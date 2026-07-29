@@ -34,6 +34,7 @@ class FakeAgentJobStore:
         self.events: list[dict[str, Any]] = []
         self.artifacts: dict[tuple[str, str], dict[str, Any]] = {}
         self.live_fence: tuple[int, int] | None = None
+        self.released: list[tuple[str, int]] = []
         self._next_event_id = 1
         self._next_job = 1
 
@@ -157,6 +158,7 @@ class FakeAgentJobStore:
         from_states: tuple[str, ...],
         to_state: str,
         detail: str | None = None,
+        base_sha: str | None = None,
     ) -> bool:
         job = self.jobs.get(job_id)
         if job is None or not self._fenced(attempt_id, lease_generation):
@@ -165,22 +167,35 @@ class FakeAgentJobStore:
             return False
         job["state"] = to_state
         job["detail"] = detail
+        # Mirrors the store's COALESCE: a worker may fill in a base the job
+        # lacked, never overwrite one the owner pinned.
+        if base_sha and not job.get("base_sha"):
+            job["base_sha"] = base_sha
         return True
 
-    async def begin_publish(self, **kwargs: Any) -> bool:
-        return await self.transition(from_states=("running",), to_state="publishing", **kwargs)
-
-    async def complete_publish(self, *, pr_url: str, **kwargs: Any) -> bool:
-        ok = await self.transition(from_states=("publishing",), to_state="succeeded", **kwargs)
-        if ok:
-            self.jobs[kwargs["job_id"]]["published_pr_url"] = pr_url
-        return ok
+    async def release_claim(
+        self, *, job_id: str, attempt_id: int, lease_generation: int | None = None
+    ) -> bool:
+        job = self.jobs.get(job_id)
+        if job is None or job.get("current_attempt_id") != attempt_id:
+            return False
+        self.released.append((job_id, attempt_id))
+        job["state"] = "queued"
+        job["current_attempt_id"] = None
+        self.live_fence = None
+        return True
 
 
 @pytest.fixture(autouse=True)
 def _api_key_secret(monkeypatch):
-    """Provide the signing secret for worker tokens."""
+    """Provide the signing secret for worker tokens and an entitled repo.
+
+    The repo allowlist is deliberately empty by default (a deployment that has
+    not been configured must refuse every job), so these tests declare the one
+    repository they use.
+    """
     monkeypatch.setenv("API_KEY_SECRET", "api-test-secret")
+    monkeypatch.setenv("AGENT_REPO_ALLOWLIST", "owner/name,o/n,private/repo")
     from serving.config.settings import get_settings
 
     get_settings.cache_clear()
@@ -202,7 +217,12 @@ def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     caller is turned away there.
     """
     from serving.servers.auth import verify_api_key
-    from serving.servers.deps import get_operational_store, verify_admin_access
+    from serving.servers.deps import (
+        get_agent_app_credentials,
+        get_log_store,
+        get_operational_store,
+        verify_admin_access,
+    )
 
     app = FastAPI()
     app.include_router(agent_jobs_router.router)
@@ -210,6 +230,12 @@ def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     # verify_admin_access resolves an operational store; the bare test app has
     # no app.state.services, so supply it even when the gate is left real.
     app.dependency_overrides[get_operational_store] = lambda: None
+    # No GitHub App by default — the configuration most deployments start in,
+    # and the one where a public repository still clones fine.
+    app.dependency_overrides[get_agent_app_credentials] = lambda: None
+    # No log store: spend and usage are then absent from the response rather
+    # than reported as a fabricated zero.
+    app.dependency_overrides[get_log_store] = lambda: None
     identity = {"user_id": _OWNER, "role": role, "authenticated": True}
     app.dependency_overrides[verify_api_key] = lambda: identity
     if dispatcher:
@@ -349,8 +375,6 @@ async def test_lost_lease_maps_to_409_on_every_write_path(
         ("post", f"/v1/agent/worker/jobs/{job_id}/events", {"event_type": "message"}),
         ("post", f"/v1/agent/worker/jobs/{job_id}/artifacts", {"kind": "p", "content": "c"}),
         ("post", f"/v1/agent/worker/jobs/{job_id}/finish", {"state": "succeeded"}),
-        ("post", f"/v1/agent/worker/jobs/{job_id}/publish/begin", None),
-        ("post", f"/v1/agent/worker/jobs/{job_id}/publish/complete", {"pr_url": "http://x"}),
     ]
     for method, path, payload in calls:
         response = await getattr(client, method)(
@@ -383,24 +407,6 @@ async def test_worker_token_is_required_and_scoped(client: AsyncClient):
         headers={"Authorization": f"Bearer {foreign_token}"},
     )
     assert wrong_job.status_code == 409
-
-
-async def test_publish_two_phase(client: AsyncClient, store: FakeAgentJobStore):
-    """begin → complete records the PR URL and finishes the job."""
-    job_id = await _create_job(client)
-    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
-    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
-
-    begin = await client.post(f"/v1/agent/worker/jobs/{job_id}/publish/begin", headers=auth)
-    assert begin.status_code == 200
-    complete = await client.post(
-        f"/v1/agent/worker/jobs/{job_id}/publish/complete",
-        json={"pr_url": "https://github.com/o/n/pull/1"},
-        headers=auth,
-    )
-    assert complete.status_code == 200
-    assert store.jobs[job_id]["state"] == "succeeded"
-    assert store.jobs[job_id]["published_pr_url"] == "https://github.com/o/n/pull/1"
 
 
 async def test_finish_rejects_non_terminal_state(client: AsyncClient):
@@ -484,7 +490,7 @@ async def test_claim_requires_the_dispatcher_credential(store: FakeAgentJobStore
     """
     await store.create_job(
         user_id="somebody-else",
-        repo="private/repo",
+        repo="private/repo",  # entitled below; the point here is the auth gate
         task_prompt="confidential task",
         runtime="claude-code",
         model="glm-5.1",
@@ -676,3 +682,513 @@ async def test_event_type_guard_rejects_a_trailing_newline(client: AsyncClient):
 
     assert _SAFE_EVENT_TYPE.fullmatch("message") is not None
     assert _SAFE_EVENT_TYPE.fullmatch("message\n") is None
+
+
+async def test_the_claim_carries_a_read_only_clone_credential(store: FakeAgentJobStore):
+    """The runner needs to check the repository out; it must not get push rights.
+
+    An installation token inherits *every* permission the App holds unless it
+    asks for less — and this App holds `contents: write` so the publisher can
+    push. Handing that to the runner would put a write credential on the host
+    that executes untrusted repository code, which is exactly the thing the
+    patch-out design exists to avoid.
+    """
+    from serving.servers.deps import get_agent_app_credentials
+
+    asked: dict[str, Any] = {}
+
+    class FakeApp:
+        async def token_for(self, repo: str, **kwargs: Any) -> str:
+            asked.update({"repo": repo, **kwargs})
+            return "ghs_clone_only"
+
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: FakeApp()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await _create_job(client)
+        claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+
+    assert claim.json()["clone_token"] == "ghs_clone_only"
+    assert asked["permissions"] == {"contents": "read"}
+    assert asked["repository_scoped"] is True
+
+
+async def test_a_deployment_without_a_github_app_still_claims_jobs(client: AsyncClient):
+    """No App configured is a working setup: a public repository needs no token."""
+    await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+
+    assert claim.status_code == 200
+    assert claim.json()["clone_token"] is None
+
+
+async def test_an_uninstalled_app_hands_the_job_over_without_a_credential(
+    store: FakeAgentJobStore,
+):
+    """A settled "not installed here" must not block the job.
+
+    A public repository clones anonymously, and a private one fails with a
+    message the owner can act on — which retrying would not improve.
+    """
+    from serving.agent_jobs.github_app import AppNotInstalled
+    from serving.servers.deps import get_agent_app_credentials
+
+    class UninstalledApp:
+        async def token_for(self, repo: str, **kwargs: Any) -> str:
+            raise AppNotInstalled(f"no App installation covers {repo}", status=404)
+
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: UninstalledApp()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        job_id = await _create_job(client)
+        claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+
+    assert claim.status_code == 200
+    assert claim.json()["job_id"] == job_id
+    assert claim.json()["clone_token"] is None
+
+
+async def test_a_transient_credential_error_is_retryable_not_terminal(
+    store: FakeAgentJobStore,
+):
+    """GitHub having a bad minute must not permanently fail someone's job.
+
+    Handing the runner a null token here sends it off to clone anonymously,
+    fail on a private repository, and mark the job *terminally* failed.
+    Abandoning the attempt instead is the retryable path: the lease expires
+    unheartbeated and the reaper requeues it.
+    """
+    from serving.servers.deps import get_agent_app_credentials
+
+    class FlakyApp:
+        async def token_for(self, repo: str, **kwargs: Any) -> str:
+            raise TimeoutError("api.github.com timed out")
+
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: FlakyApp()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await _create_job(client)
+        claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+
+    assert claim.status_code == 503, "a null token here would terminally fail the job"
+    # And the claim is handed back, not merely left to lapse. A lapsed lease
+    # still spends a retry, so an outage lasting three claim cycles would fail
+    # the job outright — the outcome this path exists to avoid, only slower.
+    assert store.released, "the attempt must be returned to the queue"
+    assert store.jobs[store.released[0][0]]["state"] == "queued"
+
+
+async def test_the_worker_reports_the_commit_it_actually_worked_from(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """A job submitted without a base_sha is unpublishable until one is recorded.
+
+    The runner resolves the default branch when it checks the repository out,
+    so it is the only component that knows — and the publisher refuses to apply
+    a patch without a base.
+    """
+    job_id = await _create_job(client)
+    assert store.jobs[job_id].get("base_sha") in (None, "")
+
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+    resolved = "a" * 40
+
+    finish = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/finish",
+        json={"state": "succeeded", "base_sha": resolved},
+        headers=auth,
+    )
+
+    assert finish.status_code == 200
+    assert store.jobs[job_id]["base_sha"] == resolved
+
+
+async def test_a_worker_cannot_overwrite_a_base_the_owner_pinned(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """An owner who names a commit must get a patch against that commit."""
+    pinned = "b" * 40
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={
+            "repo": "o/n",
+            "task_prompt": "do the thing",
+            "model": "m",
+            "base_sha": pinned,
+        },
+    )
+    job_id = created.json()["id"]
+
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+    await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/finish",
+        json={"state": "succeeded", "base_sha": "c" * 40},
+        headers=auth,
+    )
+
+    assert store.jobs[job_id]["base_sha"] == pinned
+
+
+async def test_an_unentitled_repo_is_refused_at_creation(client: AsyncClient):
+    """The requester picks the repo; the platform supplies the GitHub authority.
+
+    Without this check the two combine into a confused deputy: name any
+    repository the App can reach, and read it back through your own job's
+    events and patch artifact.
+    """
+    response = await client.post(
+        "/v1/agent/jobs",
+        json={"repo": "someone-else/private", "task_prompt": "exfiltrate", "model": "m"},
+    )
+
+    assert response.status_code == 403
+    assert "repo_not_allowed" in response.text
+
+
+async def test_a_legacy_row_gets_no_credential_at_claim(store: FakeAgentJobStore):
+    """A row written before the check existed must not yield a token now."""
+    from serving.servers.deps import get_agent_app_credentials
+
+    minted: list[str] = []
+
+    class FakeApp:
+        async def token_for(self, repo: str, **kwargs: Any) -> str:
+            minted.append(repo)
+            return "ghs_should_not_happen"
+
+    # Straight into the store, bypassing the API — the shape a pre-existing row has.
+    await store.create_job(
+        user_id=_OWNER,
+        repo="someone-else/private",
+        task_prompt="legacy",
+        runtime="claude-code",
+        model="m",
+    )
+
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: FakeApp()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+
+    assert claim.status_code == 403
+    assert minted == [], "no credential may be minted for an unentitled repo"
+    # And the job went back to the queue rather than burning an attempt.
+    assert store.released
+
+
+async def test_spend_and_usage_come_from_the_ledger_not_the_agent(store: FakeAgentJobStore):
+    """A job's numbers must not depend on what the agent says about itself.
+
+    Models do misreport their own usage — this session watched one claim it had
+    edited a file it never touched — so the owner-facing totals read the same
+    billing ledger the budget check already trusts.
+    """
+    from serving.servers.deps import get_log_store
+
+    class Ledger:
+        async def get_agent_job_cost(self, job_id: str) -> float:
+            return 0.0075
+
+        async def get_agent_job_usage(self, job_id: str) -> dict[str, float]:
+            return {"tokens_in": 74000, "tokens_out": 523, "calls": 3}
+
+    app = _build_app(store)
+    app.dependency_overrides[get_log_store] = lambda: Ledger()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        job_id = await _create_job(client)
+        got = await client.get(f"/v1/agent/jobs/{job_id}")
+
+    body = got.json()
+    assert body["spent_usd"] == 0.0075
+    assert body["tokens_in"] == 74000
+    assert body["model_calls"] == 3
+
+
+async def test_a_deployment_without_a_ledger_reports_absent_not_zero(client: AsyncClient):
+    """A missing source must not look like a job that spent nothing."""
+    job_id = await _create_job(client)
+
+    body = (await client.get(f"/v1/agent/jobs/{job_id}")).json()
+
+    assert body["spent_usd"] is None
+    assert body["tokens_in"] is None
+
+
+async def test_the_owner_can_see_what_the_sandbox_could_reach(client: AsyncClient, monkeypatch):
+    """The egress posture is reported, not left to trust."""
+    monkeypatch.setenv("AGENT_SANDBOX_NETWORK", "agent-egress")
+    monkeypatch.setenv("AGENT_EGRESS_AGENT_TIER", "platform_only")
+    job_id = await _create_job(client)
+
+    body = (await client.get(f"/v1/agent/jobs/{job_id}")).json()
+
+    assert body["agent_egress_tier"] == "platform_only"
+
+
+async def test_a_worker_cannot_write_the_publish_record(client: AsyncClient):
+    """Publishing is the platform's, not the sandbox runner's.
+
+    These endpoints had no production caller — the runner leaves publishing to
+    the platform and the publisher uses its own claim path — while letting a
+    worker token write `published_pr_url` from an arbitrary string. That marked
+    the job succeeded, showed the owner that URL, and made the real publisher
+    skip the job forever (it only claims rows where the URL is null), so the
+    patch was never gated or pushed.
+    """
+    job_id = await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+
+    for path, body in (
+        (f"/v1/agent/worker/jobs/{job_id}/publish/begin", None),
+        (f"/v1/agent/worker/jobs/{job_id}/publish/complete", {"pr_url": "https://evil/pr/1"}),
+    ):
+        response = await client.post(path, json=body, headers=auth)
+        assert response.status_code == 404, f"{path} must not exist"
+
+
+class _FakeGitHubApp:
+    """Stands in for the App: a user token maps to installations, which cover repos."""
+
+    def __init__(self, installations, repos_by_installation, *, exchange_fails=False):
+        self.installations = installations
+        self.repos = repos_by_installation
+        self.exchange_fails = exchange_fails
+        self.exchanged: list[str] = []
+
+    async def exchange_user_code(self, code: str) -> str:
+        if self.exchange_fails:
+            raise RuntimeError("GitHub refused the code exchange")
+        self.exchanged.append(code)
+        return f"user-token-for-{code}"
+
+    async def installations_for_user(self, user_token: str) -> list[dict[str, Any]]:
+        return self.installations
+
+    async def repositories_for_installation(self, installation_id: int) -> list[str]:
+        return self.repos.get(installation_id, [])
+
+    async def token_for(self, repo: str, **kwargs: Any) -> str:
+        return "ghs_x"
+
+
+def _store_with_grants(store: FakeAgentJobStore) -> FakeAgentJobStore:
+    """Give the fake store the grant surface the router uses."""
+    store.grants = {}
+
+    async def record_repo_grant(*, user_id, installation_id, account_login=None):
+        store.grants.setdefault(user_id, {})[installation_id] = account_login
+
+    async def list_repo_grants(*, user_id):
+        return [
+            {"installation_id": iid, "account_login": login}
+            for iid, login in store.grants.get(user_id, {}).items()
+        ]
+
+    async def revoke_repo_grant(*, user_id, installation_id):
+        return store.grants.get(user_id, {}).pop(installation_id, "missing") != "missing"
+
+    store.record_repo_grant = record_repo_grant
+    store.list_repo_grants = list_repo_grants
+    store.revoke_repo_grant = revoke_repo_grant
+    return store
+
+
+async def test_connecting_records_only_what_github_attests(store: FakeAgentJobStore, monkeypatch):
+    """The entitlement must come from GitHub's answer, not the browser's claim.
+
+    The browser sends a code; the platform exchanges it for a token that speaks
+    as that user and asks GitHub which installations they can reach. An
+    installation id posted directly would be exactly the confused deputy this
+    path exists to prevent.
+    """
+    monkeypatch.delenv("AGENT_REPO_ALLOWLIST", raising=False)
+    from serving.servers.deps import get_agent_app_credentials
+
+    app_creds = _FakeGitHubApp(
+        installations=[{"installation_id": 77, "account_login": "acme"}],
+        repos_by_installation={77: ["acme/service", "acme/web"]},
+    )
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        connected = await client.post("/v1/agent/github/connect", json={"code": "abc123"})
+        config = await client.get("/v1/agent/config")
+
+    assert connected.status_code == 200
+    assert app_creds.exchanged == ["abc123"], "the code must be exchanged, not trusted"
+    assert connected.json()["connections"][0]["installation_id"] == 77
+    # The picker now offers what this user actually connected.
+    assert config.json()["repos"] == ["acme/service", "acme/web"]
+    assert config.json()["github_connected"] is True
+
+
+async def test_a_connected_user_may_run_only_their_own_repos(store: FakeAgentJobStore, monkeypatch):
+    """Connecting one owner must not entitle someone else's repository."""
+    monkeypatch.delenv("AGENT_REPO_ALLOWLIST", raising=False)
+    from serving.servers.deps import get_agent_app_credentials
+
+    app_creds = _FakeGitHubApp(
+        installations=[{"installation_id": 77, "account_login": "acme"}],
+        repos_by_installation={77: ["acme/service"]},
+    )
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/v1/agent/github/connect", json={"code": "abc123"})
+        mine = await client.post(
+            "/v1/agent/jobs",
+            json={"repo": "acme/service", "task_prompt": "fix it", "model": "m"},
+        )
+        theirs = await client.post(
+            "/v1/agent/jobs",
+            json={"repo": "someone-else/private", "task_prompt": "exfiltrate", "model": "m"},
+        )
+
+    assert mine.status_code == 201
+    assert theirs.status_code == 403
+    assert "connected" in theirs.text
+
+
+async def test_a_failed_exchange_grants_nothing(store: FakeAgentJobStore, monkeypatch):
+    """A code that does not verify must leave the user with no entitlement."""
+    monkeypatch.delenv("AGENT_REPO_ALLOWLIST", raising=False)
+    from serving.servers.deps import get_agent_app_credentials
+
+    app_creds = _FakeGitHubApp(
+        installations=[{"installation_id": 77, "account_login": "acme"}],
+        repos_by_installation={77: ["acme/service"]},
+        exchange_fails=True,
+    )
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        connected = await client.post("/v1/agent/github/connect", json={"code": "stolen"})
+        config = await client.get("/v1/agent/config")
+
+    assert connected.status_code == 400
+    assert config.json()["repos"] == []
+
+
+async def test_disconnecting_removes_the_entitlement(store: FakeAgentJobStore, monkeypatch):
+    """Revoking here is half of it; uninstalling on GitHub is the other half."""
+    monkeypatch.delenv("AGENT_REPO_ALLOWLIST", raising=False)
+    from serving.servers.deps import get_agent_app_credentials
+
+    app_creds = _FakeGitHubApp(
+        installations=[{"installation_id": 77, "account_login": "acme"}],
+        repos_by_installation={77: ["acme/service"]},
+    )
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/v1/agent/github/connect", json={"code": "abc123"})
+        await client.delete("/v1/agent/github/connect/77")
+        after = await client.post(
+            "/v1/agent/jobs",
+            json={"repo": "acme/service", "task_prompt": "fix it", "model": "m"},
+        )
+
+    assert after.status_code == 403
+
+
+async def test_a_branch_is_pinned_to_a_commit_at_creation(store: FakeAgentJobStore, monkeypatch):
+    """A job records the sha, never the branch name.
+
+    A branch moves. A job that stored "dev" would silently mean a different
+    tree by the time it ran, and the publisher applies its patch onto a pinned
+    commit — so resolving late would mean generating a diff against one tree
+    and pushing it onto another.
+    """
+    monkeypatch.setenv("AGENT_REPO_ALLOWLIST", "owner/name")
+    from serving.servers.deps import get_agent_app_credentials
+
+    class BranchApp(_FakeGitHubApp):
+        async def resolve_ref(self, repo: str, ref: str) -> str:
+            assert ref == "dev"
+            return "f" * 40
+
+    app_creds = BranchApp(installations=[], repos_by_installation={})
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/v1/agent/jobs",
+            json={
+                "repo": "owner/name",
+                "task_prompt": "fix it",
+                "model": "m",
+                "base_ref": "dev",
+            },
+        )
+
+    assert created.status_code == 201
+    assert created.json()["base_sha"] == "f" * 40
+
+
+async def test_an_unresolvable_branch_is_refused_at_creation(store: FakeAgentJobStore, monkeypatch):
+    """Better a clear 400 than a job queued against a ref that does not exist."""
+    monkeypatch.setenv("AGENT_REPO_ALLOWLIST", "owner/name")
+    from serving.servers.deps import get_agent_app_credentials
+
+    class BrokenBranchApp(_FakeGitHubApp):
+        async def resolve_ref(self, repo: str, ref: str) -> str:
+            raise RuntimeError("no such branch")
+
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: BrokenBranchApp(
+        installations=[], repos_by_installation={}
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/v1/agent/jobs",
+            json={
+                "repo": "owner/name",
+                "task_prompt": "fix it",
+                "model": "m",
+                "base_ref": "nope",
+            },
+        )
+
+    assert created.status_code == 400
+    assert "nope" in created.text
+
+
+async def test_branches_are_only_listed_for_an_entitled_repo(store: FakeAgentJobStore, monkeypatch):
+    """This reads through the platform's installation, so it needs the same gate.
+
+    Without it, the endpoint enumerates branches of any repository the App
+    happens to cover — which is the confused deputy again, one level down.
+    """
+    monkeypatch.setenv("AGENT_REPO_ALLOWLIST", "owner/name")
+    from serving.servers.deps import get_agent_app_credentials
+
+    class BranchApp(_FakeGitHubApp):
+        async def branches_for_repo(self, repo: str) -> dict[str, Any]:
+            return {"default": "main", "branches": ["main", "dev"]}
+
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: BranchApp(
+        installations=[], repos_by_installation={}
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        mine = await client.get("/v1/agent/branches", params={"repo": "owner/name"})
+        theirs = await client.get("/v1/agent/branches", params={"repo": "someone/private"})
+
+    assert mine.status_code == 200
+    assert mine.json()["default"] == "main"
+    assert theirs.status_code == 403

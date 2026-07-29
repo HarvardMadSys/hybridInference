@@ -249,3 +249,79 @@ def test_credential_in_a_filename_is_caught():
     result = validate_patch(patch)
     assert not result.ok
     assert any("credential-shaped" in violation for violation in result.violations)
+
+
+# ── the parser is not the boundary ─────────────────────────────────────
+#
+# git quotes any path containing non-ASCII bytes, control characters, quotes or
+# backslashes. A gate that matches the raw header text sees a path starting
+# with a quote — matching no blocked prefix — while `git apply` decodes it and
+# writes the real file. Confirmed against real git before these were written.
+
+
+def test_a_quoted_workflow_path_is_seen_through():
+    """`.github/` hidden behind C-quoting must still hit the block.
+
+    The bypass needed one benign file alongside it: with nothing parseable the
+    patch was rejected as unrecognizable, so a lone quoted entry looked safe.
+    Mixed with a normal file it sailed through with ok=True.
+    """
+    patch = (
+        "diff --git a/README.md b/README.md\n"
+        "--- a/README.md\n+++ b/README.md\n@@ -1 +1,2 @@\n hello\n+world\n"
+        'diff --git "a/\\056github/workflows/evil.yml" "b/\\056github/workflows/evil.yml"\n'
+        "new file mode 100644\n"
+        '--- /dev/null\n+++ "b/\\056github/workflows/evil.yml"\n@@ -0,0 +1 @@\n+on: push\n'
+    )
+
+    result = validate_patch(patch)
+
+    assert not result.ok
+    assert ".github/workflows/evil.yml" in result.changed_files
+    assert result.requires_human_release
+
+
+def test_a_headerless_hunk_still_counts():
+    """A patch with no `diff --git` line at all applies fine and must be gated."""
+    patch = "--- /dev/null\n+++ b/.github/workflows/evil.yml\n@@ -0,0 +1 @@\n+on: push\n"
+
+    result = validate_patch(patch)
+
+    assert not result.ok
+    assert result.changed_files == [".github/workflows/evil.yml"]
+
+
+def test_a_symlink_is_blamed_on_the_file_that_introduced_it():
+    """A mode line must not be attributed to the previous file.
+
+    The old parser kept the last header's paths as `pending`, so a mode line
+    belonging to an entry it failed to parse was reported against whichever
+    file came before — a false positive on an innocent path, and the real one
+    unnamed.
+    """
+    patch = (
+        "diff --git a/README.md b/README.md\n"
+        "--- a/README.md\n+++ b/README.md\n@@ -1 +1,2 @@\n hello\n+world\n"
+        'diff --git "a/w\\303\\251ird" "b/w\\303\\251ird"\n'
+        "new file mode 120000\n"
+        '--- /dev/null\n+++ "b/w\\303\\251ird"\n@@ -0,0 +1 @@\n+/etc/passwd\n'
+    )
+
+    result = validate_patch(patch)
+
+    assert not result.ok
+    assert "wéird" in result.reason
+    assert "README.md" not in result.reason
+
+
+def test_an_ordinary_patch_is_unaffected():
+    """The unquoting must not change the common case."""
+    patch = (
+        "diff --git a/src/app.py b/src/app.py\n"
+        "--- a/src/app.py\n+++ b/src/app.py\n@@ -1 +1,2 @@\n x\n+y\n"
+    )
+
+    result = validate_patch(patch)
+
+    assert result.ok
+    assert result.changed_files == ["src/app.py"]

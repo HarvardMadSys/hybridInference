@@ -58,6 +58,9 @@ export interface AgentJob {
   /** Set when the model is served on our own hardware, e.g. "H200". */
   modelLocal?: string;
   spentUsd: number;
+  // False when the deployment has no billing ledger, so the UI can say
+  // "unknown" instead of implying the job cost nothing.
+  hasLedger?: boolean;
   budgetUsd: number;
   elapsedLabel?: string;
   timeoutLabel: string;

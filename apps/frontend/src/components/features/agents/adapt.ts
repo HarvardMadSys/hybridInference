@@ -117,6 +117,26 @@ function diffStat(patch: string): { add: number; del: number } | undefined {
   return { add, del };
 }
 
+const TIER_LABELS: Record<string, string> = {
+  platform_only: 'gateway only',
+  trusted: 'allowlist',
+  custom: 'custom',
+  full: 'open',
+};
+
+/** Render an egress tier for a reader who does not know the tier names. */
+function tierLabel(tier: string | null): string {
+  if (!tier) return '';
+  return TIER_LABELS[tier] ?? tier;
+}
+
+/** Render a token count compactly, or empty when there is no ledger. */
+function formatTokens(value: number | null): string {
+  if (value === null || value === undefined) return '';
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return String(value);
+}
+
 export interface AdaptOptions {
   events?: AgentJobEventApi[];
   patch?: string | null;
@@ -163,13 +183,15 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     branch: `agent/${job.id}`,
     runtime: job.runtime,
     model: job.model,
-    // Spend is summed server-side from api_logs; until the job exposes it the
-    // UI shows 0 rather than guessing from token counts.
-    spentUsd: 0,
+    // Summed server-side from api_logs. Null there means no ledger is
+    // configured; 0 is the honest display for that, but the panel below reads
+    // `hasLedger` so it can say so rather than imply the job was free.
+    spentUsd: job.spent_usd ?? 0,
     budgetUsd: job.budget_usd ?? 0,
+    hasLedger: job.spent_usd !== null,
     timeoutLabel: '',
-    networkSetup: '',
-    networkAgent: '',
+    networkSetup: tierLabel(job.setup_egress_tier),
+    networkAgent: tierLabel(job.agent_egress_tier),
     sandbox: '',
     attempts,
     events: displayEvents,
@@ -179,7 +201,12 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     diffLines: toDiffLines(patch),
     rawLines: [],
     gates: [],
-    usage: { tokensIn: '', tokensOut: '', cachePct: 0, turns: 0 },
+    usage: {
+      tokensIn: formatTokens(job.tokens_in),
+      tokensOut: formatTokens(job.tokens_out),
+      cachePct: 0,
+      turns: job.model_calls ?? 0,
+    },
     egressDenials,
     prLabel: job.published_pr_url ? `draft PR ${job.published_pr_url.split('/').pop()}` : undefined,
   };

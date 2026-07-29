@@ -65,6 +65,11 @@ ATTEMPT_FINISHED = "finished"
 
 # Control event appended by the reaper when it supersedes an attempt.
 EVENT_ATTEMPT_SUPERSEDED = "attempt_superseded"
+EVENT_ATTEMPT_ABORTED = "attempt_aborted"
+
+# An attempt the platform gave up on before the agent ever started — the job
+# never got its turn, so it must not count toward the retry budget.
+ATTEMPT_ABORTED = "aborted"
 
 
 def _new_job_id() -> str:
@@ -91,6 +96,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "repo": row["repo"],
         "base_sha": row["base_sha"],
         "task_prompt": row["task_prompt"],
+        "setup_script": row["setup_script"],
         "runtime": row["runtime"],
         "model": row["model"],
         "state": row["state"],
@@ -106,7 +112,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
 
 
 _JOB_COLUMNS = (
-    "id, user_id, repo, base_sha, task_prompt, runtime, model, state, "
+    "id, user_id, repo, base_sha, task_prompt, setup_script, runtime, model, state, "
     "cancel_requested, current_attempt_id, published_pr_url, detail, budget_usd, metadata, "
     "created_at, updated_at"
 )
@@ -130,6 +136,7 @@ class AgentJobStore:
                     repo TEXT NOT NULL,
                     base_sha TEXT,
                     task_prompt TEXT NOT NULL,
+                    setup_script TEXT,
                     runtime TEXT NOT NULL,
                     model TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'queued',
@@ -149,6 +156,7 @@ class AgentJobStore:
             await conn.execute(
                 "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS budget_usd NUMERIC(12, 6)"
             )
+            await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS setup_script TEXT")
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_jobs_queued "
                 "ON agent_jobs(created_at) WHERE state = 'queued'"
@@ -211,6 +219,72 @@ class AgentJobStore:
                 """
             )
 
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_repo_grants (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    installation_id BIGINT NOT NULL,
+                    account_login TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, installation_id)
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_repo_grants_user "
+                "ON agent_repo_grants(user_id)"
+            )
+
+    # ── Repository grants ──────────────────────────────────────────────
+    #
+    # Which GitHub App installations a *user* has proved they can reach. The
+    # entitlement has to come from something GitHub attests, never from the
+    # request: the requester chooses the repository and the platform mints the
+    # credential for it, so anything the requester can simply assert is a
+    # confused deputy waiting to happen.
+
+    async def record_repo_grant(
+        self, *, user_id: str, installation_id: int, account_login: str | None = None
+    ) -> None:
+        """Record that this user may use this installation."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO agent_repo_grants (user_id, installation_id, account_login)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, installation_id)
+                DO UPDATE SET account_login = EXCLUDED.account_login
+                """,
+                user_id,
+                installation_id,
+                account_login,
+            )
+
+    async def list_repo_grants(self, *, user_id: str) -> list[dict[str, Any]]:
+        """Return the installations this user has connected."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT installation_id, account_login FROM agent_repo_grants "
+                "WHERE user_id = $1 ORDER BY id",
+                user_id,
+            )
+        return [
+            {"installation_id": row["installation_id"], "account_login": row["account_login"]}
+            for row in rows
+        ]
+
+    async def revoke_repo_grant(self, *, user_id: str, installation_id: int) -> bool:
+        """Drop one connection. Uninstalling on GitHub is the other half."""
+        async with self._pool.acquire() as conn:
+            deleted = await conn.fetchval(
+                "DELETE FROM agent_repo_grants WHERE user_id = $1 AND installation_id = $2 "
+                "RETURNING id",
+                user_id,
+                installation_id,
+            )
+        return deleted is not None
+
     # ── Jobs ───────────────────────────────────────────────────────────
 
     async def create_job(
@@ -222,6 +296,7 @@ class AgentJobStore:
         runtime: str,
         model: str,
         base_sha: str | None = None,
+        setup_script: str | None = None,
         budget_usd: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -231,9 +306,9 @@ class AgentJobStore:
             row = await conn.fetchrow(
                 f"""
                 INSERT INTO agent_jobs
-                    (id, user_id, repo, base_sha, task_prompt, runtime, model,
-                     budget_usd, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                    (id, user_id, repo, base_sha, task_prompt, setup_script, runtime,
+                     model, budget_usd, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
                 RETURNING {_JOB_COLUMNS}
                 """,
                 job_id,
@@ -241,6 +316,7 @@ class AgentJobStore:
                 repo,
                 base_sha,
                 task_prompt,
+                setup_script,
                 runtime,
                 model,
                 Decimal(str(budget_usd)) if budget_usd is not None else None,
@@ -373,6 +449,88 @@ class AgentJobStore:
         claim["lease_generation"] = attempt["lease_generation"]
         return claim
 
+    @staticmethod
+    async def _attempts_spent(conn: Any, job_id: str) -> int:
+        """Count attempts that actually got their turn.
+
+        The retry budget used to be read off ``attempt_no``, which numbers
+        every claim including ones the platform abandoned before the agent
+        started. Counting instead means an aborted claim is free: numbers still
+        advance (they are referenced by events, and gaps are informative), but
+        only attempts that ran spend the budget.
+        """
+        return await conn.fetchval(
+            "SELECT count(*) FROM agent_attempts WHERE job_id = $1 AND status <> $2",
+            job_id,
+            ATTEMPT_ABORTED,
+        )
+
+    async def release_claim(
+        self, *, job_id: str, attempt_id: int, lease_generation: int | None = None
+    ) -> bool:
+        """Hand a just-claimed job back to the queue without spending a retry.
+
+        For the case where the *platform* could not go through with a claim it
+        already made — it could not mint the repository credential, say. The
+        job never got its turn, so making it pay for the attempt is wrong twice
+        over: it waits out a lease it will never use, and after
+        ``max_attempts`` such failures the reaper fails it outright. A brief
+        GitHub outage would terminally fail every queued private-repo job
+        without an agent ever starting.
+
+        The attempt row stays, marked ``aborted``, with a control event saying
+        why: history is append-only, and "the platform dropped this one" is
+        exactly the kind of thing an operator later needs to see. It simply
+        does not count — see the retry budget in :meth:`reap_expired`.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            released = await conn.fetchval(
+                """
+                UPDATE agent_attempts
+                SET status = $2, finished_at = NOW()
+                WHERE id = $1 AND status = 'running'
+                  AND ($3::bigint IS NULL OR lease_generation = $3)
+                  AND lease_expires_at > NOW()
+                RETURNING job_id
+                """,
+                attempt_id,
+                ATTEMPT_ABORTED,
+                lease_generation,
+            )
+            if released is None:
+                return False
+            # The store's own answer, not the caller's. `agent_job_events.job_id`
+            # has no foreign key, so a mismatched (job_id, attempt_id) pair would
+            # write a control event into a different job's stream — potentially a
+            # different tenant's.
+            await self._insert_event(
+                conn,
+                job_id=released,
+                attempt_id=attempt_id,
+                event_type=EVENT_ATTEMPT_ABORTED,
+                payload={"reason": "credential_unavailable"},
+            )
+            # Fenced on this attempt still being the current one, so a job that
+            # has since moved on is never dragged back to `queued`.
+            #
+            # An owner who cancelled while we held the claim gets `cancelled`,
+            # not `queued`. Requeueing them was a dead end: `claim_job` skips
+            # queued rows with `cancel_requested`, and the reaper only reaches
+            # jobs with a *running* attempt — which this no longer has — so the
+            # job sat in `queued` that nothing could ever move again.
+            await conn.execute(
+                """
+                UPDATE agent_jobs
+                SET state = CASE WHEN cancel_requested THEN 'cancelled' ELSE 'queued' END,
+                    current_attempt_id = NULL,
+                    updated_at = NOW()
+                WHERE id = $1 AND current_attempt_id = $2 AND state = 'running'
+                """,
+                released,
+                attempt_id,
+            )
+        return True
+
     async def heartbeat(
         self,
         *,
@@ -423,18 +581,27 @@ class AgentJobStore:
         from_states: tuple[str, ...],
         to_state: str,
         detail: str | None = None,
+        base_sha: str | None = None,
     ) -> bool:
         """Move a job between states, fenced by the attempt's live lease.
 
         Terminal transitions also close the attempt (``finished``). Returns
         False when the caller lost the lease or the job is not in
         ``from_states`` — the caller must stop.
+
+        ``base_sha`` fills in the commit the worker resolved, and only when the
+        job does not already have one: an owner who pinned a commit must get a
+        patch against *that* commit, so a worker may report the base it used
+        but never overwrite the base it was given.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             updated = await conn.fetchval(
                 """
                 UPDATE agent_jobs j
-                SET state = $4, detail = COALESCE($5, j.detail), updated_at = NOW()
+                SET state = $4,
+                    detail = COALESCE($5, j.detail),
+                    base_sha = COALESCE(j.base_sha, $7),
+                    updated_at = NOW()
                 WHERE j.id = $1
                   AND j.state = ANY($3::text[])
                   AND j.current_attempt_id = $2
@@ -452,6 +619,7 @@ class AgentJobStore:
                 to_state,
                 detail,
                 lease_generation,
+                base_sha,
             )
             if updated is None:
                 return False
@@ -462,68 +630,6 @@ class AgentJobStore:
                     attempt_id,
                 )
         return True
-
-    async def begin_publish(
-        self,
-        *,
-        job_id: str,
-        attempt_id: int,
-        lease_generation: int,
-    ) -> bool:
-        """Enter the one-shot publish phase (``running -> publishing``)."""
-        return await self.transition(
-            job_id=job_id,
-            attempt_id=attempt_id,
-            lease_generation=lease_generation,
-            from_states=(RUNNING,),
-            to_state=PUBLISHING,
-        )
-
-    async def complete_publish(
-        self,
-        *,
-        job_id: str,
-        attempt_id: int,
-        lease_generation: int,
-        pr_url: str,
-    ) -> bool:
-        """Record the published PR and finish the job (exactly once).
-
-        Requires ``state = 'publishing'``, the live fenced lease, and
-        ``published_pr_url IS NULL`` — so no second publish can ever land.
-        """
-        async with self._pool.acquire() as conn, conn.transaction():
-            updated = await conn.fetchval(
-                """
-                UPDATE agent_jobs j
-                SET state = 'succeeded', published_pr_url = $4, updated_at = NOW()
-                WHERE j.id = $1
-                  AND j.state = 'publishing'
-                  AND j.current_attempt_id = $2
-                  AND j.published_pr_url IS NULL
-                  AND EXISTS (
-                        SELECT 1 FROM agent_attempts a
-                        WHERE a.id = $2 AND a.lease_generation = $3
-                          AND a.status = 'running'
-                          AND a.lease_expires_at > NOW()
-                  )
-                RETURNING j.id
-                """,
-                job_id,
-                attempt_id,
-                lease_generation,
-                pr_url,
-            )
-            if updated is None:
-                return False
-            await conn.execute(
-                "UPDATE agent_attempts SET status = 'finished', finished_at = NOW() "
-                "WHERE id = $1 AND status = 'running'",
-                attempt_id,
-            )
-        return True
-
-    # ── Events ─────────────────────────────────────────────────────────
 
     async def append_event(
         self,
@@ -781,7 +887,7 @@ class AgentJobStore:
                 """
                 UPDATE agent_jobs
                 SET state = 'succeeded', published_pr_url = $2, updated_at = NOW()
-                WHERE id = $1 AND published_pr_url IS NULL
+                WHERE id = $1 AND published_pr_url IS NULL AND state = 'publishing'
                 RETURNING id
                 """,
                 job_id,
@@ -812,8 +918,11 @@ class AgentJobStore:
         """
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
+                # `state = 'publishing'` as well as the null URL: without it a
+                # late failure report could fail a job that had already moved
+                # on — including one a later attempt published successfully.
                 "UPDATE agent_jobs SET state = 'failed', detail = $2, updated_at = NOW() "
-                "WHERE id = $1 AND published_pr_url IS NULL",
+                "WHERE id = $1 AND published_pr_url IS NULL AND state = 'publishing'",
                 job_id,
                 detail[:2000],
             )
@@ -830,6 +939,38 @@ class AgentJobStore:
                 )
 
     # ── Reaper ─────────────────────────────────────────────────────────
+
+    async def reap_stalled_publishes(self, *, stall_seconds: float = 900.0) -> list[str]:
+        """Fail jobs the publisher took and never finished.
+
+        ``claim_for_publish`` moves a job to ``publishing`` in its own
+        transaction; if the publisher then crashes, nothing else ever touches
+        that row. ``reap_expired`` cannot help — it scans running *attempts*,
+        and this job's attempt finished before publishing began — so the job
+        sits in ``publishing`` forever, invisible to its owner and to the
+        publish queue.
+
+        Failed rather than retried, for the reason this module already gives
+        for a lease that expires while publishing: the branch or PR may
+        already exist, and a second automatic publish must never happen.
+        Returns the job ids it failed.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(
+                """
+                UPDATE agent_jobs
+                SET state = 'failed',
+                    detail = $2,
+                    updated_at = NOW()
+                WHERE state = 'publishing'
+                  AND published_pr_url IS NULL
+                  AND updated_at < NOW() - make_interval(secs => $1)
+                RETURNING id
+                """,
+                stall_seconds,
+                "the publisher stopped before finishing; manual review required",
+            )
+        return [row["id"] for row in rows]
 
     async def reap_expired(self, *, max_attempts: int = 3) -> list[dict[str, Any]]:
         """Close expired attempts and requeue (or fail) their jobs.
@@ -888,7 +1029,7 @@ class AgentJobStore:
                         "WHERE id = $1",
                         job_id,
                     )
-                elif row["attempt_no"] >= max_attempts:
+                elif await self._attempts_spent(conn, job_id) >= max_attempts:
                     action = FAILED
                     await conn.execute(
                         "UPDATE agent_jobs SET state = 'failed', detail = $2, "

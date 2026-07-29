@@ -1,0 +1,69 @@
+# syntax=docker/dockerfile:1.7
+#
+# The self-hosted agent runner (issue #1041).
+#
+# This is the TRUSTED side. It holds the dispatcher credential, checks the
+# job's repository out, and starts one disposable sandbox per job — only a
+# model-scoped token ever crosses into that sandbox. The agent itself never
+# runs here, which is why this image carries a Docker client and the sandbox
+# image deliberately does not.
+#
+# Two tools this image must have, and the reason each is load-bearing:
+#
+#   docker  The container backend shells out to it to start each sandbox.
+#           Without it the runner's preflight fails on every host and no job
+#           can run at all — the backend image alone is not enough.
+#   git     The runner clones the job's repository before the agent starts.
+#           Cloning here rather than inside the sandbox is what keeps the
+#           repository credential out of the agent's reach.
+
+FROM python:3.12-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install uv
+
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md ./
+# Mirrors Dockerfile.backend: the private routewise dependency needs a token,
+# and `-s` so an empty secret (local dev) does not break anonymous fetches.
+RUN --mount=type=secret,id=github_token \
+    if [ -s /run/secrets/github_token ]; then \
+        token="$(cat /run/secrets/github_token)" && \
+        git config --global \
+            url."https://x-access-token:${token}@github.com/".insteadOf \
+            "https://github.com/"; \
+    fi && \
+    uv sync --frozen --no-dev --no-install-project && \
+    if [ -s /run/secrets/github_token ]; then \
+        git config --global --unset-all \
+            url."https://x-access-token:${token}@github.com/".insteadOf || true; \
+    fi
+
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# The client only — no daemon. The runner talks to the host's daemon over the
+# bind-mounted socket; a second daemon in here would be both wrong and
+# considerably more privilege than this needs.
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+
+WORKDIR /app
+COPY --from=builder /app/.venv .venv
+ENV PATH="/app/.venv/bin:$PATH"
+
+COPY apps/backend/serving/ serving/
+COPY apps/backend/routing/ routing/
+
+# Root on purpose, and only here. The runner chowns each job worktree to the
+# sandbox user before mounting it — an unprivileged runner cannot, and falls
+# back to making the tree world-readable on the host. The isolation boundary is
+# between this container and the sandbox it starts, not around this container.
+USER root
+
+CMD ["python", "-m", "serving.agent_jobs.runner", "--loop"]

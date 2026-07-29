@@ -25,6 +25,17 @@ from serving.agent_jobs.publisher import PublishError, PublishResult
 
 pytestmark = pytest.mark.asyncio
 
+
+@pytest.fixture(autouse=True)
+def _entitled(monkeypatch):
+    """Entitle the fixture repository.
+
+    Publishing now re-checks entitlement before minting a write credential, so
+    a test that does not declare one is correctly refused.
+    """
+    monkeypatch.setenv("AGENT_REPO_ALLOWLIST", "o/n")
+
+
 _JOB = {
     "job_id": "ajob_1",
     "user_id": "u1",
@@ -245,14 +256,20 @@ async def test_app_only_deployment_actually_publishes(monkeypatch):
     _patch_pr(monkeypatch)
 
     class FakeApp:
-        async def token_for(self, repo: str) -> str:
+        def __init__(self) -> None:
+            self.scoped: bool | None = None
+
+        async def token_for(self, repo: str, **kwargs) -> str:
+            self.scoped = kwargs.get("repository_scoped")
             return "ghs_from_app"
+
+    app = FakeApp()
 
     task = asyncio.create_task(
         publish_loop(
             store,
             credential_provider=lambda: None,  # no static token configured
-            app_credentials=FakeApp(),
+            app_credentials=app,
             interval_seconds=0.01,
         )
     )
@@ -265,6 +282,9 @@ async def test_app_only_deployment_actually_publishes(monkeypatch):
         await task
 
     assert store.recorded == ("ajob_1", "https://github.com/o/n/pull/7")
+    # And the token it published with is scoped to this repository, not to
+    # everything the App happens to be installed on.
+    assert app.scoped is True
 
 
 async def test_no_credential_at_all_fails_the_job_rather_than_hanging(monkeypatch):
@@ -273,3 +293,25 @@ async def test_no_credential_at_all_fails_the_job_rather_than_hanging(monkeypatc
     assert await publish_one(store, credential=None, app_credentials=None) is None
     assert store.failed is not None
     assert "credential" in store.failed[1]
+
+
+async def test_publishing_stops_when_the_entitlement_was_withdrawn(monkeypatch):
+    """The write credential must not outlive the permission to use it.
+
+    Publishing happens well after the job ran, and it is the step that asks for
+    push authority. Without this the read side would refuse the clone token at
+    claim while the same deployment still handed out the push token.
+    """
+    monkeypatch.setenv("AGENT_REPO_ALLOWLIST", "someone/else")
+    store = FakeStore(dict(_JOB))
+    minted: list[str] = []
+
+    class App:
+        async def token_for(self, repo: str, **kwargs: Any) -> str:
+            minted.append(repo)
+            return "ghs_should_not_happen"
+
+    assert await publish_one(store, app_credentials=App()) is None
+    assert minted == [], "no credential may be minted for a repo no longer entitled"
+    assert store.failed is not None
+    assert "entitled" in store.failed[1]

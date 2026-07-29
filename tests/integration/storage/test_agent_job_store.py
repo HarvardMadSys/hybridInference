@@ -238,49 +238,72 @@ async def test_reap_fails_job_after_max_attempts(store: AgentJobStore):
 
 
 async def test_publish_is_one_shot(store: AgentJobStore):
-    """running -> publishing -> succeeded happens at most once."""
+    """A finished job is published at most once, by the platform publisher.
+
+    Driven through the path that actually runs. The worker-side transitions
+    this used to exercise were removed: nothing called them, and they let a
+    sandbox runner's token write the terminal publish record from an arbitrary
+    string.
+    """
     job = await _create_job(store)
     claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
-    fence = {
-        "job_id": job["id"],
-        "attempt_id": claim["attempt_id"],
-        "lease_generation": claim["lease_generation"],
-    }
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content="diff --git a/x b/x\n",
+    )
+    await store.transition(
+        job_id=job["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
 
-    # complete_publish before begin_publish is rejected.
-    assert await store.complete_publish(**fence, pr_url="https://x/pr/1") is False
+    taken = await store.claim_for_publish()
+    assert taken is not None and taken["job_id"] == job["id"]
+    # A second publisher finds nothing: the claim moved it out of reach.
+    assert await store.claim_for_publish() is None
 
-    assert await store.begin_publish(**fence) is True
-    # begin_publish is itself one-shot (state has left 'running').
-    assert await store.begin_publish(**fence) is False
-
-    assert await store.complete_publish(**fence, pr_url="https://x/pr/1") is True
-    assert await store.complete_publish(**fence, pr_url="https://x/pr/2") is False
+    assert await store.record_publish(job_id=job["id"], pr_url="https://x/pr/1") is True
+    # And the URL is written exactly once, so a racing publisher cannot
+    # overwrite it with a second PR.
+    assert await store.record_publish(job_id=job["id"], pr_url="https://x/pr/2") is False
 
     fetched = await store.get_job(job["id"])
     assert fetched["state"] == "succeeded"
     assert fetched["published_pr_url"] == "https://x/pr/1"
 
 
-async def test_publishing_lease_expiry_fails_job(store: AgentJobStore):
-    """A lease that expires mid-publish fails the job (never auto-republish)."""
+async def test_a_job_left_publishing_is_failed_not_republished(store: AgentJobStore):
+    """A publish that never completes ends as failed, never as a second push.
+
+    The branch or PR may already exist by the time anyone notices, so the rule
+    is the same wherever this is detected: fail it for a human, do not retry.
+    """
     job = await _create_job(store)
     claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
-    assert (
-        await store.begin_publish(
-            job_id=job["id"],
-            attempt_id=claim["attempt_id"],
-            lease_generation=claim["lease_generation"],
-        )
-        is True
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content="diff --git a/x b/x\n",
     )
-    await _expire_attempt(store, claim["attempt_id"])
+    await store.transition(
+        job_id=job["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
+    await store.claim_for_publish()
 
-    actions = await store.reap_expired(max_attempts=3)
-    assert actions[0]["action"] == "failed"
+    assert await store.reap_stalled_publishes(stall_seconds=0) == [job["id"]]
+
     fetched = await store.get_job(job["id"])
     assert fetched["state"] == "failed"
-    assert "publish" in fetched["detail"]
+    assert fetched["published_pr_url"] is None
 
 
 async def test_cancel_queued_and_running(store: AgentJobStore):
@@ -502,9 +525,217 @@ async def test_an_expired_lease_is_dead_before_the_reaper_runs(store: AgentJobSt
         )
         is False
     )
-    assert await store.begin_publish(job_id=job["id"], **fence) is False
+    # And the job cannot be moved into publishing either.
+    assert (
+        await store.transition(
+            job_id=job["id"], **fence, from_states=("running",), to_state="publishing"
+        )
+        is False
+    )
 
     # And the job is untouched: still running, no artifact, no terminal state.
     fetched = await store.get_job(job["id"])
     assert fetched["state"] == "running"
     assert await store.get_artifact(job_id=job["id"], kind="patch") is None
+
+
+async def test_a_released_claim_costs_no_retry(store: AgentJobStore):
+    """A claim the platform gave up on must not spend the job's retry budget.
+
+    The regression this pins: the budget was read off ``attempt_no``, which
+    numbers every claim. A GitHub outage lasting across `max_attempts` claim
+    cycles would therefore fail every queued private-repo job outright, without
+    an agent ever having started — while the whole point of releasing the claim
+    is that the job never got its turn.
+    """
+    job = await _create_job(store)
+
+    # Three claims the platform abandons before the agent starts.
+    for _ in range(3):
+        claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+        assert claim is not None, "a released job must be claimable again"
+        assert await store.release_claim(job_id=job["id"], attempt_id=claim["attempt_id"])
+        assert (await store.get_job(job["id"]))["state"] == "queued"
+
+    # The budget is untouched: a real attempt still gets to run and be reaped.
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await _expire_attempt(store, claim["attempt_id"])
+    actions = await store.reap_expired(max_attempts=3)
+
+    assert actions[0]["action"] == "queued", "aborted claims must not count as attempts"
+    assert (await store.get_job(job["id"]))["state"] == "queued"
+
+
+async def test_releasing_records_why_rather_than_erasing_the_attempt(store: AgentJobStore):
+    """History stays append-only: the abandoned attempt is marked, not deleted."""
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+
+    await store.release_claim(job_id=job["id"], attempt_id=claim["attempt_id"])
+
+    events = await store.list_events_after(job_id=job["id"])
+    aborted = [e for e in events if e["event_type"] == "attempt_aborted"]
+    assert aborted, "an operator must be able to see the platform dropped this one"
+    assert aborted[0]["attempt_id"] == claim["attempt_id"]
+
+
+async def test_releasing_a_job_that_moved_on_is_a_no_op(store: AgentJobStore):
+    """A late release must never drag a running job back to the queue."""
+    job = await _create_job(store)
+    first = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await store.release_claim(job_id=job["id"], attempt_id=first["attempt_id"])
+    second = await store.claim_job(worker_id="w2", lease_ttl_seconds=60)
+
+    # The first attempt is already finished, so releasing it again changes nothing.
+    assert await store.release_claim(job_id=job["id"], attempt_id=first["attempt_id"]) is False
+
+    fetched = await store.get_job(job["id"])
+    assert fetched["state"] == "running"
+    assert fetched["current_attempt_id"] == second["attempt_id"]
+
+
+async def test_a_publish_the_publisher_abandoned_is_swept(store: AgentJobStore):
+    """A job stuck in `publishing` must not stay there forever.
+
+    `claim_for_publish` moves the job in its own transaction; if the publisher
+    then dies, nothing else touches that row. The attempt reaper cannot help —
+    it scans *running attempts*, and this job's attempt finished before
+    publishing began — so without this sweep the job is invisible to its owner
+    and to the publish queue indefinitely.
+    """
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    fence = {
+        "job_id": job["id"],
+        "attempt_id": claim["attempt_id"],
+        "lease_generation": claim["lease_generation"],
+    }
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content="diff --git a/x b/x\n",
+    )
+    await store.transition(from_states=("running",), to_state="succeeded", **fence)
+
+    taken = await store.claim_for_publish()
+    assert taken is not None
+    assert (await store.get_job(job["id"]))["state"] == "publishing"
+
+    # Nothing has stalled yet, so a sweep must leave it alone.
+    assert await store.reap_stalled_publishes(stall_seconds=3600) == []
+    assert (await store.get_job(job["id"]))["state"] == "publishing"
+
+    # Past the deadline it is failed, not retried: the branch or PR may already
+    # exist and a second automatic publish must never happen.
+    assert await store.reap_stalled_publishes(stall_seconds=0) == [job["id"]]
+    fetched = await store.get_job(job["id"])
+    assert fetched["state"] == "failed"
+    assert "manual review" in fetched["detail"]
+
+
+async def test_the_sweep_leaves_a_published_job_alone(store: AgentJobStore):
+    """Only jobs with no PR recorded are swept."""
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content="diff --git a/x b/x\n",
+    )
+    await store.transition(
+        job_id=job["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
+    await store.claim_for_publish()
+    await store.record_publish(job_id=job["id"], pr_url="https://github.com/o/n/pull/1")
+
+    assert await store.reap_stalled_publishes(stall_seconds=0) == []
+    assert (await store.get_job(job["id"]))["state"] == "succeeded"
+
+
+async def test_releasing_with_the_wrong_generation_is_refused(store: AgentJobStore):
+    """The weakest fence in the store was this one; it now matches the others.
+
+    Releasing a claim returns the job to the queue, so an unfenced release is a
+    way to yank a job out from under the attempt that legitimately holds it.
+    """
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+
+    assert (
+        await store.release_claim(
+            job_id=job["id"], attempt_id=claim["attempt_id"], lease_generation=999
+        )
+        is False
+    )
+    assert (await store.get_job(job["id"]))["state"] == "running"
+
+    assert (
+        await store.release_claim(
+            job_id=job["id"],
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+        )
+        is True
+    )
+
+
+async def test_a_release_writes_its_event_into_the_right_job(store: AgentJobStore):
+    """agent_job_events.job_id has no foreign key, so a mismatched pair would land
+    a control event in another job's stream — possibly another tenant's."""
+    victim = await _create_job(store)
+    target = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+
+    # Deliberately name the wrong job alongside the real attempt id.
+    wrong = victim["id"] if claim["id"] != victim["id"] else target["id"]
+    await store.release_claim(job_id=wrong, attempt_id=claim["attempt_id"])
+
+    stray = await store.list_events_after(job_id=wrong)
+    assert not [e for e in stray if e["event_type"] == "attempt_aborted"], (
+        "the event must follow the attempt's real job, not the caller's claim"
+    )
+    owned = await store.list_events_after(job_id=claim["id"])
+    assert [e for e in owned if e["event_type"] == "attempt_aborted"]
+
+
+async def test_a_cancelled_job_released_from_a_claim_ends_cancelled(store: AgentJobStore):
+    """Requeueing a cancelled job put it somewhere nothing could ever reach.
+
+    `claim_job` skips queued rows with `cancel_requested`, and the reaper only
+    reaches jobs that still have a *running* attempt — which a released one
+    does not. So the job sat in `queued` permanently, invisible to its owner's
+    cancellation and to every worker.
+    """
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    assert await store.request_cancel(job_id=job["id"]) == "running"
+
+    await store.release_claim(
+        job_id=job["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+    )
+
+    fetched = await store.get_job(job["id"])
+    assert fetched["state"] == "cancelled", "a cancelled job must not be requeued"
+
+
+async def test_an_uncancelled_job_still_returns_to_the_queue(store: AgentJobStore):
+    """The ordinary release path is unchanged."""
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+
+    await store.release_claim(
+        job_id=job["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+    )
+
+    assert (await store.get_job(job["id"]))["state"] == "queued"
+    assert await store.claim_job(worker_id="w2", lease_ttl_seconds=60) is not None

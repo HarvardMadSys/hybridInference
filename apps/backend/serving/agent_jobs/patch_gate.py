@@ -68,11 +68,64 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 # ── Diff parsing ───────────────────────────────────────────────────────
 
-_DIFF_HEADER = re.compile(r"^diff --git a/(?P<a>.+?) b/(?P<b>.+)$")
+_DIFF_HEADER = re.compile(r"^diff --git (?P<a>.+?) (?P<b>.+)$")
 _RENAME_TO = re.compile(r"^rename to (?P<path>.+)$")
 _COPY_TO = re.compile(r"^copy to (?P<path>.+)$")
 _NEW_MODE = re.compile(r"^(?:new|new file) mode (?P<mode>\d{6})$")
+# Traditional hunk name lines. git omits the `diff --git` header in some diff
+# formats, and a patch that carries only these still applies perfectly well —
+# so a parser that keys solely off the header sees an empty change set.
+_NAME_LINE = re.compile(r"^(?:---|\+\+\+) (?P<path>.+?)(?:\t.*)?$")
 _SYMLINK_MODE = "120000"
+
+
+def _unquote_path(raw: str) -> str:
+    r"""Decode one path as git writes it in a diff header.
+
+    git quotes any path containing non-ASCII bytes, control characters, quotes
+    or backslashes, and escapes them C-style — so `.github/x` can legitimately
+    arrive as `"\\056github/x"`. A parser that matches the raw text sees a path
+    that starts with a quote and matches no blocked prefix, while `git apply`
+    decodes it and writes the real file. That difference is the whole bypass.
+    """
+    raw = raw.strip()
+    if not (raw.startswith('"') and raw.endswith('"') and len(raw) >= 2):
+        return raw
+    body = raw[1:-1]
+    out = bytearray()
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char != "\\":
+            out.extend(char.encode("utf-8"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(body):
+            break
+        escape = body[index]
+        if escape in "01234567":
+            octal = body[index : index + 3]
+            try:
+                out.append(int(octal, 8))
+                index += len(octal)
+                continue
+            except ValueError:
+                pass
+        out.extend({"n": b"\n", "t": b"\t", "r": b"\r"}.get(escape, escape.encode("utf-8")))
+        index += 1
+    return out.decode("utf-8", errors="replace")
+
+
+def _strip_prefix(path: str) -> str:
+    """Drop git's ``a/``/``b/`` diff prefix, after unquoting."""
+    path = _unquote_path(path)
+    if path in ("/dev/null", ""):
+        return ""
+    for prefix in ("a/", "b/"):
+        if path.startswith(prefix):
+            return path[len(prefix) :]
+    return path
 
 
 @dataclass
@@ -96,21 +149,42 @@ def _collect_paths(patch: str) -> tuple[list[str], list[str]]:
     symlinks: list[str] = []
     pending_paths: list[str] = []
 
+    def remember(path: str) -> None:
+        if path and path not in changed:
+            changed.append(path)
+
     for line in patch.splitlines():
         header = _DIFF_HEADER.match(line)
         if header:
-            pending_paths = [header.group("a"), header.group("b")]
+            # A new header ends the previous file, so mode lines can no longer
+            # be attributed to it. Without this reset a `new file mode 120000`
+            # belonging to an unparsed entry was blamed on the *previous* path,
+            # reporting a symlink on a file that had none.
+            pending_paths = [_strip_prefix(header.group("a")), _strip_prefix(header.group("b"))]
+            pending_paths = [p for p in pending_paths if p]
             for path in pending_paths:
-                if path not in changed:
-                    changed.append(path)
+                remember(path)
             continue
+
+        name = _NAME_LINE.match(line)
+        if name:
+            path = _strip_prefix(name.group("path"))
+            if path:
+                # Only adopt as pending when there was no `diff --git` header
+                # for this file; otherwise the header's paths already stand.
+                if not pending_paths:
+                    pending_paths = [path]
+                elif path not in pending_paths:
+                    pending_paths.append(path)
+                remember(path)
+            continue
+
         for pattern in (_RENAME_TO, _COPY_TO):
             match = pattern.match(line)
             if match:
-                path = match.group("path")
+                path = _strip_prefix(match.group("path"))
                 pending_paths.append(path)
-                if path not in changed:
-                    changed.append(path)
+                remember(path)
         mode = _NEW_MODE.match(line)
         if mode and mode.group("mode") == _SYMLINK_MODE:
             symlinks.extend(pending_paths)
@@ -147,6 +221,55 @@ def _scan_secrets(patch: str, paths: list[str]) -> list[str]:
     return [name for name, pattern in SECRET_PATTERNS if pattern.search(haystack)]
 
 
+def validate_change_set(
+    paths: list[str],
+    symlinks: list[str] | None = None,
+    *,
+    max_files: int = MAX_CHANGED_FILES,
+) -> PatchGateResult:
+    """Apply the path-shaped rules to a set of changed paths.
+
+    Split out from :func:`validate_patch` so the same rules can be re-run
+    against the change set **git itself reports after applying** the patch,
+    rather than against a parse of the patch text. That second pass is the one
+    that cannot be talked around: a hostile patch only has to defeat the
+    parser, and quoting alone was enough to do it. Only git knows what actually
+    landed on disk.
+    """
+    violations: list[str] = []
+    unique_files = sorted({path for path in paths if path and path != "/dev/null"})
+
+    if len(unique_files) > max_files:
+        violations.append(f"patch touches {len(unique_files)} files, over the {max_files} limit")
+
+    blocked = [
+        path
+        for path in unique_files
+        if any(path.startswith(prefix) for prefix in _BLOCKED_PREFIXES)
+    ]
+    requires_human_release = bool(blocked)
+    if blocked:
+        violations.append(
+            "patch modifies CI/workflow configuration and needs explicit human "
+            f"release: {', '.join(sorted(blocked))}"
+        )
+
+    escaping = [path for path in unique_files if _is_escaping(path)]
+    if escaping:
+        violations.append(f"patch writes outside the repository: {', '.join(sorted(escaping))}")
+
+    symlink_paths = sorted({path for path in (symlinks or []) if path and path != "/dev/null"})
+    if symlink_paths:
+        violations.append(f"patch introduces symlinks: {', '.join(symlink_paths)}")
+
+    return PatchGateResult(
+        ok=not violations,
+        violations=violations,
+        changed_files=unique_files,
+        requires_human_release=requires_human_release,
+    )
+
+
 def validate_patch(
     patch: str,
     *,
@@ -173,28 +296,10 @@ def validate_patch(
     unique_files = sorted({path for path in changed if path != "/dev/null"})
     if not unique_files:
         violations.append("patch contains no recognizable file headers")
-    if len(unique_files) > max_files:
-        violations.append(f"patch touches {len(unique_files)} files, over the {max_files} limit")
 
-    blocked = [
-        path
-        for path in unique_files
-        if any(path.startswith(prefix) for prefix in _BLOCKED_PREFIXES)
-    ]
-    if blocked:
-        requires_human_release = True
-        violations.append(
-            "patch modifies CI/workflow configuration and needs explicit human "
-            f"release: {', '.join(sorted(blocked))}"
-        )
-
-    escaping = [path for path in unique_files if _is_escaping(path)]
-    if escaping:
-        violations.append(f"patch writes outside the repository: {', '.join(sorted(escaping))}")
-
-    symlink_paths = sorted({path for path in symlinks if path != "/dev/null"})
-    if symlink_paths:
-        violations.append(f"patch introduces symlinks: {', '.join(symlink_paths)}")
+    path_result = validate_change_set(unique_files, symlinks, max_files=max_files)
+    violations.extend(path_result.violations)
+    requires_human_release = path_result.requires_human_release
 
     secrets = _scan_secrets(patch, unique_files)
     if secrets:

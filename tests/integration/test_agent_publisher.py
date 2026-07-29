@@ -295,3 +295,67 @@ def test_option_shaped_base_sha_is_refused_before_git_sees_it():
                 commit_message="m",
             )
         assert "commit hash" in str(excinfo.value)
+
+
+def test_the_post_apply_gate_catches_what_the_parser_would_miss(origin, monkeypatch):
+    """The tree that gets pushed is gated, not just the patch text.
+
+    The pre-apply gate reads a *parse* of the patch, and a parse can be talked
+    around — a C-quoted `.github/` path did exactly that. This pins the
+    backstop: with the text gate neutralised, the post-apply pass still refuses,
+    because its paths come from git's own index rather than from the patch.
+
+    Pushing a branch that carries a workflow file is the outcome being
+    prevented: GitHub will execute agent-authored YAML with repository secrets,
+    which draft-PR review does not mitigate.
+    """
+    from serving.agent_jobs import publisher
+    from serving.agent_jobs.patch_gate import PatchGateResult
+
+    clone_url, base_sha = origin
+    patch = (
+        "diff --git a/.github/workflows/evil.yml b/.github/workflows/evil.yml\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/.github/workflows/evil.yml\n"
+        "@@ -0,0 +1 @@\n"
+        "+on: push\n"
+    )
+
+    # Stand in for a parser the patch has defeated: the text gate sees nothing.
+    monkeypatch.setattr(
+        publisher,
+        "validate_patch",
+        lambda *_a, **_k: PatchGateResult(ok=True, changed_files=["README.md"]),
+    )
+
+    with pytest.raises(PublishError, match="after apply"):
+        publish_patch(
+            job_id="ajob_postgate",
+            patch=patch,
+            clone_url=clone_url,
+            base_sha=base_sha,
+            commit_message="agent: sneak in a workflow",
+        )
+
+    # And nothing reached the remote.
+    assert "agent/ajob_postgate" not in _branches(clone_url)
+
+
+def test_the_post_apply_gate_reports_the_real_paths(origin):
+    """A clean publish reports the change set git staged, not the parse."""
+    clone_url, base_sha = origin
+    patch = (
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n+++ b/app.py\n@@ -1,2 +1,3 @@\n def main():\n+    x = 1\n     return 0\n"
+    )
+
+    result = publish_patch(
+        job_id="ajob_realpaths",
+        patch=patch,
+        clone_url=clone_url,
+        base_sha=base_sha,
+        commit_message="agent: touch app.py",
+    )
+
+    assert result.changed_files == ["app.py"]

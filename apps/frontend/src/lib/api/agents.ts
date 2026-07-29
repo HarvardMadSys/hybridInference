@@ -41,6 +41,14 @@ export interface AgentJobApi {
   metadata: Record<string, unknown> | null;
   created_at: string | null;
   updated_at: string | null;
+  // Read server-side from the billing ledger, never from the agent's own
+  // report. Null means "no ledger configured", which is not the same as zero.
+  spent_usd: number | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  model_calls: number | null;
+  setup_egress_tier: string | null;
+  agent_egress_tier: string | null;
 }
 
 export interface AgentJobEventApi {
@@ -52,11 +60,67 @@ export interface AgentJobEventApi {
   created_at: string | null;
 }
 
+export interface AgentConfigApi {
+  repos: string[];
+  runtimes: string[];
+  default_budget_usd: number;
+  setup_egress_tier: string | null;
+  agent_egress_tier: string | null;
+  github_connected: boolean;
+  github_install_url: string | null;
+}
+
+/** What this deployment will actually accept — the source for the pickers. */
+export async function getAgentConfig(): Promise<AgentConfigApi> {
+  return jsonOrThrow(await fetchWithAuth(API_BASE, '/v1/agent/config'));
+}
+
+export interface GitHubConnectionApi {
+  connections: Array<{ installation_id: number; account_login: string | null }>;
+  repos: string[];
+}
+
+/**
+ * Complete the GitHub connection with the code GitHub handed the browser.
+ *
+ * The code is all the browser sends. The platform exchanges it for a token
+ * that speaks as this user and asks GitHub which installations they can reach,
+ * so the entitlement is GitHub's answer rather than anything asserted here.
+ */
+export async function connectGitHub(code: string): Promise<GitHubConnectionApi> {
+  const resp = await fetchWithAuth(API_BASE, '/v1/agent/github/connect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  return jsonOrThrow(resp);
+}
+
+/** Model ids this gateway serves — the model picker's options. */
+export async function listAgentModels(): Promise<string[]> {
+  const resp = await fetchWithAuth(API_BASE, '/v1/models');
+  const body = await jsonOrThrow<{ data?: Array<{ id: string }> }>(resp);
+  return (body.data ?? []).map((entry) => entry.id).filter(Boolean);
+}
+
+export interface RepoBranchesApi {
+  default: string | null;
+  branches: string[];
+}
+
+/** Branches of one entitled repository, for the composer's branch picker. */
+export async function listRepoBranches(repo: string): Promise<RepoBranchesApi> {
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/branches?repo=${encodeURIComponent(repo)}`);
+  return jsonOrThrow(resp);
+}
+
 export interface CreateAgentJobRequest {
   repo: string;
   task_prompt: string;
   model: string;
   runtime?: string;
+  /** A branch. The platform pins it to a commit at creation. */
+  base_ref?: string;
   base_sha?: string;
   budget_usd?: number;
 }
