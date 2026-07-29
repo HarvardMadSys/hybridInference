@@ -5,7 +5,7 @@ useDefault = true
 description = "Documented placeholder API keys and intentionally blank example secrets."
 regexTarget = "line"
 regexes = [
-  '''(?i)(authorization|x-api-key):\s*(bearer\s*)?(hyi-your-api-key|your-api-key|<your-api-key>|YOUR_API_KEY|freeinference_api)''',
+  '''(?i)(authorization|x-api-key):\s*(bearer\s*)?(hyi-your-api-key|your-api-key|<your-api-key>|YOUR_API_KEY|example_api_key)''',
   '''(?i)api_url:\s*https://hooks\.slack\.com/services/T000/B000/XXXX''',
   '''(?i)^(DB_PASSWORD|PGADMIN_PASSWORD)=\s*$''',
   '''(?i)DB_PASSWORD=\s*\nDB_ENABLED=true''',
