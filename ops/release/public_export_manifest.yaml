@@ -178,6 +178,13 @@ exclude:
       balance its CI shards. Meaningless on anyone else's hardware, and the
       exported workflow does not shard at all, so it would travel as a stale
       cache that also names an overlay the export removes.
+  - path: apps/frontend/public/sponsors/
+    reason: >-
+      Two sponsors' logos, which are their trademarks and not this project's to
+      relicense — publishing them under the repository's MIT LICENSE would say
+      otherwise. They are also unreachable in a neutral console: sponsors comes
+      from NEXT_PUBLIC_SPONSORS_JSON and defaults to empty, so the component
+      renders nothing and never asks for the files. A deployment ships its own.
   - path: benchmark/local/
     reason: >-
       Local-inference benchmark runs pinned to this deployment's cluster: model
