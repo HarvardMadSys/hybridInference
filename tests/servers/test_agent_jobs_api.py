@@ -186,6 +186,40 @@ class FakeAgentJobStore:
         return True
 
 
+class FakeOwnerAuthStore:
+    """Operational-store slice needed by JWT and API-key owner auth."""
+
+    def __init__(self, *, role: str = "internal") -> None:
+        self.role = role
+        self.last_used_key_id: str | None = None
+
+    def _user(self) -> dict[str, Any]:
+        return {
+            "id": "key-1",
+            "user_id": _OWNER,
+            "user_name": "owner",
+            "email": "owner@example.com",
+            "role": self.role,
+            "status": "active",
+            "email_verified": True,
+            "quota_daily_cost_usd": 100.0,
+            "preferences": None,
+            "max_concurrent_requests": 4,
+        }
+
+    async def get_user_by_id(self, user_id: str) -> dict[str, Any] | None:
+        return self._user() if user_id == _OWNER else None
+
+    async def get_auth_context_by_key_hash(self, _key_hash: str) -> dict[str, Any]:
+        return self._user()
+
+    async def get_user_cost_today(self, _user_id: str) -> float:
+        return 0.0
+
+    async def update_key_last_used(self, key_id: str) -> None:
+        self.last_used_key_id = key_id
+
+
 @pytest.fixture(autouse=True)
 def _api_key_secret(monkeypatch):
     """Provide the signing secret for worker tokens and an entitled repo.
@@ -216,7 +250,6 @@ def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     ``/worker/claim`` is satisfied, so a test can assert that an ordinary
     caller is turned away there.
     """
-    from serving.servers.auth import verify_api_key
     from serving.servers.deps import (
         get_agent_app_credentials,
         get_log_store,
@@ -237,7 +270,9 @@ def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     # than reported as a fabricated zero.
     app.dependency_overrides[get_log_store] = lambda: None
     identity = {"user_id": _OWNER, "role": role, "authenticated": True}
-    app.dependency_overrides[verify_api_key] = lambda: identity
+    # Override the credential resolver, not the role gate, so the normal test
+    # client still exercises the internal-only dogfood entitlement.
+    app.dependency_overrides[agent_jobs_router.authenticate_agent_owner] = lambda: identity
     if dispatcher:
         app.dependency_overrides[verify_admin_access] = lambda: "dispatcher@test"
     return app
@@ -273,6 +308,117 @@ async def test_create_get_list_round_trip(client: AsyncClient):
 
     listed = await client.get("/v1/agent/jobs")
     assert [job["id"] for job in listed.json()["jobs"]] == [job_id]
+
+
+async def test_browser_jwt_can_list_agent_jobs(store: FakeAgentJobStore):
+    """Regression: the web login JWT was interpreted as an invalid API key."""
+    from serving.servers.deps import get_operational_store
+    from serving.utils.jwt import create_access_token
+
+    app = _build_app(store)
+    app.dependency_overrides.pop(agent_jobs_router.authenticate_agent_owner)
+    app.dependency_overrides[get_operational_store] = lambda: FakeOwnerAuthStore()
+    token, _ = create_access_token(
+        user_id=_OWNER,
+        email="owner@example.com",
+        role="internal",
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as jwt_client:
+        response = await jwt_client.get(
+            "/v1/agent/jobs",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"jobs": []}
+
+
+async def test_expired_browser_jwt_is_not_reinterpreted_as_api_key(store: FakeAgentJobStore):
+    """Credential dispatch must preserve a JWT's own expiry failure."""
+    from datetime import timedelta
+
+    from serving.servers.deps import get_operational_store
+    from serving.utils.jwt import create_access_token
+
+    app = _build_app(store)
+    app.dependency_overrides.pop(agent_jobs_router.authenticate_agent_owner)
+    app.dependency_overrides[get_operational_store] = lambda: FakeOwnerAuthStore()
+    token, _ = create_access_token(
+        user_id=_OWNER,
+        email="owner@example.com",
+        role="internal",
+        expires_delta=timedelta(seconds=-1),
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as jwt_client:
+        response = await jwt_client.get(
+            "/v1/agent/jobs",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"].startswith("Token has expired")
+
+
+async def test_normal_api_key_still_authenticates_agent_owner(store: FakeAgentJobStore):
+    """Programmatic clients keep the existing API-key path and quota checks."""
+    from serving.servers.deps import get_operational_store
+
+    auth_store = FakeOwnerAuthStore()
+    app = _build_app(store)
+    app.dependency_overrides.pop(agent_jobs_router.authenticate_agent_owner)
+    app.dependency_overrides[get_operational_store] = lambda: auth_store
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as api_client:
+        response = await api_client.get(
+            "/v1/agent/jobs",
+            headers={"Authorization": "Bearer hyi-programmatic-client"},
+        )
+
+    assert response.status_code == 200
+    assert auth_store.last_used_key_id == "key-1"
+
+
+async def test_sandbox_token_stays_out_of_owner_routes(store: FakeAgentJobStore):
+    """A structured Agent token must not be mistaken for a browser JWT."""
+    from serving.agent_jobs.tokens import SCOPE_MODEL
+    from serving.servers.deps import get_operational_store
+
+    app = _build_app(store)
+    app.dependency_overrides.pop(agent_jobs_router.authenticate_agent_owner)
+    app.dependency_overrides[get_operational_store] = lambda: FakeOwnerAuthStore()
+    token = mint_worker_token(
+        job_id="ajob_0001",
+        attempt_id=1,
+        lease_generation=1,
+        scope=SCOPE_MODEL,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as sandbox_client:
+        response = await sandbox_client.get(
+            "/v1/agent/jobs",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"]["type"] == "insufficient_scope"
+
+
+@pytest.mark.parametrize("role", ["free", "pro"])
+async def test_non_internal_owner_is_denied_server_side(store: FakeAgentJobStore, role: str):
+    """The client-side dogfood gate must not be bypassable via the API."""
+    app = _build_app(store, role=role)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as denied_client:
+        response = await denied_client.get("/v1/agent/jobs")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Agent access requires role 'internal'."
 
 
 async def test_other_users_jobs_are_404_not_403(client: AsyncClient, store: FakeAgentJobStore):
@@ -655,9 +801,11 @@ async def test_sandbox_token_cannot_write_job_state(client: AsyncClient):
 async def test_sandbox_token_is_refused_on_owner_routes(client: AsyncClient):
     """A model-scoped credential must not reach the control plane.
 
-    verify_api_key is shared with /v1/agent/jobs, so resolving a sandbox token
-    there as its owner would let the sandbox enumerate, cancel, or create that
-    owner's other jobs — the authority the model scope exists to withhold.
+    Agent owner auth delegates sandbox-token-shaped credentials to
+    verify_api_key, whose inference-path allowlist must keep them away from the
+    control plane. Resolving one as its owner would let the sandbox enumerate,
+    cancel, or create that owner's other jobs — the authority the model scope
+    exists to withhold.
     """
     from serving.servers.auth import _is_inference_path
 
