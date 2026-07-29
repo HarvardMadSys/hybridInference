@@ -21,9 +21,10 @@ and cost attribution; Tier 2 is a generic headless runner whose output flows
 through as raw events, so a new agent costs nothing to support badly and can
 be promoted when it earns it.
 
-The Claude Code mappings below were derived from a recorded
-``claude -p --output-format stream-json`` run against this gateway, not from
-documentation — see ``tests/fixtures/agent_runtime_streams/``.
+The Claude Code mappings below were derived from observed
+``claude -p --output-format stream-json`` output, not from documentation. The
+corresponding test data is a sanitized, synthetic contract fixture — see
+``tests/fixtures/agent_runtime_streams/``.
 """
 
 from __future__ import annotations

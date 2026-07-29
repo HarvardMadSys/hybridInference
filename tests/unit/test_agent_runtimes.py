@@ -1,9 +1,9 @@
 """Unit tests for agent runtime adapters.
 
-The Claude Code cases replay a stream recorded from a real
-``claude -p --output-format stream-json`` run against this gateway
-(``tests/fixtures/agent_runtime_streams/``), so the parser is pinned to what
-the CLI actually emits rather than to what its docs describe.
+The Claude Code cases replay a sanitized, synthetic contract fixture derived
+from observed ``claude -p --output-format stream-json`` output. This pins the
+parser to the CLI's emitted shape without checking in a real machine's runtime
+metadata.
 """
 
 from __future__ import annotations
@@ -23,17 +23,17 @@ from serving.agent_jobs.runtimes import (
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "agent_runtime_streams"
 
 
-def _recorded_lines() -> list[str]:
-    """Return the recorded Claude Code stream, line by line."""
-    return (_FIXTURES / "claude_code_tool_roundtrip.jsonl").read_text().splitlines()
+def _contract_lines() -> list[str]:
+    """Return the synthetic Claude Code contract stream, line by line."""
+    return (_FIXTURES / "claude_code_stream_contract.jsonl").read_text().splitlines()
 
 
-def test_recorded_stream_maps_to_the_normalized_kinds():
-    """A real tool round trip normalizes into the documented event kinds."""
+def test_synthetic_contract_stream_maps_to_the_normalized_kinds():
+    """The sanitized contract stream preserves the six observed event kinds."""
     runtime = ClaudeCodeRuntime()
     kinds = [
         event.event_type
-        for line in _recorded_lines()
+        for line in _contract_lines()
         if (event := runtime.parse_event(line)) is not None
     ]
     # init -> tool_use -> rate-limit notice -> tool_result -> answer -> result
@@ -45,22 +45,22 @@ def test_recorded_stream_maps_to_the_normalized_kinds():
         "message",
         "lifecycle",
     ]
-    assert "raw" not in kinds, "recorded stream should be fully recognized"
+    assert "raw" not in kinds, "synthetic contract stream should be fully recognized"
 
 
 def test_tool_use_carries_name_and_input():
-    """The tool call the agent actually made is reported with its arguments."""
+    """The contract's synthetic tool call is reported with its arguments."""
     runtime = ClaudeCodeRuntime()
-    events = [runtime.parse_event(line) for line in _recorded_lines()]
+    events = [runtime.parse_event(line) for line in _contract_lines()]
     tool_use = next(e for e in events if e and e.event_type == "tool_use")
     assert tool_use.payload["name"] == "bash"
     assert tool_use.payload["input"] == {"cmd": "pwd"}
 
 
 def test_final_result_reports_cost_as_untrusted():
-    """The runtime's self-reported cost is recorded but labelled as such."""
+    """The runtime's self-reported cost is exposed but labelled as such."""
     runtime = ClaudeCodeRuntime()
-    events = [runtime.parse_event(line) for line in _recorded_lines()]
+    events = [runtime.parse_event(line) for line in _contract_lines()]
     result = [e for e in events if e and e.event_type == "lifecycle"][-1]
     assert result.payload["phase"] == "result"
     assert "PWD_OK" in result.payload["text"]

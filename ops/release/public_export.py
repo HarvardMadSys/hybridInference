@@ -68,6 +68,7 @@ AUDIT = {
         r"me|yahoo|qq|163|126|foxmail)\.(?:com|me)\b",
         re.IGNORECASE,
     ),
+    "personal home path": re.compile(r"(?<![A-Za-z0-9_.-])/(?:Users|home)/[A-Za-z0-9._-]+"),
     "internal hostname": re.compile(
         r"\b(?:internal|staging-internal)\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
         # The deployment's own machines, named directly. These are not
@@ -96,6 +97,11 @@ FIXTURES = {
     "xoxb-" + "replace-me",
     "hyi-" + "anthropic-compat-test",
     "hyi-" + "testkey01-FULL-SECRET-VALUE",
+    # The sandbox service account and its explicit test placeholder are not
+    # developer machine paths. Keep the personal-home rule focused on values
+    # copied from a real environment.
+    "/home/" + "agent",
+    "/home/" + "somebody",
 }
 
 # Files whose subject *is* credential detection, and which therefore have to
