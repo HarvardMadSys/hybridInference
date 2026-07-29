@@ -128,6 +128,8 @@ def test_codex_prepare_and_config_target_the_gateway():
     assert argv[argv.index("--model") + 1] == "glm-5.1"
 
     joined = " ".join(argv)
+    assert 'model_provider="hybridinference"' in joined
+    assert 'model_providers.hybridinference.name="HybridInference"' in joined
     assert 'base_url="http://localhost:8000/v1"' in joined
     # Codex removed chat wire support upstream (openai/codex#7782); the gateway
     # serves /v1/responses. `chat` here would fail every turn.

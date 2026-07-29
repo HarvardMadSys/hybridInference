@@ -290,7 +290,7 @@ class CodexRuntime(AgentRuntime):
           behind. ``--ignore-user-config`` keeps the operator's own config out.
         """
         base = gateway_base_url.rstrip("/").removesuffix("/v1")
-        provider = "freeinference"
+        provider = "hybridinference"
         argv = [
             self.binary,
             "exec",
@@ -308,7 +308,7 @@ class CodexRuntime(AgentRuntime):
             "-c",
             f'model_provider="{provider}"',
             "-c",
-            f'model_providers.{provider}.name="FreeInference"',
+            f'model_providers.{provider}.name="HybridInference"',
             "-c",
             f'model_providers.{provider}.base_url="{base}/v1"',
             "-c",
