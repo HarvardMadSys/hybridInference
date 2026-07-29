@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from serving.agent_jobs.entitlement import RepoNotAllowed, require_entitled_repo
 from serving.agent_jobs.patch_gate import branch_name_for
 from serving.agent_jobs.publisher import PublishError, publish_patch
 from serving.utils.logging import get_logger
@@ -42,6 +43,11 @@ logger = get_logger(__name__)
 
 GITHUB_API = "https://api.github.com"
 POLL_INTERVAL_S = 15.0
+
+# Exactly what publishing does: push one branch, open one draft PR. Notably not
+# `workflows`, so a patch touching `.github/` cannot be pushed even if both
+# gates were bypassed — the credential itself would refuse.
+_PUBLISH_SCOPE = {"contents": "write", "pull_requests": "write"}
 
 
 @dataclass(frozen=True)
@@ -106,7 +112,7 @@ def _pr_body(job: dict[str, Any], changed_files: list[str]) -> str:
     if len(changed_files) > 50:
         files += f"\n- …and {len(changed_files) - 50} more"
     return (
-        f"Opened by a FreeInference cloud agent job (`{job['job_id']}`).\n\n"
+        f"Opened by a cloud agent job (`{job['job_id']}`).\n\n"
         f"**Task**\n\n> {job['task_prompt'][:1500]}\n\n"
         f"**Changed files ({len(changed_files)})**\n\n{files}\n\n"
         "---\n"
@@ -121,7 +127,8 @@ def _pr_body(job: dict[str, Any], changed_files: list[str]) -> str:
 async def publish_one(
     store: AgentJobStore,
     *,
-    credential: GitHubCredential,
+    credential: GitHubCredential | None = None,
+    app_credentials: Any | None = None,
     base_branch: str = "dev",
     allow_workflow_changes: bool = False,
 ) -> str | None:
@@ -136,6 +143,51 @@ async def publish_one(
 
     job_id = job["job_id"]
     base_sha = job["base_sha"]
+
+    # Re-checked here, before any credential is minted. Publishing happens well
+    # after the job ran, and it is the step that asks for *write* authority —
+    # so an entitlement withdrawn in between (a revoked connection, a narrowed
+    # allowlist) has to be able to stop it. The read side already refuses at
+    # claim; without this the same deployment would block the read-only token
+    # and still hand out the push token.
+    try:
+        await require_entitled_repo(
+            job["repo"],
+            job.get("user_id", ""),
+            store=store,
+            app_credentials=app_credentials,
+        )
+    except RepoNotAllowed as exc:
+        await store.fail_publish(
+            job_id=job_id, detail=f"no longer entitled to publish to {job['repo']}: {exc}"
+        )
+        return None
+
+    # Prefer the App: it mints a token scoped to this repository's
+    # installation, valid an hour. A static token is the fallback for a
+    # deployment that has not set the App up.
+    if app_credentials is not None:
+        try:
+            # Scoped twice: to this one repository, and to the two permissions
+            # publishing actually uses. An installation token inherits every
+            # permission the App holds unless it asks for less, so omitting
+            # `permissions` here handed the publisher whatever the App could
+            # ever do — against a repository the *user* named.
+            credential = GitHubCredential(
+                await app_credentials.token_for(
+                    job["repo"], permissions=_PUBLISH_SCOPE, repository_scoped=True
+                )
+            )
+        except Exception as exc:
+            await store.fail_publish(
+                job_id=job_id, detail=f"could not obtain a GitHub credential: {exc}"
+            )
+            return None
+    if credential is None:
+        await store.fail_publish(
+            job_id=job_id, detail="no GitHub credential is configured for publishing"
+        )
+        return None
     if not base_sha:
         await store.fail_publish(
             job_id=job_id,
@@ -199,7 +251,8 @@ async def publish_one(
 async def publish_loop(
     store: AgentJobStore,
     *,
-    credential_provider: Any,
+    credential_provider: Any = None,
+    app_credentials: Any | None = None,
     base_branch: str = "dev",
     interval_seconds: float = POLL_INTERVAL_S,
 ) -> None:
@@ -213,10 +266,18 @@ async def publish_loop(
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            credential = credential_provider()
-            if credential is None:
+            credential = credential_provider() if credential_provider else None
+            # Either source is enough. Skipping when only the App is
+            # configured is what made an App-only deployment — the one this
+            # module recommends — silently never publish anything.
+            if credential is None and app_credentials is None:
                 continue
-            while await publish_one(store, credential=credential, base_branch=base_branch):
+            while await publish_one(
+                store,
+                credential=credential,
+                app_credentials=app_credentials,
+                base_branch=base_branch,
+            ):
                 # Drain rather than publishing one per tick, so a burst of
                 # finished jobs does not sit in the queue for minutes.
                 pass

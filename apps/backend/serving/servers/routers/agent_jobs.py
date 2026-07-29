@@ -26,12 +26,24 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from serving.agent_jobs.egress import (
+    EgressPolicyError,
+    build_policy_from_env as build_egress_policy,
+)
+from serving.agent_jobs.entitlement import (
+    RepoNotAllowed,
+    repos_for_user,
+    require_entitled_repo,
+)
+from serving.agent_jobs.github_app import AppNotInstalled
+from serving.agent_jobs.runtimes import registered_runtimes
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
     SCOPE_MODEL,
@@ -40,7 +52,9 @@ from serving.agent_jobs.tokens import (
     parse_worker_token,
 )
 from serving.schemas_agent_jobs import (
+    DEFAULT_JOB_BUDGET_USD,
     EVENT_TYPE_PATTERN,
+    AgentConfigResponse,
     AgentJobArtifactResponse,
     AgentJobCancelResponse,
     AgentJobCreate,
@@ -48,6 +62,9 @@ from serving.schemas_agent_jobs import (
     AgentJobEventsResponse,
     AgentJobListResponse,
     AgentJobResponse,
+    GitHubConnectionResponse,
+    GitHubConnectRequest,
+    RepoBranchesResponse,
     WorkerAckResponse,
     WorkerArtifactRequest,
     WorkerArtifactResponse,
@@ -58,10 +75,14 @@ from serving.schemas_agent_jobs import (
     WorkerFinishRequest,
     WorkerHeartbeatRequest,
     WorkerHeartbeatResponse,
-    WorkerPublishRequest,
 )
 from serving.servers.auth import verify_api_key
-from serving.servers.deps import get_agent_job_store, verify_admin_access
+from serving.servers.deps import (
+    get_agent_app_credentials,
+    get_agent_job_store,
+    get_log_store,
+    verify_admin_access,
+)
 from serving.storage.agent_job_store import RUNNING, TERMINAL_STATES
 from serving.utils.logging import get_logger
 
@@ -89,6 +110,13 @@ _EVENT_PAGE_SIZE = 500
 # future non-HTTP writer) must not be able to break out of the ``event:`` field
 # and inject frames into the owner's stream.
 _SAFE_EVENT_TYPE = re.compile(EVENT_TYPE_PATTERN)
+
+# The clone credential is narrowed at the point it is minted, not merely by
+# convention: the App also holds `contents: write` for the publisher, and an
+# installation token inherits every permission the App has unless it is asked
+# for less. Without this the runner would be handed push rights it must not
+# have, on a host that runs untrusted repository code.
+_CLONE_SCOPE = {"contents": "read"}
 
 
 def _sse_frame(event: dict[str, Any]) -> str:
@@ -123,8 +151,44 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _job_response(job: dict[str, Any]) -> AgentJobResponse:
+async def _job_usage(log_store: Any, job_id: str) -> dict[str, Any]:
+    """Read one job's spend and token totals from the billing ledger.
+
+    Deliberately the ledger and not the agent's own report: a run that
+    misstates its usage — which is a thing models do — cannot change what the
+    owner is shown, and it is the same source the budget check already trusts.
+    Absent on a deployment with no log store, rather than a fabricated zero.
+    """
+    usage: dict[str, Any] = {}
+    cost_getter = getattr(log_store, "get_agent_job_cost", None)
+    if cost_getter is not None:
+        with contextlib.suppress(Exception):
+            usage["spent_usd"] = await cost_getter(job_id)
+    usage_getter = getattr(log_store, "get_agent_job_usage", None)
+    if usage_getter is not None:
+        with contextlib.suppress(Exception):
+            totals = await usage_getter(job_id)
+            usage["tokens_in"] = int(totals.get("tokens_in", 0))
+            usage["tokens_out"] = int(totals.get("tokens_out", 0))
+            usage["model_calls"] = int(totals.get("calls", 0))
+    return usage
+
+
+def _egress_tiers() -> tuple[str | None, str | None]:
+    """Report the deployment's per-phase egress posture, if it has one."""
+    try:
+        policy = build_egress_policy()
+    except EgressPolicyError:
+        # A misconfigured policy is the runner's problem to refuse at preflight,
+        # not a reason to fail an owner reading their own job.
+        return None, None
+    return policy.tier_for("setup").value, policy.tier_for("agent").value
+
+
+def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> AgentJobResponse:
     """Shape a store job row for the owner-facing API."""
+    usage = usage or {}
+    setup_tier, agent_tier = _egress_tiers()
     return AgentJobResponse(
         id=job["id"],
         repo=job["repo"],
@@ -141,6 +205,12 @@ def _job_response(job: dict[str, Any]) -> AgentJobResponse:
         metadata=job["metadata"],
         created_at=_iso(job["created_at"]),
         updated_at=_iso(job["updated_at"]),
+        spent_usd=usage.get("spent_usd"),
+        tokens_in=usage.get("tokens_in"),
+        tokens_out=usage.get("tokens_out"),
+        model_calls=usage.get("model_calls"),
+        setup_egress_tier=setup_tier,
+        agent_egress_tier=agent_tier,
     )
 
 
@@ -178,21 +248,194 @@ async def _owned_job(
 # ── Owner endpoints ────────────────────────────────────────────────────
 
 
+@router.get("/config", response_model=AgentConfigResponse)
+async def get_agent_config(
+    user: dict[str, Any] = Depends(verify_api_key),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> AgentConfigResponse:
+    """What this deployment will actually accept.
+
+    The composer showed a repository, a branch, a runtime and a model as static
+    labels while submitting different hardcoded values, so the UI described a
+    job nobody was running. A picker has to be built from the same answers the
+    create endpoint enforces, or it is decoration.
+    """
+    setup_tier, agent_tier = _egress_tiers()
+    # This user's repositories, not the deployment's: what the picker offers
+    # has to be what the create endpoint will accept for *them*.
+    repos = await repos_for_user(user["user_id"], store=store, app_credentials=app_credentials)
+    return AgentConfigResponse(
+        repos=repos,
+        runtimes=registered_runtimes(),
+        default_budget_usd=DEFAULT_JOB_BUDGET_USD,
+        setup_egress_tier=setup_tier,
+        agent_egress_tier=agent_tier,
+        # Both halves, and read from what is actually wired rather than from
+        # the environment: an App the platform can mint tokens from, and at
+        # least one repository this user may work on. Either alone leaves a
+        # composer that cannot produce a runnable job.
+        github_connected=bool(app_credentials is not None and repos),
+        github_install_url=os.getenv("AGENT_GITHUB_APP_INSTALL_URL") or None,
+    )
+
+
+@router.post("/github/connect", response_model=GitHubConnectionResponse)
+async def connect_github(
+    body: GitHubConnectRequest,
+    user: dict[str, Any] = Depends(verify_api_key),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> GitHubConnectionResponse:
+    """Record the installations this user proved they can reach.
+
+    The browser sends the code GitHub handed it; the platform exchanges it for
+    a token that speaks *as that user* and asks GitHub which installations they
+    can see. Nothing the browser asserts is trusted — an installation id posted
+    directly would be exactly the confused deputy this whole path exists to
+    prevent, so the id is only ever taken from GitHub's own answer.
+    """
+    job_store = _require_store(store)
+    if app_credentials is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "type": "unavailable",
+                    "message": "No GitHub App is configured for this deployment.",
+                }
+            },
+        )
+    try:
+        user_token = await app_credentials.exchange_user_code(body.code)
+        installations = await app_credentials.installations_for_user(user_token)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"type": "github_connect_failed", "message": str(exc)}},
+        ) from exc
+
+    for installation in installations:
+        await job_store.record_repo_grant(
+            user_id=user["user_id"],
+            installation_id=installation["installation_id"],
+            account_login=installation.get("account_login"),
+        )
+    logger.info(
+        "agent_github_connected",
+        extra={"event": "agent_github_connected", "installations": len(installations)},
+    )
+    return GitHubConnectionResponse(
+        connections=await job_store.list_repo_grants(user_id=user["user_id"]),
+        repos=await repos_for_user(
+            user["user_id"], store=job_store, app_credentials=app_credentials
+        ),
+    )
+
+
+@router.delete("/github/connect/{installation_id}", response_model=GitHubConnectionResponse)
+async def disconnect_github(
+    installation_id: int,
+    user: dict[str, Any] = Depends(verify_api_key),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> GitHubConnectionResponse:
+    """Drop one connection. Uninstalling on GitHub is the other half."""
+    job_store = _require_store(store)
+    await job_store.revoke_repo_grant(user_id=user["user_id"], installation_id=installation_id)
+    return GitHubConnectionResponse(
+        connections=await job_store.list_repo_grants(user_id=user["user_id"]),
+        repos=await repos_for_user(
+            user["user_id"], store=job_store, app_credentials=app_credentials
+        ),
+    )
+
+
+@router.get("/branches", response_model=RepoBranchesResponse)
+async def list_repo_branches(
+    repo: str = Query(..., description="owner/name"),
+    user: dict[str, Any] = Depends(verify_api_key),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> RepoBranchesResponse:
+    """List a repository's branches, for the composer's branch picker.
+
+    Entitlement first: this reads a repository through the platform's own
+    installation, so without the check it would be a way to enumerate branches
+    of any repository the App happens to cover.
+    """
+    job_store = _require_store(store)
+    try:
+        await require_entitled_repo(
+            repo, user["user_id"], store=job_store, app_credentials=app_credentials
+        )
+    except RepoNotAllowed as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
+        ) from exc
+    if app_credentials is None:
+        return RepoBranchesResponse()
+    try:
+        found = await app_credentials.branches_for_repo(repo)
+    except Exception:
+        logger.warning("agent_branches_unavailable", extra={"event": "agent_branches_unavailable"})
+        return RepoBranchesResponse()
+    return RepoBranchesResponse(default=found.get("default"), branches=found.get("branches", []))
+
+
 @router.post("/jobs", response_model=AgentJobResponse, status_code=201)
 async def create_agent_job(
     body: AgentJobCreate,
     user: dict[str, Any] = Depends(verify_api_key),
     store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> AgentJobResponse:
     """Queue a new agent job for the authenticated user."""
     job_store = _require_store(store)
+    # The requester chooses the repository and the platform later mints a real
+    # installation token for it. Without this the two combine into a confused
+    # deputy: name any repository the App reaches, and read it back through
+    # your own job's events and patch.
+    try:
+        await require_entitled_repo(
+            body.repo,
+            user["user_id"],
+            store=job_store,
+            app_credentials=app_credentials,
+        )
+    except RepoNotAllowed as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
+        ) from exc
+    # A branch is resolved to the commit it points at *now*. The job stores the
+    # sha: a branch moves, so a job that recorded "dev" would silently mean a
+    # different tree by the time it ran, and the publisher applies its patch
+    # onto a pinned commit.
+    base_sha = body.base_sha
+    if base_sha is None and body.base_ref and app_credentials is not None:
+        try:
+            base_sha = await app_credentials.resolve_ref(body.repo, body.base_ref)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "type": "invalid_request",
+                        "message": f"could not resolve {body.base_ref!r} in {body.repo}: {exc}",
+                    }
+                },
+            ) from exc
+
     job = await job_store.create_job(
         user_id=user["user_id"],
         repo=body.repo,
         task_prompt=body.task_prompt,
         runtime=body.runtime,
         model=body.model,
-        base_sha=body.base_sha,
+        base_sha=base_sha,
+        setup_script=body.setup_script,
         budget_usd=body.budget_usd,
         metadata=body.metadata,
     )
@@ -220,10 +463,12 @@ async def get_agent_job(
     job_id: str,
     user: dict[str, Any] = Depends(verify_api_key),
     store: AgentJobStore | None = Depends(get_agent_job_store),
+    log_store=Depends(get_log_store),
 ) -> AgentJobResponse:
-    """Fetch one of the caller's agent jobs."""
+    """Fetch one of the caller's agent jobs, with what it has spent so far."""
     job_store = _require_store(store)
-    return _job_response(await _owned_job(job_store, job_id, user))
+    job = await _owned_job(job_store, job_id, user)
+    return _job_response(job, await _job_usage(log_store, job_id))
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=AgentJobCancelResponse)
@@ -442,6 +687,7 @@ async def worker_claim(
     body: WorkerClaimRequest,
     _dispatcher: str = Depends(verify_admin_access),
     store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> WorkerClaimResponse | None:
     """Claim the next queued job and mint this attempt's capability token.
 
@@ -478,6 +724,91 @@ async def worker_claim(
     # touch its event log, artifacts, or terminal state.
     token = mint_worker_token(**fence, scope=SCOPE_FULL)
     sandbox_token = mint_worker_token(**fence, scope=SCOPE_MODEL)
+
+    # A third credential, weaker than either: read-only, this repository only,
+    # one hour. The runner needs it to check the repository out — a runner that
+    # cannot clone runs the agent in an empty directory — and it is deliberately
+    # not the publisher's token, which can write. It stays in the runner and
+    # never enters the sandbox. Absent (null) is a working configuration: a
+    # public repository clones without any credential at all.
+    # Re-checked at mint time, not just at create time. A row written before
+    # this check existed — or while the allowlist was wider — must not be able
+    # to produce a credential now.
+    try:
+        # The same check create used. The allowlist-only variant here meant a
+        # job entitled by its owner's own GitHub connection passed creation and
+        # was then refused at claim — the two gates disagreeing about what the
+        # word entitled means.
+        await require_entitled_repo(
+            claim["repo"],
+            claim["user_id"],
+            store=job_store,
+            app_credentials=app_credentials,
+        )
+    except RepoNotAllowed as exc:
+        await job_store.release_claim(
+            job_id=claim["id"],
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+        )
+        logger.warning(
+            "agent_job_repo_not_allowed",
+            extra={"event": "agent_job_repo_not_allowed", "job_id": claim["id"]},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
+        ) from exc
+
+    clone_token: str | None = None
+    if app_credentials is not None:
+        try:
+            clone_token = await app_credentials.token_for(
+                claim["repo"], permissions=_CLONE_SCOPE, repository_scoped=True
+            )
+        except AppNotInstalled:
+            # A settled answer: the App does not cover this repository. Hand
+            # the job over without a credential — a public repository clones
+            # anonymously, and a private one fails with a message the owner can
+            # act on ("install the App"), which retrying would not improve.
+            logger.info(
+                "agent_job_clone_token_unavailable",
+                extra={"event": "agent_job_clone_token_unavailable", "job_id": claim["id"]},
+            )
+        except Exception as exc:
+            # Anything else is GitHub or the network having a bad minute.
+            # Returning no token here would send the runner off to clone
+            # anonymously, fail on a private repository, and mark the job
+            # *terminally* failed — turning a momentary outage into the owner's
+            # problem.
+            #
+            # Hand the claim back rather than just letting the lease lapse. A
+            # lapsed lease still spends a retry, so a GitHub outage lasting
+            # across three claim cycles would fail every queued private-repo
+            # job outright, without an agent ever having started — the very
+            # outcome this branch exists to avoid, only slower.
+            await job_store.release_claim(
+                job_id=claim["id"],
+                attempt_id=claim["attempt_id"],
+                lease_generation=claim["lease_generation"],
+            )
+            logger.warning(
+                "agent_job_clone_token_error",
+                extra={"event": "agent_job_clone_token_error", "job_id": claim["id"]},
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "credential_unavailable",
+                        "message": (
+                            "Could not mint a repository credential for this job; it has "
+                            "been returned to the queue and no attempt was spent."
+                        ),
+                    }
+                },
+            ) from exc
+
     return WorkerClaimResponse(
         job_id=claim["id"],
         attempt_id=claim["attempt_id"],
@@ -485,10 +816,12 @@ async def worker_claim(
         repo=claim["repo"],
         base_sha=claim["base_sha"],
         task_prompt=claim["task_prompt"],
+        setup_script=claim.get("setup_script"),
         runtime=claim["runtime"],
         model=claim["model"],
         worker_token=token,
         sandbox_token=sandbox_token,
+        clone_token=clone_token,
         metadata=claim["metadata"],
     )
 
@@ -590,49 +923,8 @@ async def worker_finish(
         from_states=(RUNNING,),
         to_state=body.state,
         detail=body.detail,
+        base_sha=body.base_sha,
     )
     if not ok:
         raise _lease_lost()
     return WorkerAckResponse(ok=True, state=body.state)
-
-
-@router.post("/worker/jobs/{job_id}/publish/begin", response_model=WorkerAckResponse)
-async def worker_begin_publish(
-    job_id: str,
-    authorization: str | None = Header(None),
-    store: AgentJobStore | None = Depends(get_agent_job_store),
-) -> WorkerAckResponse:
-    """Enter the one-shot publish phase (``running -> publishing``)."""
-    job_store = _require_store(store)
-    claims = _worker_claims(authorization)
-    _match_job(claims, job_id)
-    ok = await job_store.begin_publish(
-        job_id=job_id,
-        attempt_id=claims["attempt_id"],
-        lease_generation=claims["lease_generation"],
-    )
-    if not ok:
-        raise _lease_lost()
-    return WorkerAckResponse(ok=True, state="publishing")
-
-
-@router.post("/worker/jobs/{job_id}/publish/complete", response_model=WorkerAckResponse)
-async def worker_complete_publish(
-    job_id: str,
-    body: WorkerPublishRequest,
-    authorization: str | None = Header(None),
-    store: AgentJobStore | None = Depends(get_agent_job_store),
-) -> WorkerAckResponse:
-    """Record the published PR URL and finish the job (exactly once)."""
-    job_store = _require_store(store)
-    claims = _worker_claims(authorization)
-    _match_job(claims, job_id)
-    ok = await job_store.complete_publish(
-        job_id=job_id,
-        attempt_id=claims["attempt_id"],
-        lease_generation=claims["lease_generation"],
-        pr_url=body.pr_url,
-    )
-    if not ok:
-        raise _lease_lost()
-    return WorkerAckResponse(ok=True, state="succeeded")

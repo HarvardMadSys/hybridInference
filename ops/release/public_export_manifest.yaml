@@ -48,10 +48,13 @@ exclude:
     reason: Tests ops/spark_idle_proxy/, the DGX Spark box's idle proxy.
   - path: tests/unit/deploy/test_geoip_deployment.py
     reason: Asserts what this deployment's deploy scripts install; both go together.
-  - path: tests/unit/release/test_public_export_manifest.py
+  - path: tests/unit/release/
     reason: >-
-      Checks this manifest, which is part of the export tooling rather than of
-      the result — ops/release/ does not travel either.
+      Tests for the export tooling, which is part of producing the result
+      rather than part of it — ops/release/ does not travel either, so these
+      import a module the exported tree does not have. Excluded as a directory
+      because that is the property every test here shares; naming them one at a
+      time meant the next one broke collection in the export instead.
 
   # Found the same way as the rest: build the export tree and run it. Each of
   # these asserts something about a directory the export removes, so they fail
@@ -176,6 +179,25 @@ exclude:
       otherwise. They are also unreachable in a neutral console: sponsors comes
       from NEXT_PUBLIC_SPONSORS_JSON and defaults to empty, so the component
       renders nothing and never asks for the files. A deployment ships its own.
+  - path: benchmark/local/
+    reason: >-
+      Local-inference benchmark runs pinned to this deployment's cluster: model
+      weights under a colleague's scratch directory, and the machines named
+      directly. Nothing here reproduces anywhere else, and the paths identify
+      an individual. benchmark/provider/ carries the provider-side runs and
+      travels — it names no machine and no home directory.
+
+  - path: ops/db/backup-cron
+    reason: &deployment_cron >-
+      One deployment's crontab entry, fixed end to end: a unix account that
+      exists on those servers, its home directory, the checkout path, and the
+      S3 bucket. The scripts it calls take all of that as arguments and travel;
+      this file cannot be adapted, only mis-copied — and a mis-copied archive
+      job deletes local rows once it believes the upload succeeded. ops/db/
+      README.md carries a generic entry to write instead.
+
+  - path: ops/db/archive-old-logs-cron
+    reason: *deployment_cron
 
 # Decisions this file cannot make. The export tool refuses to run while any
 # remain, so the list is short on purpose.
@@ -245,7 +267,6 @@ overlay:
 
   - path: config/models.yaml
     source: config/examples/models.openrouter.yaml
-    requires: "#1067"   # source lands with that PR; delete this line once it has
     reason: >-
       The default registry a clone starts from: three models behind one
       credential, including a local-first hybrid entry. Same file the README
@@ -253,7 +274,6 @@ overlay:
 
   - path: config/routing.yaml
     source: config/examples/routing.minimal.yaml
-    requires: "#1067"   # source lands with that PR; delete this line once it has
     reason: >-
       Declares no endpoint at all. A fresh gateway knows about no machines
       until its operator adds theirs.
@@ -265,6 +285,24 @@ overlay:
       `expected_model_id` has to match what your own server reports, so a path
       from somebody else's filesystem is wrong for you as well as a disclosure
       of their machine layout.
+
+  - path: docs/developer/index.rst
+    source: ops/release/export_overlay/docs-developer-index.rst
+    reason: >-
+      The toctree lists four pages the export removes (codex-oncall,
+      freeinference, fasrc, staging). Sphinx warns and links to nothing, so the
+      published developer guide carries four dead entries. This copy lists what
+      travels; a test keeps the two in step.
+
+  - path: docs/developer/_templates/layout.html
+    source: ops/release/export_overlay/docs-developer-layout.html
+    reason: >-
+      The repository's copy is one deployment's Statcounter tag, and nothing
+      else — project id, security id, no-script pixel. Exported as-is, every
+      reader who builds the developer docs reports their visit to that
+      deployment's analytics account. Replaced rather than dropped because
+      conf.py declares templates_path, and a missing directory makes Sphinx
+      warn on every build.
 
 undecided: []
 
@@ -290,17 +328,3 @@ undecided: []
 # The test treats this as a ceiling: anything new fails, and an entry that stops
 # being found must be deleted, so the list can only shrink.
 known_findings:
-  - where: tests/fixtures/test_models.yaml
-    what: cluster path
-    pending: Fixed in #1082 — delete this entry once that merges.
-
-  - where: apps/backend/serving/config/settings.py
-    what: internal hostname
-    pending: >-
-      The CORS default still carries this site's origins on dev. Fixed in
-      #1060, which moves them into the distribution overlay — delete this entry
-      once that merges.
-
-  - where: tests/unit/config/test_contract_settings_defaults.py
-    what: internal hostname
-    pending: Frozen contract for the CORS default above; flips with #1060.

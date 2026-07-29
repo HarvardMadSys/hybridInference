@@ -125,6 +125,14 @@ class ClaudeCodeRuntime(AgentRuntime):
             "--output-format",
             "stream-json",
             "--verbose",
+            # The sandbox IS the boundary, so an interactive permission prompt
+            # inside it has nothing left to protect — it only guarantees the
+            # agent cannot do the work. Without this the CLI denies every write
+            # with "you haven't granted it yet", the job produces an empty
+            # patch, and (worse) a model that ignores the error still reports
+            # success. Found by the first real run, not by the fake.
+            "--permission-mode",
+            "bypassPermissions",
         ]
         env = {
             "ANTHROPIC_BASE_URL": gateway_base_url.rstrip("/").removesuffix("/v1"),
@@ -264,32 +272,59 @@ class CodexRuntime(AgentRuntime):
         gateway_base_url: str,
         credential: str,
     ) -> tuple[list[str], dict[str, str]]:
-        """Build the headless invocation and its environment."""
-        argv = [self.binary, "exec", "--json", "--skip-git-repo-check", task_prompt]
+        """Build the headless invocation and its environment.
+
+        Mirrors the invocation this repository already runs in production
+        (.github/workflows/codex-oncall.yml), because that one is known to work
+        against this gateway. Three things it gets right that the first pass
+        here did not:
+
+        - the model rides ``--model``. The previous version set ``CODEX_MODEL``,
+          which is not a variable the CLI reads, so the owner's model choice was
+          silently dropped and Codex used whatever its own default was.
+        - ``wire_api = "responses"``, not ``"chat"``. Codex removed chat wire
+          support upstream (openai/codex#7782); our gateway serves
+          ``/v1/responses`` and translates southbound.
+        - the provider is configured with ``-c`` flags rather than a config file,
+          so there is no scratch ``CODEX_HOME`` to write and nothing to leave
+          behind. ``--ignore-user-config`` keeps the operator's own config out.
+        """
+        base = gateway_base_url.rstrip("/").removesuffix("/v1")
+        provider = "freeinference"
+        argv = [
+            self.binary,
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            # The operator's own Codex config must not reach a sandbox run.
+            "--ignore-user-config",
+            # The container is the boundary, so Codex's own sandbox only needs
+            # to permit the work: writing the checked-out worktree. Same
+            # reasoning as the Claude runtime's permission mode.
+            "--sandbox",
+            "workspace-write",
+            "--model",
+            model,
+            "-c",
+            f'model_provider="{provider}"',
+            "-c",
+            f'model_providers.{provider}.name="FreeInference"',
+            "-c",
+            f'model_providers.{provider}.base_url="{base}/v1"',
+            "-c",
+            f'model_providers.{provider}.env_key="CODEX_API_KEY"',
+            "-c",
+            f'model_providers.{provider}.wire_api="responses"',
+            task_prompt,
+        ]
         env = {
-            "CODEX_MODEL": model,
             "CODEX_API_KEY": credential,
-            "OPENAI_BASE_URL": gateway_base_url.rstrip("/").removesuffix("/v1") + "/v1",
+            # Some code paths still read the OpenAI names; keep them consistent
+            # rather than leaving a second, stale credential source.
+            "OPENAI_BASE_URL": f"{base}/v1",
             "OPENAI_API_KEY": credential,
         }
         return argv, env
-
-    def config_toml(self, *, model: str, gateway_base_url: str) -> str:
-        """Return the scratch CODEX_HOME config pointing Codex at the gateway."""
-        base = gateway_base_url.rstrip("/").removesuffix("/v1")
-        return "\n".join(
-            [
-                f'model = "{model}"',
-                'model_provider = "freeinference"',
-                "",
-                "[model_providers.freeinference]",
-                'name = "freeinference"',
-                f'base_url = "{base}/v1"',
-                'env_key = "CODEX_API_KEY"',
-                'wire_api = "chat"',
-                "",
-            ]
-        )
 
     def parse_event(self, line: str) -> NormalizedEvent | None:
         """Normalize one ``codex exec --json`` line."""
@@ -384,6 +419,15 @@ _REGISTRY: dict[str, type[AgentRuntime]] = {
     ClaudeCodeRuntime.name: ClaudeCodeRuntime,
     CodexRuntime.name: CodexRuntime,
 }
+
+
+def registered_runtimes() -> list[str]:
+    """Runtime ids this deployment can actually run.
+
+    The composer offers these rather than a hardcoded list, so the picker
+    cannot advertise a runtime the backend would refuse at job creation.
+    """
+    return sorted(_REGISTRY)
 
 
 def get_runtime(name: str, *, generic_command: str | None = None) -> AgentRuntime:

@@ -22,11 +22,19 @@
 FROM node:22-bookworm-slim
 
 # Pin every agent runtime. Bump deliberately, and re-run the agent-loop
-# conformance suite (services/freeinference-harness, agent-loop-core) when you
+# conformance suite (a deployment's harness under services/) when you
 # do — that suite exists to catch an event-format change before it reaches a
 # user's job.
-ARG CLAUDE_CODE_VERSION=latest
-ARG CODEX_VERSION=latest
+#
+# These were `latest`, which made the comment above a wish rather than a fact,
+# and it cost a real job: `latest` resolved to Claude Code 2.1.220, which sends
+# a `role: "system"` message inside `messages`. The gateway passed it through
+# where it stood and every model call came back
+# `400 System message must be at the beginning` — so each job died at its first
+# turn, with an error that pointed at the model rather than at the CLI version.
+# An unpinned agent CLI is a dependency that changes under you between builds.
+ARG CLAUDE_CODE_VERSION=2.1.220
+ARG CODEX_VERSION=0.145.0
 
 # Tools an agent legitimately needs to understand and change a repository.
 # Deliberately not installed: anything that would let it reach the host
@@ -51,7 +59,14 @@ RUN npm install -g \
 # Non-root by default. The runner bind-mounts the worktree and the container is
 # disposable, so there is no reason for the agent to have root — and a kernel
 # escape needs a much better bug when it starts unprivileged.
-RUN useradd --create-home --shell /bin/bash agent
+#
+# The uid is PINNED, and must match SANDBOX_UID in
+# apps/backend/serving/agent_jobs/sandbox.py: the runner chowns each job
+# worktree to that id before mounting it. If the two drift, the agent cannot
+# write a single file in its own working tree and git refuses to run at all
+# ("dubious ownership") — a failure that looks nothing like its cause.
+RUN groupadd --gid 10001 agent \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash agent
 USER agent
 WORKDIR /workspace
 

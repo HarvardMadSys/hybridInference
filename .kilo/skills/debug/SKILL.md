@@ -27,7 +27,7 @@ apps/backend/routing/      # Routing engine — strategies, circuit breaker, EWM
   routewise/               # Per-model routing config
 apps/frontend/             # Next.js frontend
 config/                    # YAML configs: models.yaml, routing.yaml, alerts.yaml, routewise.yaml
-services/                  # llm-prober, freeinference-harness, alert-logger
+services/                  # sidecar workers, where a deployment ships them
 tests/
   unit/                    # Pure unit tests (mocked adapters, routing logic, auth, config)
   api/                     # API-level tests per provider (test_openai_api, test_claude_api, etc.)

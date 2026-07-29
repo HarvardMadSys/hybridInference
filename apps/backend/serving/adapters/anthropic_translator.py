@@ -35,16 +35,81 @@ def anthropic_request_to_openai(
     messages: list[dict[str, Any]] = []
 
     # System prompt -> system message prepended.
-    system = body.get("system")
-    system_text = _flatten_system(system)
-    if system_text:
-        messages.append({"role": "system", "content": system_text})
+    system_parts: list[str] = []
+    if system_text := _flatten_system(body.get("system")):
+        system_parts.append(system_text)
 
+    conversation: list[dict[str, Any]] = []
     for msg in body.get("messages", []):
-        messages.extend(_translate_message(msg))
+        if msg.get("role") == "system":
+            # Clients do put `role: "system"` inside `messages`, even though
+            # the Anthropic surface reserves a top-level field for it — Claude
+            # Code 2.1.220 sends its agent-type listing that way. Passing it
+            # through in place puts a system message after a user message, and
+            # strict upstreams reject the whole request ("System message must
+            # be at the beginning"), so every turn fails rather than degrading.
+            # Hoisting keeps the instruction and the ordering rule both intact.
+            if hoisted := _flatten_system(msg.get("content")):
+                system_parts.append(hoisted)
+            continue
+        conversation.extend(_translate_message(msg))
+
+    if system_parts:
+        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
+    messages.extend(conversation)
 
     params = _translate_params(body)
     return messages, params
+
+
+def normalize_inline_system(body: dict[str, Any]) -> dict[str, Any]:
+    """Fold any ``role: "system"`` message into the top-level ``system`` field.
+
+    Applied on the shared inbound path, before the request is dispatched,
+    because the destination decides how badly this breaks and *every*
+    destination breaks:
+
+    - a native Anthropic upstream is forwarded the body unchanged, and rejects
+      an inline system message outright — the role is not in its schema;
+    - an OpenAI-style upstream gets a translated body whose system message
+      sits after a user message, which strict providers refuse with
+      "System message must be at the beginning".
+
+    Normalizing once here means neither route has to know about it. Returns the
+    body unchanged (same object) when there is nothing to fold, so the common
+    case costs one scan and no copy.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not any(
+        isinstance(m, dict) and m.get("role") == "system" for m in messages
+    ):
+        return body
+
+    blocks: list[dict[str, Any]] = []
+    existing = body.get("system")
+    if isinstance(existing, str):
+        blocks.append({"type": "text", "text": existing})
+    elif isinstance(existing, list):
+        blocks.extend(existing)
+
+    kept: list[Any] = []
+    for message in messages:
+        if not (isinstance(message, dict) and message.get("role") == "system"):
+            kept.append(message)
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            blocks.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            # Only text survives: an image in a system message has nowhere to
+            # go in either destination's system field.
+            blocks.extend(b for b in content if isinstance(b, dict) and b.get("type") == "text")
+
+    normalized = dict(body)
+    normalized["messages"] = kept
+    if blocks:
+        normalized["system"] = blocks
+    return normalized
 
 
 def _flatten_system(system: Any) -> str | None:

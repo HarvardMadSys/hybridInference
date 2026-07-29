@@ -135,9 +135,16 @@ def test_nul_byte_path_fails_open_to_legacy(monkeypatch, tmp_path):
     assert resolve_config_path("models").source == "default"
 
 
-@pytest.mark.parametrize("mode", ["active", "dark"])
-def test_absolute_nul_byte_path_fails_open_in_both_modes(monkeypatch, tmp_path, mode):
-    """Absolute paths are validated at load time too, not only relative ones."""
+@pytest.mark.parametrize("mode", ["dark", ""])
+def test_absolute_nul_byte_path_falls_back_outside_active_mode(monkeypatch, tmp_path, mode):
+    """Absolute paths are validated at load time too, not only relative ones.
+
+    #952 made fail-open a property of the manifest: a file that will not load
+    costs a comparison and nothing else. That held while the manifest was
+    dark-only. Active mode narrows it — see
+    test_a_missing_manifest_is_fatal_in_active_mode — so this covers the modes
+    where falling back is still the right answer.
+    """
     manifest = _write_manifest(
         tmp_path,
         'schema_version: 1\ndistribution:\n  id: x\npaths:\n  models: "/a\\0b"\n',
@@ -147,7 +154,20 @@ def test_absolute_nul_byte_path_fails_open_in_both_modes(monkeypatch, tmp_path, 
     assert get_distribution_config() is None
     resolved = resolve_config_path("models")
     assert resolved.source == "default"
-    assert resolved.path == Path("config/models.yaml")
+    assert resolved.path == Path("config/examples/models.openrouter.yaml")
+
+
+def test_a_manifest_that_will_not_parse_is_fatal_in_active_mode(monkeypatch, tmp_path):
+    """Not only a missing file: anything that stops the manifest being the truth."""
+    manifest = _write_manifest(
+        tmp_path,
+        'schema_version: 1\ndistribution:\n  id: x\npaths:\n  models: "/a\\0b"\n',
+    )
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
+    get_distribution_config.cache_clear()
+    with pytest.raises(DistributionConfigError, match="active"):
+        get_distribution_config()
 
 
 # --- Precedence ---
@@ -156,7 +176,7 @@ def test_absolute_nul_byte_path_fails_open_in_both_modes(monkeypatch, tmp_path, 
 def test_unset_manifest_means_legacy_resolution():
     resolved = resolve_config_path("models")
     assert resolved.source == "default"
-    assert resolved.path == Path("config/models.yaml")
+    assert resolved.path == Path("config/examples/models.openrouter.yaml")
 
 
 def test_manifest_path_used_when_env_unset(monkeypatch, tmp_path):
@@ -213,7 +233,7 @@ def test_dark_mode_keeps_legacy_paths(monkeypatch, tmp_path):
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "dark")
     resolved = resolve_config_path("models")
     assert resolved.source == "default"
-    assert resolved.path == Path("config/models.yaml")
+    assert resolved.path == Path("config/examples/models.openrouter.yaml")
     # The manifest itself still loads and validates in dark mode.
     assert get_distribution_config() is not None
 
@@ -286,3 +306,44 @@ def test_constructor_supplied_alerts_counts_as_explicit(monkeypatch, tmp_path):
     resolved = resolve_config_path("alerts")
     assert resolved.source == "env"
     assert resolved.path == Path("custom/alerts.yaml")
+
+
+def test_a_missing_manifest_is_fatal_in_active_mode(monkeypatch, tmp_path):
+    """In active mode the manifest is the truth, so losing it must stop the boot.
+
+    Falling back to legacy resolution is right in dark — the manifest is only
+    being compared there and the environment still supplies every effective
+    path. In active it would mean quietly serving a different registry than
+    the deployment named, which is the failure a lost `distributions/` mount
+    produces and the one nobody would notice.
+    """
+    from serving.config import distribution
+    from serving.config.settings import Settings
+
+    gone = tmp_path / "not-written.yaml"
+    custom = Settings(
+        _env_file=None,
+        distribution_config_path=str(gone),
+        distribution_config_mode="active",
+    )
+    monkeypatch.setattr(distribution, "get_settings", lambda: custom)
+    get_distribution_config.cache_clear()
+    with pytest.raises(DistributionConfigError, match="active"):
+        get_distribution_config()
+
+
+@pytest.mark.parametrize("mode", ["dark", ""])
+def test_a_missing_manifest_is_survivable_outside_active_mode(monkeypatch, tmp_path, mode):
+    """Dark keeps failing open: nothing effective depends on the manifest there."""
+    from serving.config import distribution
+    from serving.config.settings import Settings
+
+    gone = tmp_path / "not-written.yaml"
+    custom = Settings(
+        _env_file=None,
+        distribution_config_path=str(gone),
+        distribution_config_mode=mode,
+    )
+    monkeypatch.setattr(distribution, "get_settings", lambda: custom)
+    get_distribution_config.cache_clear()
+    assert get_distribution_config() is None
