@@ -259,17 +259,18 @@ already holds the dispatcher credential and the Docker socket.
 
 ## Runtime verification
 
-Run the deterministic runtime tests after bumping an agent CLI. A CLI that
-changes its event format can break normalized event mapping; these fixtures
-catch that without a live model or deployment credential:
+Run the adapter contract tests after changing runtime integration code. They
+replay recorded and synthetic events to pin normalized mapping without a live
+model or deployment credential:
 
 ```bash
 uv run pytest tests/unit/test_agent_runtimes.py
 ```
 
-A full live-model matrix belongs to the deployment operating those models and
-credentials. Keep that conformance configuration in the deployment overlay,
-not in the neutral upstream repository.
+These tests do not invoke the installed agent binaries. An installed-CLI smoke
+test and full live-model matrix belong to the deployment operating those
+binaries, models, and credentials. Keep that conformance configuration in the
+deployment overlay, not in the neutral upstream repository.
 
 ## Known gateway findings
 
