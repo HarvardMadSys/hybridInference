@@ -2,9 +2,11 @@
 
 Two audiences, two authentication schemes:
 
-- **Owners** (users, via the normal API key): create, inspect, list, cancel
-  jobs, read artifacts, and subscribe to the event stream. Every read and
-  mutation is scoped to ``user_id`` so one user can never touch another's job.
+- **Owners** (users, via a browser JWT or normal API key): create, inspect,
+  list, cancel jobs, read artifacts, and subscribe to the event stream. Every
+  read and mutation is scoped to ``user_id`` so one user can never touch
+  another's job. P0 remains dogfood-only, so the same dependency also requires
+  the ``internal`` role (admins satisfy it through the normal role hierarchy).
 - **Workers** (the sandbox runner, via a per-attempt capability token minted at
   claim time): report events, store artifacts, renew the lease, and drive the
   fenced terminal/publish transitions. The token carries the
@@ -43,6 +45,7 @@ from serving.agent_jobs.entitlement import (
     require_entitled_repo,
 )
 from serving.agent_jobs.github_app import AppNotInstalled
+from serving.agent_jobs.model_auth import looks_like_agent_token
 from serving.agent_jobs.runtimes import registered_runtimes
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
@@ -80,7 +83,9 @@ from serving.servers.auth import verify_api_key
 from serving.servers.deps import (
     get_agent_app_credentials,
     get_agent_job_store,
+    get_current_user,
     get_log_store,
+    get_operational_store,
     verify_admin_access,
 )
 from serving.storage.agent_job_store import RUNNING, TERMINAL_STATES
@@ -117,6 +122,64 @@ _SAFE_EVENT_TYPE = re.compile(EVENT_TYPE_PATTERN)
 # for less. Without this the runner would be handed push rights it must not
 # have, on a host that runs untrusted repository code.
 _CLONE_SCOPE = {"contents": "read"}
+
+
+def _looks_like_browser_jwt(authorization: str | None) -> bool:
+    """Distinguish a web access JWT from API-key and sandbox credentials.
+
+    Browser login tokens are compact JWTs (three dot-separated segments).
+    Agent capability tokens are also structured, so exclude their dedicated
+    namespace before using the JWT dependency. Normal API keys, including
+    legacy opaque keys, continue through ``verify_api_key``.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        return False
+    token = authorization[7:]
+    return token.count(".") == 2 and not looks_like_agent_token(token)
+
+
+async def authenticate_agent_owner(
+    request: Request,
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
+    agent_job_store=Depends(get_agent_job_store),
+) -> dict[str, Any]:
+    """Authenticate an Agent owner from either web JWT or normal API key.
+
+    The Agents web app sends the access JWT returned by ``/auth/login``. API
+    clients send ``hyi-*`` keys. Passing both credential types to
+    ``verify_api_key`` made the web JWT look like an invalid API key, leaving
+    an otherwise logged-in user unable to load config or start a job.
+
+    Credential namespaces are selected before validation rather than by
+    catching one validator and falling back to the other: an expired or forged
+    JWT must remain a JWT authentication failure, not get reinterpreted as an
+    API key.
+    """
+    if _looks_like_browser_jwt(authorization):
+        return await get_current_user(authorization=authorization, op_store=op_store)
+
+    return await verify_api_key(
+        request=request,
+        authorization=authorization,
+        x_api_key=x_api_key,
+        op_store=op_store,
+        log_store=log_store,
+        agent_job_store=agent_job_store,
+    )
+
+
+async def require_agent_owner(
+    user: dict[str, Any] = Depends(authenticate_agent_owner),
+) -> dict[str, Any]:
+    """Keep the P0 Agent surface restricted to internal/admin dogfood users."""
+    from serving.config.settings import has_role
+
+    if not has_role(user.get("role", "free"), "internal"):
+        raise HTTPException(status_code=403, detail="Agent access requires role 'internal'.")
+    return user
 
 
 def _sse_frame(event: dict[str, Any]) -> str:
@@ -250,7 +313,7 @@ async def _owned_job(
 
 @router.get("/config", response_model=AgentConfigResponse)
 async def get_agent_config(
-    user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> AgentConfigResponse:
@@ -283,7 +346,7 @@ async def get_agent_config(
 @router.post("/github/connect", response_model=GitHubConnectionResponse)
 async def connect_github(
     body: GitHubConnectRequest,
-    user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> GitHubConnectionResponse:
@@ -336,7 +399,7 @@ async def connect_github(
 @router.delete("/github/connect/{installation_id}", response_model=GitHubConnectionResponse)
 async def disconnect_github(
     installation_id: int,
-    user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> GitHubConnectionResponse:
@@ -354,7 +417,7 @@ async def disconnect_github(
 @router.get("/branches", response_model=RepoBranchesResponse)
 async def list_repo_branches(
     repo: str = Query(..., description="owner/name"),
-    user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> RepoBranchesResponse:
@@ -387,7 +450,7 @@ async def list_repo_branches(
 @router.post("/jobs", response_model=AgentJobResponse, status_code=201)
 async def create_agent_job(
     body: AgentJobCreate,
-    user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> AgentJobResponse:
@@ -449,7 +512,7 @@ async def create_agent_job(
 @router.get("/jobs", response_model=AgentJobListResponse)
 async def list_agent_jobs(
     limit: int = Query(50, ge=1, le=200),
-    user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
 ) -> AgentJobListResponse:
     """List the authenticated user's agent jobs, newest first."""
@@ -461,7 +524,7 @@ async def list_agent_jobs(
 @router.get("/jobs/{job_id}", response_model=AgentJobResponse)
 async def get_agent_job(
     job_id: str,
-    user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
     log_store=Depends(get_log_store),
 ) -> AgentJobResponse:
@@ -474,7 +537,7 @@ async def get_agent_job(
 @router.post("/jobs/{job_id}/cancel", response_model=AgentJobCancelResponse)
 async def cancel_agent_job(
     job_id: str,
-    user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
 ) -> AgentJobCancelResponse:
     """Request cancellation of one of the caller's agent jobs.
@@ -498,7 +561,7 @@ async def list_agent_job_events(
     job_id: str,
     after: int = Query(0, ge=0, description="Return events with a global id greater than this."),
     limit: int = Query(_EVENT_PAGE_SIZE, ge=1, le=1000),
-    user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
 ) -> AgentJobEventsResponse:
     """Page through a job's append-only event log (non-streaming)."""
@@ -515,7 +578,7 @@ async def list_agent_job_events(
 async def get_agent_job_artifact(
     job_id: str,
     kind: str,
-    user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
 ) -> AgentJobArtifactResponse:
     """Fetch the latest artifact of a kind (e.g. ``patch``) for a job."""
@@ -544,7 +607,7 @@ async def stream_agent_job_events(
     request: Request,
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
     after: int = Query(0, ge=0),
-    user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
 ) -> StreamingResponse:
     """Stream a job's events as SSE, resumable via ``Last-Event-ID``.
