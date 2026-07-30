@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { cancelAgentJob, followUpAgentJob, getAgentJobFiles } from '@/lib/api/agents';
@@ -70,6 +70,10 @@ function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
     egressDenials: 0,
     ...overrides,
   };
+}
+
+function openWorkspace() {
+  fireEvent.click(screen.getByRole('button', { name: 'Open workspace' }));
 }
 
 describe('JobDetail', () => {
@@ -184,39 +188,54 @@ describe('JobDetail', () => {
     expect(screen.getByText('{"event_type":"message"}')).toBeInTheDocument();
   });
 
-  it('keeps the task as the default view with only Git, Terminal, and Files workspaces', () => {
+  it('keeps the task as the default view behind an accessible workspace toggle', () => {
     render(<JobDetail job={makeJob()} />);
 
-    for (const name of ['Git', 'Terminal', 'Files']) {
-      expect(screen.getByRole('button', { name: new RegExp(name) })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: new RegExp(name) })).toHaveAttribute(
-        'aria-pressed',
-        'false',
-      );
-    }
-    expect(screen.queryByRole('button', { name: 'Activity' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Environment' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open workspace' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByRole('region', { name: 'Job workspace' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Activity' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Environment' })).not.toBeInTheDocument();
     expect(screen.getByText(/with all of its detail/)).toBeInTheDocument();
     expect(screen.getByLabelText('Add a follow-up')).toBeInTheDocument();
   });
 
-  it('returns to the task by toggling a workspace tab or using the close control', () => {
+  it('opens and closes from a stable control while preserving the selected tab', () => {
     render(<JobDetail job={makeJob()} />);
 
-    const terminalTab = screen.getByRole('button', { name: 'Terminal' });
-    fireEvent.click(terminalTab);
-    expect(terminalTab).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.queryByLabelText('Add a follow-up')).not.toBeInTheDocument();
-    fireEvent.click(terminalTab);
-    expect(terminalTab).toHaveAttribute('aria-pressed', 'false');
-    expect(screen.getByLabelText('Add a follow-up')).toBeInTheDocument();
+    const task = screen.getByRole('region', { name: 'Task progress' });
+    openWorkspace();
 
-    const gitButton = screen.getByRole('button', { name: /Git/ });
-    fireEvent.click(gitButton);
-    expect(gitButton).toHaveAttribute('aria-pressed', 'true');
-    fireEvent.click(screen.getByRole('button', { name: 'Close workspace and return to task' }));
-    expect(gitButton).toHaveAttribute('aria-pressed', 'false');
-    expect(screen.getByLabelText('Add a follow-up')).toBeInTheDocument();
+    const closeButton = screen.getByRole('button', { name: 'Close workspace' });
+    expect(closeButton).toHaveAttribute('aria-expanded', 'true');
+    expect(closeButton).toHaveAttribute('aria-controls', 'job-workspace-pane');
+    expect(screen.getByRole('region', { name: 'Job workspace' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Git/ })).toHaveAttribute('aria-selected', 'true');
+    expect(task).toBeInTheDocument();
+    expect(task).toHaveClass('hidden', 'lg:flex', 'overflow-y-auto');
+    expect(screen.getByRole('region', { name: 'Job workspace' })).toHaveClass(
+      'overflow-y-auto',
+      'lg:border-l',
+    );
+
+    const terminalTab = screen.getByRole('tab', { name: 'Terminal' });
+    fireEvent.click(terminalTab);
+    expect(terminalTab).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(terminalTab);
+    expect(terminalTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('region', { name: 'Job workspace' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close workspace' }));
+    expect(screen.getByRole('button', { name: 'Open workspace' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByRole('region', { name: 'Job workspace' })).not.toBeInTheDocument();
+
+    openWorkspace();
+    expect(screen.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('shows a selectable per-file Git diff with branch and PR facts', () => {
@@ -230,7 +249,7 @@ describe('JobDetail', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /Git/ }));
+    openWorkspace();
 
     expect(screen.getByLabelText('Git workspace')).toHaveTextContent('agent/ajob_1');
     expect(screen.getByLabelText('Git workspace')).toHaveTextContent('src/example.ts');
@@ -244,13 +263,14 @@ describe('JobDetail', () => {
   it('renders terminal events as a read-only transcript with no input', () => {
     render(<JobDetail job={makeJob()} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
 
     const terminal = screen.getByLabelText('Read-only terminal transcript');
     expect(terminal).toHaveTextContent('$ pytest -q');
     expect(terminal).toHaveTextContent('2 passed');
     expect(terminal).toHaveTextContent('Read only');
-    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(within(terminal).queryByRole('textbox')).not.toBeInTheDocument();
   });
 
   it('loads Files lazily and safely refuses to preview a symlink', async () => {
@@ -264,7 +284,8 @@ describe('JobDetail', () => {
     render(<JobDetail job={makeJob()} />);
 
     expect(getAgentJobFiles).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
 
     await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledWith('ajob_1', ''));
     fireEvent.click(await screen.findByRole('button', { name: /latest/ }));
@@ -297,7 +318,8 @@ describe('JobDetail', () => {
         status: 'modified',
       });
     render(<JobDetail job={makeJob()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
 
     fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }));
 
@@ -308,7 +330,8 @@ describe('JobDetail', () => {
   it('refreshes an open Files workspace once a running job finishes', async () => {
     vi.mocked(getAgentJobFiles).mockResolvedValue({ path: '', kind: 'directory', entries: [] });
     const { rerender } = render(<JobDetail job={makeJob({ state: 'running' })} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
     await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledTimes(1));
 
     rerender(<JobDetail job={makeJob({ state: 'done' })} />);

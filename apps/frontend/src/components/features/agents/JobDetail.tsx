@@ -797,7 +797,8 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   );
   const [attemptNo, setAttemptNo] = useState(liveAttempt);
   const [drawer, setDrawer] = useState<DrawerView | null>(null);
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab | null>(null);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('git');
   const [followUp, setFollowUp] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -811,6 +812,11 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   );
   const pill = STATE_PILL[job.state];
   const isActive = job.state === 'running' || job.state === 'queued';
+
+  function openWorkspace(tab: WorkspaceTab) {
+    setWorkspaceTab(tab);
+    setWorkspaceOpen(true);
+  }
 
   async function stop() {
     setStopping(true);
@@ -841,9 +847,13 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   }
 
   return (
-    <section className="flex min-h-full flex-col bg-white">
-      <header className="sticky top-0 z-20 border-b border-gray-100 bg-white/95 px-5 backdrop-blur">
-        <div className="mx-auto flex max-w-4xl items-center gap-3 py-3">
+    <section className="flex h-full min-h-0 flex-col bg-white">
+      <header className="z-20 shrink-0 border-b border-gray-100 bg-white/95 px-5 backdrop-blur">
+        <div
+          className={`mx-auto flex w-full items-center gap-3 py-3 ${
+            workspaceOpen ? 'max-w-[100rem]' : 'max-w-4xl'
+          }`}
+        >
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-[15px] font-semibold text-gray-900">{job.title}</h1>
             <div className="mt-0.5 flex items-center gap-2 text-xs text-gray-500">
@@ -878,7 +888,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
           {job.diffFiles.length ? (
             <button
               type="button"
-              onClick={() => setWorkspaceTab('git')}
+              onClick={() => openWorkspace('git')}
               className="hidden rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 sm:block"
             >
               Changes
@@ -905,174 +915,207 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               {stopping ? 'Stopping…' : 'Stop'}
             </button>
           ) : null}
-        </div>
-        <nav
-          aria-label="Job workspace"
-          className="mx-auto flex max-w-4xl gap-1 overflow-x-auto text-[13px] font-medium"
-        >
-          {WORKSPACE_TABS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              aria-pressed={workspaceTab === tab.key}
-              onClick={() => setWorkspaceTab((current) => (current === tab.key ? null : tab.key))}
-              className={`shrink-0 border-b-2 px-3 py-2 ${
-                workspaceTab === tab.key
-                  ? 'border-gray-900 text-gray-900'
-                  : 'border-transparent text-gray-500 hover:text-gray-900'
-              }`}
+          <button
+            type="button"
+            onClick={() => setWorkspaceOpen((current) => !current)}
+            aria-label={workspaceOpen ? 'Close workspace' : 'Open workspace'}
+            aria-expanded={workspaceOpen}
+            aria-controls="job-workspace-pane"
+            className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-gray-500 hover:bg-gray-100 hover:text-gray-900 ${
+              workspaceOpen ? 'border-gray-300 bg-gray-100 text-gray-900' : 'border-gray-200'
+            }`}
+          >
+            <svg
+              aria-hidden="true"
+              className="h-4 w-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.8}
             >
-              {tab.label}
-              {tab.key === 'git' && job.diffFiles.length ? (
-                <span className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
-                  {job.diffFiles.length}
-                </span>
-              ) : null}
-            </button>
-          ))}
-        </nav>
+              <rect x="3.5" y="4" width="17" height="16" rx="2" />
+              <path d="M14.5 4v16" />
+            </svg>
+          </button>
+        </div>
       </header>
 
-      {workspaceTab === null ? (
+      <div
+        className={`min-h-0 flex-1 overflow-hidden ${
+          workspaceOpen ? 'lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(28rem,0.9fr)]' : 'flex'
+        }`}
+      >
         <div
           role="region"
           aria-label="Task progress"
-          className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-5 pb-6 pt-6"
+          className={`min-w-0 flex-1 flex-col overflow-y-auto ${
+            workspaceOpen ? 'hidden lg:flex' : 'flex'
+          }`}
         >
-          <div className="flex-1">
-            {(job.threadMessages ?? []).map((message) => (
-              <ThreadTurn key={message.id} message={message} />
-            ))}
-
-            <div className="my-4 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-              <Markdown text={job.prompt || job.title} />
-            </div>
-
-            {job.stateNote && job.state !== 'failed' ? (
-              <p className="mb-2 text-xs text-gray-400">{job.stateNote}</p>
-            ) : null}
-
-            {job.attempts.length > 1 ? (
-              <div className="my-3 flex flex-wrap items-center gap-1.5 text-xs">
-                <span className="mr-1 text-gray-400">Run attempts</span>
-                {job.attempts.map((attempt) => (
-                  <button
-                    key={attempt.no}
-                    type="button"
-                    onClick={() => setAttemptNo(attempt.no)}
-                    className={`rounded-md px-2 py-1 ${
-                      attempt.no === attemptNo
-                        ? 'bg-gray-900 text-white'
-                        : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                    }`}
-                  >
-                    {attempt.no} · {attempt.status}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-
-            {selectedAttempt?.status === 'superseded' && selectedAttempt.note ? (
-              <div className="my-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
-                {selectedAttempt.note}
-              </div>
-            ) : null}
-
-            <div aria-label="Agent activity" className="mt-2">
-              {visibleEvents.map((event, index) => (
-                <EventRow key={`${event.attemptNo ?? 0}-${index}`} event={event} />
+          <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-5 pb-6 pt-6">
+            <div className="flex-1">
+              {(job.threadMessages ?? []).map((message) => (
+                <ThreadTurn key={message.id} message={message} />
               ))}
-              {job.liveNote ? (
-                <div className="flex items-center gap-2.5 py-3 text-[13px] text-gray-500">
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
-                  {job.liveNote}
+
+              <div className="my-4 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+                <Markdown text={job.prompt || job.title} />
+              </div>
+
+              {job.stateNote && job.state !== 'failed' ? (
+                <p className="mb-2 text-xs text-gray-400">{job.stateNote}</p>
+              ) : null}
+
+              {job.attempts.length > 1 ? (
+                <div className="my-3 flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="mr-1 text-gray-400">Run attempts</span>
+                  {job.attempts.map((attempt) => (
+                    <button
+                      key={attempt.no}
+                      type="button"
+                      onClick={() => setAttemptNo(attempt.no)}
+                      className={`rounded-md px-2 py-1 ${
+                        attempt.no === attemptNo
+                          ? 'bg-gray-900 text-white'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                      }`}
+                    >
+                      {attempt.no} · {attempt.status}
+                    </button>
+                  ))}
                 </div>
               ) : null}
-              {job.state === 'queued' && visibleEvents.length === 0 ? (
-                <div className="flex items-center gap-2.5 py-3 text-[13px] text-gray-500">
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-gray-400" />
-                  {job.parentJobId ? 'Queued after the current run' : 'Waiting for a runner'}
+
+              {selectedAttempt?.status === 'superseded' && selectedAttempt.note ? (
+                <div className="my-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
+                  {selectedAttempt.note}
                 </div>
               ) : null}
+
+              <div aria-label="Agent activity" className="mt-2">
+                {visibleEvents.map((event, index) => (
+                  <EventRow key={`${event.attemptNo ?? 0}-${index}`} event={event} />
+                ))}
+                {job.liveNote ? (
+                  <div className="flex items-center gap-2.5 py-3 text-[13px] text-gray-500">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+                    {job.liveNote}
+                  </div>
+                ) : null}
+                {job.state === 'queued' && visibleEvents.length === 0 ? (
+                  <div className="flex items-center gap-2.5 py-3 text-[13px] text-gray-500">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-gray-400" />
+                    {job.parentJobId ? 'Queued after the current run' : 'Waiting for a runner'}
+                  </div>
+                ) : null}
+              </div>
+
+              <OutcomeCard job={job} onOpenDiff={() => openWorkspace('git')} />
             </div>
 
-            <OutcomeCard job={job} onOpenDiff={() => setWorkspaceTab('git')} />
+            <div className="sticky bottom-0 z-10 -mx-2 mt-10 bg-gradient-to-t from-white via-white px-2 pb-2 pt-8">
+              <form
+                onSubmit={(event) => void submitFollowUp(event)}
+                className="rounded-2xl border border-gray-200 bg-white shadow-lg shadow-gray-200/50 focus-within:border-gray-300"
+              >
+                <textarea
+                  rows={2}
+                  value={followUp}
+                  onChange={(event) => setFollowUp(event.target.value)}
+                  placeholder="Add a follow-up"
+                  aria-label="Add a follow-up"
+                  className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-4 pt-3 text-sm leading-relaxed text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
+                />
+                <div className="flex items-center gap-2 px-3 pb-2.5">
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
+                    Inherits {job.runtime} · {job.model}
+                    {isActive ? ' · queued after this run' : ''}
+                  </span>
+                  <button
+                    type="submit"
+                    disabled={!followUp.trim() || submitting}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Send follow-up"
+                  >
+                    {submitting ? (
+                      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    ) : (
+                      <svg
+                        aria-hidden="true"
+                        className="h-4 w-4"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M12 19V5m0 0-6 6m6-6 6 6"
+                        />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </form>
+              {actionError ? (
+                <p className="mt-2 text-center text-xs text-red-600" role="alert">
+                  {actionError}
+                </p>
+              ) : null}
+            </div>
           </div>
+        </div>
 
-          <div className="sticky bottom-0 z-10 -mx-2 mt-10 bg-gradient-to-t from-white via-white px-2 pb-2 pt-8">
-            <form
-              onSubmit={(event) => void submitFollowUp(event)}
-              className="rounded-2xl border border-gray-200 bg-white shadow-lg shadow-gray-200/50 focus-within:border-gray-300"
+        {workspaceOpen ? (
+          <aside
+            id="job-workspace-pane"
+            role="region"
+            aria-label="Job workspace"
+            className="min-w-0 overflow-y-auto border-gray-200 bg-white lg:border-l"
+          >
+            <nav
+              aria-label="Workspace views"
+              role="tablist"
+              className="sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-gray-200 bg-white px-4 text-[13px] font-medium"
             >
-              <textarea
-                rows={2}
-                value={followUp}
-                onChange={(event) => setFollowUp(event.target.value)}
-                placeholder="Add a follow-up"
-                aria-label="Add a follow-up"
-                className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-4 pt-3 text-sm leading-relaxed text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
-              />
-              <div className="flex items-center gap-2 px-3 pb-2.5">
-                <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
-                  Inherits {job.runtime} · {job.model}
-                  {isActive ? ' · queued after this run' : ''}
-                </span>
+              {WORKSPACE_TABS.map((tab) => (
                 <button
-                  type="submit"
-                  disabled={!followUp.trim() || submitting}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
-                  aria-label="Send follow-up"
+                  key={tab.key}
+                  id={`workspace-tab-${tab.key}`}
+                  type="button"
+                  role="tab"
+                  aria-controls="workspace-tab-panel"
+                  aria-selected={workspaceTab === tab.key}
+                  onClick={() => openWorkspace(tab.key)}
+                  className={`shrink-0 border-b-2 px-3 py-3 ${
+                    workspaceTab === tab.key
+                      ? 'border-gray-900 text-gray-900'
+                      : 'border-transparent text-gray-500 hover:text-gray-900'
+                  }`}
                 >
-                  {submitting ? (
-                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                  ) : (
-                    <svg
-                      aria-hidden="true"
-                      className="h-4 w-4"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M12 19V5m0 0-6 6m6-6 6 6"
-                      />
-                    </svg>
-                  )}
+                  {tab.label}
+                  {tab.key === 'git' && job.diffFiles.length ? (
+                    <span className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
+                      {job.diffFiles.length}
+                    </span>
+                  ) : null}
                 </button>
-              </div>
-            </form>
-            {actionError ? (
-              <p className="mt-2 text-center text-xs text-red-600" role="alert">
-                {actionError}
-              </p>
-            ) : null}
-          </div>
-        </div>
-      ) : (
-        <div
-          role="region"
-          aria-label={WORKSPACE_TABS.find((tab) => tab.key === workspaceTab)?.label}
-          className="mx-auto w-full max-w-5xl flex-1 px-5 py-6"
-        >
-          <div className="mb-4 flex items-center">
-            <button
-              type="button"
-              onClick={() => setWorkspaceTab(null)}
-              aria-label="Close workspace and return to task"
-              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              ))}
+            </nav>
+            <div
+              id="workspace-tab-panel"
+              role="tabpanel"
+              aria-labelledby={`workspace-tab-${workspaceTab}`}
+              className="p-5"
             >
-              <span aria-hidden="true">←</span>
-              Return to task
-            </button>
-          </div>
-          {workspaceTab === 'git' ? <GitPanel job={job} /> : null}
-          {workspaceTab === 'terminal' ? <TerminalPanel events={visibleEvents} /> : null}
-          {workspaceTab === 'files' ? <FilesPanel job={job} /> : null}
-        </div>
-      )}
+              {workspaceTab === 'git' ? <GitPanel job={job} /> : null}
+              {workspaceTab === 'terminal' ? <TerminalPanel events={visibleEvents} /> : null}
+              {workspaceTab === 'files' ? <FilesPanel job={job} /> : null}
+            </div>
+          </aside>
+        ) : null}
+      </div>
 
       {drawer ? (
         <DetailsDrawer job={job} initialView={drawer} onClose={() => setDrawer(null)} />
