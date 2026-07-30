@@ -483,18 +483,6 @@ describe('JobDetail', () => {
     expect(navigation.push).toHaveBeenCalledWith('/agents/ajob_fork');
   });
 
-  it('offers a whole-conversation fork only once the run has settled', async () => {
-    vi.mocked(forkAgentJob).mockResolvedValue({ id: 'ajob_fork' } as never);
-    const { rerender } = render(<JobDetail job={makeJob()} />);
-    expect(screen.queryByRole('button', { name: 'Fork' })).not.toBeInTheDocument();
-
-    rerender(<JobDetail job={makeJob({ state: 'done' })} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Fork' }));
-
-    await waitFor(() => expect(forkAgentJob).toHaveBeenCalledWith('ajob_1'));
-    expect(navigation.push).toHaveBeenCalledWith('/agents/ajob_fork');
-  });
-
   it('prefills the composer from a rewind draft exactly once', () => {
     sessionStorage.setItem('agent-rewind-draft-ajob_1', 'edited prompt');
     render(<JobDetail job={makeJob()} />);

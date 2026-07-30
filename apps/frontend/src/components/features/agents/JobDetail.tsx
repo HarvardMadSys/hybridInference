@@ -1371,17 +1371,6 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               </span>
             </button>
           ) : null}
-          {!isActive ? (
-            <button
-              type="button"
-              onClick={() => void forkFrom(job.id)}
-              disabled={forking}
-              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-60"
-            >
-              <ForkIcon />
-              {forking ? 'Forking…' : 'Fork'}
-            </button>
-          ) : null}
           {isActive ? (
             <button
               type="button"
