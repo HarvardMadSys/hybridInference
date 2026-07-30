@@ -36,10 +36,10 @@ import os
 import sys
 
 from serving.agent_jobs.egress import (
-    DEFAULT_TRUSTED_DOMAINS,
     EgressPolicyError,
     check_allowlist,
     normalize_domains,
+    trusted_domains,
 )
 
 DEFAULT_PROXY_PORT = 3128
@@ -137,7 +137,9 @@ def build_config_from_env(env: dict[str, str] | None = None) -> str:
         raise EgressPolicyError(
             f"AGENT_EGRESS_PROXY_PORT={source.get('AGENT_EGRESS_PROXY_PORT')!r} is not a number"
         ) from exc
-    return render_squid_config([*DEFAULT_TRUSTED_DOMAINS, *extra], port=port)
+    # The same function the runner's policy uses, so the list this proxy
+    # enforces cannot drift from the one the platform believes it configured.
+    return render_squid_config(trusted_domains(extra), port=port)
 
 
 def main(argv: list[str] | None = None) -> int:

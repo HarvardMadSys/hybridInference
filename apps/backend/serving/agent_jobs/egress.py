@@ -172,6 +172,17 @@ def normalize_domains(raw: str | list[str]) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def trusted_domains(allowlist: tuple[str, ...] | list[str] = ()) -> tuple[str, ...]:
+    """The Trusted tier's domains: the built-in registries plus the operator's.
+
+    One function because two things need this answer and they run in different
+    containers: the runner (through :meth:`EgressPolicy.domains_for`) and the
+    renderer that writes the proxy's config. Computing it twice is how the
+    proxy ends up enforcing a list the platform does not think it configured.
+    """
+    return normalize_domains([*DEFAULT_TRUSTED_DOMAINS, *allowlist])
+
+
 @dataclass(frozen=True)
 class EgressPolicy:
     """The tier each phase runs under, and the network each tier maps to."""
@@ -208,10 +219,6 @@ class EgressPolicy:
             )
         return network
 
-    def proxy_for(self, phase: str) -> str:
-        """Return the proxy URL this phase should use, or ``""`` for none."""
-        return self.proxies.get(self.tier_for(phase), "")
-
     def domains_for(self, tier: EgressTier) -> tuple[str, ...]:
         """Return the domains a tier may reach.
 
@@ -220,7 +227,7 @@ class EgressPolicy:
         exists precisely to replace our judgement with theirs.
         """
         if tier is EgressTier.TRUSTED:
-            return normalize_domains([*DEFAULT_TRUSTED_DOMAINS, *self.allowlist])
+            return trusted_domains(self.allowlist)
         if tier is EgressTier.CUSTOM:
             return self.allowlist
         return ()
@@ -399,4 +406,5 @@ __all__ = [
     "build_policy_from_env",
     "check_allowlist",
     "normalize_domains",
+    "trusted_domains",
 ]
