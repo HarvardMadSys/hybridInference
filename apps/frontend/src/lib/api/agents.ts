@@ -45,6 +45,8 @@ export interface AgentJobApi {
   detail: string | null;
   budget_usd: number | null;
   metadata: Record<string, unknown> | null;
+  /** Names only; optional so a pre-MCP deployment stays readable. */
+  mcp_servers?: string[];
   created_at: string | null;
   updated_at: string | null;
   // Read server-side from the billing ledger, never from the agent's own
@@ -141,10 +143,23 @@ export interface AgentConfigApi {
   /** Models an agent job can actually call — the create endpoint's own list. */
   models: string[];
   default_budget_usd: number;
+  /** MCP servers this deployment offers. Never carries a URL or a credential. */
+  mcp_servers?: AgentMcpServerApi[];
+  /** Runtimes that can be given MCP servers; others refuse such a job. */
+  mcp_runtimes?: string[];
   setup_egress_tier: string | null;
   agent_egress_tier: string | null;
   github_connected: boolean;
   github_install_url: string | null;
+}
+
+export interface AgentMcpServerApi {
+  name: string;
+  description: string;
+  /** Tools exposed. Empty means every tool the server offers. */
+  tools: string[];
+  /** Applied when a job does not choose its servers explicitly. */
+  default: boolean;
 }
 
 /** What this deployment will actually accept — the source for the pickers. */

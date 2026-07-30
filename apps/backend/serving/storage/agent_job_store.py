@@ -116,6 +116,11 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "budget_usd": float(row["budget_usd"]) if row["budget_usd"] is not None else None,
         "metadata": _load_json(row["metadata"]),
         "fork_source_job_id": row["fork_source_job_id"],
+        # Resolved once, at creation, against the deployment registry — not
+        # re-read per attempt. A job runs with the tool surface it was created
+        # with, so removing a server from the registry stops new jobs from
+        # asking for it without changing what a running one was promised.
+        "mcp_servers": list(row["mcp_servers"] or []),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -125,7 +130,7 @@ _JOB_COLUMNS = (
     "id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha, task_prompt, "
     "setup_script, runtime, model, state, "
     "cancel_requested, current_attempt_id, published_pr_url, published_commit_sha, detail, "
-    "budget_usd, metadata, fork_source_job_id, "
+    "budget_usd, metadata, fork_source_job_id, mcp_servers, "
     "created_at, updated_at"
 )
 
@@ -178,6 +183,7 @@ class AgentJobStore:
                     detail TEXT,
                     budget_usd NUMERIC(12, 6),
                     metadata JSONB,
+                    mcp_servers TEXT[],
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
@@ -203,6 +209,10 @@ class AgentJobStore:
             await conn.execute(
                 "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS fork_source_job_id TEXT"
             )
+            # Nullable rather than DEFAULT '{}': a job created before MCP
+            # existed asked for no servers, and NULL says that without claiming
+            # someone chose it.
+            await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS mcp_servers TEXT[]")
             # Existing P0 jobs predate conversations. Give each one a one-turn
             # thread so old links and history immediately participate in the
             # new UI instead of becoming a second, legacy product surface.
@@ -593,6 +603,7 @@ class AgentJobStore:
         setup_script: str | None = None,
         budget_usd: float | None = None,
         metadata: dict[str, Any] | None = None,
+        mcp_servers: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a queued job and return it."""
         job_id = _new_job_id()
@@ -612,8 +623,8 @@ class AgentJobStore:
                 f"""
                 INSERT INTO agent_jobs
                     (id, thread_id, turn_no, user_id, repo, base_sha, task_prompt,
-                     setup_script, runtime, model, budget_usd, metadata)
-                VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+                     setup_script, runtime, model, budget_usd, metadata, mcp_servers)
+                VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)
                 RETURNING {_JOB_COLUMNS}
                 """,
                 job_id,
@@ -627,6 +638,7 @@ class AgentJobStore:
                 model,
                 Decimal(str(budget_usd)) if budget_usd is not None else None,
                 json.dumps(metadata) if metadata is not None else None,
+                list(mcp_servers or []),
             )
             await conn.execute(
                 """
@@ -756,8 +768,9 @@ class AgentJobStore:
                 f"""
                 INSERT INTO agent_jobs
                     (id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha,
-                     task_prompt, setup_script, runtime, model, state, budget_usd, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+                     task_prompt, setup_script, runtime, model, state, budget_usd, metadata,
+                     mcp_servers)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15)
                 RETURNING {_JOB_COLUMNS}
                 """,
                 job_id,
@@ -778,6 +791,10 @@ class AgentJobStore:
                 json.dumps(_load_json(parent["metadata"]))
                 if parent["metadata"] is not None
                 else None,
+                # Inherited, not re-resolved: the next turn of a conversation
+                # gets the tool surface the thread has been running with, so a
+                # follow-up cannot quietly gain a server the owner never chose.
+                list(parent["mcp_servers"] or []),
             )
             await conn.execute(
                 """
@@ -866,9 +883,9 @@ class AgentJobStore:
                         (id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha,
                          task_prompt, setup_script, runtime, model, state,
                          published_commit_sha, detail, budget_usd, metadata,
-                         fork_source_job_id, created_at, updated_at)
+                         fork_source_job_id, mcp_servers, created_at, updated_at)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                            $13, $14, $15, $16::jsonb, $17,
+                            $13, $14, $15, $16::jsonb, $17, $18,
                             clock_timestamp(), clock_timestamp())
                     """,
                     copy_id,
@@ -893,6 +910,12 @@ class AgentJobStore:
                     if turn["metadata"] is not None
                     else None,
                     turn["id"],
+                    # Carried with the turn, like its runtime and model. A fork
+                    # that dropped these would give the copy a strictly smaller
+                    # tool surface than the conversation it claims to continue,
+                    # and the next turn would fail in a way that looks like the
+                    # model got worse.
+                    list(turn["mcp_servers"] or []),
                 )
                 previous_copy = copy_id
             # clock_timestamp(), not NOW(): NOW() is frozen for the whole
@@ -1046,7 +1069,8 @@ class AgentJobStore:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT j.user_id, j.id AS job_id, j.budget_usd, j.model, j.state
+                SELECT j.user_id, j.id AS job_id, j.budget_usd, j.model, j.state,
+                       j.mcp_servers
                 FROM agent_attempts a
                 JOIN agent_jobs j ON j.id = a.job_id
                 WHERE a.id = $1
@@ -1079,6 +1103,11 @@ class AgentJobStore:
             "user_id": row["user_id"],
             "role": role,
             "job_id": row["job_id"],
+            # What this job may reach through the MCP proxy. Carried on the same
+            # fenced lookup as the model credential so the two cannot disagree:
+            # the instant the token stops buying inference it also stops
+            # reaching tools.
+            "mcp_servers": list(row["mcp_servers"] or []),
             "budget_usd": float(row["budget_usd"]) if row["budget_usd"] is not None else None,
             "model": row["model"],
         }

@@ -2717,3 +2717,126 @@ async def test_branches_are_only_listed_for_an_entitled_repo(store: FakeAgentJob
     assert mine.status_code == 200
     assert mine.json()["default"] == "main"
     assert theirs.status_code == 403
+
+
+# ── MCP server selection ──────────────────────────────────────────────
+
+
+def _mcp_registry():
+    """A registry with one default server and one opt-in server."""
+    from serving.agent_jobs.mcp_registry import McpRegistry, McpServer
+
+    return McpRegistry(
+        servers={
+            "github": McpServer(
+                name="github",
+                url="https://mcp.example.com/mcp",
+                headers={"Authorization": "Bearer ghs_secret"},
+                tools=frozenset({"get_issue"}),
+                default=True,
+            ),
+            "deepwiki": McpServer(name="deepwiki", url="https://wiki.example.com/mcp"),
+        }
+    )
+
+
+async def test_the_composer_is_told_which_servers_and_which_runtimes(
+    client: AsyncClient, monkeypatch
+):
+    """A picker built from anything but the create endpoint's rules is decoration."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    config = (await client.get("/v1/agent/config")).json()
+
+    assert [entry["name"] for entry in config["mcp_servers"]] == ["deepwiki", "github"]
+    assert config["mcp_runtimes"] == ["claude-code"]
+    # The composer learns what a server exposes, never how to reach it.
+    assert "ghs_secret" not in json.dumps(config)
+    assert "mcp.example.com" not in json.dumps(config)
+
+
+async def test_omitting_servers_takes_the_deployment_defaults(client: AsyncClient, monkeypatch):
+    """A dogfood deployment gets its issue tracker without asking each time."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={"repo": "owner/name", "task_prompt": "fix it", "model": "glm-5.1"},
+    )
+    assert created.status_code == 201
+    assert created.json()["mcp_servers"] == ["github"]
+
+
+async def test_an_explicit_empty_list_means_no_servers(client: AsyncClient, monkeypatch):
+    """Choosing none is a real choice and must not be read as "unset"."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={
+            "repo": "owner/name",
+            "task_prompt": "fix it",
+            "model": "glm-5.1",
+            "mcp_servers": [],
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["mcp_servers"] == []
+
+
+async def test_an_unknown_server_is_refused_at_creation(client: AsyncClient, monkeypatch):
+    """Better than discovering mid-run that the task's one tool is missing."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={
+            "repo": "owner/name",
+            "task_prompt": "fix it",
+            "model": "glm-5.1",
+            "mcp_servers": ["sentry"],
+        },
+    )
+    assert created.status_code == 400
+    assert "sentry" in created.text
+
+
+async def test_a_runtime_that_cannot_load_mcp_refuses_the_job(client: AsyncClient, monkeypatch):
+    """Silently dropping the tools would produce confidently wrong work."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={
+            "repo": "owner/name",
+            "task_prompt": "fix it",
+            "model": "glm-5.1",
+            "runtime": "codex",
+            "mcp_servers": ["github"],
+        },
+    )
+    assert created.status_code == 400
+    assert "codex" in created.text
+
+
+async def test_the_claim_hands_the_runner_the_job_s_servers(
+    client: AsyncClient, store: FakeAgentJobStore, monkeypatch
+):
+    """The runner passes names to the adapter; it never learns the addresses."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={
+            "repo": "owner/name",
+            "task_prompt": "fix it",
+            "model": "glm-5.1",
+            "mcp_servers": ["github", "deepwiki"],
+        },
+    )
+    assert created.status_code == 201
+
+    app = _build_app(store, dispatcher=True)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as dispatcher:
+        claimed = await dispatcher.post(
+            "/v1/agent/worker/claim", json={"worker_id": "w-1", "lease_ttl_seconds": 60}
+        )
+    assert claimed.status_code == 200
+    body = claimed.json()
+    assert body["mcp_servers"] == ["deepwiki", "github"]
+    assert "mcp.example.com" not in json.dumps(body)

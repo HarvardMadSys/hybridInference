@@ -46,6 +46,11 @@ ERROR = "error"
 LIFECYCLE = "lifecycle"
 RAW = "raw"
 
+# Where the job token is handed to the agent CLI for its MCP calls. The
+# generated MCP config references this name rather than carrying the value,
+# so the credential never becomes a process argument.
+MCP_TOKEN_ENV = "AGENT_MCP_TOKEN"
+
 
 @dataclass(frozen=True)
 class NormalizedEvent:
@@ -63,6 +68,11 @@ class RuntimeCapabilities:
     cost_report: bool = False
     normalized_events: bool = False
     tier: int = 2
+    # Whether this adapter can point the CLI at the gateway's MCP proxy *and*
+    # shut out every other MCP config source. Both halves or neither: a runtime
+    # that could be given servers but not stopped from picking up the
+    # repository's own would be worse than one with no MCP at all.
+    mcp: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,6 +113,38 @@ class AgentRuntime:
     ) -> tuple[list[str], dict[str, str]]:
         """Return ``(argv, extra_env)`` to run this task headlessly."""
         raise NotImplementedError
+
+    @staticmethod
+    def _mcp_endpoints(
+        config: RuntimeMCPConfig, *, gateway_base_url: str
+    ) -> dict[str, dict[str, Any]]:
+        """Resolve opaque server ids into gateway-local endpoints.
+
+        The agent is told a URL on our own gateway, and nothing else: not the
+        upstream address, not the credential that reaches it. Both stay on the
+        gateway, which is what lets a sandbox with no egress use these servers
+        at all.
+
+        **The token is referenced, not embedded.** ``${AGENT_MCP_TOKEN}`` is
+        expanded by the CLI from the environment, so the credential never
+        becomes a process argument — where it would be readable from the
+        process table and, worse, liable to be copied into an error tail or an
+        event payload the owner can read. Verified against the real CLI: with
+        the header written this way and the variable exported, the proxy
+        authenticates the request and the argv carries only the placeholder.
+        """
+        base = gateway_base_url.rstrip("/").removesuffix("/v1")
+        return {
+            server_id: {
+                "type": "http",
+                "url": f"{base}/v1/agent/mcp/{server_id}",
+                # The same credential the model calls use, so tools last
+                # exactly as long as inference does: one fence governs both,
+                # and a cancelled job loses them together.
+                "headers": {"Authorization": f"Bearer ${{{MCP_TOKEN_ENV}}}"},
+            }
+            for server_id in config.server_ids
+        }
 
     def parse_event(self, line: str) -> NormalizedEvent | None:
         """Map one output line onto a normalized event, or ``None`` to skip."""
@@ -162,7 +204,6 @@ class ClaudeCodeRuntime(AgentRuntime):
         mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Build the headless invocation and its environment."""
-        self._require_empty_mcp_config(mcp_config)
         argv = [
             self.binary,
             "-p",
@@ -173,9 +214,13 @@ class ClaudeCodeRuntime(AgentRuntime):
             "stream-json",
             "--verbose",
             # A repository can commit .mcp.json and Claude otherwise starts
-            # its stdio commands before the model's first turn.  Platform MCP
-            # will be supplied explicitly through --mcp-config later; until
-            # then strict mode means the effective server set is empty.
+            # its stdio commands before the model's first turn. Reproduced
+            # against the real CLI in this exact configuration: without this
+            # flag the CLI reports the repository's own server alongside the
+            # platform's, with no approval step, because the permission mode
+            # below is precisely what removes the gate that would have caught
+            # it. Unconditional, including for a job with no MCP servers —
+            # which is where an injected one would be least expected.
             "--strict-mcp-config",
             # The sandbox IS the boundary, so an interactive permission prompt
             # inside it has nothing left to protect — it only guarantees the
@@ -185,10 +230,20 @@ class ClaudeCodeRuntime(AgentRuntime):
             # success. Found by the first real run, not by the fake.
             "--permission-mode",
             "bypassPermissions",
+            # Paired with --strict-mcp-config above: that flag makes this the
+            # *only* source of MCP servers, and this supplies the platform's.
+            # Passed even when empty, so the pairing has no gap.
+            "--mcp-config",
+            json.dumps(
+                {"mcpServers": self._mcp_endpoints(mcp_config, gateway_base_url=gateway_base_url)}
+            ),
         ]
         env = {
             "ANTHROPIC_BASE_URL": gateway_base_url.rstrip("/").removesuffix("/v1"),
             "ANTHROPIC_API_KEY": credential,
+            # Referenced by the MCP config above rather than written into it,
+            # so the job token never appears in a process argument.
+            MCP_TOKEN_ENV: credential,
             "ANTHROPIC_MODEL": model,
             "ANTHROPIC_SMALL_FAST_MODEL": model,
             # Telemetry and auto-update are refused explicitly rather than left
@@ -311,8 +366,10 @@ class ClaudeCodeRuntime(AgentRuntime):
         )
 
     def capabilities(self) -> RuntimeCapabilities:
-        """Claude Code is Tier 1: normalized events and a cost report."""
-        return RuntimeCapabilities(resume=True, cost_report=True, normalized_events=True, tier=1)
+        """Claude Code is Tier 1: normalized events, a cost report, and MCP."""
+        return RuntimeCapabilities(
+            resume=True, cost_report=True, normalized_events=True, tier=1, mcp=True
+        )
 
 
 class CodexRuntime(AgentRuntime):
@@ -336,6 +393,17 @@ class CodexRuntime(AgentRuntime):
         mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Build the headless invocation and its environment.
+
+        A non-empty ``mcp_config`` is refused, and :meth:`capabilities`
+        reports ``mcp=False`` so the platform turns such a job away at creation
+        rather than running one whose tools silently never appear. Codex
+        configures MCP servers through ``mcp_servers.*`` config keys whose
+        remote-URL form has moved between releases, and there is no flag
+        equivalent to Claude Code's ``--strict-mcp-config`` verified against
+        the pinned CLI. Shipping a guess would give a job either no tools or —
+        far worse — the repository's own MCP servers. Wiring this up is a
+        matter of verifying two flags against ``CODEX_VERSION`` in
+        ``Dockerfile.agent-sandbox``, not of design.
 
         Mirrors the invocation this repository already runs in production
         (.github/workflows/codex-oncall.yml), because that one is known to work
@@ -472,7 +540,12 @@ class GenericRuntime(AgentRuntime):
         credential: str,
         mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
-        """Expand the template into argv without ever invoking a shell."""
+        """Expand the template into argv without ever invoking a shell.
+
+        A Tier 2 runtime is any headless CLI, so there is no flag this adapter
+        could know to pass and no way to shut out a repository's own config.
+        A non-empty set is refused rather than dropped.
+        """
         self._require_empty_mcp_config(mcp_config)
         argv = [
             part.replace("{prompt}", task_prompt).replace("{model}", model)
@@ -616,6 +689,17 @@ def registered_runtimes() -> list[str]:
     cannot advertise a runtime the backend would refuse at job creation.
     """
     return sorted(_REGISTRY)
+
+
+def runtimes_supporting_mcp() -> list[str]:
+    """Runtime ids that can be given MCP servers safely.
+
+    Used by the composer and by job creation, so a job never reaches a sandbox
+    having been promised tools its harness will not load.
+    """
+    return sorted(
+        name for name, runtime_cls in _REGISTRY.items() if runtime_cls().capabilities().mcp
+    )
 
 
 def get_runtime(name: str, *, generic_command: str | None = None) -> AgentRuntime:

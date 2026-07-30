@@ -81,6 +81,15 @@ class AgentJobCreate(BaseModel):
         # sandbox credential with no spending limit at all.
         description="Cap on this job's model spend, in USD.",
     )
+    mcp_servers: list[str] | None = Field(
+        None,
+        max_length=16,
+        description=(
+            "MCP servers from this deployment's registry to expose to the agent. "
+            "Omitted takes the registry's defaults; an explicit [] means none. Each "
+            "name must be configured, and the runtime must support MCP."
+        ),
+    )
     metadata: dict[str, Any] | None = Field(None, description="Opaque caller metadata.")
 
 
@@ -108,6 +117,9 @@ class AgentJobResponse(BaseModel):
     # Set on turns created by a fork: the original turn this row copies.
     forked_from_job_id: str | None = None
     metadata: dict[str, Any] | None = None
+    # Names only. The owner never sees a server's URL or credential — those are
+    # the two things proxying through the gateway exists to keep off the wire.
+    mcp_servers: list[str] = Field(default_factory=list)
     created_at: str | None = None
     updated_at: str | None = None
     # Read from the billing ledger, never from anything the agent reports about
@@ -419,6 +431,13 @@ class WorkerClaimResponse(BaseModel):
         None,
         description="Successful parent patch to rehydrate before this follow-up runs.",
     )
+    mcp_servers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "MCP server names this job may reach through the gateway proxy. The runner "
+            "passes them to the runtime adapter; it never learns their addresses."
+        ),
+    )
     metadata: dict[str, Any] | None = None
 
 
@@ -511,6 +530,22 @@ class WorkerAckResponse(BaseModel):
     state: str | None = None
 
 
+class McpServerSummary(BaseModel):
+    """One MCP server the composer may offer.
+
+    Public fields only: a server's URL and its credential stay on the gateway,
+    so neither has a field here to leak into.
+    """
+
+    name: str
+    description: str = ""
+    tools: list[str] = Field(
+        default_factory=list,
+        description="Tools exposed. Empty means every tool the server offers.",
+    )
+    default: bool = False
+
+
 class AgentConfigResponse(BaseModel):
     """What this deployment will actually accept, for the task composer.
 
@@ -533,6 +568,17 @@ class AgentConfigResponse(BaseModel):
     )
     default_budget_usd: float = Field(
         DEFAULT_JOB_BUDGET_USD, description="Per-job spend cap applied when none is given."
+    )
+    mcp_servers: list[McpServerSummary] = Field(
+        default_factory=list,
+        description="MCP servers this deployment offers. Empty means none are configured.",
+    )
+    mcp_runtimes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Runtime ids that can be given MCP servers. A runtime outside this list "
+            "refuses a job that names any, rather than dropping them silently."
+        ),
     )
     setup_egress_tier: str | None = None
     agent_egress_tier: str | None = None

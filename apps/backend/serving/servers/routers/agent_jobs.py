@@ -47,9 +47,10 @@ from serving.agent_jobs.entitlement import (
     require_entitled_repo,
 )
 from serving.agent_jobs.github_app import AppNotInstalled, GitHubAppError
+from serving.agent_jobs.mcp_registry import McpRegistryError, get_registry
 from serving.agent_jobs.model_auth import looks_like_agent_token
 from serving.agent_jobs.patch_gate import branch_name_for
-from serving.agent_jobs.runtimes import registered_runtimes
+from serving.agent_jobs.runtimes import registered_runtimes, runtimes_supporting_mcp
 from serving.agent_jobs.source_control import (
     OAuthStateError,
     SourceControlError,
@@ -108,6 +109,7 @@ from serving.schemas_agent_jobs import (
     AgentWorkspaceWriteRequest,
     GitHubConnectionResponse,
     GitHubConnectRequest,
+    McpServerSummary,
     OAuthConnectRequest,
     RepoBranchesResponse,
     SourceControlAccount,
@@ -328,6 +330,7 @@ def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> A
         budget_usd=job.get("budget_usd"),
         forked_from_job_id=job.get("fork_source_job_id"),
         metadata=metadata or None,
+        mcp_servers=list(job.get("mcp_servers") or []),
         created_at=_iso(job["created_at"]),
         updated_at=_iso(job["updated_at"]),
         spent_usd=usage.get("spent_usd"),
@@ -402,6 +405,10 @@ async def get_agent_config(
             router_exec, visibility_resolver=model_visibility_resolver, user_ctx=user
         ),
         default_budget_usd=DEFAULT_JOB_BUDGET_USD,
+        # Public fields only — McpServerSummary has nowhere to put a URL or a
+        # credential, which is how it stays that way.
+        mcp_servers=[McpServerSummary(**entry) for entry in get_registry().public()],
+        mcp_runtimes=runtimes_supporting_mcp(),
         setup_egress_tier=setup_tier,
         agent_egress_tier=agent_tier,
         # Both halves, and read from what is actually wired rather than from
@@ -838,6 +845,38 @@ async def _require_resolvable_model(
     )
 
 
+def _resolve_mcp_servers(requested: list[str] | None, *, runtime: str) -> list[str]:
+    """Settle which MCP servers a new job runs with, or refuse to create it.
+
+    Both failures are refusals rather than silent drops, and for the same
+    reason: a job is submitted because someone wants a task done, and a task
+    written around a tool the agent turns out not to have does not fail — it
+    quietly produces the wrong work, having spent the budget.
+    """
+    try:
+        servers = get_registry().resolve(requested)
+    except McpRegistryError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"type": "invalid_request", "message": str(exc)}},
+        ) from exc
+    if servers and runtime not in runtimes_supporting_mcp():
+        supported = ", ".join(runtimes_supporting_mcp()) or "none"
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "type": "invalid_request",
+                    "message": (
+                        f"the {runtime!r} runtime cannot be given MCP servers on this "
+                        f"deployment. Runtimes that can: {supported}."
+                    ),
+                }
+            },
+        )
+    return servers
+
+
 @router.post("/jobs", response_model=AgentJobResponse, status_code=201)
 async def create_agent_job(
     body: AgentJobCreate,
@@ -896,6 +935,7 @@ async def create_agent_job(
     metadata.pop(_BASE_REF_METADATA_KEY, None)
     if body.base_ref:
         metadata[_BASE_REF_METADATA_KEY] = body.base_ref
+    mcp_servers = _resolve_mcp_servers(body.mcp_servers, runtime=body.runtime)
     job = await job_store.create_job(
         user_id=user["user_id"],
         repo=body.repo,
@@ -906,6 +946,7 @@ async def create_agent_job(
         setup_script=body.setup_script,
         budget_usd=body.budget_usd,
         metadata=metadata or None,
+        mcp_servers=mcp_servers,
     )
     logger.info(
         "agent_job_created",
@@ -1073,6 +1114,12 @@ async def create_agent_follow_up(
             status_code=403,
             detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
         ) from exc
+    # A thread's MCP servers are inherited by every turn, so switching harness
+    # mid-thread can land tools on a runtime that cannot load them. Refuse,
+    # rather than run a turn whose tools silently vanish — the follow-up prompt
+    # was very likely written expecting them.
+    if body.runtime and parent.get("mcp_servers"):
+        _resolve_mcp_servers(list(parent["mcp_servers"]), runtime=body.runtime)
     job = await job_store.create_follow_up(
         parent_job_id=job_id,
         user_id=user["user_id"],
@@ -2119,6 +2166,7 @@ async def worker_claim(
         clone_token=clone_token,
         context_messages=context["messages"],
         context_patch=context["patch"],
+        mcp_servers=list(claim.get("mcp_servers") or []),
         metadata=claim["metadata"],
     )
 

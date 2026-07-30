@@ -1,0 +1,56 @@
+# MCP servers offered to agent jobs — copy into a deployment overlay.
+#
+# Point MCP_CONFIG_PATH at your copy, or set `paths.mcp` in the distribution
+# manifest. No file, or no MCP_CONFIG_PATH, means no MCP servers: that is a
+# supported shape, not a broken one.
+#
+# Everything here is a REMOTE server: a URL the gateway reaches over HTTPS and
+# speaks MCP's streamable-HTTP transport to. The sandbox never reaches it
+# directly and never learns its address or credential — the agent is handed
+# `<gateway>/v1/agent/mcp/<name>` and the job token it already has, so the
+# closed `platform_only` egress tier stays closed. `command:` (stdio) servers
+# are refused, deliberately: they are third-party code, and the only two places
+# to run them are the sandbox that has no egress and the gateway that is
+# trusted.
+#
+# Credentials belong in environment variables, interpolated with ${VAR}. An
+# unset or empty variable is a startup error naming it — never a blank header.
+
+servers:
+  # GitHub's own hosted server. The obvious first one: "fix issue #1234" needs
+  # the agent to be able to read issue #1234.
+  #
+  # The token is yours to scope, and scope it narrowly — an agent runs on
+  # untrusted repository content, so a repo README can try to talk it into
+  # calling whatever this token permits.
+  - name: github
+    url: https://api.githubcopilot.com/mcp/
+    description: GitHub issues and pull requests, read-only.
+    default: true
+    headers:
+      Authorization: "Bearer ${GITHUB_MCP_TOKEN}"
+    # The allowlist is the control that matters, and it is enforced in both
+    # directions: a tool that is not listed here is not advertised to the model
+    # and is refused if called anyway. Omit `tools:` and every tool the server
+    # exposes is reachable — including any write tool it gains in a later
+    # release, with no config change here to notice. The gateway logs a warning
+    # at startup for each server left unfiltered.
+    tools:
+      - get_issue
+      - get_issue_comments
+      - list_issues
+      - get_pull_request
+      - get_pull_request_files
+      - get_pull_request_comments
+      - search_issues
+      - search_code
+
+  # No credential, no allowlist needed: three read-only tools over public
+  # repository documentation.
+  - name: deepwiki
+    url: https://mcp.deepwiki.com/mcp
+    description: Documentation and Q&A for public repositories.
+    tools:
+      - read_wiki_structure
+      - read_wiki_contents
+      - ask_question

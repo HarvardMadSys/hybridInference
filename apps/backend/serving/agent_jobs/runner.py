@@ -179,6 +179,10 @@ class ClaimedJob:
     # The prior successful run's edits, re-applied before the next sandbox is
     # started. Credentials still never cross the sandbox boundary.
     context_patch: str | None = None
+    # MCP servers this job was granted. Names only: the runner learns nothing
+    # about where they actually are, because the sandbox reaches them through
+    # the gateway's proxy rather than directly.
+    mcp_servers: list[str] = field(default_factory=list)
 
     @classmethod
     def from_response(cls, body: dict[str, Any]) -> ClaimedJob:
@@ -203,6 +207,7 @@ class ClaimedJob:
             clone_token=body.get("clone_token") or None,
             context_messages=list(body.get("context_messages") or []),
             context_patch=body.get("context_patch") or None,
+            mcp_servers=list(body.get("mcp_servers") or []),
         )
 
 
@@ -733,9 +738,9 @@ def run_agent(
         # states — stays out here with the runner, so an agent that leaks its
         # credential can spend the job's capped budget and nothing more.
         credential=job.sandbox_token,
-        # The runner is the only future source of this value. Repository
-        # contents never become runtime MCP configuration, and every adapter
-        # currently rejects a non-empty set until the gateway broker exists.
+        # The runner is the only source of this value. Repository contents
+        # never become runtime MCP configuration, and an adapter without a
+        # gateway-mediated path still rejects a non-empty set.
         mcp_config=mcp_config,
     )
 
@@ -1015,6 +1020,11 @@ def run_once(
             heart=heart,
             timeout_s=agent_timeout_s,
             backend=backend,
+            # Opaque ids, straight from the claim. The runner deliberately
+            # never learns where these servers are or what credential reaches
+            # them — the gateway resolves both, which is what keeps the sandbox
+            # able to use them without any egress of its own.
+            mcp_config=RuntimeMCPConfig(server_ids=tuple(job.mcp_servers)),
         )
 
         if exit_code == 130:

@@ -250,16 +250,19 @@ def test_pi_runtime_targets_the_gateway_through_its_wrapper():
 @pytest.mark.parametrize(
     "runtime",
     [
-        ClaudeCodeRuntime(),
         CodexRuntime(),
         PiRuntime(),
         OpencodeRuntime(),
         GenericRuntime("some-agent {prompt}"),
     ],
-    ids=["claude", "codex", "pi", "opencode", "generic"],
+    ids=["codex", "pi", "opencode", "generic"],
 )
-def test_mcp_config_fails_closed_until_the_gateway_broker_exists(runtime):
-    """No adapter may silently turn a requested server into direct MCP."""
+def test_mcp_config_fails_closed_without_a_gateway_broker(runtime):
+    """An adapter with no mediated path refuses rather than dropping servers.
+
+    ``ClaudeCodeRuntime`` is excluded because it now *has* that path; the
+    invariant it has to satisfy instead is the next test's.
+    """
     config = RuntimeMCPConfig(server_ids=("repository-supplied-server",))
 
     with pytest.raises(RuntimeMCPUnavailableError) as raised:
@@ -275,6 +278,30 @@ def test_mcp_config_fails_closed_until_the_gateway_broker_exists(runtime):
     # Server ids and credentials do not enter an error that may reach job logs.
     assert "repository-supplied-server" not in str(raised.value)
     assert "mcp-secret-must-not-leak" not in str(raised.value)
+
+
+def test_a_brokered_runtime_emits_only_gateway_endpoints_and_no_credential():
+    """The same rule, for the adapter that does resolve servers.
+
+    "Fails closed" was only ever a stand-in for this: a requested server must
+    not become direct MCP, and the credential must not become a CLI argument.
+    An adapter that gained a broker has to keep both, not inherit an exemption.
+    """
+    argv, env = ClaudeCodeRuntime().prepare(
+        workdir="/tmp/x",
+        task_prompt="do it",
+        model="glm-5.1",
+        gateway_base_url="http://backend:8080",
+        credential="mcp-secret-must-not-leak",
+        mcp_config=RuntimeMCPConfig(server_ids=("github",)),
+    )
+    rendered = " ".join(argv)
+
+    assert "mcp-secret-must-not-leak" not in rendered
+    assert env["AGENT_MCP_TOKEN"] == "mcp-secret-must-not-leak"
+    servers = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]
+    assert servers["github"]["url"] == "http://backend:8080/v1/agent/mcp/github"
+    assert "--strict-mcp-config" in argv
 
 
 @pytest.mark.parametrize(
