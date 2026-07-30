@@ -17,6 +17,8 @@ from serving.agent_jobs.runtimes import (
     ClaudeCodeRuntime,
     CodexRuntime,
     GenericRuntime,
+    OpencodeRuntime,
+    PiRuntime,
     get_runtime,
 )
 
@@ -176,9 +178,78 @@ def test_registry_resolution_and_refusal():
     """Known runtimes resolve; unknown ones refuse unless Tier 2 is requested."""
     assert isinstance(get_runtime("claude-code"), ClaudeCodeRuntime)
     assert isinstance(get_runtime("codex"), CodexRuntime)
-    assert isinstance(get_runtime("pi", generic_command="pi run"), GenericRuntime)
+    assert isinstance(get_runtime("pi"), PiRuntime)
+    assert isinstance(get_runtime("opencode"), OpencodeRuntime)
+    assert isinstance(
+        get_runtime("some-new-cli", generic_command="some-new-cli run"), GenericRuntime
+    )
     with pytest.raises(KeyError):
         get_runtime("does-not-exist")
+
+
+def test_pi_runtime_targets_the_gateway_through_its_wrapper():
+    """pi is invoked via the wrapper, with everything the wrapper needs.
+
+    pi ignores OPENAI_BASE_URL (verified against a local fake: zero hits, a
+    real OpenAI 401), so the invocation must go through `pi-freeinference`,
+    which writes the provider config from the environment. A regression here
+    silently sends jobs to api.openai.com, where the egress policy turns them
+    into timeouts that read like a broken model.
+    """
+    runtime = PiRuntime()
+    argv, env = runtime.prepare(
+        workdir="/tmp/x",
+        task_prompt="do the thing; carefully",
+        model="glm-5.1",
+        gateway_base_url="http://backend:8080",
+        credential="ajt.a.b",
+    )
+
+    assert argv[0] == "pi-freeinference"
+    assert runtime.binary == "pi-freeinference"
+    # The prompt stays one argv element — no shell anywhere on the path.
+    assert "do the thing; carefully" in argv
+    assert argv[argv.index("--model") + 1] == "glm-5.1"
+    assert "--mode" in argv and argv[argv.index("--mode") + 1] == "json"
+    # Everything the wrapper reads to build ~/.pi/agent/models.json.
+    assert env["OPENAI_BASE_URL"] == "http://backend:8080/v1"
+    assert env["OPENAI_API_KEY"] == "ajt.a.b"
+    assert env["PI_GATEWAY_MODEL"] == "glm-5.1"
+    # Tier 2: structured or not, pi's output is passed through as raw.
+    assert runtime.parse_event('{"type":"turn_start"}').event_type == "raw"
+    assert runtime.capabilities().tier == 2
+
+
+def test_opencode_runtime_targets_the_gateway_through_its_wrapper():
+    """OpenCode is invoked via the wrapper, with everything it needs.
+
+    OpenCode ignores OPENAI_BASE_URL and its built-in openai provider speaks
+    the Responses API; the wrapper declares a chat-completions provider over
+    the SDK package bundled in the binary and disables the models.dev fetch
+    that otherwise hard-fails every offline run.
+    """
+    runtime = OpencodeRuntime()
+    argv, env = runtime.prepare(
+        workdir="/tmp/x",
+        task_prompt="fix the bug; then run tests",
+        model="glm-5.1",
+        gateway_base_url="http://backend:8080",
+        credential="ajt.a.b",
+    )
+
+    assert argv[0] == "opencode-freeinference"
+    assert runtime.binary == "opencode-freeinference"
+    assert "fix the bug; then run tests" in argv
+    # The model rides inside the provider-qualified -m argument.
+    assert argv[argv.index("-m") + 1] == "freeinference/glm-5.1"
+    # The sandbox is the boundary; an interactive permission gate inside it
+    # only guarantees the agent cannot do the work.
+    assert "--auto" in argv
+    assert env["OPENAI_BASE_URL"] == "http://backend:8080/v1"
+    assert env["OPENAI_API_KEY"] == "ajt.a.b"
+    assert env["OPENCODE_GATEWAY_MODEL"] == "glm-5.1"
+    assert runtime.parse_event('{"type":"text"}').event_type == "raw"
+    assert runtime.capabilities().tier == 2
 
 
 def test_capabilities_declare_tiers():
