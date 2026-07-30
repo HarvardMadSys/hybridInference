@@ -71,6 +71,16 @@ A task also takes **follow-up messages**: send one from the task page and it
 runs as a new isolated pass in the same thread, inheriting the repository and
 — unless you switch them — the agent and model of the turn before.
 
+The conversation itself carries three actions. Every message has **Copy**.
+**Fork from here** on any earlier answer duplicates the conversation up to
+that turn into a new thread — history and not-yet-published changes carry
+over, and the fork publishes to its own branch, so a different direction can
+be tried without disturbing the original. **Edit & rewind** on one of your
+own messages forks the conversation from just before it and prefills the
+composer with that message, ready to resend changed — without the turns that
+followed. Forking copies recorded history only: a reply still streaming stays
+with the original task.
+
 ## Choosing an agent and model
 
 The **agent** is the tool that does the work — Claude Code, Codex, OpenCode,
