@@ -188,7 +188,7 @@ export function TaskComposer() {
               <Picker label="Branch" value={branch} options={branches} onChange={setBranch} />
               <span className="h-4 w-px bg-gray-200" />
               <Picker
-                label="Runtime"
+                label="Agent"
                 value={runtime}
                 options={config?.runtimes ?? []}
                 onChange={setRuntime}
