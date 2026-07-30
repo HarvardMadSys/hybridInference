@@ -132,7 +132,9 @@ export function toDisplayEvent(event: AgentJobEventApi): AgentEvent | null {
     return { kind: 'lifecycle', text: asText(payload, 'phase', 'text') || 'lifecycle' };
   }
   if (type === 'raw') {
-    return { kind: 'terminal', text: asText(payload, 'text') || readableValue(payload) };
+    // Raw records are unclassified runtime protocol data. They remain available
+    // in the diagnostic Raw events drawer, but are not terminal commands or output.
+    return null;
   }
 
   // Diff is rendered from the complete patch artifact rather than a stream

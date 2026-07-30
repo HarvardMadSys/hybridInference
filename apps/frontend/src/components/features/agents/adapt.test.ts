@@ -76,6 +76,16 @@ describe('toDisplayState', () => {
 });
 
 describe('toDisplayEvent', () => {
+  it('keeps raw runtime protocol events out of the terminal transcript', () => {
+    expect(
+      toDisplayEvent(
+        event(1, 'raw', {
+          text: '{"type":"system","subtype":"thinking_tokens","estimated_tokens":1}',
+        }),
+      ),
+    ).toBeNull();
+  });
+
   it('promotes an egress denial out of the generic error kind', () => {
     // "the sandbox tried to reach X" is a different story from "it failed".
     expect(toDisplayEvent(event(1, 'error', { host: 'evil.example', attempts: 3 }))).toEqual({
