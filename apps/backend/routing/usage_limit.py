@@ -36,13 +36,23 @@ __all__ = ["UsageLimit", "detect_usage_limit"]
 _USAGE_MARKERS = ("usage limit", "subscription limit")
 _RESET_MARKERS = ("limit will reset", "limit resets")
 
+# Collapse whitespace/underscore/hyphen runs so "usage-limit", "usage_limit" and
+# "rate-limit" read like their space-separated spellings before marker matching.
+_SEPARATORS_RE = re.compile(r"[\s_-]+")
+# Matches every common transient rate-limit spelling: "rate limit", "rate-limit",
+# "rate_limit" (via separator collapse), and "ratelimit" (optional space).
+_RATE_LIMIT_RE = re.compile(r"rate ?limit")
+
 
 def _is_usage_limit(low: str) -> bool:
     """Return whether ``low`` (a lower-cased error) names a subscription usage limit."""
-    if any(marker in low for marker in _USAGE_MARKERS):
+    normalized = _SEPARATORS_RE.sub(" ", low)
+    if any(marker in normalized for marker in _USAGE_MARKERS):
         return True
-    if any(marker in low for marker in _RESET_MARKERS):
-        return "rate limit" not in low
+    if any(marker in normalized for marker in _RESET_MARKERS):
+        # A transient rate limit also "resets" — in seconds — and must keep
+        # paging; exclude it in any spelling.
+        return _RATE_LIMIT_RE.search(normalized) is None
     return False
 
 

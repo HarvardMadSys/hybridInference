@@ -24,6 +24,20 @@ def test_transient_rate_limit_is_not_a_usage_limit():
         )
         is None
     )
+    # Alternate separators/spellings of "rate limit" must also be excluded.
+    assert (
+        detect_usage_limit("rate-limit hit; your limit will reset at 2026-07-30 22:00:00", now=NOW)
+        is None
+    )
+    assert detect_usage_limit("rate_limit exceeded, limit will reset in 30s", now=NOW) is None
+    assert detect_usage_limit("ratelimit exceeded; limit will reset in 30s", now=NOW) is None
+
+
+def test_hyphenated_usage_limit_marker_is_detected():
+    # Separator variants of the usage-limit marker are still classified.
+    limit = detect_usage_limit("weekly usage-limit reached", now=NOW)
+    assert limit is not None
+    assert limit.window == "weekly"
 
 
 def test_reset_phrase_without_rate_limit_is_a_usage_limit():
