@@ -62,9 +62,10 @@ In the composer:
 4. Run the task
 
 The task page streams the agent's activity as it happens — its reasoning, each
-tool call with its result, and the diff as it takes shape. A running task can
-be cancelled at any point. When the task finishes, the draft pull request is
-linked directly from the task page.
+tool call with its result, and the diff as it takes shape. A task can be
+cancelled while the agent is working; cancellation does not recall a result
+that is already being published. When the task finishes, the draft pull
+request is linked directly from the task page.
 
 A task also takes **follow-up messages**: send one from the task page and it
 runs as a new isolated pass in the same thread, inheriting the repository and
@@ -119,7 +120,9 @@ guarantees in one place:
 - **Deny-all network.** The sandbox's only route is the FreeInference
   gateway. Repository contents are treated as untrusted input: even if they
   hijack the agent's instructions (prompt injection), there is no path to
-  send your code or data anywhere else.
+  send your code or data anywhere else — the worst a hijacked run can
+  produce is a bad patch, which arrives as a draft PR for your review, never
+  a merge.
 - **Credentials stay outside.** GitHub tokens live on the platform and never
   enter the sandbox; the checkout token is read-only and scoped to the one
   repository. The sandbox's only credential is the task's model key —
