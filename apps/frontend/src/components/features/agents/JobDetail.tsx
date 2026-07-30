@@ -921,8 +921,10 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
             aria-label={workspaceOpen ? 'Close workspace' : 'Open workspace'}
             aria-expanded={workspaceOpen}
             aria-controls="job-workspace-pane"
-            className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-gray-500 hover:bg-gray-100 hover:text-gray-900 ${
-              workspaceOpen ? 'border-gray-300 bg-gray-100 text-gray-900' : 'border-gray-200'
+            className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[13px] font-medium transition-colors ${
+              workspaceOpen
+                ? 'border-gray-900 bg-gray-900 text-white hover:bg-gray-800'
+                : 'border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-900'
             }`}
           >
             <svg
@@ -936,6 +938,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               <rect x="3.5" y="4" width="17" height="16" rx="2" />
               <path d="M14.5 4v16" />
             </svg>
+            <span>{workspaceOpen ? 'Close workspace' : 'Workspace'}</span>
           </button>
         </div>
       </header>
