@@ -584,3 +584,43 @@ def test_opencode_wrapper_refuses_to_run_half_configured(tmp_path):
     )
     assert result.returncode == 64
     assert "OPENAI_API_KEY" in result.stderr
+
+
+def test_concurrency_is_declared_not_typed_at_deploy_time(compose: dict):
+    """One runner takes one job at a time, so replicas *is* the concurrency.
+
+    A `--scale` passed by hand survives until the next `docker compose up`
+    without it, which silently drops the fleet back to one — presenting as
+    "every user is queueing" long after anyone remembers scaling it. The count
+    therefore belongs in the file the deploy reads.
+    """
+    runner = compose["services"]["agent-runner"]
+    replicas = (runner.get("deploy") or {}).get("replicas")
+    assert replicas, "agent-runner declares no replica count, so a deploy resets concurrency to 1"
+    assert "AGENT_RUNNER_REPLICAS" in str(replicas), "the replica count is not operator-tunable"
+
+
+def test_replicas_are_distinguishable_in_the_lease_ledger(compose: dict):
+    """Replicas must not all claim jobs under the same lease_owner.
+
+    Fencing never reads this string, so a collision is not a correctness bug —
+    it just makes "which runner is stuck" unanswerable exactly when a second
+    replica makes it worth asking.
+    """
+    command = " ".join(compose["services"]["agent-runner"].get("command") or [])
+    assert "--worker-id" not in command, (
+        "a literal --worker-id pins every replica to the same lease_owner; "
+        "let the runner derive one that includes its hostname"
+    )
+
+
+def test_runner_derives_a_distinct_worker_id_per_container(monkeypatch):
+    """The derived id groups by configuration and separates by host."""
+    from serving.agent_jobs.runner import default_worker_id
+
+    monkeypatch.setattr("socket.gethostname", lambda: "abc123")
+    monkeypatch.delenv("AGENT_WORKER_ID", raising=False)
+    assert default_worker_id() == "runner-abc123"
+
+    monkeypatch.setenv("AGENT_WORKER_ID", "staging")
+    assert default_worker_id() == "staging-abc123"
