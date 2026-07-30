@@ -2,7 +2,6 @@
 import '@testing-library/jest-dom/vitest';
 
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { useRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { PaneResizer } from './PaneResizer';
@@ -31,30 +30,31 @@ function Harness({ options }: { options?: Partial<ResizablePaneOptions> }) {
   );
 }
 
-/** Same harness, but sized against a container whose layout width is stubbed. */
+/**
+ * Same harness, sized against a container whose layout width is stubbed. Reads
+ * through a getter so a test can change the width mid-run, the way the shell
+ * does when the task list takes a different share.
+ */
 function ContainerHarness({
-  containerWidth,
+  width,
   siblingMinWidth,
 }: {
-  containerWidth: number;
+  width: () => number;
   siblingMinWidth: number;
 }) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
   const pane = useResizablePane({
     storageKey: STORAGE_KEY,
     defaultWidth: 300,
     minWidth: 200,
     maxWidth: 800,
     side: 'start',
-    containerRef,
     siblingMinWidth,
   });
   return (
     <div
       ref={(node) => {
-        containerRef.current = node;
-        if (node)
-          Object.defineProperty(node, 'clientWidth', { configurable: true, value: containerWidth });
+        if (node) Object.defineProperty(node, 'clientWidth', { configurable: true, get: width });
+        pane.containerRef(node);
       }}
     >
       <div data-testid="pane" style={{ width: pane.width }} />
@@ -206,7 +206,7 @@ describe('useResizablePane', () => {
   it('stops the drag where the pane across the seam hits its floor', () => {
     // Container 900 wide with a 400 floor for the other pane: 500 is the ceiling
     // even though maxWidth would allow 500+ and the window would allow 840.
-    render(<ContainerHarness containerWidth={900} siblingMinWidth={400} />);
+    render(<ContainerHarness width={() => 900} siblingMinWidth={400} />);
 
     drag(400, 900);
 
@@ -228,7 +228,7 @@ describe('useResizablePane', () => {
   });
 
   it('falls back to the window share when the container has no layout yet', () => {
-    render(<ContainerHarness containerWidth={0} siblingMinWidth={400} />);
+    render(<ContainerHarness width={() => 0} siblingMinWidth={400} />);
 
     drag(400, 1400);
 
@@ -237,35 +237,8 @@ describe('useResizablePane', () => {
 
   it('re-measures when another pane announces that it took more room', () => {
     let containerWidth = 900;
-    function Sized() {
-      const containerRef = useRef<HTMLDivElement | null>(null);
-      const pane = useResizablePane({
-        storageKey: STORAGE_KEY,
-        defaultWidth: 300,
-        minWidth: 200,
-        maxWidth: 800,
-        side: 'start',
-        containerRef,
-        siblingMinWidth: 400,
-      });
-      return (
-        <div
-          ref={(node) => {
-            containerRef.current = node;
-            if (node)
-              Object.defineProperty(node, 'clientWidth', {
-                configurable: true,
-                get: () => containerWidth,
-              });
-          }}
-        >
-          <div data-testid="pane" style={{ width: pane.width }} />
-          <PaneResizer pane={pane} label="Resize pane" />
-        </div>
-      );
-    }
+    render(<ContainerHarness width={() => containerWidth} siblingMinWidth={400} />);
 
-    render(<Sized />);
     drag(300, 800);
     expect(widthOf()).toBe('500px');
 

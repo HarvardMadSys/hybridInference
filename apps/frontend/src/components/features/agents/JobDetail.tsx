@@ -3,7 +3,6 @@
 import {
   useEffect,
   useMemo,
-  useRef,
   useState,
   type CSSProperties,
   type FormEvent,
@@ -1245,7 +1244,6 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const [stopping, setStopping] = useState(false);
   const [forking, setForking] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const splitRef = useRef<HTMLDivElement | null>(null);
   const workspacePane = useResizablePane({
     storageKey: WORKSPACE_WIDTH_STORAGE_KEY,
     defaultWidth: WORKSPACE_DEFAULT_WIDTH,
@@ -1253,7 +1251,6 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
     maxWidth: WORKSPACE_MAX_WIDTH,
     side: 'end',
     maxViewportFraction: 0.75,
-    containerRef: splitRef,
     siblingMinWidth: TRANSCRIPT_MIN_WIDTH,
   });
 
@@ -1440,7 +1437,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
       </header>
 
       <div
-        ref={splitRef}
+        ref={workspacePane.containerRef}
         className={`min-h-0 flex-1 overflow-hidden ${workspaceOpen ? 'block lg:flex' : 'flex'}`}
       >
         <div
