@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
@@ -24,18 +25,18 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           <p className="mt-1 text-sm text-gray-500">
             You don&apos;t have permission to view this page.
           </p>
-          <a
+          <Link
             href="/dashboard"
             className="mt-5 text-sm font-medium text-gray-900 underline decoration-gray-300 underline-offset-4 hover:decoration-gray-900 transition"
           >
             Back to Dashboard
-          </a>
+          </Link>
         </div>
       ) : (
         <div className="mx-auto w-full max-w-4xl pb-20">
           {/* Nav */}
           <div className="mb-10 flex items-center justify-between">
-            <a
+            <Link
               href="/dashboard"
               className="group flex items-center gap-1.5 text-[13px] text-gray-400 transition hover:text-gray-900"
             >
@@ -53,7 +54,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 />
               </svg>
               Dashboard
-            </a>
+            </Link>
           </div>
 
           {/* Title */}

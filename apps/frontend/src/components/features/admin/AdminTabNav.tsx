@@ -23,9 +23,12 @@ export function AdminTabNav() {
         const href = `/dashboard/admin/${tab.slug}`;
         const isActive = pathname === href || pathname.startsWith(`${href}/`);
         return (
+          // Nine tabs are always in view; default prefetch would pull every
+          // admin route's JS up front, so fetch each tab on demand instead.
           <Link
             key={tab.slug}
             href={href}
+            prefetch={false}
             className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
               isActive
                 ? 'bg-gray-900 text-white'

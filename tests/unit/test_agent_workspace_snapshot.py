@@ -311,7 +311,7 @@ def test_runner_stores_snapshot_before_the_terminal_transition(tmp_path, monkeyp
     monkeypatch.setattr(runner_mod, "existing_checkout_sha", lambda *_args: "abcdef0")
     monkeypatch.setattr(runner_mod, "align_existing_checkout", lambda *_args, **_kwargs: "abcdef0")
     monkeypatch.setattr(runner_mod, "run_agent", lambda *_args, **_kwargs: (0, "", []))
-    monkeypatch.setattr(runner_mod, "build_patch", lambda *_args: "diff --git a/x b/x\n")
+    monkeypatch.setattr(runner_mod, "build_patch", lambda *_args, **_kwargs: "diff --git a/x b/x\n")
 
     def snapshot(_control, *, workdir: str, patch: str) -> bool:
         assert workdir == str(tmp_path)

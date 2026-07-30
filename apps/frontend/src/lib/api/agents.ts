@@ -107,6 +107,8 @@ export interface AgentJobDirectoryApi {
   path: string;
   kind: 'directory';
   entries: AgentJobFileEntryApi[] | null;
+  writable?: boolean;
+  source?: 'workspace' | 'snapshot';
 }
 
 export interface AgentJobFileApi {
@@ -118,6 +120,8 @@ export interface AgentJobFileApi {
   truncated: boolean;
   status?: AgentJobFileStatus | null;
   omitted_reason?: string | null;
+  writable?: boolean;
+  source?: 'workspace' | 'snapshot';
 }
 
 export interface AgentJobSymlinkApi {
@@ -125,6 +129,8 @@ export interface AgentJobSymlinkApi {
   kind: 'symlink';
   status?: AgentJobFileStatus | null;
   omitted_reason?: string | null;
+  writable?: boolean;
+  source?: 'workspace' | 'snapshot';
 }
 
 export type AgentJobFilesApi = AgentJobDirectoryApi | AgentJobFileApi | AgentJobSymlinkApi;
@@ -388,7 +394,7 @@ export async function getAgentJobArtifact(
   return jsonOrThrow(resp);
 }
 
-/** Browse the immutable base tree with the job's saved changes overlaid. */
+/** Browse the live worktree, falling back to an archived snapshot for old jobs. */
 export async function getAgentJobFiles(jobId: string, path = ''): Promise<AgentJobFilesApi> {
   const query = path ? `?path=${encodeURIComponent(path)}` : '';
   const resp = await fetchWithAuth(
@@ -396,6 +402,69 @@ export async function getAgentJobFiles(jobId: string, path = ''): Promise<AgentJ
     `/v1/agent/jobs/${encodeURIComponent(jobId)}/files${query}`,
   );
   return jsonOrThrow<AgentJobFilesApi>(resp);
+}
+
+/** Save one UTF-8 file in the live worktree. */
+export async function writeAgentJobFile(
+  jobId: string,
+  path: string,
+  content: string,
+): Promise<AgentJobFileApi> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/v1/agent/jobs/${encodeURIComponent(jobId)}/files?path=${encodeURIComponent(path)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    },
+  );
+  return jsonOrThrow<AgentJobFileApi>(resp);
+}
+
+export interface AgentTerminalResultApi {
+  output: string;
+  stderr: string;
+  exit_code: number;
+  cwd: string;
+}
+
+/** Execute an owner-entered command inside the workspace sandbox. */
+export async function runAgentTerminalCommand(
+  jobId: string,
+  command: string,
+  cwd: string,
+): Promise<AgentTerminalResultApi> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/v1/agent/jobs/${encodeURIComponent(jobId)}/terminal`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command, cwd }),
+    },
+  );
+  return jsonOrThrow<AgentTerminalResultApi>(resp);
+}
+
+export interface AgentGitWorkspaceApi {
+  available: boolean;
+  branch: string;
+  changes: Array<{ code: string; path: string }>;
+  patch: string;
+  commits: Array<{
+    sha: string;
+    short_sha: string;
+    subject: string;
+    author: string;
+    authored_at: string;
+  }>;
+}
+
+/** Read Git status/diff/commits from the live worktree. */
+export async function getAgentJobGit(jobId: string): Promise<AgentGitWorkspaceApi> {
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/jobs/${encodeURIComponent(jobId)}/git`);
+  return jsonOrThrow<AgentGitWorkspaceApi>(resp);
 }
 
 export interface StreamAgentJobOptions {

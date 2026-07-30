@@ -230,7 +230,7 @@ class AgentWorkspaceEntry(BaseModel):
 
 
 class AgentWorkspaceResponse(BaseModel):
-    """A directory listing or bounded text-file preview at the pinned base SHA."""
+    """A directory listing or bounded text-file preview from a job workspace."""
 
     path: str
     kind: Literal["file", "directory", "symlink"]
@@ -241,6 +241,58 @@ class AgentWorkspaceResponse(BaseModel):
     truncated: bool = False
     status: Literal["added", "modified", "deleted"] | None = None
     omitted_reason: str | None = None
+    writable: bool = False
+    source: Literal["workspace", "snapshot"] = "snapshot"
+
+
+class AgentWorkspaceWriteRequest(BaseModel):
+    """Replace one UTF-8 file in a live worktree."""
+
+    content: str = Field(..., max_length=2 * 1024 * 1024)
+
+
+class AgentTerminalRequest(BaseModel):
+    """Execute one user-entered shell command in the workspace sandbox."""
+
+    command: str = Field(..., min_length=1, max_length=8000)
+    cwd: str = Field("/workspace", min_length=1, max_length=4096)
+    timeout_seconds: float = Field(60.0, gt=0, le=120)
+
+
+class AgentTerminalResponse(BaseModel):
+    """Bounded output and resulting working directory for one command."""
+
+    output: str
+    stderr: str
+    exit_code: int
+    cwd: str
+
+
+class AgentGitChange(BaseModel):
+    """One worktree status row."""
+
+    code: str
+    path: str
+
+
+class AgentGitCommit(BaseModel):
+    """One recent commit visible from the worktree."""
+
+    sha: str
+    short_sha: str
+    subject: str
+    author: str
+    authored_at: str
+
+
+class AgentGitWorkspaceResponse(BaseModel):
+    """Live diff/status/commit data, or an unavailable legacy-workspace marker."""
+
+    available: bool
+    branch: str = ""
+    changes: list[AgentGitChange] = Field(default_factory=list)
+    patch: str = ""
+    commits: list[AgentGitCommit] = Field(default_factory=list)
 
 
 # ── Worker-facing (capability-token authenticated) ─────────────────────

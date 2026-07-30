@@ -4,7 +4,15 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { cancelAgentJob, followUpAgentJob, forkAgentJob, getAgentJobFiles } from '@/lib/api/agents';
+import {
+  cancelAgentJob,
+  followUpAgentJob,
+  forkAgentJob,
+  getAgentJobFiles,
+  getAgentJobGit,
+  runAgentTerminalCommand,
+  writeAgentJobFile,
+} from '@/lib/api/agents';
 
 import { JobDetail } from './JobDetail';
 import type { AgentJob } from './types';
@@ -20,6 +28,9 @@ vi.mock('@/lib/api/agents', () => ({
   followUpAgentJob: vi.fn(),
   forkAgentJob: vi.fn(),
   getAgentJobFiles: vi.fn(),
+  getAgentJobGit: vi.fn(),
+  runAgentTerminalCommand: vi.fn(),
+  writeAgentJobFile: vi.fn(),
 }));
 
 function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
@@ -95,6 +106,16 @@ describe('JobDetail', () => {
     vi.mocked(followUpAgentJob).mockReset();
     vi.mocked(forkAgentJob).mockReset();
     vi.mocked(getAgentJobFiles).mockReset();
+    vi.mocked(getAgentJobGit).mockReset();
+    vi.mocked(getAgentJobGit).mockResolvedValue({
+      available: false,
+      branch: '',
+      changes: [],
+      patch: '',
+      commits: [],
+    });
+    vi.mocked(runAgentTerminalCommand).mockReset();
+    vi.mocked(writeAgentJobFile).mockReset();
     sessionStorage.clear();
   });
 
@@ -193,7 +214,8 @@ describe('JobDetail', () => {
     render(<JobDetail job={makeJob()} />);
 
     expect(screen.queryByText('Input tokens')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.queryByRole('button', { name: 'Details' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Run details' }));
     expect(screen.getByRole('dialog', { name: 'Run details' })).toBeInTheDocument();
     expect(screen.getByText('Input tokens')).toBeInTheDocument();
     expect(screen.getByText('Sandbox')).toBeInTheDocument();
@@ -202,13 +224,12 @@ describe('JobDetail', () => {
     expect(screen.getByText('{"event_type":"message"}')).toBeInTheDocument();
   });
 
-  it('keeps the task as the default view behind an accessible workspace toggle', () => {
+  it('keeps the task as the default view behind a labeled, accessible workspace toggle', () => {
     render(<JobDetail job={makeJob()} />);
 
-    expect(screen.getByRole('button', { name: 'Open workspace' })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
+    const workspaceButton = screen.getByRole('button', { name: 'Open workspace' });
+    expect(workspaceButton).toHaveTextContent('Workspace');
+    expect(workspaceButton).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('region', { name: 'Job workspace' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Activity' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Environment' })).not.toBeInTheDocument();
@@ -223,8 +244,10 @@ describe('JobDetail', () => {
     openWorkspace();
 
     const closeButton = screen.getByRole('button', { name: 'Close workspace' });
+    expect(closeButton).toHaveTextContent('Close workspace');
     expect(closeButton).toHaveAttribute('aria-expanded', 'true');
     expect(closeButton).toHaveAttribute('aria-controls', 'job-workspace-pane');
+    expect(closeButton).toHaveClass('bg-gray-900', 'text-white');
     expect(screen.getByRole('region', { name: 'Job workspace' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Git/ })).toHaveAttribute('aria-selected', 'true');
     expect(task).toBeInTheDocument();
@@ -242,17 +265,16 @@ describe('JobDetail', () => {
     expect(screen.getByRole('region', { name: 'Job workspace' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Close workspace' }));
-    expect(screen.getByRole('button', { name: 'Open workspace' })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
+    const reopenButton = screen.getByRole('button', { name: 'Open workspace' });
+    expect(reopenButton).toHaveTextContent('Workspace');
+    expect(reopenButton).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('region', { name: 'Job workspace' })).not.toBeInTheDocument();
 
     openWorkspace();
     expect(screen.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('shows a selectable per-file Git diff with branch and PR facts', () => {
+  it('shows a selectable diff-first Git workspace with review and commit tabs', async () => {
     render(
       <JobDetail
         job={makeJob({
@@ -265,26 +287,57 @@ describe('JobDetail', () => {
 
     openWorkspace();
 
-    expect(screen.getByLabelText('Git workspace')).toHaveTextContent('agent/ajob_1');
+    await waitFor(() =>
+      expect(screen.getByLabelText('Git workspace')).toHaveTextContent('Archived result'),
+    );
     expect(screen.getByLabelText('Git workspace')).toHaveTextContent('src/example.ts');
-    expect(screen.getByRole('link', { name: 'draft PR 44' })).toHaveAttribute(
+    fireEvent.click(screen.getByRole('tab', { name: 'review' }));
+    expect(screen.getByRole('link', { name: 'Open pull request' })).toHaveAttribute(
       'href',
       'https://github.com/owner/repository/pull/44',
     );
+    fireEvent.click(screen.getByRole('tab', { name: 'diff' }));
     expect(screen.getByText('+fixed')).toBeInTheDocument();
+    await waitFor(() => expect(getAgentJobGit).toHaveBeenCalledWith('ajob_1'));
   });
 
-  it('renders terminal events as a read-only transcript with no input', () => {
+  it('keeps the agent transcript and executes commands in the workspace terminal', async () => {
+    vi.mocked(runAgentTerminalCommand).mockResolvedValue({
+      output: 'README.md\n',
+      stderr: '',
+      exit_code: 0,
+      cwd: '/workspace',
+    });
+    vi.mocked(getAgentJobFiles).mockResolvedValue({
+      path: '',
+      kind: 'directory',
+      entries: [],
+    });
     render(<JobDetail job={makeJob()} />);
 
     openWorkspace();
     fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
 
-    const terminal = screen.getByLabelText('Read-only terminal transcript');
+    const terminal = screen.getByLabelText('Workspace terminal');
     expect(terminal).toHaveTextContent('$ pytest -q');
     expect(terminal).toHaveTextContent('2 passed');
-    expect(terminal).toHaveTextContent('Read only');
-    expect(within(terminal).queryByRole('textbox')).not.toBeInTheDocument();
+    const input = within(terminal).getByRole('textbox', { name: 'Terminal command' });
+    fireEvent.change(input, { target: { value: 'ls' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await waitFor(() =>
+      expect(runAgentTerminalCommand).toHaveBeenCalledWith('ajob_1', 'ls', '/workspace'),
+    );
+    expect(await within(terminal).findByText('README.md')).toBeInTheDocument();
+    expect(terminal).not.toHaveTextContent('Read only');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
+    expect(screen.getByLabelText('Workspace terminal')).toHaveTextContent('README.md');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close workspace' }));
+    openWorkspace();
+    expect(screen.getByLabelText('Workspace terminal')).toHaveTextContent('README.md');
   });
 
   it('loads Files lazily and safely refuses to preview a symlink', async () => {
@@ -339,6 +392,50 @@ describe('JobDetail', () => {
 
     expect(await screen.findByText('# Updated')).toBeInTheDocument();
     expect(screen.getByLabelText('Workspace files')).not.toHaveTextContent('null B');
+  });
+
+  it('edits and saves a file from the live worktree', async () => {
+    vi.mocked(getAgentJobFiles)
+      .mockResolvedValueOnce({
+        path: '',
+        kind: 'directory',
+        entries: [{ name: 'README.md', path: 'README.md', kind: 'file' }],
+        writable: true,
+        source: 'workspace',
+      })
+      .mockResolvedValue({
+        path: 'README.md',
+        kind: 'file',
+        content: '# Before',
+        size: 8,
+        binary: false,
+        truncated: false,
+        writable: true,
+        source: 'workspace',
+      });
+    vi.mocked(writeAgentJobFile).mockResolvedValue({
+      path: 'README.md',
+      kind: 'file',
+      content: '# After',
+      size: 7,
+      binary: false,
+      truncated: false,
+      writable: true,
+      source: 'workspace',
+    });
+    render(<JobDetail job={makeJob()} />);
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+    fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }));
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit README.md' });
+    fireEvent.change(editor, { target: { value: '# After' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(writeAgentJobFile).toHaveBeenCalledWith('ajob_1', 'README.md', '# After'),
+    );
+    expect(screen.getByLabelText('Workspace files')).toHaveTextContent('Live worktree');
   });
 
   it('refreshes an open Files workspace once a running job finishes', async () => {

@@ -64,6 +64,10 @@ from serving.agent_jobs.tokens import (
     parse_worker_token,
 )
 from serving.agent_jobs.visible_models import agent_model_resolvable, agent_visible_models
+from serving.agent_jobs.workspace_broker_client import (
+    WorkspaceBrokerError,
+    workspace_broker_from_env,
+)
 from serving.agent_jobs.workspace_browser import (
     WorkspacePathError,
     WorkspaceSnapshotError,
@@ -79,6 +83,7 @@ from serving.schemas_agent_jobs import (
     EVENT_TYPE_PATTERN,
     AgentConfigResponse,
     AgentFollowUpRequest,
+    AgentGitWorkspaceResponse,
     AgentJobArtifactResponse,
     AgentJobCancelResponse,
     AgentJobCreate,
@@ -86,10 +91,13 @@ from serving.schemas_agent_jobs import (
     AgentJobEventsResponse,
     AgentJobListResponse,
     AgentJobResponse,
+    AgentTerminalRequest,
+    AgentTerminalResponse,
     AgentThreadArchiveResponse,
     AgentThreadMessageResponse,
     AgentThreadResponse,
     AgentWorkspaceResponse,
+    AgentWorkspaceWriteRequest,
     GitHubConnectionResponse,
     GitHubConnectRequest,
     OAuthConnectRequest,
@@ -1198,6 +1206,42 @@ async def get_agent_job_artifact(
     )
 
 
+def _workspace_id(job: dict[str, Any]) -> str:
+    """Return the durable directory identity for this job's worktree."""
+    return str(job["id"])
+
+
+def _workspace_broker_http_error(exc: WorkspaceBrokerError) -> HTTPException:
+    """Map private broker failures onto bounded owner-facing errors."""
+    status = exc.status_code if exc.status_code in {400, 404, 408, 409, 413} else 503
+    return HTTPException(
+        status_code=status,
+        detail={"error": {"type": "workspace_unavailable", "message": exc.message}},
+    )
+
+
+async def _require_workspace_entitlement(
+    *,
+    job: dict[str, Any],
+    user: dict[str, Any],
+    store: Any,
+    app_credentials: Any | None,
+) -> None:
+    """Recheck that the owner may still access the workspace repository."""
+    try:
+        await require_entitled_repo(
+            job["repo"],
+            user["user_id"],
+            store=store,
+            app_credentials=app_credentials,
+        )
+    except RepoNotAllowed as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
+        ) from exc
+
+
 @router.get("/jobs/{job_id}/files", response_model=AgentWorkspaceResponse)
 async def get_agent_job_workspace_file(
     job_id: str,
@@ -1206,12 +1250,12 @@ async def get_agent_job_workspace_file(
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> AgentWorkspaceResponse:
-    """Browse the job's pinned repository tree with its changed-file overlay.
+    """Browse a live job worktree or an older job's archived snapshot.
 
-    GitHub is read lazily with a short-lived ``contents: read`` token scoped to
-    this one repository.  The runner's bounded snapshot replaces changed files
-    after an attempt ends; it never grants this endpoint access to the runner's
-    worktree or to any credential that entered the sandbox.
+    Live reads go through the private workspace broker after owner and current
+    repository entitlement checks. For jobs created before durable worktrees,
+    GitHub is read lazily at the pinned SHA and merged with the runner's bounded
+    changed-file snapshot.
     """
     job_store = _require_store(store)
     job = await _owned_job(job_store, job_id, user)
@@ -1223,18 +1267,20 @@ async def get_agent_job_workspace_file(
             detail={"error": {"type": "invalid_path", "message": str(exc)}},
         ) from exc
 
-    try:
-        await require_entitled_repo(
-            job["repo"],
-            user["user_id"],
-            store=job_store,
-            app_credentials=app_credentials,
-        )
-    except RepoNotAllowed as exc:
-        raise HTTPException(
-            status_code=403,
-            detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
-        ) from exc
+    await _require_workspace_entitlement(
+        job=job, user=user, store=job_store, app_credentials=app_credentials
+    )
+
+    # New self-hosted runners retain one real worktree per job. Prefer it
+    # before consulting GitHub/snapshots; only a pre-broker job falls through
+    # to the archived view.
+    broker = workspace_broker_from_env()
+    if broker is not None:
+        try:
+            return AgentWorkspaceResponse(**(await broker.files(_workspace_id(job), safe_path)))
+        except WorkspaceBrokerError as exc:
+            if exc.status_code != 404 or exc.message != "workspace is not materialized":
+                raise _workspace_broker_http_error(exc) from exc
 
     base_sha = job.get("base_sha")
     if not base_sha:
@@ -1333,6 +1379,8 @@ async def get_agent_job_workspace_file(
             path=safe_path,
             kind="directory",
             entries=merge_directory_entries(path=safe_path, baseline=baseline, overlay=overlay),
+            writable=False,
+            source="snapshot",
         )
     try:
         return AgentWorkspaceResponse(**github_file_response(safe_path, baseline))
@@ -1346,6 +1394,119 @@ async def get_agent_job_workspace_file(
                 }
             },
         ) from exc
+
+
+@router.put("/jobs/{job_id}/files", response_model=AgentWorkspaceResponse)
+async def write_agent_job_workspace_file(
+    job_id: str,
+    body: AgentWorkspaceWriteRequest,
+    path: str = Query(..., min_length=1, max_length=4096),
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> AgentWorkspaceResponse:
+    """Save one text file directly into the job's live worktree."""
+    job_store = _require_store(store)
+    job = await _owned_job(job_store, job_id, user)
+    try:
+        safe_path = normalize_workspace_path(path)
+    except WorkspacePathError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"type": "invalid_path", "message": str(exc)}},
+        ) from exc
+    if not safe_path:
+        raise HTTPException(status_code=400, detail="A file path is required.")
+    await _require_workspace_entitlement(
+        job=job, user=user, store=job_store, app_credentials=app_credentials
+    )
+    broker = workspace_broker_from_env()
+    if broker is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "type": "workspace_unavailable",
+                    "message": "This deployment has no live workspace broker.",
+                }
+            },
+        )
+    try:
+        return AgentWorkspaceResponse(
+            **(await broker.write_file(_workspace_id(job), safe_path, body.content))
+        )
+    except WorkspaceBrokerError as exc:
+        if exc.status_code == 404 and exc.message == "workspace is not materialized":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": {
+                        "type": "workspace_unavailable",
+                        "message": "This older job has only an archived workspace snapshot.",
+                    }
+                },
+            ) from exc
+        raise _workspace_broker_http_error(exc) from exc
+
+
+@router.post("/jobs/{job_id}/terminal", response_model=AgentTerminalResponse)
+async def run_agent_job_terminal_command(
+    job_id: str,
+    body: AgentTerminalRequest,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> AgentTerminalResponse:
+    """Run an owner-entered command in a disposable workspace sandbox."""
+    job_store = _require_store(store)
+    job = await _owned_job(job_store, job_id, user)
+    await _require_workspace_entitlement(
+        job=job, user=user, store=job_store, app_credentials=app_credentials
+    )
+    broker = workspace_broker_from_env()
+    if broker is None:
+        raise HTTPException(status_code=409, detail="This deployment has no live workspace broker.")
+    try:
+        result = await broker.terminal(
+            _workspace_id(job),
+            command=body.command,
+            cwd=body.cwd,
+            timeout_seconds=body.timeout_seconds,
+        )
+        return AgentTerminalResponse(**result)
+    except WorkspaceBrokerError as exc:
+        if exc.status_code == 404 and exc.message == "workspace is not materialized":
+            raise HTTPException(
+                status_code=409,
+                detail="This older job has no live terminal workspace.",
+            ) from exc
+        raise _workspace_broker_http_error(exc) from exc
+
+
+@router.get("/jobs/{job_id}/git", response_model=AgentGitWorkspaceResponse)
+async def get_agent_job_git_workspace(
+    job_id: str,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> AgentGitWorkspaceResponse:
+    """Read live worktree status, diff and recent commits."""
+    job_store = _require_store(store)
+    job = await _owned_job(job_store, job_id, user)
+    await _require_workspace_entitlement(
+        job=job, user=user, store=job_store, app_credentials=app_credentials
+    )
+    broker = workspace_broker_from_env()
+    if broker is None:
+        return AgentGitWorkspaceResponse(available=False)
+    try:
+        return AgentGitWorkspaceResponse(
+            **(await broker.git(_workspace_id(job), base_sha=job.get("base_sha")))
+        )
+    except WorkspaceBrokerError as exc:
+        if exc.status_code == 404 and exc.message == "workspace is not materialized":
+            return AgentGitWorkspaceResponse(available=False)
+        raise _workspace_broker_http_error(exc) from exc
 
 
 @router.get("/jobs/{job_id}/stream")

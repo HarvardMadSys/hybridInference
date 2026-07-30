@@ -16,10 +16,13 @@ import {
   getAgentIntegrations,
   getAgentJobArtifact,
   getAgentJobFiles,
+  getAgentJobGit,
   getAgentJobThread,
   listAgentJobs,
   restoreAgentJob,
+  runAgentTerminalCommand,
   streamAgentJob,
+  writeAgentJobFile,
 } from '../agents';
 import * as client from '../client';
 
@@ -185,6 +188,46 @@ describe('agents api', () => {
     expect(fetchWithAuth).toHaveBeenCalledWith(
       expect.any(String),
       '/v1/agent/jobs/job%2Fone/files?path=src%2Fa%20file.ts',
+    );
+  });
+
+  it('writes a live workspace file with an encoded path', async () => {
+    fetchWithAuth.mockResolvedValue(
+      jsonResponse({ path: 'src/a file.ts', kind: 'file', content: 'updated' }),
+    );
+
+    await writeAgentJobFile('job/one', 'src/a file.ts', 'updated');
+
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      expect.any(String),
+      '/v1/agent/jobs/job%2Fone/files?path=src%2Fa%20file.ts',
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ content: 'updated' }) }),
+    );
+  });
+
+  it('runs a workspace terminal command and loads live Git state', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(jsonResponse({ output: 'ok', stderr: '', exit_code: 0, cwd: '/' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ available: true, branch: 'agent/x', changes: [], patch: '', commits: [] }),
+      );
+
+    await runAgentTerminalCommand('ajob_1', 'pwd', '/workspace');
+    await getAgentJobGit('ajob_1');
+
+    expect(fetchWithAuth).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      '/v1/agent/jobs/ajob_1/terminal',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ command: 'pwd', cwd: '/workspace' }),
+      }),
+    );
+    expect(fetchWithAuth).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      '/v1/agent/jobs/ajob_1/git',
     );
   });
 

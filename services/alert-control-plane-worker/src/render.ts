@@ -1,7 +1,5 @@
 import type {
   CanonicalAlertEnvelope,
-  DependencyUnavailableContext,
-  MetricThresholdContext,
   ModelUnavailableContext,
   MonitoringCycleContext,
   ProviderCircuitContext,
@@ -116,73 +114,6 @@ function monitoringCycleContextFields(
   return fields;
 }
 
-/**
- * Human label and unit per metric. The wire keeps the stable identifier and a
- * bare number; the unit lives here so the card reads at least as clearly as
- * the free-text line it replaces ("12.3% (45 of 366 requests, last 300s)"),
- * rather than as an unqualified "0.123".
- */
-const METRIC_DISPLAY: Readonly<
-  Record<string, { readonly label: string; readonly unit: "ratio" | "ms" | "usd" | "count" }>
-> = {
-  auth_failure_count: { label: "Auth failures", unit: "count" },
-  failed_request_rate: { label: "Failed-request rate", unit: "ratio" },
-  http_5xx_rate: { label: "5xx rate", unit: "ratio" },
-  latency_p95_ms: { label: "p95 latency", unit: "ms" },
-  prefix_cache_pending_evictions: { label: "Prefix-cache evictions", unit: "count" },
-  provider_hourly_spend: { label: "Hourly spend", unit: "usd" },
-  tracked_task_failure_rate: { label: "Tracked-task failure rate", unit: "ratio" },
-  user_daily_cost: { label: "Daily cost", unit: "usd" },
-};
-
-function formatMetricValue(value: number, unit: "ratio" | "ms" | "usd" | "count"): string {
-  if (unit === "ratio") return `${(value * 100).toFixed(1)}%`;
-  if (unit === "ms") return `${Math.round(value)}ms`;
-  if (unit === "usd") return `$${value.toFixed(2)}`;
-  return String(Math.round(value));
-}
-
-function metricThresholdContextFields(
-  context: MetricThresholdContext,
-): readonly SlackTextObject[] {
-  const display = METRIC_DISPLAY[context.metric];
-  const fields: SlackTextObject[] = [
-    field("Metric", display?.label ?? context.metric),
-  ];
-  const unit = display?.unit ?? "count";
-  optionalField(fields, "Observed", formatMetricValue(context.observed, unit));
-  optionalField(fields, "Threshold", formatMetricValue(context.threshold, unit));
-  if (context.window_sec !== undefined) {
-    optionalField(fields, "Window", formatDuration(context.window_sec * 1_000));
-  }
-  optionalField(fields, "Scope", context.scope);
-  optionalField(fields, "Subject", context.subject);
-  optionalField(fields, "Samples", context.sample_count);
-  // Addresses are what on-call blocks, so they are rendered in full; the
-  // validator has already proven every entry is an IP and nothing else.
-  if (context.source_addresses !== undefined) {
-    optionalField(fields, "Source addresses", context.source_addresses.join(", "));
-  }
-  optionalField(fields, "Distinct sources", context.distinct_sources);
-  if (context.top_source_share !== undefined) {
-    optionalField(
-      fields,
-      "Top source share",
-      `${(context.top_source_share * 100).toFixed(1)}%`,
-    );
-  }
-  return fields.slice(0, 10);
-}
-
-function dependencyUnavailableContextFields(
-  context: DependencyUnavailableContext,
-): readonly SlackTextObject[] {
-  const fields: SlackTextObject[] = [field("Dependency", context.dependency)];
-  optionalField(fields, "Reason", context.reason);
-  optionalField(fields, "Backend", context.backend);
-  return fields;
-}
-
 function contextFields(envelope: CanonicalAlertEnvelope): readonly SlackTextObject[] {
   switch (envelope.event.alert_type) {
     case "provider_circuit_open":
@@ -191,10 +122,16 @@ function contextFields(envelope: CanonicalAlertEnvelope): readonly SlackTextObje
       return modelUnavailableContextFields(envelope.event.context);
     case "monitoring_cycle_failure":
       return monitoringCycleContextFields(envelope.event.context);
-    case "metric_threshold_breach":
-      return metricThresholdContextFields(envelope.event.context);
-    case "dependency_unavailable":
-      return dependencyUnavailableContextFields(envelope.event.context);
+    default: {
+      // Persisted envelopes replay without re-validation (store.ts parseJson,
+      // slack.ts parseEnvelope), so an envelope stored before its alert type
+      // was retired — e.g. the two gateway types removed with the backend
+      // migration wind-down — can still reach this renderer after a deploy.
+      // Render a degraded card instead of returning undefined, which would
+      // strand the pending delivery as slack_payload_invalid.
+      const alertType = (envelope.event as { alert_type?: unknown }).alert_type;
+      return [field("Alert type", escapeSlackMrkdwn(String(alertType ?? "unknown"), 200))];
+    }
   }
 }
 

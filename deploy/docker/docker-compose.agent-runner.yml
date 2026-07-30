@@ -31,9 +31,46 @@ services:
   # reporting that make a job work both go to the gateway, so a sandbox that
   # cannot reach it fails every job at the first request.
   backend:
+    environment:
+      AGENT_WORKSPACE_BROKER_URL: http://agent-workspace-broker:8092
+      # Reuse the already-required trusted-service credential by default.  It
+      # never reaches the browser or sandbox; a deployment can split the
+      # secret later without changing the protocol.
+      AGENT_WORKSPACE_BROKER_TOKEN: ${AGENT_DISPATCHER_TOKEN:?dispatcher credential is required}
     networks:
       - hybridinference
       - agent-egress
+
+  agent-workspace-broker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.agent-runner
+      secrets:
+        - github_token
+    restart: unless-stopped
+    environment:
+      AGENT_WORKSPACE_BROKER_TOKEN: ${AGENT_DISPATCHER_TOKEN:?dispatcher credential is required}
+      AGENT_WORKDIR_ROOT: ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
+      AGENT_SANDBOX_BACKEND: ${AGENT_SANDBOX_BACKEND:-kata}
+      AGENT_SANDBOX_IMAGE: ${AGENT_SANDBOX_IMAGE:?name the sandbox image this deployment runs}
+      AGENT_EGRESS_NETWORK_PLATFORM_ONLY: ${AGENT_EGRESS_NETWORK_PLATFORM_ONLY:-agent-egress}
+      AGENT_EGRESS_SETUP_TIER: ${AGENT_EGRESS_SETUP_TIER:-platform_only}
+      AGENT_EGRESS_AGENT_TIER: ${AGENT_EGRESS_AGENT_TIER:-platform_only}
+      AGENT_EGRESS_NETWORK_TRUSTED: ${AGENT_EGRESS_NETWORK_TRUSTED:-}
+      AGENT_EGRESS_NETWORK_CUSTOM: ${AGENT_EGRESS_NETWORK_CUSTOM:-}
+      AGENT_EGRESS_NETWORK_FULL: ${AGENT_EGRESS_NETWORK_FULL:-}
+      AGENT_EGRESS_ALLOWLIST: ${AGENT_EGRESS_ALLOWLIST:-}
+    command:
+      - python
+      - -m
+      - serving.agent_jobs.workspace_broker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}:${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
+    networks:
+      - hybridinference
+    depends_on:
+      - backend
 
   agent-runner:
     # How many jobs this deployment runs at once — one per replica. Compose
@@ -70,6 +107,7 @@ services:
       # Where job directories live — identical inside this container and on the
       # host, which the bind mount below depends on rather than merely prefers.
       AGENT_WORKDIR_ROOT: ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
+      AGENT_WORKSPACE_TTL_S: ${AGENT_WORKSPACE_TTL_S:-604800}
 
       # Egress policy. `agent-egress` is an internal network with no route to
       # the internet: a sandbox on it reaches the gateway (models + event
