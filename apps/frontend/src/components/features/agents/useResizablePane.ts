@@ -12,7 +12,7 @@ const KEY_STEP_COARSE_PX = 64;
 // leaves the workspace less room. React re-renders don't cross that boundary and
 // a ResizeObserver only reports a container the pane itself is inside, so every
 // pane announces its own resize and the others re-measure.
-const PANE_RESIZE_EVENT = 'agents:pane-resize';
+export const PANE_RESIZE_EVENT = 'agents:pane-resize';
 
 /**
  * Tell every pane to re-measure. Called for each step of a drag, and by anything
