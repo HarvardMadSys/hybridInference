@@ -50,8 +50,13 @@ Against real components on a developer machine:
 | Worktree handover to the sandbox user | real Docker: root creates a `0700` worktree, chowns it to 10001, and a `--user 10001` container writes to it and produces a diff. Without the chown the same container gets `Permission denied` and `fatal: not a git repository` |
 | The gateway on staging | `/v1/agent/*` live: job create/get/list/cancel, SSE stream, and a non-dispatcher key refused at `/worker/claim` with 401 |
 | MCP: registry refusals, proxy authorization, tool filtering | unit + API tests against a mocked upstream: an unset credential refuses at load, a stdio server is rejected, a job cannot reach a server it was not granted, a dead fence loses tools with inference, a blocked tool never leaves the gateway, and a filtered catalogue never advertises one |
-| **MCP: a repository could inject its own MCP servers, and no longer can** | real Claude Code 2.1.220 in a job's exact configuration (headless, `bypassPermissions`, cwd = a checkout carrying a `.mcp.json`): without `--strict-mcp-config` the CLI reports the repository's server alongside ours, with it only ours. No approval step was involved |
-| MCP: the adapter's `--mcp-config` is accepted by the real CLI | the argv `ClaudeCodeRuntime.prepare` emits, run against the real binary: the platform's server appears in `system/init` as `{"name": "github", ...}`, and a deliberately bogus flag in the same argv fails instantly, so the flags are being parsed rather than ignored |
+| **MCP: what `--strict-mcp-config` (#1129) actually prevents** | the flag was added on the strength of the CLI's documented behaviour; this is the measurement. Real Claude Code 2.1.220 in a job's exact configuration (headless, `bypassPermissions`, cwd = a checkout carrying a `.mcp.json`): without the flag the CLI reports the repository's server alongside the platform's, with it only the platform's. No approval step was involved either way |
+| MCP: the adapter's `--mcp-config` is accepted by the real CLI | the argv `ClaudeCodeRuntime.prepare` emits, run against the real binary: the platform's server appears in `system/init`, and a deliberately bogus flag in the same argv fails instantly, so the flags are being parsed rather than ignored |
+| MCP: the token can stay out of argv | the same run with the header written as `Bearer ${AGENT_MCP_TOKEN}` and the variable exported: the CLI expanded it and the proxy authenticated the request, while the command line carried only the placeholder |
+| **MCP: the proxy against a real hosted server** | the shipping router and filters against live `mcp.deepwiki.com` (which answers over SSE, so the streaming filter is the one that ran): `initialize` → `serverInfo: DeepWiki`, `tools/list` → its three real tools, `tools/call read_wiki_structure` → real documentation for `psf/requests` |
+| MCP: the allowlist, on a real catalogue | same server, `tools: [read_wiki_structure]`: `tools/list` returned that one tool of the three, and `tools/call ask_question` came back `-32601` without the request leaving the gateway |
+| MCP: the authorization matrix, end to end | live token + granted server 200; live token + a server the job was not granted 403; a superseded attempt 401; an ordinary `hyi-` key 401; no credential 401 |
+| MCP: Claude Code driving the proxy | the real CLI, pointed at the proxy, completed the whole handshake through it — `initialize`, `notifications/initialized`, the `GET` stream, `tools/list` — each reaching deepwiki and returning 200 |
 | **A self-hosted runner completing a real job** | `ajob_04de5d509a25ded2` against staging: claimed → cloned `psf/requests` at `414f0513` (verified equal to that repo's HEAD) → Claude Code 2.1.220 in a Docker sandbox as uid 10001 → `Read` + `Edit` with `is_error: false` → 518-byte patch stored → `succeeded`. The patch was read back and matches the file the agent left on disk |
 
 ## Not verified
@@ -61,12 +66,20 @@ Be precise about these when reporting status:
 - **The full model matrix.** One real job on one real model is verified (see
   above); the 2-runtime × 3-model matrix has not been run, so cross-model
   behaviour differences are still unknown.
-- **No job has yet used a real MCP server.** The proxy is verified against a
-  mocked upstream, so what is pinned is the gateway's behaviour — who may call
-  what, which credential goes where, what is advertised. What a live hosted
-  server does with our requests, and whether a small model uses the tools well,
-  is unmeasured. Run a job against `deepwiki` (no credential needed) before
-  concluding the chain works end to end.
+- **No real *job* has used MCP.** The proxy is verified against a live server
+  (see above), but through a harness: the shipping router and filters, with a
+  faked job store, and an agent CLI running outside a sandbox. What has not run
+  is the whole chain — a queued job, a runner, a real sandbox on the
+  `platform_only` network reaching `/v1/agent/mcp/...`. That last hop is the
+  same host and network as the model calls the sandbox already makes, so it
+  follows rather than being hoped for, but it has not been observed.
+- **No credentialed MCP server has been exercised live.** `deepwiki` takes no
+  credential, so the registry's header attachment — the part that matters most
+  for GitHub — is covered by unit tests and by a live run that only proves a
+  configured header is sent, not that a real server accepts it.
+- **No model has actually used these tools.** Every live check above was made
+  by a client, not by an agent deciding to call something. Whether a small
+  model on staging uses an MCP tool well, or at all, is unmeasured.
 - **The Actions workflow has never executed on GitHub.** See the blockers.
 - **Kata.** Still a shared-kernel container in every run so far; the
   `--runtime` flag provably reaches the daemon but no job has run under an
@@ -168,21 +181,27 @@ Four things about this that look like details and are not:
   check is against the job's own grant. Omitting `mcp_servers` at creation
   takes the registry's `default: true` entries; an explicit `[]` means none.
 
-Only `claude-code` can be given servers. The adapter passes
-`--strict-mcp-config`, and that pairing is the rule rather than a coincidence:
-a runtime that could be handed servers but not stopped from picking up the
-repository's own would be worse than one with no MCP at all. Creating a job
-that names servers on any other runtime is refused, rather than run with the
-tools silently missing. Codex is a matter of verifying two flags against the
-pinned `CODEX_VERSION`, not of design.
+Only `claude-code` can be given servers, because it is the only adapter with a
+gateway-mediated path. Every other one still fails closed the way #1129 left
+them, so a job naming servers on one of them is refused at creation rather than
+run with the tools silently missing. Codex is a matter of verifying two flags
+against the pinned `CODEX_VERSION`, not of design.
 
-### Why `--strict-mcp-config` is unconditional
+The credential is referenced, not embedded: the generated config carries
+`${AGENT_MCP_TOKEN}` and the adapter exports it, so the job token never becomes
+a process argument — where it would be readable from the process table and
+liable to be copied into an error tail or an event payload the owner reads.
 
-It is passed even when a job has no MCP servers, because without it a
-**repository supplies its own MCP servers to the agent working on it**. That is
-not a theoretical reading of the docs — it was reproduced against the real CLI
-in exactly the configuration a job runs in (headless `-p`, `bypassPermissions`,
-cwd = the checkout). A directory containing
+### What `--strict-mcp-config` is holding shut
+
+The flag landed in #1129 on the strength of the CLI's documented behaviour, and
+`--mcp-config` now supplies the platform's servers alongside it. The pairing is
+load-bearing in both directions: strict mode makes our config the *only* source
+of servers, and our config is passed even when empty so there is no gap.
+
+What the flag prevents was measured rather than assumed, in exactly the
+configuration a job runs in (headless `-p`, `bypassPermissions`, cwd = the
+checkout). A directory containing
 
 ```json
 {"mcpServers":{"evil_repo_server":{"command":"/bin/echo","args":["pwned"]}}}
@@ -197,9 +216,9 @@ produces these two `system/init` lines, differing only in the flag:
 
 No prompt, no approval step: the permission mode the sandbox needs for its
 *own* work is exactly what removes the one gate that would have stopped this.
-The flag is therefore unconditional rather than paired with having servers —
-a job with no MCP at all is the case where an injected server would be least
-expected and least noticed.
+That is why the flag stays unconditional now that there is a real config to
+pass beside it — a job with no MCP at all is the case where an injected server
+would be least expected and least noticed.
 
 The design's own rule about egress is what applies here: a boundary the agent
 participates in is not a boundary.
