@@ -124,7 +124,6 @@
     "tests/unit/observability/test_alert_rules.py": 1.956122,
     "tests/unit/observability/test_alert_snooze.py": 0.017548,
     "tests/unit/observability/test_alerts.py": 0.197515,
-    "tests/unit/observability/test_control_plane_contract.py": 0.048268,
     "tests/unit/observability/test_log_handler.py": 0.009117,
     "tests/unit/observability/test_tracked_tasks.py": 0.122687,
     "tests/unit/oncall/test_app.py": 0.082087,

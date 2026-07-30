@@ -162,6 +162,12 @@ Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
 - Storage layer supports both Postgres and Cloudflare D1 — check
   `apps/backend/serving/storage/` for the active backend before assuming
   SQL dialect.
+- Alerting has two permanent, independent paths (decision: issue #1103).
+  Backend gateway alerts go through `alert_slack()`
+  (`apps/backend/serving/observability/alerts.py`) to a Slack webhook;
+  status-monitor alerts go through the alert control plane worker
+  (`services/alert-control-plane-worker/`). Do not wire backend producers
+  to the control plane.
 - Frontend is Next.js in `apps/frontend/` — its quality gates are separate
   from the Python `make` targets.
 
