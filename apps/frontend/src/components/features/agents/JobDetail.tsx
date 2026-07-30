@@ -873,6 +873,14 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               </svg>
               <span className="truncate">{job.repo}</span>
               {job.turnNo && job.turnNo > 1 ? <span>· turn {job.turnNo}</span> : null}
+              <span aria-hidden="true">·</span>
+              <button
+                type="button"
+                onClick={() => setDrawer('overview')}
+                className="shrink-0 font-medium text-gray-500 hover:text-gray-900 hover:underline"
+              >
+                Run details
+              </button>
             </div>
           </div>
           <span
@@ -897,13 +905,6 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               </span>
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={() => setDrawer('overview')}
-            className="rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100"
-          >
-            Details
-          </button>
           {isActive ? (
             <button
               type="button"

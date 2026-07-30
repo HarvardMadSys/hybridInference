@@ -179,7 +179,8 @@ describe('JobDetail', () => {
     render(<JobDetail job={makeJob()} />);
 
     expect(screen.queryByText('Input tokens')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.queryByRole('button', { name: 'Details' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Run details' }));
     expect(screen.getByRole('dialog', { name: 'Run details' })).toBeInTheDocument();
     expect(screen.getByText('Input tokens')).toBeInTheDocument();
     expect(screen.getByText('Sandbox')).toBeInTheDocument();
