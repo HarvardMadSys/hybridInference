@@ -43,6 +43,7 @@ from serving.agent_jobs.egress import (
     EgressTier,
     build_policy_from_env,
 )
+from serving.agent_jobs.egress_proxy import CANARY_HOST
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -713,25 +714,101 @@ class ContainerBackend(SandboxBackend):
         if self.egress is None:
             self._check_one_network(self.network)
             return
+        probed: set[EgressTier] = set()
         for phase in PHASES:
             tier = self.egress.tier_for(phase)
             try:
                 network = self.egress.network_for(phase)
             except EgressPolicyError:
                 # A phase whose tier names no network cannot run. That is only
-                # fatal for a phase this runner actually spawns — the setup
-                # phase does not exist yet, and refusing to start over a
-                # capability nothing uses would be a startup failure with no
-                # cause an operator could act on. It still fails loudly at
-                # spawn if a phase is ever added without configuring it.
+                # fatal for a phase this runner actually spawns: a job with no
+                # setup script never enters the setup phase, and refusing to
+                # start over a capability this deployment does not use would be
+                # a startup failure with no cause an operator could act on. It
+                # still fails loudly at spawn, with this same error.
                 if phase == "agent":
                     raise
                 continue
-            # Trusted and custom tiers are allowlist-fronted by construction;
-            # asserting `internal` on them would be wrong. Full is already
-            # gated behind the acknowledgement in build_policy_from_env.
-            if tier is EgressTier.PLATFORM_ONLY:
+            # Trusted runs on a network with no route of its own, exactly like
+            # the closed tier: the *proxy* has the second leg, not the network.
+            # This used to exempt it as "allowlist-fronted by construction",
+            # which was an assumption about a network nobody checked — pointing
+            # AGENT_EGRESS_NETWORK_TRUSTED at the default bridge passed
+            # preflight in silence and gave the setup phase the whole internet.
+            #
+            # Custom stays exempt, and deliberately: it exists for a deployment
+            # whose own gateway filters transparently, which needs a routable
+            # network. Demanding `internal` there would force the operator to
+            # set AGENT_SANDBOX_ALLOW_OPEN_NETWORK, which silences this check
+            # for *every* tier including the closed one. Full is exempt because
+            # it is already gated behind that same acknowledgement.
+            if tier in (EgressTier.PLATFORM_ONLY, EgressTier.TRUSTED):
                 self._check_one_network(network)
+            # Probed only for the tier whose proxy we render the config for. A
+            # custom proxy refuses in whatever way its operator chose — a drop
+            # rather than a 403, say — and reading that as "not enforcing"
+            # would refuse to start a deployment that is working correctly.
+            if tier is EgressTier.TRUSTED and tier not in probed:
+                probed.add(tier)
+                self._check_proxy_denies_unlisted(phase=phase, network=network)
+
+    def _check_proxy_denies_unlisted(self, *, phase: str, network: str) -> None:
+        """Refuse to start if the tier's proxy is not actually enforcing.
+
+        A proxy that answers but allows everything is the worst outcome
+        available here: the tier reads as "allowlisted" in every log and
+        config, the network is internal exactly as designed, and the sandbox
+        still reaches the whole internet. Nothing downstream would notice,
+        which is the same shape as the Kata runtime silently degrading to a
+        shared kernel — so it is checked the same way, by observing the
+        behaviour rather than trusting the configuration.
+
+        The probe asks for a host that cannot be allowlisted and cannot exist
+        (RFC 2606 ``.invalid``), so it never leaves the host even when it
+        passes, and it distinguishes the three outcomes that matter: refused by
+        the proxy, unable to reach the proxy at all, or served.
+        """
+        env = self.egress.sandbox_env(phase) if self.egress else {}
+        argv = [self.docker_binary, "run", "--rm", "--network", network]
+        for key, value in sorted(env.items()):
+            argv += ["--env", f"{key}={value}"]
+        argv += [
+            "--entrypoint",
+            "/bin/sh",
+            self.image,
+            "-c",
+            # curl reads the proxy out of the environment above, which is the
+            # exact mechanism a setup script will use — a `--proxy` flag here
+            # would test a path no real job takes. Its stderr is left alone on
+            # purpose: "Failed to connect to ... port 3128" is the diagnostic
+            # the unreachable branch below reports.
+            f'curl -sS -o /dev/null -w "%{{http_code}}" --max-time 10 '
+            f"http://{CANARY_HOST}/ || true",
+        ]
+        try:
+            # Matches the bind probe's budget: on a host that has not pulled
+            # the sandbox image yet, this is the call that pulls it.
+            probe = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SandboxError(
+                f"the egress proxy for the {phase} phase could not be probed: {exc}"
+            ) from exc
+        code = probe.stdout.strip().splitlines()[-1].strip() if probe.stdout.strip() else ""
+        if code == "403":
+            return
+        if code in ("", "000"):
+            raise SandboxError(
+                f"the {phase} phase's egress proxy is unreachable from network {network!r}. "
+                "Every dependency install would fail with a connection error. Check that "
+                "the proxy service is running and on that network "
+                f"(docker: {probe.stderr.strip()[:200]})."
+            )
+        raise SandboxError(
+            f"the {phase} phase's egress proxy answered {code} for {CANARY_HOST}, which is "
+            "not on any allowlist and does not exist. It is not enforcing an allowlist, so "
+            "the sandbox can reach the internet through it while the configuration says "
+            "otherwise. Check the proxy's generated configuration."
+        )
 
     def _check_one_network(self, network: str) -> None:
         """Refuse to start unless the sandbox network denies egress by default.
@@ -921,7 +998,14 @@ class ContainerBackend(SandboxBackend):
         ]
         if self.runtime:
             argv += ["--runtime", self.runtime]
-        for key, value in sorted(spec.env.items()):
+        env = dict(spec.env)
+        if self.egress is not None:
+            # Policy last. A job's own environment must not be able to unset
+            # the proxy its phase is required to use — and the setup phase in
+            # particular arrives here with an empty env, so this is where the
+            # proxy reaches it at all.
+            env.update(self.egress.sandbox_env(spec.phase))
+        for key, value in sorted(env.items()):
             argv += ["--env", f"{key}={value}"]
         argv += self.extra_args
         argv.append(self.image)

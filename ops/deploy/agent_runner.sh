@@ -62,24 +62,33 @@ cmd_up() {
 
   log "starting ${replicas} runner(s); restart policy keeps them up across reboots"
   log "persist it with AGENT_RUNNER_REPLICAS=${replicas} in .env, or the next deploy uses the default"
+  # The proxy is named explicitly rather than left to `depends_on`. Compose does
+  # start a dependency, but this is the deployment artifact: an operator reading
+  # it should see that the setup phase's egress is a service on this host, and
+  # `status`/`down` below have to name it anyway.
   AGENT_SANDBOX_IMAGE="$SANDBOX_IMAGE" AGENT_RUNNER_REPLICAS="$replicas" \
-    "${COMPOSE[@]}" up -d --build agent-runner
+    "${COMPOSE[@]}" up -d --build agent-egress-proxy agent-runner
 
-  # The runner's own preflight (backend reachable, image spawnable, workdir
-  # bind-mountable, egress network resolvable) runs before it claims anything;
-  # surface its verdict here instead of leaving it in a detached log.
+  # Preflight (backend reachable, image spawnable, workdir bind-mountable,
+  # egress networks internal, and the setup proxy actually refusing a host that
+  # is not on its allowlist) runs before the runner claims anything; surface its
+  # verdict here instead of leaving it in a detached log.
   sleep 3
   "${COMPOSE[@]}" logs --tail 20 agent-runner
   log "done. 'ops/deploy/agent_runner.sh status' shows the live tail."
 }
 
 cmd_status() {
-  "${COMPOSE[@]}" ps agent-runner
+  "${COMPOSE[@]}" ps agent-runner agent-egress-proxy
   "${COMPOSE[@]}" logs --tail 40 agent-runner
+  # Denied requests are only visible here: an internal network refuses a
+  # connection silently, so the proxy's log is the one record that a job tried
+  # to reach something it may not.
+  "${COMPOSE[@]}" logs --tail 20 agent-egress-proxy
 }
 
 cmd_down() {
-  "${COMPOSE[@]}" rm --stop --force agent-runner
+  "${COMPOSE[@]}" rm --stop --force agent-runner agent-egress-proxy
 }
 
 case "${1:-}" in

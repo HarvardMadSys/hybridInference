@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from serving.agent_jobs.egress import EgressPolicyError
+from serving.agent_jobs.egress_proxy import CANARY_HOST
 from serving.agent_jobs.sandbox import (
     KATA_RUNTIME,
     ContainerBackend,
@@ -542,6 +543,137 @@ def test_open_egress_requires_an_explicit_acknowledgement():
     backend._check_networks_are_closed()  # acknowledged: does not raise
 
 
+def _egress_env(**extra: str) -> dict[str, str]:
+    """A container backend with a configured, proxied setup tier."""
+    return {
+        "AGENT_SANDBOX_BACKEND": "container",
+        "AGENT_SANDBOX_IMAGE": "img:1",
+        "AGENT_EGRESS_NETWORK_PLATFORM_ONLY": "agent-egress",
+        "AGENT_EGRESS_NETWORK_TRUSTED": "agent-egress-trusted",
+        "AGENT_EGRESS_PROXY_URL_TRUSTED": "http://agent-egress-proxy:3128",
+        **extra,
+    }
+
+
+def _fake_docker(monkeypatch, *, internal: dict[str, str], canary: str = "403"):
+    """Stand in for the daemon: network internality, and what the canary got."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1:3] == ["network", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=internal.get(argv[3], "true"), stderr="")
+        if argv[1] == "run":
+            return SimpleNamespace(returncode=0, stdout=canary, stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fake_run)
+    return calls
+
+
+def test_a_proxied_network_that_routes_out_is_refused_too(monkeypatch):
+    """The trusted tier is a closed network plus a proxy, not an open network.
+
+    Preflight used to exempt trusted and custom as "allowlist-fronted by
+    construction" — an assumption about a network nobody checked. Pointing
+    AGENT_EGRESS_NETWORK_TRUSTED at the default bridge then passed in silence
+    and handed the setup phase the whole internet, with every log and config
+    still reading `trusted`.
+    """
+    backend = build_backend_from_env(_egress_env())
+    _fake_docker(monkeypatch, internal={"agent-egress-trusted": "false"})
+
+    with pytest.raises(SandboxError, match="not `internal`"):
+        backend._check_networks_are_closed()
+
+
+def test_a_proxy_that_serves_the_canary_is_a_startup_failure(monkeypatch):
+    """A proxy that answers but allows everything is the worst available outcome.
+
+    The tier reads as allowlisted in every log and config, the network is
+    internal exactly as designed, and the sandbox still reaches the internet.
+    Nothing downstream would notice — the same shape as a Kata runtime
+    degrading to a shared kernel, and checked the same way: by observing the
+    behaviour instead of trusting the configuration.
+    """
+    backend = build_backend_from_env(_egress_env())
+    _fake_docker(monkeypatch, internal={}, canary="200")
+
+    with pytest.raises(SandboxError, match="not enforcing an allowlist"):
+        backend._check_networks_are_closed()
+
+
+def test_an_unreachable_proxy_is_reported_as_unreachable(monkeypatch):
+    """Distinguished from "not enforcing", because the fixes are opposite.
+
+    curl reports both as a failure; conflating them would send an operator to
+    check the allowlist when the proxy is simply not running.
+    """
+    backend = build_backend_from_env(_egress_env())
+    _fake_docker(monkeypatch, internal={}, canary="000")
+
+    with pytest.raises(SandboxError, match="unreachable"):
+        backend._check_networks_are_closed()
+
+
+def test_a_denying_proxy_passes_and_is_probed_the_way_a_job_would_use_it(monkeypatch):
+    """The probe must exercise the mechanism a setup script actually uses.
+
+    Passing `--proxy` on the command line would prove the proxy denies while
+    saying nothing about whether the environment reaches the sandbox — which
+    is the part that carries the policy.
+    """
+    backend = build_backend_from_env(_egress_env())
+    calls = _fake_docker(monkeypatch, internal={}, canary="403")
+
+    backend._check_networks_are_closed()
+
+    probe = next(argv for argv in calls if argv[1] == "run")
+    assert probe[probe.index("--network") + 1] == "agent-egress-trusted"
+    assert "https_proxy=http://agent-egress-proxy:3128" in probe
+    assert CANARY_HOST in probe[-1]
+    # And the closed phase is never probed: it has no proxy to enforce anything.
+    assert sum(1 for argv in calls if argv[1] == "run") == 1
+
+
+def test_a_custom_tier_keeps_the_operators_own_topology(monkeypatch):
+    """`custom` exists to replace our judgement, so neither check applies to it.
+
+    Both exemptions are deliberate and worth pinning, because tightening them
+    looks like an improvement. Demanding `internal` would force a transparently
+    filtered deployment to set AGENT_SANDBOX_ALLOW_OPEN_NETWORK, which silences
+    the check for the *closed* tier too; and probing for our own proxy's 403
+    would read an operator's drop-on-deny as "not enforcing" and refuse to
+    start a deployment that works.
+    """
+    backend = build_backend_from_env(
+        {
+            "AGENT_SANDBOX_BACKEND": "container",
+            "AGENT_SANDBOX_IMAGE": "img:1",
+            "AGENT_EGRESS_SETUP_TIER": "custom",
+            "AGENT_EGRESS_AGENT_TIER": "custom",
+            "AGENT_EGRESS_NETWORK_CUSTOM": "operator-net",
+            "AGENT_EGRESS_PROXY_URL_CUSTOM": "http://operator-proxy:8080",
+        }
+    )
+    calls = _fake_docker(monkeypatch, internal={"operator-net": "false"}, canary="000")
+
+    backend._check_networks_are_closed()  # does not raise
+
+    assert not [argv for argv in calls if argv[1] == "run"], "a custom proxy must not be probed"
+
+
+def test_the_setup_phase_is_handed_the_proxy_and_the_agent_phase_is_not():
+    """The whole point of two phases, at the one place it becomes real."""
+    backend = build_backend_from_env(_egress_env())
+
+    setup = backend.build_command(SandboxSpec(argv=["sh"], workdir="/w", phase="setup"))
+    agent = backend.build_command(SandboxSpec(argv=["sh"], workdir="/w", phase="agent"))
+
+    assert "https_proxy=http://agent-egress-proxy:3128" in setup
+    assert not any(value.startswith("https_proxy=") for value in agent)
+
+
 def test_the_phase_decides_which_network_the_container_joins():
     """setup and agent must not silently share one network.
 
@@ -555,6 +687,7 @@ def test_the_phase_decides_which_network_the_container_joins():
             "AGENT_SANDBOX_IMAGE": "img:1",
             "AGENT_EGRESS_NETWORK_PLATFORM_ONLY": "agent-egress",
             "AGENT_EGRESS_NETWORK_TRUSTED": "agent-setup",
+            "AGENT_EGRESS_PROXY_URL_TRUSTED": "http://proxy:3128",
         }
     )
 

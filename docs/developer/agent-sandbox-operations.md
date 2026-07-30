@@ -362,6 +362,64 @@ The isolation boundary is between the runner and the sandbox it starts, not
 around the runner. Running the runner unprivileged does not buy isolation — it
 already holds the dispatcher credential and the Docker socket.
 
+### Dependency installation, and the proxy that allows it
+
+A job may carry a `setup_script`. It runs before the agent, under its own
+egress tier, and its result is cached per repository and script — so a retry
+does not reinstall.
+
+The tier is where the work is. `setup` defaults to `trusted` and `agent` stays
+`platform_only`, which in this deployment means three networks:
+
+| Network | Internal | Who is on it |
+|---|---|---|
+| `agent-egress` | yes | the sandbox during the agent turn, and the gateway |
+| `agent-egress-trusted` | yes | the sandbox during setup, and the proxy |
+| `agent-egress-uplink` | **no** | the proxy, alone |
+
+Both sandbox networks have no route of their own. The difference is that
+`agent-egress-proxy` sits on the trusted one with a second leg, and the sandbox
+is handed `http_proxy`/`https_proxy` pointing at it. The environment variables
+are a convenience for package managers, not the boundary: a setup script that
+ignored them finds a network that cannot route anywhere.
+
+The agent turn — the part driven by untrusted model output — still reaches the
+gateway and nothing else. That does not change when setup is opened.
+
+**Adding a domain.** `AGENT_EGRESS_ALLOWLIST` is *added to* the built-in
+registry list (PyPI, npm, crates, Go, RubyGems, Maven, github.com), never a
+replacement for it. `*.example.com` covers subdomains. An agent vendor's
+telemetry domain is refused outright — a sandbox that can phone home about a
+private repository is not closed, whatever the tier is called. The list is
+rendered into the proxy's config by `agent-egress-proxy-config`, a one-shot
+service that runs before the proxy and fails the deploy if the list is
+unusable. Editing that config by hand skips the validation that keeps a
+hostile value out of it.
+
+**Three preflight failures and what each means.** The runner refuses to claim
+jobs unless the setup tier is genuinely enforcing:
+
+- *"the sandbox network … is not `internal`"* — a tier variable points at a
+  routable network. The setup phase would have the whole internet while the
+  config still said `trusted`.
+- *"egress proxy is unreachable"* — the proxy is not running, or not on that
+  network. Check `docker compose logs agent-egress-proxy`; a config Squid
+  rejects shows up there as a parse error on the first line.
+- *"egress proxy answered … it is not enforcing an allowlist"* — the proxy
+  served a host that does not exist and is on no list. Treat this as an open
+  proxy on the sandbox's network.
+
+**Where a denied request is visible.** Only in the proxy's log — an internal
+network refuses a connection silently, so before this there was nowhere to
+observe a blocked attempt from. `ops/deploy/agent_runner.sh status` tails it;
+a denial is the line with `verdict=TCP_DENIED/403`.
+
+**What this does not give you.** No secrets reach the sandbox (there is still
+no secrets store, by design), the sandbox runs unprivileged so `apt install`
+does not work — use `pip --user`, a virtualenv, `npm ci` — and a tool that
+ignores the proxy environment (bun, at the time of writing) cannot reach a
+registry at all.
+
 ## Runtime verification
 
 Run the adapter contract tests after changing runtime integration code. They
