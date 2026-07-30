@@ -115,7 +115,7 @@ async def test_undelivered_page_does_not_mute_the_outage(monkeypatch):
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         await _drain_alert_tasks()
         assert cb._alert_suppressed_until == 0.0
-        assert cb._alert_in_flight is False
+        assert cb._alert_in_flight_generation is None
 
 
 async def test_recovery_during_delivery_does_not_restore_stale_mute(monkeypatch):
@@ -131,8 +131,33 @@ async def test_recovery_during_delivery_does_not_restore_stale_mute(monkeypatch)
         await _drain_alert_tasks()  # page now delivers, but for a stale generation
         # The recovered endpoint must not be re-muted by the late page.
         assert cb._alert_suppressed_until == 0.0
-        assert cb._alert_in_flight is False
+        assert cb._alert_in_flight_generation is None
         assert cb.state == _CircuitState.CLOSED
+
+
+async def test_stale_in_flight_does_not_block_new_outage_after_recovery(monkeypatch):
+    # If the endpoint recovers while a page is still sending and then trips again,
+    # the stale (old-generation) in-flight guard must not suppress the new
+    # outage's firing edge. The guard is generation-scoped, so recovery frees it.
+    _trip_env(monkeypatch)
+    cb = _CircuitBreaker(provider="zai:api.z.ai:443")
+
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()):
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)  # outage 1 page in flight
+        assert cb._alert_in_flight_generation == 0
+
+        # Recovery bumps the generation while outage 1's page is still "sending".
+        cb.on_success()
+        assert cb._recovery_generation == 1
+
+        # A fresh outage trips before that page finished — it must page, not be
+        # blocked by the stale gen-0 guard, and claim the guard for gen 1.
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        assert cb.state == _CircuitState.OPEN
+        assert cb._alert_in_flight_generation == 1
+        await _drain_alert_tasks()
 
 
 async def test_non_usage_limit_failure_is_not_suppressed(monkeypatch):

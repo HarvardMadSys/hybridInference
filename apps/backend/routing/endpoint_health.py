@@ -172,9 +172,11 @@ class _CircuitBreaker:
         # subscription usage-limit outage (0.0 = not muted). Committed only once a
         # page is delivered (_send_circuit_alert) and cleared on recovery.
         self._alert_suppressed_until: float = 0.0
-        # True while a usage-limit page is being delivered, so a re-trip in that
-        # window can't emit a duplicate page before the deadline is committed.
-        self._alert_in_flight: bool = False
+        # Recovery generation of the usage-limit page currently being delivered
+        # (None when none). A re-trip of the *same* generation is a duplicate and
+        # is suppressed while the page sends; once recovery bumps the generation
+        # this guard is stale, so a new outage's page is not blocked by it.
+        self._alert_in_flight_generation: int | None = None
         # Bumped on every recovery. A page that finishes delivering after the
         # endpoint recovered carries a stale generation and must not restore its
         # now-obsolete mute — see _send_circuit_alert.
@@ -278,14 +280,17 @@ class _CircuitBreaker:
             # dropped page never mutes an outage that was never announced.
             now_dt = datetime.now(timezone.utc)
             usage_limit = detect_usage_limit(detail, now=now_dt)
-            # While the endpoint is inside a known usage-limit outage — a page is
-            # mid-delivery, or its mute deadline has not passed — stay silent no
-            # matter how *this* failure presents. A half-open re-trip often
-            # surfaces differently from the original 429 (e.g. KeyPoolExhausted
-            # once the key's 429-backoff exceeds the circuit cooldown, or a
-            # timeout); those must not resurrect the storm. Recovery (on_success)
-            # clears the mute, so a recovered endpoint re-arms.
-            if self._alert_in_flight or now_dt.timestamp() < self._alert_suppressed_until:
+            # While the endpoint is inside a known usage-limit outage — a page for
+            # the current generation is mid-delivery, or its mute deadline has not
+            # passed — stay silent no matter how *this* failure presents. A
+            # half-open re-trip often surfaces differently from the original 429
+            # (e.g. KeyPoolExhausted once the key's 429-backoff exceeds the circuit
+            # cooldown, or a timeout); those must not resurrect the storm. The
+            # in-flight guard is scoped to the generation, so a recovery (which
+            # bumps it) does not let a stale in-flight page mute the *next* outage;
+            # recovery also clears the deadline, re-arming the endpoint.
+            in_flight_current = self._alert_in_flight_generation == self._recovery_generation
+            if in_flight_current or now_dt.timestamp() < self._alert_suppressed_until:
                 logger.info(
                     "circuit_open_alert_suppressed",
                     extra={
@@ -331,15 +336,17 @@ class _CircuitBreaker:
             )
             generation = self._recovery_generation
             if reset_epoch is not None:
-                self._alert_in_flight = True
+                self._alert_in_flight_generation = generation
             try:
                 task = asyncio.ensure_future(
                     self._send_circuit_alert(context, reset_epoch, generation)
                 )
             except RuntimeError:
                 # No running loop (sync caller / test): nothing was scheduled, so
-                # release the in-flight guard we optimistically set.
-                self._alert_in_flight = False
+                # release the in-flight guard we optimistically set (unless a newer
+                # generation already claimed it).
+                if self._alert_in_flight_generation == generation:
+                    self._alert_in_flight_generation = None
             else:
                 _ALERT_TASKS.add(task)
                 task.add_done_callback(_ALERT_TASKS.discard)
@@ -375,7 +382,10 @@ class _CircuitBreaker:
         finally:
             if reset_epoch is not None:
                 with self._lock:
-                    self._alert_in_flight = False
+                    # Only clear the guard if this page still owns it; after a
+                    # recovery a newer generation's page may have claimed it.
+                    if self._alert_in_flight_generation == generation:
+                        self._alert_in_flight_generation = None
                     if delivered and generation == self._recovery_generation:
                         self._alert_suppressed_until = reset_epoch
         return delivered
