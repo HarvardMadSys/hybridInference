@@ -66,13 +66,19 @@ tool call with its result, and the diff as it takes shape. A running task can
 be cancelled at any point. When the task finishes, the draft pull request is
 linked directly from the task page.
 
+A task also takes **follow-up messages**: send one from the task page and it
+runs as a new isolated pass in the same thread, inheriting the repository and
+— unless you switch them — the agent and model of the turn before.
+
 ## Choosing an agent and model
 
-The **agent** is the tool that does the work — Claude Code and Codex are
-available today. The **model** is what drives it: the composer lists the
+The **agent** is the tool that does the work — Claude Code, Codex, OpenCode,
+and pi are available today. Claude Code and Codex stream fully structured
+activity (reasoning, tool calls, diffs); OpenCode and pi run with a plainer
+raw log view. The **model** is what drives the agent: the composer lists the
 models enabled for agent tasks, which during the beta can be a subset of the
 full [model catalog](models.md). Both are picked per task, and any listed
-model can drive either agent.
+model can drive any agent.
 
 As with interactive use, larger models suit gnarly, open-ended tasks; faster
 models suit mechanical sweeps and small fixes.
