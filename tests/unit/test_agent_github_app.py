@@ -9,6 +9,7 @@ wrong installation, or a private key leaking into a log line.
 from __future__ import annotations
 
 import time
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import jwt
@@ -101,6 +102,24 @@ def test_unusable_private_key_is_a_clear_error():
     """A malformed key must fail with a message, not a stack trace."""
     with pytest.raises(GitHubAppError):
         build_app_jwt(AppConfig(app_id="1", private_key="not a key"))
+
+
+def test_user_authorization_uses_oauth_even_when_app_is_already_installed(config):
+    oauth_config = AppConfig(
+        app_id=config.app_id,
+        private_key=config.private_key,
+        api_base=config.api_base,
+        client_id="Iv1.client",
+        client_secret="secret",
+    )
+
+    url = urlparse(GitHubAppCredentials(oauth_config).user_authorization_url("signed-state"))
+
+    assert url.path == "/login/oauth/authorize"
+    assert parse_qs(url.query) == {
+        "client_id": ["Iv1.client"],
+        "state": ["signed-state"],
+    }
 
 
 async def test_token_is_scoped_to_the_repository_installation(config):

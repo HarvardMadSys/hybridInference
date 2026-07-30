@@ -128,6 +128,14 @@ function ProviderActions({
             Reauthorize {copy.name}
           </a>
         ) : null}
+        {integration.manage_url ? (
+          <a
+            href={integration.manage_url}
+            className="block rounded-lg px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+          >
+            Configure repositories
+          </a>
+        ) : null}
         {integration.accounts.map((account) => (
           <button
             key={account.id}

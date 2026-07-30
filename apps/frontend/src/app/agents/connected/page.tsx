@@ -11,6 +11,7 @@ function ConnectedInner() {
   const params = useSearchParams();
   const connectStarted = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  const [installUrl, setInstallUrl] = useState<string | null>(null);
   const providerParam = params?.get('provider');
   const provider: AgentIntegrationProvider = providerParam === 'gitlab' ? 'gitlab' : 'github';
   const providerName = provider === 'gitlab' ? 'GitLab' : 'GitHub';
@@ -38,12 +39,22 @@ function ConnectedInner() {
       return;
     }
 
-    const connect = provider === 'gitlab' ? connectGitLab : connectGitHub;
-    connect(code, state)
-      .then(() => router.replace(`/agents/integrations?connected=${provider}`))
-      .catch((cause: unknown) =>
-        setError(cause instanceof Error ? cause.message : 'could not complete the connection'),
-      );
+    async function completeConnection(authCode: string, authState: string) {
+      if (provider === 'github') {
+        const connection = await connectGitHub(authCode, authState);
+        if (connection.install_url) {
+          setInstallUrl(connection.install_url);
+          return;
+        }
+      } else {
+        await connectGitLab(authCode, authState);
+      }
+      router.replace(`/agents/integrations?connected=${provider}`);
+    }
+
+    void completeConnection(code, state).catch((cause: unknown) =>
+      setError(cause instanceof Error ? cause.message : 'could not complete the connection'),
+    );
   }, [code, oauthError, provider, providerName, router, state]);
 
   if (error) {
@@ -57,6 +68,23 @@ function ConnectedInner() {
         >
           Back to integrations
         </Link>
+      </div>
+    );
+  }
+
+  if (installUrl) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3">
+        <h1 className="text-xl font-semibold text-gray-900">Install the GitHub App</h1>
+        <p className="max-w-md text-center text-sm text-gray-500">
+          GitHub authorization succeeded, but this account has no FreeInference installation yet.
+        </p>
+        <a
+          href={installUrl}
+          className="rounded-lg bg-crimson px-4 py-2 text-sm font-medium text-white hover:bg-crimson-dark"
+        >
+          Install GitHub App
+        </a>
       </div>
     );
   }

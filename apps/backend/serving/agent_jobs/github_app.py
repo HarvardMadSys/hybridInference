@@ -24,7 +24,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 import jwt
@@ -34,6 +34,7 @@ from serving.utils.logging import get_logger
 logger = get_logger(__name__)
 
 GITHUB_API = "https://api.github.com"
+GITHUB_OAUTH_AUTHORIZE = "https://github.com/login/oauth/authorize"
 
 # GitHub rejects an App JWT with more than ten minutes of life. Nine leaves
 # room for clock skew without being refused.
@@ -146,6 +147,19 @@ class GitHubAppCredentials:
     def user_authorization_configured(self) -> bool:
         """Whether the App can exchange a browser authorization code."""
         return bool(self._config.client_id and self._config.client_secret)
+
+    def user_authorization_url(self, state: str) -> str:
+        """Start GitHub's user OAuth flow, independently of App installation.
+
+        The App installation URL only starts OAuth for a new installation. If
+        the App is already installed, GitHub opens the installation settings
+        page instead and never calls us back. Reauthorization therefore has to
+        use the web application flow directly.
+        """
+        if not self.user_authorization_configured:
+            raise GitHubAppError("the GitHub App's user authorization is not configured")
+        query = urlencode({"client_id": self._config.client_id, "state": state})
+        return f"{GITHUB_OAUTH_AUTHORIZE}?{query}"
 
     async def _request(
         self, method: str, path: str, *, token: str, json: dict[str, Any] | None = None
