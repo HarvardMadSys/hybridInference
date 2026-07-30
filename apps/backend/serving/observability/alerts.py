@@ -18,6 +18,7 @@ import socket
 import threading
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -460,11 +461,35 @@ _STATE_TRANSITIONS = ThresholdTransitionTracker(
 _STALE_SWEEP_INTERVAL_SEC = 60
 
 
+@dataclass
+class _PendingResolution:
+    """A resolution whose delivery failed, kept for the sweep timer to retry.
+
+    Re-arming the tracker alone is not a retry path for every alert shape: a
+    state alert (circuit breaker, store health) reports exactly one healthy
+    edge and is never swept, so after a failed send nothing would ever call
+    ``observe`` again and its only resolution would be lost. A metric alert
+    fares little better — the re-armed key must sit through a fresh settling
+    period, and only if traffic continues. Recording the failed send here lets
+    the periodic sweep retry the delivery itself, independent of observations.
+    """
+
+    kind: Literal["metric", "state"]
+    title: str
+
+
+#: Failed resolution sends by key, retried each sweep tick. In-memory like the
+#: trackers: a restart loses it, which degrades to the pre-#1076 behaviour
+#: (the incident's close is never announced), never to a wrong announcement.
+_PENDING_RESOLUTIONS: dict[str, _PendingResolution] = {}
+
+
 def reset_transition_state() -> None:
     """Drop all open-breach state. For tests and for a clean engine restart."""
     for tracker_ in (_TRANSITIONS, _STATE_TRANSITIONS):
         tracker_._firing.clear()
         tracker_._bounds.clear()
+    _PENDING_RESOLUTIONS.clear()
 
 
 async def alert_on_transition(
@@ -507,6 +532,10 @@ async def alert_on_transition(
         stale_after=stale_after,
     )
     if breached:
+        # The incident is (still or again) real, so any resolution queued for a
+        # retry is stale — sending it later would announce a live breach as
+        # recovered.
+        _PENDING_RESOLUTIONS.pop(key, None)
         # Every breached evaluation still goes to the sink, exactly as before.
         # The cooldown there decides whether it becomes a message, and under the
         # control plane each repeat is what advances the incident's occurrence
@@ -529,11 +558,27 @@ async def alert_on_transition(
         cooldown_sec=cooldown_sec,
         status="resolved",
     )
-    if not sent:
+    if sent:
+        # Confirmed close — but only when no re-breach slipped in while the
+        # send was in flight. ``observe`` deleted the firing state on the
+        # resolved edge, so any state present *now* is a new incident opened by
+        # a concurrent ``breached=True`` call; forgetting it would untrack a
+        # live breach and, for a state alert, silently spend the only healthy
+        # edge its close will ever get. On a clean close ``forget`` just drops
+        # the staleness bound, which dynamic keys (per-user cost, per-period
+        # budgets) would otherwise leak one entry each.
+        if not tracker.is_firing(key):
+            tracker.forget(key)
+        _PENDING_RESOLUTIONS.pop(key, None)
+    else:
         # ``observe`` already cleared the key, so without this the only
         # resolution it will ever produce is gone and the incident stays open
-        # with nothing able to close it.
+        # with nothing able to close it. Re-arming alone only helps a rule that
+        # keeps observing; the pending entry lets the sweep timer retry the
+        # send itself, which is the sole retry path for a state alert whose
+        # single healthy edge is already spent.
         tracker.rearm(key, moment)
+        _PENDING_RESOLUTIONS[key] = _PendingResolution(kind=kind, title=title)
     return sent
 
 
@@ -550,13 +595,56 @@ async def sweep_stale_breaches() -> None:
     ongoing outage as recovered.
     """
     now = time.time()
+
+    # First, retry resolutions whose delivery failed on their transition edge.
+    # This runs off observations entirely: for a state alert it is the only
+    # retry there is, and for a metric alert it beats waiting out a fresh
+    # settling period that may never come if traffic stopped.
+    for key, pending in list(_PENDING_RESOLUTIONS.items()):
+        if _PENDING_RESOLUTIONS.get(key) is not pending:
+            # A re-breach cancelled this entry after the snapshot: the breach
+            # is live again and this recovery would announce it as over.
+            continue
+        tracker = _TRANSITIONS if pending.kind == "metric" else _STATE_TRANSITIONS
+        sent = False
+        try:
+            sent = await alert_slack(
+                AlertSeverity.INFO,
+                f"Recovered: {pending.title}",
+                {"alert": key},
+                dedupe_key=key,
+                cooldown_sec=0,
+                status="resolved",
+            )
+        except Exception:
+            # One stuck resolution must not strand every other pending one.
+            log.exception("pending resolution retry failed for %s", key)
+        # Re-validate identity after the await too: a re-breach while the send
+        # was in flight popped this entry, and the firing state it holds now
+        # belongs to a live incident — ``forget`` would untrack it and spend
+        # its future healthy edge. The stale "Recovered" text may already have
+        # reached the channel (nothing can unsend it); what matters is that
+        # the tracker stays correct so the next real transition re-announces
+        # and eventually closes properly. The check is race-free because no
+        # await sits between the send returning and this line.
+        if sent and _PENDING_RESOLUTIONS.get(key) is pending:
+            _PENDING_RESOLUTIONS.pop(key, None)
+            # Confirmed close: clears the re-armed firing state and the key's
+            # staleness bound in one step.
+            tracker.forget(key)
+
     for key in _TRANSITIONS.sweep(now):
         sent = False
         try:
             sent = await alert_slack(
                 AlertSeverity.INFO,
-                f"Recovered: {key}",
-                {"alert": key, "reason": "no longer reported"},
+                # "No recent samples" is a materially weaker claim than an
+                # observed-clear recovery: the rule stopped seeing data (idle
+                # traffic, a drained process), so the breach can no longer be
+                # evaluated. Say so, instead of wording that reads as if the
+                # metric was measured healthy.
+                f"Recovered (no recent samples): {key}",
+                {"alert": key, "reason": "no samples within the rule window"},
                 dedupe_key=key,
                 cooldown_sec=0,
                 status="resolved",
@@ -564,7 +652,18 @@ async def sweep_stale_breaches() -> None:
         except Exception:
             # One stuck resolution must not strand every other open incident.
             log.exception("stale breach resolution failed for %s", key)
-        if not sent:
+        if _TRANSITIONS.is_firing(key):
+            # The metric re-breached while the send was in flight and opened a
+            # fresh incident: leave its state (and the bound the new ``observe``
+            # just set) alone. Forgetting would untrack the live breach;
+            # re-arming would overwrite its liveness clock with a backdated one
+            # and set up a premature no-samples close.
+            continue
+        if sent:
+            # Confirmed close: without this, dynamic keys (per-user cost,
+            # per-period budgets) each leave a ``_bounds`` entry behind forever.
+            _TRANSITIONS.forget(key)
+        else:
             # The sweep already dropped the key, so leaving it dropped would
             # lose the resolution outright. Re-arm stale enough that the *next*
             # sweep retries: plain re-arming would restart the staleness clock
