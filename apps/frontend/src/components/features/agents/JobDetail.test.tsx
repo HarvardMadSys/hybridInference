@@ -17,9 +17,10 @@ import {
   streamAgentTerminal,
   writeAgentTerminalInput,
   writeAgentJobFile,
+  type AgentJobFilesApi,
 } from '@/lib/api/agents';
 
-import { JobDetail } from './JobDetail';
+import { JobDetail, WORKSPACE_WIDTH_STORAGE_KEY } from './JobDetail';
 import type { AgentJob } from './types';
 
 const navigation = vi.hoisted(() => ({ push: vi.fn() }));
@@ -131,13 +132,13 @@ describe('JobDetail', () => {
     });
     vi.mocked(createAgentTerminal).mockReset();
     vi.mocked(deleteAgentTerminal).mockReset();
-    vi.mocked(listAgentTerminals).mockReset();
-    vi.mocked(listAgentTerminals).mockResolvedValue([]);
+    vi.mocked(listAgentTerminals).mockReset().mockResolvedValue([]);
     vi.mocked(resizeAgentTerminal).mockReset();
     vi.mocked(streamAgentTerminal).mockReset();
     vi.mocked(writeAgentTerminalInput).mockReset();
     vi.mocked(writeAgentJobFile).mockReset();
     sessionStorage.clear();
+    localStorage.clear();
   });
 
   afterEach(() => cleanup());
@@ -245,11 +246,12 @@ describe('JobDetail', () => {
     expect(screen.getByText('{"event_type":"message"}')).toBeInTheDocument();
   });
 
-  it('keeps the task as the default view behind a labeled, accessible workspace toggle', () => {
+  it('keeps the task as the default view behind an icon-only, accessible workspace toggle', () => {
     render(<JobDetail job={makeJob()} />);
 
     const workspaceButton = screen.getByRole('button', { name: 'Open workspace' });
-    expect(workspaceButton).toHaveTextContent('Workspace');
+    expect(workspaceButton).toHaveTextContent('');
+    expect(workspaceButton).toHaveClass('h-9', 'w-9', 'justify-center');
     expect(workspaceButton).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('region', { name: 'Job workspace' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Activity' })).not.toBeInTheDocument();
@@ -265,7 +267,7 @@ describe('JobDetail', () => {
     openWorkspace();
 
     const closeButton = screen.getByRole('button', { name: 'Close workspace' });
-    expect(closeButton).toHaveTextContent('Close workspace');
+    expect(closeButton).toHaveTextContent('');
     expect(closeButton).toHaveAttribute('aria-expanded', 'true');
     expect(closeButton).toHaveAttribute('aria-controls', 'job-workspace-pane');
     expect(closeButton).toHaveClass('bg-gray-900', 'text-white');
@@ -275,7 +277,7 @@ describe('JobDetail', () => {
     expect(task).toHaveClass('hidden', 'lg:flex', 'overflow-y-auto');
     expect(screen.getByRole('region', { name: 'Job workspace' })).toHaveClass(
       'overflow-hidden',
-      'lg:border-l',
+      'lg:w-[var(--job-workspace-width)]',
     );
 
     const terminalTab = screen.getByRole('tab', { name: 'Terminal' });
@@ -287,12 +289,42 @@ describe('JobDetail', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Close workspace' }));
     const reopenButton = screen.getByRole('button', { name: 'Open workspace' });
-    expect(reopenButton).toHaveTextContent('Workspace');
+    expect(reopenButton).toHaveTextContent('');
     expect(reopenButton).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('region', { name: 'Job workspace' })).not.toBeInTheDocument();
 
     openWorkspace();
     expect(screen.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('resizes the workspace pane by dragging the seam, and remembers the width', () => {
+    render(<JobDetail job={makeJob()} />);
+
+    expect(screen.queryByRole('separator', { name: 'Resize workspace' })).not.toBeInTheDocument();
+    openWorkspace();
+
+    const pane = screen.getByRole('region', { name: 'Job workspace' });
+    const seam = screen.getByRole('separator', { name: 'Resize workspace' });
+    expect(seam).toHaveAttribute('aria-controls', 'job-workspace-pane');
+    expect(pane.style.getPropertyValue('--job-workspace-width')).toBe('560px');
+
+    // Dragging the seam left widens the workspace and narrows the transcript.
+    fireEvent.pointerDown(seam, { button: 0, clientX: 800 });
+    fireEvent.pointerMove(window, { clientX: 700 });
+    fireEvent.pointerUp(window, { clientX: 700 });
+
+    expect(pane.style.getPropertyValue('--job-workspace-width')).toBe('660px');
+    expect(window.localStorage.getItem(WORKSPACE_WIDTH_STORAGE_KEY)).toBe('660');
+
+    cleanup();
+    render(<JobDetail job={makeJob()} />);
+    openWorkspace();
+
+    expect(
+      screen
+        .getByRole('region', { name: 'Job workspace' })
+        .style.getPropertyValue('--job-workspace-width'),
+    ).toBe('660px');
   });
 
   it('shows a selectable diff-first Git workspace with review and commit tabs', async () => {
@@ -399,7 +431,7 @@ describe('JobDetail', () => {
     expect(screen.getByLabelText('Workspace files')).not.toHaveTextContent('null B');
   });
 
-  it('edits and saves a file from the live worktree', async () => {
+  it('reads a live worktree file without offering to edit it', async () => {
     vi.mocked(getAgentJobFiles)
       .mockResolvedValueOnce({
         path: '',
@@ -418,29 +450,136 @@ describe('JobDetail', () => {
         writable: true,
         source: 'workspace',
       });
-    vi.mocked(writeAgentJobFile).mockResolvedValue({
-      path: 'README.md',
-      kind: 'file',
-      content: '# After',
-      size: 7,
-      binary: false,
-      truncated: false,
-      writable: true,
-      source: 'workspace',
-    });
     render(<JobDetail job={makeJob()} />);
     openWorkspace();
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
     fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }));
 
-    const editor = await screen.findByRole('textbox', { name: 'Edit README.md' });
-    fireEvent.change(editor, { target: { value: '# After' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const pane = screen.getByLabelText('Workspace files');
+    await waitFor(() => expect(pane).toHaveTextContent('# Before'));
+    // Writable is a fact about the workspace, not an invitation: the pane is a
+    // reader, so nothing here can change the run's files.
+    expect(pane).toHaveTextContent('Live worktree');
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Edit README.md' })).not.toBeInTheDocument();
+    expect(writeAgentJobFile).not.toHaveBeenCalled();
+  });
 
+  it('expands a directory in place and keeps the tree around the open file', async () => {
+    const files = async (_jobId: string, path = ''): Promise<AgentJobFilesApi> => {
+      if (path === '')
+        return {
+          path: '',
+          kind: 'directory',
+          entries: [
+            { name: 'README.md', path: 'README.md', kind: 'file', size: 12 },
+            { name: 'src', path: 'src', kind: 'directory' },
+          ],
+        };
+      if (path === 'src')
+        return {
+          path: 'src',
+          kind: 'directory',
+          entries: [
+            { name: 'example.ts', path: 'src/example.ts', kind: 'file', status: 'modified' },
+          ],
+        };
+      return {
+        path: 'src/example.ts',
+        kind: 'file',
+        content: 'export const value = 1;',
+        size: 24,
+        binary: false,
+        truncated: false,
+      };
+    };
+    vi.mocked(getAgentJobFiles).mockImplementation(files);
+    render(<JobDetail job={makeJob()} />);
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+
+    // A directory expands beneath itself rather than replacing the listing.
+    fireEvent.click(await screen.findByRole('button', { name: /src/ }));
+    await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledWith('ajob_1', 'src'));
+    expect(await screen.findByRole('button', { name: /example\.ts/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /README\.md/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /example\.ts/ }));
+
+    // The viewer highlights the source, so assert on the pane's whole text.
     await waitFor(() =>
-      expect(writeAgentJobFile).toHaveBeenCalledWith('ajob_1', 'README.md', '# After'),
+      expect(screen.getByLabelText('Workspace files')).toHaveTextContent('export const value = 1;'),
     );
-    expect(screen.getByLabelText('Workspace files')).toHaveTextContent('Live worktree');
+    // The sibling entries survive opening a file — the tree is not replaced.
+    expect(screen.getByRole('button', { name: /README\.md/ })).toBeInTheDocument();
+  });
+
+  it('gives the tree the whole pane when the workspace is too narrow for two', async () => {
+    // The pane is user-resizable, so the layout follows the panel's own width.
+    // jsdom reports 0 for every box; pretend the pane was dragged narrow.
+    const clientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get: () => 420,
+    });
+    try {
+      vi.mocked(getAgentJobFiles)
+        .mockResolvedValueOnce({
+          path: '',
+          kind: 'directory',
+          entries: [{ name: 'README.md', path: 'README.md', kind: 'file' }],
+        })
+        .mockResolvedValue({
+          path: 'README.md',
+          kind: 'file',
+          content: '# Narrow',
+          size: 8,
+          binary: false,
+          truncated: false,
+        });
+      render(<JobDetail job={makeJob()} />);
+      openWorkspace();
+      fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+      fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }));
+
+      // The file takes the pane rather than sharing it with a 200px sidebar…
+      await waitFor(() =>
+        expect(screen.getByLabelText('Workspace files')).toHaveTextContent('# Narrow'),
+      );
+      expect(screen.queryByRole('button', { name: /README\.md/ })).not.toBeInTheDocument();
+
+      // …and the header button walks back to the tree instead of hiding it.
+      fireEvent.click(screen.getByRole('button', { name: 'Show file tree' }));
+      expect(await screen.findByRole('button', { name: /README\.md/ })).toBeInTheDocument();
+    } finally {
+      if (clientWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', clientWidth);
+      else delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth;
+    }
+  });
+
+  it('opens a changed file from the Changes list', async () => {
+    vi.mocked(getAgentJobFiles)
+      .mockResolvedValueOnce({ path: '', kind: 'directory', entries: [] })
+      .mockResolvedValueOnce({
+        path: 'src/example.ts',
+        kind: 'file',
+        content: 'const fixed = true;',
+        size: 20,
+        binary: false,
+        truncated: false,
+        status: 'modified',
+      });
+    render(<JobDetail job={makeJob()} />);
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+    fireEvent.click(await screen.findByRole('tab', { name: /Changes/ }));
+
+    fireEvent.click(screen.getByRole('button', { name: /example\.ts/ }));
+
+    await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledWith('ajob_1', 'src/example.ts'));
+    expect(await screen.findByText('src')).toBeInTheDocument();
+    expect(screen.getByLabelText('Workspace files')).toHaveTextContent('modified');
   });
 
   it('refreshes an open Files workspace once a running job finishes', async () => {

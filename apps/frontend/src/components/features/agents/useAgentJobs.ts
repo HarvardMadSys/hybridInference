@@ -13,7 +13,9 @@ import {
 import type {
   AgentJobApi,
   AgentJobEventApi,
-  AgentJobFilesApi,
+  AgentJobFileApi,
+  AgentJobFileEntryApi,
+  AgentJobSymlinkApi,
   AgentThreadApi,
 } from '@/lib/api/agents';
 import { toDisplayJob } from './adapt';
@@ -179,46 +181,179 @@ export function useAgentJob(jobId: string): {
   return { job, loading, error, reload };
 }
 
-/** Load one workspace path only while the Files tab is active. */
-export function useAgentJobFiles(
-  jobId: string,
-  path: string,
-  enabled: boolean,
-  refreshKey = '',
-): {
-  node: AgentJobFilesApi | null;
+/** One directory of the workspace tree, as far as it has been loaded. */
+export interface WorkspaceDirectory {
+  entries: AgentJobFileEntryApi[] | null;
   loading: boolean;
   error: string | null;
+}
+
+export interface WorkspaceFilesState {
+  /** Loaded directories keyed by path; the workspace root is the empty string. */
+  directories: Record<string, WorkspaceDirectory>;
+  expanded: Record<string, boolean>;
+  selected: string | null;
+  file: AgentJobFileApi | AgentJobSymlinkApi | null;
+  fileLoading: boolean;
+  fileError: string | null;
+  source: 'workspace' | 'snapshot' | null;
+  toggleDirectory: (path: string) => void;
+  openFile: (path: string) => void;
+  closeFile: () => void;
   reload: () => void;
-} {
-  const [node, setNode] = useState<AgentJobFilesApi | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+}
+
+const filesError = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : 'Could not load workspace files';
+
+/**
+ * Browse the workspace as a lazily expanded tree, only while the tab is active.
+ *
+ * Each directory is one request, cached under its path, so expanding a folder
+ * never discards the rest of the tree. A refresh (job state change, or a save)
+ * refetches the root, every open folder and the open file — nothing else.
+ */
+export function useWorkspaceFiles(
+  jobId: string,
+  enabled: boolean,
+  refreshKey = '',
+): WorkspaceFilesState {
+  const [directories, setDirectories] = useState<Record<string, WorkspaceDirectory>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [selected, setSelected] = useState<string | null>(null);
+  const [file, setFile] = useState<AgentJobFileApi | AgentJobSymlinkApi | null>(null);
+  const [fileLoading, setFileLoading] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [source, setSource] = useState<'workspace' | 'snapshot' | null>(null);
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((value) => value + 1), []);
 
-  useEffect(() => {
-    if (!enabled || !jobId) return undefined;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    getAgentJobFiles(jobId, path)
-      .then((result) => {
-        if (!cancelled) setNode(result);
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) {
-          setNode(null);
-          setError(cause instanceof Error ? cause.message : 'Could not load workspace files');
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, jobId, path, refreshKey, tick]);
+  // A refresh invalidates every in-flight request: results from an older
+  // generation belong to a workspace state the user is no longer looking at.
+  const generation = useRef(0);
+  const alive = useRef(true);
+  const expandedRef = useRef(expanded);
+  const selectedRef = useRef(selected);
 
-  return { node, loading, error, reload };
+  useEffect(() => {
+    expandedRef.current = expanded;
+    selectedRef.current = selected;
+  }, [expanded, selected]);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const loadDirectory = useCallback(
+    async (path: string) => {
+      const mine = generation.current;
+      setDirectories((current) => ({
+        ...current,
+        [path]: { entries: current[path]?.entries ?? null, loading: true, error: null },
+      }));
+      try {
+        const node = await getAgentJobFiles(jobId, path);
+        if (!alive.current || mine !== generation.current) return;
+        setDirectories((current) => ({
+          ...current,
+          [path]: {
+            entries: node.kind === 'directory' ? (node.entries ?? []) : [],
+            loading: false,
+            error: null,
+          },
+        }));
+        if (path === '') setSource(node.source ?? null);
+      } catch (cause) {
+        if (!alive.current || mine !== generation.current) return;
+        setDirectories((current) => ({
+          ...current,
+          [path]: { entries: null, loading: false, error: filesError(cause) },
+        }));
+      }
+    },
+    [jobId],
+  );
+
+  const loadFile = useCallback(
+    async (path: string) => {
+      const mine = generation.current;
+      setFileLoading(true);
+      setFileError(null);
+      try {
+        const node = await getAgentJobFiles(jobId, path);
+        if (!alive.current || mine !== generation.current) return;
+        if (node.kind === 'directory') {
+          // The entry turned out to be a directory — show it in the tree.
+          setDirectories((current) => ({
+            ...current,
+            [path]: { entries: node.entries ?? [], loading: false, error: null },
+          }));
+          setExpanded((current) => ({ ...current, [path]: true }));
+          setSelected(null);
+          setFile(null);
+        } else {
+          setFile(node);
+        }
+      } catch (cause) {
+        if (!alive.current || mine !== generation.current) return;
+        setFile(null);
+        setFileError(filesError(cause));
+      } finally {
+        if (alive.current && mine === generation.current) setFileLoading(false);
+      }
+    },
+    [jobId],
+  );
+
+  useEffect(() => {
+    if (!enabled || !jobId) return;
+    generation.current += 1;
+    setDirectories({});
+    const open = expandedRef.current;
+    for (const path of ['', ...Object.keys(open).filter((path) => open[path])]) {
+      void loadDirectory(path);
+    }
+    if (selectedRef.current) void loadFile(selectedRef.current);
+  }, [enabled, jobId, refreshKey, tick, loadDirectory, loadFile]);
+
+  const toggleDirectory = useCallback(
+    (path: string) => {
+      const open = Boolean(expanded[path]);
+      setExpanded((current) => ({ ...current, [path]: !open }));
+      if (!open && !directories[path]?.entries) void loadDirectory(path);
+    },
+    [directories, expanded, loadDirectory],
+  );
+
+  const openFile = useCallback(
+    (path: string) => {
+      setSelected(path);
+      setFile(null);
+      void loadFile(path);
+    },
+    [loadFile],
+  );
+
+  const closeFile = useCallback(() => {
+    setSelected(null);
+    setFile(null);
+    setFileError(null);
+  }, []);
+
+  return {
+    directories,
+    expanded,
+    selected,
+    file,
+    fileLoading,
+    fileError,
+    source,
+    toggleDirectory,
+    openFile,
+    closeFile,
+    reload,
+  };
 }
