@@ -4,9 +4,16 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { Markdown } from '@/components/ui/Markdown';
-import { cancelAgentJob, followUpAgentJob } from '@/lib/api/agents';
+import {
+  cancelAgentJob,
+  followUpAgentJob,
+  getAgentJobGit,
+  runAgentTerminalCommand,
+  writeAgentJobFile,
+  type AgentGitWorkspaceApi,
+} from '@/lib/api/agents';
 
-import { lifecyclePhaseLabel } from './adapt';
+import { lifecyclePhaseLabel, toDiffFileDetails } from './adapt';
 import type { AgentEvent, AgentJob, AgentThreadMessage } from './types';
 import { useAgentJobFiles } from './useAgentJobs';
 
@@ -460,10 +467,51 @@ function OutcomeCard({ job, onOpenDiff }: { job: AgentJob; onOpenDiff: () => voi
   );
 }
 
-function GitPanel({ job }: { job: AgentJob }) {
-  const files = useMemo(() => job.diffFileDetails ?? [], [job.diffFileDetails]);
+type GitView = 'diff' | 'review' | 'commits';
+
+function GitPanel({ job, active }: { job: AgentJob; active: boolean }) {
+  const [view, setView] = useState<GitView>('diff');
+  const [live, setLive] = useState<AgentGitWorkspaceApi | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  useEffect(() => {
+    if (!active) return undefined;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    getAgentJobGit(job.id)
+      .then((result) => {
+        if (!cancelled) setLive(result);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) {
+          setLive(null);
+          setError(cause instanceof Error ? cause.message : 'Could not load Git workspace');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, job.id, job.state, refreshKey]);
+
+  const files = useMemo(
+    () => (live?.available ? toDiffFileDetails(live.patch) : (job.diffFileDetails ?? [])),
+    [job.diffFileDetails, live],
+  );
   const [selectedPath, setSelectedPath] = useState(files[0]?.path ?? '');
   const selected = files.find((file) => file.path === selectedPath) ?? files[0];
+  const stat = useMemo(
+    () =>
+      files.reduce((total, file) => ({ add: total.add + file.add, del: total.del + file.del }), {
+        add: 0,
+        del: 0,
+      }),
+    [files],
+  );
 
   useEffect(() => {
     if (files.length && !files.some((file) => file.path === selectedPath)) {
@@ -472,50 +520,68 @@ function GitPanel({ job }: { job: AgentJob }) {
   }, [files, selectedPath]);
 
   return (
-    <div className="space-y-5" aria-label="Git workspace">
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-xl border border-gray-200 p-4">
-          <p className="text-xs text-gray-400">Output branch</p>
-          <p className="mt-1 break-all font-mono text-sm text-gray-800">{job.branch}</p>
+    <div className="space-y-4" aria-label="Git workspace">
+      <header className="flex flex-wrap items-center gap-3 border-b border-gray-200 pb-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-gray-800">{job.repo}</p>
+          <p className="truncate font-mono text-xs text-gray-400">
+            {live?.available ? live.branch || 'detached HEAD' : job.branch}
+          </p>
         </div>
-        <div className="rounded-xl border border-gray-200 p-4">
-          <p className="text-xs text-gray-400">Base branch</p>
-          <p className="mt-1 break-all font-mono text-sm text-gray-800">{job.baseRef || '—'}</p>
-        </div>
-        <div className="rounded-xl border border-gray-200 p-4">
-          <p className="text-xs text-gray-400">Base commit</p>
-          <p className="mt-1 font-mono text-sm text-gray-800">{job.baseSha || '—'}</p>
-        </div>
-        <div className="rounded-xl border border-gray-200 p-4">
-          <p className="text-xs text-gray-400">Pull request</p>
-          {job.prUrl ? (
-            <a
-              href={job.prUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-1 inline-block text-sm font-medium text-blue-600 hover:underline"
-            >
-              {job.prLabel ?? 'Open draft PR'}
-            </a>
-          ) : (
-            <p className="mt-1 text-sm text-gray-500">Not published</p>
-          )}
-        </div>
-      </section>
+        <span className="rounded bg-gray-100 px-2 py-1 text-[11px] text-gray-500">
+          {error
+            ? 'Unavailable'
+            : live?.available
+              ? 'Live worktree'
+              : loading
+                ? 'Loading…'
+                : 'Archived result'}
+        </span>
+        <button
+          type="button"
+          onClick={() => setRefreshKey((value) => value + 1)}
+          disabled={loading}
+          className="ml-auto rounded-md border border-gray-200 px-2.5 py-1 text-xs text-gray-500 hover:bg-gray-50 disabled:opacity-50"
+        >
+          {loading ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </header>
 
-      {files.length ? (
+      <div className="flex items-center gap-5 border-b border-gray-200" role="tablist">
+        {(['diff', 'review', 'commits'] as GitView[]).map((item) => (
+          <button
+            key={item}
+            type="button"
+            role="tab"
+            aria-selected={view === item}
+            onClick={() => setView(item)}
+            className={`border-b-2 px-1 pb-2 text-xs font-medium capitalize ${
+              view === item
+                ? 'border-gray-900 text-gray-900'
+                : 'border-transparent text-gray-400 hover:text-gray-700'
+            }`}
+          >
+            {item}
+          </button>
+        ))}
+        {view === 'diff' && files.length ? (
+          <span className="ml-auto pb-2 font-mono text-[11px]">
+            <span className="text-emerald-600">+{stat.add}</span>{' '}
+            <span className="text-red-500">−{stat.del}</span>
+          </span>
+        ) : null}
+      </div>
+
+      {error ? <p className="text-xs text-red-600">{error}</p> : null}
+
+      {view === 'diff' && files.length ? (
         <section className="overflow-hidden rounded-xl border border-gray-200 lg:grid lg:grid-cols-[minmax(14rem,0.35fr)_minmax(0,1fr)]">
           <div className="border-b border-gray-200 bg-gray-50/60 lg:border-b-0 lg:border-r">
             <div className="flex items-center px-3 py-2.5 text-xs text-gray-500">
               <span>
                 {files.length} changed file{files.length === 1 ? '' : 's'}
               </span>
-              {job.diffStat ? (
-                <span className="ml-auto font-mono">
-                  <span className="text-emerald-600">+{job.diffStat.add}</span>{' '}
-                  <span className="text-red-500">−{job.diffStat.del}</span>
-                </span>
-              ) : null}
+              <span className="ml-auto font-mono">Changes</span>
             </div>
             <div className="max-h-[34rem] overflow-auto border-t border-gray-200">
               {files.map((file) => (
@@ -556,10 +622,74 @@ function GitPanel({ job }: { job: AgentJob }) {
             </pre>
           </div>
         </section>
-      ) : (
+      ) : view === 'diff' ? (
         <div className="rounded-xl border border-dashed border-gray-200 px-5 py-12 text-center text-sm text-gray-400">
           No changes yet.
         </div>
+      ) : view === 'review' ? (
+        <section className="space-y-4 rounded-xl border border-gray-200 p-5">
+          <div className="flex items-center gap-3">
+            <div>
+              <p className="text-sm font-medium text-gray-800">
+                {files.length} changed file{files.length === 1 ? '' : 's'}
+              </p>
+              <p className="mt-1 text-xs text-gray-400">
+                Compared with {job.baseRef || job.baseSha || 'the pinned base'}
+              </p>
+            </div>
+            <p className="ml-auto font-mono text-xs">
+              <span className="text-emerald-600">+{stat.add}</span>{' '}
+              <span className="text-red-500">−{stat.del}</span>
+            </p>
+          </div>
+          {files.length ? (
+            <ul className="divide-y divide-gray-100 border-y border-gray-100">
+              {files.map((file) => (
+                <li key={file.path} className="flex gap-3 py-2.5 font-mono text-xs">
+                  <span className="min-w-0 flex-1 truncate text-gray-600">{file.path}</span>
+                  <span className="text-emerald-600">+{file.add}</span>
+                  <span className="text-red-500">−{file.del}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {job.prUrl ? (
+            <a
+              href={job.prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800"
+            >
+              Open pull request
+            </a>
+          ) : (
+            <p className="text-xs text-gray-400">Pull request not published yet.</p>
+          )}
+        </section>
+      ) : (
+        <section className="overflow-hidden rounded-xl border border-gray-200">
+          {live?.available && live.commits.length ? (
+            <ul className="divide-y divide-gray-100">
+              {live.commits.map((commit) => (
+                <li key={commit.sha} className="px-4 py-3">
+                  <div className="flex items-start gap-3">
+                    <span className="font-mono text-xs text-gray-400">{commit.short_sha}</span>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm text-gray-700">{commit.subject}</p>
+                      <p className="mt-1 text-[11px] text-gray-400">
+                        {commit.author} · {commit.authored_at}
+                      </p>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="px-5 py-12 text-center text-sm text-gray-400">
+              Commit history is available for live workspaces.
+            </p>
+          )}
+        </section>
       )}
     </div>
   );
@@ -580,19 +710,67 @@ function isTerminalEvent(event: AgentEvent): event is TerminalEvent {
   );
 }
 
-function TerminalPanel({ events }: { events: AgentEvent[] }) {
+interface InteractiveTerminalEntry {
+  command: string;
+  cwd: string;
+  output: string;
+  stderr: string;
+  exitCode: number;
+}
+
+function TerminalPanel({ jobId, events }: { jobId: string; events: AgentEvent[] }) {
   const terminalEvents = events.filter(isTerminalEvent);
+  const [cwd, setCwd] = useState('/workspace');
+  const [command, setCommand] = useState('');
+  const [running, setRunning] = useState(false);
+  const [entries, setEntries] = useState<InteractiveTerminalEntry[]>([]);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const value = command.trim();
+    if (!value || running) return;
+    const commandCwd = cwd;
+    setCommand('');
+    setRunning(true);
+    try {
+      const result = await runAgentTerminalCommand(jobId, value, commandCwd);
+      setEntries((current) => [
+        ...current,
+        {
+          command: value,
+          cwd: commandCwd,
+          output: result.output,
+          stderr: result.stderr,
+          exitCode: result.exit_code,
+        },
+      ]);
+      setCwd(result.cwd || commandCwd);
+    } catch (cause) {
+      setEntries((current) => [
+        ...current,
+        {
+          command: value,
+          cwd: commandCwd,
+          output: '',
+          stderr: cause instanceof Error ? cause.message : 'Terminal command failed',
+          exitCode: 1,
+        },
+      ]);
+    } finally {
+      setRunning(false);
+    }
+  };
 
   return (
     <section
-      aria-label="Read-only terminal transcript"
+      aria-label="Workspace terminal"
       className="overflow-hidden rounded-xl border border-gray-800 bg-gray-950 shadow-sm"
     >
       <div className="flex items-center border-b border-gray-800 px-4 py-2.5 text-xs text-gray-400">
-        <span className="font-medium text-gray-300">Terminal</span>
-        <span className="ml-auto rounded bg-gray-800 px-2 py-0.5">Read only</span>
+        <span className="font-medium text-gray-300">Terminal 1</span>
+        <span className="ml-auto truncate font-mono text-[11px] text-gray-500">{cwd}</span>
       </div>
-      <div className="min-h-80 max-h-[38rem] overflow-auto p-4 font-mono text-xs leading-relaxed text-gray-200">
+      <div className="min-h-80 max-h-[34rem] overflow-auto p-4 font-mono text-xs leading-relaxed text-gray-200">
         {terminalEvents.length ? (
           terminalEvents.map((event, index) => {
             if (event.kind === 'tool_use') {
@@ -628,9 +806,45 @@ function TerminalPanel({ events }: { events: AgentEvent[] }) {
             );
           })
         ) : (
-          <p className="text-gray-500">No terminal commands have been recorded.</p>
+          <p className="mb-4 text-gray-600">Workspace ready.</p>
         )}
+        {entries.map((entry, index) => (
+          <div key={`${entry.command}-${index}`} className="mb-5 last:mb-0">
+            <div className="whitespace-pre-wrap break-words">
+              <span className="text-cyan-400">{entry.cwd}</span>{' '}
+              <span className="select-none text-emerald-400">$ </span>
+              {entry.command}
+            </div>
+            {entry.output ? (
+              <pre className="mt-1 whitespace-pre-wrap break-words text-gray-300">
+                {entry.output}
+              </pre>
+            ) : null}
+            {entry.stderr ? (
+              <pre className="mt-1 whitespace-pre-wrap break-words text-red-300">
+                {entry.stderr}
+              </pre>
+            ) : null}
+            {entry.exitCode !== 0 ? (
+              <p className="mt-1 text-red-400">process exited with {entry.exitCode}</p>
+            ) : null}
+          </div>
+        ))}
+        {running ? <p className="animate-pulse text-gray-500">Running…</p> : null}
       </div>
+      <form onSubmit={submit} className="flex items-center border-t border-gray-800 px-4 py-3">
+        <span className="mr-2 select-none font-mono text-xs text-emerald-400">$</span>
+        <input
+          value={command}
+          onChange={(event) => setCommand(event.target.value)}
+          aria-label="Terminal command"
+          autoComplete="off"
+          spellCheck={false}
+          disabled={running}
+          className="min-w-0 flex-1 bg-transparent font-mono text-xs text-gray-100 outline-none placeholder:text-gray-700 disabled:opacity-60"
+          placeholder="Type a command and press Enter"
+        />
+      </form>
     </section>
   );
 }
@@ -654,16 +868,40 @@ function parentPath(path: string): string {
   return parts.join('/');
 }
 
-function FilesPanel({ job }: { job: AgentJob }) {
+function FilesPanel({ job, active }: { job: AgentJob; active: boolean }) {
   const [path, setPath] = useState('');
   const { node, loading, error, reload } = useAgentJobFiles(
     job.id,
     path,
-    true,
+    active,
     `${job.state}:${job.diffFiles.length}`,
   );
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const crumbs = path.split('/').filter(Boolean);
   const directoryEntries = node?.kind === 'directory' ? (node.entries ?? []) : [];
+
+  useEffect(() => {
+    if (node?.kind === 'file') {
+      setDraft(node.content ?? '');
+      setSaveError(null);
+    }
+  }, [node]);
+
+  const save = async () => {
+    if (node?.kind !== 'file' || !node.writable || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await writeAgentJobFile(job.id, node.path, draft);
+      reload();
+    } catch (cause) {
+      setSaveError(cause instanceof Error ? cause.message : 'Could not save the file');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <section
@@ -694,8 +932,24 @@ function FilesPanel({ job }: { job: AgentJob }) {
           );
         })}
         <span className="ml-auto shrink-0 rounded bg-white px-2 py-0.5 text-[11px] text-gray-400 ring-1 ring-gray-200">
-          Read only
+          {error
+            ? 'Unavailable'
+            : node?.source === 'workspace'
+              ? 'Live worktree'
+              : loading
+                ? 'Loading…'
+                : 'Archived snapshot'}
         </span>
+        {node?.kind === 'file' && node.writable ? (
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || draft === (node.content ?? '')}
+            className="ml-2 shrink-0 rounded-md bg-gray-900 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-gray-800 disabled:bg-gray-200 disabled:text-gray-400"
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        ) : null}
       </div>
 
       {loading ? (
@@ -768,6 +1022,14 @@ function FilesPanel({ job }: { job: AgentJob }) {
             ) : null}
             {node.truncated ? <span>Preview truncated</span> : null}
           </div>
+          {saveError ? (
+            <p
+              role="alert"
+              className="border-b border-red-100 bg-red-50 px-4 py-2 text-xs text-red-600"
+            >
+              {saveError}
+            </p>
+          ) : null}
           {node.status === 'deleted' ? (
             <p className="px-5 py-12 text-center text-sm text-gray-400">
               This file was deleted by the run.
@@ -776,6 +1038,14 @@ function FilesPanel({ job }: { job: AgentJob }) {
             <p className="px-5 py-12 text-center text-sm text-gray-400">
               Binary files cannot be previewed.
             </p>
+          ) : node.writable ? (
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              aria-label={`Edit ${node.path}`}
+              spellCheck={false}
+              className="block min-h-[34rem] w-full resize-y border-0 bg-white p-4 font-mono text-xs leading-relaxed text-gray-700 outline-none"
+            />
           ) : (
             <pre className="max-h-[38rem] overflow-auto whitespace-pre p-4 font-mono text-xs leading-relaxed text-gray-700">
               {node.content ?? ''}
@@ -1070,54 +1340,70 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
           </div>
         </div>
 
-        {workspaceOpen ? (
-          <aside
-            id="job-workspace-pane"
-            role="region"
-            aria-label="Job workspace"
-            className="min-w-0 overflow-y-auto border-gray-200 bg-white lg:border-l"
+        <aside
+          id="job-workspace-pane"
+          role="region"
+          aria-label="Job workspace"
+          hidden={!workspaceOpen}
+          className="min-w-0 overflow-y-auto border-gray-200 bg-white lg:border-l"
+        >
+          <nav
+            aria-label="Workspace views"
+            role="tablist"
+            className="sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-gray-200 bg-white px-4 text-[13px] font-medium"
           >
-            <nav
-              aria-label="Workspace views"
-              role="tablist"
-              className="sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-gray-200 bg-white px-4 text-[13px] font-medium"
-            >
-              {WORKSPACE_TABS.map((tab) => (
-                <button
-                  key={tab.key}
-                  id={`workspace-tab-${tab.key}`}
-                  type="button"
-                  role="tab"
-                  aria-controls="workspace-tab-panel"
-                  aria-selected={workspaceTab === tab.key}
-                  onClick={() => openWorkspace(tab.key)}
-                  className={`shrink-0 border-b-2 px-3 py-3 ${
-                    workspaceTab === tab.key
-                      ? 'border-gray-900 text-gray-900'
-                      : 'border-transparent text-gray-500 hover:text-gray-900'
-                  }`}
-                >
-                  {tab.label}
-                  {tab.key === 'git' && job.diffFiles.length ? (
-                    <span className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
-                      {job.diffFiles.length}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            </nav>
-            <div
-              id="workspace-tab-panel"
-              role="tabpanel"
-              aria-labelledby={`workspace-tab-${workspaceTab}`}
-              className="p-5"
-            >
-              {workspaceTab === 'git' ? <GitPanel job={job} /> : null}
-              {workspaceTab === 'terminal' ? <TerminalPanel events={visibleEvents} /> : null}
-              {workspaceTab === 'files' ? <FilesPanel job={job} /> : null}
-            </div>
-          </aside>
-        ) : null}
+            {WORKSPACE_TABS.map((tab) => (
+              <button
+                key={tab.key}
+                id={`workspace-tab-${tab.key}`}
+                type="button"
+                role="tab"
+                aria-controls={`workspace-panel-${tab.key}`}
+                aria-selected={workspaceTab === tab.key}
+                onClick={() => openWorkspace(tab.key)}
+                className={`shrink-0 border-b-2 px-3 py-3 ${
+                  workspaceTab === tab.key
+                    ? 'border-gray-900 text-gray-900'
+                    : 'border-transparent text-gray-500 hover:text-gray-900'
+                }`}
+              >
+                {tab.label}
+                {tab.key === 'git' && job.diffFiles.length ? (
+                  <span className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
+                    {job.diffFiles.length}
+                  </span>
+                ) : null}
+              </button>
+            ))}
+          </nav>
+          <div
+            id="workspace-panel-git"
+            role="tabpanel"
+            aria-labelledby="workspace-tab-git"
+            hidden={workspaceTab !== 'git'}
+            className="p-5"
+          >
+            <GitPanel job={job} active={workspaceOpen && workspaceTab === 'git'} />
+          </div>
+          <div
+            id="workspace-panel-terminal"
+            role="tabpanel"
+            aria-labelledby="workspace-tab-terminal"
+            hidden={workspaceTab !== 'terminal'}
+            className="p-5"
+          >
+            <TerminalPanel jobId={job.id} events={visibleEvents} />
+          </div>
+          <div
+            id="workspace-panel-files"
+            role="tabpanel"
+            aria-labelledby="workspace-tab-files"
+            hidden={workspaceTab !== 'files'}
+            className="p-5"
+          >
+            <FilesPanel job={job} active={workspaceOpen && workspaceTab === 'files'} />
+          </div>
+        </aside>
       </div>
 
       {drawer ? (

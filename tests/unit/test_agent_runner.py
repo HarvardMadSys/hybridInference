@@ -294,17 +294,79 @@ def test_missing_runtime_binary_fails_the_job_loudly(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(runner_mod, "ControlPlane", lambda *a, **k: control)
-    monkeypatch.setattr(runner_mod.shutil, "which", lambda _name: None)
+    backend = ProcessBackend(acknowledged_unsafe=True)
+    monkeypatch.setattr(backend, "has_binary", lambda _name: False)
 
     code = runner_mod.run_once(
         base_url="http://gw",
         dispatcher_token="d",
         worker_id="w",
         workdir=str(tmp_path),
+        backend=backend,
     )
     assert code == 2
     assert control.finished[0] == "failed"
     assert "not installed" in control.finished[1]
+
+
+def test_live_runner_reuses_one_durable_workspace_per_job(monkeypatch, tmp_path):
+    """A retry addresses the same tree and never reapplies its saved context patch."""
+
+    class Control(FakeControl):
+        def finish(self, state, detail=None, **_kwargs):
+            self.finished = (state, detail)
+
+    class Backend(_CountingBackend):
+        def adopt_workdir(self, _path: str) -> None:
+            pass
+
+    job = ClaimedJob(
+        **{
+            **_JOB.__dict__,
+            "thread_id": "athr_durable",
+            "base_sha": "abcdef1",
+            "context_patch": "diff --git a/a b/a\n",
+        }
+    )
+    control = Control()
+    workdirs: list[str] = []
+    monkeypatch.setattr(runner_mod, "claim", lambda **_kwargs: job)
+    monkeypatch.setattr(runner_mod, "ControlPlane", lambda *_args, **_kwargs: control)
+    monkeypatch.setattr(runner_mod, "Heartbeater", lambda *_args, **_kwargs: FakeHeart())
+    runtime = type("Runtime", (), {"binary": "fake"})()
+    monkeypatch.setattr(runner_mod, "get_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(
+        runner_mod,
+        "existing_checkout_sha",
+        lambda workdir, _repo: workdirs.append(workdir) or "abcdef1",
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "align_existing_checkout",
+        lambda workdir, **_kwargs: workdirs.append(workdir) or "abcdef1",
+    )
+    monkeypatch.setattr(runner_mod, "checkout_output_branch", lambda *_args, **_kwargs: "agent/x")
+    applied: list[str] = []
+    monkeypatch.setattr(
+        runner_mod, "apply_context_patch", lambda *_args, **_kwargs: applied.append("patch")
+    )
+    monkeypatch.setattr(runner_mod, "run_agent", lambda *_args, **_kwargs: (0, "", []))
+    monkeypatch.setattr(runner_mod, "build_patch", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(runner_mod, "save_workspace_snapshot", lambda *_args, **_kwargs: True)
+
+    code = runner_mod.run_once(
+        base_url="http://gw",
+        dispatcher_token="d",
+        worker_id="w",
+        workdir=str(tmp_path / "unused"),
+        workspace_root=str(tmp_path / "workspaces"),
+        backend=Backend(),
+    )
+
+    expected = str(tmp_path / "workspaces" / "ajob_1")
+    assert code == 0
+    assert workdirs == [expected]
+    assert applied == [], "the saved patch is already present in a reused live worktree"
 
 
 def test_empty_queue_is_a_clean_no_op(monkeypatch, tmp_path):

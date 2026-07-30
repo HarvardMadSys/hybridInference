@@ -30,11 +30,9 @@ import os
 import pathlib
 import queue
 import re
-import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -42,7 +40,7 @@ from typing import Any
 
 import httpx
 
-from serving.agent_jobs.patch_gate import validate_patch
+from serving.agent_jobs.patch_gate import branch_name_for, validate_patch
 from serving.agent_jobs.runtimes import (
     EMPTY_RUNTIME_MCP_CONFIG,
     AgentRuntime,
@@ -52,11 +50,13 @@ from serving.agent_jobs.runtimes import (
 )
 from serving.agent_jobs.sandbox import SandboxBackend, SandboxSpec, build_backend_from_env
 from serving.agent_jobs.setup import build_cache_from_env, run_setup
+from serving.agent_jobs.workspace_paths import purge_stale_workspaces, workspace_path
 from serving.agent_jobs.workspace_snapshot import build_workspace_snapshot
 
 DEFAULT_LEASE_TTL_S = 120.0
 HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_AGENT_TIMEOUT_S = 3600.0
+DEFAULT_WORKSPACE_TTL_S = 7 * 24 * 60 * 60
 # How often the control checks run while the agent is silent.
 _POLL_INTERVAL_S = 0.5
 _GIT_TIMEOUT_S = 300.0
@@ -519,6 +519,17 @@ def existing_checkout_sha(workdir: str, repo: str) -> str | None:
     return head.stdout.strip() if head.returncode == 0 else None
 
 
+def checkout_output_branch(workdir: str, branch_id: str) -> str:
+    """Put a fresh durable worktree on the publisher's local output branch."""
+    branch = branch_name_for(branch_id)
+    switched = _run_git(["checkout", "--quiet", "-B", branch, "HEAD"], cwd=workdir)
+    if switched.returncode != 0:
+        raise WorktreeError(
+            f"could not create workspace branch {branch}: {switched.stderr.strip()[:200]}"
+        )
+    return branch
+
+
 def align_existing_checkout(workdir: str, *, checked_out: str, base_sha: str | None) -> str:
     """Move a pre-populated worktree onto the commit the job pinned.
 
@@ -556,7 +567,9 @@ def align_existing_checkout(workdir: str, *, checked_out: str, base_sha: str | N
     return target
 
 
-def build_patch(workdir: str, backend: SandboxBackend | None = None) -> str:
+def build_patch(
+    workdir: str, backend: SandboxBackend | None = None, *, base_sha: str | None = None
+) -> str:
     """Return the agent's work as a patch, or an empty string if nothing changed.
 
     Runs git **inside the sandbox**, never in the trusted runner. The agent
@@ -568,11 +581,26 @@ def build_patch(workdir: str, backend: SandboxBackend | None = None) -> str:
     the patch in the same container the agent already ran in keeps that
     execution inside the boundary that was built for it.
 
-    ``git add -A -N`` stages intents so new files appear in the diff. Nothing
-    is committed and nothing is pushed: the trusted publisher owns that side,
-    and it re-validates the patch before it touches a repository.
+    A disposable index records intent-to-add entries so new files appear in
+    the diff without changing the owner's real staging state. Nothing is
+    committed or pushed: the trusted publisher owns that side and re-validates
+    the patch before it touches a repository.
     """
-    script = "git add -A -N >/dev/null 2>&1; git diff --binary HEAD"
+    if base_sha and not _COMMIT_SHA.fullmatch(base_sha):
+        raise WorktreeError(f"base_sha must be a commit hash, got {base_sha!r}")
+    target = base_sha or "HEAD"
+    # Diff against the pinned base, not necessarily HEAD: the workspace
+    # terminal legitimately lets its owner create local commits, and those
+    # changes still belong in the platform-owned publishing patch.
+    # Use a disposable index: inspecting/publishing a durable worktree must not
+    # leave intent-to-add entries behind in the owner's real Git index.
+    script = (
+        'index_path="${TMPDIR:-/tmp}/hyi-patch-index.$$"; '
+        'rm -f "$index_path"; trap \'rm -f "$index_path"\' EXIT; '
+        f'GIT_INDEX_FILE="$index_path" git read-tree {target} && '
+        'GIT_INDEX_FILE="$index_path" git add -A -N >/dev/null 2>&1 && '
+        f'GIT_INDEX_FILE="$index_path" git diff --binary {target}'
+    )
     if backend is None:
         # No sandbox available (unit tests, an operator running by hand). Run
         # with config sources neutralised — this is weaker than the sandbox,
@@ -592,6 +620,10 @@ def build_patch(workdir: str, backend: SandboxBackend | None = None) -> str:
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            raise WorktreeError(
+                f"could not build the workspace patch: {result.stderr.strip()[-500:]}"
+            )
         return result.stdout
 
     process = backend.spawn(
@@ -646,7 +678,12 @@ def _read_bounded(process: Any, *, deadline_s: float, max_bytes: int) -> str:
             )
         chunks.append(line)
 
-    process.wait()
+    exit_code = process.wait()
+    if exit_code != 0:
+        stderr = process.stderr_text().strip()
+        raise WorktreeError(
+            f"could not build the workspace patch (exit {exit_code}): {stderr[-500:]}"
+        )
     return "".join(chunks)
 
 
@@ -806,6 +843,7 @@ def run_once(
     agent_timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
     generic_command: str | None = None,
     backend: SandboxBackend | None = None,
+    workspace_root: str | None = None,
 ) -> int:
     """Claim one job, run it, and report the outcome. Returns a process exit code.
 
@@ -833,6 +871,15 @@ def run_once(
     if job is None:
         print("no queued agent job; nothing to do")
         return 0
+
+    # Long-lived runners give every job a durable worktree.  The browser and
+    # terminal broker address this same directory after the agent exits;
+    # follow-up jobs receive their own worktree and are rehydrated through the
+    # existing, validated context-patch path.
+    if workspace_root is not None:
+        durable = workspace_path(workspace_root, job.job_id)
+        durable.mkdir(parents=True, exist_ok=True)
+        workdir = str(durable)
 
     print(f"claimed {job.job_id} attempt {job.attempt_no} runtime={job.runtime}")
     control = ControlPlane(base_url, job.worker_token)
@@ -873,6 +920,7 @@ def run_once(
         # read, and the patch it produced was necessarily empty.
         try:
             checked_out = existing_checkout_sha(workdir, job.repo)
+            reused_workspace = checked_out is not None
             if checked_out is None:
                 base_sha = prepare_worktree(
                     workdir=workdir,
@@ -880,13 +928,22 @@ def run_once(
                     base_sha=job.base_sha,
                     clone_token=job.clone_token,
                 )
+                if workspace_root is not None:
+                    checkout_output_branch(workdir, job.thread_id or job.job_id)
             else:
-                # An externally prepared worktree (the Actions dogfood checks
-                # the repository out itself) — but on whatever ref triggered
-                # the workflow, which is not necessarily what the job pinned.
-                base_sha = align_existing_checkout(
-                    workdir, checked_out=checked_out, base_sha=job.base_sha
-                )
+                if workspace_root is not None:
+                    # A retry of this same job must preserve edits (and local
+                    # commits) already made in its durable worktree.  Fresh
+                    # follow-up jobs use a different directory, so there is no
+                    # cross-turn base drift to repair here.
+                    base_sha = job.base_sha or checked_out
+                else:
+                    # An externally prepared worktree (the Actions dogfood
+                    # checks the repository out itself) may be on an unrelated
+                    # ref, so the one-shot path still aligns to the pinned base.
+                    base_sha = align_existing_checkout(
+                        workdir, checked_out=checked_out, base_sha=job.base_sha
+                    )
             # The agent owns this tree from here on, so it must be able to
             # write to it — and git must not see it as another user's repo.
             backend.adopt_workdir(workdir)
@@ -898,7 +955,11 @@ def run_once(
             NormalizedEvent("lifecycle", {"phase": "checked_out", "base_sha": base_sha})
         )
 
-        if job.context_patch:
+        # A durable workspace already contains the preceding turn's edits.
+        # Re-applying the stored context patch would duplicate them (and often
+        # fail halfway through), so patch rehydration is only for fresh/legacy
+        # worktrees.
+        if job.context_patch and not reused_workspace:
             try:
                 apply_context_patch(workdir, job.context_patch)
             except WorktreeError as exc:
@@ -960,7 +1021,7 @@ def run_once(
             control.finish("cancelled", "cancelled by owner", base_sha=base_sha)
             return 0
 
-        patch = build_patch(workdir, backend)
+        patch = build_patch(workdir, backend, base_sha=job.base_sha or base_sha)
         if patch.strip():
             control.save_artifact("patch", patch)
             control.append_event(
@@ -998,9 +1059,9 @@ def run_once(
         control.finish("succeeded", "agent completed", base_sha=base_sha)
         return 0
     except WorktreeError as exc:
-        # Bounded patch generation raises this on a timeout or byte cap. Left
-        # to escape, the job stayed `running` until its lease expired and was
-        # then retried — repeating a deterministic failure until the attempt
+        # Patch generation raises this on a Git failure, timeout or byte cap.
+        # Left to escape, the job stayed `running` until its lease expired and
+        # was retried — repeating a deterministic failure until the attempt
         # budget ran out, with nothing in the record saying why.
         print(f"patch generation failed: {exc}", file=sys.stderr)
         with contextlib.suppress(Exception):
@@ -1011,6 +1072,9 @@ def run_once(
         print(f"lease lost, stopping: {exc}", file=sys.stderr)
         return 3
     finally:
+        if workspace_root is not None:
+            with contextlib.suppress(OSError):
+                os.utime(workdir, None)
         heart.stop()
         control.close()
 
@@ -1026,12 +1090,16 @@ def run_forever(
     generic_command: str | None = None,
     idle_sleep_s: float = 5.0,
     backend: SandboxBackend | None = None,
+    workspace_ttl_s: float = DEFAULT_WORKSPACE_TTL_S,
 ) -> int:
     """Claim and run jobs until interrupted — the long-lived runner.
 
-    Each job gets a fresh directory under ``workdir_root`` which is removed
-    afterwards, so one job can never read or corrupt another's worktree even
-    when they share a host.
+    Each agent job gets a stable directory under ``workdir_root``.  Job and
+    user-terminal containers still remain disposable isolation boundaries, but
+    the mounted repository persists so Files, Git and the user terminal all see
+    the same worktree.  The validated job id keeps neighbouring workspaces
+    disjoint even when runners share a host; follow-up turns are rehydrated into
+    their own tree through the existing patch flow.
 
     A failure in one job must not take the runner down: the store already
     records the outcome against that job, and a runner that exits on the first
@@ -1051,17 +1119,17 @@ def run_forever(
     print(f"agent runner {worker_id} started (sandbox backend: {backend.name})", flush=True)
 
     while True:
-        job_dir = pathlib.Path(tempfile.mkdtemp(prefix="job-", dir=str(root)))
         try:
             run_once(
                 base_url=base_url,
                 dispatcher_token=dispatcher_token,
                 worker_id=worker_id,
-                workdir=str(job_dir),
+                workdir=str(root),
                 lease_ttl=lease_ttl,
                 agent_timeout_s=agent_timeout_s,
                 generic_command=generic_command,
                 backend=backend,
+                workspace_root=str(root),
             )
         except KeyboardInterrupt:
             return 0
@@ -1078,15 +1146,14 @@ def run_forever(
             # Keep serving: the store owns this job's outcome, and one bad
             # repository must not stop every other queued job.
             print(f"agent runner: job failed unexpectedly: {exc}", file=sys.stderr, flush=True)
-        finally:
-            shutil.rmtree(job_dir, ignore_errors=True)
-
         # Housekeeping on the idle tick: a snapshot cache on the same host as
         # every job worktree must not be the thing that fills the disk.
         cache = build_cache_from_env()
         if cache is not None:
             with contextlib.suppress(Exception):
                 cache.purge_expired()
+        with contextlib.suppress(Exception):
+            purge_stale_workspaces(root, ttl_seconds=workspace_ttl_s)
 
         # `run_once` returns 0 with nothing claimed too; sleeping only when the
         # queue was empty would need a separate signal, and a short sleep after
@@ -1163,7 +1230,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workdir-root",
         default=os.environ.get("AGENT_WORKDIR_ROOT", "/var/lib/hybridinference/agent-jobs"),
-        help="Where per-job worktrees are created in --loop mode.",
+        help="Where per-job worktrees are retained in --loop mode.",
+    )
+    parser.add_argument(
+        "--workspace-ttl",
+        type=float,
+        default=_env_float("AGENT_WORKSPACE_TTL_S", DEFAULT_WORKSPACE_TTL_S),
+        help="Seconds to retain an idle job workspace (0 disables cleanup).",
     )
     return parser
 
@@ -1186,6 +1259,7 @@ def main(argv: list[str] | None = None) -> int:
             lease_ttl=args.lease_ttl,
             agent_timeout_s=args.agent_timeout,
             generic_command=args.generic_command,
+            workspace_ttl_s=args.workspace_ttl,
         )
 
     return run_once(
@@ -1209,6 +1283,7 @@ __all__ = [
     "LeaseLost",
     "WorktreeError",
     "build_patch",
+    "checkout_output_branch",
     "existing_checkout_sha",
     "main",
     "prepare_worktree",

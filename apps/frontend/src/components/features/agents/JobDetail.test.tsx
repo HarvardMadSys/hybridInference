@@ -4,7 +4,14 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { cancelAgentJob, followUpAgentJob, getAgentJobFiles } from '@/lib/api/agents';
+import {
+  cancelAgentJob,
+  followUpAgentJob,
+  getAgentJobFiles,
+  getAgentJobGit,
+  runAgentTerminalCommand,
+  writeAgentJobFile,
+} from '@/lib/api/agents';
 
 import { JobDetail } from './JobDetail';
 import type { AgentJob } from './types';
@@ -19,6 +26,9 @@ vi.mock('@/lib/api/agents', () => ({
   cancelAgentJob: vi.fn(),
   followUpAgentJob: vi.fn(),
   getAgentJobFiles: vi.fn(),
+  getAgentJobGit: vi.fn(),
+  runAgentTerminalCommand: vi.fn(),
+  writeAgentJobFile: vi.fn(),
 }));
 
 function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
@@ -82,6 +92,16 @@ describe('JobDetail', () => {
     vi.mocked(cancelAgentJob).mockReset();
     vi.mocked(followUpAgentJob).mockReset();
     vi.mocked(getAgentJobFiles).mockReset();
+    vi.mocked(getAgentJobGit).mockReset();
+    vi.mocked(getAgentJobGit).mockResolvedValue({
+      available: false,
+      branch: '',
+      changes: [],
+      patch: '',
+      commits: [],
+    });
+    vi.mocked(runAgentTerminalCommand).mockReset();
+    vi.mocked(writeAgentJobFile).mockReset();
   });
 
   afterEach(() => cleanup());
@@ -238,7 +258,7 @@ describe('JobDetail', () => {
     expect(screen.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('shows a selectable per-file Git diff with branch and PR facts', () => {
+  it('shows a selectable diff-first Git workspace with review and commit tabs', async () => {
     render(
       <JobDetail
         job={makeJob({
@@ -251,26 +271,57 @@ describe('JobDetail', () => {
 
     openWorkspace();
 
-    expect(screen.getByLabelText('Git workspace')).toHaveTextContent('agent/ajob_1');
+    await waitFor(() =>
+      expect(screen.getByLabelText('Git workspace')).toHaveTextContent('Archived result'),
+    );
     expect(screen.getByLabelText('Git workspace')).toHaveTextContent('src/example.ts');
-    expect(screen.getByRole('link', { name: 'draft PR 44' })).toHaveAttribute(
+    fireEvent.click(screen.getByRole('tab', { name: 'review' }));
+    expect(screen.getByRole('link', { name: 'Open pull request' })).toHaveAttribute(
       'href',
       'https://github.com/owner/repository/pull/44',
     );
+    fireEvent.click(screen.getByRole('tab', { name: 'diff' }));
     expect(screen.getByText('+fixed')).toBeInTheDocument();
+    await waitFor(() => expect(getAgentJobGit).toHaveBeenCalledWith('ajob_1'));
   });
 
-  it('renders terminal events as a read-only transcript with no input', () => {
+  it('keeps the agent transcript and executes commands in the workspace terminal', async () => {
+    vi.mocked(runAgentTerminalCommand).mockResolvedValue({
+      output: 'README.md\n',
+      stderr: '',
+      exit_code: 0,
+      cwd: '/workspace',
+    });
+    vi.mocked(getAgentJobFiles).mockResolvedValue({
+      path: '',
+      kind: 'directory',
+      entries: [],
+    });
     render(<JobDetail job={makeJob()} />);
 
     openWorkspace();
     fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
 
-    const terminal = screen.getByLabelText('Read-only terminal transcript');
+    const terminal = screen.getByLabelText('Workspace terminal');
     expect(terminal).toHaveTextContent('$ pytest -q');
     expect(terminal).toHaveTextContent('2 passed');
-    expect(terminal).toHaveTextContent('Read only');
-    expect(within(terminal).queryByRole('textbox')).not.toBeInTheDocument();
+    const input = within(terminal).getByRole('textbox', { name: 'Terminal command' });
+    fireEvent.change(input, { target: { value: 'ls' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await waitFor(() =>
+      expect(runAgentTerminalCommand).toHaveBeenCalledWith('ajob_1', 'ls', '/workspace'),
+    );
+    expect(await within(terminal).findByText('README.md')).toBeInTheDocument();
+    expect(terminal).not.toHaveTextContent('Read only');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
+    expect(screen.getByLabelText('Workspace terminal')).toHaveTextContent('README.md');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close workspace' }));
+    openWorkspace();
+    expect(screen.getByLabelText('Workspace terminal')).toHaveTextContent('README.md');
   });
 
   it('loads Files lazily and safely refuses to preview a symlink', async () => {
@@ -325,6 +376,50 @@ describe('JobDetail', () => {
 
     expect(await screen.findByText('# Updated')).toBeInTheDocument();
     expect(screen.getByLabelText('Workspace files')).not.toHaveTextContent('null B');
+  });
+
+  it('edits and saves a file from the live worktree', async () => {
+    vi.mocked(getAgentJobFiles)
+      .mockResolvedValueOnce({
+        path: '',
+        kind: 'directory',
+        entries: [{ name: 'README.md', path: 'README.md', kind: 'file' }],
+        writable: true,
+        source: 'workspace',
+      })
+      .mockResolvedValue({
+        path: 'README.md',
+        kind: 'file',
+        content: '# Before',
+        size: 8,
+        binary: false,
+        truncated: false,
+        writable: true,
+        source: 'workspace',
+      });
+    vi.mocked(writeAgentJobFile).mockResolvedValue({
+      path: 'README.md',
+      kind: 'file',
+      content: '# After',
+      size: 7,
+      binary: false,
+      truncated: false,
+      writable: true,
+      source: 'workspace',
+    });
+    render(<JobDetail job={makeJob()} />);
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+    fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }));
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit README.md' });
+    fireEvent.change(editor, { target: { value: '# After' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(writeAgentJobFile).toHaveBeenCalledWith('ajob_1', 'README.md', '# After'),
+    );
+    expect(screen.getByLabelText('Workspace files')).toHaveTextContent('Live worktree');
   });
 
   it('refreshes an open Files workspace once a running job finishes', async () => {

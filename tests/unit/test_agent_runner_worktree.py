@@ -24,6 +24,7 @@ from serving.agent_jobs.runner import (
     align_existing_checkout,
     apply_context_patch,
     build_patch,
+    checkout_output_branch,
     existing_checkout_sha,
     prepare_worktree,
 )
@@ -167,6 +168,45 @@ def test_a_populated_worktree_produces_a_real_patch(tmp_path: Path, remote):
     # `git add -A -N` is what makes a file the agent created show up at all.
     assert "brand_new.txt" in patch
     assert "Say hello." in patch
+
+
+def test_a_durable_workspace_uses_the_publishers_output_branch(tmp_path: Path, remote):
+    base, repo, _first, _head = remote
+    workdir = tmp_path / "job"
+    workdir.mkdir()
+    prepare_worktree(workdir=str(workdir), repo=repo, base_sha=None, remote_base=base)
+
+    branch = checkout_output_branch(str(workdir), "athr_example")
+
+    assert branch == "agent/athr_example"
+    assert _git("branch", "--show-current", cwd=workdir).strip() == branch
+
+
+def test_patch_keeps_terminal_commits_relative_to_the_pinned_base(tmp_path: Path, remote):
+    base, repo, _first, head = remote
+    workdir = tmp_path / "job"
+    workdir.mkdir()
+    prepare_worktree(workdir=str(workdir), repo=repo, base_sha=head, remote_base=base)
+    checkout_output_branch(str(workdir), "athr_example")
+    (workdir / "terminal.txt").write_text("committed from terminal\n")
+    _git("add", "terminal.txt", cwd=workdir)
+    _git("commit", "-m", "terminal commit", cwd=workdir)
+
+    patch = build_patch(str(workdir), base_sha=head)
+
+    assert "terminal.txt" in patch
+    assert "+committed from terminal" in patch
+    assert _git("status", "--porcelain", cwd=workdir).strip() == ""
+
+
+def test_patch_fails_when_the_pinned_base_is_missing(tmp_path: Path, remote):
+    base, repo, _first, _head = remote
+    workdir = tmp_path / "job"
+    workdir.mkdir()
+    prepare_worktree(workdir=str(workdir), repo=repo, base_sha=None, remote_base=base)
+
+    with pytest.raises(WorktreeError, match="could not build"):
+        build_patch(str(workdir), base_sha="deadbeef")
 
 
 def test_an_unreachable_repository_fails_the_job_with_a_reason(tmp_path: Path):
@@ -373,6 +413,27 @@ def test_building_the_patch_refuses_unbounded_output():
         runner_module._read_bounded(process, deadline_s=30, max_bytes=4096)
 
     assert process.killed
+
+
+def test_building_the_patch_rejects_a_failed_git_process():
+    """A bad base or hostile config must fail the job, not look like an empty diff."""
+    from serving.agent_jobs import runner as runner_module
+
+    class FailedProcess:
+        def lines(self):
+            return iter(())
+
+        def kill(self) -> None:
+            raise AssertionError("a completed process must not be killed")
+
+        def wait(self) -> int:
+            return 128
+
+        def stderr_text(self) -> str:
+            return "fatal: bad revision"
+
+    with pytest.raises(WorktreeError, match="bad revision"):
+        runner_module._read_bounded(FailedProcess(), deadline_s=30, max_bytes=4096)
 
 
 # ── denied egress is the data P0 exists to produce ─────────────────────
