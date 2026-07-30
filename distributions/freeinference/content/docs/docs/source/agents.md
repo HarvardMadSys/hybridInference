@@ -102,6 +102,39 @@ agent are metered by the gateway per task and count toward your account usage
 like your other API traffic. Every task runs under a budget cap, so a runaway
 agent loop is stopped by the platform.
 
+## Security
+
+The pipeline above *is* the security model; this section collects the
+guarantees in one place:
+
+- **Per-task isolation.** Each task gets its own sandbox, running as an
+  unprivileged user with all Linux capabilities dropped, destroyed when the
+  task ends. Tasks share nothing with each other.
+- **Deny-all network.** The sandbox's only route is the FreeInference
+  gateway. Repository contents are treated as untrusted input: even if they
+  hijack the agent's instructions (prompt injection), there is no path to
+  send your code or data anywhere else.
+- **Credentials stay outside.** GitHub tokens live on the platform and never
+  enter the sandbox; the checkout token is read-only and scoped to the one
+  repository. The sandbox's only credential is the task's model key —
+  budget-capped, valid for one task, revoked when it ends.
+- **One write path.** The only write ever performed on your repository is
+  the scanned patch, pushed to a fresh `agent/<job-id>` branch as a draft
+  pull request. The GitHub App holds no `workflows` permission, so `.github/`
+  cannot change even past the patch gate — and a human review stands between
+  every change and a merge.
+- **Nothing to leak.** There is no secrets store: a task cannot receive
+  credentials, so a compromised task cannot expose any.
+- **No new data path for your code.** Model calls from a task flow through
+  the same FreeInference gateway and providers as your interactive API
+  traffic.
+- **Audit trail.** Every task keeps an append-only event log — each tool
+  call and its result as it happened — and per-task model usage is metered
+  on the platform side, independent of what the agent reports.
+
+During the beta, task events and patches are retained with the job so you
+can revisit past runs; a formal retention policy is planned.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
