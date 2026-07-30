@@ -493,6 +493,28 @@ async def _source_control_providers(
             github_error = str(exc)
 
     grants = await store.list_repo_grants(user_id=user_id)
+    # The install URL is the wrong way to *start* a connection — GitHub sends
+    # an already-installed App there straight to its settings page instead of
+    # through the callback — but that settings page is the only route to
+    # adding or removing the App's repositories, and GitHub routes user and
+    # organization installations to the right one without us having to know
+    # which this is. State rides along because a changed installation comes
+    # back through the same callback, and it is issued separately from the
+    # connect state so that following one link cannot invalidate the other.
+    github_manage_url = None
+    if github_configured and grants:
+        try:
+            manage_state = await issue_oauth_state(store, user_id=user_id, provider="github")
+            github_manage_url = github_authorization_url(github_install_url, state=manage_state)
+        except SourceControlError as exc:
+            # A malformed install URL no longer breaks connecting, so it must
+            # not surface as a connection error — but an operator still needs
+            # to hear that the management link is missing because of it.
+            logger.warning(
+                "agent_github_manage_url_unavailable",
+                extra={"event": "agent_github_manage_url_unavailable", "reason": str(exc)},
+            )
+
     github_repos = await repos_for_user(
         user_id, store=store, app_credentials=app_credentials, env={"AGENT_REPO_ALLOWLIST": ""}
     )
@@ -502,6 +524,7 @@ async def _source_control_providers(
             configured=github_configured,
             connected=bool(grants),
             connect_url=github_connect_url,
+            manage_url=github_manage_url,
             capabilities=["Agent checkout", "branch discovery", "draft PR publishing"],
             accounts=[
                 SourceControlAccount(

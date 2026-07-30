@@ -171,6 +171,7 @@ export interface AgentIntegrationProviderApi {
   configured: boolean;
   connected: boolean;
   connect_url: string | null;
+  manage_url?: string | null;
   capabilities: string[];
   accounts: AgentIntegrationAccountApi[];
   repositories: AgentIntegrationRepositoryApi[];

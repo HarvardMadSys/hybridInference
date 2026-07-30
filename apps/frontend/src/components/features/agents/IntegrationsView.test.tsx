@@ -102,6 +102,39 @@ describe('IntegrationsView', () => {
     expect(screen.getAllByText('Admin setup required')).toHaveLength(1);
   });
 
+  it('offers a repository configuration link for a connected installation', async () => {
+    mockedGetIntegrations.mockResolvedValue({
+      providers: [
+        {
+          ...integrations.providers[0],
+          manage_url: 'https://github.com/apps/example/installations/new?state=manage',
+        },
+        integrations.providers[1],
+      ],
+    });
+
+    render(<IntegrationsView />);
+
+    await screen.findByText('Connected as HarvardMadSys · 2 repositories');
+    fireEvent.click(screen.getByText('Manage'));
+
+    expect(screen.getByRole('link', { name: 'Configure repositories' })).toHaveAttribute(
+      'href',
+      'https://github.com/apps/example/installations/new?state=manage',
+    );
+  });
+
+  it('omits the configuration link when the gateway offers no install URL', async () => {
+    mockedGetIntegrations.mockResolvedValue(integrations);
+
+    render(<IntegrationsView />);
+
+    await screen.findByText('Connected as HarvardMadSys · 2 repositories');
+    fireEvent.click(screen.getByText('Manage'));
+
+    expect(screen.queryByRole('link', { name: 'Configure repositories' })).not.toBeInTheDocument();
+  });
+
   it('disconnects an account and refreshes provider state', async () => {
     mockedGetIntegrations.mockResolvedValueOnce(integrations).mockResolvedValueOnce({
       providers: [

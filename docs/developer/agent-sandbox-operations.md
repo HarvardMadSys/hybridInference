@@ -220,6 +220,13 @@ installation. Keeping those two URLs separate is required for reconnects:
 GitHub sends an already-installed App's `/installations/new` link to its
 settings page without invoking the OAuth callback.
 
+That same redirect is what *Configure repositories* relies on, so the install
+URL stays wired to a connected user's Manage menu: it is the only route to the
+page where the App's repository selection changes, and GitHub picks the user
+or organization settings page itself. Set `AGENT_GITHUB_APP_INSTALL_URL` to
+the `/apps/<slug>/installations/new` form — pointing it at the OAuth endpoint
+instead leaves a user with no installation looping through authorization.
+
 The same App also supplies the runner's clone credential, and the two are
 *not* the same token. An installation token inherits every permission the App
 holds unless it asks for less, so the clone token is requested as
@@ -322,7 +329,7 @@ runners share one queue with no leader and no sharding.
 | `AGENT_SANDBOX_UID` / `_GID` | `10001` | Only for a custom sandbox image; must match its user |
 | `AGENT_REPO_ALLOWLIST` | — | Comma-separated `owner/name`, or `owner/*`, for the single-tenant dogfood. Users who connect the App themselves do not need it; unset simply means the only entitlement is a user's own connection |
 | `AGENT_GITHUB_APP_CLIENT_ID` / `_CLIENT_SECRET` | — | The App's OAuth half. Only the user-facing connect flow needs it; minting installation tokens uses the private key alone |
-| `AGENT_GITHUB_APP_INSTALL_URL` | — | GitHub App installation URL used only when OAuth finds no accessible installation. The gateway adds a short-lived, user-bound `state`; set the App callback to `<frontend>/agents/connected?provider=github` |
+| `AGENT_GITHUB_APP_INSTALL_URL` | — | GitHub App installation URL, `https://github.com/apps/<slug>/installations/new`. Used when OAuth finds no accessible installation, and behind *Configure repositories* for a connected user. The gateway adds a short-lived, user-bound `state`; set the App callback to `<frontend>/agents/connected?provider=github` |
 | `AGENT_GITLAB_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` | — | GitLab.com OAuth application credentials, kept on the gateway. Configure only `read_user` and `read_api` scopes |
 | `AGENT_GITLAB_OAUTH_REDIRECT_URI` | — | Exact registered callback, normally `<frontend>/agents/connected?provider=gitlab`. HTTPS is required except for localhost development |
 | `AGENT_SANDBOX_ALLOW_OPEN_NETWORK` | — | Accepts a non-`internal` sandbox network. Preflight refuses one otherwise, so a missing setting cannot quietly mean full egress |

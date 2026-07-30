@@ -158,6 +158,40 @@ async def test_github_status_connect_replay_and_disconnect(monkeypatch) -> None:
     assert reconnect_url.path == "/login/oauth/authorize"
 
 
+async def test_connected_github_offers_an_installation_management_url(monkeypatch) -> None:
+    """A grant unlocks the only route to the App's repository selection.
+
+    Connecting deliberately no longer visits the install URL, so without this
+    link a connected user has nowhere in the product to add or remove the
+    repositories their agents can reach.
+    """
+    monkeypatch.setenv("API_KEY_SECRET", "api-test-secret")
+    monkeypatch.setenv(
+        "AGENT_GITHUB_APP_INSTALL_URL",
+        "https://github.com/apps/freeinference/installations/new",
+    )
+    store = IntegrationStore()
+    app = build_app(store, github=FakeGitHubApp())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        before = await client.get("/v1/agent/integrations")
+        connect_state = parse_qs(urlparse(before.json()["providers"][0]["connect_url"]).query)[
+            "state"
+        ][0]
+        await client.post(
+            "/v1/agent/integrations/github/connect",
+            json={"code": "github-code", "state": connect_state},
+        )
+        after = await client.get("/v1/agent/integrations")
+
+    assert before.json()["providers"][0]["manage_url"] is None
+    github = after.json()["providers"][0]
+    manage_url = urlparse(github["manage_url"])
+    assert manage_url.path == "/apps/freeinference/installations/new"
+    # Two single-use states: following one link must not spend the other.
+    manage_state = parse_qs(manage_url.query)["state"][0]
+    assert manage_state != parse_qs(urlparse(github["connect_url"]).query)["state"][0]
+
+
 async def test_github_oauth_without_installation_offers_install_step(monkeypatch) -> None:
     class GitHubAppWithoutInstallation(FakeGitHubApp):
         async def installations_for_user(self, token: str):
