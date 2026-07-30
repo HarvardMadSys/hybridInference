@@ -21,6 +21,19 @@ vi.mock('@/components/providers', () => ({
   }),
 }));
 
+const configuredBranding = {
+  appName: 'Example Inference',
+  orgName: 'Example Org',
+  orgUrl: 'https://org.example.test',
+  statusUrl: 'https://status.example.test/',
+};
+
+let brandingOverride: Record<string, unknown> = configuredBranding;
+
+vi.mock('@/components/providers/SiteConfigProvider', () => ({
+  useSiteConfig: () => ({ branding: brandingOverride, features: { rag: true } }),
+}));
+
 describe('Header', () => {
   afterEach(() => {
     cleanup();
@@ -28,6 +41,7 @@ describe('Header', () => {
 
   beforeEach(() => {
     replace.mockClear();
+    brandingOverride = configuredBranding;
     authState = {
       isAuthenticated: false,
     };
@@ -44,9 +58,17 @@ describe('Header', () => {
 
     const statusLink = screen.getByRole('link', { name: 'Status' });
 
-    expect(statusLink).toHaveAttribute('href', 'https://status.staging.freeinference.org/');
+    expect(statusLink).toHaveAttribute('href', 'https://status.example.test/');
     expect(statusLink).toHaveAttribute('target', '_blank');
     expect(statusLink).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('hides the status link when the deployment has no status page', () => {
+    brandingOverride = { ...configuredBranding, statusUrl: '' };
+
+    render(<Header />);
+
+    expect(screen.queryByRole('link', { name: 'Status' })).not.toBeInTheDocument();
   });
 
   it('shows a dashboard link in the header for authenticated users', () => {

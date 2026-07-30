@@ -9,11 +9,14 @@ HybridInference is a FastAPI gateway that routes LLM requests across local
 inference servers (vLLM, SGLang, Ollama) and remote OpenAI-compatible providers
 (DeepSeek, Zhipu, OpenRouter, Anthropic, Gemini, etc.).
 
-- **Production:** https://freeinference.org
-- **Staging:** https://staging.freeinference.org (deployed from `dev`)
-- **Public docs:** https://doc.freeinference.org/
-- **Internal docs:** https://internaldoc.freeinference.org/
 - **Repo README:** [README.md](README.md)
+- **Developer guide:** [docs/developer/](docs/developer/)
+
+If you are working on a particular deployment, its hosts, accounts and
+operational notes live in that deployment's overlay — see
+`distributions/<name>/AGENTS.md`. They are deliberately not here: this file
+ships with the source, and a URL or credential written into it is published to
+everyone who clones the repository.
 
 ## 2. Repo map
 
@@ -24,7 +27,7 @@ apps/
     routing/      # Routing engine: strategies, routers, health, circuit breaker
   frontend/       # Next.js web UI
 config/           # YAML config: models, routing, alerts
-services/         # status-monitor-worker, freeinference-harness
+services/         # Sidecar workers (present only where a deployment ships them)
 tests/
   unit/           # Fast, mocked. Default in CI.
   api/            # Per-provider API surface tests.
@@ -33,11 +36,14 @@ tests/
   external/       # Hits live servers. Marker: external.
 ops/              # Operational tooling (deploy, setup, runtime, admin, perf, db, cloudflare)
 deploy/           # Systemd units, Docker, observability manifests
+distributions/      # Deployment overlays, one directory each. Absent from a
+                    # neutral checkout; see section 6.5.
+  <name>/           # manifest + site config, branding, content, docs
+    content/docs/   # that deployment's public doc-site source (Sphinx)
 docs/
   developer/      # Developer guide (built into the internal doc site)
   agents/         # Agent-facing artifacts: specs/ and plans/
   superpowers/    # Additional design specs/ and plans/
-  free_inference/ # Public doc site source (Sphinx → doc.freeinference.org)
   reviews/        # Code review records
 ```
 
@@ -77,9 +83,10 @@ Pre-commit hooks are installed by `make setup-dev`.
 - **Branch off `dev`**, never `main`.
 - **Branch naming:** `<user>/<scope>/<feature-name>` (e.g. `jason/claude/add-x`).
 - **Use a git worktree** rather than working in the main checkout. Worktree should be put in /tmp/claude/worktree/<feature-name>.
-- **PRs target `dev`.** Staging deploys from `dev`.
-- **Verify against staging** before claiming done.
-- **Staging test account:** `admin@admin.com` / `admin`.
+- **PRs target `dev`.**
+- **Verify against a running deployment** before claiming done. If you are
+  working on one, its staging host and test account are in its overlay guide
+  (`distributions/<name>/AGENTS.md`) — never write credentials into this file.
 
 ## 6. Project-specific knowledge
 
@@ -128,9 +135,9 @@ For the full diagram (network layer, observability, storage), see
 
 | File | Owns |
 |---|---|
-| `config/models.yaml` | Model registry (required); per-model `router:` / `router_params:` (incl. RouteWise tuning) |
-| `config/routing.yaml` | Local/remote split, health checks (optional) |
-| `config/alerts.yaml` | Alert rules |
+| `distributions/<name>/config/models.yaml` | Model registry — a deployment's; per-model `router:` / `router_params:` (incl. RouteWise tuning). `config/examples/` has one to start from |
+| `distributions/<name>/config/routing.yaml` | Local/remote split, health checks — a deployment's; the gateway starts without one |
+| `distributions/<name>/config/alerts.yaml` | Alert rules — a deployment's, not the project's |
 
 YAML supports env var interpolation: `${VAR}` and `${VAR:-default}`.
 

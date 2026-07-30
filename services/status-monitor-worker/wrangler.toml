@@ -33,12 +33,20 @@ PROBE_DEADLINE_MS = "60000"
 # (~20 min apart) confirms a sustained outage and suppresses a single transient
 # blip. Only fires when the SLACK_WEBHOOK_URL secret is set.
 ALERT_FAILURE_THRESHOLD = "2"
-# Above this many models changing state in one cycle, the per-model pages collapse
-# into a single summary message so a provider-wide blip doesn't flood the channel.
+# Legacy rollback mode only (ALERT_DEFAULT_OWNER=legacy): above this many models
+# changing state in one cycle, legacy-owned pages collapse into a single summary
+# message. Control-plane incidents always open one per model (D1, 2026-07-27).
 ALERT_STORM_THRESHOLD = "5"
 # New individual model incidents use the unified Control Plane. Incidents opened
 # before this switch stay pinned to their legacy writer until they recover.
 ALERT_DEFAULT_OWNER = "control-plane"
+# New cycle-level (gateway-down) incidents use the Control Plane. Deliberately a
+# separate flag from ALERT_DEFAULT_OWNER: it flips only after the manually
+# deployed control plane accepts monitoring_cycle_failure, because this Worker
+# auto-deploys from dev and a shared flag would open a window where cycle
+# events are emitted and rejected. An open cycle incident stays pinned to the
+# writer that opened it until its recovery is confirmed.
+ALERT_CYCLE_OWNER = "control-plane"
 
 [version_metadata]
 binding = "CF_VERSION_METADATA"

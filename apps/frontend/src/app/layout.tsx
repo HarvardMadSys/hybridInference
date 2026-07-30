@@ -32,7 +32,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Script
               id="statcounter-loader"
               src="https://www.statcounter.com/counter/counter.js"
-              strategy="afterInteractive"
+              strategy="lazyOnload"
             />
           </>
         )}

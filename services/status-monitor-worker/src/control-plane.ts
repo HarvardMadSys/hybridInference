@@ -1,3 +1,4 @@
+import type { CycleStatus } from "./db";
 import { modelAlertFingerprint } from "./oncall";
 import type { ProbeResult } from "./probe";
 
@@ -57,6 +58,32 @@ export interface ModelUnavailableAlertEvent {
   readonly evidence_refs: readonly string[];
 }
 
+export type MonitoringCycleReason =
+  | "account_rejected"
+  | "discovery_failed"
+  | "not_configured"
+  | "unknown";
+
+/**
+ * Wire body for a whole-cycle monitoring failure. Deliberately carries a
+ * closed reason enum and no free-text error: cycle errors embed upstream
+ * response fragments, which stay on the monitor's own dashboard/health
+ * surfaces instead of crossing the trust boundary.
+ */
+export interface MonitoringCycleAlertEvent {
+  readonly schema_version: 1;
+  readonly event_id: string;
+  readonly alert_type: "monitoring_cycle_failure";
+  readonly fingerprint: string;
+  readonly status: ModelUnavailableStatus;
+  readonly severity: "critical" | "info";
+  readonly title: string;
+  readonly occurred_at: string;
+  readonly summary: string;
+  readonly context: { readonly reason?: MonitoringCycleReason };
+  readonly evidence_refs: readonly string[];
+}
+
 export interface StatusMonitorControlPlaneService {
   submitStatusMonitorEvent(
     bodyJson: string,
@@ -65,8 +92,11 @@ export interface StatusMonitorControlPlaneService {
 }
 
 export interface PendingCanonicalEvent {
+  /** Which durable pipeline owns the row: per-model incidents or the cycle. */
+  readonly kind: "model" | "cycle";
   readonly eventId: string;
   readonly fingerprint: string;
+  /** Empty for `kind: "cycle"` — filter by kind before using it. */
   readonly modelId: string;
   readonly status: ModelUnavailableStatus;
   readonly bodyJson: string;
@@ -125,6 +155,16 @@ const REASONS = new Set<ModelUnavailabilityReason>([
   "timeout",
   "unknown",
   "upstream_error",
+]);
+
+/** Fixed incident fingerprint for the whole-cycle monitoring failure. */
+export const CYCLE_FINGERPRINT = "status-monitor:cycle";
+const CYCLE_CONTEXT_KEYS = new Set(["reason"]);
+const CYCLE_REASONS = new Set<MonitoringCycleReason>([
+  "account_rejected",
+  "discovery_failed",
+  "not_configured",
+  "unknown",
 ]);
 
 function metaKey(prefix: string, fingerprint: string, status?: ModelUnavailableStatus): string {
@@ -211,6 +251,23 @@ export function prepareDrainOwnerRelease(
   return db.prepare(`DELETE FROM meta WHERE key = ?`).bind(metaKey(OWNER_KEY_PREFIX, fingerprint));
 }
 
+/**
+ * Builds an owner-pin write for an atomic delivery-commit batch. Pinning
+ * inside the commit (rather than on attempt, as {@link resolveDrainOwner}
+ * does) is for paths that may attempt an edge no destination can deliver:
+ * pinning those on attempt would permanently claim the incident for a writer
+ * that can never complete it.
+ */
+export function prepareDrainOwnerWrite(
+  db: D1Database,
+  fingerprint: string,
+  owner: AlertDeliveryOwner,
+): D1PreparedStatement {
+  return db
+    .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+    .bind(metaKey(OWNER_KEY_PREFIX, fingerprint), owner);
+}
+
 function failureReason(error: string | null): ModelUnavailabilityReason {
   if (error === null) return "unknown";
   if (/\b(?:401|403|auth|unauthori[sz]ed|forbidden)\b/i.test(error)) return "authentication";
@@ -265,6 +322,46 @@ export function modelUnavailableEvent(
       ? `${result.modelId} failed ${threshold} consecutive synthetic probes.`
       : `${result.modelId} accepted a successful synthetic probe.`,
     context,
+    evidence_refs: [],
+  };
+}
+
+/**
+ * Classify a cycle failure without shipping the raw error text. Order matters:
+ * "PROBER_API_KEY not set" would otherwise match the account patterns.
+ */
+export function cycleFailureReason(error: string | null): MonitoringCycleReason {
+  if (error === null) return "unknown";
+  if (/PROBER_API_KEY not set/i.test(error)) return "not_configured";
+  if (/\b(?:401|403|429)\b|api key|verif|quota|account-wide/i.test(error)) {
+    return "account_rejected";
+  }
+  if (/discovery failed|\/models response|probe targets/i.test(error)) {
+    return "discovery_failed";
+  }
+  return "unknown";
+}
+
+/** Translate one cycle transition into the platform-neutral wire contract. */
+export function monitoringCycleEvent(
+  cycle: CycleStatus,
+  transition: ModelUnavailableStatus,
+  eventId: string = crypto.randomUUID(),
+): MonitoringCycleAlertEvent {
+  const firing = transition === "firing";
+  return {
+    schema_version: 1,
+    event_id: eventId,
+    alert_type: "monitoring_cycle_failure",
+    fingerprint: CYCLE_FINGERPRINT,
+    status: transition,
+    severity: firing ? "critical" : "info",
+    title: firing ? "Monitoring cycle failing" : "Monitoring cycle recovered",
+    occurred_at: occurredAt(cycle.checkedAt ?? ""),
+    summary: firing
+      ? "The monitoring cycle failed; no models could be probed."
+      : "The monitoring cycle recovered.",
+    context: firing ? { reason: cycleFailureReason(cycle.error) } : {},
     evidence_refs: [],
   };
 }
@@ -365,7 +462,6 @@ function parsePending(
     }
     if (
       body.schema_version !== 1 ||
-      body.alert_type !== "model_unavailable" ||
       body.fingerprint !== fingerprint ||
       body.status !== status ||
       typeof body.event_id !== "string" ||
@@ -377,7 +473,33 @@ function parsePending(
       !validBoundedString(body.summary, 4_000) ||
       !Array.isArray(body.evidence_refs) ||
       body.evidence_refs.length !== 0 ||
-      !isRecord(body.context) ||
+      !isRecord(body.context)
+    ) {
+      throw new Error("invalid event fields");
+    }
+    if (body.alert_type === "monitoring_cycle_failure") {
+      if (
+        fingerprint !== CYCLE_FINGERPRINT ||
+        !hasExactKeys(body.context, CYCLE_CONTEXT_KEYS) ||
+        (status === "firing" &&
+          (body.severity !== "critical" ||
+            !CYCLE_REASONS.has(body.context.reason as MonitoringCycleReason))) ||
+        (status === "resolved" &&
+          (body.severity !== "info" || body.context.reason !== undefined))
+      ) {
+        throw new Error("invalid cycle event");
+      }
+      return {
+        kind: "cycle",
+        eventId: body.event_id,
+        fingerprint,
+        modelId: "",
+        status,
+        bodyJson: stored.body_json,
+      };
+    }
+    if (
+      body.alert_type !== "model_unavailable" ||
       !hasExactKeys(body.context, CONTEXT_KEYS) ||
       body.context.model_id === undefined ||
       !validBoundedString(body.context.model_id, 256) ||
@@ -411,6 +533,7 @@ function parsePending(
       throw new Error("invalid lifecycle");
     }
     return {
+      kind: "model",
       eventId: body.event_id,
       fingerprint,
       modelId: body.context.model_id,
@@ -429,7 +552,7 @@ function parsePending(
  */
 export async function getOrCreatePendingCanonicalEvent(
   db: D1Database,
-  candidate: ModelUnavailableAlertEvent,
+  candidate: ModelUnavailableAlertEvent | MonitoringCycleAlertEvent,
 ): Promise<PendingCanonicalEvent> {
   const key = metaKey(PENDING_KEY_PREFIX, candidate.fingerprint, candidate.status);
   const stored = await readMeta(db, key);
@@ -467,6 +590,25 @@ function parseListedPending(key: string, raw: string): PendingCanonicalEvent {
   }
 }
 
+/**
+ * Count durable transitions still awaiting Control Plane acceptance.
+ *
+ * Deliberately a raw count with no parsing: the health endpoint must be able to
+ * observe a stuck pipeline even when a stored row is corrupt (where
+ * {@link listPendingCanonicalEvents} would throw). A row is created before each
+ * submission and deleted in the post-delivery batch, so a count that stays
+ * above zero across cycles (~20 minutes apart) means the Control Plane keeps
+ * rejecting or is unreachable — the log-only rejection reports otherwise
+ * require `wrangler tail` to see.
+ */
+export async function countPendingCanonicalEvents(db: D1Database): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS n FROM meta WHERE key GLOB ?`)
+    .bind(`${PENDING_KEY_PREFIX}*`)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
 /** Returns every durable transition that must be retried before new edges. */
 export async function listPendingCanonicalEvents(
   db: D1Database,
@@ -479,6 +621,21 @@ export async function listPendingCanonicalEvents(
 }
 
 /**
+ * Log why a submission did not land.
+ *
+ * Because there is no relay/webhook fallback, an unreported rejection is a
+ * silent alerting outage: the pending body is retried forever while nothing
+ * reaches Slack. Only the fingerprint and a closed-set reason code are emitted —
+ * the fingerprint is a bounded, control-character-free model identifier, and the
+ * canonical body is never logged.
+ */
+function reportUndelivered(pending: PendingCanonicalEvent, reason: string): void {
+  console.error(
+    `alert control plane did not accept ${pending.status} ${pending.fingerprint}: ${reason}`,
+  );
+}
+
+/**
  * Submit only to the control plane. Failure keeps the pending body for an
  * idempotent retry and deliberately has no relay/webhook fallback.
  */
@@ -488,11 +645,12 @@ export async function submitPendingCanonicalEvent(
   versionMetadata: WorkerVersionMetadata | undefined,
 ): Promise<boolean> {
   const deploymentId = versionMetadata?.id;
-  if (
-    service === undefined ||
-    typeof deploymentId !== "string" ||
-    !CLOUDFLARE_VERSION_ID_RE.test(deploymentId)
-  ) {
+  if (service === undefined) {
+    reportUndelivered(pending, "service_binding_missing");
+    return false;
+  }
+  if (typeof deploymentId !== "string" || !CLOUDFLARE_VERSION_ID_RE.test(deploymentId)) {
+    reportUndelivered(pending, "deployment_identity_invalid");
     return false;
   }
   try {
@@ -500,9 +658,19 @@ export async function submitPendingCanonicalEvent(
       pending.bodyJson,
       deploymentId,
     );
-    return isStatusMonitorRpcResult(result) && result.accepted;
+    if (!isStatusMonitorRpcResult(result)) {
+      reportUndelivered(pending, "malformed_rpc_result");
+      return false;
+    }
+    if (!result.accepted) {
+      // `errorCode` is a closed enum of stable codes (RPC_ERROR_CODES), so it
+      // carries no producer data and is safe to log verbatim.
+      reportUndelivered(pending, result.errorCode);
+      return false;
+    }
+    return true;
   } catch {
-    console.error("alert control plane service binding submission failed");
+    reportUndelivered(pending, "service_binding_threw");
     return false;
   }
 }

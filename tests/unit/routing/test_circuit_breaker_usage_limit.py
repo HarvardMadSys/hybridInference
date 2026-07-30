@@ -43,14 +43,14 @@ async def test_usage_limit_alerts_once_then_suppresses_retrips(monkeypatch):
     _trip_env(monkeypatch)
     cb = _CircuitBreaker(provider="zai:api.z.ai:443")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)  # CLOSED -> OPEN
         assert cb.state == _CircuitState.OPEN
         await _drain_alert_tasks()
         mock_alert.assert_awaited_once()
         assert cb._alert_suppressed_until > 0.0
-        context = mock_alert.await_args.args[2]
+        context = mock_alert.await_args.kwargs["context"]()
         assert "quota_reset_at" in context
 
         # A half-open probe fails again with the same usage-limit error: the
@@ -70,7 +70,7 @@ async def test_active_mute_suppresses_non_usage_limit_retrip(monkeypatch):
     _trip_env(monkeypatch)
     cb = _CircuitBreaker(provider="zai:api.z.ai:443")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)  # trip + page
         await _drain_alert_tasks()
@@ -89,7 +89,7 @@ async def test_usage_limit_realerts_after_reset(monkeypatch):
     _trip_env(monkeypatch)
     cb = _CircuitBreaker(provider="zai:api.z.ai:443")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         await _drain_alert_tasks()
@@ -110,7 +110,7 @@ async def test_undelivered_page_does_not_mute_the_outage(monkeypatch):
 
     # A dropped page (relay/webhook failure, snooze, cooldown) returns False:
     # the outage must stay un-muted so the next probe re-pages.
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock(return_value=False)):
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock(return_value=False)):
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         await _drain_alert_tasks()
@@ -122,7 +122,7 @@ async def test_recovery_during_delivery_does_not_restore_stale_mute(monkeypatch)
     _trip_env(monkeypatch)
     cb = _CircuitBreaker(provider="zai:api.z.ai:443")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()):
         # Trip schedules the page but it has not run yet (no await), so the
         # endpoint can recover while the page is still "in flight".
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
@@ -139,21 +139,21 @@ async def test_non_usage_limit_failure_is_not_suppressed(monkeypatch):
     _trip_env(monkeypatch)
     cb = _CircuitBreaker(provider="openai:api.openai.com:443")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="stream_exception", detail="HTTP 502 bad gateway")
         cb.on_failure(reason="stream_exception", detail="HTTP 502 bad gateway")
         await _drain_alert_tasks()
         mock_alert.assert_awaited_once()
         # No usage-limit -> no suppression deadline, no reset context field.
         assert cb._alert_suppressed_until == 0.0
-        assert "quota_reset_at" not in mock_alert.await_args.args[2]
+        assert "quota_reset_at" not in mock_alert.await_args.kwargs["context"]()
 
 
 async def test_recovery_clears_suppression(monkeypatch):
     _trip_env(monkeypatch)
     cb = _CircuitBreaker(provider="zai:api.z.ai:443")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()):
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         await _drain_alert_tasks()
@@ -168,7 +168,7 @@ async def test_suppressed_retrip_emits_structured_info_log(monkeypatch, caplog):
     cb = _CircuitBreaker(provider="zai:api.z.ai:443")
 
     with (
-        patch("routing.endpoint_health.alert_slack", new=AsyncMock()),
+        patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()),
         caplog.at_level(logging.INFO, logger="routing.routers"),
     ):
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
@@ -197,10 +197,10 @@ async def test_registry_derives_detail_from_exc_for_hedged_failures(monkeypatch)
     endpoint = "zai:api.z.ai:443"
     exc = _UsageLimitError(_WEEKLY_DETAIL)
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
         reg.record_failure(endpoint, reason="UsageLimitError", exc=exc)
         reg.record_failure(endpoint, reason="UsageLimitError", exc=exc)  # trips
         await _drain_alert_tasks()
         mock_alert.assert_awaited_once()
         assert reg._circuits[endpoint]._alert_suppressed_until > 0.0
-        assert "quota_reset_at" in mock_alert.await_args.args[2]
+        assert "quota_reset_at" in mock_alert.await_args.kwargs["context"]()

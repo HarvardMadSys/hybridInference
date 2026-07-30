@@ -30,12 +30,27 @@ if TYPE_CHECKING:
 __all__ = [
     "FixedRatioStrategy",
     "build_router",
+    "register_missing_strategy",
     "register_strategy",
     "validate_router_config",
 ]
 
 
 _STRATEGIES: dict[str, tuple[type, type]] = {}
+
+# Strategies whose implementation package is not installed (optional extras).
+# Selecting one in models.yaml must fail configuration validation with an
+# actionable message instead of failing at backend import time.
+_MISSING_STRATEGIES: dict[str, str] = {}
+
+
+def register_missing_strategy(name: str, reason: str) -> None:
+    """Record that ``name`` is a known strategy without an installed backend.
+
+    Used by the import guards for optional strategy packages (and by tests).
+    A later successful :func:`register_strategy` for the same name wins.
+    """
+    _MISSING_STRATEGIES[name] = reason
 
 
 def register_strategy(name: str):
@@ -92,6 +107,8 @@ def _validated_strategy(
 ) -> tuple[type, Any]:
     """Resolve and validate a strategy without constructing its router."""
     if name not in _STRATEGIES:
+        if name in _MISSING_STRATEGIES:
+            raise ValueError(_MISSING_STRATEGIES[name])
         raise ValueError(f"unknown router strategy {name!r}; known: {sorted(_STRATEGIES)}")
     router_cls, params_cls = _STRATEGIES[name]
     validated = params_cls.model_validate(params or {})
@@ -167,4 +184,17 @@ def build_router(
 # Trigger registration of built-in strategies via import side effects.
 # Imports are at the bottom to avoid circular imports: the strategy modules
 # import from routing.routers / routing.routewise at their top.
-from routing.strategies import fixed, routewise  # noqa: F401
+from routing.strategies import fixed  # noqa: F401
+
+try:
+    from routing.strategies import routewise  # noqa: F401
+except ImportError:  # pragma: no cover - exercised only without the extra
+    # RouteWise is heading for an optional install (private package). Keep
+    # the neutral registry importable and surface the gap at configuration
+    # validation time instead of at backend import time.
+    register_missing_strategy(
+        "routewise",
+        "router strategy 'routewise' is configured but the optional RouteWise "
+        "package is not installed; install the 'routewise' extra "
+        "(uv sync --extra routewise) or select a different router in models.yaml",
+    )

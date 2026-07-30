@@ -292,3 +292,40 @@ def test_build_routewise_returns_routewise_router():
     assert router.config.latency_min_samples == 100
     # route_table is None until attach_route_table is called.
     assert router.route_table is None
+
+
+@pytest.mark.unit
+def test_missing_strategy_fails_validation_with_actionable_message(monkeypatch):
+    """A known-but-uninstalled strategy fails config validation, not import."""
+    import routing.strategies as strategies_module
+    from routing.strategies import validate_router_config
+
+    monkeypatch.delitem(strategies_module._STRATEGIES, "ghost", raising=False)
+    monkeypatch.setitem(
+        strategies_module._MISSING_STRATEGIES,
+        "ghost",
+        "router strategy 'ghost' requires the optional 'ghost' extra",
+    )
+    with pytest.raises(ValueError, match="optional 'ghost' extra"):
+        validate_router_config("ghost", {})
+
+
+@pytest.mark.unit
+def test_installed_strategy_wins_over_a_missing_marker(monkeypatch):
+    """register_strategy after register_missing_strategy takes precedence."""
+    import routing.strategies as strategies_module
+    from routing.strategies import validate_router_config
+
+    monkeypatch.setitem(strategies_module._MISSING_STRATEGIES, "routewise", "should never surface")
+    # routewise is installed in this environment, so validation still works.
+    params = validate_router_config("routewise", {})
+    assert params is not None
+
+
+@pytest.mark.unit
+def test_unknown_strategy_error_is_unchanged(monkeypatch):
+    """Names in neither registry keep the known-strategies error."""
+    from routing.strategies import validate_router_config
+
+    with pytest.raises(ValueError, match="unknown router strategy 'nope'"):
+        validate_router_config("nope", {})

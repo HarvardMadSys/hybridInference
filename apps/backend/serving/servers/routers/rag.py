@@ -1,6 +1,6 @@
 """RAG docs-assistant endpoints.
 
-Answers questions about FreeInference using the public user docs as a knowledge
+Answers questions about this deployment using its own user docs as a knowledge
 base. The handler is a thin orchestrator over the gateway's *own* public API:
 
 * the query is embedded via ``POST {RAG_API_BASE_URL}/embeddings`` and
@@ -115,12 +115,19 @@ class RagChatRequest(BaseModel):
 _USER_AGENT = "doc_assistant"
 
 
-def _auth_headers(settings: RagSettings) -> dict[str, str]:
-    return {
+def _auth_headers(settings: RagSettings, on_behalf_of: str | None = None) -> dict[str, str]:
+    headers = {
         "Authorization": f"Bearer {settings.api_key}",
         "Content-Type": "application/json",
         "User-Agent": _USER_AGENT,
     }
+    # Attribute the self-call to the real end user (verified by JWT at
+    # /v1/rag/chat) rather than to the shared RAG_API_KEY account. The gateway
+    # honors this header only for the trusted RAG service key, so a stray value
+    # on any other key is ignored.
+    if on_behalf_of:
+        headers["X-On-Behalf-Of"] = on_behalf_of
+    return headers
 
 
 def _require_api_key(settings: RagSettings) -> None:
@@ -147,14 +154,18 @@ def _map_upstream_error(status: int, where: str) -> HTTPException:
     return HTTPException(status_code=502, detail=f"RAG {where}: upstream error ({status}).")
 
 
-async def _gateway_embed(settings: RagSettings, model: str, text: str) -> list[float]:
+async def _gateway_embed(
+    settings: RagSettings, model: str, text: str, on_behalf_of: str | None = None
+) -> list[float]:
     """Embed ``text`` by calling the gateway's /v1/embeddings as a user."""
     _require_api_key(settings)
     url = f"{settings.api_base_url}/embeddings"
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             resp = await client.post(
-                url, headers=_auth_headers(settings), json={"model": model, "input": text}
+                url,
+                headers=_auth_headers(settings, on_behalf_of),
+                json={"model": model, "input": text},
             )
     except httpx.HTTPError as exc:
         logger.warning(f"rag embed call failed: {exc}")
@@ -173,7 +184,10 @@ async def _gateway_embed(settings: RagSettings, model: str, text: str) -> list[f
 
 
 async def _gateway_chat_json(
-    settings: RagSettings, model: str, messages: list[dict[str, Any]]
+    settings: RagSettings,
+    model: str,
+    messages: list[dict[str, Any]],
+    on_behalf_of: str | None = None,
 ) -> str:
     """Generate a non-streamed answer via /v1/chat/completions as a user."""
     _require_api_key(settings)
@@ -187,7 +201,9 @@ async def _gateway_chat_json(
     }
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_JSON) as client:
-            resp = await client.post(url, headers=_auth_headers(settings), json=payload)
+            resp = await client.post(
+                url, headers=_auth_headers(settings, on_behalf_of), json=payload
+            )
     except httpx.HTTPError as exc:
         logger.warning(f"rag chat call failed: {exc}")
         raise HTTPException(
@@ -201,7 +217,12 @@ async def _gateway_chat_json(
         raise HTTPException(status_code=502, detail="Malformed generation response") from exc
 
 
-async def _open_chat_stream(settings: RagSettings, model: str, messages: list[dict[str, Any]]):
+async def _open_chat_stream(
+    settings: RagSettings,
+    model: str,
+    messages: list[dict[str, Any]],
+    on_behalf_of: str | None = None,
+):
     """Open a streamed /v1/chat/completions call as a user.
 
     Sends the request and checks the status *before* returning so a pre-first-
@@ -220,7 +241,9 @@ async def _open_chat_stream(settings: RagSettings, model: str, messages: list[di
         "max_tokens": settings.max_tokens,
     }
     client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT)
-    request = client.build_request("POST", url, headers=_auth_headers(settings), json=payload)
+    request = client.build_request(
+        "POST", url, headers=_auth_headers(settings, on_behalf_of), json=payload
+    )
     try:
         resp = await client.send(request, stream=True)
     except httpx.HTTPError as exc:
@@ -250,7 +273,9 @@ async def _open_chat_stream(settings: RagSettings, model: str, messages: list[di
     return resp.aiter_bytes(), _aclose
 
 
-async def _embed_query(store: VectorStore, query: str, settings: RagSettings) -> list[float]:
+async def _embed_query(
+    store: VectorStore, query: str, settings: RagSettings, on_behalf_of: str | None = None
+) -> list[float]:
     """Embed the query, matching the embedder that built the index.
 
     A ``gateway`` index is embedded through the gateway (logged); a ``hash``
@@ -258,7 +283,7 @@ async def _embed_query(store: VectorStore, query: str, settings: RagSettings) ->
     """
     if store.embedder_mode == "hash":
         return HashEmbedder(dim=store.dim, model=store.embed_model).embed_query(query)
-    return await _gateway_embed(settings, store.embed_model, query)
+    return await _gateway_embed(settings, store.embed_model, query, on_behalf_of)
 
 
 @router.get("/status")
@@ -280,10 +305,14 @@ async def rag_status(
 @router.post("/chat")
 async def rag_chat(
     body: RagChatRequest,
-    _user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> Any:
     """Answer the latest user question, grounded in retrieved docs."""
     settings = load_rag_settings()
+    # The gateway self-calls (embed + generate) act on behalf of this JWT-verified
+    # end user, so their api_logs / cost / quota / concurrency attribute to the
+    # real user rather than to the shared RAG_API_KEY service account.
+    on_behalf_of = user.get("user_id")
     store = await _load_store()
     if store is None:
         raise HTTPException(
@@ -305,7 +334,7 @@ async def rag_chat(
         raise HTTPException(status_code=400, detail="Empty user message.")
     history = [m.model_dump() for m in body.messages[:query_idx]]
 
-    query_vec = await _embed_query(store, query, settings)
+    query_vec = await _embed_query(store, query, settings, on_behalf_of)
     if store.dim and len(query_vec) != store.dim:
         # Fail loud instead of letting cosine_similarity silently return 0.0 for
         # every record (which would yield plausible-looking but garbage sources).
@@ -325,12 +354,12 @@ async def rag_chat(
     model = settings.chat_model
 
     if not body.stream:
-        answer = await _gateway_chat_json(settings, model, messages)
+        answer = await _gateway_chat_json(settings, model, messages, on_behalf_of)
         return {"answer": answer, "sources": sources, "model": model}
 
     # Open the upstream stream up front so a *pre-first-byte* auth/quota/5xx error
     # surfaces as a real HTTP status instead of a broken 200 stream.
-    byte_iter, aclose = await _open_chat_stream(settings, model, messages)
+    byte_iter, aclose = await _open_chat_stream(settings, model, messages, on_behalf_of)
 
     async def _generate():
         # Emit retrieved sources first so the UI can render citations before the

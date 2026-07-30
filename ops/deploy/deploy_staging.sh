@@ -9,7 +9,27 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/health}"
 FRONTEND_HEALTH_URL="${FRONTEND_HEALTH_URL:-http://127.0.0.1:3001/}"
 TARGET_BRANCH="${TARGET_BRANCH:-dev}"
 DEPLOY_SHA="${DEPLOY_SHA:-}"
-COMPOSE=(docker compose -f deploy/docker/docker-compose.yml --env-file .env)
+# This deployment's public identity — site name, links, CORS, console build
+# args — lives in the distribution overlay, because the upstream defaults name
+# no deployment. Without these files the stack would come up unbranded. `.env`
+# is passed last so it wins, keeping per-host overrides working; secrets live
+# only in `.env`, never in the checked-in overlay.
+COMPOSE=(docker compose -f deploy/docker/docker-compose.yml)
+for env_file in "$APP_DIR"/distributions/freeinference/deploy/*.env; do
+  if [[ -f "$env_file" ]]; then
+    COMPOSE+=(--env-file "$env_file")
+  fi
+done
+# The files above are the site's, and their values are production's. Anything
+# that has to differ on staging belongs in deploy/staging/, which is read after
+# them and before `.env` — so it can be reviewed in the repository rather than
+# living only on the host. Nothing there yet; the loop is a no-op until there is.
+for env_file in "$APP_DIR"/distributions/freeinference/deploy/staging/*.env; do
+  if [[ -f "$env_file" ]]; then
+    COMPOSE+=(--env-file "$env_file")
+  fi
+done
+COMPOSE+=(--env-file .env)
 
 log() {
   printf '[deploy-staging] %s\n' "$*"
@@ -37,6 +57,27 @@ main() {
   if [[ ! -f .env ]]; then
     log "Missing ${APP_DIR}/.env; staging secrets must stay on the server."
     exit 1
+  fi
+
+  # Cloud-agent runner (issue #1041): the host opts in by setting
+  # AGENT_DISPATCHER_TOKEN in .env — the same variable the runner and the
+  # gateway's claim gate already share, so there is no second switch to
+  # forget. The overlay must ride this same compose invocation (it attaches
+  # `backend` to the agent-egress network); with no token the deploy is
+  # exactly what it was before this block existed.
+  AGENT_RUNNER=0
+  if grep -qE '^AGENT_DISPATCHER_TOKEN=..+' .env; then
+    AGENT_RUNNER=1
+    # Appended, not spliced: compose accepts flags in any order before the
+    # subcommand, and what decides overlay precedence is the relative order of
+    # the `-f` flags among themselves — which stays base-then-overlay here.
+    COMPOSE+=(-f deploy/docker/docker-compose.agent-runner.yml)
+    # The overlay refuses to start without an image name (an unqualified
+    # default would resolve through Docker Hub). The deploy builds exactly
+    # this tag below, so the name always resolves locally.
+    sandbox_image="$(grep -E '^AGENT_SANDBOX_IMAGE=..+' .env | tail -1 | cut -d= -f2- || true)"
+    export AGENT_SANDBOX_IMAGE="${sandbox_image:-hybridinference-agent-sandbox:latest}"
+    log "Agent runner enabled (AGENT_DISPATCHER_TOKEN is set); sandbox image ${AGENT_SANDBOX_IMAGE}."
   fi
 
   # Refuse only when the working tree diverges from HEAD for tracked files,
@@ -88,8 +129,15 @@ main() {
     log "WARNING: DB-IP Country Lite update failed; retaining the last good database."
   fi
 
+  if [[ "$AGENT_RUNNER" == "1" ]]; then
+    log "Building the agent sandbox image (${AGENT_SANDBOX_IMAGE})."
+    docker build -f deploy/docker/Dockerfile.agent-sandbox -t "$AGENT_SANDBOX_IMAGE" .
+  fi
+
   log "Rebuilding and restarting Docker Compose services."
-  make build
+  # The rebuild needs this site's identity too: the console's is compiled in
+  # as build args, and `make` no longer discovers an overlay on its own.
+  make build DISTRIBUTION=freeinference AGENT_RUNNER="$AGENT_RUNNER"
 
   log "Current service state:"
   "${COMPOSE[@]}" ps

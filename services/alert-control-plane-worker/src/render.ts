@@ -1,6 +1,7 @@
 import type {
   CanonicalAlertEnvelope,
   ModelUnavailableContext,
+  MonitoringCycleContext,
   ProviderCircuitContext,
   SlackBlock,
   SlackMessage,
@@ -105,12 +106,32 @@ function modelUnavailableContextFields(
   return fields;
 }
 
+function monitoringCycleContextFields(
+  context: MonitoringCycleContext,
+): readonly SlackTextObject[] {
+  const fields: SlackTextObject[] = [];
+  optionalField(fields, "Reason", context.reason);
+  return fields;
+}
+
 function contextFields(envelope: CanonicalAlertEnvelope): readonly SlackTextObject[] {
   switch (envelope.event.alert_type) {
     case "provider_circuit_open":
       return providerContextFields(envelope.event.context);
     case "model_unavailable":
       return modelUnavailableContextFields(envelope.event.context);
+    case "monitoring_cycle_failure":
+      return monitoringCycleContextFields(envelope.event.context);
+    default: {
+      // Persisted envelopes replay without re-validation (store.ts parseJson,
+      // slack.ts parseEnvelope), so an envelope stored before its alert type
+      // was retired — e.g. the two gateway types removed with the backend
+      // migration wind-down — can still reach this renderer after a deploy.
+      // Render a degraded card instead of returning undefined, which would
+      // strand the pending delivery as slack_payload_invalid.
+      const alertType = (envelope.event as { alert_type?: unknown }).alert_type;
+      return [field("Alert type", escapeSlackMrkdwn(String(alertType ?? "unknown"), 200))];
+    }
   }
 }
 

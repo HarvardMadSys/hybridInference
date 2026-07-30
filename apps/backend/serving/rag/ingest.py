@@ -36,7 +36,17 @@ def build_index(settings: RagSettings) -> VectorStore:
     """Chunk + embed the corpus and return a populated :class:`VectorStore`."""
     files = _iter_markdown(settings.corpus_dir)
     if not files:
-        raise FileNotFoundError(f"No markdown files found under {settings.corpus_dir}")
+        # The corpus is distribution content. A checkout with no overlay — which
+        # is every clone of the neutral upstream — resolves this default to a
+        # path that was never going to exist, so `make rag-ingest` failed with
+        # a bare "no markdown files" naming a directory the reader has no
+        # reason to have heard of. Say what to supply instead.
+        raise FileNotFoundError(
+            f"No markdown files under {settings.corpus_dir}.\n"
+            "The default corpus lives in a distribution overlay, and this "
+            "checkout has none. Point RAG_CORPUS_DIR at your own documentation:\n"
+            "    RAG_CORPUS_DIR=path/to/docs make rag-ingest"
+        )
 
     chunks = []
     for path in files:

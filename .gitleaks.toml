@@ -5,12 +5,27 @@ useDefault = true
 description = "Documented placeholder API keys and intentionally blank example secrets."
 regexTarget = "line"
 regexes = [
-  '''(?i)(authorization|x-api-key):\s*(bearer\s*)?(hyi-your-api-key|your-api-key|<your-api-key>|YOUR_API_KEY|freeinference_api)''',
+  '''(?i)(authorization|x-api-key):\s*(bearer\s*)?(hyi-your-api-key|your-api-key|<your-api-key>|YOUR_API_KEY|example_api_key)''',
   '''(?i)api_url:\s*https://hooks\.slack\.com/services/T000/B000/XXXX''',
   '''(?i)^(DB_PASSWORD|PGADMIN_PASSWORD)=\s*$''',
   '''(?i)DB_PASSWORD=\s*\nDB_ENABLED=true''',
 ]
 
+# Reviewed 2026-07-28 per the pre-publication checklist in
+# docs/agents/specs/2026-06-18-opensource-decoupling.zh.md.
+#
+# The markdown path below is load-bearing but wrong in one direction: it assumes
+# every credential in a design document is a sample. That held for every file
+# except one — a live gateway API key sat in an archived plan document, exempted
+# by this rule, until a full-history scan found it.
+#
+# Narrowing it precisely needs the rule ids that actually fire here, which means
+# running gitleaks against the tree; a blind edit risks turning the Security Scan
+# red for everyone. So the gap is backstopped instead, in the repository's own
+# language: tests/unit/test_no_committed_credentials.py scans tracked files for
+# the credential shapes this project issues — including `hyi-`, which gitleaks'
+# default rules do not know — and exempts fixtures by literal value rather than
+# by directory. Narrow this rule when someone can verify the result.
 [[allowlists]]
 description = "Test fixtures and design plan/spec markdown — fake credentials in code samples."
 paths = [

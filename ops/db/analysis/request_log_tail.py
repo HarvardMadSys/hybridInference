@@ -9,7 +9,7 @@ reveals whether they are retries, agent tool-call rounds, streaming re-sends, or
 genuinely distinct turns.
 
 Usage:
-    python ops/db/analysis/request_log_tail.py artemorlov0605@gmail.com --limit 40
+    python ops/db/analysis/request_log_tail.py a@x.com --limit 40
     python ops/db/analysis/request_log_tail.py a@x.com --model minimax-m3 --dupes
 """
 

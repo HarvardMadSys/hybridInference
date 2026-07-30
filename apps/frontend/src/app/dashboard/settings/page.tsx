@@ -105,14 +105,16 @@ function SettingsContent() {
           <a href="/dashboard" className="text-sm font-medium text-blue-600 hover:text-blue-700">
             ← Back
           </a>
-          <a
-            href={branding.docsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm font-medium text-gray-700 hover:text-gray-900"
-          >
-            Docs
-          </a>
+          {branding.docsUrl && (
+            <a
+              href={branding.docsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm font-medium text-gray-700 hover:text-gray-900"
+            >
+              Docs
+            </a>
+          )}
         </div>
       </div>
 

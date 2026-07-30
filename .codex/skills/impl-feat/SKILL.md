@@ -132,4 +132,4 @@ git worktree remove ../hybridInference-<feature-name>
 - **Minimal changes only.** Don't refactor or touch unrelated code.
 - **Work in a worktree.** Never modify the main working directory's branch.
 - **Validate before acting.** Don't blindly accept review comments — verify against the code.
-- **Test against staging.** Verify the feature on https://staging.freeinference.org if applicable (account: admin@admin.com:admin).
+- **Test against a running deployment.** If you are working on one, its staging host and test account are in its overlay guide (`distributions/<name>/AGENTS.md`), not here.

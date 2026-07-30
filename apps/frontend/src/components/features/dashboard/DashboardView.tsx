@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { ApiKeyManager } from '@/components/features/dashboard/ApiKeyManager';
 import { ModelsSection } from '@/components/features/dashboard/ModelsSection';
 import { RecentRequests } from '@/components/features/dashboard/RecentRequests';
@@ -25,7 +26,7 @@ export function DashboardView() {
             <p className="mt-1 text-sm text-gray-600">Welcome back, {displayName}</p>
           </div>
           <div className="flex items-center gap-2">
-            <a
+            <Link
               href="/dashboard/settings"
               className="inline-flex items-center rounded-md bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
             >
@@ -44,29 +45,31 @@ export function DashboardView() {
                 />
               </svg>
               Settings
-            </a>
-            <a
-              href={branding.docsUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center rounded-md bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
-            >
-              <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M18 13v6a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h6"
-                />
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M15 3h6m0 0v6m0-6L10 14"
-                />
-              </svg>
-              Docs
-            </a>
+            </Link>
+            {branding.docsUrl && (
+              <a
+                href={branding.docsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center rounded-md bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
+              >
+                <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M18 13v6a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h6"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M15 3h6m0 0v6m0-6L10 14"
+                  />
+                </svg>
+                Docs
+              </a>
+            )}
           </div>
         </div>
       </div>
@@ -109,8 +112,23 @@ export function DashboardView() {
             Internal Tools
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <a
+            <Link
+              href="/agents"
+              className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
+            >
+              <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M7 3v12m0 0a3 3 0 1 0 3 3m-3-3a3 3 0 0 1 3 3m7-15a3 3 0 1 1-3 3m3-3v6a4 4 0 0 1-4 4H10"
+                />
+              </svg>
+              Agents
+            </Link>
+            <Link
               href="/dashboard/playground"
+              prefetch={false}
               className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
             >
               <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -122,11 +140,11 @@ export function DashboardView() {
                 />
               </svg>
               API Playground
-            </a>
+            </Link>
             {state.user?.role === 'admin' && (
               <>
-                <a
-                  href="/dashboard/admin"
+                <Link
+                  href="/dashboard/admin/users"
                   className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
                 >
                   <svg
@@ -143,7 +161,7 @@ export function DashboardView() {
                     />
                   </svg>
                   Admin Console
-                </a>
+                </Link>
                 <a
                   href="/pgadmin/"
                   target="_blank"

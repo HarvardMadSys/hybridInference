@@ -1,0 +1,1040 @@
+# Example models registry for the OpenRouter-compatible server.
+# Values like ${ENV_VAR} will be expanded from environment variables.
+#
+# NOTE: Local GPU endpoints use "host.docker.internal" to reach the host machine
+# from inside Docker. For bare-metal (non-Docker) development, replace with "localhost".
+
+models:
+  - id: glm-5.1
+    name: GLM-5.1
+    required_role: free
+    provider: zai
+    quantization: "fp8"
+    context_length: 200000
+    max_output_length: 128000
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    aliases: ["freeinference-glm-5.1"]
+    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
+    pricing:
+      prompt: "2.8"
+      completion: "6.4"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.8"
+      input_cache_writes: "0"
+    route:
+      - kind: zai
+        weight: 1.0
+        base_url: ${ZAI_BASE_URL}
+        api_keys:
+          - ${ZAI_API_KEY}
+          - ${ZAI_API_KEY2}
+        provider_model_id: "glm-5.1"
+      # Ollama Cloud fallback
+      - kind: ollama
+        weight: 0.01
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "glm-5.1"
+      - kind: chutes
+        weight: 0.01
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "zai-org/GLM-5.1-TEE"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "glm-5.1"
+
+  - id: glm-5.2
+    name: GLM-5.2
+    provider: zai
+    required_role: pro
+    quantization: "fp8"
+    context_length: 1000000
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    aliases: ["freeinference-glm-5.2"]
+    # Intentionally billed at 2x the Z.AI PAYG rate
+    # (base: prompt 1.4 / completion 4.4 / cache 0.26 — https://docs.z.ai/guides/overview/pricing).
+    # These values are charged as USD/M tokens against each user's cost quota.
+    pricing:
+      prompt: "2.8"
+      completion: "8.8"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.8"
+      input_cache_writes: "0"
+    route:
+      - kind: zai
+        weight: 1.0
+        base_url: ${ZAI_BASE_URL}
+        api_keys:
+          - ${ZAI_API_KEY}
+          - ${ZAI_API_KEY2}
+        provider_model_id: "glm-5.2"
+      # Ollama Cloud fallback
+      - kind: ollama
+        weight: 0.01
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "glm-5.2"
+      - kind: chutes
+        weight: 0.01
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "zai-org/GLM-5.2-TEE"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "glm-5.2"
+
+  - id: glm-5-turbo
+    name: GLM-5 Turbo
+    required_role: admin
+    provider: zai
+    quantization: "fp8"
+    context_length: 200000
+    max_output_length: 128000
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    aliases: ["freeinference-glm-5-turbo"]
+    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
+    pricing:
+      prompt: "1.6"
+      completion: "4.0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.24"
+      input_cache_writes: "0"
+    route:
+      - kind: zai
+        weight: 1.0
+        base_url: ${ZAI_BASE_URL}
+        api_keys:
+          - ${ZAI_API_KEY}
+          - ${ZAI_API_KEY2}
+        provider_model_id: "glm-5-turbo"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "glm-5-turbo"
+      - kind: chutes
+        weight: 0.01
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "zai-org/GLM-5-TEE"
+
+
+  - id: minimax-m2.5
+    name: MiniMax M2.5
+    required_role: free
+    provider: minimax
+    quantization: "bf16"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 204800
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    aliases: ["MiniMax-M2.5"]
+    # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
+    pricing:
+      prompt: "0.3"
+      completion: "1.2"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.3"
+      input_cache_writes: "0.0"
+    route:
+      # Remote MiniMax API endpoint
+      - kind: minimax
+        weight: 1.0
+        base_url: ${MINIMAX_BASE_URL}
+        api_keys:
+          - ${MINIMAX_API_KEY}
+          - ${MINIMAX_API_KEY2}
+        provider_model_id: "MiniMax-M2.5"
+      # Ollama Cloud fallback
+      - kind: ollama
+        weight: 0.01
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "minimax-m2.5"
+      # Chutes fallback
+      - kind: chutes
+        weight: 0.01
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
+      # Featherless fallback
+      - kind: featherless
+        weight: 0.00
+        base_url: ${FEATHERLESS_BASE_URL}
+        api_keys:
+          - ${FEATHERLESS_API_KEY}
+        provider_model_id: "MiniMaxAI/MiniMax-M2.5"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "minimax-m2.5"
+
+  - id: minimax-m3
+    name: MiniMax M3
+    required_role: free
+    provider: minimax
+    quantization: "bf16"
+    # MiniMax-M3 natively accepts image and video upstream (OpenAI-compat
+    # video_url content block). Video only on the primary MiniMax route.
+    input_modalities: ["text", "image", "video"]
+    output_modalities: ["text"]
+    context_length: 1048576
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    # MiniMax-M3 streams reasoning as <mm:think>...</mm:think> tags inside the
+    # content field rather than a structured reasoning_content delta. Lift the
+    # tagged text into the reasoning channel (applies to every route below).
+    processor: reasoning_extract
+    aliases: ["MiniMax-M3"]
+    # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
+    pricing:
+      prompt: "0.5"
+      completion: "2"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.3"
+      input_cache_writes: "0.0"
+    route:
+      # Remote MiniMax API endpoint
+      - kind: minimax
+        weight: 1.0
+        base_url: ${MINIMAX_BASE_URL}
+        api_keys:
+          - ${MINIMAX_API_KEY}
+          - ${MINIMAX_API_KEY2}
+        provider_model_id: "MiniMax-M3"
+      # Ollama Cloud fallback
+      - kind: ollama
+        weight: 0.01
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "minimax-m3"
+        # Ollama serving not verified for image/video; keep text-only so media
+        # is dispatched only to the MiniMax primary route.
+        input_modalities: ["text"]
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "minimax-m3"
+        # Canary fallback proxies back to the gateway; keep text-only so media
+        # stays on the verified MiniMax primary route.
+        input_modalities: ["text"]
+
+  - id: minimax-fast
+    name: MiniMax Fast
+    required_role: admin
+    provider: minimax
+    quantization: "bf16"
+    # Routes to MiniMax-M2.5, which is text-only upstream; do not advertise image.
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 204800
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, top_k, max_tokens, stop, seed, stream]
+    aliases: ["MiniMax-Fast"]
+    router: routewise
+    router_params:
+      # RouteWise algorithm options reference. Resource limits are configured
+      # per route entry below: `quota: {limit}` plus a `quota_source:` block
+      # (the provider usage API is the quota truth source, incl. window/reset
+      # semantics) and `concurrency: {limit}`.
+      budget_alpha: 0.5
+      latency_hedge_mode: probability_target
+      # Cold-start the cost envelope from minimax-m2.5's logged traffic (same
+      # underlying model/workload; donor rows are priced with THIS model's
+      # routes and only seed the DB bootstrap -- runtime updates stay own-traffic).
+      envelope_bootstrap_donor_models: ["minimax-m2.5"]
+      # random_seed: null
+      # reference_api_price: {prompt: "1.2", completion: "4.0"}
+      # db_bootstrap_enabled: true
+      # db_bootstrap_max_rows: 50000
+      # stateful_providers_single_worker_only: true
+      # quota_snapshot_refresh_interval_sec: 60.0
+      # envelope_window_hours: 24
+      # envelope_lower_percentile: 10.0
+      # envelope_upper_percentile: 90.0
+      # envelope_min_samples: 1
+      # output_default_tokens: 512.0
+      # output_min_bucket_samples: 3
+      # output_min_model_samples: 3
+      # output_min_global_samples: 3
+      # latency_slo_sec: 3.0
+      # latency_window_sec: 900.0
+      # latency_history_prior_window_sec: 86400.0
+      # latency_max_samples_per_profile: 5000
+      # latency_min_samples: 10
+      # latency_unprofiled_ttft_ms: 5000.0
+      # fallback_mode: policy
+      # routewise_probe_enabled: false
+      # routewise_probe_interval_sec: 300.0
+      # routewise_probe_timeout_sec: 30.0
+      # routewise_probe_idle_only: true
+      # routewise_probe_idle_threshold_sec: 900.0
+      # routewise_probe_max_concurrency: 1
+      # prefix_cache_cost_adjustment_enabled: false
+    # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
+    pricing:
+      prompt: "0.3"
+      completion: "1.2"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.03"
+      input_cache_writes: "0.375"
+    route:
+      # S_Q: Chutes subscription quota, using provider quota snapshots.
+      - kind: chutes
+        weight: 1.0
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
+        provider_type: quota
+        quota_pool: chutes-minimax-fast-daily
+        quota_source:
+          provider: chutes
+          usage_label: "Daily requests"
+          unit: requests
+        quota:
+          limit: 5000
+      # S_Q (future): MiniMax coding plan 5h window. The official token-plan
+      # remains API works (fetcher wired for admin observability), but it
+      # reports remaining PERCENT only -- counts are zero -- so there is no
+      # per-request consume scale and percent-unit quota sources are rejected
+      # at boot. To enable MiniMax as a quota provider later, either the API
+      # must expose real counts or the plan's window capacity must be
+      # configured explicitly (e.g. requests_per_window) so percent can be
+      # converted to a count-based usage in the fetcher.
+      # S_C: Featherless Premium; paper real-eval used C=1 for MiniMax-M2.5.
+      - kind: featherless
+        weight: 1.0
+        base_url: ${FEATHERLESS_BASE_URL}
+        api_keys:
+          - ${FEATHERLESS_API_KEY}
+        provider_model_id: "MiniMaxAI/MiniMax-M2.5"
+        provider_type: concurrency
+        concurrency_pool: featherless-minimax-fast
+        concurrency:
+          limit: 1
+      # S_A: OpenRouter-pinned DeepInfra, cheapest/highest-use MiniMax real-eval API leg.
+      - kind: openrouter[deepinfra]
+        weight: 1.0
+        base_url: https://openrouter.ai/api/v1
+        api_keys:
+          - ${OPENROUTER_API_KEY}
+        provider_type: on_demand
+        provider_model_id: "minimax/minimax-m2.5"
+        pricing:
+          prompt: "0.15"
+          completion: "1.15"
+          image: "0"
+          request: "0"
+          input_cache_reads: "0.03"
+          input_cache_writes: "0"
+
+  # ── Kimi / Moonshot (kind: kimi_coding) ─────────────────────────
+  # Flagship served primarily through the Kimi Code coding-plan subscription
+  # (flat fee). The coding plan exposes the unified `kimi-for-coding` model
+  # (currently the latest K2.7-code). Default FixedRouter: the coding-plan route
+  # is strongly preferred by weight, with the pay-per-token Moonshot API kept as
+  # a weighted fallback for when the coding-plan endpoint is unhealthy.
+  - id: kimi-k2.7-code
+    name: Kimi K2.7 Code (only support coding agents)
+    required_role: pro
+    provider: kimi
+    quantization: "fp8"
+    # The Kimi coding endpoint supports image and video inputs.
+    input_modalities: ["text", "image", "video"]
+    output_modalities: ["text"]
+    context_length: 262144
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    aliases: ["Kimi-K2.7-Code", "kimi-k2.7"]
+    pricing:
+      prompt: "0.8"
+      completion: "2.5"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.2"
+      input_cache_writes: "0"
+    route:
+      - kind: kimi_coding
+        weight: 1.0
+        base_url: ${KIMI_CODING_BASE_URL}
+        api_keys:
+          - ${KIMI_CODING_API_KEY}
+        provider_model_id: "kimi-for-coding"
+      # Ollama Cloud fallback
+      - kind: ollama
+        weight: 0.01
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "kimi-k2.7-code"
+        # Ollama serving not verified for image/video; keep text-only so media
+        # is dispatched only to the Kimi coding primary route.
+        input_modalities: ["text"]
+      - kind: chutes
+        weight: 0.01
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "moonshotai/Kimi-K2.6-TEE"
+        # Chutes fallback is not verified for image/video.
+        input_modalities: ["text"]
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "kimi-k2.7-code"
+        # Canary fallback proxies back to the gateway; keep text-only so media
+        # stays on the verified Kimi coding primary route.
+        input_modalities: ["text"]
+
+
+  - id: kimi-k2.7-code-highspeed
+    name: Kimi K2.7 Code (only support coding agents)
+    required_role: internal
+    provider: kimi
+    quantization: "fp8"
+    # kimi-for-coding-highspeed exposes the same image/video input capabilities.
+    input_modalities: ["text", "image", "video"]
+    output_modalities: ["text"]
+    context_length: 262144
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    pricing:
+      prompt: "2.8"
+      completion: "8.0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.8"
+      input_cache_writes: "0"
+    route:
+      - kind: kimi_coding
+        weight: 1.0
+        base_url: ${KIMI_CODING_BASE_URL}
+        api_keys:
+          - ${KIMI_CODING_API_KEY}
+        provider_model_id: "kimi-for-coding-highspeed"
+
+  - id: kimi-k3
+    name: Kimi K3 (only support coding agents)
+    required_role: internal
+    provider: kimi
+    quantization: "fp8"
+    input_modalities: ["text", "image", "video"]
+    output_modalities: ["text"]
+    context_length: 262144
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    pricing:
+      prompt: "2.8"
+      completion: "8.0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.8"
+      input_cache_writes: "0"
+    route:
+      - kind: kimi_coding
+        weight: 1.0
+        base_url: ${KIMI_CODING_BASE_URL}
+        api_keys:
+          - ${KIMI_CODING_API_KEY}
+        provider_model_id: "kimi-k3"
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "kimi-k3"
+        # Keep media on the verified Kimi coding endpoint.
+        input_modalities: ["text"]
+
+  - id: qwen3.6-35b
+    name: Qwen3.6 35B (high speed)
+    provider: sglang
+    quantization: "fp8"
+    # Qwen3.6-35B-A3B is a vision-language model (image+video); the local sglang
+    # launch retains the vision encoder (no --language-model-only flag).
+    input_modalities: ["text", "image", "video"]
+    output_modalities: ["text"]
+    context_length: 262144
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    aliases: ["qwen3.6:35b", "claude-haiku-4-5", "claude-haiku-4-5-20251001"]
+    pricing:
+      prompt: "0.08"
+      completion: "0.28"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.01"
+      input_cache_writes: "0"
+    route:
+      - kind: sglang
+        weight: 1.0
+        base_url: ${LOCAL_DEPLOYMENT_URL}
+        provider_model_id: "Qwen/Qwen3.6-35B-A3B-FP8"
+        api_keys:
+          - ${LOCAL_API_KEY}
+        extra_body:
+          chat_template_kwargs:
+            enable_thinking: false
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "qwen3.6-35b"
+        # Canary fallback proxies to a separate deployment; keep text-only so
+        # image/video stays on the verified local SGLang primary route.
+        input_modalities: ["text"]
+
+  # Served on DGX Spark by ops/spark_idle_proxy (vLLM + NVFP4 kernels).
+  # Discrete diffusion LLM (Gemma4 backbone); replaced gpt-oss-20b on Spark.
+  - id: diffusiongemma
+    name: DiffusionGemma 26B
+    provider: vllm
+    required_role: free
+    provider_model_id: "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
+    quantization: "nvfp4"
+    aliases: ["freeinference-diffusiongemma"]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 262144
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, thinking]
+    pricing:
+      prompt: "0.02"
+      completion: "0.08"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.01"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        base_url: ${SPARK_DEPLOYMENT_URL}
+        provider_model_id: "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
+        api_keys:
+          - ${LOCAL_API_KEY}
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "diffusiongemma"
+
+  # ── DeepSeek V4 (kind: deepseek) ─────────────────────────
+  # Local H200 idle proxy: ops/h200_idle_proxy (sglang PP=3 on GPUs 0,2,3, port 8003).
+  - id: deepseek-v4-flash
+    name: DeepSeek V4 Flash (high speed)
+    provider: deepseek
+    required_role: free
+    provider_model_id: "deepseek-v4-flash"
+    context_length: 1000000
+    max_output_length: 393216
+    aliases: ["deepseek-v4", "claude-opus-4-8", "claude-opus-4.8", "claude-sonnet-5"]
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking, reasoning_effort]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    quantization: "none"
+    # Pricing (original): prompt $0.14/M, cache-hit $0.0028/M, completion $0.28/M
+    # Pricing (promo 75% off): prompt $0.035/M, cache-hit $0.0007/M, completion $0.07/M
+    # DeepSeek API https://api-docs.deepseek.com/quick_start/pricing
+    pricing:
+      prompt: "0.14"
+      completion: "0.28"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.0028"
+      input_cache_writes: "0"
+    route:
+      # H200 local sglang (key via H200_DEPLOYMENT_URL + LOCAL_API_KEY).
+      # optional: skipped when H200_DEPLOYMENT_URL is unset/blank.
+      - kind: sglang
+        weight: 1.0
+        optional: true
+        base_url: ${H200_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "deepseek-v4-flash"
+      - kind: deepseek
+        weight: 1.0
+        base_url: ${DEEPSEEK_BASE_URL}
+        api_keys:
+          - ${DEEPSEEK_API_KEY}
+        provider_model_id: "deepseek-v4-flash"
+      - kind: ollama
+        weight: 1.0
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "deepseek-v4-flash"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "deepseek-v4-flash"
+
+  - id: deepseek-v4-pro
+    name: DeepSeek V4 Pro
+    provider: deepseek
+    required_role: admin
+    provider_model_id: "deepseek-v4-pro"
+    context_length: 1000000
+    max_output_length: 393216
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking, reasoning_effort]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    quantization: "none"
+    # Pricing (original): prompt $1.74/M, cache-hit $0.0145/M, completion $3.48/M
+    # Pricing (promo 75% off): prompt $0.435/M, cache-hit $0.0036/M, completion $0.87/M
+    # DeepSeek API https://api-docs.deepseek.com/quick_start/pricing
+    pricing:
+      prompt: "1.74"
+      completion: "3.48"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.0145"
+      input_cache_writes: "0"
+    route:
+      - kind: deepseek
+        weight: 1.0
+        base_url: https://api.deepseek.com
+        api_keys:
+          - ${DEEPSEEK_API_KEY}
+        provider_model_id: "deepseek-v4-pro"
+      - kind: ollama
+        weight: 1.0
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "deepseek-v4-pro"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "deepseek-v4-pro"
+
+
+  # ── OpenRouter examples ────────────────────────────────────
+  # Bare `kind: openrouter` lets OpenRouter pick the upstream provider
+  # freely; `kind: openrouter[<provider_slug>]` pins to one OpenRouter
+  # upstream via provider.order=[<slug>], allow_fallbacks=false. See
+  # docs/openrouter.md for the full list of supported provider slugs.
+  #
+  # - id: llama-3.3-70b
+  #   name: Llama 3.3 70B (via OpenRouter)
+  #   provider: openrouter
+  #   provider_model_id: meta-llama/llama-3.3-70b-instruct
+  #   context_length: 131072
+  #   max_output_length: 8192
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream]
+  #   input_modalities: ["text"]
+  #   output_modalities: ["text"]
+  #   pricing:
+  #     prompt: "0.13"
+  #     completion: "0.39"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0"
+  #     input_cache_writes: "0"
+  #   route:
+  #     # Pinned to DeepInfra: deterministic upstream, distinct endpoint_id.
+  #     - kind: openrouter[deepinfra]
+  #       weight: 1.0
+  #       base_url: https://openrouter.ai/api/v1
+  #       api_keys:
+  #         - ${OPENROUTER_API_KEY}
+  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
+  #     # Bare openrouter — let OpenRouter pick. Different endpoint_id
+  #     # from the pinned leg so circuit-breaker stats stay separate.
+  #     - kind: openrouter
+  #       weight: 0
+  #       base_url: https://openrouter.ai/api/v1
+  #       api_keys:
+  #         - ${OPENROUTER_API_KEY}
+  #       provider_model_id: meta-llama/llama-3.3-70b-instruct
+
+
+
+  # ===== Embedding Models =====
+  # Served locally on a GPU box by ops/local_deployment_proxy (sglang --is-embedding),
+  # the same idle proxy that serves the local chat models. Reuses LOCAL_DEPLOYMENT_URL
+  # (the proxy's reverse tunnel); the proxy routes by the model field.
+
+  - id: bge-m3
+    name: BGE-M3
+    type: embedding
+    provider: sglang
+    quantization: "fp16"
+    input_modalities: ["text"]
+    output_modalities: ["embedding"]
+    context_length: 8192
+    max_output_length: 0
+    pricing:
+      prompt: "0"
+      completion: "0"
+    route:
+      - kind: sglang
+        weight: 1.0
+        base_url: ${LOCAL_DEPLOYMENT_URL}
+        provider_model_id: "BAAI/bge-m3"
+        api_keys:
+          - ${LOCAL_API_KEY}
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      #
+      # Embedding models don't use weighted routing: the loader registers every
+      # route in YAML order and the /v1/embeddings endpoint tries them as an
+      # ordered fallback chain (primary first, this canary last), so `weight` is
+      # ignored here. See registry.register_from_models_yaml and
+      # FallbackEmbeddingAdapter.
+      - kind: staging
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "bge-m3"
+
+  # ── Anthropic direct (kind: anthropic) ─────────────────────
+  # These models route directly to api.anthropic.com via the AnthropicAdapter.
+  #
+  # - id: claude-sonnet-4.6
+  #   name: Claude Sonnet 4.6
+  #   provider: anthropic
+  #   required_role: internal
+  #   provider_model_id: "claude-sonnet-4-6"
+  #   context_length: 1000000
+  #   max_output_length: 64000
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice]
+  #   input_modalities: [text, image]
+  #   output_modalities: [text]
+  #   quantization: "none"
+  #   # Anthropic API https://docs.anthropic.com/en/about-claude/pricing
+  #   pricing:
+  #     prompt: "3.00"
+  #     completion: "15.00"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.30"
+  #     input_cache_writes: "3.75"
+  #   route:
+  #     - kind: anthropic
+  #       weight: 1.0
+  #       base_url: ${CLI_PROXY_BASE_URL}
+  #       api_key: ${CLI_PROXY_API_KEY}
+  #       provider_model_id: "claude-sonnet-4-6"
+
+  # - id: claude-opus-4.6
+  #   name: Claude Opus 4.6
+  #   provider: anthropic
+  #   required_role: internal
+  #   provider_model_id: "claude-opus-4-6"
+  #   context_length: 1000000
+  #   max_output_length: 128000
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice]
+  #   input_modalities: [text, image]
+  #   output_modalities: [text]
+  #   quantization: "none"
+  #   # Anthropic API https://docs.anthropic.com/en/about-claude/pricing
+  #   pricing:
+  #     prompt: "5.00"
+  #     completion: "25.00"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.50"
+  #     input_cache_writes: "6.25"
+  #   route:
+  #     - kind: anthropic
+  #       weight: 1.0
+  #       base_url: ${CLI_PROXY_BASE_URL}
+  #       api_key: ${CLI_PROXY_API_KEY}
+  #       provider_model_id: "claude-opus-4-6"
+  # #
+  # - id: claude-opus-4.7
+  #   name: Claude Opus 4.7
+  #   provider: anthropic
+  #   required_role: internal
+  #   provider_model_id: "claude-opus-4-7"
+  #   context_length: 1000000
+  #   max_output_length: 128000
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice]
+  #   input_modalities: [text, image]
+  #   output_modalities: [text]
+  #   quantization: "none"
+  #   # Pricing mirrors claude-opus-4.6 until official 4.7 numbers are published.
+  #   pricing:
+  #     prompt: "5.00"
+  #     completion: "25.00"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.50"
+  #     input_cache_writes: "6.25"
+  #   route:
+  #     - kind: anthropic
+  #       weight: 1.0
+  #       base_url: ${CLI_PROXY_BASE_URL}
+  #       api_key: ${CLI_PROXY_API_KEY}
+  #       provider_model_id: "claude-opus-4-7"
+
+  # - id: gpt-5.4
+  #   name: GPT-5.4
+  #   provider: openai
+  #   required_role: internal
+  #   provider_model_id: "gpt-5.4"
+  #   context_length: 1050000
+  #   max_output_length: 128000
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, response_format, seed, reasoning_effort]
+  #   input_modalities: [text, image]
+  #   output_modalities: [text]
+  #   quantization: "none"
+  #   pricing:
+  #     prompt: "2.50"
+  #     completion: "15.00"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.50"
+  #     input_cache_writes: "0.00"
+  #   route:
+  #     - kind: openai_compat
+  #       weight: 1.0
+  #       base_url: ${CLI_PROXY_BASE_URL}
+  #       api_key: ${CLI_PROXY_API_KEY}
+  #       provider_model_id: "gpt-5.4"
+
+  # - id: gpt-5.4-mini
+  #   name: GPT-5.4-mini
+  #   provider: openai
+  #   required_role: internal
+  #   provider_model_id: "gpt-5.4-mini"
+  #   context_length: 1050000
+  #   max_output_length: 128000
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, response_format, seed, reasoning_effort]
+  #   input_modalities: [text, image]
+  #   output_modalities: [text]
+  #   quantization: "none"
+  #   pricing:
+  #     prompt: "0.75"
+  #     completion: "6.00"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.25"
+  #     input_cache_writes: "0.00"
+  #   route:
+  #     - kind: openai_compat
+  #       weight: 1.0
+  #       base_url: ${CLI_PROXY_BASE_URL}
+  #       api_key: ${CLI_PROXY_API_KEY}
+  #       provider_model_id: "gpt-5.4-mini"
+
+  # - id: gpt-5.3-spark
+  #   name: GPT-5.3-Codex-Spark
+  #   provider: openai
+  #   required_role: internal
+  #   provider_model_id: "gpt-5.3-spark"
+  #   context_length: 120800
+  #   max_output_length: 8000
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, response_format, seed, reasoning_effort]
+  #   input_modalities: [text, image]
+  #   output_modalities: [text]
+  #   quantization: "none"
+  #   pricing:
+  #     prompt: "5.00"
+  #     completion: "30.00"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.80"
+  #     input_cache_writes: "0.00"
+  #   route:
+  #     - kind: openai_compat
+  #       weight: 1.0
+  #       base_url: ${CLI_PROXY_BASE_URL}
+  #       api_key: ${CLI_PROXY_API_KEY}
+  #       provider_model_id: "gpt-5.3-codex-spark"
+
+  # - id: gpt-5.5
+  #   name: GPT-5.5
+  #   provider: openai
+  #   required_role: internal
+  #   provider_model_id: "gpt-5.5"
+  #   context_length: 1050000
+  #   max_output_length: 128000
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, response_format, seed, reasoning_effort]
+  #   input_modalities: [text, image]
+  #   output_modalities: [text]
+  #   quantization: "none"
+  #   pricing:
+  #     prompt: "5.00"
+  #     completion: "30.00"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "2.00"
+  #     input_cache_writes: "0.00"
+  #   route:
+  #     - kind: openai_compat
+  #       weight: 1.0
+  #       base_url: ${CLI_PROXY_BASE_URL}
+  #       api_key: ${CLI_PROXY_API_KEY}
+  #       provider_model_id: "gpt-5.5"
+
+
+  # - id: gemini-2.5-flash
+  #   name: Gemini 2.5 Flash
+  #   provider: gemini
+  #   provider_model_id: "gemini-2.5-flash"
+  #   base_url: https://generativelanguage.googleapis.com/v1beta
+  #   api_keys:
+  #     - ${GEMINI_API_KEY}
+  #   quantization: "bf16"
+  #   input_modalities: ["text", "image"]
+  #   output_modalities: ["text"]
+  #   context_length: 1048576
+  #   max_output_length: 65536
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, top_k, max_tokens, stop]
+  #   pricing:
+  #     prompt: "0.15"  # Input tokens per 1M tokens
+  #     completion: "1.25"  # Output tokens (including thinking) per 1M tokens
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.075"  # Cache hit tokens per 1M tokens (50% discount)
+  #     input_cache_writes: "1.0"  # Cache storage per 1M tokens per hour
+  #   route:
+  #     - kind: gemini
+  #       weight: 1.0
+  #       base_url: https://generativelanguage.googleapis.com/v1beta
+  #       api_keys:
+  #         - ${GEMINI_API_KEY}
+  #       provider_model_id: "gemini-2.5-flash"

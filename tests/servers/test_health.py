@@ -165,3 +165,49 @@ async def test_discovery_and_health_counts_hide_unpublished_routes(
     assert health_response.json()["routes_configured"] == baseline_count
     assert deep_response.json()["routes_configured"] == baseline_count
     assert "staged-model" not in routing_response.json()["routes"]
+
+
+async def test_health_reports_no_database_when_none_is_configured(
+    test_client, app_services, monkeypatch
+):
+    """A DB-less deployment must not claim a connected database.
+
+    Regression: the endpoint derived `database_connected` from the store
+    health flag, which reports an unconfigured database as healthy — so the
+    "no database configured" branch was unreachable and the response said
+    database_configured/connected were both true with no database at all.
+    """
+    monkeypatch.setenv("DB_ENABLED", "false")
+    app_services.operational_store = None
+    app_services.log_store = None
+
+    resp = await test_client.get("/health")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "healthy"
+    assert body["database_configured"] is False
+    assert body["database_connected"] is False
+
+
+async def test_health_does_not_call_a_failed_database_unconfigured(
+    test_client, app_services, monkeypatch
+):
+    """Wanting a database and not having one is an outage, not a shape.
+
+    Both states leave the stores as None, and `_test_store_health` cannot tell
+    them apart. Reporting the second as healthy is how a gateway whose database
+    never came up keeps taking traffic from a load balancer that believes it.
+    """
+    monkeypatch.setenv("DB_ENABLED", "true")
+    app_services.operational_store = None
+    app_services.log_store = None
+
+    resp = await test_client.get("/health")
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["status"] == "unhealthy"
+    assert body["reason"] == "database_unavailable_at_startup"
+    assert body["database_configured"] is True
+    assert body["database_connected"] is False

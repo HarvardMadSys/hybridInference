@@ -12,7 +12,7 @@ from typing import Any
 
 from routing.usage_limit import detect_usage_limit
 from serving.exceptions import operator_safe_error
-from serving.observability.alerts import AlertSeverity, alert_slack, escape_slack_text
+from serving.observability.alerts import AlertSeverity, alert_on_transition, escape_slack_text
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
@@ -220,6 +220,29 @@ class _CircuitBreaker:
                         "duration_ms": duration_ms,
                     },
                 )
+                # The breaker already knew the outage was over and only logged
+                # it. Reporting it is what lets the incident close instead of
+                # sitting open until the principal quota runs out.
+                try:
+                    task = asyncio.ensure_future(
+                        alert_on_transition(
+                            key=f"circuit_open:{self.provider}",
+                            breached=False,
+                            severity=AlertSeverity.ERROR,
+                            title="Provider circuit opened",
+                            context=dict,
+                            cooldown_sec=300,
+                            kind="state",
+                        )
+                    )
+                except RuntimeError:
+                    # No running loop (sync teardown). Nothing else will close
+                    # this incident: a circuit has one healthy edge and state
+                    # alerts are never swept, because silence is not recovery.
+                    pass
+                else:
+                    _ALERT_TASKS.add(task)
+                    task.add_done_callback(_ALERT_TASKS.discard)
 
     def on_failure(
         self,
@@ -337,12 +360,17 @@ class _CircuitBreaker:
         """
         delivered = False
         try:
-            delivered = await alert_slack(
-                AlertSeverity.ERROR,
-                "Provider circuit opened",
-                context,
-                dedupe_key=f"circuit_open:{self.provider}",
+            # Route the breach through the transition tracker so the incident
+            # opens (and later closes via on_success's breached=False) on the
+            # control plane; its return is whether a page was actually sent.
+            delivered = await alert_on_transition(
+                key=f"circuit_open:{self.provider}",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=lambda: context,
                 cooldown_sec=300,
+                kind="state",
             )
         finally:
             if reset_epoch is not None:

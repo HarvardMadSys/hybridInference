@@ -1,0 +1,160 @@
+# Agent job runner (issue #1041, P0 dogfood).
+#
+# Claims one queued agent job and executes it in an ephemeral runner. This is
+# the DOGFOOD substrate only: it is valid because the repository being worked
+# on is our own. It does not generalize to external repositories — a central
+# workflow cannot check out someone else's private repo without putting an
+# installation token inside the runner, which the design forbids. External
+# tenants get the VM-based orchestrator instead.
+#
+# Security posture, inherited from the codex-oncall workflow that proved it:
+#   - untrusted values reach disk/env by indirection, never by shell
+#     interpolation;
+#   - secrets are scoped to the single step that needs them;
+#   - the job token is read-only; the runner has no git write path at all,
+#     because it emits a patch and the trusted publisher does the pushing.
+#
+# What is deliberately DIFFERENT from codex-oncall: that workflow is read-only
+# and degrades to `--sandbox danger-full-access` with a warning when its
+# sandbox self-check fails. A write-capable agent must not do that, so the
+# preflight here FAILS CLOSED.
+
+name: agent-job-runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker_id:
+        description: Identifier recorded on the claimed attempt
+        required: false
+        default: actions-runner
+  repository_dispatch:
+    types: [agent-job-queued]
+  schedule:
+    # Drains the queue on a slow tick so a job submitted without a dispatch
+    # still runs. Harmless when the queue is empty: the runner exits 0.
+    - cron: "*/10 * * * *"
+
+# One runner at a time: two concurrent claims would each take a different job,
+# which is safe, but serializing keeps dogfood cost and log noise predictable.
+concurrency:
+  group: agent-job-runner
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run-agent-job:
+    # Cost and noise containment, not a secrets boundary: a fork never receives
+    # this repository's secrets or variables, so the scheduled run there would
+    # only install two CLIs and then fail preflight, every ten minutes, forever.
+    # The isolation control for the /proc property below is the container/kata
+    # backend, not this line.
+    if: github.repository == 'HarvardMadSys/hybridInference'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Check out the working tree
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Do NOT persist credentials: the agent runs against this worktree
+          # and must not find a usable git remote credential in it.
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install runner dependencies
+        run: python -m pip install --quiet httpx
+
+      - name: Install the agent runtimes
+        env:
+          # Pinned to the same versions as deploy/docker/Dockerfile.agent-sandbox.
+          # `latest` here already cost a real job once: it resolved to a CLI whose
+          # request shape the gateway rejected, and every model call returned 400.
+          # A drift between the two substrates would mean a job behaves differently
+          # depending on which one happens to claim it.
+          CLAUDE_CODE_VERSION: "2.1.220"
+          CODEX_VERSION: "0.145.0"
+          PI_VERSION: "0.73.1"
+          OPENCODE_VERSION: "1.18.9"
+        run: |
+          set -euo pipefail
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          npm install -g "@openai/codex@${CODEX_VERSION}"
+          npm install -g "@mariozechner/pi-coding-agent@${PI_VERSION}"
+          npm install -g "opencode-ai@${OPENCODE_VERSION}"
+          # pi and OpenCode reach the gateway via generated provider configs;
+          # the runner invokes these wrappers, which the container substrate
+          # bakes into its image and this substrate takes from the checkout.
+          sudo install -m 0755 deploy/docker/pi-freeinference /usr/local/bin/pi-freeinference
+          sudo install -m 0755 deploy/docker/opencode-freeinference /usr/local/bin/opencode-freeinference
+          # Match the container substrate: an empty Codex MCP requirements
+          # allowlist blocks repository/user MCP config from spawning servers.
+          sudo install -D -m 0644 deploy/docker/codex-requirements.toml /etc/codex/requirements.toml
+          claude --version
+          codex --version
+          pi --version
+          opencode --version
+
+      - name: Preflight (fail closed)
+        env:
+          BASE_URL: ${{ vars.FREEINFERENCE_BASE_URL }}
+        run: |
+          set -euo pipefail
+          # A write-capable agent must never start on a half-configured runner.
+          # Every one of these is a hard failure, not a warning.
+          test -n "$BASE_URL" || { echo "::error::FREEINFERENCE_BASE_URL is not set"; exit 1; }
+          command -v claude >/dev/null || { echo "::error::claude runtime missing"; exit 1; }
+          command -v codex >/dev/null || { echo "::error::codex runtime missing"; exit 1; }
+          command -v git >/dev/null || { echo "::error::git missing"; exit 1; }
+          if [ -f "$HOME/.git-credentials" ] || git config --get credential.helper >/dev/null 2>&1; then
+            echo "::error::a git credential helper is configured; the sandbox must hold no git credential"
+            exit 1
+          fi
+
+      - name: Run one queued agent job
+        env:
+          # Scoped to this step alone. The dispatcher token authorizes the
+          # claim; the per-attempt capability token the claim returns is what
+          # the agent itself gets, and it never appears in this file.
+          AGENT_DISPATCHER_TOKEN: ${{ secrets.AGENT_DISPATCHER_TOKEN }}
+          FREEINFERENCE_BASE_URL: ${{ vars.FREEINFERENCE_BASE_URL }}
+          # This runner IS the sandbox: the agent runs as the same user as the
+          # runner, on a VM GitHub throws away afterwards. The backend refuses
+          # that arrangement unless it is acknowledged, and the acknowledgement
+          # is narrow — it is only defensible because this workflow is a
+          # single-tenant dogfood against our own repository. The agent here
+          # can read the dispatcher credential out of /proc, which on a
+          # multi-tenant deployment would let it dequeue other tenants' jobs.
+          # Anything multi-tenant uses the container/kata backend instead.
+          AGENT_SANDBOX_BACKEND: process
+          AGENT_SANDBOX_ALLOW_UNISOLATED: "1"
+          # Untrusted-input rule: read the worker id from the environment
+          # rather than interpolating ${{ }} into the shell.
+          WORKER_ID_INPUT: ${{ github.event.inputs.worker_id }}
+        run: |
+          set -euo pipefail
+          WORKER_ID="${WORKER_ID_INPUT:-actions-${GITHUB_RUN_ID}}"
+          PYTHONPATH=apps/backend python -m serving.agent_jobs.runner \
+            --base-url "$FREEINFERENCE_BASE_URL" \
+            --worker-id "$WORKER_ID" \
+            --workdir "$GITHUB_WORKSPACE" \
+            --agent-timeout 2700
+
+      - name: Assert the runner left no commits or pushes behind
+        if: always()
+        run: |
+          set -euo pipefail
+          # The contract is patch-out: the runner reports a diff and the trusted
+          # publisher pushes it. If a commit ever appears here, the contract has
+          # been broken and we want to know from CI, not from a surprise branch.
+          if [ -n "$(git log --oneline "origin/${GITHUB_REF_NAME}..HEAD" 2>/dev/null || true)" ]; then
+            echo "::error::the runner created commits; patch-out was bypassed"
+            exit 1
+          fi

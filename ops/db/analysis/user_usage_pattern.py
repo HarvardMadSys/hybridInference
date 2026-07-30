@@ -10,7 +10,7 @@ This complements ``compare_users.py`` (which focuses on cross-account overlap):
 here the question is "how does this one person use the service?".
 
 Usage:
-    python ops/db/analysis/user_usage_pattern.py greckoff@gmail.com
+    python ops/db/analysis/user_usage_pattern.py a@x.com
     python ops/db/analysis/user_usage_pattern.py a@x.com --days 60
     python ops/db/analysis/user_usage_pattern.py a@x.com --json
 """

@@ -280,8 +280,12 @@ def _make_or_cfg(
 def test_openrouter_adapter_attribution_headers() -> None:
     adapter = OpenRouterAdapter(_make_or_cfg())
     headers = adapter._build_headers()
-    assert headers["HTTP-Referer"] == "https://freeinference.org"
-    assert headers["X-Title"] == "FreeInference"
+    # Attribution follows the site identity: unconfigured, it is the product
+    # name with no borrowed URL — a third-party deployment must never appear
+    # under another operator's OpenRouter attribution. With no public URL
+    # declared, the referer header is omitted rather than sent empty.
+    assert "HTTP-Referer" not in headers
+    assert headers["X-Title"] == "HybridInference"
     assert headers["Authorization"] == "Bearer sk-or-test"
 
 

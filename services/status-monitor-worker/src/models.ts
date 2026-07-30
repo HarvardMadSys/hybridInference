@@ -26,6 +26,9 @@ function kindOf(model: RawModel): "chat" | "embedding" {
  * account can't access simply don't appear (and won't be reported as outages).
  * `/v1/models` (not `/models`) is used because the edge routes `/v1/*` to the
  * gateway; without Anthropic headers it returns the standard OpenAI list shape.
+ *
+ * A catalog with no usable target is a discovery failure, not a successful
+ * cycle over zero models — see the guard below.
  */
 export async function discoverModels(config: Config, apiKey: string): Promise<TargetModel[]> {
   const response = await fetch(`${config.gatewayBaseUrl}/v1/models`, {
@@ -46,11 +49,25 @@ export async function discoverModels(config: Config, apiKey: string): Promise<Ta
   const targets: TargetModel[] = [];
   const seen = new Set<string>();
   for (const model of data) {
-    if (typeof model.id !== "string" || seen.has(model.id)) {
+    // A blank id is not a probe target. Kept, it would be requested as if it were
+    // a real model, fail, and still count as a *present* model — enough to make
+    // the guard below see a usable catalog while every genuine model reads as
+    // departed, which is the exact mass resolution that guard exists to prevent.
+    if (typeof model.id !== "string" || model.id.trim() === "" || seen.has(model.id)) {
       continue;
     }
     seen.add(model.id);
     targets.push({ id: model.id, kind: kindOf(model) });
+  }
+  // A catalog that yields no probe target is a gateway or authorization failure,
+  // not "every model was legitimately removed". Returning empty would report a
+  // *successful* cycle over zero models, which deletes all probe history, blanks
+  // the dashboard, and — since every previously alerted model is now absent —
+  // resolves every open incident as departed. That silent mass recovery hides a
+  // total outage and re-arms each failure streak from zero. Failing discovery
+  // instead keeps history, keeps incidents open, and pages the cycle alert.
+  if (targets.length === 0) {
+    throw new Error("empty /models response: no usable probe targets");
   }
   return targets;
 }

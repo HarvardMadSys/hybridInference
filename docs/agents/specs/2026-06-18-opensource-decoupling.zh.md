@@ -69,16 +69,32 @@ auth/quota/concurrency,也已经有 `runtime_settings` 注册表和 `USER_AUTH_E
 
 这些会泄露 Harvard 真实基础设施,是硬阻断项:
 
-- [ ] **`wrangler.toml` 中的 Cloudflare 账号 + D1 database ID** ——
+> **状态复核 2026-07-28。** 下面三条的勾选依据是 `ops/release/public_export.py`
+> 的实测输出,不是"读代码觉得应该没问题"。复跑它即可重新验证。
+
+- [x] **`wrangler.toml` 中的 Cloudflare 账号 + D1 database ID** ——
   `services/status-monitor-worker/wrangler.toml:7,37,38`。它们是标识符而非凭据
   (文件注释本身写明 `account_id` 非机密;真正的 secret `CLOUDFLARE_API_TOKEN`
-  从未提交)。从 HEAD 参数化移除,轮换 `CLOUDFLARE_API_TOKEN` 作为廉价保险;
-  **不做 git 历史重写**——本私有仓的历史永远不随公开发布(公开方式见主设计文档
-  「公开与可见性策略」),重写历史只会作废所有活跃 worktree 和进行中 PR。
-- [ ] **Statcounter 分析代码块** —— `apps/frontend/src/app/layout.tsx:27,31,57`
-  (project `13224568`,security key `2d8ab84a`)。否则每个部署者的流量都会流进
-  Harvard 的分析账号。改成由 `NEXT_PUBLIC_STATCOUNTER_PROJECT_ID` 控制、默认关闭。
-- [ ] 复查 `.gitleaks.toml`,确保轮换后的真实值不会被现有 allowlist 规则误屏蔽。
+  从未提交)。
+  **按导出路径已满足,未做参数化。** 三处出现(两个 `wrangler.toml` 与
+  `.github/workflows/alert-control-plane-staging-lifecycle.yml:29`)全部落在
+  `services/` 与 `.github/workflows/` 的排除范围内,导出树的审计里
+  `cloudflare identifier` 命中数为 **0**。若日后排除清单改动使 `services/`
+  重新进入导出,这条自动回到未完成——审计会当场报出来。
+  轮换 `CLOUDFLARE_API_TOKEN` 仍建议做,作为廉价保险;**不做 git 历史重写**
+  ——本私有仓的历史永远不随公开发布,重写只会作废所有活跃 worktree 和进行中 PR。
+- [x] **Statcounter 分析代码块** —— `apps/frontend/src/app/layout.tsx`
+  (project `13224568`,security key `2d8ab84a`)。
+  已由 `branding.statcounterProjectId` 门控(空值即整块不渲染),默认值在
+  #1069 改为空,compose 与 `Dockerfile.frontend` 的默认值在 #1060 一并清空。
+  未配置的部署不加载 Statcounter。
+- [x] 复查 `.gitleaks.toml`,确保轮换后的真实值不会被现有 allowlist 规则误屏蔽。
+  **复查发现了一个真实缺口**:`docs/agents/(plans|specs)/*.md` 整目录白名单,
+  假设设计文档里的凭据都是样例——一把真的网关 key 恰好藏在那里(#1078)。
+  精确收窄需要能实跑 gitleaks(盲改会让 Security Scan 对所有人变红),因此改为
+  在仓库自身语言里兜底:`tests/unit/test_no_committed_credentials.py` 覆盖本项目
+  自己签发的凭据格式(gitleaks 默认规则不认识 `hyi-`),按字面值而非目录豁免。
+  结论与待办都写在 `.gitleaks.toml` 的注释里。
 
 ---
 
@@ -114,8 +130,13 @@ auth/quota/concurrency,也已经有 `runtime_settings` 注册表和 `USER_AUTH_E
 ### P0 —— 基础设施 & 密钥抽取(工作量:S)—— **最先做**
 - [ ] 把 `wrangler.toml` 的 `account_id` / `database_id` / `database_name` /
       `GATEWAY_BASE_URL`(`:7,17,37,38`)参数化为 Wrangler env 变量。
+      *2026-07-28:公开面上已不必要(见安全章节),留作卫生项;做它需要先建
+      repo variable,且 wrangler 部署无法本地验证。*
 - [ ] 轮换 `CLOUDFLARE_API_TOKEN` 作为保险(见安全章节;不做历史重写)。
-- [ ] 把 status-monitor worker 做成**可选** add-on,而非必需依赖。
+- [x] 把 status-monitor worker 做成**可选** add-on,而非必需依赖。
+      *已满足:`apps/backend/` 对 status-monitor 与告警控制面零引用,
+      `tests/servers/test_neutral_startup.py` 实测网关在无数据库、无认证、
+      无 overlay、无 worker 的裸环境下正常启动并服务。*
 
 ### P1 —— 后端配置抽取扫荡(工作量:S/M)
 把每一处 `freeinference.org` / `admin@freeinference.org` 字面量换成 env 驱动的

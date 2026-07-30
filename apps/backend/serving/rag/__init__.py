@@ -1,11 +1,13 @@
 """Documentation RAG assistant.
 
 A small, self-contained retrieval-augmented-generation pipeline that answers
-questions about FreeInference using the public user docs as its knowledge base.
+questions about a deployment using its own user docs as the knowledge base.
 
 Design notes
 ------------
-* **Corpus**: the public user docs under ``docs/free_inference/docs/source``.
+* **Corpus**: the active distribution overlay's user docs, resolved by
+  ``rag.config``; a checkout with no overlay has none and answers 503 until
+  ``RAG_CORPUS_DIR`` names one.
 * **Embeddings & chat route through the gateway itself** — the ingest CLI calls
   the OpenAI-compatible ``/v1/embeddings`` endpoint; the serving endpoint embeds
   the query with the in-process embedding adapter and generates the answer with

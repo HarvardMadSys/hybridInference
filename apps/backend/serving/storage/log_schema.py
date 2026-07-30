@@ -81,6 +81,11 @@ _API_LOGS_COLUMN_MIGRATIONS = [
         "served_endpoint_id",
         "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS served_endpoint_id TEXT",
     ),
+    # Cloud agent sandbox (issue #1041): the agent job whose sandbox issued
+    # this request, so a job's model spend can be summed from the same ledger
+    # that bills everything else — no need to trust an agent's self-reported
+    # usage. NULL for all ordinary traffic.
+    ("agent_job_id", "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS agent_job_id TEXT"),
 ]
 
 # ``(name, ddl)`` per index. Created after the column migrations so a predicate /
@@ -128,6 +133,14 @@ _API_LOGS_INDEXES = [
     (
         "idx_api_logs_user_cost",
         "CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost ON api_logs(user_id, timestamp, cost_usd)",
+    ),
+    (
+        "idx_api_logs_agent_job",
+        # Partial: agent traffic is a tiny slice of the table, and the query
+        # that matters (sum this job's spend, on every model call the sandbox
+        # makes) is keyed purely on job id.
+        "CREATE INDEX IF NOT EXISTS idx_api_logs_agent_job "
+        "ON api_logs(agent_job_id) WHERE agent_job_id IS NOT NULL",
     ),
     (
         "idx_api_logs_served_endpoint",
@@ -228,7 +241,8 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
             last_user_msg_entropy REAL,
             last_user_msg_hash BIGINT,
             served_model_id TEXT,
-            served_endpoint_id TEXT
+            served_endpoint_id TEXT,
+            agent_job_id TEXT
         )
     """)
 

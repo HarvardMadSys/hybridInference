@@ -3289,8 +3289,8 @@ git commit -m "config(models): retarget Claude models to direct kind: anthropic"
 #   - https://staging.freeinference.org/v1/messages           (recommended)
 #   - https://staging.freeinference.org/anthropic/v1/messages (legacy alias)
 
-export ANTHROPIC_AUTH_TOKEN="hyi-JLL5SnXa14DpKSF3GcQQRmfAm9aDmjxEfod4X5EWrWk"
-export ANTHROPIC_API_KEY="hyi-JLL5SnXa14DpKSF3GcQQRmfAm9aDmjxEfod4X5EWrWk"
+export ANTHROPIC_AUTH_TOKEN="hyi-your-api-key"
+export ANTHROPIC_API_KEY="hyi-your-api-key"
 export ANTHROPIC_BASE_URL="https://staging.freeinference.org"
 export CLAUDE_MODEL="claude-opus-4.7"
 

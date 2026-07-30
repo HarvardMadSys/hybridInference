@@ -1,6 +1,17 @@
+@import '@xterm/xterm/css/xterm.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+.agent-xterm .xterm {
+  height: 100%;
+}
+
+.agent-xterm .xterm-viewport {
+  scrollbar-color: #d1d5db transparent;
+  scrollbar-width: thin;
+}
 
 @layer base {
   html {
