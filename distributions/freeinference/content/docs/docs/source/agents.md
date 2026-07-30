@@ -154,15 +154,6 @@ guarantees in one place:
 During the beta, task events and patches are retained with the job so you
 can revisit past runs; a formal retention policy is planned.
 
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Task sits in "Queued" | Waiting for runner capacity during the beta | It starts when capacity frees up — or cancel and retry later |
-| Task finished but there is no pull request | The run produced no patch, for example because tool calls failed | Open the task page's activity feed — failed tool calls are shown there, and a run with tool failures and no patch is reported as failed, not dressed up as success |
-| A model you use elsewhere is missing from the composer | Only models enabled for agent tasks are listed during the beta | Pick from the listed models |
-| A repository is missing from the composer | The GitHub App installation does not cover it | Edit the App's repository access in your GitHub settings |
-
 ## See also
 
 - [Available Models](models.md) — full model catalog
