@@ -211,6 +211,20 @@ describe('useResizablePane', () => {
     drag(400, 900);
 
     expect(widthOf()).toBe('500px');
+    // The announced maximum is the one the drag honours, not the configured 800.
+    expect(handle()).toHaveAttribute('aria-valuemax', '500');
+  });
+
+  it('announces the maximum the layout allows, and End reaches exactly it', () => {
+    window.innerWidth = 1000; // 0.6 share caps this pane at 600, under maxWidth
+    render(<Harness options={{ maxWidth: 900 }} />);
+
+    expect(handle()).toHaveAttribute('aria-valuemax', '600');
+
+    fireEvent.keyDown(handle(), { key: 'End' });
+
+    expect(widthOf()).toBe('600px');
+    expect(handle()).toHaveAttribute('aria-valuenow', '600');
   });
 
   it('falls back to the window share when the container has no layout yet', () => {

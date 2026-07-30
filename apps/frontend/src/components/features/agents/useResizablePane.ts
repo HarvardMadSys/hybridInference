@@ -65,7 +65,11 @@ const DEFAULT_VIEWPORT_FRACTION = 0.6;
 // the shared container is what makes that exact: the transcript's floor has to
 // survive a wide task list too, and only the container knows what is left after
 // the sidebar took its share.
-function clampWidth(next: number, options: ResizablePaneOptions): number {
+//
+// This is where the pane can actually reach right now, which is also the number
+// the separator reports as its maximum — announcing the configured `maxWidth`
+// would promise a screen reader a range the drag refuses to enter.
+function upperBound(options: ResizablePaneOptions): number {
   const {
     minWidth,
     maxWidth,
@@ -82,8 +86,11 @@ function clampWidth(next: number, options: ResizablePaneOptions): number {
       : typeof window === 'undefined'
         ? maxWidth
         : Math.round(window.innerWidth * maxViewportFraction);
-  const upper = Math.max(minWidth, Math.min(maxWidth, outerCap));
-  return Math.min(Math.max(Math.round(next), minWidth), upper);
+  return Math.max(minWidth, Math.min(maxWidth, outerCap));
+}
+
+function clampWidth(next: number, options: ResizablePaneOptions): number {
+  return Math.min(Math.max(Math.round(next), options.minWidth), upperBound(options));
 }
 
 /**
@@ -106,16 +113,21 @@ export function useResizablePane(options: ResizablePaneOptions): ResizablePane {
   optionsRef.current = options;
 
   const [width, setWidth] = useState(defaultWidth);
+  const [reachableMax, setReachableMax] = useState(maxWidth);
   const [drag, setDrag] = useState<{ startX: number; startWidth: number } | null>(null);
   const widthRef = useRef(width);
   const desiredRef = useRef(defaultWidth);
   const announceRef = useRef(false);
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const observedRef = useRef<HTMLElement | null>(null);
 
   /** Render the remembered width, narrowed to whatever the layout allows now. */
   const settle = useCallback(() => {
-    const clamped = clampWidth(desiredRef.current, optionsRef.current);
+    const upper = upperBound(optionsRef.current);
+    const clamped = Math.min(Math.max(desiredRef.current, optionsRef.current.minWidth), upper);
     widthRef.current = clamped;
     setWidth(clamped);
+    setReachableMax(upper);
   }, []);
 
   // A gesture is authoritative: it is already limited by the layout, so the
@@ -138,9 +150,13 @@ export function useResizablePane(options: ResizablePaneOptions): ResizablePane {
     announcePaneResize();
   }, [width]);
 
+  // Keyboard resizing persists on every keypress, so held arrows would rewrite
+  // the same value dozens of times a second once the seam reaches a bound.
   const persist = useCallback(() => {
+    const value = String(desiredRef.current);
     try {
-      window.localStorage.setItem(storageKey, String(desiredRef.current));
+      if (window.localStorage.getItem(storageKey) === value) return;
+      window.localStorage.setItem(storageKey, value);
     } catch {
       // Blocked storage only loses the remembered width, never the resize.
     }
@@ -163,21 +179,44 @@ export function useResizablePane(options: ResizablePaneOptions): ResizablePane {
     settle();
   }, [maxWidth, minWidth, settle, storageKey]);
 
-  // Re-settle whenever the available space changes: a resized window, another
-  // pane taking a different share, or anything else that moves the container.
+  // Re-settle whenever the available space changes: a resized window, or another
+  // pane taking a different share of it.
   useEffect(() => {
     window.addEventListener('resize', settle);
     window.addEventListener(PANE_RESIZE_EVENT, settle);
-    const container = optionsRef.current.containerRef?.current;
-    const observer =
-      container && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(settle) : null;
-    observer?.observe(container!);
     return () => {
       window.removeEventListener('resize', settle);
       window.removeEventListener(PANE_RESIZE_EVENT, settle);
-      observer?.disconnect();
     };
   }, [settle]);
+
+  // Watch the container itself too, for size changes no one announced. Checked
+  // after every render rather than once at mount: a ref holds no identity React
+  // can depend on, so a container that arrives late — or is swapped — would
+  // otherwise leave the observer pointed at nothing, or at a detached node.
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return;
+    const container = optionsRef.current.containerRef?.current ?? null;
+    if (container === observedRef.current) return;
+    observerRef.current?.disconnect();
+    observedRef.current = container;
+    if (!container) {
+      observerRef.current = null;
+      return;
+    }
+    const observer = new ResizeObserver(settle);
+    observer.observe(container);
+    observerRef.current = observer;
+  });
+
+  useEffect(
+    () => () => {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      observedRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!drag) return;
@@ -249,7 +288,7 @@ export function useResizablePane(options: ResizablePaneOptions): ResizablePane {
       'aria-orientation': 'vertical',
       'aria-valuenow': width,
       'aria-valuemin': minWidth,
-      'aria-valuemax': maxWidth,
+      'aria-valuemax': reachableMax,
       tabIndex: 0,
       onPointerDown,
       onKeyDown,
