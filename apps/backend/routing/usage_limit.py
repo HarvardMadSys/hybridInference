@@ -29,16 +29,22 @@ from datetime import datetime, timedelta, timezone
 
 __all__ = ["UsageLimit", "detect_usage_limit"]
 
-# A usage-limit error must clearly name a *usage/subscription* limit. Matching
-# "usage limit" (covers "Usage limit reached" and "weekly usage limit") or an
-# explicit "limit will reset" avoids catching transient "rate limit" 429s, which
-# recover within seconds and must keep paging normally.
-_USAGE_LIMIT_MARKERS = (
-    "usage limit",
-    "limit will reset",
-    "limit resets",
-    "subscription limit",
-)
+# A usage-limit error must clearly name a *usage/subscription* limit. "usage
+# limit" / "subscription limit" are unambiguous. A bare reset phrase counts only
+# when the text is not a transient "rate limit" — a rate limit also "resets", but
+# within seconds, and must keep paging normally.
+_USAGE_MARKERS = ("usage limit", "subscription limit")
+_RESET_MARKERS = ("limit will reset", "limit resets")
+
+
+def _is_usage_limit(low: str) -> bool:
+    """Return whether ``low`` (a lower-cased error) names a subscription usage limit."""
+    if any(marker in low for marker in _USAGE_MARKERS):
+        return True
+    if any(marker in low for marker in _RESET_MARKERS):
+        return "rate limit" not in low
+    return False
+
 
 # Suppression-window guards. A parsed reset is clamped into this range so a
 # mis-parsed or clock-skewed timestamp can neither thrash (re-alert at once) nor
@@ -157,7 +163,7 @@ def detect_usage_limit(detail: str | None, *, now: datetime) -> UsageLimit | Non
     """
     if not detail:
         return None
-    if not any(marker in detail.lower() for marker in _USAGE_LIMIT_MARKERS):
+    if not _is_usage_limit(detail.lower()):
         return None
 
     window_est = _estimate_window(detail)

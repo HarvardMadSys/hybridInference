@@ -168,9 +168,12 @@ class _CircuitBreaker:
         self.consecutive_failures = 0
         self.last_opened: float | None = None
         # Wall-clock epoch until which repeat circuit-open alerts are muted for a
-        # subscription usage-limit outage (0.0 = not muted). Set in on_failure
-        # and cleared on recovery in on_success.
+        # subscription usage-limit outage (0.0 = not muted). Committed only once a
+        # page is delivered (_send_circuit_alert) and cleared on recovery.
         self._alert_suppressed_until: float = 0.0
+        # True while a usage-limit page is being delivered, so a re-trip in that
+        # window can't emit a duplicate page before the deadline is committed.
+        self._alert_in_flight: bool = False
         self._offenders: Counter[str] = Counter()
         self._lock = threading.Lock()
 
@@ -240,23 +243,29 @@ class _CircuitBreaker:
             # A subscription usage-limit outage re-trips on every half-open probe
             # until the provider's window resets. Fire one alert per outage and
             # stay quiet until the parsed reset time, instead of re-paging every
-            # few minutes for hours. The deadline is cleared on recovery.
+            # few minutes for hours. The deadline is committed only once the page
+            # is delivered (see _send_circuit_alert) and cleared on recovery, so a
+            # dropped page never mutes an outage that was never announced.
             now_dt = datetime.now(timezone.utc)
             usage_limit = detect_usage_limit(detail, now=now_dt)
-            if usage_limit is not None:
-                if now_dt.timestamp() < self._alert_suppressed_until:
-                    logger.info(
-                        "circuit_open_alert_suppressed",
-                        extra={
-                            "event": "circuit_open_alert_suppressed",
-                            "provider": self.provider,
-                            "reason": reason or "unknown",
-                            "quota_reset_at": _iso_utc(self._alert_suppressed_until),
-                            "window": usage_limit.window,
-                        },
-                    )
-                    return
-                self._alert_suppressed_until = usage_limit.reset_at.timestamp()
+            if usage_limit is not None and (
+                self._alert_in_flight or now_dt.timestamp() < self._alert_suppressed_until
+            ):
+                logger.info(
+                    "circuit_open_alert_suppressed",
+                    extra={
+                        "event": "circuit_open_alert_suppressed",
+                        "provider": self.provider,
+                        "reason": reason or "unknown",
+                        "quota_reset_at": (
+                            _iso_utc(self._alert_suppressed_until)
+                            if self._alert_suppressed_until
+                            else None
+                        ),
+                        "window": usage_limit.window,
+                    },
+                )
+                return
 
             context: dict[str, Any] = {
                 "provider": self.provider,
@@ -266,7 +275,9 @@ class _CircuitBreaker:
             }
             if detail:
                 context["upstream_error"] = detail
+            reset_epoch: float | None = None
             if usage_limit is not None:
+                reset_epoch = usage_limit.reset_at.timestamp()
                 context["quota_reset_at"] = usage_limit.reset_at.isoformat()
             offenders = self._format_offenders()
             if offenders:
@@ -283,21 +294,39 @@ class _CircuitBreaker:
                     "offending_users": dict(self._offenders) or None,
                 },
             )
+            if reset_epoch is not None:
+                self._alert_in_flight = True
             try:
-                task = asyncio.ensure_future(
-                    alert_slack(
-                        AlertSeverity.ERROR,
-                        "Provider circuit opened",
-                        context,
-                        dedupe_key=f"circuit_open:{self.provider}",
-                        cooldown_sec=300,
-                    )
-                )
+                task = asyncio.ensure_future(self._send_circuit_alert(context, reset_epoch))
             except RuntimeError:
-                pass
+                # No running loop (sync caller / test): nothing was scheduled, so
+                # release the in-flight guard we optimistically set.
+                self._alert_in_flight = False
             else:
                 _ALERT_TASKS.add(task)
                 task.add_done_callback(_ALERT_TASKS.discard)
+
+    async def _send_circuit_alert(self, context: dict[str, Any], reset_epoch: float | None) -> bool:
+        """Deliver a circuit-open page; commit usage-limit suppression on success.
+
+        For a usage-limit trip (``reset_epoch`` set) the suppression deadline is
+        recorded only after the page is actually delivered, so a dropped page —
+        relay/webhook failure, a global snooze, or the alert cooldown — leaves the
+        outage un-muted and it re-pages on the next failing probe.
+        """
+        delivered = await alert_slack(
+            AlertSeverity.ERROR,
+            "Provider circuit opened",
+            context,
+            dedupe_key=f"circuit_open:{self.provider}",
+            cooldown_sec=300,
+        )
+        if reset_epoch is not None:
+            with self._lock:
+                self._alert_in_flight = False
+                if delivered:
+                    self._alert_suppressed_until = reset_epoch
+        return delivered
 
     def _format_offenders(self, *, top: int = _OFFENDERS_IN_ALERT) -> str | None:
         """Render failure-streak offenders for an alert, busiest first."""

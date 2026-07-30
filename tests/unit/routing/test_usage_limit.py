@@ -14,8 +14,24 @@ def test_returns_none_for_empty_or_non_usage_limit():
 
 
 def test_transient_rate_limit_is_not_a_usage_limit():
-    # A per-minute rate limit recovers on its own and must keep alerting.
+    # A per-minute rate limit recovers on its own and must keep alerting, even
+    # when it phrases its recovery with a reset marker.
     assert detect_usage_limit("429 Too Many Requests: rate limit exceeded", now=NOW) is None
+    assert detect_usage_limit("rate limit will reset in 60 seconds", now=NOW) is None
+    assert (
+        detect_usage_limit(
+            "429 rate limit exceeded; your limit will reset at 2026-07-30 22:00:00", now=NOW
+        )
+        is None
+    )
+
+
+def test_reset_phrase_without_rate_limit_is_a_usage_limit():
+    # A bare reset phrase with no "rate limit" qualifier is treated as a usage
+    # limit (default window, since no named period is present).
+    limit = detect_usage_limit("Your limit will reset at 2026-07-30 22:45:10", now=NOW)
+    assert limit is not None
+    assert limit.reset_at == datetime(2026, 7, 30, 22, 45, 10, tzinfo=timezone.utc)
 
 
 def test_explicit_reset_timestamp_wins_over_window():

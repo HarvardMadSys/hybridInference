@@ -10,7 +10,7 @@ import asyncio
 import logging
 from unittest.mock import AsyncMock, patch
 
-from routing.endpoint_health import _CircuitBreaker, _CircuitState
+from routing.endpoint_health import _ALERT_TASKS, _CircuitBreaker, _CircuitState
 
 # "weekly usage limit" with no explicit timestamp -> reset ~7 days out,
 # comfortably in the future regardless of when the test runs.
@@ -27,6 +27,18 @@ def _trip_env(monkeypatch):
     reset_dedupe_state()
 
 
+async def _drain_alert_tasks():
+    """Await the breaker's fire-and-forget page tasks so post-delivery state settles.
+
+    The suppression deadline is committed inside ``_send_circuit_alert`` after the
+    page is delivered, so tests that read ``_alert_suppressed_until`` must let that
+    task finish first.
+    """
+    tasks = list(_ALERT_TASKS)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def test_usage_limit_alerts_once_then_suppresses_retrips(monkeypatch):
     _trip_env(monkeypatch)
     cb = _CircuitBreaker(provider="zai:api.z.ai:443")
@@ -35,7 +47,7 @@ async def test_usage_limit_alerts_once_then_suppresses_retrips(monkeypatch):
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)  # CLOSED -> OPEN
         assert cb.state == _CircuitState.OPEN
-        await asyncio.sleep(0)
+        await _drain_alert_tasks()
         mock_alert.assert_awaited_once()
         assert cb._alert_suppressed_until > 0.0
         context = mock_alert.await_args.args[2]
@@ -46,7 +58,7 @@ async def test_usage_limit_alerts_once_then_suppresses_retrips(monkeypatch):
         cb.state = _CircuitState.HALF_OPEN
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         assert cb.state == _CircuitState.OPEN
-        await asyncio.sleep(0)
+        await _drain_alert_tasks()
         mock_alert.assert_awaited_once()
 
 
@@ -57,16 +69,30 @@ async def test_usage_limit_realerts_after_reset(monkeypatch):
     with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
-        await asyncio.sleep(0)
+        await _drain_alert_tasks()
         mock_alert.assert_awaited_once()
 
         # Simulate the reset window elapsing, then a fresh outage.
         cb._alert_suppressed_until = 0.0
         cb.state = _CircuitState.HALF_OPEN
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
-        await asyncio.sleep(0)
+        await _drain_alert_tasks()
         assert mock_alert.await_count == 2
         assert cb._alert_suppressed_until > 0.0
+
+
+async def test_undelivered_page_does_not_mute_the_outage(monkeypatch):
+    _trip_env(monkeypatch)
+    cb = _CircuitBreaker(provider="zai:api.z.ai:443")
+
+    # A dropped page (relay/webhook failure, snooze, cooldown) returns False:
+    # the outage must stay un-muted so the next probe re-pages.
+    with patch("routing.endpoint_health.alert_slack", new=AsyncMock(return_value=False)):
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        await _drain_alert_tasks()
+        assert cb._alert_suppressed_until == 0.0
+        assert cb._alert_in_flight is False
 
 
 async def test_non_usage_limit_failure_is_not_suppressed(monkeypatch):
@@ -76,7 +102,7 @@ async def test_non_usage_limit_failure_is_not_suppressed(monkeypatch):
     with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="stream_exception", detail="HTTP 502 bad gateway")
         cb.on_failure(reason="stream_exception", detail="HTTP 502 bad gateway")
-        await asyncio.sleep(0)
+        await _drain_alert_tasks()
         mock_alert.assert_awaited_once()
         # No usage-limit -> no suppression deadline, no reset context field.
         assert cb._alert_suppressed_until == 0.0
@@ -90,6 +116,7 @@ async def test_recovery_clears_suppression(monkeypatch):
     with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        await _drain_alert_tasks()
         assert cb._alert_suppressed_until > 0.0
         cb.on_success()
         assert cb._alert_suppressed_until == 0.0
@@ -106,6 +133,7 @@ async def test_suppressed_retrip_emits_structured_info_log(monkeypatch, caplog):
     ):
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        await _drain_alert_tasks()
         cb.state = _CircuitState.HALF_OPEN
         cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
 
