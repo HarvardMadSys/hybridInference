@@ -48,7 +48,7 @@ describe('AgentsConnectedPage', () => {
 
   it('defaults legacy callbacks without a provider to GitHub', async () => {
     navigation.search = 'code=github-code&state=signed-state';
-    mockedConnectGitHub.mockResolvedValue({ provider: 'github', connected: true });
+    mockedConnectGitHub.mockResolvedValue({ connections: [{}], repos: [], install_url: null });
 
     render(<AgentsConnectedPage />);
 
@@ -60,7 +60,7 @@ describe('AgentsConnectedPage', () => {
 
   it('submits a single-use OAuth state only once in React Strict Mode', async () => {
     navigation.search = 'provider=github&code=github-code&state=signed-state';
-    mockedConnectGitHub.mockResolvedValue({ provider: 'github', connected: true });
+    mockedConnectGitHub.mockResolvedValue({ connections: [{}], repos: [], install_url: null });
 
     render(
       <StrictMode>
@@ -70,6 +70,24 @@ describe('AgentsConnectedPage', () => {
 
     await waitFor(() => expect(navigation.replace).toHaveBeenCalled());
     expect(mockedConnectGitHub).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers App installation after OAuth finds no accessible installation', async () => {
+    navigation.search = 'provider=github&code=github-code&state=signed-state';
+    mockedConnectGitHub.mockResolvedValue({
+      connections: [],
+      repos: [],
+      install_url: 'https://github.com/apps/freeinference/installations/new?state=fresh-state',
+    });
+
+    render(<AgentsConnectedPage />);
+
+    const install = await screen.findByRole('link', { name: 'Install GitHub App' });
+    expect(install).toHaveAttribute(
+      'href',
+      'https://github.com/apps/freeinference/installations/new?state=fresh-state',
+    );
+    expect(navigation.replace).not.toHaveBeenCalled();
   });
 
   it('does not exchange a code without connection state', async () => {

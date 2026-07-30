@@ -556,6 +556,7 @@ class GitHubConnectionResponse(BaseModel):
 
     connections: list[dict[str, Any]] = Field(default_factory=list)
     repos: list[str] = Field(default_factory=list)
+    install_url: str | None = None
 
 
 class SourceControlAccount(BaseModel):

@@ -445,6 +445,12 @@ async def _connect_github_for_user(
     )
     user_token = await app_credentials.exchange_user_code(body.code)
     installations = await app_credentials.installations_for_user(user_token)
+    install_url = None
+    if not installations:
+        github_install_url = (os.getenv("AGENT_GITHUB_APP_INSTALL_URL") or "").strip()
+        if github_install_url:
+            install_state = await issue_oauth_state(store, user_id=user_id, provider="github")
+            install_url = github_authorization_url(github_install_url, state=install_state)
     for installation in installations:
         await store.record_repo_grant(
             user_id=user_id,
@@ -458,6 +464,7 @@ async def _connect_github_for_user(
     return GitHubConnectionResponse(
         connections=await store.list_repo_grants(user_id=user_id),
         repos=await repos_for_user(user_id, store=store, app_credentials=app_credentials),
+        install_url=install_url,
     )
 
 
@@ -480,8 +487,8 @@ async def _source_control_providers(
     if github_configured:
         try:
             state = await issue_oauth_state(store, user_id=user_id, provider="github")
-            github_connect_url = github_authorization_url(github_install_url, state=state)
-        except SourceControlError as exc:
+            github_connect_url = app_credentials.user_authorization_url(state)
+        except (GitHubAppError, SourceControlError) as exc:
             github_configured = False
             github_error = str(exc)
 

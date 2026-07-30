@@ -189,6 +189,7 @@ export async function getAgentIntegrations(): Promise<AgentIntegrationsApi> {
 export interface GitHubConnectionApi {
   connections: Array<{ installation_id: number; account_login: string | null }>;
   repos: string[];
+  install_url: string | null;
 }
 
 /**

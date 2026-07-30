@@ -16,6 +16,7 @@ from serving.agent_jobs.source_control import (
     GitLabOAuthClient,
     GitLabOAuthConfig,
     SourceControlCipher,
+    github_authorization_url,
 )
 from serving.servers.deps import (
     get_agent_app_credentials,
@@ -87,6 +88,14 @@ class IntegrationStore:
 
 
 class FakeGitHubApp:
+    user_authorization_configured = True
+
+    def user_authorization_url(self, state: str) -> str:
+        return github_authorization_url(
+            "https://github.com/login/oauth/authorize?client_id=client-id",
+            state=state,
+        )
+
     async def exchange_user_code(self, code: str) -> str:
         assert code == "github-code"
         return "ephemeral-user-token"
@@ -117,7 +126,7 @@ async def test_github_status_connect_replay_and_disconnect(monkeypatch) -> None:
     monkeypatch.setenv("API_KEY_SECRET", "api-test-secret")
     monkeypatch.setenv(
         "AGENT_GITHUB_APP_INSTALL_URL",
-        "https://github.com/login/oauth/authorize?client_id=client-id",
+        "https://github.com/apps/freeinference/installations/new",
     )
     store = IntegrationStore()
     app = build_app(store, github=FakeGitHubApp())
@@ -134,13 +143,48 @@ async def test_github_status_connect_replay_and_disconnect(monkeypatch) -> None:
             json={"code": "github-code", "state": state},
         )
         disconnected = await client.delete("/v1/agent/integrations/github/connections/77")
+        reconnect_status = await client.get("/v1/agent/integrations")
 
     assert status.status_code == 200
     assert github["configured"] is True
+    connect_url = urlparse(github["connect_url"])
+    assert connect_url.path == "/login/oauth/authorize"
+    assert parse_qs(connect_url.query)["client_id"] == ["client-id"]
     assert connected.json()["repos"] == ["acme/service"]
     assert replay.status_code == 400
     assert replay.json()["detail"]["error"]["type"] == "oauth_state_invalid"
     assert disconnected.json()["connections"] == []
+    reconnect_url = urlparse(reconnect_status.json()["providers"][0]["connect_url"])
+    assert reconnect_url.path == "/login/oauth/authorize"
+
+
+async def test_github_oauth_without_installation_offers_install_step(monkeypatch) -> None:
+    class GitHubAppWithoutInstallation(FakeGitHubApp):
+        async def installations_for_user(self, token: str):
+            assert token == "ephemeral-user-token"
+            return []
+
+    monkeypatch.setenv("API_KEY_SECRET", "api-test-secret")
+    monkeypatch.setenv(
+        "AGENT_GITHUB_APP_INSTALL_URL",
+        "https://github.com/apps/freeinference/installations/new",
+    )
+    store = IntegrationStore()
+    app = build_app(store, github=GitHubAppWithoutInstallation())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        status = await client.get("/v1/agent/integrations")
+        connect_url = urlparse(status.json()["providers"][0]["connect_url"])
+        oauth_state = parse_qs(connect_url.query)["state"][0]
+        connected = await client.post(
+            "/v1/agent/integrations/github/connect",
+            json={"code": "github-code", "state": oauth_state},
+        )
+
+    assert connected.status_code == 200
+    install_url = urlparse(connected.json()["install_url"])
+    assert install_url.path == "/apps/freeinference/installations/new"
+    assert parse_qs(install_url.query)["state"][0] != oauth_state
+    assert connected.json()["connections"] == []
 
 
 async def test_gitlab_connect_lists_projects_stores_ciphertext_and_revokes(monkeypatch) -> None:
