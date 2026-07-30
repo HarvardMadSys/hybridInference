@@ -192,6 +192,38 @@ def test_job_worktrees_are_a_host_path_at_the_same_path_inside(compose: dict):
         assert resolved.startswith("/"), "must be a host path, not a named volume"
 
 
+def test_workspace_broker_and_runner_share_the_same_worktrees(compose: dict):
+    """Files, Terminal, and Git must inspect the runner's live job directory."""
+    services = compose["services"]
+    runner_mounts = {
+        mount for mount in services["agent-runner"]["volumes"] if "agent-jobs" in mount
+    }
+    broker_mounts = {
+        mount for mount in services["agent-workspace-broker"]["volumes"] if "agent-jobs" in mount
+    }
+
+    assert broker_mounts == runner_mounts
+    assert services["backend"]["environment"]["AGENT_WORKSPACE_BROKER_URL"].endswith(":8092")
+
+
+def test_workspace_broker_keeps_execution_off_the_public_gateway(compose: dict):
+    """Only the private broker may spawn an isolated workspace command."""
+    services = compose["services"]
+    broker = services["agent-workspace-broker"]
+    socket_mounts = [mount for mount in broker["volumes"] if "docker.sock" in mount]
+
+    assert socket_mounts and all(mount.endswith(":ro") for mount in socket_mounts)
+    assert not any("docker.sock" in mount for mount in services["backend"].get("volumes", []))
+    assert broker["networks"] == ["hybridinference"]
+
+
+def test_runner_retains_live_worktrees_for_workspace_tools(compose: dict):
+    """A finished run must outlive the process long enough to remain inspectable."""
+    env = compose["services"]["agent-runner"]["environment"]
+
+    assert int(_expand(env["AGENT_WORKSPACE_TTL_S"])) > 0
+
+
 def test_the_runner_image_can_actually_start_a_sandbox():
     """The container backend shells out to `docker`; the backend image has none."""
     text = _RUNNER_DOCKERFILE.read_text()

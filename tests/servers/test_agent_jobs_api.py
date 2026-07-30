@@ -870,9 +870,22 @@ async def test_other_users_jobs_are_404_not_403(client: AsyncClient, store: Fake
         f"/v1/agent/jobs/{foreign['id']}/events",
         f"/v1/agent/jobs/{foreign['id']}/artifacts/patch",
         f"/v1/agent/jobs/{foreign['id']}/files",
+        f"/v1/agent/jobs/{foreign['id']}/git",
     ):
         response = await client.get(path)
         assert response.status_code == 404, path
+
+    write = await client.put(
+        f"/v1/agent/jobs/{foreign['id']}/files",
+        params={"path": "README.md"},
+        json={"content": "forbidden"},
+    )
+    terminal = await client.post(
+        f"/v1/agent/jobs/{foreign['id']}/terminal",
+        json={"command": "pwd", "cwd": "/workspace"},
+    )
+    assert write.status_code == 404
+    assert terminal.status_code == 404
     cancel = await client.post(f"/v1/agent/jobs/{foreign['id']}/cancel")
     assert cancel.status_code == 404
     for method in (client.post, client.delete):
@@ -981,6 +994,81 @@ async def test_workspace_files_merge_pinned_base_and_changed_snapshot(
         ("owner/name", "", "a" * 40),
         ("owner/name", "src", "a" * 40),
         ("owner/name", "src/base.py", "a" * 40),
+    ]
+
+
+async def test_live_workspace_routes_use_the_job_broker(store: FakeAgentJobStore, monkeypatch):
+    """Files, Terminal and Git all address the same durable job worktree."""
+
+    class Broker:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        async def files(self, workspace_id: str, path: str):
+            self.calls.append(("files", workspace_id, path))
+            return {
+                "path": path,
+                "kind": "directory",
+                "entries": [],
+                "writable": True,
+                "source": "workspace",
+            }
+
+        async def write_file(self, workspace_id: str, path: str, content: str):
+            self.calls.append(("write", workspace_id, path, content))
+            return {
+                "path": path,
+                "kind": "file",
+                "content": content,
+                "size": len(content),
+                "writable": True,
+                "source": "workspace",
+            }
+
+        async def terminal(self, workspace_id: str, **kwargs):
+            self.calls.append(("terminal", workspace_id, kwargs["command"], kwargs["cwd"]))
+            return {"output": "ok\n", "stderr": "", "exit_code": 0, "cwd": "/workspace"}
+
+        async def git(self, workspace_id: str, base_sha: str | None = None):
+            self.calls.append(("git", workspace_id, base_sha))
+            return {
+                "available": True,
+                "branch": "agent/thread",
+                "changes": [{"code": " M", "path": "README.md"}],
+                "patch": "diff --git a/README.md b/README.md\n",
+                "commits": [],
+            }
+
+    broker = Broker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        listing = await local_client.get(f"/v1/agent/jobs/{job_id}/files")
+        saved = await local_client.put(
+            f"/v1/agent/jobs/{job_id}/files",
+            params={"path": "README.md"},
+            json={"content": "updated"},
+        )
+        terminal = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminal",
+            json={"command": "pwd", "cwd": "/workspace"},
+        )
+        git = await local_client.get(f"/v1/agent/jobs/{job_id}/git")
+
+    workspace_id = job_id
+    assert listing.status_code == 200
+    assert listing.json()["writable"] is True
+    assert listing.json()["source"] == "workspace"
+    assert saved.status_code == 200
+    assert terminal.json()["output"] == "ok\n"
+    assert git.json()["branch"] == "agent/thread"
+    assert broker.calls == [
+        ("files", workspace_id, ""),
+        ("write", workspace_id, "README.md", "updated"),
+        ("terminal", workspace_id, "pwd", "/workspace"),
+        ("git", workspace_id, store.jobs[job_id].get("base_sha")),
     ]
 
 
