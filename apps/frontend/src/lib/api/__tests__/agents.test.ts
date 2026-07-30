@@ -12,6 +12,7 @@ import {
   connectGitLab,
   disconnectAgentIntegration,
   followUpAgentJob,
+  forkAgentJob,
   getAgentIntegrations,
   getAgentJobArtifact,
   getAgentJobFiles,
@@ -111,6 +112,19 @@ describe('agents api', () => {
       expect.any(String),
       '/v1/agent/jobs/job%2Fone/archive',
       { method: 'DELETE' },
+    );
+  });
+
+  it('forks a conversation from a settled turn', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({ id: 'ajob_fork', state: 'succeeded' }));
+
+    const fork = await forkAgentJob('job/one');
+
+    expect(fork.id).toBe('ajob_fork');
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      expect.any(String),
+      '/v1/agent/jobs/job%2Fone/fork',
+      { method: 'POST' },
     );
   });
 

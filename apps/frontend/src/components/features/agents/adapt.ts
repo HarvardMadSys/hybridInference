@@ -5,7 +5,12 @@
 // backend genuinely provides are mapped, and fields it does not are left empty
 // so the UI renders an honest blank instead of an invented value.
 
-import type { AgentJobApi, AgentJobEventApi, AgentThreadApi } from '@/lib/api/agents';
+import type {
+  AgentJobApi,
+  AgentJobEventApi,
+  AgentThreadApi,
+  AgentThreadMessageApi,
+} from '@/lib/api/agents';
 
 import type { AgentDiffFile, AgentEvent, AgentJob, AgentJobState, DiffLine } from './types';
 
@@ -367,17 +372,29 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
         .map((threadJob) => threadJob.id),
     );
   }
+  const mapMessage = (message: AgentThreadMessageApi) => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    jobId: message.job_id,
+    createdAt: message.created_at,
+  });
   const priorMessages = (options.thread?.messages ?? [])
     .filter((message) =>
       priorJobIds ? priorJobIds.has(message.job_id) : message.job_id !== job.id,
     )
-    .map((message) => ({
-      id: message.id,
-      role: message.role,
-      content: message.content,
-      jobId: message.job_id,
-      createdAt: message.created_at,
-    }));
+    .map(mapMessage);
+  // A turn copied by fork has no events; its durable messages are the only
+  // record of what it said. For a settled job whose event log carries no
+  // message rows, render the thread's copy of the turn — prompt included, so
+  // the turn keeps its chronology and the prompt card knows to stand down.
+  const settled = job.state === 'succeeded' || job.state === 'failed' || job.state === 'cancelled';
+  let ownMessages: ReturnType<typeof mapMessage>[] = [];
+  if (settled && !events.some((event) => event.event_type === 'message')) {
+    ownMessages = (options.thread?.messages ?? [])
+      .filter((message) => message.job_id === job.id)
+      .map(mapMessage);
+  }
   const threadPrUrl = [...(options.thread?.jobs ?? [])]
     .reverse()
     .find((threadJob) => threadJob.published_pr_url)?.published_pr_url;
@@ -428,6 +445,7 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     threadId: job.thread_id ?? options.thread?.thread_id ?? undefined,
     parentJobId: job.parent_job_id ?? undefined,
     turnNo: job.turn_no,
-    threadMessages: priorMessages,
+    threadMessages: [...priorMessages, ...ownMessages],
+    historyIncludesPrompt: ownMessages.some((message) => message.role === 'user'),
   };
 }

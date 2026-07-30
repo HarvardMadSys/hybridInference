@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { cancelAgentJob, followUpAgentJob, getAgentJobFiles } from '@/lib/api/agents';
+import { cancelAgentJob, followUpAgentJob, forkAgentJob, getAgentJobFiles } from '@/lib/api/agents';
 
 import { JobDetail } from './JobDetail';
 import type { AgentJob } from './types';
@@ -18,6 +18,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/api/agents', () => ({
   cancelAgentJob: vi.fn(),
   followUpAgentJob: vi.fn(),
+  forkAgentJob: vi.fn(),
   getAgentJobFiles: vi.fn(),
 }));
 
@@ -76,12 +77,25 @@ function openWorkspace() {
   fireEvent.click(screen.getByRole('button', { name: 'Open workspace' }));
 }
 
+const HISTORY = [
+  { id: 1, role: 'user' as const, content: 'Earlier question', jobId: 'ajob_0', createdAt: null },
+  {
+    id: 2,
+    role: 'assistant' as const,
+    content: 'Earlier answer',
+    jobId: 'ajob_0',
+    createdAt: null,
+  },
+];
+
 describe('JobDetail', () => {
   beforeEach(() => {
     navigation.push.mockReset();
     vi.mocked(cancelAgentJob).mockReset();
     vi.mocked(followUpAgentJob).mockReset();
+    vi.mocked(forkAgentJob).mockReset();
     vi.mocked(getAgentJobFiles).mockReset();
+    sessionStorage.clear();
   });
 
   afterEach(() => cleanup());
@@ -337,5 +351,58 @@ describe('JobDetail', () => {
     rerender(<JobDetail job={makeJob({ state: 'done' })} />);
 
     await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledTimes(2));
+  });
+
+  it('copies a message to the clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    render(<JobDetail job={makeJob({ threadMessages: HISTORY })} />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy message' })[0]);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('Earlier question'));
+  });
+
+  it('forks the conversation from an earlier assistant message', async () => {
+    vi.mocked(forkAgentJob).mockResolvedValue({ id: 'ajob_fork' } as never);
+    render(<JobDetail job={makeJob({ threadMessages: HISTORY })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fork from here' }));
+
+    await waitFor(() => expect(forkAgentJob).toHaveBeenCalledWith('ajob_0'));
+    expect(navigation.push).toHaveBeenCalledWith('/agents/ajob_fork');
+  });
+
+  it('edit-and-rewind forks the prior turn and leaves the prompt as a draft', async () => {
+    vi.mocked(forkAgentJob).mockResolvedValue({ id: 'ajob_fork' } as never);
+    render(<JobDetail job={makeJob({ threadMessages: HISTORY })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit & rewind' }));
+
+    await waitFor(() => expect(forkAgentJob).toHaveBeenCalledWith('ajob_0'));
+    expect(sessionStorage.getItem('agent-rewind-draft-ajob_fork')).toBe(
+      'Current task\nwith all of its detail.',
+    );
+    expect(navigation.push).toHaveBeenCalledWith('/agents/ajob_fork');
+  });
+
+  it('offers a whole-conversation fork only once the run has settled', async () => {
+    vi.mocked(forkAgentJob).mockResolvedValue({ id: 'ajob_fork' } as never);
+    const { rerender } = render(<JobDetail job={makeJob()} />);
+    expect(screen.queryByRole('button', { name: 'Fork' })).not.toBeInTheDocument();
+
+    rerender(<JobDetail job={makeJob({ state: 'done' })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Fork' }));
+
+    await waitFor(() => expect(forkAgentJob).toHaveBeenCalledWith('ajob_1'));
+    expect(navigation.push).toHaveBeenCalledWith('/agents/ajob_fork');
+  });
+
+  it('prefills the composer from a rewind draft exactly once', () => {
+    sessionStorage.setItem('agent-rewind-draft-ajob_1', 'edited prompt');
+    render(<JobDetail job={makeJob()} />);
+
+    expect(screen.getByLabelText('Add a follow-up')).toHaveValue('edited prompt');
+    expect(sessionStorage.getItem('agent-rewind-draft-ajob_1')).toBeNull();
   });
 });

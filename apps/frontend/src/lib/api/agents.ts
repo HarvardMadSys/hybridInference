@@ -59,6 +59,8 @@ export interface AgentJobApi {
   thread_id?: string | null;
   parent_job_id?: string | null;
   turn_no?: number;
+  /** Set on turns created by a fork: the original turn this row copies. */
+  forked_from_job_id?: string | null;
 }
 
 export interface AgentThreadMessageApi {
@@ -344,6 +346,19 @@ export async function followUpAgentJob(
       body: JSON.stringify(body),
     },
   );
+  return jsonOrThrow<AgentJobApi>(resp);
+}
+
+/**
+ * Copy the conversation up to a settled turn into a new thread.
+ *
+ * Nothing runs and nothing publishes until the owner sends the next turn
+ * there. Returns the copied anchor turn — the page to navigate to.
+ */
+export async function forkAgentJob(jobId: string): Promise<AgentJobApi> {
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/jobs/${encodeURIComponent(jobId)}/fork`, {
+    method: 'POST',
+  });
   return jsonOrThrow<AgentJobApi>(resp);
 }
 
