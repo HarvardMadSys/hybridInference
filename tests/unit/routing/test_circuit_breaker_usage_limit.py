@@ -158,3 +158,26 @@ async def test_suppressed_retrip_emits_structured_info_log(monkeypatch, caplog):
     assert len(suppressed) == 1
     assert suppressed[0].event == "circuit_open_alert_suppressed"
     assert suppressed[0].window == "weekly"
+
+
+async def test_registry_derives_detail_from_exc_for_hedged_failures(monkeypatch):
+    # Hedged failure paths call record_failure(exc=...) with no `detail`; the
+    # registry must derive it from the exception so usage-limit suppression still
+    # engages for hedged endpoints (not just the router path that passes `detail`).
+    _trip_env(monkeypatch)
+    from routing.endpoint_health import EndpointHealthRegistry
+
+    class _UsageLimitError(Exception):
+        status_code = 429  # a usage-limit 429 trips the breaker (not a client error)
+
+    reg = EndpointHealthRegistry()
+    endpoint = "zai:api.z.ai:443"
+    exc = _UsageLimitError(_WEEKLY_DETAIL)
+
+    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+        reg.record_failure(endpoint, reason="UsageLimitError", exc=exc)
+        reg.record_failure(endpoint, reason="UsageLimitError", exc=exc)  # trips
+        await _drain_alert_tasks()
+        mock_alert.assert_awaited_once()
+        assert reg._circuits[endpoint]._alert_suppressed_until > 0.0
+        assert "quota_reset_at" in mock_alert.await_args.args[2]

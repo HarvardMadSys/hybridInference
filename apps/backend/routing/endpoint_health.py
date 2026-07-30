@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from routing.usage_limit import detect_usage_limit
+from serving.exceptions import operator_safe_error
 from serving.observability.alerts import AlertSeverity, alert_slack, escape_slack_text
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -412,6 +413,12 @@ class EndpointHealthRegistry:
                 },
             )
             return
+        # Some callers (e.g. the RouteWise hedging paths) pass only ``exc``; the
+        # router path passes an explicit ``detail``. Derive an operator-safe detail
+        # from the exception when absent so usage-limit detection and the alert
+        # text work uniformly regardless of call site.
+        if detail is None and exc is not None:
+            detail = operator_safe_error(exc)
         with self._lock:
             self.ensure(endpoint_id)
             self._health[endpoint_id].record(False)
