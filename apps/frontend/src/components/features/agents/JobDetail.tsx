@@ -18,15 +18,14 @@ import {
   forkAgentJob,
   getAgentJobGit,
   runAgentTerminalCommand,
-  writeAgentJobFile,
   type AgentGitWorkspaceApi,
 } from '@/lib/api/agents';
 
 import { lifecyclePhaseLabel, toDiffFileDetails } from './adapt';
 import { PaneResizer } from './PaneResizer';
 import type { AgentEvent, AgentJob, AgentThreadMessage } from './types';
-import { useAgentJobFiles } from './useAgentJobs';
 import { useResizablePane } from './useResizablePane';
+import { WorkspaceFiles } from './WorkspaceFiles';
 
 type DrawerView = 'overview' | 'diff' | 'raw';
 type WorkspaceTab = 'git' | 'terminal' | 'files';
@@ -1019,216 +1018,6 @@ function TerminalPanel({ jobId, events }: { jobId: string; events: AgentEvent[] 
   );
 }
 
-function fileStatusClass(status?: 'added' | 'modified' | 'deleted' | null): string {
-  if (status === 'added') return 'bg-emerald-50 text-emerald-700';
-  if (status === 'deleted') return 'bg-red-50 text-red-700';
-  return 'bg-amber-50 text-amber-700';
-}
-
-function formatFileSize(size?: number | null): string {
-  if (size === undefined || size === null) return '';
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function parentPath(path: string): string {
-  const parts = path.split('/').filter(Boolean);
-  parts.pop();
-  return parts.join('/');
-}
-
-function FilesPanel({ job, active }: { job: AgentJob; active: boolean }) {
-  const [path, setPath] = useState('');
-  const { node, loading, error, reload } = useAgentJobFiles(
-    job.id,
-    path,
-    active,
-    `${job.state}:${job.diffFiles.length}`,
-  );
-  const [draft, setDraft] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const crumbs = path.split('/').filter(Boolean);
-  const directoryEntries = node?.kind === 'directory' ? (node.entries ?? []) : [];
-
-  useEffect(() => {
-    if (node?.kind === 'file') {
-      setDraft(node.content ?? '');
-      setSaveError(null);
-    }
-  }, [node]);
-
-  const save = async () => {
-    if (node?.kind !== 'file' || !node.writable || saving) return;
-    setSaving(true);
-    setSaveError(null);
-    try {
-      await writeAgentJobFile(job.id, node.path, draft);
-      reload();
-    } catch (cause) {
-      setSaveError(cause instanceof Error ? cause.message : 'Could not save the file');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <section
-      aria-label="Workspace files"
-      className="overflow-hidden rounded-xl border border-gray-200"
-    >
-      <div className="flex min-h-11 items-center gap-1 overflow-x-auto border-b border-gray-200 bg-gray-50/70 px-3 text-xs">
-        <button
-          type="button"
-          onClick={() => setPath('')}
-          className="text-gray-600 hover:text-gray-900"
-        >
-          Files
-        </button>
-        {crumbs.map((crumb, index) => {
-          const crumbPath = crumbs.slice(0, index + 1).join('/');
-          return (
-            <span key={crumbPath} className="flex items-center gap-1">
-              <Chevron className="h-3 w-3 text-gray-300" />
-              <button
-                type="button"
-                onClick={() => setPath(crumbPath)}
-                className="whitespace-nowrap text-gray-600 hover:text-gray-900"
-              >
-                {crumb}
-              </button>
-            </span>
-          );
-        })}
-        <span className="ml-auto shrink-0 rounded bg-white px-2 py-0.5 text-[11px] text-gray-400 ring-1 ring-gray-200">
-          {error
-            ? 'Unavailable'
-            : node?.source === 'workspace'
-              ? 'Live worktree'
-              : loading
-                ? 'Loading…'
-                : 'Archived snapshot'}
-        </span>
-        {node?.kind === 'file' && node.writable ? (
-          <button
-            type="button"
-            onClick={save}
-            disabled={saving || draft === (node.content ?? '')}
-            className="ml-2 shrink-0 rounded-md bg-gray-900 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-gray-800 disabled:bg-gray-200 disabled:text-gray-400"
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        ) : null}
-      </div>
-
-      {loading ? (
-        <div className="flex min-h-80 items-center justify-center text-sm text-gray-400">
-          Loading files…
-        </div>
-      ) : error ? (
-        <div className="flex min-h-80 flex-col items-center justify-center gap-3 px-5 text-center">
-          <p role="alert" className="text-sm text-red-600">
-            {error}
-          </p>
-          <button
-            type="button"
-            onClick={reload}
-            className="rounded-md border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
-          >
-            Try again
-          </button>
-        </div>
-      ) : node?.kind === 'directory' ? (
-        <div className="min-h-80 divide-y divide-gray-100">
-          {path ? (
-            <button
-              type="button"
-              onClick={() => setPath(parentPath(path))}
-              className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-gray-500 hover:bg-gray-50"
-            >
-              <span className="font-mono">..</span>
-            </button>
-          ) : null}
-          {directoryEntries.map((entry) => (
-            <button
-              key={entry.path}
-              type="button"
-              onClick={() => setPath(entry.path)}
-              className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50"
-            >
-              <span aria-hidden="true" className="text-gray-400">
-                {entry.kind === 'directory' ? '▸' : entry.kind === 'symlink' ? '↗' : '–'}
-              </span>
-              <span className="min-w-0 flex-1 truncate font-mono text-xs">{entry.name}</span>
-              {entry.status ? (
-                <span
-                  className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${fileStatusClass(entry.status)}`}
-                >
-                  {entry.status}
-                </span>
-              ) : null}
-              <span className="shrink-0 text-[11px] text-gray-400">
-                {formatFileSize(entry.size)}
-              </span>
-            </button>
-          ))}
-          {directoryEntries.length === 0 ? (
-            <p className="px-4 py-12 text-center text-sm text-gray-400">This directory is empty.</p>
-          ) : null}
-        </div>
-      ) : node?.kind === 'symlink' ? (
-        <div className="flex min-h-80 items-center justify-center px-5 text-center text-sm text-gray-400">
-          Symlinks are not previewed.
-        </div>
-      ) : node?.kind === 'file' ? (
-        <div className="min-h-80">
-          <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-2 text-[11px] text-gray-400">
-            <span>{formatFileSize(node.size)}</span>
-            {node.status ? (
-              <span className={`rounded px-1.5 py-0.5 font-medium ${fileStatusClass(node.status)}`}>
-                {node.status}
-              </span>
-            ) : null}
-            {node.truncated ? <span>Preview truncated</span> : null}
-          </div>
-          {saveError ? (
-            <p
-              role="alert"
-              className="border-b border-red-100 bg-red-50 px-4 py-2 text-xs text-red-600"
-            >
-              {saveError}
-            </p>
-          ) : null}
-          {node.status === 'deleted' ? (
-            <p className="px-5 py-12 text-center text-sm text-gray-400">
-              This file was deleted by the run.
-            </p>
-          ) : node.binary ? (
-            <p className="px-5 py-12 text-center text-sm text-gray-400">
-              Binary files cannot be previewed.
-            </p>
-          ) : node.writable ? (
-            <textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              aria-label={`Edit ${node.path}`}
-              spellCheck={false}
-              className="block min-h-[34rem] w-full resize-y border-0 bg-white p-4 font-mono text-xs leading-relaxed text-gray-700 outline-none"
-            />
-          ) : (
-            <pre className="max-h-[38rem] overflow-auto whitespace-pre p-4 font-mono text-xs leading-relaxed text-gray-700">
-              {node.content ?? ''}
-            </pre>
-          )}
-        </div>
-      ) : (
-        <div className="min-h-80" />
-      )}
-    </section>
-  );
-}
-
 export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => void }) {
   const router = useRouter();
   const liveAttempt = useMemo(
@@ -1671,7 +1460,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
             hidden={workspaceTab !== 'files'}
             className="p-5"
           >
-            <FilesPanel job={job} active={workspaceOpen && workspaceTab === 'files'} />
+            <WorkspaceFiles job={job} active={workspaceOpen && workspaceTab === 'files'} />
           </div>
         </aside>
       </div>

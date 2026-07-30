@@ -12,6 +12,7 @@ import {
   getAgentJobGit,
   runAgentTerminalCommand,
   writeAgentJobFile,
+  type AgentJobFilesApi,
 } from '@/lib/api/agents';
 
 import { JobDetail, WORKSPACE_WIDTH_STORAGE_KEY } from './JobDetail';
@@ -458,6 +459,7 @@ describe('JobDetail', () => {
     openWorkspace();
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
     fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
 
     const editor = await screen.findByRole('textbox', { name: 'Edit README.md' });
     fireEvent.change(editor, { target: { value: '# After' } });
@@ -467,6 +469,79 @@ describe('JobDetail', () => {
       expect(writeAgentJobFile).toHaveBeenCalledWith('ajob_1', 'README.md', '# After'),
     );
     expect(screen.getByLabelText('Workspace files')).toHaveTextContent('Live worktree');
+  });
+
+  it('expands a directory in place and keeps the tree around the open file', async () => {
+    const files = async (_jobId: string, path = ''): Promise<AgentJobFilesApi> => {
+      if (path === '')
+        return {
+          path: '',
+          kind: 'directory',
+          entries: [
+            { name: 'README.md', path: 'README.md', kind: 'file', size: 12 },
+            { name: 'src', path: 'src', kind: 'directory' },
+          ],
+        };
+      if (path === 'src')
+        return {
+          path: 'src',
+          kind: 'directory',
+          entries: [
+            { name: 'example.ts', path: 'src/example.ts', kind: 'file', status: 'modified' },
+          ],
+        };
+      return {
+        path: 'src/example.ts',
+        kind: 'file',
+        content: 'export const value = 1;',
+        size: 24,
+        binary: false,
+        truncated: false,
+      };
+    };
+    vi.mocked(getAgentJobFiles).mockImplementation(files);
+    render(<JobDetail job={makeJob()} />);
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+
+    // A directory expands beneath itself rather than replacing the listing.
+    fireEvent.click(await screen.findByRole('button', { name: /src/ }));
+    await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledWith('ajob_1', 'src'));
+    expect(await screen.findByRole('button', { name: /example\.ts/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /README\.md/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /example\.ts/ }));
+
+    // The viewer highlights the source, so assert on the pane's whole text.
+    await waitFor(() =>
+      expect(screen.getByLabelText('Workspace files')).toHaveTextContent('export const value = 1;'),
+    );
+    // The sibling entries survive opening a file — the tree is not replaced.
+    expect(screen.getByRole('button', { name: /README\.md/ })).toBeInTheDocument();
+  });
+
+  it('opens a changed file from the Changes list', async () => {
+    vi.mocked(getAgentJobFiles)
+      .mockResolvedValueOnce({ path: '', kind: 'directory', entries: [] })
+      .mockResolvedValueOnce({
+        path: 'src/example.ts',
+        kind: 'file',
+        content: 'const fixed = true;',
+        size: 20,
+        binary: false,
+        truncated: false,
+        status: 'modified',
+      });
+    render(<JobDetail job={makeJob()} />);
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+    fireEvent.click(await screen.findByRole('tab', { name: /Changes/ }));
+
+    fireEvent.click(screen.getByRole('button', { name: /example\.ts/ }));
+
+    await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledWith('ajob_1', 'src/example.ts'));
+    expect(await screen.findByText('src')).toBeInTheDocument();
+    expect(screen.getByLabelText('Workspace files')).toHaveTextContent('modified');
   });
 
   it('refreshes an open Files workspace once a running job finishes', async () => {
