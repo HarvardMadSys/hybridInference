@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
 import type { AgentJobFileEntryApi } from '@/lib/api/agents';
 
@@ -10,6 +10,9 @@ import { useWorkspaceFiles, type WorkspaceDirectory } from './useAgentJobs';
 
 /** Rows rendered at once; the API already caps a preview at 512 KB. */
 const MAX_PREVIEW_LINES = 4000;
+
+/** Below this the tree and the file take turns instead of sharing the width. */
+const TWO_PANE_MIN_WIDTH = 560;
 
 type SidebarMode = 'files' | 'changes';
 
@@ -56,86 +59,157 @@ function Caret({ open }: { open: boolean }) {
       fill="none"
       stroke="currentColor"
       strokeWidth={2.4}
-      className={`h-3 w-3 shrink-0 text-gray-400 transition-transform ${open ? 'rotate-90' : ''}`}
+      className={`h-3 w-3 shrink-0 text-gray-500 transition-transform ${open ? 'rotate-90' : ''}`}
     >
       <path strokeLinecap="round" strokeLinejoin="round" d="m9 18 6-6-6-6" />
     </svg>
   );
 }
 
-const GLYPHS: Record<string, { path: string; className: string }> = {
-  code: { path: 'm9 8-4 4 4 4m6-8 4 4-4 4', className: 'text-sky-500' },
-  data: {
-    path: 'M9 5H7a2 2 0 0 0-2 2v3l-2 2 2 2v3a2 2 0 0 0 2 2h2m6-14h2a2 2 0 0 1 2 2v3l2 2-2 2v3a2 2 0 0 1-2 2h-2',
-    className: 'text-amber-500',
+// One glyph per kind of file, the way an editor sidebar names things: a
+// changelog is a clock, a lock file is a padlock. Monochrome on purpose —
+// colour in this pane is reserved for the added/modified/deleted marks.
+const GLYPHS = {
+  info: { paths: ['M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16Z', 'M12 10.5v6'], dot: [12, 8] },
+  clock: { paths: ['M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16Z', 'M12 8v4.5l3 2'] },
+  key: {
+    paths: [
+      'M12 4.2a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4Z',
+      'M12 10.6V19.5',
+      'M12 14h2.6',
+      'M12 16.8h2',
+    ],
   },
-  doc: { path: 'M7 5h7l4 4v10H7V5Zm2 6h6m-6 4h6', className: 'text-gray-400' },
-  shell: { path: 'm8 10 2 2-2 2m4 0h4M5 5h14v14H5V5Z', className: 'text-emerald-500' },
-  media: { path: 'M5 6h14v12H5V6Zm2 8 3-3 3 3 2-2 2 2', className: 'text-violet-500' },
-  plain: { path: 'M7 5h7l4 4v10H7V5Zm7 0v4h4', className: 'text-gray-300' },
-};
+  gear: {
+    paths: [
+      'M12 8.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8Z',
+      'M12 4v2.2M12 17.8V20M5.1 8l1.9 1.1M17 14.9l1.9 1.1M5.1 16l1.9-1.1M17 9.1 18.9 8',
+    ],
+  },
+  lock: { paths: ['M6.5 11h11v9h-11v-9Z', 'M9 11V8a3 3 0 0 1 6 0v3'] },
+  sliders: { paths: ['M4.5 7.5h15', 'M4.5 12h10', 'M4.5 16.5h6'] },
+  diamond: { paths: ['M12 3.2 20.8 12 12 20.8 3.2 12 12 3.2Z'] },
+  code: { paths: ['m9 8-4 4 4 4', 'm15 8 4 4-4 4'] },
+  braces: {
+    paths: [
+      'M9.5 4.5H8a2 2 0 0 0-2 2v3l-2 2.5 2 2.5v3a2 2 0 0 0 2 2h1.5',
+      'M14.5 4.5H16a2 2 0 0 1 2 2v3l2 2.5-2 2.5v3a2 2 0 0 1-2 2h-1.5',
+    ],
+  },
+  doc: { paths: ['M7 4.5h6.5L18 9v10.5H7V4.5Z', 'M13 4.5V9h5', 'M9.5 13h5', 'M9.5 16h5'] },
+  terminal: { paths: ['M4.5 5h15v14h-15V5Z', 'm8 10 2 2-2 2', 'M12.5 14h4'] },
+  image: { paths: ['M4.5 6h15v12h-15V6Z', 'm7 14.5 3-3 2.5 2.5 2-2 2.5 2.5'] },
+  table: { paths: ['M4.5 6h15v12h-15V6Z', 'M4.5 10.5h15', 'M10 6v12'] },
+  plain: { paths: ['M7 4.5h6.5L18 9v10.5H7V4.5Z', 'M13 4.5V9h5'] },
+} as const;
 
-const GLYPH_BY_EXTENSION: Record<string, keyof typeof GLYPHS> = {
+type GlyphName = keyof typeof GLYPHS;
+
+/** Whole-name matches, checked as prefixes so `README.zh.md` still counts. */
+const GLYPH_BY_NAME: Array<[string, GlyphName]> = [
+  ['readme', 'info'],
+  ['changelog', 'clock'],
+  ['history', 'clock'],
+  ['license', 'key'],
+  ['licence', 'key'],
+  ['copying', 'key'],
+  ['notice', 'key'],
+  ['.env', 'sliders'],
+  ['.gitignore', 'diamond'],
+  ['.gitattributes', 'diamond'],
+  ['.dockerignore', 'diamond'],
+  ['.editorconfig', 'sliders'],
+  ['dockerfile', 'terminal'],
+  ['makefile', 'terminal'],
+];
+
+const GLYPH_BY_EXTENSION: Record<string, GlyphName> = {
   ts: 'code',
   tsx: 'code',
   js: 'code',
   jsx: 'code',
+  mjs: 'code',
+  cjs: 'code',
   py: 'code',
   go: 'code',
   rs: 'code',
   rb: 'code',
   java: 'code',
+  kt: 'code',
+  swift: 'code',
   c: 'code',
   h: 'code',
+  cc: 'code',
   cpp: 'code',
+  cs: 'code',
+  php: 'code',
   css: 'code',
   scss: 'code',
   html: 'code',
-  json: 'data',
-  yaml: 'data',
-  yml: 'data',
-  toml: 'data',
-  ini: 'data',
-  cfg: 'data',
-  env: 'data',
-  lock: 'data',
-  csv: 'data',
-  sql: 'data',
+  vue: 'code',
+  json: 'braces',
+  jsonc: 'braces',
+  yaml: 'braces',
+  yml: 'braces',
+  toml: 'gear',
+  ini: 'gear',
+  cfg: 'gear',
+  conf: 'gear',
+  properties: 'gear',
+  lock: 'lock',
+  pem: 'lock',
+  key: 'lock',
+  crt: 'lock',
   md: 'doc',
   markdown: 'doc',
+  mdx: 'doc',
   rst: 'doc',
   txt: 'doc',
-  sh: 'shell',
-  bash: 'shell',
-  zsh: 'shell',
-  png: 'media',
-  jpg: 'media',
-  jpeg: 'media',
-  gif: 'media',
-  svg: 'media',
-  webp: 'media',
-  ico: 'media',
-  pdf: 'media',
+  log: 'doc',
+  sh: 'terminal',
+  bash: 'terminal',
+  zsh: 'terminal',
+  fish: 'terminal',
+  csv: 'table',
+  tsv: 'table',
+  parquet: 'table',
+  sql: 'table',
+  png: 'image',
+  jpg: 'image',
+  jpeg: 'image',
+  gif: 'image',
+  svg: 'image',
+  webp: 'image',
+  ico: 'image',
+  pdf: 'image',
 };
 
-function FileGlyph({ name }: { name: string }) {
+function glyphFor(name: string): GlyphName {
   const lower = name.toLowerCase();
+  const byName = GLYPH_BY_NAME.find(([prefix]) => lower.startsWith(prefix));
+  if (byName) return byName[1];
   const dot = lower.lastIndexOf('.');
-  const family =
-    lower === 'dockerfile' || lower === 'makefile'
-      ? 'shell'
-      : ((dot > 0 ? GLYPH_BY_EXTENSION[lower.slice(dot + 1)] : undefined) ?? 'plain');
-  const glyph = GLYPHS[family];
+  return (dot > 0 ? GLYPH_BY_EXTENSION[lower.slice(dot + 1)] : undefined) ?? 'plain';
+}
+
+function FileGlyph({ name }: { name: string }) {
+  const glyph = GLYPHS[glyphFor(name)];
+  const dot = 'dot' in glyph ? glyph.dot : undefined;
   return (
     <svg
       aria-hidden="true"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.8}
-      className={`h-3.5 w-3.5 shrink-0 ${glyph.className}`}
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4 shrink-0 text-gray-500"
     >
-      <path strokeLinecap="round" strokeLinejoin="round" d={glyph.path} />
+      {glyph.paths.map((d) => (
+        <path key={d} d={d} />
+      ))}
+      {dot ? <circle cx={dot[0]} cy={dot[1]} r={0.9} fill="currentColor" stroke="none" /> : null}
     </svg>
   );
 }
@@ -170,7 +244,7 @@ function TreeLevel({
   onOpen: (path: string) => void;
 }) {
   const state = directories[path];
-  const indent = { paddingLeft: `${0.5 + depth * 0.75}rem` };
+  const indent = { paddingLeft: `${0.5 + depth * 0.875}rem` };
 
   if (state?.error) {
     return (
@@ -206,15 +280,14 @@ function TreeLevel({
               type="button"
               onClick={() => (isDirectory ? onToggle(entry.path) : onOpen(entry.path))}
               aria-expanded={isDirectory ? open : undefined}
+              title={entry.name}
               style={indent}
-              className={`flex w-full items-center gap-1.5 py-[3px] pr-2 text-left text-[12px] ${
-                active
-                  ? 'bg-gray-200/70 text-gray-900'
-                  : 'text-gray-600 hover:bg-gray-200/40 hover:text-gray-900'
+              className={`flex w-full items-center gap-2 rounded-md py-[5px] pr-2 text-left text-[13px] ${
+                active ? 'bg-gray-200/60 text-gray-900' : 'text-gray-800 hover:bg-gray-100'
               }`}
             >
               {isDirectory ? <Caret open={open} /> : <FileGlyph name={entry.name} />}
-              <span className="min-w-0 flex-1 truncate font-mono">{entry.name}</span>
+              <span className="min-w-0 flex-1 truncate">{entry.name}</span>
               <StatusMark status={entry.status ?? null} />
             </button>
             {isDirectory && open ? (
@@ -262,13 +335,14 @@ function ChangedList({
           type="button"
           onClick={() => onOpen(row.path)}
           title={row.path}
-          className={`flex w-full items-baseline gap-1.5 px-2 py-[3px] text-left text-[12px] ${
+          className={`flex w-full items-center gap-2 rounded-md py-[5px] pl-2 pr-2 text-left text-[13px] ${
             selected === row.path
-              ? 'bg-gray-200/70 text-gray-900'
-              : 'text-gray-600 hover:bg-gray-200/40 hover:text-gray-900'
+              ? 'bg-gray-200/60 text-gray-900'
+              : 'text-gray-800 hover:bg-gray-100'
           }`}
         >
-          <span className="min-w-0 flex-1 truncate font-mono">{basename(row.path)}</span>
+          <FileGlyph name={basename(row.path)} />
+          <span className="min-w-0 flex-1 truncate">{basename(row.path)}</span>
           {row.stat ? (
             <span className="shrink-0 font-mono text-[10px] text-gray-400">
               <span className="text-emerald-600">+{row.stat.add}</span>{' '}
@@ -374,21 +448,28 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
   } = useWorkspaceFiles(job.id, active, `${job.state}:${job.diffFiles.length}`);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [narrow, setNarrow] = useState(false);
+  const [paneWidth, setPaneWidth] = useState(0);
   const [mode, setMode] = useState<SidebarMode>('files');
+  const observerRef = useRef<ResizeObserver | null>(null);
 
   const root = directories[''];
-  // Below sm there is no room for both panes, so the tree and the file take
-  // turns and the header button walks back to the tree.
+  // The workspace pane is user-resizable, so whether there is room for two
+  // panes is a fact about this box and not about the viewport. Unmeasured (SSR,
+  // jsdom) counts as roomy: the two-pane layout is the normal one.
+  const narrow = paneWidth > 0 && paneWidth < TWO_PANE_MIN_WIDTH;
+  // When it is not, the tree and the file take turns and the header button
+  // walks back to the tree.
   const showTree = sidebarOpen && !(narrow && selected);
 
-  useEffect(() => {
-    const query = window.matchMedia?.('(max-width: 639px)');
-    if (!query) return undefined;
-    setNarrow(query.matches);
-    const onChange = (event: MediaQueryListEvent) => setNarrow(event.matches);
-    query.addEventListener('change', onChange);
-    return () => query.removeEventListener('change', onChange);
+  const measurePane = useCallback((node: HTMLElement | null) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
+    if (!node) return;
+    setPaneWidth(node.clientWidth);
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => setPaneWidth(node.clientWidth));
+    observer.observe(node);
+    observerRef.current = observer;
   }, []);
 
   const sourceLabel = root?.error
@@ -401,6 +482,7 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
 
   return (
     <section
+      ref={measurePane}
       aria-label="Workspace files"
       className="flex h-[36rem] max-h-[calc(100vh-11rem)] flex-col overflow-hidden rounded-xl border border-gray-200 bg-white"
     >
@@ -430,17 +512,15 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
 
         {selected ? (
           <span className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate font-mono text-[13px] text-gray-800">
+            <span className="truncate text-[13px] font-medium text-gray-900">
               {basename(selected)}
             </span>
-            {dirname(selected) ? (
-              <span className="hidden truncate font-mono text-[11px] text-gray-400 sm:inline">
-                {dirname(selected)}
-              </span>
+            {dirname(selected) && !narrow ? (
+              <span className="truncate text-[11px] text-gray-400">{dirname(selected)}</span>
             ) : null}
           </span>
         ) : (
-          <span className="font-mono text-[13px] text-gray-500">Files</span>
+          <span className="text-[13px] text-gray-500">Files</span>
         )}
 
         <span className="ml-auto shrink-0 rounded bg-white px-2 py-0.5 text-[11px] text-gray-400 ring-1 ring-gray-200">
@@ -450,7 +530,11 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
 
       <div className="flex min-h-0 flex-1">
         {showTree ? (
-          <aside className="flex w-full shrink-0 flex-col border-r border-gray-200 bg-gray-50/40 sm:w-56">
+          <aside
+            className={`flex shrink-0 flex-col border-r border-gray-200 bg-white ${
+              narrow ? 'w-full' : 'w-56'
+            }`}
+          >
             <div
               role="tablist"
               aria-label="File list"
@@ -500,7 +584,7 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
                 </svg>
               </button>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto py-1">
+            <div className="min-h-0 flex-1 overflow-auto px-1 py-1">
               {mode === 'files' ? (
                 <TreeLevel
                   path=""
@@ -519,7 +603,7 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
         ) : null}
 
         <div
-          className={`min-w-0 flex-1 overflow-auto bg-white ${showTree ? 'hidden sm:block' : ''}`}
+          className={`min-w-0 flex-1 overflow-auto bg-white ${showTree && narrow ? 'hidden' : ''}`}
         >
           {fileLoading ? (
             <PaneMessage>Loading file…</PaneMessage>
