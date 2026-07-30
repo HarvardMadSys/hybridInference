@@ -174,6 +174,10 @@ class _CircuitBreaker:
         # True while a usage-limit page is being delivered, so a re-trip in that
         # window can't emit a duplicate page before the deadline is committed.
         self._alert_in_flight: bool = False
+        # Bumped on every recovery. A page that finishes delivering after the
+        # endpoint recovered carries a stale generation and must not restore its
+        # now-obsolete mute — see _send_circuit_alert.
+        self._recovery_generation: int = 0
         self._offenders: Counter[str] = Counter()
         self._lock = threading.Lock()
 
@@ -194,9 +198,11 @@ class _CircuitBreaker:
         with self._lock:
             self.consecutive_failures = 0
             self._offenders.clear()
-            # Recovery re-arms alerting: a later usage-limit outage should page
-            # again rather than stay muted under a stale suppression deadline.
+            # Recovery re-arms alerting: clear the mute and bump the generation so
+            # a page still in flight for the ended outage can't restore a stale
+            # deadline, and a later usage-limit outage is free to page again.
             self._alert_suppressed_until = 0.0
+            self._recovery_generation += 1
             if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
                 duration_ms = (
                     (time.perf_counter() - self.last_opened) * 1000.0
@@ -294,10 +300,13 @@ class _CircuitBreaker:
                     "offending_users": dict(self._offenders) or None,
                 },
             )
+            generation = self._recovery_generation
             if reset_epoch is not None:
                 self._alert_in_flight = True
             try:
-                task = asyncio.ensure_future(self._send_circuit_alert(context, reset_epoch))
+                task = asyncio.ensure_future(
+                    self._send_circuit_alert(context, reset_epoch, generation)
+                )
             except RuntimeError:
                 # No running loop (sync caller / test): nothing was scheduled, so
                 # release the in-flight guard we optimistically set.
@@ -306,26 +315,35 @@ class _CircuitBreaker:
                 _ALERT_TASKS.add(task)
                 task.add_done_callback(_ALERT_TASKS.discard)
 
-    async def _send_circuit_alert(self, context: dict[str, Any], reset_epoch: float | None) -> bool:
+    async def _send_circuit_alert(
+        self, context: dict[str, Any], reset_epoch: float | None, generation: int
+    ) -> bool:
         """Deliver a circuit-open page; commit usage-limit suppression on success.
 
         For a usage-limit trip (``reset_epoch`` set) the suppression deadline is
         recorded only after the page is actually delivered, so a dropped page —
         relay/webhook failure, a global snooze, or the alert cooldown — leaves the
-        outage un-muted and it re-pages on the next failing probe.
+        outage un-muted and it re-pages on the next failing probe. The deadline is
+        also withheld when the endpoint recovered while the page was in flight
+        (``generation`` no longer current), so a stale mute can't silence a later
+        outage. The in-flight guard is released in ``finally`` so a raising send
+        never wedges the breaker muted.
         """
-        delivered = await alert_slack(
-            AlertSeverity.ERROR,
-            "Provider circuit opened",
-            context,
-            dedupe_key=f"circuit_open:{self.provider}",
-            cooldown_sec=300,
-        )
-        if reset_epoch is not None:
-            with self._lock:
-                self._alert_in_flight = False
-                if delivered:
-                    self._alert_suppressed_until = reset_epoch
+        delivered = False
+        try:
+            delivered = await alert_slack(
+                AlertSeverity.ERROR,
+                "Provider circuit opened",
+                context,
+                dedupe_key=f"circuit_open:{self.provider}",
+                cooldown_sec=300,
+            )
+        finally:
+            if reset_epoch is not None:
+                with self._lock:
+                    self._alert_in_flight = False
+                    if delivered and generation == self._recovery_generation:
+                        self._alert_suppressed_until = reset_epoch
         return delivered
 
     def _format_offenders(self, *, top: int = _OFFENDERS_IN_ALERT) -> str | None:

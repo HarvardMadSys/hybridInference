@@ -95,6 +95,23 @@ async def test_undelivered_page_does_not_mute_the_outage(monkeypatch):
         assert cb._alert_in_flight is False
 
 
+async def test_recovery_during_delivery_does_not_restore_stale_mute(monkeypatch):
+    _trip_env(monkeypatch)
+    cb = _CircuitBreaker(provider="zai:api.z.ai:443")
+
+    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+        # Trip schedules the page but it has not run yet (no await), so the
+        # endpoint can recover while the page is still "in flight".
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        cb.on_success()
+        await _drain_alert_tasks()  # page now delivers, but for a stale generation
+        # The recovered endpoint must not be re-muted by the late page.
+        assert cb._alert_suppressed_until == 0.0
+        assert cb._alert_in_flight is False
+        assert cb.state == _CircuitState.CLOSED
+
+
 async def test_non_usage_limit_failure_is_not_suppressed(monkeypatch):
     _trip_env(monkeypatch)
     cb = _CircuitBreaker(provider="openai:api.openai.com:443")
