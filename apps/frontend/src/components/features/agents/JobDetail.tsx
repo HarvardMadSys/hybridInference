@@ -1,6 +1,14 @@
 'use client';
 
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 
@@ -16,11 +24,21 @@ import {
 } from '@/lib/api/agents';
 
 import { lifecyclePhaseLabel, toDiffFileDetails } from './adapt';
+import { PaneResizer } from './PaneResizer';
 import type { AgentEvent, AgentJob, AgentThreadMessage } from './types';
 import { useAgentJobFiles } from './useAgentJobs';
+import { useResizablePane } from './useResizablePane';
 
 type DrawerView = 'overview' | 'diff' | 'raw';
 type WorkspaceTab = 'git' | 'terminal' | 'files';
+
+export const WORKSPACE_WIDTH_STORAGE_KEY = 'agents.workspace.width';
+const WORKSPACE_DEFAULT_WIDTH = 560;
+const WORKSPACE_MIN_WIDTH = 360;
+const WORKSPACE_MAX_WIDTH = 1200;
+// The transcript is the reason the page exists; the workspace stops widening
+// before the conversation and its composer get squeezed into a column.
+const TRANSCRIPT_MIN_WIDTH = 400;
 
 const WORKSPACE_TABS: Array<{ key: WorkspaceTab; label: string }> = [
   { key: 'git', label: 'Git' },
@@ -1227,6 +1245,17 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const [stopping, setStopping] = useState(false);
   const [forking, setForking] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const splitRef = useRef<HTMLDivElement | null>(null);
+  const workspacePane = useResizablePane({
+    storageKey: WORKSPACE_WIDTH_STORAGE_KEY,
+    defaultWidth: WORKSPACE_DEFAULT_WIDTH,
+    minWidth: WORKSPACE_MIN_WIDTH,
+    maxWidth: WORKSPACE_MAX_WIDTH,
+    side: 'end',
+    maxViewportFraction: 0.75,
+    containerRef: splitRef,
+    siblingMinWidth: TRANSCRIPT_MIN_WIDTH,
+  });
 
   useEffect(() => setAttemptNo(liveAttempt), [liveAttempt]);
 
@@ -1411,9 +1440,8 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
       </header>
 
       <div
-        className={`min-h-0 flex-1 overflow-hidden ${
-          workspaceOpen ? 'lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(28rem,0.9fr)]' : 'flex'
-        }`}
+        ref={splitRef}
+        className={`min-h-0 flex-1 overflow-hidden ${workspaceOpen ? 'block lg:flex' : 'flex'}`}
       >
         <div
           role="region"
@@ -1575,12 +1603,22 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
           </div>
         </div>
 
+        {workspaceOpen ? (
+          <PaneResizer
+            pane={workspacePane}
+            label="Resize workspace"
+            controls="job-workspace-pane"
+            className="hidden lg:block"
+          />
+        ) : null}
+
         <aside
           id="job-workspace-pane"
           role="region"
           aria-label="Job workspace"
           hidden={!workspaceOpen}
-          className="min-w-0 overflow-y-auto border-gray-200 bg-white lg:border-l"
+          style={{ '--job-workspace-width': `${workspacePane.width}px` } as CSSProperties}
+          className="min-w-0 overflow-y-auto bg-white lg:w-[var(--job-workspace-width)] lg:shrink-0"
         >
           <nav
             aria-label="Workspace views"
