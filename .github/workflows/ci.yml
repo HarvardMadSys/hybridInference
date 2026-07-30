@@ -285,9 +285,7 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
   alert-control-plane-check:
-    # No custom name: matrix expressions in a job name render unexpanded
-    # ("${{ matrix.… }}") when the classifier skips the job before the matrix
-    # expands. The default job-id naming stays clean in both states.
+    name: Alert Service Quality
     needs: changes
     if: >-
       always() &&
@@ -305,16 +303,6 @@ jobs:
     defaults:
       run:
         working-directory: services/alert-control-plane-worker
-    strategy:
-      fail-fast: false
-      matrix:
-        check:
-          - name: TypeScript
-            command: npm run typecheck
-          - name: Tests
-            command: npm test
-          - name: Wrangler Dry Run
-            command: npm exec -- wrangler deploy --dry-run --config wrangler.example.toml
     steps:
       - uses: actions/checkout@v6
         with:
@@ -328,13 +316,24 @@ jobs:
           cache-dependency-path: services/alert-control-plane-worker/package-lock.json
 
       - name: Install dependencies
+        id: dependencies
         run: npm ci
 
-      - name: Run ${{ matrix.check.name }}
-        run: ${{ matrix.check.command }}
+      - name: Run TypeScript check
+        if: always() && steps.dependencies.outcome == 'success'
+        run: npm run typecheck
+
+      - name: Run tests
+        if: always() && steps.dependencies.outcome == 'success'
+        run: npm test
+
+      - name: Run Wrangler deployment dry run
+        if: always() && steps.dependencies.outcome == 'success'
+        run: npm exec -- wrangler deploy --dry-run --config wrangler.example.toml
 
   test:
-    # No custom name: see alert-control-plane-check.
+    # No custom name: skipped jobs do not expand matrix expressions in names;
+    # the default job-id name renders cleanly before matrix expansion.
     needs: changes
     if: >-
       always() &&
@@ -629,7 +628,8 @@ jobs:
           uvx --python ${{ env.PYTHON_VERSION }} pip-audit --progress-spinner off --no-deps --disable-pip -r /tmp/audit-requirements.txt
 
   docker-build:
-    # No custom name: see alert-control-plane-check.
+    # No custom name: skipped jobs do not expand matrix expressions in names;
+    # the default job-id name renders cleanly before matrix expansion.
     needs: changes
     # PRs build only affected images. Scheduled/manual runs build all images,
     # while branch pushes leave image publishing to the deployment pipeline.
