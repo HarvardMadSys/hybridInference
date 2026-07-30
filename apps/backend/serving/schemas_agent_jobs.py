@@ -103,6 +103,8 @@ class AgentJobResponse(BaseModel):
     published_commit_sha: str | None = None
     detail: str | None = None
     budget_usd: float | None = None
+    # Set on turns created by a fork: the original turn this row copies.
+    forked_from_job_id: str | None = None
     metadata: dict[str, Any] | None = None
     created_at: str | None = None
     updated_at: str | None = None

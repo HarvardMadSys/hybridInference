@@ -115,6 +115,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "detail": row["detail"],
         "budget_usd": float(row["budget_usd"]) if row["budget_usd"] is not None else None,
         "metadata": _load_json(row["metadata"]),
+        "fork_source_job_id": row["fork_source_job_id"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -124,7 +125,7 @@ _JOB_COLUMNS = (
     "id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha, task_prompt, "
     "setup_script, runtime, model, state, "
     "cancel_requested, current_attempt_id, published_pr_url, published_commit_sha, detail, "
-    "budget_usd, metadata, "
+    "budget_usd, metadata, fork_source_job_id, "
     "created_at, updated_at"
 )
 
@@ -195,6 +196,12 @@ class AgentJobStore:
             )
             await conn.execute(
                 "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS turn_no INTEGER NOT NULL DEFAULT 1"
+            )
+            # Set only on turns copied by fork_thread: which original turn this
+            # row duplicates, and where follow_up_context finds the source's
+            # still-unpublished patch.
+            await conn.execute(
+                "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS fork_source_job_id TEXT"
             )
             # Existing P0 jobs predate conversations. Give each one a one-turn
             # thread so old links and history immediately participate in the
@@ -782,6 +789,133 @@ class AgentJobStore:
             )
         return _job_row_to_dict(row)
 
+    async def fork_thread(self, *, source_job_id: str, user_id: str) -> dict[str, Any] | None:
+        """Duplicate a conversation up to (and including) one settled turn.
+
+        Events are append-only and ``(thread_id, turn_no)`` is unique, so a
+        thread cannot branch in place; a fork is a *new* thread whose turns
+        are copies. The copies are display shells — terminal state, no
+        attempts, no artifacts — which keeps them invisible to ``claim_job``
+        (never queued), to the publisher (no patch artifact to claim), and to
+        the reaper (no running attempt).
+
+        Git lineage does carry over: each copy keeps ``base_sha`` and
+        ``published_commit_sha``, and ``fork_source_job_id`` names the
+        original turn so ``follow_up_context`` can fetch the source's
+        still-unpublished patch for the fork's next run. The fork therefore
+        continues from the same code state while publishing to its own
+        ``agent/<thread-id>`` branch.
+
+        Returns the copied anchor turn — the fork's navigation target — or
+        ``None`` when the job is not the caller's or has not settled. An
+        anchor mid-run is refused rather than partially copied: its patch
+        does not exist yet, so history and workspace would disagree.
+        """
+        new_thread_id = _new_thread_id()
+        async with self._pool.acquire() as conn, conn.transaction():
+            source = await conn.fetchrow(
+                f"SELECT {_JOB_COLUMNS} FROM agent_jobs WHERE id = $1 AND user_id = $2",
+                source_job_id,
+                user_id,
+            )
+            if source is None or source["state"] not in TERMINAL_STATES:
+                return None
+            thread = await conn.fetchrow(
+                "SELECT repo, title FROM agent_threads WHERE id = $1 AND user_id = $2",
+                source["thread_id"],
+                user_id,
+            )
+            if thread is None:
+                return None
+            turns = await conn.fetch(
+                f"SELECT {_JOB_COLUMNS} FROM agent_jobs "
+                "WHERE thread_id = $1 AND turn_no <= $2 ORDER BY turn_no",
+                source["thread_id"],
+                source["turn_no"],
+            )
+            messages = await conn.fetch(
+                """
+                SELECT m.job_id, m.role, m.content, m.created_at
+                FROM agent_thread_messages m
+                JOIN agent_jobs j ON j.id = m.job_id
+                WHERE m.thread_id = $1 AND j.turn_no <= $2
+                ORDER BY j.turn_no, CASE WHEN m.role = 'user' THEN 0 ELSE 1 END, m.id
+                """,
+                source["thread_id"],
+                source["turn_no"],
+            )
+            await conn.execute(
+                "INSERT INTO agent_threads (id, user_id, repo, title) VALUES ($1, $2, $3, $4)",
+                new_thread_id,
+                user_id,
+                thread["repo"],
+                f"{thread['title']} (fork)"[:160],
+            )
+            copied_id: dict[str, str] = {}
+            previous_copy: str | None = None
+            for turn in turns:
+                copy_id = _new_job_id()
+                copied_id[turn["id"]] = copy_id
+                await conn.execute(
+                    """
+                    INSERT INTO agent_jobs
+                        (id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha,
+                         task_prompt, setup_script, runtime, model, state,
+                         published_commit_sha, detail, budget_usd, metadata,
+                         fork_source_job_id, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                            $13, $14, $15, $16::jsonb, $17,
+                            clock_timestamp(), clock_timestamp())
+                    """,
+                    copy_id,
+                    new_thread_id,
+                    previous_copy,
+                    turn["turn_no"],
+                    user_id,
+                    turn["repo"],
+                    turn["base_sha"],
+                    turn["task_prompt"],
+                    turn["setup_script"],
+                    turn["runtime"],
+                    turn["model"],
+                    # An unsettled earlier turn (a cancelled anchor can sit
+                    # after a still-running parent) copies as cancelled: its
+                    # messages are whatever had durably landed by now.
+                    turn["state"] if turn["state"] in TERMINAL_STATES else CANCELLED,
+                    turn["published_commit_sha"],
+                    turn["detail"],
+                    turn["budget_usd"],
+                    json.dumps(_load_json(turn["metadata"]))
+                    if turn["metadata"] is not None
+                    else None,
+                    turn["id"],
+                )
+                previous_copy = copy_id
+            # clock_timestamp(), not NOW(): NOW() is frozen for the whole
+            # transaction, and list_jobs orders by created_at — copies must
+            # both sort in turn order and surface as the newest conversation.
+            await conn.executemany(
+                """
+                INSERT INTO agent_thread_messages (thread_id, job_id, role, content, created_at)
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                [
+                    (
+                        new_thread_id,
+                        copied_id[message["job_id"]],
+                        message["role"],
+                        message["content"],
+                        message["created_at"],
+                    )
+                    for message in messages
+                ],
+            )
+            anchor = await conn.fetchrow(
+                f"SELECT {_JOB_COLUMNS} FROM agent_jobs WHERE id = $1",
+                copied_id[source["id"]],
+            )
+        return _job_row_to_dict(anchor)
+
     async def get_thread_for_job(self, *, job_id: str, user_id: str) -> dict[str, Any] | None:
         """Return the conversation containing an owned job."""
         async with self._pool.acquire() as conn:
@@ -854,6 +988,28 @@ class AgentJobStore:
                 """,
                 job["parent_job_id"],
             )
+            if patch is None:
+                # A forked anchor is a copy with no artifacts of its own. Its
+                # base_sha was frozen at fork time, so the *source* turn's
+                # patch is still the uncommitted work this thread continues
+                # from — even if the source thread published it later, that
+                # commit landed on the source's branch, not in this fork's
+                # base. The parent's own published_commit_sha stays the guard:
+                # a fork taken after publish already carries the commit.
+                patch = await conn.fetchval(
+                    """
+                    SELECT a.content
+                    FROM agent_jobs parent
+                    JOIN agent_jobs src ON src.id = parent.fork_source_job_id
+                    JOIN agent_job_artifacts a ON a.job_id = src.id AND a.kind = 'patch'
+                    WHERE parent.id = $1
+                      AND parent.published_commit_sha IS NULL
+                      AND src.state IN ('succeeded', 'publishing')
+                    ORDER BY a.created_at DESC
+                    LIMIT 1
+                    """,
+                    job["parent_job_id"],
+                )
         return {"messages": [dict(message) for message in messages], "patch": patch}
 
     async def resolve_model_credential(

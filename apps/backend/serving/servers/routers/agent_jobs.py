@@ -309,6 +309,7 @@ def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> A
         published_commit_sha=job.get("published_commit_sha"),
         detail=job["detail"],
         budget_usd=job.get("budget_usd"),
+        forked_from_job_id=job.get("fork_source_job_id"),
         metadata=metadata or None,
         created_at=_iso(job["created_at"]),
         updated_at=_iso(job["updated_at"]),
@@ -1073,6 +1074,48 @@ async def create_agent_follow_up(
         },
     )
     return _job_response(job)
+
+
+@router.post("/jobs/{job_id}/fork", response_model=AgentJobResponse, status_code=201)
+async def fork_agent_job(
+    job_id: str,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> AgentJobResponse:
+    """Copy the conversation up to this settled turn into a new thread.
+
+    The fork is a duplicate of durable history only: nothing is queued and
+    nothing is published until the owner sends the next turn there, and a
+    still-running turn cannot be an anchor — its output is not history yet.
+    Returns the copied anchor turn, which is where the caller navigates.
+    """
+    job_store = _require_store(store)
+    job = await _owned_job(job_store, job_id, user)
+    not_settled = HTTPException(
+        status_code=409,
+        detail={
+            "error": {
+                "type": "not_settled",
+                "message": "This turn is still active; fork an earlier turn or stop the run first.",
+            }
+        },
+    )
+    if job["state"] not in TERMINAL_STATES:
+        raise not_settled
+    forked = await job_store.fork_thread(source_job_id=job_id, user_id=user["user_id"])
+    if forked is None:
+        # The settled-check above raced a concurrent transition; same answer.
+        raise not_settled
+    logger.info(
+        "agent_job_forked",
+        extra={
+            "event": "agent_job_forked",
+            "job_id": forked["id"],
+            "thread_id": forked.get("thread_id"),
+            "source_job_id": job_id,
+        },
+    )
+    return _job_response(forked)
 
 
 @router.get("/jobs/{job_id}/thread", response_model=AgentThreadResponse)
