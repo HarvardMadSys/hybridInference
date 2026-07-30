@@ -92,6 +92,10 @@ profile export is required. `ANTHROPIC_SMALL_FAST_MODEL` is deprecated; use
 `ANTHROPIC_DEFAULT_HAIKU_MODEL` instead. Claude Code already provides a default
 API timeout, so a custom `API_TIMEOUT_MS` is not needed for normal setup.
 
+The current setup script also removes the exact marked `ANTHROPIC_BASE_URL`
+block written to `.zshrc` or `.bashrc` by older FreeInference script versions.
+It leaves all unrelated shell-profile content unchanged.
+
 Restart any running Claude Code session after changing the settings.
 
 ## Choosing and checking a model

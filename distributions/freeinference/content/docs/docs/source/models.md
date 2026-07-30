@@ -29,6 +29,15 @@ All listed models produce text. Context and output limits are deployment
 limits; an upstream provider may enforce a smaller limit for an individual
 request.
 
+## Embedding Model
+
+| Model ID | Access | Context | Input | Output |
+|----------|--------|---------|-------|--------|
+| `bge-m3` | Free | 8K | Text | Embedding vector |
+
+Use `bge-m3` with the OpenAI-compatible `/v1/embeddings` endpoint for codebase
+indexing. It is not a chat or completion model.
+
 ## Choosing a Model
 
 - Start with `glm-5.1` for general coding and bilingual work.

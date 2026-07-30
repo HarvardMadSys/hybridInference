@@ -41,7 +41,7 @@ def _run_setup(
     )
 
 
-def test_merges_current_model_settings_without_touching_shell_profile(tmp_path: Path) -> None:
+def test_merges_current_settings_and_removes_only_legacy_shell_block(tmp_path: Path) -> None:
     settings_dir = tmp_path / ".claude"
     settings_dir.mkdir()
     settings_path = settings_dir / "settings.json"
@@ -59,7 +59,13 @@ def test_merges_current_model_settings_without_touching_shell_profile(tmp_path: 
         )
     )
     shell_profile = tmp_path / ".zshrc"
-    shell_profile.write_text("# keep me\n")
+    shell_profile.write_text(
+        "# keep before\n"
+        "# >>> freeinference claude-code >>>\n"
+        'export ANTHROPIC_BASE_URL="https://freeinference.org/anthropic"\n'
+        "# <<< freeinference claude-code <<<\n"
+        "# keep after\n"
+    )
 
     result = _run_setup(
         tmp_path,
@@ -81,7 +87,7 @@ def test_merges_current_model_settings_without_touching_shell_profile(tmp_path: 
         "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen3.6-35b",
     }
-    assert shell_profile.read_text() == "# keep me\n"
+    assert shell_profile.read_text() == "# keep before\n# keep after\n"
 
 
 def test_refuses_to_replace_invalid_settings_json(tmp_path: Path) -> None:

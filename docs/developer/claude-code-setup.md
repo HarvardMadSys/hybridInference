@@ -94,4 +94,7 @@ Claude web or Slack sessions do not inherit this local gateway configuration.
 Remove the FreeInference or gateway-specific `model` value and the
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and
 `ANTHROPIC_DEFAULT_*_MODEL` keys from `~/.claude/settings.json`. Preserve any
-unrelated Claude Code settings and environment variables in the file.
+unrelated Claude Code settings and environment variables in the file. Users of
+an older FreeInference setup script should also remove the block between
+`# >>> freeinference claude-code >>>` and
+`# <<< freeinference claude-code <<<` from their shell profile.

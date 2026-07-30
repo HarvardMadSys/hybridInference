@@ -14,7 +14,8 @@
 #   1. Checks that Claude Code (claude) is installed
 #   2. Asks for your FreeInference API key
 #   3. Merges the gateway and model settings into ~/.claude/settings.json
-#   4. Runs a quick connectivity test against the proxy
+#   4. Removes the shell-profile block written by older script versions
+#   5. Runs a quick connectivity test against the proxy
 # ──────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -157,7 +158,56 @@ fi
 
 ok "Settings written to ${SETTINGS_FILE}"
 
-# ── 4. Connectivity test ─────────────────────────────────────────
+# ── 4. Remove the legacy shell-profile block ────────────────────
+# Older versions wrote ANTHROPIC_BASE_URL between these exact markers. Current
+# Claude Code reads it from settings.json, so remove only the block owned by
+# this script and preserve every other profile line.
+LEGACY_RC_MARKER_BEGIN="# >>> freeinference claude-code >>>"
+LEGACY_RC_MARKER_END="# <<< freeinference claude-code <<<"
+
+cleanup_legacy_profile() {
+    local profile="$1"
+    local begin_count end_count tmp_profile
+
+    [[ -f "$profile" ]] || return 0
+    begin_count=$(grep -cFx "$LEGACY_RC_MARKER_BEGIN" "$profile" || true)
+    end_count=$(grep -cFx "$LEGACY_RC_MARKER_END" "$profile" || true)
+    [[ "$begin_count" == "0" && "$end_count" == "0" ]] && return 0
+
+    if [[ "$begin_count" != "1" || "$end_count" != "1" ]]; then
+        warn "Legacy FreeInference markers in ${profile} are ambiguous; leaving the file unchanged."
+        return 0
+    fi
+    if ! awk -v begin="$LEGACY_RC_MARKER_BEGIN" -v end="$LEGACY_RC_MARKER_END" \
+        '$0 == begin {seen=1} $0 == end && seen {found=1} END {exit !found}' \
+        "$profile"; then
+        warn "Legacy FreeInference markers in ${profile} are out of order; leaving the file unchanged."
+        return 0
+    fi
+
+    if ! tmp_profile=$(mktemp "${profile}.tmp.XXXXXX"); then
+        warn "Could not create a temporary file beside ${profile}; leaving it unchanged."
+        return 0
+    fi
+    if awk -v begin="$LEGACY_RC_MARKER_BEGIN" -v end="$LEGACY_RC_MARKER_END" \
+        '$0 == begin {skip=1; next} $0 == end {skip=0; next} !skip' \
+        "$profile" > "$tmp_profile"; then
+        if mv "$tmp_profile" "$profile"; then
+            ok "Removed legacy FreeInference block from ${profile}"
+        else
+            rm -f "$tmp_profile"
+            warn "Could not replace ${profile}; leaving it unchanged."
+        fi
+    else
+        rm -f "$tmp_profile"
+        warn "Could not clean the legacy FreeInference block from ${profile}."
+    fi
+}
+
+cleanup_legacy_profile "${ZDOTDIR:-$HOME}/.zshrc"
+cleanup_legacy_profile "$HOME/.bashrc"
+
+# ── 5. Connectivity test ─────────────────────────────────────────
 printf "\n"
 info "Testing connectivity to FreeInference API ..."
 
@@ -184,7 +234,7 @@ else
     warn "API returned HTTP ${HTTP_CODE}. Configuration saved — you can debug later."
 fi
 
-# ── 5. Done ──────────────────────────────────────────────────────
+# ── 6. Done ──────────────────────────────────────────────────────
 printf "\n${GREEN}${BOLD}All set!${NC}\n\n"
 info "Run ${BOLD}claude${NC} in any project directory to start coding."
 info "Configured model: ${BOLD}${FREEINFERENCE_MODEL}${NC} (Haiku/background: ${BOLD}${FREEINFERENCE_HAIKU_MODEL}${NC})"

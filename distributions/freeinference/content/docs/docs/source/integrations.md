@@ -141,7 +141,7 @@ current setup, model mappings, verification steps, and gateway limitations.
       },
       "embeddingsProvider": {
         "provider": "openai",
-        "model": "your-embedding-model-id",
+        "model": "bge-m3",
         "apiBase": "https://freeinference.org/v1",
         "apiKey": "your-api-key-here"
       }
@@ -270,7 +270,9 @@ console.log(response.choices[0].message.content);
 
 FreeInference exposes an embedding endpoint at `/v1/embeddings` and a Qdrant proxy at `/v1/qdrant` for codebase indexing in supported IDEs.
 
-> **Note:** Embedding model availability changes over time. Check `https://freeinference.org/v1/models` for the currently registered embedding model ID and substitute it in the examples below.
+> **Note:** The current embedding model is `bge-m3`. Model availability changes
+> over time, so check `https://freeinference.org/v1/models` before configuring a
+> new client.
 
 ### Roo Code
 
@@ -285,7 +287,7 @@ Roo Code natively supports OpenAI-compatible embedding providers.
 | **Embedder Provider** | OpenAI Compatible |
 | **Base URL** | `https://freeinference.org/v1` |
 | **API Key** | Your FreeInference API key |
-| **Model** | `your-embedding-model-id` |
+| **Model** | `bge-m3` |
 | **Model Dimension** | Matching model dimension |
 | **Qdrant URL** | `https://freeinference.org/v1/qdrant` |
 | **Qdrant API Key** | Your FreeInference API key |
@@ -307,7 +309,7 @@ Kilo Code supports OpenAI-compatible embedding configuration. To use FreeInferen
 | **Embedder Provider** | OpenAI Compatible |
 | **Base URL** | `https://freeinference.org/v1` |
 | **API Key** | Your FreeInference API key |
-| **Model** | `your-embedding-model-id` |
+| **Model** | `bge-m3` |
 | **Model Dimension** | Matching model dimension |
 | **Qdrant URL** | `https://freeinference.org/v1/qdrant` |
 | **Qdrant API Key** | Your FreeInference API key |
@@ -320,7 +322,7 @@ Continue supports embeddings for codebase indexing. Add an `embeddingsProvider` 
 {
   "embeddingsProvider": {
     "provider": "openai",
-    "model": "your-embedding-model-id",
+    "model": "bge-m3",
     "apiBase": "https://freeinference.org/v1",
     "apiKey": "your-api-key-here"
   }
@@ -351,7 +353,7 @@ client = OpenAI(
 )
 
 response = client.embeddings.create(
-    model="your-embedding-model-id",
+    model="bge-m3",
     input=["def hello():", "function greet() {"],
 )
 
@@ -363,7 +365,7 @@ for item in response.data:
 curl -X POST https://freeinference.org/v1/embeddings \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-here" \
-  -d '{"model": "your-embedding-model-id", "input": "hello world"}'
+  -d '{"model": "bge-m3", "input": "hello world"}'
 ```
 
 ---
