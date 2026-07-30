@@ -14,7 +14,7 @@ import {
   writeAgentJobFile,
 } from '@/lib/api/agents';
 
-import { JobDetail } from './JobDetail';
+import { JobDetail, WORKSPACE_WIDTH_STORAGE_KEY } from './JobDetail';
 import type { AgentJob } from './types';
 
 const navigation = vi.hoisted(() => ({ push: vi.fn() }));
@@ -117,6 +117,7 @@ describe('JobDetail', () => {
     vi.mocked(runAgentTerminalCommand).mockReset();
     vi.mocked(writeAgentJobFile).mockReset();
     sessionStorage.clear();
+    localStorage.clear();
   });
 
   afterEach(() => cleanup());
@@ -254,7 +255,7 @@ describe('JobDetail', () => {
     expect(task).toHaveClass('hidden', 'lg:flex', 'overflow-y-auto');
     expect(screen.getByRole('region', { name: 'Job workspace' })).toHaveClass(
       'overflow-y-auto',
-      'lg:border-l',
+      'lg:w-[var(--job-workspace-width)]',
     );
 
     const terminalTab = screen.getByRole('tab', { name: 'Terminal' });
@@ -272,6 +273,36 @@ describe('JobDetail', () => {
 
     openWorkspace();
     expect(screen.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('resizes the workspace pane by dragging the seam, and remembers the width', () => {
+    render(<JobDetail job={makeJob()} />);
+
+    expect(screen.queryByRole('separator', { name: 'Resize workspace' })).not.toBeInTheDocument();
+    openWorkspace();
+
+    const pane = screen.getByRole('region', { name: 'Job workspace' });
+    const seam = screen.getByRole('separator', { name: 'Resize workspace' });
+    expect(seam).toHaveAttribute('aria-controls', 'job-workspace-pane');
+    expect(pane.style.getPropertyValue('--job-workspace-width')).toBe('560px');
+
+    // Dragging the seam left widens the workspace and narrows the transcript.
+    fireEvent.pointerDown(seam, { button: 0, clientX: 800 });
+    fireEvent.pointerMove(window, { clientX: 700 });
+    fireEvent.pointerUp(window, { clientX: 700 });
+
+    expect(pane.style.getPropertyValue('--job-workspace-width')).toBe('660px');
+    expect(window.localStorage.getItem(WORKSPACE_WIDTH_STORAGE_KEY)).toBe('660');
+
+    cleanup();
+    render(<JobDetail job={makeJob()} />);
+    openWorkspace();
+
+    expect(
+      screen
+        .getByRole('region', { name: 'Job workspace' })
+        .style.getPropertyValue('--job-workspace-width'),
+    ).toBe('660px');
   });
 
   it('shows a selectable diff-first Git workspace with review and commit tabs', async () => {
