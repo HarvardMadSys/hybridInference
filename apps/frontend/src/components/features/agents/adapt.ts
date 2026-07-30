@@ -231,49 +231,6 @@ function rawEventLine(event: AgentJobEventApi): string {
   });
 }
 
-function lifecycleFact(events: AgentJobEventApi[], keys: string[]): unknown {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event.event_type !== 'lifecycle') continue;
-    for (const key of keys) {
-      const value = event.payload?.[key];
-      if (value !== undefined && value !== null && value !== '') return value;
-    }
-  }
-  return undefined;
-}
-
-function factLabel(value: unknown): string | undefined {
-  if (typeof value === 'string' || typeof value === 'number') return String(value);
-  if (typeof value === 'boolean') return value ? 'Enabled' : 'Disabled';
-  return undefined;
-}
-
-function setupFacts(events: AgentJobEventApi[]): { cache?: string; status?: string } {
-  const explicitCache = lifecycleFact(events, ['setup_cache']);
-  const explicitStatus = lifecycleFact(events, ['setup_status']);
-  if (explicitCache !== undefined || explicitStatus !== undefined) {
-    return { cache: factLabel(explicitCache), status: factLabel(explicitStatus) };
-  }
-  const setup = [...events]
-    .reverse()
-    .find((event) => event.event_type === 'lifecycle' && event.payload?.phase === 'setup');
-  if (!setup?.payload) return {};
-  const cached = setup.payload.cached;
-  const ran = setup.payload.ran;
-  return {
-    cache: typeof cached === 'boolean' ? (cached ? 'Hit' : 'Miss') : undefined,
-    status:
-      typeof ran === 'boolean'
-        ? ran
-          ? 'Ran successfully'
-          : cached === true
-            ? 'Restored from cache'
-            : 'Skipped'
-        : undefined,
-  };
-}
-
 export interface AdaptOptions {
   events?: AgentJobEventApi[];
   patch?: string | null;
@@ -327,7 +284,6 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
   const events = options.events ?? [];
   const patch = options.patch ?? '';
   const renderedEvents = displayEvents(events);
-  const setup = setupFacts(events);
 
   // Attempts are inferred from the event log rather than fetched: an attempt
   // exists precisely because it wrote events, and a superseded control event
@@ -388,7 +344,6 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     // Every turn in a conversation publishes to the same branch/PR.
     branch: job.output_branch ?? `agent/${job.thread_id ?? options.thread?.thread_id ?? job.id}`,
     runtime: job.runtime,
-    runtimeVersion: factLabel(lifecycleFact(events, ['runtime_version'])),
     model: job.model,
     // Summed server-side from api_logs. Null there means no ledger is
     // configured; 0 is the honest display for that, but the panel below reads
@@ -399,10 +354,7 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     timeoutLabel: '',
     networkSetup: tierLabel(job.setup_egress_tier),
     networkAgent: tierLabel(job.agent_egress_tier),
-    sandbox: factLabel(lifecycleFact(events, ['sandbox_backend'])) ?? '',
-    vmIsolation: factLabel(lifecycleFact(events, ['vm_isolation'])),
-    setupCache: setup.cache,
-    setupStatus: setup.status,
+    sandbox: '',
     attempts,
     events: renderedEvents,
     eventCount: events.length,

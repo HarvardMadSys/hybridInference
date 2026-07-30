@@ -10,14 +10,12 @@ import type { AgentEvent, AgentJob, AgentThreadMessage } from './types';
 import { useAgentJobFiles } from './useAgentJobs';
 
 type DrawerView = 'overview' | 'diff' | 'raw';
-type WorkspaceTab = 'activity' | 'git' | 'terminal' | 'files' | 'environment';
+type WorkspaceTab = 'git' | 'terminal' | 'files';
 
 const WORKSPACE_TABS: Array<{ key: WorkspaceTab; label: string }> = [
-  { key: 'activity', label: 'Activity' },
   { key: 'git', label: 'Git' },
   { key: 'terminal', label: 'Terminal' },
   { key: 'files', label: 'Files' },
-  { key: 'environment', label: 'Environment' },
 ];
 
 const STATE_PILL: Record<AgentJob['state'], { label: string; className: string; dot?: string }> = {
@@ -793,56 +791,6 @@ function FilesPanel({ job }: { job: AgentJob }) {
   );
 }
 
-function EnvironmentPanel({ job }: { job: AgentJob }) {
-  return (
-    <div className="grid gap-5 lg:grid-cols-2" aria-label="Run environment">
-      <section className="rounded-xl border border-gray-200 p-5">
-        <h2 className="text-sm font-semibold text-gray-900">Source</h2>
-        <dl className="mt-3 divide-y divide-gray-100">
-          <DetailStat label="Repository" value={job.repo} />
-          <DetailStat label="Base branch" value={job.baseRef ?? ''} />
-          <DetailStat label="Base commit" value={job.baseSha} />
-          <DetailStat label="Output branch" value={job.branch} />
-        </dl>
-      </section>
-      <section className="rounded-xl border border-gray-200 p-5">
-        <h2 className="text-sm font-semibold text-gray-900">Runtime</h2>
-        <dl className="mt-3 divide-y divide-gray-100">
-          <DetailStat label="Runtime" value={job.runtime} />
-          <DetailStat label="Version" value={job.runtimeVersion ?? ''} />
-          <DetailStat label="Model" value={job.model} />
-        </dl>
-      </section>
-      <section className="rounded-xl border border-gray-200 p-5">
-        <h2 className="text-sm font-semibold text-gray-900">Isolation and setup</h2>
-        <dl className="mt-3 divide-y divide-gray-100">
-          <DetailStat label="Sandbox" value={job.sandbox} />
-          <DetailStat label="VM isolation" value={job.vmIsolation ?? ''} />
-          <DetailStat label="Setup" value={job.setupStatus ?? ''} />
-          <DetailStat label="Setup cache" value={job.setupCache ?? ''} />
-          <DetailStat label="Setup network" value={job.networkSetup} />
-          <DetailStat label="Agent network" value={job.networkAgent} />
-        </dl>
-      </section>
-      <section className="rounded-xl border border-gray-200 p-5">
-        <h2 className="text-sm font-semibold text-gray-900">Limits and usage</h2>
-        <dl className="mt-3 divide-y divide-gray-100">
-          <DetailStat label="Attempts" value={String(job.attempts.length)} />
-          <DetailStat label="Budget" value={job.budgetUsd ? `$${job.budgetUsd.toFixed(2)}` : ''} />
-          <DetailStat
-            label="Spend"
-            value={job.hasLedger === false ? 'Ledger unavailable' : `$${job.spentUsd.toFixed(4)}`}
-          />
-          <DetailStat label="Input tokens" value={job.usage.tokensIn} />
-          <DetailStat label="Output tokens" value={job.usage.tokensOut} />
-          <DetailStat label="Model calls" value={String(job.usage.turns)} />
-          <DetailStat label="Egress denials" value={String(job.egressDenials)} />
-        </dl>
-      </section>
-    </div>
-  );
-}
-
 export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => void }) {
   const router = useRouter();
   const liveAttempt = useMemo(
@@ -851,7 +799,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   );
   const [attemptNo, setAttemptNo] = useState(liveAttempt);
   const [drawer, setDrawer] = useState<DrawerView | null>(null);
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('activity');
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab | null>(null);
   const [followUp, setFollowUp] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -962,16 +910,14 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
         </div>
         <nav
           aria-label="Job workspace"
-          role="tablist"
           className="mx-auto flex max-w-4xl gap-1 overflow-x-auto text-[13px] font-medium"
         >
           {WORKSPACE_TABS.map((tab) => (
             <button
               key={tab.key}
               type="button"
-              role="tab"
-              aria-selected={workspaceTab === tab.key}
-              onClick={() => setWorkspaceTab(tab.key)}
+              aria-pressed={workspaceTab === tab.key}
+              onClick={() => setWorkspaceTab((current) => (current === tab.key ? null : tab.key))}
               className={`shrink-0 border-b-2 px-3 py-2 ${
                 workspaceTab === tab.key
                   ? 'border-gray-900 text-gray-900'
@@ -989,10 +935,10 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
         </nav>
       </header>
 
-      {workspaceTab === 'activity' ? (
+      {workspaceTab === null ? (
         <div
-          role="tabpanel"
-          aria-label="Activity"
+          role="region"
+          aria-label="Task progress"
           className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-5 pb-6 pt-6"
         >
           <div className="flex-1">
@@ -1109,14 +1055,24 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
         </div>
       ) : (
         <div
-          role="tabpanel"
+          role="region"
           aria-label={WORKSPACE_TABS.find((tab) => tab.key === workspaceTab)?.label}
           className="mx-auto w-full max-w-5xl flex-1 px-5 py-6"
         >
+          <div className="mb-4 flex items-center">
+            <button
+              type="button"
+              onClick={() => setWorkspaceTab(null)}
+              aria-label="Close workspace and return to task"
+              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+            >
+              <span aria-hidden="true">←</span>
+              Return to task
+            </button>
+          </div>
           {workspaceTab === 'git' ? <GitPanel job={job} /> : null}
           {workspaceTab === 'terminal' ? <TerminalPanel events={visibleEvents} /> : null}
           {workspaceTab === 'files' ? <FilesPanel job={job} /> : null}
-          {workspaceTab === 'environment' ? <EnvironmentPanel job={job} /> : null}
         </div>
       )}
 

@@ -18,7 +18,6 @@ from serving.agent_jobs import runner as runner_mod
 from serving.agent_jobs.runner import (
     ClaimedJob,
     LeaseLost,
-    _started_lifecycle,
     build_patch,
     conversation_prompt,
     run_agent,
@@ -60,21 +59,6 @@ def test_follow_up_prompt_replays_runtime_neutral_conversation():
     assert "USER: fix the timeout" in prompt
     assert "ASSISTANT: I updated the middleware" in prompt
     assert prompt.endswith("NEW USER REQUEST:\nnow add tests")
-
-
-def test_started_lifecycle_reports_safe_execution_environment_facts():
-    """Environment shows the boundary without exposing host paths or worker identity."""
-    facts = _started_lifecycle(_JOB, ProcessBackend(acknowledged_unsafe=True))
-
-    assert facts == {
-        "phase": "started",
-        "runtime": "generic",
-        "attempt_no": 1,
-        "sandbox_backend": "process",
-        "vm_isolation": False,
-        "setup_cache": "Not used",
-        "setup_status": "Not configured",
-    }
 
 
 @pytest.fixture(autouse=True)

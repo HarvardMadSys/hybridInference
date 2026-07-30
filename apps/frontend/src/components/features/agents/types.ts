@@ -97,11 +97,6 @@ export interface AgentJob {
   networkSetup: string;
   networkAgent: string;
   sandbox: string;
-  /** Runtime-provided isolation label. Never sourced from environment variables. */
-  vmIsolation?: string;
-  /** Safe setup facts emitted by the runner lifecycle. */
-  setupCache?: string;
-  setupStatus?: string;
   attempts: AgentAttempt[];
   events: AgentEvent[];
   /** Bottom-of-stream live line while running, e.g. "turn 15 · …". */

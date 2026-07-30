@@ -190,32 +190,6 @@ describe('toDisplayJob', () => {
     expect(job.spentUsd).toBe(0);
   });
 
-  it('adapts only explicit runtime lifecycle facts for Environment', () => {
-    const job = toDisplayJob(JOB, {
-      events: [
-        event(1, 'lifecycle', {
-          phase: 'started',
-          runtime_version: '2.4.1',
-          sandbox_backend: 'docker',
-          vm_isolation: true,
-        }),
-        event(2, 'lifecycle', {
-          phase: 'setup',
-          setup_cache: 'hit',
-          setup_status: 'restored',
-          internal_workdir: '/secret/runner/path',
-        }),
-      ],
-    });
-
-    expect(job.runtimeVersion).toBe('2.4.1');
-    expect(job.sandbox).toBe('docker');
-    expect(job.vmIsolation).toBe('Enabled');
-    expect(job.setupCache).toBe('hit');
-    expect(job.setupStatus).toBe('restored');
-    expect(job).not.toHaveProperty('internalWorkdir');
-  });
-
   it('folds a tool result into its matching activity and preserves its attempt', () => {
     const events = [
       event(1, 'tool_use', { id: 'tool_1', name: 'Bash', input: { command: 'pytest' } }, 7),

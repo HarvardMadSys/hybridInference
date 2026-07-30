@@ -184,13 +184,39 @@ describe('JobDetail', () => {
     expect(screen.getByText('{"event_type":"message"}')).toBeInTheDocument();
   });
 
-  it('provides Activity, Git, Terminal, Files, and Environment workspaces', () => {
+  it('keeps the task as the default view with only Git, Terminal, and Files workspaces', () => {
     render(<JobDetail job={makeJob()} />);
 
-    for (const name of ['Activity', 'Git', 'Terminal', 'Files', 'Environment']) {
-      expect(screen.getByRole('tab', { name: new RegExp(name) })).toBeInTheDocument();
+    for (const name of ['Git', 'Terminal', 'Files']) {
+      expect(screen.getByRole('button', { name: new RegExp(name) })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: new RegExp(name) })).toHaveAttribute(
+        'aria-pressed',
+        'false',
+      );
     }
-    expect(screen.getByRole('tab', { name: 'Activity' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('button', { name: 'Activity' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Environment' })).not.toBeInTheDocument();
+    expect(screen.getByText(/with all of its detail/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Add a follow-up')).toBeInTheDocument();
+  });
+
+  it('returns to the task by toggling a workspace tab or using the close control', () => {
+    render(<JobDetail job={makeJob()} />);
+
+    const terminalTab = screen.getByRole('button', { name: 'Terminal' });
+    fireEvent.click(terminalTab);
+    expect(terminalTab).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByLabelText('Add a follow-up')).not.toBeInTheDocument();
+    fireEvent.click(terminalTab);
+    expect(terminalTab).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByLabelText('Add a follow-up')).toBeInTheDocument();
+
+    const gitButton = screen.getByRole('button', { name: /Git/ });
+    fireEvent.click(gitButton);
+    expect(gitButton).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Close workspace and return to task' }));
+    expect(gitButton).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByLabelText('Add a follow-up')).toBeInTheDocument();
   });
 
   it('shows a selectable per-file Git diff with branch and PR facts', () => {
@@ -204,7 +230,7 @@ describe('JobDetail', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('tab', { name: /Git/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Git/ }));
 
     expect(screen.getByLabelText('Git workspace')).toHaveTextContent('agent/ajob_1');
     expect(screen.getByLabelText('Git workspace')).toHaveTextContent('src/example.ts');
@@ -218,7 +244,7 @@ describe('JobDetail', () => {
   it('renders terminal events as a read-only transcript with no input', () => {
     render(<JobDetail job={makeJob()} />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Terminal' }));
 
     const terminal = screen.getByLabelText('Read-only terminal transcript');
     expect(terminal).toHaveTextContent('$ pytest -q');
@@ -238,7 +264,7 @@ describe('JobDetail', () => {
     render(<JobDetail job={makeJob()} />);
 
     expect(getAgentJobFiles).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
 
     await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledWith('ajob_1', ''));
     fireEvent.click(await screen.findByRole('button', { name: /latest/ }));
@@ -271,7 +297,7 @@ describe('JobDetail', () => {
         status: 'modified',
       });
     render(<JobDetail job={makeJob()} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
 
     fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }));
 
@@ -282,33 +308,11 @@ describe('JobDetail', () => {
   it('refreshes an open Files workspace once a running job finishes', async () => {
     vi.mocked(getAgentJobFiles).mockResolvedValue({ path: '', kind: 'directory', entries: [] });
     const { rerender } = render(<JobDetail job={makeJob({ state: 'running' })} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
     await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledTimes(1));
 
     rerender(<JobDetail job={makeJob({ state: 'done' })} />);
 
     await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledTimes(2));
-  });
-
-  it('shows only allow-listed environment facts', () => {
-    render(
-      <JobDetail
-        job={makeJob({
-          runtimeVersion: '1.2.3',
-          vmIsolation: 'Firecracker VM',
-          setupCache: 'Hit',
-          setupStatus: 'Restored from cache',
-        })}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Environment' }));
-
-    const environment = screen.getByLabelText('Run environment');
-    expect(environment).toHaveTextContent('1.2.3');
-    expect(environment).toHaveTextContent('Firecracker VM');
-    expect(environment).toHaveTextContent('Restored from cache');
-    expect(environment).toHaveTextContent('gateway only');
-    expect(environment).not.toHaveTextContent('environment variables');
   });
 });

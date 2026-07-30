@@ -645,21 +645,6 @@ def save_workspace_snapshot(control: ControlPlane, *, workdir: str, patch: str) 
     return True
 
 
-def _started_lifecycle(job: ClaimedJob, backend: SandboxBackend) -> dict[str, Any]:
-    """Return only safe, owner-visible facts about the execution boundary."""
-    return {
-        "phase": "started",
-        "runtime": job.runtime,
-        "attempt_no": job.attempt_no,
-        "sandbox_backend": backend.name,
-        # ContainerBackend can report its Kata/VM boundary. ProcessBackend has
-        # no isolation of its own, even when an outer CI VM happens to host it.
-        "vm_isolation": bool(getattr(backend, "is_vm_isolated", False)),
-        "setup_cache": "Not used" if not job.setup_script else "Pending",
-        "setup_status": "Not configured" if not job.setup_script else "Pending",
-    }
-
-
 def run_agent(
     runtime: AgentRuntime,
     *,
@@ -842,7 +827,7 @@ def run_once(
         control.append_event(
             NormalizedEvent(
                 "lifecycle",
-                _started_lifecycle(job, backend),
+                {"phase": "started", "runtime": job.runtime, "attempt_no": job.attempt_no},
             )
         )
 
@@ -908,14 +893,6 @@ def run_once(
                         "phase": "setup",
                         "cached": setup.restored_from_cache,
                         "ran": setup.ran,
-                        "setup_cache": "Hit" if setup.restored_from_cache else "Miss",
-                        "setup_status": (
-                            "Failed"
-                            if setup.exit_code != 0
-                            else "Restored from cache"
-                            if setup.restored_from_cache
-                            else "Ran successfully"
-                        ),
                     },
                 )
             )
