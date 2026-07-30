@@ -767,9 +767,23 @@ class ContainerBackend(SandboxBackend):
         (RFC 2606 ``.invalid``), so it never leaves the host even when it
         passes, and it distinguishes the three outcomes that matter: refused by
         the proxy, unable to reach the proxy at all, or served.
+
+        **Both paths are probed, and the CONNECT one is why.** A cleartext
+        request alone proves very little here: this deployment's own config
+        denies plain HTTP outright, so a proxy that refused cleartext while
+        tunnelling CONNECT to anywhere would answer 403 and pass — with every
+        HTTPS destination in the world still reachable, which is the whole of
+        what a package manager (or an exfiltration attempt) actually uses.
+        ``%{http_connect}`` reports the proxy's answer to the CONNECT itself,
+        as distinct from whatever happens inside the tunnel.
         """
         env = self.egress.sandbox_env(phase) if self.egress else {}
         argv = [self.docker_binary, "run", "--rm", "--network", network]
+        # Under the runtime jobs will actually use. The bind probe learned this
+        # the hard way: probing under the daemon's default while the shipped
+        # backend is kata validates a configuration nobody runs.
+        if self.runtime:
+            argv += ["--runtime", self.runtime]
         for key, value in sorted(env.items()):
             argv += ["--env", f"{key}={value}"]
         argv += [
@@ -779,11 +793,14 @@ class ContainerBackend(SandboxBackend):
             "-c",
             # curl reads the proxy out of the environment above, which is the
             # exact mechanism a setup script will use — a `--proxy` flag here
-            # would test a path no real job takes. Its stderr is left alone on
-            # purpose: "Failed to connect to ... port 3128" is the diagnostic
-            # the unreachable branch below reports.
-            f'curl -sS -o /dev/null -w "%{{http_code}}" --max-time 10 '
-            f"http://{CANARY_HOST}/ || true",
+            # would test a path no real job takes. Both stderrs are left alone
+            # on purpose: "Failed to connect to ... port 3128" is the
+            # diagnostic the unreachable branch below reports.
+            f"plain=$(curl -sS -o /dev/null -w '%{{http_code}}' --max-time 10 "
+            f"http://{CANARY_HOST}/ || true); "
+            f"tunnel=$(curl -sS -o /dev/null -w '%{{http_connect}}' --max-time 10 "
+            f"https://{CANARY_HOST}/ || true); "
+            'echo "$plain $tunnel"',
         ]
         try:
             # Matches the bind probe's budget: on a host that has not pulled
@@ -793,10 +810,13 @@ class ContainerBackend(SandboxBackend):
             raise SandboxError(
                 f"the egress proxy for the {phase} phase could not be probed: {exc}"
             ) from exc
-        code = probe.stdout.strip().splitlines()[-1].strip() if probe.stdout.strip() else ""
-        if code == "403":
+        answered = probe.stdout.strip().splitlines()[-1].split() if probe.stdout.strip() else []
+        plain, tunnel = [*answered, "", ""][:2]
+        # `0` is what %{http_connect} reports when no CONNECT was ever answered.
+        no_answer = {"", "0", "000"}
+        if plain == "403" and tunnel == "403":
             return
-        if code in ("", "000"):
+        if plain in no_answer and tunnel in no_answer:
             # Fatal, even though an unreachable proxy leaves the sandbox *more*
             # closed rather than less: it means this deployment's setup tier is
             # broken, and one startup failure is how an operator learns that
@@ -810,11 +830,13 @@ class ContainerBackend(SandboxBackend):
                 f"(docker: {probe.stderr.strip()[:200]}). If this deployment does not need "
                 "dependency installation, set AGENT_EGRESS_SETUP_TIER=platform_only."
             )
+        refused = "CONNECT" if tunnel == "403" else "cleartext"
         raise SandboxError(
-            f"the {phase} phase's egress proxy answered {code} for {CANARY_HOST}, which is "
-            "not on any allowlist and does not exist. It is not enforcing an allowlist, so "
-            "the sandbox can reach the internet through it while the configuration says "
-            "otherwise. Check the proxy's generated configuration."
+            f"the {phase} phase's egress proxy answered {plain!r} (cleartext) and "
+            f"{tunnel!r} (CONNECT) for {CANARY_HOST}, which is on no allowlist and does "
+            f"not exist — so it refuses {refused} and lets the other through. The sandbox "
+            "can reach the internet while the configuration says otherwise. Check the "
+            "proxy's generated configuration."
         )
 
     def _check_one_network(self, network: str) -> None:
@@ -886,19 +908,21 @@ class ContainerBackend(SandboxBackend):
         if not host:
             return
         network = self.network_for_phase("agent")
+        argv = [self.docker_binary, "run", "--rm", "--network", network]
+        # Same reason the bind probe pins it: a probe under the daemon's
+        # default runtime says nothing about a deployment whose jobs run under
+        # kata, and DNS is exactly the kind of thing that differs between them.
+        if self.runtime:
+            argv += ["--runtime", self.runtime]
+        argv += [
+            "--entrypoint",
+            "/bin/sh",
+            self.image,
+            "-c",
+            f"getent hosts {shlex.quote(host)} >/dev/null 2>&1",
+        ]
         probe = subprocess.run(
-            [
-                self.docker_binary,
-                "run",
-                "--rm",
-                "--network",
-                network,
-                "--entrypoint",
-                "/bin/sh",
-                self.image,
-                "-c",
-                f"getent hosts {shlex.quote(host)} >/dev/null 2>&1",
-            ],
+            argv,
             capture_output=True,
             text=True,
             timeout=60,

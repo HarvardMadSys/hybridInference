@@ -88,9 +88,15 @@ VENDOR_TELEMETRY_DOMAINS = (
 # The selection rule is exfiltration, not download safety. The sandbox is
 # disposable and unprivileged, so "it could fetch something malicious" is
 # already priced in; what matters is whether a host can *receive* a private
-# repository. These are read-only distribution endpoints. `api.github.com` is
-# deliberately absent for exactly that reason: an authenticated agent could
-# push a repository's contents into an issue body.
+# repository in a form the sender can read back. `api.github.com` is
+# deliberately absent for exactly that reason: an issue body is durable,
+# attacker-retrievable storage that one authenticated POST reaches.
+#
+# This narrows the channel; it does not close it. An allowed CONNECT is a
+# tunnel, so a listed host can be sent arbitrary methods, paths and bodies —
+# what makes these entries defensible is that an *unauthenticated* client
+# cannot store anything at them and read it back, not that they are read-only
+# services. Anything added here should be judged the same way.
 DEFAULT_TRUSTED_DOMAINS: tuple[str, ...] = (
     # Python
     "pypi.org",

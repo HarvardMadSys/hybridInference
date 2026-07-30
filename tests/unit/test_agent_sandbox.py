@@ -555,8 +555,11 @@ def _egress_env(**extra: str) -> dict[str, str]:
     }
 
 
-def _fake_docker(monkeypatch, *, internal: dict[str, str], canary: str = "403"):
-    """Stand in for the daemon: network internality, and what the canary got."""
+def _fake_docker(monkeypatch, *, internal: dict[str, str], canary: str = "403 403"):
+    """Stand in for the daemon: network internality, and what the canary got.
+
+    ``canary`` is the probe's ``"<cleartext> <connect>"`` line.
+    """
     calls: list[list[str]] = []
 
     def fake_run(argv, **kwargs):
@@ -597,9 +600,25 @@ def test_a_proxy_that_serves_the_canary_is_a_startup_failure(monkeypatch):
     behaviour instead of trusting the configuration.
     """
     backend = build_backend_from_env(_egress_env())
-    _fake_docker(monkeypatch, internal={}, canary="200")
+    _fake_docker(monkeypatch, internal={}, canary="200 200")
 
-    with pytest.raises(SandboxError, match="not enforcing an allowlist"):
+    with pytest.raises(SandboxError, match="reach the internet"):
+        backend._check_networks_are_closed()
+
+
+def test_a_proxy_that_denies_cleartext_but_tunnels_anywhere_is_caught(monkeypatch):
+    """The cleartext answer alone proves almost nothing, so it is not trusted alone.
+
+    Our own rendered config denies plain HTTP outright, so a proxy that
+    refused cleartext while allowing CONNECT to any host would answer 403 to
+    a one-request probe and pass — with every HTTPS destination in the world
+    still reachable, which is all a package manager, or an exfiltration
+    attempt, actually uses.
+    """
+    backend = build_backend_from_env(_egress_env())
+    _fake_docker(monkeypatch, internal={}, canary="403 200")
+
+    with pytest.raises(SandboxError, match="refuses cleartext and lets the other through"):
         backend._check_networks_are_closed()
 
 
@@ -607,10 +626,11 @@ def test_an_unreachable_proxy_is_reported_as_unreachable(monkeypatch):
     """Distinguished from "not enforcing", because the fixes are opposite.
 
     curl reports both as a failure; conflating them would send an operator to
-    check the allowlist when the proxy is simply not running.
+    check the allowlist when the proxy is simply not running. `0` is what
+    `%{http_connect}` reports when no CONNECT was ever answered.
     """
     backend = build_backend_from_env(_egress_env())
-    _fake_docker(monkeypatch, internal={}, canary="000")
+    _fake_docker(monkeypatch, internal={}, canary="000 0")
 
     with pytest.raises(SandboxError, match="unreachable"):
         backend._check_networks_are_closed()
@@ -624,16 +644,39 @@ def test_a_denying_proxy_passes_and_is_probed_the_way_a_job_would_use_it(monkeyp
     is the part that carries the policy.
     """
     backend = build_backend_from_env(_egress_env())
-    calls = _fake_docker(monkeypatch, internal={}, canary="403")
+    calls = _fake_docker(monkeypatch, internal={}, canary="403 403")
 
     backend._check_networks_are_closed()
 
     probe = next(argv for argv in calls if argv[1] == "run")
     assert probe[probe.index("--network") + 1] == "agent-egress-trusted"
     assert "https_proxy=http://agent-egress-proxy:3128" in probe
-    assert CANARY_HOST in probe[-1]
+    # Both paths, because refusing one and tunnelling the other is a real
+    # proxy misconfiguration and only the CONNECT one carries real traffic.
+    assert f"http://{CANARY_HOST}/" in probe[-1]
+    assert f"https://{CANARY_HOST}/" in probe[-1]
     # And the closed phase is never probed: it has no proxy to enforce anything.
     assert sum(1 for argv in calls if argv[1] == "run") == 1
+
+
+def test_every_probe_runs_under_the_runtime_jobs_will_use(monkeypatch):
+    """A probe under the daemon's default validates a deployment nobody runs.
+
+    The bind check learned this when it passed on a host with no Kata shim and
+    every job then died at spawn. The egress probes are the same shape — DNS
+    and networking are exactly what differs between a shared-kernel container
+    and a VM-isolated one — so they carry the flag too.
+    """
+    backend = build_backend_from_env(_egress_env(AGENT_SANDBOX_BACKEND="kata"))
+    calls = _fake_docker(monkeypatch, internal={})
+
+    backend._check_networks_are_closed()
+    backend.check_gateway_reachable("http://backend:8080")
+
+    runs = [argv for argv in calls if argv[1] == "run"]
+    assert len(runs) == 2
+    for argv in runs:
+        assert argv[argv.index("--runtime") + 1] == KATA_RUNTIME
 
 
 def test_a_custom_tier_keeps_the_operators_own_topology(monkeypatch):

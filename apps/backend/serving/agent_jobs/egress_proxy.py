@@ -130,6 +130,11 @@ def build_config_from_env(env: dict[str, str] | None = None) -> str:
     own proxy by definition, so it is not rendered here.
     """
     source = env if env is not None else dict(os.environ)
+    # Parses the operator's comma-separated string into entries; the union with
+    # the built-ins happens in `trusted_domains`, which validates again. The
+    # second pass is idempotent, and splitting here is not optional — handing a
+    # raw string to a function that splats it would spread it character by
+    # character.
     extra = normalize_domains(source.get("AGENT_EGRESS_ALLOWLIST") or "")
     try:
         port = int(source.get("AGENT_EGRESS_PROXY_PORT") or DEFAULT_PROXY_PORT)
