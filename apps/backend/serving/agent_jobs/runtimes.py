@@ -415,9 +415,61 @@ class GenericRuntime(AgentRuntime):
         return NormalizedEvent(RAW, {"text": line[:4000]})
 
 
+class PiRuntime(GenericRuntime):
+    """Tier 2: the pi coding agent, streamed as raw JSON lines.
+
+    pi ignores ``OPENAI_BASE_URL`` — its built-in ``openai`` provider goes
+    straight to api.openai.com (verified against a local fake: zero hits, a
+    real OpenAI 401). The supported route is a custom provider in
+    ``~/.pi/agent/models.json``, so the sandbox image ships a reviewed
+    ``pi-freeinference`` wrapper that writes that file from this environment
+    and then ``exec``s the real CLI. The prompt stays in argv end to end;
+    nothing user-controlled passes through a shell.
+
+    ``--mode json`` output is structured (turn/message/usage events) but is
+    deliberately passed through as ``raw``: promotion to a normalizing Tier 1
+    adapter happens once real jobs prove the format worth pinning with
+    recorded fixtures, per the tier design.
+    """
+
+    name = "pi"
+
+    def __init__(self) -> None:
+        """Fix the wrapper invocation; Tier 2 mechanics come from Generic."""
+        super().__init__(
+            "pi-freeinference --provider freeinference --model {model} "
+            "--mode json --no-session -p {prompt}",
+            binary="pi-freeinference",
+        )
+
+    def prepare(
+        self,
+        *,
+        workdir: str,
+        task_prompt: str,
+        model: str,
+        gateway_base_url: str,
+        credential: str,
+    ) -> tuple[list[str], dict[str, str]]:
+        """Add the model id the wrapper writes into pi's provider config."""
+        argv, env = super().prepare(
+            workdir=workdir,
+            task_prompt=task_prompt,
+            model=model,
+            gateway_base_url=gateway_base_url,
+            credential=credential,
+        )
+        # models.json wants the model listed under the provider; the wrapper
+        # cannot parse it back out of pi's argv without reimplementing pi's
+        # option handling, so hand it over explicitly.
+        env["PI_GATEWAY_MODEL"] = model
+        return argv, env
+
+
 _REGISTRY: dict[str, type[AgentRuntime]] = {
     ClaudeCodeRuntime.name: ClaudeCodeRuntime,
     CodexRuntime.name: CodexRuntime,
+    PiRuntime.name: PiRuntime,
 }
 
 

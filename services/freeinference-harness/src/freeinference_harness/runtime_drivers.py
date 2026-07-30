@@ -181,6 +181,85 @@ def run_runtime_codex_smoke(
         )
 
 
+def run_runtime_pi_smoke(
+    target: TargetConfig,
+    scenario: ScenarioConfig,
+) -> dict[str, Any]:
+    """Runs `pi -p` against the target via a scratch-HOME provider config.
+
+    pi ignores ``OPENAI_BASE_URL``; a custom provider in
+    ``~/.pi/agent/models.json`` is its supported route to a gateway — the same
+    mechanism the sandbox's ``pi-freeinference`` wrapper uses, registered here
+    as ``openai-completions`` so pi speaks the OpenAI chat surface.
+    """
+    binary = shutil.which("pi")
+    if binary is None:
+        return _skip_missing("pi")
+
+    prompt, expected_token = _smoke_prompt(scenario)
+    with tempfile.TemporaryDirectory(prefix="agent-loop-pi-") as tmp:
+        home = Path(tmp)
+        config_dir = home / ".pi" / "agent"
+        config_dir.mkdir(parents=True)
+        (config_dir / "models.json").write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        "harness": {
+                            "baseUrl": f"{target.base_url.rstrip('/').removesuffix('/v1')}/v1",
+                            "api": "openai-completions",
+                            "apiKey": target.api_key or "harness-local",
+                            "models": [{"id": target.model}],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = _base_env()
+        # HOME is the config mechanism here, so the override is the point.
+        env.update({"HOME": str(home), "PI_OFFLINE": "1"})
+        command = [
+            binary,
+            "--provider",
+            "harness",
+            "--model",
+            target.model,
+            "--mode",
+            "json",
+            "--no-session",
+            "-p",
+            prompt,
+        ]
+        return _run_and_check(
+            command,
+            env=env,
+            timeout_seconds=target.timeout_seconds,
+            expected_token=expected_token,
+            runtime_name="pi",
+            result_extractor=_extract_pi_result,
+        )
+
+
+def _extract_pi_result(stdout: str) -> str:
+    """Collects assistant text from pi's ``--mode json`` event lines."""
+    texts: list[str] = []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "message_end":
+            continue
+        message = event.get("message") or {}
+        if message.get("role") != "assistant":
+            continue
+        for part in message.get("content") or []:
+            if isinstance(part, dict) and part.get("type") == "text":
+                texts.append(part.get("text") or "")
+    return "\n".join(texts) if texts else stdout
+
+
 def _run_and_check(
     command: list[str],
     *,

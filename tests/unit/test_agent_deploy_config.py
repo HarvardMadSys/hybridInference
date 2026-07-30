@@ -254,12 +254,18 @@ def test_both_substrates_pin_the_same_agent_cli_versions():
     workflow = path.read_text()
     image = _DOCKERFILE.read_text()
 
-    for name in ("CLAUDE_CODE_VERSION", "CODEX_VERSION"):
+    for name in ("CLAUDE_CODE_VERSION", "CODEX_VERSION", "PI_VERSION"):
         pinned = re.search(rf"^ARG {name}=(\S+)$", image, re.MULTILINE)
         assert pinned, f"{name} must be pinned in the sandbox image"
         assert f'{name}: "{pinned.group(1)}"' in workflow, (
             f"{name} differs between the sandbox image and the Actions workflow"
         )
+
+    # pi is reached through a wrapper, so a substrate that installs the CLI
+    # but not the wrapper produces jobs that die at spawn with "binary
+    # missing" — both substrates must ship it.
+    assert "pi-freeinference" in image, "the sandbox image does not install the pi wrapper"
+    assert "pi-freeinference" in workflow, "the Actions runner does not install the pi wrapper"
 
 
 def test_the_runner_reads_the_bounds_the_overlay_configures(monkeypatch, compose: dict):
@@ -391,3 +397,86 @@ def test_compose_file_has_no_duplicate_keys():
 
     _StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicates)
     yaml.load(_COMPOSE.read_text(), Loader=_StrictLoader)
+
+
+_PI_WRAPPER = Path(__file__).resolve().parents[2] / "deploy/docker/pi-freeinference"
+
+
+def test_pi_wrapper_writes_the_provider_config_and_execs_pi(tmp_path):
+    """The wrapper turns its environment into pi's models.json, argv untouched.
+
+    Executed for real rather than read: a stub ``pi`` on PATH records the argv
+    it receives, HOME is a temp dir, and the assertions read the exact file the
+    real pi would read. pi ignores OPENAI_BASE_URL, so this file is the ONLY
+    thing standing between a job and api.openai.com.
+    """
+    import json as _json
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    record = tmp_path / "argv.json"
+    stub = stub_dir / "pi"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        f"open({str(record)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+    )
+    stub.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    prompt = 'prompt; with $(dangerous) `chars` "quoted"'
+    result = _subprocess.run(
+        [_sys.executable, str(_PI_WRAPPER), "--provider", "freeinference", "-p", prompt],
+        env={
+            "PATH": f"{stub_dir}:{_os.environ['PATH']}",
+            "HOME": str(home),
+            "OPENAI_BASE_URL": "http://backend:8080/v1",
+            "OPENAI_API_KEY": "ajt.attempt.key",
+            "PI_GATEWAY_MODEL": "glm-5.1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    provider = _json.loads((home / ".pi/agent/models.json").read_text())["providers"][
+        "freeinference"
+    ]
+    assert provider["baseUrl"] == "http://backend:8080/v1"
+    assert provider["apiKey"] == "ajt.attempt.key"
+    assert provider["api"] == "openai-completions"
+    assert provider["models"] == [{"id": "glm-5.1"}]
+    # argv passed through byte-for-byte: the shell-hostile prompt survived.
+    assert _json.loads(record.read_text()) == [
+        "--provider",
+        "freeinference",
+        "-p",
+        prompt,
+    ]
+
+
+def test_pi_wrapper_refuses_to_run_half_configured(tmp_path):
+    """Missing environment is a named refusal, not a job that dials OpenAI."""
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+
+    result = _subprocess.run(
+        [_sys.executable, str(_PI_WRAPPER), "-p", "hi"],
+        env={
+            "PATH": _os.environ["PATH"],
+            "HOME": str(tmp_path),
+            "OPENAI_BASE_URL": "http://backend:8080/v1",
+            # OPENAI_API_KEY and PI_GATEWAY_MODEL deliberately absent.
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 64
+    assert "OPENAI_API_KEY" in result.stderr

@@ -81,12 +81,19 @@ jobs:
           # depending on which one happens to claim it.
           CLAUDE_CODE_VERSION: "2.1.220"
           CODEX_VERSION: "0.145.0"
+          PI_VERSION: "0.73.1"
         run: |
           set -euo pipefail
           npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
           npm install -g "@openai/codex@${CODEX_VERSION}"
+          npm install -g "@mariozechner/pi-coding-agent@${PI_VERSION}"
+          # pi reaches the gateway via a generated provider config; the runner
+          # invokes this wrapper, which the container substrate bakes into its
+          # image and this substrate takes from the checkout.
+          sudo install -m 0755 deploy/docker/pi-freeinference /usr/local/bin/pi-freeinference
           claude --version
           codex --version
+          pi --version
 
       - name: Preflight (fail closed)
         env:
