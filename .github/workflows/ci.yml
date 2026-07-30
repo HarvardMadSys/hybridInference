@@ -285,7 +285,9 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
   alert-control-plane-check:
-    name: Alert Control Plane ${{ matrix.check.name }}
+    # No custom name: matrix expressions in a job name render unexpanded
+    # ("${{ matrix.… }}") when the classifier skips the job before the matrix
+    # expands. The default job-id naming stays clean in both states.
     needs: changes
     if: >-
       always() &&
@@ -332,7 +334,7 @@ jobs:
         run: ${{ matrix.check.command }}
 
   test:
-    name: Test (shard ${{ matrix.shard }}/4)
+    # No custom name: see alert-control-plane-check.
     needs: changes
     if: >-
       always() &&
@@ -627,7 +629,7 @@ jobs:
           uvx --python ${{ env.PYTHON_VERSION }} pip-audit --progress-spinner off --no-deps --disable-pip -r /tmp/audit-requirements.txt
 
   docker-build:
-    name: Docker Build (${{ matrix.image }})
+    # No custom name: see alert-control-plane-check.
     needs: changes
     # PRs build only affected images. Scheduled/manual runs build all images,
     # while branch pushes leave image publishing to the deployment pipeline.
