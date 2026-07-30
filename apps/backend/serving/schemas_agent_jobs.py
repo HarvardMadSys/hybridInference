@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -266,6 +268,60 @@ class AgentTerminalResponse(BaseModel):
     stderr: str
     exit_code: int
     cwd: str
+
+
+_MAX_TERMINAL_INPUT_BYTES = 64 * 1024
+_MAX_TERMINAL_INPUT_BASE64_CHARS = 4 * ((_MAX_TERMINAL_INPUT_BYTES + 2) // 3)
+
+
+class AgentTerminalSessionCreateRequest(BaseModel):
+    """Open one interactive PTY after an agent run has settled."""
+
+    rows: int = Field(24, ge=2, le=200)
+    cols: int = Field(80, ge=20, le=500)
+
+
+class AgentTerminalSessionInputRequest(BaseModel):
+    """Base64-encoded bytes to write to an interactive PTY."""
+
+    data: str = Field(..., min_length=1, max_length=_MAX_TERMINAL_INPUT_BASE64_CHARS)
+
+    @field_validator("data")
+    @classmethod
+    def valid_bounded_base64(cls, value: str) -> str:
+        """Reject malformed or oversized input before it reaches the broker."""
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("data must be valid base64") from exc
+        if len(decoded) > _MAX_TERMINAL_INPUT_BYTES:
+            raise ValueError("decoded terminal input must be at most 65536 bytes")
+        return value
+
+
+class AgentTerminalSessionResizeRequest(BaseModel):
+    """Resize an interactive PTY."""
+
+    rows: int = Field(..., ge=2, le=200)
+    cols: int = Field(..., ge=20, le=500)
+
+
+class AgentTerminalSessionResponse(BaseModel):
+    """Owner-safe metadata for one interactive terminal session."""
+
+    id: str = Field(..., pattern=r"^term_[A-Za-z0-9_-]{1,80}$")
+    shell: str = Field(..., min_length=1, max_length=4096)
+    state: str = Field(..., min_length=1, max_length=32)
+    cwd: str = Field(..., min_length=1, max_length=4096)
+    rows: int = Field(..., ge=2, le=200)
+    cols: int = Field(..., ge=20, le=500)
+    last_seq: int = Field(..., ge=0)
+
+
+class AgentTerminalSessionListResponse(BaseModel):
+    """Interactive terminal sessions retained by one live workspace."""
+
+    terminals: list[AgentTerminalSessionResponse] = Field(default_factory=list)
 
 
 class AgentGitChange(BaseModel):

@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import httpx
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 @dataclass
@@ -20,12 +24,43 @@ class WorkspaceBrokerError(RuntimeError):
         return self.message
 
 
+@dataclass
+class WorkspaceBrokerStream:
+    """An already-authorized broker response that the gateway must close."""
+
+    _client: httpx.AsyncClient
+    _response: httpx.Response
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self._response.aiter_raw()
+
+    async def aclose(self) -> None:
+        """Release both the streaming response and its dedicated client."""
+        try:
+            await self._response.aclose()
+        finally:
+            await self._client.aclose()
+
+
 class WorkspaceBrokerClient:
     """Talk to the broker without exposing its credential to the browser."""
 
     def __init__(self, base_url: str, token: str) -> None:
         self._base_url = base_url.rstrip("/")
         self._headers = {"X-Agent-Workspace-Token": token}
+
+    @staticmethod
+    def _response_error(response: httpx.Response) -> WorkspaceBrokerError:
+        """Read a bounded, owner-safe error from a completed broker response."""
+        message = "The live workspace request failed."
+        try:
+            body = response.json()
+            detail = body.get("detail") if isinstance(body, dict) else None
+            if isinstance(detail, str) and detail:
+                message = detail
+        except ValueError:
+            pass
+        return WorkspaceBrokerError(response.status_code, message)
 
     async def _request(
         self,
@@ -51,15 +86,7 @@ class WorkspaceBrokerClient:
                 503, "The live workspace is temporarily unavailable."
             ) from exc
         if response.is_error:
-            message = "The live workspace request failed."
-            try:
-                body = response.json()
-                detail = body.get("detail") if isinstance(body, dict) else None
-                if isinstance(detail, str) and detail:
-                    message = detail
-            except ValueError:
-                pass
-            raise WorkspaceBrokerError(response.status_code, message)
+            raise self._response_error(response)
         body = response.json()
         if not isinstance(body, dict):
             raise WorkspaceBrokerError(502, "The live workspace returned an invalid response.")
@@ -87,6 +114,76 @@ class WorkspaceBrokerClient:
             timeout=timeout_seconds + 10,
         )
 
+    async def create_terminal(self, workspace_id: str, *, rows: int, cols: int) -> dict[str, Any]:
+        """Open one interactive terminal in a durable workspace."""
+        return await self._request(
+            "POST", workspace_id, "terminals", json={"rows": rows, "cols": cols}
+        )
+
+    async def list_terminals(self, workspace_id: str) -> dict[str, Any]:
+        """List the interactive terminals retained by a workspace."""
+        return await self._request("GET", workspace_id, "terminals")
+
+    async def stream_terminal(
+        self, workspace_id: str, terminal_id: str, *, after: int
+    ) -> WorkspaceBrokerStream:
+        """Open and validate a terminal SSE stream before public headers are sent."""
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+        )
+        suffix = f"terminals/{quote(terminal_id, safe='')}/stream"
+        response: httpx.Response | None = None
+        ownership_transferred = False
+        try:
+            request = client.build_request(
+                "GET",
+                f"{self._base_url}/workspaces/{workspace_id}/{suffix}",
+                headers=self._headers,
+                params={"after": str(after)},
+            )
+            response = await client.send(request, stream=True)
+            if response.is_error:
+                await response.aread()
+                raise self._response_error(response)
+            ownership_transferred = True
+            return WorkspaceBrokerStream(client, response)
+        except WorkspaceBrokerError:
+            raise
+        except httpx.HTTPError as exc:
+            raise WorkspaceBrokerError(
+                503, "The live workspace is temporarily unavailable."
+            ) from exc
+        finally:
+            # ``asyncio.CancelledError`` is a BaseException, so exception-only
+            # cleanup leaks this dedicated client while a cancelled public SSE
+            # request is still connecting. Ownership moves to the returned
+            # stream only after a successful, validated response.
+            if not ownership_transferred:
+                try:
+                    if response is not None:
+                        await response.aclose()
+                finally:
+                    await client.aclose()
+
+    async def terminal_input(
+        self, workspace_id: str, terminal_id: str, *, data: str
+    ) -> dict[str, Any]:
+        """Write base64-encoded bytes to an interactive terminal."""
+        suffix = f"terminals/{quote(terminal_id, safe='')}/input"
+        return await self._request("POST", workspace_id, suffix, json={"data": data})
+
+    async def resize_terminal(
+        self, workspace_id: str, terminal_id: str, *, rows: int, cols: int
+    ) -> dict[str, Any]:
+        """Resize an interactive terminal."""
+        suffix = f"terminals/{quote(terminal_id, safe='')}/resize"
+        return await self._request("POST", workspace_id, suffix, json={"rows": rows, "cols": cols})
+
+    async def delete_terminal(self, workspace_id: str, terminal_id: str) -> dict[str, Any]:
+        """Kill an interactive terminal; the private operation is idempotent."""
+        suffix = f"terminals/{quote(terminal_id, safe='')}"
+        return await self._request("DELETE", workspace_id, suffix)
+
     async def git(self, workspace_id: str, base_sha: str | None = None) -> dict[str, Any]:
         """Read live status, base-relative diff, and recent commits."""
         params = {"base_sha": base_sha} if base_sha else None
@@ -102,4 +199,9 @@ def workspace_broker_from_env() -> WorkspaceBrokerClient | None:
     return WorkspaceBrokerClient(url, token)
 
 
-__all__ = ["WorkspaceBrokerClient", "WorkspaceBrokerError", "workspace_broker_from_env"]
+__all__ = [
+    "WorkspaceBrokerClient",
+    "WorkspaceBrokerError",
+    "WorkspaceBrokerStream",
+    "workspace_broker_from_env",
+]

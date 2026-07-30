@@ -6,6 +6,10 @@ composed command rather than trusted to a container runtime being installed.
 
 from __future__ import annotations
 
+import signal
+import subprocess
+from types import SimpleNamespace
+
 import pytest
 
 from serving.agent_jobs.egress import EgressPolicyError
@@ -15,6 +19,7 @@ from serving.agent_jobs.sandbox import (
     ProcessBackend,
     SandboxError,
     SandboxSpec,
+    _ContainerTerminalProcess,
     build_backend_from_env,
 )
 
@@ -44,6 +49,13 @@ def test_process_backend_executes_and_streams():
     assert lines == ["one", "two"]
 
 
+def test_process_backend_refuses_persistent_terminals_even_when_acknowledged():
+    """A local PTY cannot reliably kill job-control groups across macOS/Linux."""
+    backend = ProcessBackend(acknowledged_unsafe=True)
+    with pytest.raises(SandboxError, match="container or kata"):
+        backend.spawn_terminal(_SPEC, rows=24, cols=80)
+
+
 def test_container_command_carries_the_isolation_flags():
     """The composed docker command pins the boundary we claim to have."""
     command = ContainerBackend(image="img:1", network="agent-net").build_command(_SPEC)
@@ -62,6 +74,187 @@ def test_container_command_carries_the_isolation_flags():
     assert "--network agent-net" in joined
     # The agent's argv comes after the image, never before it.
     assert command[command.index("img:1") + 1 :] == ["claude", "-p", "hi"]
+
+
+def test_container_terminal_keeps_isolation_and_adds_a_named_tty():
+    """Terminal management must not weaken the ordinary sandbox boundary."""
+    backend = ContainerBackend(image="img:1", network="agent-net")
+    command = backend.build_terminal_command(_SPEC, name="hyi-terminal-test")
+    joined = " ".join(command)
+
+    assert command[:4] == ["docker", "run", "--rm", "--interactive"]
+    assert "--tty" in command
+    assert command[command.index("--name") + 1] == "hyi-terminal-test"
+    assert command.index("--name") < command.index("img:1")
+    assert "type=bind,source=/tmp/wd,target=/workspace" in joined
+    assert "--user 10001:10001" in joined
+    assert "--network agent-net" in joined
+    assert "--cap-drop ALL" in joined
+    assert "--security-opt no-new-privileges" in joined
+    assert "--pids-limit 512" in joined
+    assert "--label org.hybridinference.agent-terminal=true" in joined
+    assert "org.hybridinference.agent-terminal-owner=" in joined
+    assert command[command.index("img:1") + 1 :] == ["claude", "-p", "hi"]
+
+
+@pytest.mark.parametrize(
+    "failure", [OSError("docker unavailable"), subprocess.TimeoutExpired([], 15)]
+)
+def test_container_terminal_resize_wraps_process_failures(monkeypatch, failure):
+    """Docker invocation failures stay inside the sandbox error contract."""
+
+    class _AttachedClient:
+        pid = 1234
+        stdout = None
+
+        @staticmethod
+        def poll():
+            return None
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fail)
+    terminal = _ContainerTerminalProcess(
+        _AttachedClient(), docker_binary="docker", container_name="hyi-terminal-test"
+    )
+
+    with pytest.raises(SandboxError, match="cannot be resized"):
+        terminal.resize(30, 100)
+
+
+def test_container_terminal_kill_always_kills_client_and_force_removes(monkeypatch):
+    """A timed-out Docker kill cannot skip either fallback cleanup step."""
+    calls: list[list[str]] = []
+    killed_groups: list[tuple[int, int]] = []
+
+    class _AttachedClient:
+        pid = 4321
+        stdout = None
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = -signal.SIGKILL
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -signal.SIGKILL
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1] == "kill":
+            raise subprocess.TimeoutExpired(argv, 15)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "serving.agent_jobs.sandbox.os.killpg",
+        lambda pid, sig: killed_groups.append((pid, sig)),
+    )
+    terminal = _ContainerTerminalProcess(
+        _AttachedClient(), docker_binary="docker", container_name="hyi-terminal-test"
+    )
+
+    terminal.kill()
+    terminal.kill()
+
+    assert calls == [
+        ["docker", "kill", "hyi-terminal-test"],
+        ["docker", "rm", "--force", "hyi-terminal-test"],
+    ]
+    assert killed_groups == [(4321, signal.SIGKILL)]
+
+
+def test_container_terminal_kill_failure_can_be_retried(monkeypatch):
+    """Cleanup is not marked complete until force-removal is confirmed."""
+    calls: list[list[str]] = []
+    remove_attempts = 0
+
+    class _AttachedClient:
+        pid = 4321
+        stdout = None
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = -signal.SIGKILL
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -signal.SIGKILL
+
+    def fake_run(argv, **kwargs):
+        nonlocal remove_attempts
+        calls.append(argv)
+        if argv[1] == "rm":
+            remove_attempts += 1
+            if remove_attempts == 1:
+                return SimpleNamespace(returncode=1, stdout="", stderr="daemon unavailable")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("serving.agent_jobs.sandbox.os.killpg", lambda *_args: None)
+    terminal = _ContainerTerminalProcess(
+        _AttachedClient(), docker_binary="docker", container_name="hyi-terminal-test"
+    )
+
+    with pytest.raises(SandboxError, match="cleanup could not be confirmed"):
+        terminal.kill()
+    terminal.kill()
+    terminal.kill()
+
+    assert calls == [
+        ["docker", "kill", "hyi-terminal-test"],
+        ["docker", "rm", "--force", "hyi-terminal-test"],
+        ["docker", "kill", "hyi-terminal-test"],
+        ["docker", "rm", "--force", "hyi-terminal-test"],
+    ]
+
+
+def test_terminal_broker_cleanup_is_stable_and_scoped_to_one_workdir(monkeypatch, tmp_path):
+    """Restart cleanup targets only containers owned by this workdir root."""
+    calls: list[list[str]] = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="dead1\ndead2\n", stderr=""),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ]
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return results.pop(0)
+
+    monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fake_run)
+    backend = ContainerBackend(image="img:1", network="agent-net")
+    backend.prepare_terminal_broker(str(tmp_path))
+    command = backend.build_terminal_command(_SPEC, name="hyi-terminal-test")
+    owner_label = next(
+        value for value in command if value.startswith("org.hybridinference.agent-terminal-owner=")
+    )
+    restarted = ContainerBackend(image="img:1", network="agent-net")
+    restarted.prepare_terminal_broker(str(tmp_path))
+    restarted_command = restarted.build_terminal_command(_SPEC, name="hyi-terminal-test-2")
+    restarted_owner_label = next(
+        value
+        for value in restarted_command
+        if value.startswith("org.hybridinference.agent-terminal-owner=")
+    )
+
+    assert calls[0][:5] == ["docker", "container", "ls", "--all", "--quiet"]
+    assert calls[0][-4:] == [
+        "--filter",
+        "label=org.hybridinference.agent-terminal=true",
+        "--filter",
+        f"label={owner_label}",
+    ]
+    assert calls[1] == ["docker", "rm", "--force", "dead1", "dead2"]
+    assert owner_label.startswith("org.hybridinference.agent-terminal-owner=workdir-")
+    assert restarted_owner_label == owner_label
 
 
 def test_plain_container_is_not_vm_isolated():

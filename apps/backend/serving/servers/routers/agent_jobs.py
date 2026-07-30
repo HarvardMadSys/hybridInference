@@ -33,7 +33,7 @@ import re
 import secrets
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
 
 from serving.agent_jobs.egress import (
@@ -93,6 +93,11 @@ from serving.schemas_agent_jobs import (
     AgentJobResponse,
     AgentTerminalRequest,
     AgentTerminalResponse,
+    AgentTerminalSessionCreateRequest,
+    AgentTerminalSessionInputRequest,
+    AgentTerminalSessionListResponse,
+    AgentTerminalSessionResizeRequest,
+    AgentTerminalSessionResponse,
     AgentThreadArchiveResponse,
     AgentThreadMessageResponse,
     AgentThreadResponse,
@@ -156,6 +161,7 @@ _EVENT_PAGE_SIZE = 500
 # future non-HTTP writer) must not be able to break out of the ``event:`` field
 # and inject frames into the owner's stream.
 _SAFE_EVENT_TYPE = re.compile(EVENT_TYPE_PATTERN)
+_TERMINAL_ID_PATTERN = r"^term_[A-Za-z0-9_-]{1,80}$"
 
 # The clone credential is narrowed at the point it is minted, not merely by
 # convention: the App also holds `contents: write` for the publisher, and an
@@ -1213,11 +1219,26 @@ def _workspace_id(job: dict[str, Any]) -> str:
 
 def _workspace_broker_http_error(exc: WorkspaceBrokerError) -> HTTPException:
     """Map private broker failures onto bounded owner-facing errors."""
-    status = exc.status_code if exc.status_code in {400, 404, 408, 409, 413} else 503
+    status = exc.status_code if exc.status_code in {400, 404, 408, 409, 413, 429} else 503
     return HTTPException(
         status_code=status,
         detail={"error": {"type": "workspace_unavailable", "message": exc.message}},
     )
+
+
+def _terminal_broker_http_error(exc: WorkspaceBrokerError) -> HTTPException:
+    """Preserve terminal errors while presenting a missing worktree as a conflict."""
+    if exc.status_code == 404 and exc.message == "workspace is not materialized":
+        return HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "type": "workspace_unavailable",
+                    "message": "This older job has no live terminal workspace.",
+                }
+            },
+        )
+    return _workspace_broker_http_error(exc)
 
 
 async def _require_workspace_entitlement(
@@ -1240,6 +1261,57 @@ async def _require_workspace_entitlement(
             status_code=403,
             detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
         ) from exc
+
+
+async def _terminal_owner_workspace(
+    *,
+    job_id: str,
+    user: dict[str, Any],
+    store: AgentJobStore | None,
+    app_credentials: Any | None,
+    require_settled: bool,
+    recheck_entitlement: bool = True,
+) -> tuple[dict[str, Any], Any]:
+    """Authorize one terminal operation and return its private broker.
+
+    Creating or attaching to a terminal rechecks repository entitlement. Once
+    attached, the opaque terminal id acts as a short-lived capability scoped
+    to the already-authenticated job owner. Input and resize must not enumerate
+    GitHub installations for every keystroke; they still recheck ownership,
+    settled state and the broker-side workspace/session binding. Delete skips
+    entitlement as well so a revoked owner can always clean up a live process.
+    """
+    job_store = _require_store(store)
+    job = await _owned_job(job_store, job_id, user)
+    if require_settled and job["state"] not in TERMINAL_STATES:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "type": "terminal_not_ready",
+                    "message": "Interactive terminals are available after the agent run finishes.",
+                }
+            },
+        )
+    if recheck_entitlement:
+        await _require_workspace_entitlement(
+            job=job,
+            user=user,
+            store=job_store,
+            app_credentials=app_credentials,
+        )
+    broker = workspace_broker_from_env()
+    if broker is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "type": "workspace_unavailable",
+                    "message": "This deployment has no live workspace broker.",
+                }
+            },
+        )
+    return job, broker
 
 
 @router.get("/jobs/{job_id}/files", response_model=AgentWorkspaceResponse)
@@ -1481,6 +1553,192 @@ async def run_agent_job_terminal_command(
                 detail="This older job has no live terminal workspace.",
             ) from exc
         raise _workspace_broker_http_error(exc) from exc
+
+
+@router.post(
+    "/jobs/{job_id}/terminals",
+    response_model=AgentTerminalSessionResponse,
+)
+async def create_agent_job_terminal(
+    job_id: str,
+    body: AgentTerminalSessionCreateRequest,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> AgentTerminalSessionResponse:
+    """Open an interactive PTY after the agent has released its workspace."""
+    job, broker = await _terminal_owner_workspace(
+        job_id=job_id,
+        user=user,
+        store=store,
+        app_credentials=app_credentials,
+        require_settled=True,
+    )
+    try:
+        return AgentTerminalSessionResponse(
+            **(
+                await broker.create_terminal(
+                    _workspace_id(job),
+                    rows=body.rows,
+                    cols=body.cols,
+                )
+            )
+        )
+    except WorkspaceBrokerError as exc:
+        raise _terminal_broker_http_error(exc) from exc
+
+
+@router.get(
+    "/jobs/{job_id}/terminals",
+    response_model=AgentTerminalSessionListResponse,
+)
+async def list_agent_job_terminals(
+    job_id: str,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> AgentTerminalSessionListResponse:
+    """List interactive terminals, including exited sessions kept for replay."""
+    job, broker = await _terminal_owner_workspace(
+        job_id=job_id,
+        user=user,
+        store=store,
+        app_credentials=app_credentials,
+        require_settled=False,
+    )
+    try:
+        return AgentTerminalSessionListResponse(**(await broker.list_terminals(_workspace_id(job))))
+    except WorkspaceBrokerError as exc:
+        raise _terminal_broker_http_error(exc) from exc
+
+
+@router.get("/jobs/{job_id}/terminals/{terminal_id}/stream")
+async def stream_agent_job_terminal(
+    job_id: str,
+    request: Request,
+    terminal_id: str = Path(..., pattern=_TERMINAL_ID_PATTERN),
+    after: int = Query(0, ge=0, le=2**63 - 1),
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> StreamingResponse:
+    """Relay a resumable private PTY stream without exposing its broker token."""
+    job, broker = await _terminal_owner_workspace(
+        job_id=job_id,
+        user=user,
+        store=store,
+        app_credentials=app_credentials,
+        require_settled=False,
+    )
+    try:
+        upstream = await broker.stream_terminal(_workspace_id(job), terminal_id, after=after)
+    except WorkspaceBrokerError as exc:
+        raise _terminal_broker_http_error(exc) from exc
+
+    async def relay():
+        try:
+            async for chunk in upstream:
+                if await request.is_disconnected():
+                    break
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    return StreamingResponse(
+        relay(),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
+
+@router.post(
+    "/jobs/{job_id}/terminals/{terminal_id}/input",
+    response_model=AgentTerminalSessionResponse,
+)
+async def write_agent_job_terminal_input(
+    job_id: str,
+    body: AgentTerminalSessionInputRequest,
+    terminal_id: str = Path(..., pattern=_TERMINAL_ID_PATTERN),
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> AgentTerminalSessionResponse:
+    """Write bounded base64 input to an active interactive terminal."""
+    job, broker = await _terminal_owner_workspace(
+        job_id=job_id,
+        user=user,
+        store=store,
+        app_credentials=app_credentials,
+        require_settled=True,
+        recheck_entitlement=False,
+    )
+    try:
+        return AgentTerminalSessionResponse(
+            **(await broker.terminal_input(_workspace_id(job), terminal_id, data=body.data))
+        )
+    except WorkspaceBrokerError as exc:
+        raise _terminal_broker_http_error(exc) from exc
+
+
+@router.post(
+    "/jobs/{job_id}/terminals/{terminal_id}/resize",
+    response_model=AgentTerminalSessionResponse,
+)
+async def resize_agent_job_terminal(
+    job_id: str,
+    body: AgentTerminalSessionResizeRequest,
+    terminal_id: str = Path(..., pattern=_TERMINAL_ID_PATTERN),
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> AgentTerminalSessionResponse:
+    """Resize an active interactive terminal."""
+    job, broker = await _terminal_owner_workspace(
+        job_id=job_id,
+        user=user,
+        store=store,
+        app_credentials=app_credentials,
+        require_settled=True,
+        recheck_entitlement=False,
+    )
+    try:
+        return AgentTerminalSessionResponse(
+            **(
+                await broker.resize_terminal(
+                    _workspace_id(job), terminal_id, rows=body.rows, cols=body.cols
+                )
+            )
+        )
+    except WorkspaceBrokerError as exc:
+        raise _terminal_broker_http_error(exc) from exc
+
+
+@router.delete(
+    "/jobs/{job_id}/terminals/{terminal_id}",
+    response_model=AgentTerminalSessionResponse,
+)
+async def delete_agent_job_terminal(
+    job_id: str,
+    terminal_id: str = Path(..., pattern=_TERMINAL_ID_PATTERN),
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> AgentTerminalSessionResponse:
+    """Idempotently kill an interactive terminal, even while a new job runs."""
+    job, broker = await _terminal_owner_workspace(
+        job_id=job_id,
+        user=user,
+        store=store,
+        app_credentials=app_credentials,
+        require_settled=False,
+        recheck_entitlement=False,
+    )
+    try:
+        return AgentTerminalSessionResponse(
+            **(await broker.delete_terminal(_workspace_id(job), terminal_id))
+        )
+    except WorkspaceBrokerError as exc:
+        raise _terminal_broker_http_error(exc) from exc
 
 
 @router.get("/jobs/{job_id}/git", response_model=AgentGitWorkspaceResponse)
