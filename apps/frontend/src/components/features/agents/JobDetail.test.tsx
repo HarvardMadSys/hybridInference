@@ -6,11 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   cancelAgentJob,
+  createAgentTerminal,
+  deleteAgentTerminal,
   followUpAgentJob,
   forkAgentJob,
   getAgentJobFiles,
   getAgentJobGit,
-  runAgentTerminalCommand,
+  listAgentTerminals,
+  resizeAgentTerminal,
+  streamAgentTerminal,
+  writeAgentTerminalInput,
   writeAgentJobFile,
 } from '@/lib/api/agents';
 
@@ -25,11 +30,16 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/lib/api/agents', () => ({
   cancelAgentJob: vi.fn(),
+  createAgentTerminal: vi.fn(),
+  deleteAgentTerminal: vi.fn(),
   followUpAgentJob: vi.fn(),
   forkAgentJob: vi.fn(),
   getAgentJobFiles: vi.fn(),
   getAgentJobGit: vi.fn(),
-  runAgentTerminalCommand: vi.fn(),
+  listAgentTerminals: vi.fn(),
+  resizeAgentTerminal: vi.fn(),
+  streamAgentTerminal: vi.fn(),
+  writeAgentTerminalInput: vi.fn(),
   writeAgentJobFile: vi.fn(),
 }));
 
@@ -106,6 +116,11 @@ describe('JobDetail', () => {
     vi.mocked(followUpAgentJob).mockReset();
     vi.mocked(forkAgentJob).mockReset();
     vi.mocked(getAgentJobFiles).mockReset();
+    vi.mocked(getAgentJobFiles).mockResolvedValue({
+      path: '',
+      kind: 'directory',
+      entries: [],
+    });
     vi.mocked(getAgentJobGit).mockReset();
     vi.mocked(getAgentJobGit).mockResolvedValue({
       available: false,
@@ -114,7 +129,13 @@ describe('JobDetail', () => {
       patch: '',
       commits: [],
     });
-    vi.mocked(runAgentTerminalCommand).mockReset();
+    vi.mocked(createAgentTerminal).mockReset();
+    vi.mocked(deleteAgentTerminal).mockReset();
+    vi.mocked(listAgentTerminals).mockReset();
+    vi.mocked(listAgentTerminals).mockResolvedValue([]);
+    vi.mocked(resizeAgentTerminal).mockReset();
+    vi.mocked(streamAgentTerminal).mockReset();
+    vi.mocked(writeAgentTerminalInput).mockReset();
     vi.mocked(writeAgentJobFile).mockReset();
     sessionStorage.clear();
   });
@@ -253,7 +274,7 @@ describe('JobDetail', () => {
     expect(task).toBeInTheDocument();
     expect(task).toHaveClass('hidden', 'lg:flex', 'overflow-y-auto');
     expect(screen.getByRole('region', { name: 'Job workspace' })).toHaveClass(
-      'overflow-y-auto',
+      'overflow-hidden',
       'lg:border-l',
     );
 
@@ -301,43 +322,27 @@ describe('JobDetail', () => {
     await waitFor(() => expect(getAgentJobGit).toHaveBeenCalledWith('ajob_1'));
   });
 
-  it('keeps the agent transcript and executes commands in the workspace terminal', async () => {
-    vi.mocked(runAgentTerminalCommand).mockResolvedValue({
-      output: 'README.md\n',
-      stderr: '',
-      exit_code: 0,
-      cwd: '/workspace',
-    });
-    vi.mocked(getAgentJobFiles).mockResolvedValue({
-      path: '',
-      kind: 'directory',
-      entries: [],
-    });
-    render(<JobDetail job={makeJob()} />);
+  it('keeps agent commands out of the user terminal and locks it while the run is active', async () => {
+    const view = render(<JobDetail job={makeJob()} />);
 
     openWorkspace();
     fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
 
     const terminal = screen.getByLabelText('Workspace terminal');
-    expect(terminal).toHaveTextContent('$ pytest -q');
-    expect(terminal).toHaveTextContent('2 passed');
-    const input = within(terminal).getByRole('textbox', { name: 'Terminal command' });
-    fireEvent.change(input, { target: { value: 'ls' } });
-    fireEvent.submit(input.closest('form')!);
+    expect(listAgentTerminals).not.toHaveBeenCalled();
+    expect(terminal).not.toHaveTextContent('pytest -q');
+    expect(terminal).not.toHaveTextContent('2 passed');
+    expect(terminal).toHaveTextContent('Terminal input is available after the agent finishes');
+    expect(
+      within(terminal).queryByRole('button', { name: 'New terminal' }),
+    ).not.toBeInTheDocument();
 
-    await waitFor(() =>
-      expect(runAgentTerminalCommand).toHaveBeenCalledWith('ajob_1', 'ls', '/workspace'),
-    );
-    expect(await within(terminal).findByText('README.md')).toBeInTheDocument();
-    expect(terminal).not.toHaveTextContent('Read only');
+    view.rerender(<JobDetail job={makeJob({ state: 'done' })} />);
+    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledWith('ajob_1'));
 
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
-    expect(screen.getByLabelText('Workspace terminal')).toHaveTextContent('README.md');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close workspace' }));
-    openWorkspace();
-    expect(screen.getByLabelText('Workspace terminal')).toHaveTextContent('README.md');
+    expect(listAgentTerminals).toHaveBeenCalledTimes(1);
   });
 
   it('loads Files lazily and safely refuses to preview a symlink', async () => {

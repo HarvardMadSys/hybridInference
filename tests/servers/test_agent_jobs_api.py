@@ -8,6 +8,7 @@ own concurrency semantics are pinned separately by the ``dbtest`` suite.
 
 from __future__ import annotations
 
+import base64
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -1072,8 +1073,26 @@ async def test_other_users_jobs_are_404_not_403(client: AsyncClient, store: Fake
         f"/v1/agent/jobs/{foreign['id']}/terminal",
         json={"command": "pwd", "cwd": "/workspace"},
     )
+    terminal_session_requests = [
+        await client.post(
+            f"/v1/agent/jobs/{foreign['id']}/terminals",
+            json={"rows": 24, "cols": 80},
+        ),
+        await client.get(f"/v1/agent/jobs/{foreign['id']}/terminals"),
+        await client.get(f"/v1/agent/jobs/{foreign['id']}/terminals/term_1/stream"),
+        await client.post(
+            f"/v1/agent/jobs/{foreign['id']}/terminals/term_1/input",
+            json={"data": "bHMK"},
+        ),
+        await client.post(
+            f"/v1/agent/jobs/{foreign['id']}/terminals/term_1/resize",
+            json={"rows": 30, "cols": 100},
+        ),
+        await client.delete(f"/v1/agent/jobs/{foreign['id']}/terminals/term_1"),
+    ]
     assert write.status_code == 404
     assert terminal.status_code == 404
+    assert all(response.status_code == 404 for response in terminal_session_requests)
     cancel = await client.post(f"/v1/agent/jobs/{foreign['id']}/cancel")
     assert cancel.status_code == 404
     for method in (client.post, client.delete):
@@ -1258,6 +1277,308 @@ async def test_live_workspace_routes_use_the_job_broker(store: FakeAgentJobStore
         ("terminal", workspace_id, "pwd", "/workspace"),
         ("git", workspace_id, store.jobs[job_id].get("base_sha")),
     ]
+
+
+def _terminal_session_descriptor(*, state: str = "running") -> dict[str, Any]:
+    return {
+        "id": "term_1",
+        "shell": "/bin/bash",
+        "state": state,
+        "cwd": "/workspace",
+        "rows": 24,
+        "cols": 80,
+        "last_seq": 2,
+    }
+
+
+class _FiniteTerminalStream:
+    def __init__(self, *chunks: bytes) -> None:
+        self.chunks = chunks
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _TerminalSessionBroker:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, ...]] = []
+        self.stream = _FiniteTerminalStream(
+            b'event: output\ndata: {"seq":1,"data":"aGk="}\n\n',
+            b'event: exit\ndata: {"seq":2,"exit_code":0}\n\n',
+        )
+
+    async def create_terminal(self, workspace_id: str, *, rows: int, cols: int):
+        self.calls.append(("create", workspace_id, rows, cols))
+        return _terminal_session_descriptor()
+
+    async def list_terminals(self, workspace_id: str):
+        self.calls.append(("list", workspace_id))
+        return {"terminals": [_terminal_session_descriptor()]}
+
+    async def stream_terminal(self, workspace_id: str, terminal_id: str, *, after: int):
+        self.calls.append(("stream", workspace_id, terminal_id, after))
+        return self.stream
+
+    async def terminal_input(self, workspace_id: str, terminal_id: str, *, data: str):
+        self.calls.append(("input", workspace_id, terminal_id, data))
+        return _terminal_session_descriptor()
+
+    async def resize_terminal(self, workspace_id: str, terminal_id: str, *, rows: int, cols: int):
+        self.calls.append(("resize", workspace_id, terminal_id, rows, cols))
+        return {**_terminal_session_descriptor(), "rows": rows, "cols": cols}
+
+    async def delete_terminal(self, workspace_id: str, terminal_id: str):
+        self.calls.append(("delete", workspace_id, terminal_id))
+        return _terminal_session_descriptor(state="closed")
+
+
+async def test_interactive_terminal_routes_proxy_owner_session_lifecycle(
+    store: FakeAgentJobStore, monkeypatch
+):
+    """The gateway keeps broker credentials private while proxying PTY controls."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        store.jobs[job_id]["state"] = "succeeded"
+
+        created = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+        listed = await local_client.get(f"/v1/agent/jobs/{job_id}/terminals")
+        wrote = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": base64.b64encode(b"ls\n").decode()},
+        )
+        resized = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/resize",
+            json={"rows": 40, "cols": 120},
+        )
+        killed = await local_client.delete(f"/v1/agent/jobs/{job_id}/terminals/term_1")
+
+    assert created.status_code == 200
+    assert created.json()["id"] == "term_1"
+    assert listed.json() == {"terminals": [_terminal_session_descriptor()]}
+    assert wrote.status_code == 200
+    assert resized.json()["rows"] == 40
+    assert resized.json()["cols"] == 120
+    assert killed.status_code == 200
+    assert killed.json()["state"] == "closed"
+    assert broker.calls == [
+        ("create", job_id, 24, 80),
+        ("list", job_id),
+        ("input", job_id, "term_1", "bHMK"),
+        ("resize", job_id, "term_1", 40, 120),
+        ("delete", job_id, "term_1"),
+    ]
+
+
+async def test_terminal_controls_use_the_attached_session_capability(
+    store: FakeAgentJobStore, monkeypatch
+):
+    """Typing and resize stay local instead of enumerating GitHub per keypress."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+
+    async def unexpected_entitlement_recheck(**_kwargs):
+        raise AssertionError("attached terminal controls must not call external entitlement")
+
+    monkeypatch.setattr(
+        agent_jobs_router,
+        "_require_workspace_entitlement",
+        unexpected_entitlement_recheck,
+    )
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        store.jobs[job_id]["state"] = "succeeded"
+        wrote = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "eA=="},
+        )
+        resized = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/resize",
+            json={"rows": 30, "cols": 100},
+        )
+        killed = await local_client.delete(f"/v1/agent/jobs/{job_id}/terminals/term_1")
+
+    assert wrote.status_code == 200
+    assert resized.status_code == 200
+    assert killed.status_code == 200
+    assert broker.calls == [
+        ("input", job_id, "term_1", "eA=="),
+        ("resize", job_id, "term_1", 30, 100),
+        ("delete", job_id, "term_1"),
+    ]
+
+
+async def test_interactive_terminal_stream_is_relayed_byte_for_byte(
+    store: FakeAgentJobStore, monkeypatch
+):
+    """Output and exit SSE frames cross the gateway without re-encoding."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        response = await local_client.get(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/stream",
+            params={"after": 7},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.content == (
+        b'event: output\ndata: {"seq":1,"data":"aGk="}\n\n'
+        b'event: exit\ndata: {"seq":2,"exit_code":0}\n\n'
+    )
+    assert broker.calls == [("stream", job_id, "term_1", 7)]
+    assert broker.stream.closed is True
+
+
+async def test_terminal_creation_input_and_resize_require_a_settled_job(
+    store: FakeAgentJobStore, monkeypatch
+):
+    """A user cannot race an agent by opening or mutating a PTY while it runs."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        store.jobs[job_id]["state"] = "running"
+        create = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+        write = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "bHMK"},
+        )
+        resize = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/resize",
+            json={"rows": 30, "cols": 100},
+        )
+        listed = await local_client.get(f"/v1/agent/jobs/{job_id}/terminals")
+        killed_once = await local_client.delete(f"/v1/agent/jobs/{job_id}/terminals/term_1")
+        killed_twice = await local_client.delete(f"/v1/agent/jobs/{job_id}/terminals/term_1")
+
+    for response in (create, write, resize):
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"]["type"] == "terminal_not_ready"
+    assert listed.status_code == 200
+    assert killed_once.status_code == 200
+    assert killed_twice.status_code == 200
+    assert broker.calls == [
+        ("list", job_id),
+        ("delete", job_id, "term_1"),
+        ("delete", job_id, "term_1"),
+    ]
+
+
+async def test_terminal_routes_recheck_entitlement_before_contacting_broker(
+    store: FakeAgentJobStore, monkeypatch
+):
+    """An owned legacy row is not enough to access a now-unentitled worktree."""
+    job = await store.create_job(
+        user_id=_OWNER,
+        repo="someone/private",
+        task_prompt="old task",
+        runtime="claude-code",
+        model="glm-5.1",
+    )
+    job["state"] = "succeeded"
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        response = await local_client.post(
+            f"/v1/agent/jobs/{job['id']}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"]["type"] == "repo_not_allowed"
+    assert broker.calls == []
+
+
+async def test_terminal_routes_report_missing_broker_and_workspace_as_conflicts(
+    store: FakeAgentJobStore, monkeypatch
+):
+    """Legacy deployments and pre-workspace jobs get actionable 409 responses."""
+    from serving.agent_jobs.workspace_broker_client import WorkspaceBrokerError
+
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        store.jobs[job_id]["state"] = "succeeded"
+        monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: None)
+        missing_broker = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+
+        class MissingWorkspaceBroker(_TerminalSessionBroker):
+            async def create_terminal(self, workspace_id: str, *, rows: int, cols: int):
+                raise WorkspaceBrokerError(404, "workspace is not materialized")
+
+        monkeypatch.setattr(
+            agent_jobs_router,
+            "workspace_broker_from_env",
+            lambda: MissingWorkspaceBroker(),
+        )
+        missing_workspace = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+
+    assert missing_broker.status_code == 409
+    assert missing_broker.json()["detail"]["error"]["type"] == "workspace_unavailable"
+    assert missing_workspace.status_code == 409
+    assert missing_workspace.json()["detail"]["error"]["type"] == "workspace_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("path", "method", "body"),
+    [
+        ("terminals", "post", {"rows": 1, "cols": 80}),
+        ("terminals", "post", {"rows": 24, "cols": 501}),
+        ("terminals/term_1/input", "post", {"data": "not base64"}),
+        (
+            "terminals/term_1/input",
+            "post",
+            {"data": base64.b64encode(b"x" * (64 * 1024 + 1)).decode()},
+        ),
+        ("terminals/term_1/resize", "post", {"rows": 201, "cols": 80}),
+        ("terminals/term_1/resize", "post", {"rows": 24, "cols": 19}),
+        ("terminals/term_1/stream?after=-1", "get", None),
+        (f"terminals/term_1/stream?after={2**63}", "get", None),
+    ],
+)
+async def test_interactive_terminal_request_bounds(
+    client: AsyncClient, path: str, method: str, body: dict[str, Any] | None
+):
+    """PTY dimensions, input bytes, and replay cursors are bounded at the gateway."""
+    job_id = await _create_job(client)
+    url = f"/v1/agent/jobs/{job_id}/{path}"
+    if body is None:
+        response = await getattr(client, method)(url)
+    else:
+        response = await getattr(client, method)(url, json=body)
+
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(

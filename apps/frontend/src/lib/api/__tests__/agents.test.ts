@@ -10,6 +10,8 @@ import {
   archiveAgentJob,
   connectGitHub,
   connectGitLab,
+  createAgentTerminal,
+  deleteAgentTerminal,
   disconnectAgentIntegration,
   followUpAgentJob,
   forkAgentJob,
@@ -18,10 +20,13 @@ import {
   getAgentJobFiles,
   getAgentJobGit,
   getAgentJobThread,
+  listAgentTerminals,
   listAgentJobs,
+  resizeAgentTerminal,
   restoreAgentJob,
-  runAgentTerminalCommand,
+  streamAgentTerminal,
   streamAgentJob,
+  writeAgentTerminalInput,
   writeAgentJobFile,
 } from '../agents';
 import * as client from '../client';
@@ -205,30 +210,202 @@ describe('agents api', () => {
     );
   });
 
-  it('runs a workspace terminal command and loads live Git state', async () => {
+  it('manages PTY sessions and loads live Git state', async () => {
+    const terminal = {
+      id: 'term/1',
+      shell: 'zsh',
+      state: 'running',
+      cwd: '/workspace',
+      rows: 24,
+      cols: 80,
+      last_seq: 0,
+    };
     fetchWithAuth
-      .mockResolvedValueOnce(jsonResponse({ output: 'ok', stderr: '', exit_code: 0, cwd: '/' }))
+      .mockResolvedValueOnce(jsonResponse({ terminals: [terminal] }))
+      .mockResolvedValueOnce(jsonResponse(terminal))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValueOnce(
         jsonResponse({ available: true, branch: 'agent/x', changes: [], patch: '', commits: [] }),
       );
 
-    await runAgentTerminalCommand('ajob_1', 'pwd', '/workspace');
+    await expect(listAgentTerminals('job/one')).resolves.toEqual([terminal]);
+    await createAgentTerminal('job/one');
+    await writeAgentTerminalInput('job/one', 'term/1', 'λ\r');
+    await resizeAgentTerminal('job/one', 'term/1', 30, 100);
+    await deleteAgentTerminal('job/one', 'term/1');
     await getAgentJobGit('ajob_1');
 
     expect(fetchWithAuth).toHaveBeenNthCalledWith(
       1,
       expect.any(String),
-      '/v1/agent/jobs/ajob_1/terminal',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ command: 'pwd', cwd: '/workspace' }),
-      }),
+      '/v1/agent/jobs/job%2Fone/terminals',
     );
     expect(fetchWithAuth).toHaveBeenNthCalledWith(
       2,
       expect.any(String),
+      '/v1/agent/jobs/job%2Fone/terminals',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ rows: 24, cols: 80 }),
+      }),
+    );
+    expect(fetchWithAuth).toHaveBeenNthCalledWith(
+      3,
+      expect.any(String),
+      '/v1/agent/jobs/job%2Fone/terminals/term%2F1/input',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ data: 'zrsN' }) }),
+    );
+    expect(fetchWithAuth).toHaveBeenNthCalledWith(
+      4,
+      expect.any(String),
+      '/v1/agent/jobs/job%2Fone/terminals/term%2F1/resize',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ rows: 30, cols: 100 }) }),
+    );
+    expect(fetchWithAuth).toHaveBeenNthCalledWith(
+      5,
+      expect.any(String),
+      '/v1/agent/jobs/job%2Fone/terminals/term%2F1',
+      { method: 'DELETE' },
+    );
+    expect(fetchWithAuth).toHaveBeenNthCalledWith(
+      6,
+      expect.any(String),
       '/v1/agent/jobs/ajob_1/git',
     );
+  });
+
+  it('chunks large terminal pastes on complete UTF-8 characters', async () => {
+    fetchWithAuth.mockResolvedValue(new Response(null, { status: 204 }));
+    const pasted = `${'a'.repeat(65_535)}λ🙂z`;
+
+    await writeAgentTerminalInput('job-1', 'term-1', pasted);
+
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+    const decoded = fetchWithAuth.mock.calls.map((call: unknown[]) => {
+      const init = call[2] as RequestInit;
+      const encoded = (JSON.parse(String(init.body)) as { data: string }).data;
+      const bytes = Uint8Array.from(Buffer.from(encoded, 'base64'));
+      expect(bytes.byteLength).toBeLessThanOrEqual(64 * 1024);
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    });
+    expect(decoded.join('')).toBe(pasted);
+  });
+
+  it('streams terminal output and exit frames from an explicit resume cursor', async () => {
+    fetchWithAuth.mockResolvedValue(
+      sseResponse([
+        'event: reset\ndata: {"seq":8,"reason":"output_truncated"}\n\n',
+        'event: output\ndata: {"seq":9,"data":"aGk="}\n\n',
+        'event: exit\ndata: {"seq":10,"exit_code":0}\n\n',
+      ]),
+    );
+    const onOutput = vi.fn();
+    const onReset = vi.fn();
+    const onExit = vi.fn();
+
+    await streamAgentTerminal('job/one', 'term/1', {
+      after: 7,
+      onOutput,
+      onReset,
+      onExit,
+    });
+
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      expect.any(String),
+      '/v1/agent/jobs/job%2Fone/terminals/term%2F1/stream?after=7',
+      { headers: { Accept: 'text/event-stream' }, signal: undefined },
+    );
+    expect(onReset).toHaveBeenCalledWith({ seq: 8, reason: 'output_truncated' });
+    expect(onOutput).toHaveBeenCalledWith({ seq: 9, data: 'aGk=' });
+    expect(onExit).toHaveBeenCalledWith({ seq: 10, exit_code: 0 });
+  });
+
+  it('resumes a dropped terminal stream without replaying output', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(
+        sseResponse([
+          'event: broken\ndata: {nope}\n\n',
+          'event: output\ndata: {"seq":8,"data":"YQ=="}\n\n',
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sseResponse([
+          'event: output\ndata: {"seq":8,"data":"YQ=="}\n\n',
+          'event: output\ndata: {"seq":9,"data":"Yg=="}\n\n',
+          'event: exit\ndata: {"seq":10,"exit_code":0}\n\n',
+        ]),
+      );
+    const onOutput = vi.fn();
+
+    await streamAgentTerminal('job-1', 'term-1', {
+      after: 7,
+      onOutput,
+      onReset: vi.fn(),
+      onExit: vi.fn(),
+    });
+
+    expect(onOutput.mock.calls.map(([event]) => event.seq)).toEqual([8, 9]);
+    expect(fetchWithAuth).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      '/v1/agent/jobs/job-1/terminals/term-1/stream?after=8',
+      expect.any(Object),
+    );
+  });
+
+  it('advances the resume cursor when a truncated-output reset is received', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(
+        sseResponse(['event: reset\ndata: {"seq":8,"reason":"output_truncated"}\n\n']),
+      )
+      .mockResolvedValueOnce(
+        sseResponse([
+          'event: output\ndata: {"seq":9,"data":"YQ=="}\n\n',
+          'event: exit\ndata: {"seq":10,"exit_code":0}\n\n',
+        ]),
+      );
+    const onReset = vi.fn();
+
+    await streamAgentTerminal('job-1', 'term-1', {
+      after: 7,
+      onOutput: vi.fn(),
+      onReset,
+      onExit: vi.fn(),
+    });
+
+    expect(onReset).toHaveBeenCalledOnce();
+    expect(fetchWithAuth).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      '/v1/agent/jobs/job-1/terminals/term-1/stream?after=8',
+      expect.any(Object),
+    );
+  });
+
+  it('keeps reconnecting with capped backoff until it is aborted', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchWithAuth.mockRejectedValue(new Error('offline'));
+      const controller = new AbortController();
+      const stream = streamAgentTerminal('job-1', 'term-1', {
+        signal: controller.signal,
+        onOutput: vi.fn(),
+        onReset: vi.fn(),
+        onExit: vi.fn(),
+      });
+
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        await vi.advanceTimersToNextTimerAsync();
+      }
+      expect(fetchWithAuth.mock.calls.length).toBeGreaterThan(7);
+      controller.abort();
+      await vi.runAllTimersAsync();
+      await expect(stream).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('treats a missing thread as an old standalone job', async () => {

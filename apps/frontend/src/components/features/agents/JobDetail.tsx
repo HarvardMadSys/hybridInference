@@ -10,12 +10,12 @@ import {
   followUpAgentJob,
   forkAgentJob,
   getAgentJobGit,
-  runAgentTerminalCommand,
   writeAgentJobFile,
   type AgentGitWorkspaceApi,
 } from '@/lib/api/agents';
 
 import { lifecyclePhaseLabel, toDiffFileDetails } from './adapt';
+import { TerminalWorkspace } from './TerminalWorkspace';
 import type { AgentEvent, AgentJob, AgentThreadMessage } from './types';
 import { useAgentJobFiles } from './useAgentJobs';
 
@@ -848,160 +848,6 @@ function GitPanel({ job, active }: { job: AgentJob; active: boolean }) {
   );
 }
 
-function isTerminalTool(tool: string): boolean {
-  const name = tool.toLowerCase();
-  return ['bash', 'shell', 'command', 'exec', 'terminal'].some((part) => name.includes(part));
-}
-
-type TerminalEvent = Extract<AgentEvent, { kind: 'tool_use' | 'tool_result' | 'terminal' }>;
-
-function isTerminalEvent(event: AgentEvent): event is TerminalEvent {
-  return (
-    (event.kind === 'tool_use' && isTerminalTool(event.tool)) ||
-    event.kind === 'tool_result' ||
-    event.kind === 'terminal'
-  );
-}
-
-interface InteractiveTerminalEntry {
-  command: string;
-  cwd: string;
-  output: string;
-  stderr: string;
-  exitCode: number;
-}
-
-function TerminalPanel({ jobId, events }: { jobId: string; events: AgentEvent[] }) {
-  const terminalEvents = events.filter(isTerminalEvent);
-  const [cwd, setCwd] = useState('/workspace');
-  const [command, setCommand] = useState('');
-  const [running, setRunning] = useState(false);
-  const [entries, setEntries] = useState<InteractiveTerminalEntry[]>([]);
-
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const value = command.trim();
-    if (!value || running) return;
-    const commandCwd = cwd;
-    setCommand('');
-    setRunning(true);
-    try {
-      const result = await runAgentTerminalCommand(jobId, value, commandCwd);
-      setEntries((current) => [
-        ...current,
-        {
-          command: value,
-          cwd: commandCwd,
-          output: result.output,
-          stderr: result.stderr,
-          exitCode: result.exit_code,
-        },
-      ]);
-      setCwd(result.cwd || commandCwd);
-    } catch (cause) {
-      setEntries((current) => [
-        ...current,
-        {
-          command: value,
-          cwd: commandCwd,
-          output: '',
-          stderr: cause instanceof Error ? cause.message : 'Terminal command failed',
-          exitCode: 1,
-        },
-      ]);
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  return (
-    <section
-      aria-label="Workspace terminal"
-      className="overflow-hidden rounded-xl border border-gray-800 bg-gray-950 shadow-sm"
-    >
-      <div className="flex items-center border-b border-gray-800 px-4 py-2.5 text-xs text-gray-400">
-        <span className="font-medium text-gray-300">Terminal 1</span>
-        <span className="ml-auto truncate font-mono text-[11px] text-gray-500">{cwd}</span>
-      </div>
-      <div className="min-h-80 max-h-[34rem] overflow-auto p-4 font-mono text-xs leading-relaxed text-gray-200">
-        {terminalEvents.length ? (
-          terminalEvents.map((event, index) => {
-            if (event.kind === 'tool_use') {
-              return (
-                <div key={`${event.attemptNo ?? 0}-${index}`} className="mb-5 last:mb-0">
-                  <div className="whitespace-pre-wrap break-words">
-                    <span className="select-none text-emerald-400">$ </span>
-                    {event.detail}
-                  </div>
-                  {event.output ? (
-                    <pre
-                      className={`mt-1 whitespace-pre-wrap break-words ${
-                        event.outputIsError ? 'text-red-300' : 'text-gray-400'
-                      }`}
-                    >
-                      {event.output.join('\n') || 'Command completed with no output.'}
-                    </pre>
-                  ) : (
-                    <p className="mt-1 text-gray-600">Waiting for output…</p>
-                  )}
-                </div>
-              );
-            }
-            return (
-              <pre
-                key={`${event.attemptNo ?? 0}-${index}`}
-                className={`mb-3 whitespace-pre-wrap break-words ${
-                  event.kind === 'tool_result' && event.isError ? 'text-red-300' : 'text-gray-400'
-                }`}
-              >
-                {event.text || 'Command completed with no output.'}
-              </pre>
-            );
-          })
-        ) : (
-          <p className="mb-4 text-gray-600">Workspace ready.</p>
-        )}
-        {entries.map((entry, index) => (
-          <div key={`${entry.command}-${index}`} className="mb-5 last:mb-0">
-            <div className="whitespace-pre-wrap break-words">
-              <span className="text-cyan-400">{entry.cwd}</span>{' '}
-              <span className="select-none text-emerald-400">$ </span>
-              {entry.command}
-            </div>
-            {entry.output ? (
-              <pre className="mt-1 whitespace-pre-wrap break-words text-gray-300">
-                {entry.output}
-              </pre>
-            ) : null}
-            {entry.stderr ? (
-              <pre className="mt-1 whitespace-pre-wrap break-words text-red-300">
-                {entry.stderr}
-              </pre>
-            ) : null}
-            {entry.exitCode !== 0 ? (
-              <p className="mt-1 text-red-400">process exited with {entry.exitCode}</p>
-            ) : null}
-          </div>
-        ))}
-        {running ? <p className="animate-pulse text-gray-500">Running…</p> : null}
-      </div>
-      <form onSubmit={submit} className="flex items-center border-t border-gray-800 px-4 py-3">
-        <span className="mr-2 select-none font-mono text-xs text-emerald-400">$</span>
-        <input
-          value={command}
-          onChange={(event) => setCommand(event.target.value)}
-          aria-label="Terminal command"
-          autoComplete="off"
-          spellCheck={false}
-          disabled={running}
-          className="min-w-0 flex-1 bg-transparent font-mono text-xs text-gray-100 outline-none placeholder:text-gray-700 disabled:opacity-60"
-          placeholder="Type a command and press Enter"
-        />
-      </form>
-    </section>
-  );
-}
-
 function fileStatusClass(status?: 'added' | 'modified' | 'deleted' | null): string {
   if (status === 'added') return 'bg-emerald-50 text-emerald-700';
   if (status === 'deleted') return 'bg-red-50 text-red-700';
@@ -1580,7 +1426,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
           role="region"
           aria-label="Job workspace"
           hidden={!workspaceOpen}
-          className="min-w-0 overflow-y-auto border-gray-200 bg-white lg:border-l"
+          className="flex min-h-0 min-w-0 flex-col overflow-hidden border-gray-200 bg-white lg:border-l"
         >
           <nav
             aria-label="Workspace views"
@@ -1616,7 +1462,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
             role="tabpanel"
             aria-labelledby="workspace-tab-git"
             hidden={workspaceTab !== 'git'}
-            className="p-5"
+            className="min-h-0 flex-1 overflow-y-auto p-5"
           >
             <GitPanel job={job} active={workspaceOpen && workspaceTab === 'git'} />
           </div>
@@ -1625,16 +1471,22 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
             role="tabpanel"
             aria-labelledby="workspace-tab-terminal"
             hidden={workspaceTab !== 'terminal'}
-            className="p-5"
+            className="min-h-0 flex-1 p-3"
           >
-            <TerminalPanel jobId={job.id} events={visibleEvents} />
+            <TerminalWorkspace
+              key={job.id}
+              jobId={job.id}
+              active={workspaceOpen && workspaceTab === 'terminal'}
+              disabled={isActive}
+              disabledReason="Terminal input is available after the agent finishes, so both do not modify the workspace at once."
+            />
           </div>
           <div
             id="workspace-panel-files"
             role="tabpanel"
             aria-labelledby="workspace-tab-files"
             hidden={workspaceTab !== 'files'}
-            className="p-5"
+            className="min-h-0 flex-1 overflow-y-auto p-5"
           >
             <FilesPanel job={job} active={workspaceOpen && workspaceTab === 'files'} />
           </div>

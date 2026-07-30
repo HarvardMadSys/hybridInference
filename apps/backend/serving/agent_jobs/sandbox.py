@@ -24,9 +24,12 @@ and hand back a line stream. They do not know what an agent is.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
+import secrets
 import shlex
 import shutil
+import signal
 import subprocess
 import threading
 from abc import ABC, abstractmethod
@@ -65,10 +68,16 @@ SANDBOX_UID = 10001
 SANDBOX_GID = 10001
 SANDBOX_HOME = "/home/agent"
 SANDBOX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+TERMINAL_CONTAINER_LABEL = "org.hybridinference.agent-terminal"
+TERMINAL_CONTAINER_OWNER_LABEL = "org.hybridinference.agent-terminal-owner"
 
 
 class SandboxError(Exception):
     """Raised when a sandbox cannot be created or configured."""
+
+
+class TerminalNotSupportedError(SandboxError):
+    """Raised when a backend cannot safely provide persistent terminals."""
 
 
 def _walk_entries(path: str) -> Iterator[tuple[str, bool]]:
@@ -123,6 +132,37 @@ class SandboxProcess(ABC):
         """Return whatever the agent wrote to stderr."""
 
 
+class TerminalProcess(ABC):
+    """A byte-oriented interactive terminal living inside one sandbox.
+
+    This is deliberately separate from :class:`SandboxProcess`. Agent event
+    parsing needs line-delimited stdout and a separate stderr stream, while a
+    terminal needs one PTY byte stream plus stdin and window resizing. Trying
+    to make one interface serve both silently breaks control sequences and
+    interactive programs.
+    """
+
+    @abstractmethod
+    def chunks(self) -> Iterator[bytes]:
+        """Yield terminal output bytes until the terminal reaches EOF."""
+
+    @abstractmethod
+    def write(self, data: bytes) -> None:
+        """Write bytes to the terminal's stdin."""
+
+    @abstractmethod
+    def resize(self, rows: int, cols: int) -> None:
+        """Resize the terminal window."""
+
+    @abstractmethod
+    def kill(self) -> None:
+        """Terminate the terminal and its complete process hierarchy."""
+
+    @abstractmethod
+    def wait(self) -> int:
+        """Wait for exit and return the status code."""
+
+
 class SandboxBackend(ABC):
     """Creates isolated execution environments for agent jobs."""
 
@@ -131,6 +171,26 @@ class SandboxBackend(ABC):
     @abstractmethod
     def spawn(self, spec: SandboxSpec) -> SandboxProcess:
         """Start the agent and return a handle to it."""
+
+    def spawn_terminal(self, spec: SandboxSpec, *, rows: int, cols: int) -> TerminalProcess:
+        """Start an interactive terminal and return its byte-stream handle.
+
+        Kept as an optional capability so an existing custom backend that only
+        runs agents does not become un-instantiable when terminals are added.
+        """
+        raise TerminalNotSupportedError(
+            "interactive terminals require the container or kata sandbox backend; "
+            f"the {self.name!r} backend cannot guarantee whole-session cleanup"
+        )
+
+    def prepare_terminal_broker(self, workdir_root: str) -> None:
+        """Prepare terminal resources owned by one workspace broker.
+
+        This hook is deliberately separate from :meth:`preflight`: only the
+        private workspace broker owns persistent terminals, so ordinary agent
+        runners must never clean up terminal resources.
+        """
+        return
 
     def preflight(self, workdir_root: str | None = None) -> None:
         """Raise :class:`SandboxError` if this backend cannot run here.
@@ -281,6 +341,143 @@ class ProcessBackend(SandboxBackend):
 # ── container: docker / kata ───────────────────────────────────────────
 
 
+class _ContainerTerminalProcess(TerminalProcess):
+    """An interactive ``docker run -it`` process with a server-owned name."""
+
+    def __init__(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        docker_binary: str,
+        container_name: str,
+    ) -> None:
+        self._process = process
+        self._docker_binary = docker_binary
+        self._container_name = container_name
+        self._state_lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        self._killed = False
+
+    def chunks(self) -> Iterator[bytes]:
+        """Yield the raw combined PTY stream from Docker."""
+        assert self._process.stdout is not None
+        while chunk := self._process.stdout.read(64 * 1024):
+            yield chunk
+
+    def write(self, data: bytes) -> None:
+        """Forward terminal input to the attached container."""
+        with self._write_lock:
+            if self._process.poll() is not None or self._process.stdin is None:
+                raise SandboxError("terminal is closed")
+            try:
+                self._process.stdin.write(data)
+                self._process.stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                raise SandboxError("terminal is closed") from exc
+
+    def resize(self, rows: int, cols: int) -> None:
+        """Resize the named container's allocated TTY."""
+        try:
+            result = subprocess.run(
+                [
+                    self._docker_binary,
+                    "container",
+                    "resize",
+                    "--height",
+                    str(rows),
+                    "--width",
+                    str(cols),
+                    self._container_name,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SandboxError("terminal cannot be resized") from exc
+        if result.returncode != 0:
+            raise SandboxError("terminal cannot be resized: " + result.stderr.strip()[:200])
+
+    def kill(self) -> None:
+        """Kill the named container and confirm both sides are gone.
+
+        ``docker kill`` is only the first attempt: it can race startup or fail
+        transiently.  ``rm --force`` is the authoritative cleanup operation,
+        and the local Docker client must also have exited before this method is
+        allowed to report success.  A failed attempt deliberately leaves
+        ``_killed`` false so the broker can retry the same opaque session id.
+        """
+        with self._state_lock:
+            if self._killed:
+                return
+            try:
+                killed = subprocess.run(
+                    [self._docker_binary, "kill", self._container_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+                if killed.returncode != 0:
+                    logger.warning(
+                        "agent_sandbox_terminal_docker_kill_failed",
+                        extra={"event": "agent_sandbox_terminal_docker_kill_failed"},
+                    )
+            except (OSError, subprocess.TimeoutExpired):
+                logger.warning(
+                    "agent_sandbox_terminal_docker_kill_failed",
+                    extra={"event": "agent_sandbox_terminal_docker_kill_failed"},
+                    exc_info=True,
+                )
+
+            client_stopped = self._process.poll() is not None
+            if not client_stopped:
+                try:
+                    os.killpg(self._process.pid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    with contextlib.suppress(OSError):
+                        self._process.kill()
+                try:
+                    self._process.wait(timeout=5)
+                    client_stopped = True
+                except subprocess.TimeoutExpired:
+                    with contextlib.suppress(OSError):
+                        self._process.kill()
+                    try:
+                        self._process.wait(timeout=2)
+                        client_stopped = True
+                    except subprocess.TimeoutExpired:
+                        pass
+
+            # ``docker kill`` can race container creation or a natural exit.
+            # Once the client is gone, force-remove either confirms deletion or
+            # confirms that the server-generated name no longer exists.
+            try:
+                removed = subprocess.run(
+                    [self._docker_binary, "rm", "--force", self._container_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise SandboxError("terminal container cleanup could not be confirmed") from exc
+            missing = "no such container" in removed.stderr.lower()
+            if removed.returncode != 0 and not missing:
+                raise SandboxError(
+                    "terminal container cleanup could not be confirmed: "
+                    + removed.stderr.strip()[:200]
+                )
+            if not client_stopped or self._process.poll() is None:
+                raise SandboxError("terminal Docker client could not be stopped")
+            self._killed = True
+
+    def wait(self) -> int:
+        """Wait for the attached Docker client and return its status."""
+        return self._process.wait()
+
+
 class ContainerBackend(SandboxBackend):
     """Run the agent in a throwaway container, optionally VM-isolated.
 
@@ -323,6 +520,10 @@ class ContainerBackend(SandboxBackend):
         self.uid = uid
         self.gid = gid
         self.home = home
+        # Replaced with a stable, root-scoped value when the workspace broker
+        # starts. The ephemeral value prevents accidental broad cleanup if a
+        # backend is constructed outside that broker-owned lifecycle.
+        self._terminal_owner_id = "unscoped-" + secrets.token_hex(12)
 
     @property
     def is_vm_isolated(self) -> bool:
@@ -353,6 +554,62 @@ class ContainerBackend(SandboxBackend):
         with an error about a path the operator has never heard of.
         """
         return {"HOME": self.home, "PATH": SANDBOX_PATH, "LANG": "C.UTF-8"}
+
+    def prepare_terminal_broker(self, workdir_root: str) -> None:
+        """Adopt a stable owner scope and remove only this broker's crash orphans.
+
+        One resolved workdir root may have exactly one active workspace broker.
+        That single-active-broker invariant lets a restarted broker reclaim its
+        own terminal containers without touching peers that share the Docker
+        daemon under a different root. This runs only from broker lifespan,
+        never from general runner preflight.
+        """
+        resolved_root = os.path.realpath(workdir_root)
+        digest = hashlib.sha256(os.fsencode(resolved_root)).hexdigest()[:32]
+        owner_id = f"workdir-{digest}"
+        try:
+            listed = subprocess.run(
+                [
+                    self.docker_binary,
+                    "container",
+                    "ls",
+                    "--all",
+                    "--quiet",
+                    "--filter",
+                    f"label={TERMINAL_CONTAINER_LABEL}=true",
+                    "--filter",
+                    f"label={TERMINAL_CONTAINER_OWNER_LABEL}={owner_id}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SandboxError("terminal crash cleanup could not inspect containers") from exc
+        if listed.returncode != 0:
+            raise SandboxError(
+                "terminal crash cleanup could not inspect containers: "
+                + listed.stderr.strip()[:200]
+            )
+        container_ids = listed.stdout.split()
+        if container_ids:
+            try:
+                removed = subprocess.run(
+                    [self.docker_binary, "rm", "--force", *container_ids],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise SandboxError("terminal crash cleanup could not remove containers") from exc
+            if removed.returncode != 0:
+                raise SandboxError(
+                    "terminal crash cleanup could not remove containers: "
+                    + removed.stderr.strip()[:200]
+                )
+        self._terminal_owner_id = owner_id
 
     def adopt_workdir(self, path: str) -> None:
         """Give the job worktree to the sandbox user before the agent runs.
@@ -608,17 +865,35 @@ class ContainerBackend(SandboxBackend):
                 "mount) — otherwise every job fails at spawn."
             )
 
-    def build_command(self, spec: SandboxSpec) -> list[str]:
-        """Compose the ``docker run`` argv for one job.
+    def _build_command(
+        self,
+        spec: SandboxSpec,
+        *,
+        terminal_name: str | None = None,
+    ) -> list[str]:
+        """Compose the shared, security-sensitive ``docker run`` argv.
 
-        Kept separate from :meth:`spawn` so the isolation flags are directly
-        testable without a container runtime installed.
+        A terminal differs only by a TTY and an opaque, server-generated name
+        used for resize/kill. Network, privilege, mount and resource flags
+        share this builder so future hardening applies to both execution paths.
         """
         argv = [
             self.docker_binary,
             "run",
             "--rm",
             "--interactive",
+        ]
+        if terminal_name is not None:
+            argv += [
+                "--tty",
+                "--name",
+                terminal_name,
+                "--label",
+                f"{TERMINAL_CONTAINER_LABEL}=true",
+                "--label",
+                f"{TERMINAL_CONTAINER_OWNER_LABEL}={self._terminal_owner_id}",
+            ]
+        argv += [
             # The sandbox is thrown away after the job, so nothing it writes
             # outside the mounted worktree can persist or leak to a neighbour.
             "--mount",
@@ -653,6 +928,14 @@ class ContainerBackend(SandboxBackend):
         argv += spec.argv
         return argv
 
+    def build_command(self, spec: SandboxSpec) -> list[str]:
+        """Compose the ``docker run`` argv for one non-terminal job."""
+        return self._build_command(spec)
+
+    def build_terminal_command(self, spec: SandboxSpec, *, name: str) -> list[str]:
+        """Compose a contained ``docker run -it`` argv for a terminal."""
+        return self._build_command(spec, terminal_name=name)
+
     def spawn(self, spec: SandboxSpec) -> SandboxProcess:
         """Start the agent inside a throwaway container."""
         command = self.build_command(spec)
@@ -679,6 +962,42 @@ class ContainerBackend(SandboxBackend):
                 bufsize=1,
             )
         )
+
+    def spawn_terminal(self, spec: SandboxSpec, *, rows: int, cols: int) -> TerminalProcess:
+        """Start an attached TTY in a throwaway, named container."""
+        # Docker names accept this alphabet and the value is never supplied by
+        # a request, so it cannot become an argv or resource-name injection.
+        container_name = f"hyi-terminal-{secrets.token_hex(12)}"
+        command = self.build_terminal_command(spec, name=container_name)
+        logger.info(
+            "agent_sandbox_terminal_spawn",
+            extra={
+                "event": "agent_sandbox_terminal_spawn",
+                "backend": self.name,
+                "vm_isolated": self.is_vm_isolated,
+                "image": self.image,
+            },
+        )
+        process = subprocess.Popen(
+            command,
+            env={**os.environ},
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=0,
+            start_new_session=True,
+        )
+        terminal = _ContainerTerminalProcess(
+            process,
+            docker_binary=self.docker_binary,
+            container_name=container_name,
+        )
+        # Docker accepts resize only after the container has reached running.
+        # The frontend sends its measured size again when the pane mounts, so
+        # an initial startup race is safe to ignore.
+        with contextlib.suppress(SandboxError):
+            terminal.resize(rows, cols)
+        return terminal
 
 
 # ── selection ──────────────────────────────────────────────────────────
