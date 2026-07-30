@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import os
 import tarfile
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,12 @@ from serving.utils.logging import get_logger
 logger = get_logger(__name__)
 
 DEFAULT_TTL_SECONDS = 7 * 24 * 3600
+
+# How long an in-progress staging archive may sit before it is treated as
+# abandoned. Comfortably longer than archiving a dependency tree takes, and far
+# shorter than the cache TTL, which would let a stalled write look live for a
+# week.
+_STAGING_GRACE_SECONDS = 6 * 3600
 # A snapshot exists to save time; one this large costs more to move than the
 # install it replaces, and usually means the agent's own output got captured.
 DEFAULT_MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024 * 1024
@@ -108,10 +115,23 @@ class SnapshotCache:
         return path
 
     def save(self, key: str, workdir: str) -> bool:
-        """Capture the workdir, minus the checkout, as this key's snapshot."""
+        """Capture the workdir, minus the checkout, as this key's snapshot.
+
+        The staging file is unique per writer. Replicas share this directory,
+        and two of them cold-starting the same repository and setup script hold
+        the same cache key — with one fixed ``.partial`` name they truncated and
+        interleaved each other's archive, then renamed it into place, so later
+        jobs restored a corrupt tree. The rename stays atomic (same directory,
+        same filesystem), which makes concurrent saves last-writer-wins with a
+        *complete* archive: correct, because both wrote the same content.
+        """
         self.root.mkdir(parents=True, exist_ok=True)
         target = self._path_for(key)
-        staging = target.with_suffix(".tar.partial")
+        handle, staged_name = tempfile.mkstemp(
+            dir=self.root, prefix=f".{key}.", suffix=".tar.partial"
+        )
+        os.close(handle)
+        staging = Path(staged_name)
         try:
             with tarfile.open(staging, "w") as archive:
                 for entry in sorted(os.listdir(workdir)):
@@ -125,8 +145,9 @@ class SnapshotCache:
                     extra={"event": "agent_snapshot_too_large", "key": key},
                 )
                 return False
-            # Rename last: a reader must never find a half-written archive,
-            # and several runners can be doing this at once.
+            # Rename last, and atomically: a reader must never find a
+            # half-written archive, and several runners can be doing this at
+            # once — which is why the staging name above is per writer.
             staging.replace(target)
         except OSError:
             staging.unlink(missing_ok=True)
@@ -161,16 +182,31 @@ class SnapshotCache:
         return True
 
     def purge_expired(self) -> int:
-        """Drop every entry past its TTL. Returns how many were removed."""
+        """Drop every entry past its TTL. Returns how many were removed.
+
+        Abandoned staging files are swept too. A writer killed mid-archive (a
+        reaped lease, a restarted container) leaves one behind, and nothing else
+        would ever remove it: they are never read, so they would accumulate
+        silently until the disk filled. They get a fixed grace period rather
+        than the cache TTL — a week-long window would let a stalled write look
+        live — and one still being written by a live job is younger than that.
+        """
         if not self.root.exists():
             return 0
         removed = 0
         cutoff = time.time() - self.ttl_seconds
+        staging_cutoff = time.time() - _STAGING_GRACE_SECONDS
         for entry in self.root.glob("*.tar"):
             try:
                 if entry.stat().st_mtime < cutoff:
                     entry.unlink(missing_ok=True)
                     removed += 1
+            except OSError:
+                continue
+        for entry in self.root.glob("*.tar.partial"):
+            try:
+                if entry.stat().st_mtime < staging_cutoff:
+                    entry.unlink(missing_ok=True)
             except OSError:
                 continue
         return removed

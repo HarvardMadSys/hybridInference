@@ -404,3 +404,28 @@ def test_a_self_built_backend_is_still_preflighted_before_claiming(monkeypatch, 
 
     assert backend.preflights == 1
     assert claims, "preflight must not have replaced the claim"
+
+
+def test_only_the_claim_call_reports_an_unreachable_gateway(monkeypatch):
+    """A transport failure after a claim must not be logged as "nothing claimed".
+
+    "Gateway unreachable, retrying" tells an operator no job was taken. Raised
+    for a failure during event reporting or a terminal transition, it hides an
+    attempt that is still running until its lease expires — the one they need
+    to go look at.
+    """
+    import httpx
+
+    from serving.agent_jobs.runner import ClaimUnreachable, claim
+
+    def dead_post(*_args, **_kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "post", dead_post)
+
+    with pytest.raises(ClaimUnreachable):
+        claim(base_url="http://gateway.invalid", dispatcher_token="t", worker_id="w", lease_ttl=60)
+
+    # The same error raised anywhere else stays a plain transport error, so the
+    # loop's handler reports a job rather than an empty claim.
+    assert not issubclass(httpx.ConnectError, ClaimUnreachable)

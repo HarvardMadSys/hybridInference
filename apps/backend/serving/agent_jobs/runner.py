@@ -128,6 +128,15 @@ class LeaseLost(Exception):
     """Raised when this attempt no longer owns the job and must stop."""
 
 
+class ClaimUnreachable(Exception):
+    """The gateway could not be reached *to claim*, so no job was taken.
+
+    Distinct from a transport failure later in the run: that one leaves an
+    attempt running until its lease expires, and an operator needs to be sent
+    to the job rather than told nothing was claimed.
+    """
+
+
 class WorktreeError(Exception):
     """Raised when the job's repository could not be materialized."""
 
@@ -292,12 +301,20 @@ def claim(
     The dispatcher credential is used here and nowhere else — it does not
     travel into the agent's environment.
     """
-    response = httpx.post(
-        f"{base_url.rstrip('/')}/v1/agent/worker/claim",
-        json={"worker_id": worker_id, "lease_ttl_seconds": lease_ttl},
-        headers={"Authorization": f"Bearer {dispatcher_token}"},
-        timeout=30.0,
-    )
+    try:
+        response = httpx.post(
+            f"{base_url.rstrip('/')}/v1/agent/worker/claim",
+            json={"worker_id": worker_id, "lease_ttl_seconds": lease_ttl},
+            headers={"Authorization": f"Bearer {dispatcher_token}"},
+            timeout=30.0,
+        )
+    except httpx.TransportError as exc:
+        # Tagged at the one place where "the gateway is unreachable" also means
+        # "no job was claimed". The same error from a later call — an event, an
+        # artifact, a terminal transition — happens with an attempt already
+        # running, and reporting *that* as an unreached gateway would hide the
+        # job an operator has to go look at.
+        raise ClaimUnreachable(str(exc)) from exc
     response.raise_for_status()
     body = response.json()
     return ClaimedJob.from_response(body) if body else None
@@ -1015,11 +1032,12 @@ def run_forever(
             )
         except KeyboardInterrupt:
             return 0
-        except httpx.TransportError as exc:
-            # The gateway is not answering — no job was claimed, so calling
-            # this a failed job sends whoever reads the log looking for one.
-            # Normal at startup: compose starts the runner and the gateway
-            # together, and the runner wins the race about half the time.
+        except ClaimUnreachable as exc:
+            # Raised only by the claim call, so this really does mean no job was
+            # taken. Normal at startup: compose starts the runner and the
+            # gateway together, and the runner wins the race about half the
+            # time. A transport failure *after* a claim falls through to the
+            # handler below, which does not claim otherwise.
             print(
                 f"agent runner: gateway unreachable, retrying: {exc}", file=sys.stderr, flush=True
             )
