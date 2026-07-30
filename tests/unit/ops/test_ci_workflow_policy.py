@@ -47,3 +47,32 @@ def test_python_tests_signal_controls_only_the_pytest_job() -> None:
 
     assert "needs.changes.outputs.python_tests == 'true'" in jobs["test"]["if"]
     assert "needs.changes.outputs.backend == 'true'" in jobs["backend-quality"]["if"]
+
+
+def test_alert_service_quality_runs_all_checks_in_one_job() -> None:
+    jobs = _workflow("ci.yml")["jobs"]
+    job = jobs["alert-control-plane-check"]
+
+    assert job["name"] == "Alert Service Quality"
+    assert "strategy" not in job
+    assert "alert-control-plane-check" in jobs["ci-gate"]["needs"]
+
+    run_steps = [(step.get("name"), step["run"]) for step in job["steps"] if "run" in step]
+    assert run_steps == [
+        ("Install dependencies", "npm ci"),
+        ("Run TypeScript check", "npm run typecheck"),
+        ("Run tests", "npm test"),
+        (
+            "Run Wrangler deployment dry run",
+            "npm exec -- wrangler deploy --dry-run --config wrangler.example.toml",
+        ),
+    ]
+
+    install_step = next(step for step in job["steps"] if step.get("id") == "dependencies")
+    assert install_step["run"] == "npm ci"
+    assert all(
+        step.get("if") == "always() && steps.dependencies.outcome == 'success'"
+        for step in job["steps"]
+        if step.get("run") in {"npm run typecheck", "npm test"}
+        or str(step.get("run", "")).startswith("npm exec -- wrangler")
+    )

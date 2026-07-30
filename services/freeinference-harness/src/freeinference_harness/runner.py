@@ -28,6 +28,8 @@ from freeinference_harness.models import (
 from freeinference_harness.runtime_drivers import (
     run_runtime_claude_smoke,
     run_runtime_codex_smoke,
+    run_runtime_opencode_smoke,
+    run_runtime_pi_smoke,
 )
 from freeinference_harness.tool_validation import validate_tool_calls
 
@@ -184,6 +186,10 @@ class HarnessRunner:
                 result = run_runtime_claude_smoke(target, scenario)
             elif scenario.scenario_type == "runtime_codex_smoke":
                 result = run_runtime_codex_smoke(target, scenario)
+            elif scenario.scenario_type == "runtime_pi_smoke":
+                result = run_runtime_pi_smoke(target, scenario)
+            elif scenario.scenario_type == "runtime_opencode_smoke":
+                result = run_runtime_opencode_smoke(target, scenario)
             else:
                 return self._attempt(
                     target=target,

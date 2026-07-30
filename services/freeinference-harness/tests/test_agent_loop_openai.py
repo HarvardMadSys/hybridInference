@@ -170,3 +170,69 @@ def test_missing_runtime_binary_skips_cleanly(fake_base_url, monkeypatch):
     result = drivers.run_runtime_codex_smoke(target, scenario)
     assert result["status"] == "skip"
     assert result["failure_type"] == "runtime_missing"
+
+
+def test_pi_smoke_skips_cleanly_without_the_binary(fake_base_url, monkeypatch):
+    """The pi scenario skips (not fails) on machines without the CLI."""
+    import freeinference_harness.runtime_drivers as drivers
+
+    monkeypatch.setattr(drivers.shutil, "which", lambda _name: None)
+    target = _target(fake_base_url)
+    scenario = ScenarioConfig(
+        scenario_id="runtime_pi_smoke",
+        scenario_type="runtime_pi_smoke",
+        agent_script="runtime_smoke",
+    )
+    result = drivers.run_runtime_pi_smoke(target, scenario)
+    assert result["status"] == "skip"
+    assert result["failure_type"] == "runtime_missing"
+
+
+def test_pi_result_extractor_reads_assistant_text_from_json_events():
+    """Assistant text comes out of pi's event lines, not the raw dump."""
+    from freeinference_harness.runtime_drivers import _extract_pi_result
+
+    lines = "\n".join(
+        [
+            '{"type":"agent_start"}',
+            '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}',
+            "not json at all",
+            '{"type":"message_end","message":{"role":"assistant","content":'
+            '[{"type":"text","text":"RUNTIME_SMOKE_OK: done"}]}}',
+        ]
+    )
+    assert _extract_pi_result(lines) == "RUNTIME_SMOKE_OK: done"
+    # No assistant events -> fall back to the raw output rather than "".
+    assert _extract_pi_result("plain text") == "plain text"
+
+
+def test_opencode_smoke_skips_cleanly_without_the_binary(fake_base_url, monkeypatch):
+    """The OpenCode scenario skips (not fails) on machines without the CLI."""
+    import freeinference_harness.runtime_drivers as drivers
+
+    monkeypatch.setattr(drivers.shutil, "which", lambda _name: None)
+    target = _target(fake_base_url)
+    scenario = ScenarioConfig(
+        scenario_id="runtime_opencode_smoke",
+        scenario_type="runtime_opencode_smoke",
+        agent_script="runtime_smoke",
+    )
+    result = drivers.run_runtime_opencode_smoke(target, scenario)
+    assert result["status"] == "skip"
+    assert result["failure_type"] == "runtime_missing"
+
+
+def test_opencode_result_extractor_reads_text_parts_from_json_events():
+    """Assistant text comes out of OpenCode's text-part events."""
+    from freeinference_harness.runtime_drivers import _extract_opencode_result
+
+    lines = "\n".join(
+        [
+            '{"type":"step_start"}',
+            "not json at all",
+            '{"type":"text","part":{"text":"RUNTIME_SMOKE_OK: done"}}',
+            '{"type":"step_finish","part":{"reason":"stop"}}',
+        ]
+    )
+    assert _extract_opencode_result(lines) == "RUNTIME_SMOKE_OK: done"
+    assert _extract_opencode_result("plain text") == "plain text"

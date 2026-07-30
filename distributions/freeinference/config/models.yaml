@@ -508,7 +508,6 @@ models:
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
-    aliases: ["Kimi-K2.7-Code", "kimi-k2.7"]
     pricing:
       prompt: "2.8"
       completion: "8.0"
@@ -546,7 +545,7 @@ models:
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream]
-    aliases: ["qwen3.6:35b", "claude-sonnet-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001"]
+    aliases: ["qwen3.6:35b", "claude-haiku-4-5", "claude-haiku-4-5-20251001"]
     pricing:
       prompt: "0.08"
       completion: "0.28"

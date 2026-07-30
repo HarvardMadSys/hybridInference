@@ -224,3 +224,71 @@ def test_no_script_means_no_setup_phase(script: str, tmp_path: Path):
     )
     assert not result.ran
     assert backend.specs == []
+
+
+def test_saves_of_one_key_never_share_a_staging_path(tmp_path, monkeypatch):
+    """Two writers of the same key must not write the same staging file.
+
+    Replicas share AGENT_SNAPSHOT_ROOT, and two of them cold-starting the same
+    repository and setup script hold the same cache key. With one fixed
+    `.partial` name they truncate and interleave each other's archive, then
+    rename the result into place, so later jobs restore a corrupt tree.
+
+    The mechanism is asserted rather than the race: a thread test that only
+    *sometimes* interleaves is green on the broken code too, which is no test
+    at all. Distinct paths plus an atomic rename make concurrent saves
+    last-writer-wins with a complete archive — correct, since both wrote the
+    same content.
+    """
+    import tarfile as _tarfile
+
+    from serving.agent_jobs.setup import SnapshotCache
+
+    cache = SnapshotCache(root=tmp_path / "snapshots", ttl_seconds=3600)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    (workdir / "deps.txt").write_text("installed", encoding="utf-8")
+
+    seen: list[str] = []
+    real_open = _tarfile.open
+
+    def recording_open(name=None, mode="r", *args, **kwargs):
+        if "w" in mode:
+            seen.append(str(name))
+        return real_open(name, mode, *args, **kwargs)
+
+    monkeypatch.setattr("serving.agent_jobs.setup.tarfile.open", recording_open)
+
+    assert cache.save("same-key", str(workdir)) is True
+    assert cache.save("same-key", str(workdir)) is True
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1], (
+        "both writers staged through the same path, so concurrent saves of one "
+        "key can truncate and interleave each other's archive"
+    )
+    # And the published archive is still complete and readable.
+    restored = tmp_path / "restored"
+    restored.mkdir()
+    assert cache.restore("same-key", str(restored)) is True
+    assert (restored / "deps.txt").read_text(encoding="utf-8") == "installed"
+
+
+def test_abandoned_staging_files_are_swept(tmp_path):
+    """A writer killed mid-archive must not leak its staging file forever."""
+    import time as _time
+
+    from serving.agent_jobs.setup import SnapshotCache
+
+    root = tmp_path / "snapshots"
+    root.mkdir()
+    orphan = root / ".key.abcdef.tar.partial"
+    orphan.write_bytes(b"half an archive")
+    os.utime(orphan, (_time.time() - 7 * 3600, _time.time() - 7 * 3600))
+    fresh = root / ".key.fedcba.tar.partial"
+    fresh.write_bytes(b"still being written")
+
+    SnapshotCache(root=root, ttl_seconds=3600).purge_expired()
+
+    assert not orphan.exists(), "an abandoned staging file was never reclaimed"
+    assert fresh.exists(), "a staging file a live job is still writing was deleted"

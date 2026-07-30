@@ -8,7 +8,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { AgentJobApi, AgentJobEventApi } from '@/lib/api/agents';
 
-import { toDiffFiles, toDiffLines, toDisplayEvent, toDisplayJob, toDisplayState } from './adapt';
+import {
+  lifecyclePhaseLabel,
+  toDiffFiles,
+  toDiffLines,
+  toDisplayEvent,
+  toDisplayJob,
+  toDisplayState,
+} from './adapt';
 
 const JOB: AgentJobApi = {
   id: 'ajob_1',
@@ -346,5 +353,77 @@ describe('ledger-sourced fields', () => {
     expect(job.spentUsd).toBe(0);
     expect(job.hasLedger).toBe(false);
     expect(job.usage.tokensIn).toBe('');
+  });
+});
+
+describe('lifecycle noise', () => {
+  const event = (id: number, event_type: string, payload: Record<string, unknown>) => ({
+    id,
+    attempt_id: 1,
+    seq: id,
+    event_type,
+    payload,
+    created_at: null,
+  });
+
+  const job = {
+    id: 'ajob_1',
+    repo: 'owner/repo',
+    task_prompt: 'walk through this repo',
+    runtime: 'claude-code',
+    model: 'glm-5.1',
+    base_sha: null,
+    state: 'succeeded' as const,
+    cancel_requested: false,
+    current_attempt_id: 1,
+    published_pr_url: null,
+    detail: null,
+    budget_usd: 5,
+    metadata: null,
+    created_at: null,
+    updated_at: null,
+    spent_usd: null,
+    tokens_in: null,
+    tokens_out: null,
+    model_calls: null,
+    setup_egress_tier: null,
+    agent_egress_tier: null,
+  };
+
+  it('does not render an unknown phase as a completed milestone', () => {
+    // The staging run stored 408 of these; each one was drawn with a ✓.
+    const { text, milestone } = lifecyclePhaseLabel('thinking_tokens');
+    expect(milestone).toBe(false);
+    expect(text).toBe('thinking tokens');
+    expect(lifecyclePhaseLabel('checked_out')).toEqual({
+      text: 'Repository ready',
+      milestone: true,
+    });
+  });
+
+  it('collapses consecutive reasoning rows into one status', () => {
+    const events = [
+      event(1, 'thinking', { text: '' }),
+      event(2, 'thinking', { text: '' }),
+      event(3, 'thinking', { text: '' }),
+      event(4, 'message', { text: 'done' }),
+      event(5, 'thinking', { text: '' }),
+    ];
+    const kinds = toDisplayJob(job, { events }).events.map((e) => e.kind);
+    // Three in a row become one; the later one after a message is its own.
+    expect(kinds).toEqual(['thinking', 'message', 'thinking']);
+  });
+
+  it('does not repeat a milestone the platform and the CLI both report', () => {
+    // "started" (platform) and "init" (CLI) both mean setting up environment.
+    const events = [
+      event(1, 'lifecycle', { phase: 'started' }),
+      event(2, 'lifecycle', { phase: 'init' }),
+      event(3, 'lifecycle', { phase: 'checked_out' }),
+    ];
+    const texts = toDisplayJob(job, { events })
+      .events.filter((e) => e.kind === 'lifecycle')
+      .map((e) => (e.kind === 'lifecycle' ? lifecyclePhaseLabel(e.text).text : ''));
+    expect(texts).toEqual(['Setting up environment', 'Repository ready']);
   });
 });

@@ -21,9 +21,10 @@ and cost attribution; Tier 2 is a generic headless runner whose output flows
 through as raw events, so a new agent costs nothing to support badly and can
 be promoted when it earns it.
 
-The Claude Code mappings below were derived from a recorded
-``claude -p --output-format stream-json`` run against this gateway, not from
-documentation — see ``tests/fixtures/agent_runtime_streams/``.
+The Claude Code mappings below were derived from observed
+``claude -p --output-format stream-json`` output, not from documentation. The
+corresponding test data is a sanitized, synthetic contract fixture — see
+``tests/fixtures/agent_runtime_streams/``.
 """
 
 from __future__ import annotations
@@ -64,6 +65,26 @@ class RuntimeCapabilities:
     tier: int = 2
 
 
+@dataclass(frozen=True)
+class RuntimeMCPConfig:
+    """Gateway-owned MCP server ids made available to one agent run.
+
+    This boundary deliberately has no endpoint, header, or credential fields.
+    A later broker implementation must resolve these opaque registry ids on
+    the trusted gateway and expose only gateway-local endpoints to the
+    sandbox; secrets must never become CLI arguments or runtime event data.
+    """
+
+    server_ids: tuple[str, ...] = ()
+
+
+EMPTY_RUNTIME_MCP_CONFIG = RuntimeMCPConfig()
+
+
+class RuntimeMCPUnavailableError(RuntimeError):
+    """Raised when MCP is requested before a runtime has a mediated path."""
+
+
 class AgentRuntime:
     """Base adapter. Subclasses override the three questions."""
 
@@ -78,6 +99,7 @@ class AgentRuntime:
         model: str,
         gateway_base_url: str,
         credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Return ``(argv, extra_env)`` to run this task headlessly."""
         raise NotImplementedError
@@ -89,6 +111,13 @@ class AgentRuntime:
     def capabilities(self) -> RuntimeCapabilities:
         """Describe what this runtime supports."""
         return RuntimeCapabilities()
+
+    def _require_empty_mcp_config(self, config: RuntimeMCPConfig) -> None:
+        """Fail closed until this adapter has a gateway-mediated MCP path."""
+        if config.server_ids:
+            raise RuntimeMCPUnavailableError(
+                f"runtime {self.name!r} cannot use MCP servers until the gateway broker is enabled"
+            )
 
     @staticmethod
     def _raw(line: str, reason: str) -> NormalizedEvent:
@@ -106,6 +135,22 @@ class ClaudeCodeRuntime(AgentRuntime):
     name = "claude-code"
     binary = "claude"
 
+    # `type: "system"` covers two unrelated things: a few genuine milestones,
+    # and progress telemetry. Only these are milestones. The distinction is not
+    # cosmetic — the first real job on staging stored 412 lifecycle events, 408
+    # of them `subtype: "thinking_tokens"`, so a counter became 408 rows in the
+    # append-only log, 408 SSE frames, and 408 ticked-off steps in the UI.
+    # An allowlist rather than a denylist: a CLI upgrade that invents another
+    # counter must not be able to flood the stream just because nobody had
+    # heard of it yet.
+    MILESTONE_SUBTYPES = frozenset({"init", "compact_boundary"})
+
+    def __init__(self) -> None:
+        """Track which unclassified subtypes this run has already reported."""
+        # One adapter instance per job (see get_runtime), so this is per-run
+        # state — the suppression below cannot leak across jobs.
+        self._reported_subtypes: set[str] = set()
+
     def prepare(
         self,
         *,
@@ -114,8 +159,10 @@ class ClaudeCodeRuntime(AgentRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Build the headless invocation and its environment."""
+        self._require_empty_mcp_config(mcp_config)
         argv = [
             self.binary,
             "-p",
@@ -125,6 +172,11 @@ class ClaudeCodeRuntime(AgentRuntime):
             "--output-format",
             "stream-json",
             "--verbose",
+            # A repository can commit .mcp.json and Claude otherwise starts
+            # its stdio commands before the model's first turn.  Platform MCP
+            # will be supplied explicitly through --mcp-config later; until
+            # then strict mode means the effective server set is empty.
+            "--strict-mcp-config",
             # The sandbox IS the boundary, so an interactive permission prompt
             # inside it has nothing left to protect — it only guarantees the
             # agent cannot do the work. Without this the CLI denies every write
@@ -162,10 +214,20 @@ class ClaudeCodeRuntime(AgentRuntime):
 
         kind = event.get("type")
         if kind == "system":
+            subtype = str(event.get("subtype") or "system").strip() or "system"
+            if subtype not in self.MILESTONE_SUBTYPES:
+                # Not discarded outright: the first occurrence is kept as a raw
+                # diagnostic so a subtype nobody has classified yet is still
+                # discoverable in the event log. Repeats are dropped, which is
+                # what turns 408 rows into 1.
+                if subtype in self._reported_subtypes:
+                    return None
+                self._reported_subtypes.add(subtype)
+                return self._raw(line, f"unclassified system subtype {subtype!r}")
             return NormalizedEvent(
                 LIFECYCLE,
                 {
-                    "phase": event.get("subtype") or "system",
+                    "phase": subtype,
                     "model": event.get("model"),
                     "runtime_version": event.get("claude_code_version"),
                 },
@@ -256,8 +318,8 @@ class ClaudeCodeRuntime(AgentRuntime):
 class CodexRuntime(AgentRuntime):
     """OpenAI Codex headless (``codex exec --json``).
 
-    Speaks the OpenAI surface, configured through a scratch ``CODEX_HOME`` so
-    nothing touches the operator's own Codex config.
+    Speaks the OpenAI surface, configured through command-line provider flags
+    so nothing writes to or depends on the operator's own Codex config.
     """
 
     name = "codex"
@@ -271,6 +333,7 @@ class CodexRuntime(AgentRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Build the headless invocation and its environment.
 
@@ -289,6 +352,7 @@ class CodexRuntime(AgentRuntime):
           so there is no scratch ``CODEX_HOME`` to write and nothing to leave
           behind. ``--ignore-user-config`` keeps the operator's own config out.
         """
+        self._require_empty_mcp_config(mcp_config)
         base = gateway_base_url.rstrip("/").removesuffix("/v1")
         provider = "hybridinference"
         argv = [
@@ -392,8 +456,10 @@ class GenericRuntime(AgentRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Expand the template into argv without ever invoking a shell."""
+        self._require_empty_mcp_config(mcp_config)
         argv = [
             part.replace("{prompt}", task_prompt).replace("{model}", model)
             for part in shlex.split(self.command_template)
@@ -415,9 +481,117 @@ class GenericRuntime(AgentRuntime):
         return NormalizedEvent(RAW, {"text": line[:4000]})
 
 
+class PiRuntime(GenericRuntime):
+    """Tier 2: the pi coding agent, streamed as raw JSON lines.
+
+    pi ignores ``OPENAI_BASE_URL`` — its built-in ``openai`` provider goes
+    straight to api.openai.com (verified against a local fake: zero hits, a
+    real OpenAI 401). The supported route is a custom provider in
+    ``~/.pi/agent/models.json``, so the sandbox image ships a reviewed
+    ``pi-freeinference`` wrapper that writes that file from this environment
+    and then ``exec``s the real CLI. The prompt stays in argv end to end;
+    nothing user-controlled passes through a shell.
+
+    ``--mode json`` output is structured (turn/message/usage events) but is
+    deliberately passed through as ``raw``: promotion to a normalizing Tier 1
+    adapter happens once real jobs prove the format worth pinning with
+    recorded fixtures, per the tier design.
+    """
+
+    name = "pi"
+
+    def __init__(self) -> None:
+        """Fix the wrapper invocation; Tier 2 mechanics come from Generic."""
+        super().__init__(
+            "pi-freeinference --provider freeinference --model {model} "
+            # pi has no native MCP client at the pinned version; MCP arrives
+            # through executable extensions, including project-local ones.
+            # Disable their discovery until the gateway supplies a reviewed
+            # extension explicitly.
+            "--mode json --no-session --no-extensions -p {prompt}",
+            binary="pi-freeinference",
+        )
+
+    def prepare(
+        self,
+        *,
+        workdir: str,
+        task_prompt: str,
+        model: str,
+        gateway_base_url: str,
+        credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
+    ) -> tuple[list[str], dict[str, str]]:
+        """Add the model id the wrapper writes into pi's provider config."""
+        argv, env = super().prepare(
+            workdir=workdir,
+            task_prompt=task_prompt,
+            model=model,
+            gateway_base_url=gateway_base_url,
+            credential=credential,
+            mcp_config=mcp_config,
+        )
+        # models.json wants the model listed under the provider; the wrapper
+        # cannot parse it back out of pi's argv without reimplementing pi's
+        # option handling, so hand it over explicitly.
+        env["PI_GATEWAY_MODEL"] = model
+        return argv, env
+
+
+class OpencodeRuntime(GenericRuntime):
+    """Tier 2: OpenCode headless, streamed as raw JSON lines.
+
+    Two verified facts shape the invocation. OpenCode ignores
+    ``OPENAI_BASE_URL``, and its built-in ``openai`` provider speaks the
+    Responses API; the ``opencode-freeinference`` wrapper instead declares a
+    provider over the **bundled** ``@ai-sdk/openai-compatible`` package
+    (chat-completions dialect, nothing downloaded at run time). And its
+    startup fetch of the models.dev catalog hard-fails offline, so the
+    wrapper disables it and declares the model in the config — without which
+    every sandboxed run dies before the first request.
+
+    ``--auto`` is the same lesson as Claude Code's bypassPermissions: the
+    sandbox is the boundary, and an interactive permission gate inside it
+    only guarantees the agent cannot do the work.
+    """
+
+    name = "opencode"
+
+    def __init__(self) -> None:
+        """Fix the wrapper invocation; Tier 2 mechanics come from Generic."""
+        super().__init__(
+            "opencode-freeinference run --format json --auto -m freeinference/{model} {prompt}",
+            binary="opencode-freeinference",
+        )
+
+    def prepare(
+        self,
+        *,
+        workdir: str,
+        task_prompt: str,
+        model: str,
+        gateway_base_url: str,
+        credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
+    ) -> tuple[list[str], dict[str, str]]:
+        """Add the model id the wrapper declares in OpenCode's config."""
+        argv, env = super().prepare(
+            workdir=workdir,
+            task_prompt=task_prompt,
+            model=model,
+            gateway_base_url=gateway_base_url,
+            credential=credential,
+            mcp_config=mcp_config,
+        )
+        env["OPENCODE_GATEWAY_MODEL"] = model
+        return argv, env
+
+
 _REGISTRY: dict[str, type[AgentRuntime]] = {
     ClaudeCodeRuntime.name: ClaudeCodeRuntime,
     CodexRuntime.name: CodexRuntime,
+    PiRuntime.name: PiRuntime,
+    OpencodeRuntime.name: OpencodeRuntime,
 }
 
 

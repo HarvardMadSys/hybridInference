@@ -6,6 +6,13 @@ All agents use the same FreeInference API key. If you don't have one yet, see th
 
 If you are choosing one default setup path, use Kilo Code. It works directly with FreeInference's OpenAI-compatible endpoint and has the most detailed setup guide below.
 
+```{toctree}
+:maxdepth: 1
+:hidden:
+
+claude-code
+```
+
 ## Kilo Code
 
 [Kilo Code](https://kilocode.ai) is an AI coding assistant that works well with FreeInference through the standard OpenAI-compatible endpoint.
@@ -32,9 +39,10 @@ If you are choosing one default setup path, use Kilo Code. It works directly wit
    | Use Case | Recommended Model |
    |----------|-------------------|
    | Default coding assistant | `glm-5.1` |
-   | Faster edit loops | `glm-5-turbo` |
+   | Faster edit loops | `qwen3.6-35b` |
    | Long context or image input | `minimax-m3` |
-   | Agentic coding | `kimi-k2.7-code` |
+   | Complex agentic coding | `deepseek-v4-flash` |
+   | Kimi coding model (Pro access) | `kimi-k2.7-code` |
 
 7. Save the settings.
 
@@ -77,39 +85,9 @@ If you are choosing one default setup path, use Kilo Code. It works directly wit
 
 ---
 
-## Claude Code
-
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) is Anthropic's official CLI coding agent. FreeInference provides an Anthropic-compatible endpoint so Claude Code works without an Anthropic API key.
-
-For the full walkthrough — model selection, verification, and troubleshooting — see the dedicated [Claude Code guide](claude-code.md).
-
-### Quick Setup (macOS / Linux)
-
-```bash
-FREEINFERENCE_API_KEY="your-key-here" bash setup_claude_code.sh
-```
-
-> **Security note:** Always review remote shell scripts before executing them. You can also clone this repository and run `ops/setup/setup_claude_code.sh` from your local checkout instead of fetching it over the network.
-
-### Manual Setup
-
-Edit `~/.claude/settings.json` (on Windows: `%USERPROFILE%\.claude\settings.json`):
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "https://freeinference.org/anthropic",
-    "ANTHROPIC_AUTH_TOKEN": "<your-freeinference-api-key>",
-    "ANTHROPIC_MODEL": "glm-5.1",
-    "ANTHROPIC_SMALL_FAST_MODEL": "glm-5-turbo",
-    "API_TIMEOUT_MS": "600000"
-  }
-}
-```
-
-Set `ANTHROPIC_MODEL` to a public FreeInference model — Claude Code's built-in
-Anthropic model defaults are not in the public catalog and return a `404`. See
-the [Claude Code guide](claude-code.md) for details.
+**Claude Code.** FreeInference provides an Anthropic-compatible gateway for
+Claude Code. Follow the dedicated [Claude Code guide](claude-code.md) for the
+current setup, model mappings, verification steps, and gateway limitations.
 
 ---
 
@@ -164,13 +142,13 @@ the [Claude Code guide](claude-code.md) for details.
      "tabAutocompleteModel": {
        "title": "FreeInference Autocomplete",
        "provider": "openai",
-       "model": "glm-5-turbo",
+       "model": "qwen3.6-35b",
        "apiBase": "https://freeinference.org/v1",
        "apiKey": "your-api-key-here"
       },
       "embeddingsProvider": {
         "provider": "openai",
-        "model": "your-embedding-model-id",
+        "model": "bge-m3",
         "apiBase": "https://freeinference.org/v1",
         "apiKey": "your-api-key-here"
       }
@@ -201,7 +179,7 @@ the [Claude Code guide](claude-code.md) for details.
    API Key: your-api-key-here
    ```
 
-5. Select your preferred model such as `glm-5.1`, `glm-5-turbo`, `minimax-m3`, or `kimi-k2.7-code`.
+5. Select a public model such as `glm-5.1`, `qwen3.6-35b`, `deepseek-v4-flash`, or `minimax-m3`. `kimi-k2.7-code` requires Pro access.
 
 6. Save settings and start using FreeInference.
 
@@ -299,7 +277,9 @@ console.log(response.choices[0].message.content);
 
 FreeInference exposes an embedding endpoint at `/v1/embeddings` and a Qdrant proxy at `/v1/qdrant` for codebase indexing in supported IDEs.
 
-> **Note:** Embedding model availability changes over time. Check `https://freeinference.org/v1/models` for the currently registered embedding model ID and substitute it in the examples below.
+> **Note:** The current embedding model is `bge-m3`. Model availability changes
+> over time, so check `https://freeinference.org/v1/models` before configuring a
+> new client.
 
 ### Roo Code
 
@@ -314,7 +294,7 @@ Roo Code natively supports OpenAI-compatible embedding providers.
 | **Embedder Provider** | OpenAI Compatible |
 | **Base URL** | `https://freeinference.org/v1` |
 | **API Key** | Your FreeInference API key |
-| **Model** | `your-embedding-model-id` |
+| **Model** | `bge-m3` |
 | **Model Dimension** | Matching model dimension |
 | **Qdrant URL** | `https://freeinference.org/v1/qdrant` |
 | **Qdrant API Key** | Your FreeInference API key |
@@ -336,7 +316,7 @@ Kilo Code supports OpenAI-compatible embedding configuration. To use FreeInferen
 | **Embedder Provider** | OpenAI Compatible |
 | **Base URL** | `https://freeinference.org/v1` |
 | **API Key** | Your FreeInference API key |
-| **Model** | `your-embedding-model-id` |
+| **Model** | `bge-m3` |
 | **Model Dimension** | Matching model dimension |
 | **Qdrant URL** | `https://freeinference.org/v1/qdrant` |
 | **Qdrant API Key** | Your FreeInference API key |
@@ -349,7 +329,7 @@ Continue supports embeddings for codebase indexing. Add an `embeddingsProvider` 
 {
   "embeddingsProvider": {
     "provider": "openai",
-    "model": "your-embedding-model-id",
+    "model": "bge-m3",
     "apiBase": "https://freeinference.org/v1",
     "apiKey": "your-api-key-here"
   }
@@ -380,7 +360,7 @@ client = OpenAI(
 )
 
 response = client.embeddings.create(
-    model="your-embedding-model-id",
+    model="bge-m3",
     input=["def hello():", "function greet() {"],
 )
 
@@ -392,7 +372,7 @@ for item in response.data:
 curl -X POST https://freeinference.org/v1/embeddings \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key-here" \
-  -d '{"model": "your-embedding-model-id", "input": "hello world"}'
+  -d '{"model": "bge-m3", "input": "hello world"}'
 ```
 
 ---
@@ -414,7 +394,7 @@ If you get "model not found" errors:
 
 - Check the [available models](models.md) list
 - Ensure the model name is exactly as listed (case-sensitive)
-- Try switching to a different model like `glm-5.1` or `glm-5-turbo`
+- Try switching to a different public model like `glm-5.1` or `qwen3.6-35b`
 
 ### Cursor-Specific Issues
 
@@ -427,15 +407,9 @@ If you get "model not found" errors:
 - Ensure there are no trailing slashes in the URL
 - The URL should be exactly: `https://freeinference.org/v1`
 
-### Claude Code Issues
-
-| Error | Cause | Fix |
-|-------|-------|-----|
-| 401 Authentication error | Bad API key | Check `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json` |
-| 404 Model not found | Model not in the public catalog (e.g. an unset Claude default) | Set `ANTHROPIC_MODEL` to a public model from `https://freeinference.org/v1/models` (e.g. `glm-5.1`) |
-| 429 Rate limited | Too many requests | Wait a minute and retry |
-| 503 Accounts unavailable | Subscription pool exhausted | Wait a minute and retry |
-| Connection timeout | Network issue | Check connectivity to `freeinference.org` |
+**Claude Code issues.** See the dedicated guide's
+[Troubleshooting](claude-code.md#troubleshooting) section for current gateway,
+authentication, and model-selection fixes.
 
 ### Kilo Code / Roo Code Issues
 
