@@ -66,7 +66,7 @@ export function SiteFooter(): JSX.Element {
   entries.push({
     key: 'terms',
     node: (
-      <Link href="/terms" className="hover:text-crimson">
+      <Link href="/terms" prefetch={false} className="hover:text-crimson">
         Terms
       </Link>
     ),
@@ -76,7 +76,7 @@ export function SiteFooter(): JSX.Element {
     entries.push({
       key: 'team',
       node: (
-        <Link href="/team" className="hover:text-crimson">
+        <Link href="/team" prefetch={false} className="hover:text-crimson">
           Team
         </Link>
       ),

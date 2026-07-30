@@ -18,7 +18,7 @@ export function Header() {
   return (
     <header className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-6">
       <div className="flex min-w-0 items-baseline gap-2">
-        <Link href="/" className="text-xl font-bold tracking-tight">
+        <Link href="/" prefetch={false} className="text-xl font-bold tracking-tight">
           {branding.appName}
         </Link>
         {branding.orgName && branding.orgUrl && (
@@ -48,6 +48,7 @@ export function Header() {
             {features.rag && (
               <Link
                 href="/chat"
+                prefetch={false}
                 className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
               >
                 Docs Assistant
