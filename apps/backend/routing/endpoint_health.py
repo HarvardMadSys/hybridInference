@@ -255,9 +255,14 @@ class _CircuitBreaker:
             # dropped page never mutes an outage that was never announced.
             now_dt = datetime.now(timezone.utc)
             usage_limit = detect_usage_limit(detail, now=now_dt)
-            if usage_limit is not None and (
-                self._alert_in_flight or now_dt.timestamp() < self._alert_suppressed_until
-            ):
+            # While the endpoint is inside a known usage-limit outage — a page is
+            # mid-delivery, or its mute deadline has not passed — stay silent no
+            # matter how *this* failure presents. A half-open re-trip often
+            # surfaces differently from the original 429 (e.g. KeyPoolExhausted
+            # once the key's 429-backoff exceeds the circuit cooldown, or a
+            # timeout); those must not resurrect the storm. Recovery (on_success)
+            # clears the mute, so a recovered endpoint re-arms.
+            if self._alert_in_flight or now_dt.timestamp() < self._alert_suppressed_until:
                 logger.info(
                     "circuit_open_alert_suppressed",
                     extra={
@@ -269,7 +274,7 @@ class _CircuitBreaker:
                             if self._alert_suppressed_until
                             else None
                         ),
-                        "window": usage_limit.window,
+                        "window": usage_limit.window if usage_limit is not None else "active",
                     },
                 )
                 return

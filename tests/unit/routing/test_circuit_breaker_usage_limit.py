@@ -62,6 +62,29 @@ async def test_usage_limit_alerts_once_then_suppresses_retrips(monkeypatch):
         mock_alert.assert_awaited_once()
 
 
+async def test_active_mute_suppresses_non_usage_limit_retrip(monkeypatch):
+    # Once an endpoint is muted for a usage-limit outage, a half-open re-trip that
+    # surfaces as a different error — e.g. KeyPoolExhausted once the key's
+    # 429-backoff exceeds the circuit cooldown, which carries no usage marker —
+    # must stay muted rather than resurrect the storm.
+    _trip_env(monkeypatch)
+    cb = _CircuitBreaker(provider="zai:api.z.ai:443")
+
+    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)  # trip + page
+        await _drain_alert_tasks()
+        mock_alert.assert_awaited_once()
+        assert cb._alert_suppressed_until > 0.0
+
+        # Half-open re-trip fails locally with a non-usage-limit error.
+        cb.state = _CircuitState.HALF_OPEN
+        cb.on_failure(reason="KeyPoolExhausted", detail="KeyPoolExhausted: all keys cooling down")
+        assert cb.state == _CircuitState.OPEN
+        await _drain_alert_tasks()
+        mock_alert.assert_awaited_once()  # still just the one page
+
+
 async def test_usage_limit_realerts_after_reset(monkeypatch):
     _trip_env(monkeypatch)
     cb = _CircuitBreaker(provider="zai:api.z.ai:443")
