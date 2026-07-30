@@ -24,14 +24,18 @@ and hand back a line stream. They do not know what an agent is.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import os
 import secrets
 import shlex
 import shutil
 import signal
+import struct
 import subprocess
+import termios
 import threading
+import tty
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -350,10 +354,12 @@ class _ContainerTerminalProcess(TerminalProcess):
         *,
         docker_binary: str,
         container_name: str,
+        input_fd: int | None,
     ) -> None:
         self._process = process
         self._docker_binary = docker_binary
         self._container_name = container_name
+        self._input_fd = input_fd
         self._state_lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._killed = False
@@ -367,16 +373,35 @@ class _ContainerTerminalProcess(TerminalProcess):
     def write(self, data: bytes) -> None:
         """Forward terminal input to the attached container."""
         with self._write_lock:
-            if self._process.poll() is not None or self._process.stdin is None:
+            if self._process.poll() is not None or self._input_fd is None:
                 raise SandboxError("terminal is closed")
             try:
-                self._process.stdin.write(data)
-                self._process.stdin.flush()
-            except (BrokenPipeError, OSError) as exc:
+                remaining = memoryview(data)
+                while remaining:
+                    written = os.write(self._input_fd, remaining)
+                    if written == 0:
+                        raise OSError("terminal input closed")
+                    remaining = remaining[written:]
+            except OSError as exc:
                 raise SandboxError("terminal is closed") from exc
+
+    def _close_input(self) -> None:
+        """Close the host PTY exactly once, serialized against writers."""
+        with self._write_lock:
+            input_fd = self._input_fd
+            self._input_fd = None
+            if input_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(input_fd)
 
     def resize(self, rows: int, cols: int) -> None:
         """Resize the named container's allocated TTY."""
+        with self._write_lock:
+            if self._input_fd is not None:
+                try:
+                    _set_pty_size(self._input_fd, rows, cols)
+                except OSError as exc:
+                    raise SandboxError("terminal cannot be resized") from exc
         try:
             result = subprocess.run(
                 [
@@ -471,11 +496,20 @@ class _ContainerTerminalProcess(TerminalProcess):
                 )
             if not client_stopped or self._process.poll() is None:
                 raise SandboxError("terminal Docker client could not be stopped")
+            self._close_input()
             self._killed = True
 
     def wait(self) -> int:
         """Wait for the attached Docker client and return its status."""
-        return self._process.wait()
+        try:
+            return self._process.wait()
+        finally:
+            self._close_input()
+
+
+def _set_pty_size(fd: int, rows: int, cols: int) -> None:
+    """Set a host PTY size using the platform's native winsize structure."""
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
 class ContainerBackend(SandboxBackend):
@@ -978,19 +1012,34 @@ class ContainerBackend(SandboxBackend):
                 "image": self.image,
             },
         )
-        process = subprocess.Popen(
-            command,
-            env={**os.environ},
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            bufsize=0,
-            start_new_session=True,
-        )
+        master_fd, slave_fd = os.openpty()
+        try:
+            _set_pty_size(slave_fd, rows, cols)
+            tty.setraw(slave_fd)
+            process = subprocess.Popen(
+                command,
+                env={**os.environ},
+                # Docker refuses ``--tty`` unless its own stdin is a TTY. The
+                # browser writes to the PTY master while Docker inherits the
+                # slave; stdout remains a pipe for the broker's output pump.
+                stdin=slave_fd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=0,
+                start_new_session=True,
+            )
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(master_fd)
+            raise
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(slave_fd)
         terminal = _ContainerTerminalProcess(
             process,
             docker_binary=self.docker_binary,
             container_name=container_name,
+            input_fd=master_fd,
         )
         # Docker accepts resize only after the container has reached running.
         # The frontend sends its measured size again when the pane mounts, so
