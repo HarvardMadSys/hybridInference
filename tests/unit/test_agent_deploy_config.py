@@ -254,18 +254,19 @@ def test_both_substrates_pin_the_same_agent_cli_versions():
     workflow = path.read_text()
     image = _DOCKERFILE.read_text()
 
-    for name in ("CLAUDE_CODE_VERSION", "CODEX_VERSION", "PI_VERSION"):
+    for name in ("CLAUDE_CODE_VERSION", "CODEX_VERSION", "PI_VERSION", "OPENCODE_VERSION"):
         pinned = re.search(rf"^ARG {name}=(\S+)$", image, re.MULTILINE)
         assert pinned, f"{name} must be pinned in the sandbox image"
         assert f'{name}: "{pinned.group(1)}"' in workflow, (
             f"{name} differs between the sandbox image and the Actions workflow"
         )
 
-    # pi is reached through a wrapper, so a substrate that installs the CLI
-    # but not the wrapper produces jobs that die at spawn with "binary
-    # missing" — both substrates must ship it.
-    assert "pi-freeinference" in image, "the sandbox image does not install the pi wrapper"
-    assert "pi-freeinference" in workflow, "the Actions runner does not install the pi wrapper"
+    # pi and OpenCode are reached through wrappers, so a substrate that
+    # installs the CLI but not the wrapper produces jobs that die at spawn
+    # with "binary missing" — both substrates must ship both.
+    for wrapper in ("pi-freeinference", "opencode-freeinference"):
+        assert wrapper in image, f"the sandbox image does not install {wrapper}"
+        assert wrapper in workflow, f"the Actions runner does not install {wrapper}"
 
 
 def test_the_runner_reads_the_bounds_the_overlay_configures(monkeypatch, compose: dict):
@@ -473,6 +474,109 @@ def test_pi_wrapper_refuses_to_run_half_configured(tmp_path):
             "HOME": str(tmp_path),
             "OPENAI_BASE_URL": "http://backend:8080/v1",
             # OPENAI_API_KEY and PI_GATEWAY_MODEL deliberately absent.
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 64
+    assert "OPENAI_API_KEY" in result.stderr
+
+
+_OPENCODE_WRAPPER = Path(__file__).resolve().parents[2] / "deploy/docker/opencode-freeinference"
+
+
+def test_opencode_wrapper_writes_config_sets_offline_flags_and_execs(tmp_path):
+    """The wrapper produces OpenCode's config and kills its phone-home paths.
+
+    A stub ``opencode`` on PATH records argv and the environment it received.
+    The offline flags are the load-bearing part: without
+    OPENCODE_DISABLE_MODELS_FETCH the CLI hard-fails fetching models.dev,
+    which in the deny-all sandbox is every single run.
+    """
+    import json as _json
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    record = tmp_path / "seen.json"
+    stub = stub_dir / "opencode"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "seen = {'argv': sys.argv[1:], 'env': {k: v for k, v in os.environ.items()"
+        " if k.startswith('OPENCODE_')}}\n"
+        f"open({str(record)!r}, 'w').write(json.dumps(seen))\n"
+    )
+    stub.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    prompt = 'fix; the $(bug) "carefully"'
+    result = _subprocess.run(
+        [
+            _sys.executable,
+            str(_OPENCODE_WRAPPER),
+            "run",
+            "--format",
+            "json",
+            "--auto",
+            "-m",
+            "freeinference/glm-5.1",
+            prompt,
+        ],
+        env={
+            "PATH": f"{stub_dir}:{_os.environ['PATH']}",
+            "HOME": str(home),
+            "OPENAI_BASE_URL": "http://backend:8080/v1",
+            "OPENAI_API_KEY": "ajt.attempt.key",
+            "OPENCODE_GATEWAY_MODEL": "glm-5.1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    seen = _json.loads(record.read_text())
+    assert seen["argv"] == [
+        "run",
+        "--format",
+        "json",
+        "--auto",
+        "-m",
+        "freeinference/glm-5.1",
+        prompt,
+    ]
+    assert seen["env"]["OPENCODE_DISABLE_MODELS_FETCH"] == "1"
+    assert seen["env"]["OPENCODE_DISABLE_DEFAULT_PLUGINS"] == "1"
+    assert seen["env"]["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+
+    config = _json.loads(Path(seen["env"]["OPENCODE_CONFIG"]).read_text())
+    provider = config["provider"]["freeinference"]
+    assert provider["npm"] == "@ai-sdk/openai-compatible"
+    assert provider["options"]["baseURL"] == "http://backend:8080/v1"
+    assert provider["options"]["apiKey"] == "ajt.attempt.key"
+    assert provider["models"] == {"glm-5.1": {"name": "glm-5.1"}}
+    # The config lives in HOME, never in the job worktree.
+    assert seen["env"]["OPENCODE_CONFIG"].startswith(str(home))
+
+
+def test_opencode_wrapper_refuses_to_run_half_configured(tmp_path):
+    """Missing environment is a named refusal, not a run that dials out."""
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+
+    result = _subprocess.run(
+        [_sys.executable, str(_OPENCODE_WRAPPER), "run", "hi"],
+        env={
+            "PATH": _os.environ["PATH"],
+            "HOME": str(tmp_path),
+            "OPENAI_BASE_URL": "http://backend:8080/v1",
+            # OPENAI_API_KEY and OPENCODE_GATEWAY_MODEL deliberately absent.
         },
         capture_output=True,
         text=True,

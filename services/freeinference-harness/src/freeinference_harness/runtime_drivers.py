@@ -241,6 +241,89 @@ def run_runtime_pi_smoke(
         )
 
 
+def run_runtime_opencode_smoke(
+    target: TargetConfig,
+    scenario: ScenarioConfig,
+) -> dict[str, Any]:
+    """Runs `opencode run` against the target via a scratch config file.
+
+    Mirrors the sandbox's ``opencode-freeinference`` wrapper: a provider over
+    the SDK package bundled in the binary (chat-completions dialect), with the
+    models.dev catalog fetch disabled — OpenCode hard-fails without it when
+    offline — and the model declared explicitly, which the disabled catalog
+    makes mandatory.
+    """
+    binary = shutil.which("opencode")
+    if binary is None:
+        return _skip_missing("opencode")
+
+    prompt, expected_token = _smoke_prompt(scenario)
+    with tempfile.TemporaryDirectory(prefix="agent-loop-opencode-") as tmp:
+        config_path = Path(tmp) / "opencode.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "provider": {
+                        "harness": {
+                            "npm": "@ai-sdk/openai-compatible",
+                            "name": "harness",
+                            "options": {
+                                "baseURL": f"{target.base_url.rstrip('/').removesuffix('/v1')}/v1",
+                                "apiKey": target.api_key or "harness-local",
+                            },
+                            "models": {target.model: {"name": target.model}},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = _base_env()
+        env.update(
+            {
+                "OPENCODE_CONFIG": str(config_path),
+                "OPENCODE_DISABLE_MODELS_FETCH": "1",
+                "OPENCODE_DISABLE_AUTOUPDATE": "1",
+                "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
+            }
+        )
+        command = [
+            binary,
+            "run",
+            "--format",
+            "json",
+            "--auto",
+            "-m",
+            f"harness/{target.model}",
+            prompt,
+        ]
+        return _run_and_check(
+            command,
+            env=env,
+            timeout_seconds=target.timeout_seconds,
+            expected_token=expected_token,
+            runtime_name="opencode",
+            result_extractor=_extract_opencode_result,
+        )
+
+
+def _extract_opencode_result(stdout: str) -> str:
+    """Collects assistant text from OpenCode's ``--format json`` event lines."""
+    texts: list[str] = []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "text":
+            continue
+        part = event.get("part") or {}
+        text = part.get("text")
+        if isinstance(text, str) and text:
+            texts.append(text)
+    return "\n".join(texts) if texts else stdout
+
+
 def _extract_pi_result(stdout: str) -> str:
     """Collects assistant text from pi's ``--mode json`` event lines."""
     texts: list[str] = []

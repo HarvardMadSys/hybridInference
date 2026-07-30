@@ -466,10 +466,58 @@ class PiRuntime(GenericRuntime):
         return argv, env
 
 
+class OpencodeRuntime(GenericRuntime):
+    """Tier 2: OpenCode headless, streamed as raw JSON lines.
+
+    Two verified facts shape the invocation. OpenCode ignores
+    ``OPENAI_BASE_URL``, and its built-in ``openai`` provider speaks the
+    Responses API; the ``opencode-freeinference`` wrapper instead declares a
+    provider over the **bundled** ``@ai-sdk/openai-compatible`` package
+    (chat-completions dialect, nothing downloaded at run time). And its
+    startup fetch of the models.dev catalog hard-fails offline, so the
+    wrapper disables it and declares the model in the config — without which
+    every sandboxed run dies before the first request.
+
+    ``--auto`` is the same lesson as Claude Code's bypassPermissions: the
+    sandbox is the boundary, and an interactive permission gate inside it
+    only guarantees the agent cannot do the work.
+    """
+
+    name = "opencode"
+
+    def __init__(self) -> None:
+        """Fix the wrapper invocation; Tier 2 mechanics come from Generic."""
+        super().__init__(
+            "opencode-freeinference run --format json --auto -m freeinference/{model} {prompt}",
+            binary="opencode-freeinference",
+        )
+
+    def prepare(
+        self,
+        *,
+        workdir: str,
+        task_prompt: str,
+        model: str,
+        gateway_base_url: str,
+        credential: str,
+    ) -> tuple[list[str], dict[str, str]]:
+        """Add the model id the wrapper declares in OpenCode's config."""
+        argv, env = super().prepare(
+            workdir=workdir,
+            task_prompt=task_prompt,
+            model=model,
+            gateway_base_url=gateway_base_url,
+            credential=credential,
+        )
+        env["OPENCODE_GATEWAY_MODEL"] = model
+        return argv, env
+
+
 _REGISTRY: dict[str, type[AgentRuntime]] = {
     ClaudeCodeRuntime.name: ClaudeCodeRuntime,
     CodexRuntime.name: CodexRuntime,
     PiRuntime.name: PiRuntime,
+    OpencodeRuntime.name: OpencodeRuntime,
 }
 
 

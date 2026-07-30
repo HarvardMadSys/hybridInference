@@ -17,6 +17,7 @@ from serving.agent_jobs.runtimes import (
     ClaudeCodeRuntime,
     CodexRuntime,
     GenericRuntime,
+    OpencodeRuntime,
     PiRuntime,
     get_runtime,
 )
@@ -178,7 +179,10 @@ def test_registry_resolution_and_refusal():
     assert isinstance(get_runtime("claude-code"), ClaudeCodeRuntime)
     assert isinstance(get_runtime("codex"), CodexRuntime)
     assert isinstance(get_runtime("pi"), PiRuntime)
-    assert isinstance(get_runtime("opencode", generic_command="opencode run"), GenericRuntime)
+    assert isinstance(get_runtime("opencode"), OpencodeRuntime)
+    assert isinstance(
+        get_runtime("some-new-cli", generic_command="some-new-cli run"), GenericRuntime
+    )
     with pytest.raises(KeyError):
         get_runtime("does-not-exist")
 
@@ -213,6 +217,38 @@ def test_pi_runtime_targets_the_gateway_through_its_wrapper():
     assert env["PI_GATEWAY_MODEL"] == "glm-5.1"
     # Tier 2: structured or not, pi's output is passed through as raw.
     assert runtime.parse_event('{"type":"turn_start"}').event_type == "raw"
+    assert runtime.capabilities().tier == 2
+
+
+def test_opencode_runtime_targets_the_gateway_through_its_wrapper():
+    """OpenCode is invoked via the wrapper, with everything it needs.
+
+    OpenCode ignores OPENAI_BASE_URL and its built-in openai provider speaks
+    the Responses API; the wrapper declares a chat-completions provider over
+    the SDK package bundled in the binary and disables the models.dev fetch
+    that otherwise hard-fails every offline run.
+    """
+    runtime = OpencodeRuntime()
+    argv, env = runtime.prepare(
+        workdir="/tmp/x",
+        task_prompt="fix the bug; then run tests",
+        model="glm-5.1",
+        gateway_base_url="http://backend:8080",
+        credential="ajt.a.b",
+    )
+
+    assert argv[0] == "opencode-freeinference"
+    assert runtime.binary == "opencode-freeinference"
+    assert "fix the bug; then run tests" in argv
+    # The model rides inside the provider-qualified -m argument.
+    assert argv[argv.index("-m") + 1] == "freeinference/glm-5.1"
+    # The sandbox is the boundary; an interactive permission gate inside it
+    # only guarantees the agent cannot do the work.
+    assert "--auto" in argv
+    assert env["OPENAI_BASE_URL"] == "http://backend:8080/v1"
+    assert env["OPENAI_API_KEY"] == "ajt.a.b"
+    assert env["OPENCODE_GATEWAY_MODEL"] == "glm-5.1"
+    assert runtime.parse_event('{"type":"text"}').event_type == "raw"
     assert runtime.capabilities().tier == 2
 
 
