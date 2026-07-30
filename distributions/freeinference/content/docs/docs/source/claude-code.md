@@ -1,165 +1,132 @@
 # Claude Code
 
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) is Anthropic's
-official CLI coding agent. FreeInference exposes an **Anthropic-compatible
-Messages endpoint**, so Claude Code works against FreeInference without an
-Anthropic subscription — you just point it at the FreeInference base URL,
-authenticate with your FreeInference API key, and select one of FreeInference's
-public models.
+[Claude Code](https://code.claude.com/docs/en/overview) is Anthropic's CLI
+coding agent. FreeInference exposes an Anthropic-compatible Messages endpoint,
+so you can run Claude Code through FreeInference with a FreeInference API key.
 
-If you don't have a key yet, register at
+If you do not have a key yet, register at
 [https://freeinference.org](https://freeinference.org) and create one from the
 dashboard. See the [Quick Start](quickstart.md) for details.
 
 ## How it works
 
-Claude Code speaks the Anthropic Messages API. FreeInference accepts that
-format at:
-
-```
-https://freeinference.org/anthropic/v1/messages
-```
-
-so the base URL Claude Code should use is:
+Claude Code sends Anthropic Messages API requests to the configured gateway.
+For FreeInference, use this base URL:
 
 ```
 https://freeinference.org/anthropic
 ```
 
-Requests in Anthropic format are translated and routed to FreeInference's
-public models, then translated back into Anthropic format for Claude Code. You
-authenticate with your FreeInference API key (`hyi-...`) — no `ANTHROPIC_API_KEY`
-from Anthropic is needed.
+Claude Code appends `/v1/messages`; FreeInference translates and routes those
+requests to public models, then returns Anthropic-format responses. Authenticate
+with your FreeInference key (`hyi-...`) through `ANTHROPIC_AUTH_TOKEN`; you do
+not need an Anthropic API key.
 
-> **Defaults work, but pinning is better.** Claude Code's built-in default
-> model IDs (`claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5`) are
-> recognized and served by budget models from the public catalog
-> (see [Choosing a model](#choosing-a-model)). For predictable quality and
-> availability, set `ANTHROPIC_MODEL` explicitly to a public model such as
-> `minimax-m3`.
+The current Claude-family aliases resolve as follows:
+
+| Claude Code selection | FreeInference model |
+|-----------------------|---------------------|
+| Opus / `claude-opus-4-8` | `deepseek-v4-flash` |
+| Sonnet / `claude-sonnet-5` | `deepseek-v4-flash` |
+| Haiku / background tasks | `qwen3.6-35b` |
+
+Pinning the models in your settings, as shown below, keeps this mapping
+predictable when Claude Code changes its built-in defaults.
 
 ## One-click setup (macOS / Linux)
 
-FreeInference ships a setup script that configures
-`~/.claude/settings.json` and runs a connectivity check.
+Download the setup script so you can inspect it before running it:
 
 ```bash
-# Download first so you can inspect it, then run it
 curl -fsSL -o setup_claude_code.sh \
   https://doc.freeinference.org/setup_claude_code.sh
+less setup_claude_code.sh
 bash setup_claude_code.sh
 ```
 
-The script prompts for your API key. To run it non-interactively, supply the
-key through the `FREEINFERENCE_API_KEY` environment variable:
+The script prompts for your API key, merges the FreeInference settings into
+`~/.claude/settings.json`, and checks connectivity. For non-interactive setup:
 
 ```bash
 FREEINFERENCE_API_KEY="hyi-your-api-key" bash setup_claude_code.sh
 ```
 
-The script configures the base URL, auth token, and public default models
-(`minimax-m3` for main work, `qwen3.6-35b` for background tasks), then runs a
-connectivity check. To use a different model, override `FREEINFERENCE_MODEL`
-(and `FREEINFERENCE_SMALL_FAST_MODEL`) in the environment before running it, or
-edit `ANTHROPIC_MODEL` afterwards as shown in [Manual setup](#manual-setup).
+It pins `minimax-m3` for main work and `qwen3.6-35b` for Haiku/background
+calls. Set `FREEINFERENCE_MODEL` or `FREEINFERENCE_HAIKU_MODEL` before running
+the script to choose different accessible models.
 
-> **Security note:** Always review remote shell scripts before executing them.
-> If you have repository access, you can instead run
-> `ops/setup/setup_claude_code.sh` from a local checkout.
+> **Security note:** Review remote shell scripts before running them. If you
+> have a repository checkout, you can run `ops/setup/setup_claude_code.sh`
+> directly instead.
 
 ## Manual setup
 
-Edit `~/.claude/settings.json` (on Windows:
-`%USERPROFILE%\.claude\settings.json`) and add the `env` block below. If the
-file already has settings, merge the keys into the existing `env` object
-rather than overwriting it.
+Edit `~/.claude/settings.json` (Windows:
+`%USERPROFILE%\.claude\settings.json`). Merge these keys with any existing
+settings instead of replacing the whole file:
 
 ```json
 {
+  "model": "minimax-m3",
   "env": {
     "ANTHROPIC_BASE_URL": "https://freeinference.org/anthropic",
     "ANTHROPIC_AUTH_TOKEN": "hyi-your-api-key",
-    "ANTHROPIC_MODEL": "minimax-m3",
-    "ANTHROPIC_SMALL_FAST_MODEL": "qwen3.6-35b",
-    "API_TIMEOUT_MS": "600000"
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "minimax-m3",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "minimax-m3",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen3.6-35b"
   }
 }
 ```
 
-| Variable | Purpose |
-|----------|---------|
-| `ANTHROPIC_BASE_URL` | Points Claude Code at the FreeInference Anthropic endpoint. |
-| `ANTHROPIC_AUTH_TOKEN` | Your FreeInference API key (`hyi-...`). Sent as the auth credential. |
-| `ANTHROPIC_MODEL` | The FreeInference model Claude Code uses for its main work. |
-| `ANTHROPIC_SMALL_FAST_MODEL` | The model Claude Code uses for lightweight background tasks. |
-| `API_TIMEOUT_MS` | Request timeout. `600000` (10 min) is recommended for long agentic turns. |
+| Setting | Purpose |
+|---------|---------|
+| `model` | Main model used when a new session starts. |
+| `ANTHROPIC_BASE_URL` | Routes Claude Code to the FreeInference Anthropic endpoint. |
+| `ANTHROPIC_AUTH_TOKEN` | Sends your FreeInference key as the bearer credential. |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL` | Maps the Opus selection to the main model. |
+| `ANTHROPIC_DEFAULT_SONNET_MODEL` | Maps the Sonnet selection to the main model. |
+| `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Maps Haiku and lightweight background work to the smaller model. |
 
-> **Claude Code ≥ 2.1.198 also needs a shell export.** Recent Claude Code
-> versions no longer apply `ANTHROPIC_BASE_URL` from the settings-file `env`
-> block — requests silently go to `api.anthropic.com`, which rejects
-> FreeInference keys with `Failed to authenticate. API Error: 401 Invalid
-> bearer token`. Add the base URL to your shell profile as well
-> (`~/.bashrc`, `~/.zshrc`, or equivalent):
->
-> ```bash
-> export ANTHROPIC_BASE_URL="https://freeinference.org/anthropic"
-> ```
->
-> The other variables (auth token, models) still work from
-> `settings.json`, which keeps your API key out of shell config files. The
-> [one-click script](#one-click-setup-macos--linux) does both steps for you.
+Claude Code supports environment variables in the `env` block, so no shell
+profile export is required. `ANTHROPIC_SMALL_FAST_MODEL` is deprecated; use
+`ANTHROPIC_DEFAULT_HAIKU_MODEL` instead. Claude Code already provides a default
+API timeout, so a custom `API_TIMEOUT_MS` is not needed for normal setup.
 
-Restart any running `claude` session (and open a new terminal so the export
-takes effect), then run `claude` in a project directory to start.
+Restart any running Claude Code session after changing the settings.
 
-## Choosing a model
+## Choosing and checking a model
 
-FreeInference serves its public catalog under its own model IDs (GLM, Qwen,
-MiniMax). The Anthropic endpoint accepts these IDs directly, so point Claude
-Code at one with `ANTHROPIC_MODEL`:
+The recommended defaults are:
 
 | Model | Best for |
 |-------|----------|
-| `minimax-m3` | Default main model — long context and image input |
-| `qwen3.6-35b` | Default background model — fast, non-reasoning |
-| `glm-5.1` | Balanced alternative for everyday coding |
-| `glm-5-turbo` | Faster edit loops |
+| `minimax-m3` | Setup default; long-context or image-aware work |
+| `deepseek-v4-flash` | Complex coding and agentic work; long context and tool use |
+| `qwen3.6-35b` | Fast background and lightweight tasks |
+| `glm-5.1` | General-purpose coding alternative |
 
-Claude Code also runs a lightweight model for background tasks — set
-`ANTHROPIC_SMALL_FAST_MODEL` so that one resolves to a public model too (e.g.
-`qwen3.6-35b`). Both variables are in the [Manual setup](#manual-setup) block
-above.
+Inside Claude Code, run `/model` to view or change the current session model.
+Run `/status` to confirm the active model and authentication/provider status.
+`/model` changes the current session; edit the top-level `model` setting to
+change the default for future sessions.
 
-Fetch the live catalog at any time:
+You can fetch the catalog available to your key at any time:
 
 ```bash
 curl https://freeinference.org/v1/models \
   -H "Authorization: Bearer hyi-your-api-key"
 ```
 
-> **Note on Claude model IDs.** Claude Code's current default IDs are served
-> by public catalog models: `claude-opus-4-8` (and the `[1m]` long-context
-> variant) resolves to `minimax-m3`, while `claude-sonnet-5` and
-> `claude-haiku-4-5` resolve to `qwen3.6-35b`. So Claude Code works without
-> setting any model — just be aware the defaults are budget models, and
-> `qwen3.6-35b` is hosted on FreeInference's own GPUs, which can be briefly
-> unavailable during maintenance. Legacy IDs like `claude-3-5-sonnet-latest`
-> resolve to internal Claude models and require elevated access; on a public
-> key they return a `404`.
+See [Available Models](models.md) for model descriptions and access levels.
 
-See the [Available Models](models.md) page for the full catalog and the
-[API Headers Reference](api_headers.md) for supported headers such as
-`anthropic-version` and `anthropic-beta`.
+## Verify the endpoint
 
-## Verify it works
-
-Send a one-shot request straight to the endpoint. Claude Code clients send the
-key in the `x-api-key` header; `Authorization: Bearer` is also accepted.
+Send a one-shot request directly to the Anthropic-compatible endpoint:
 
 ```bash
 curl -X POST https://freeinference.org/anthropic/v1/messages \
   -H "Content-Type: application/json" \
-  -H "x-api-key: hyi-your-api-key" \
+  -H "Authorization: Bearer hyi-your-api-key" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
     "model": "minimax-m3",
@@ -168,38 +135,45 @@ curl -X POST https://freeinference.org/anthropic/v1/messages \
   }'
 ```
 
-A `200` with a `message` payload means you're set. A `429` means the key works
-but you're momentarily rate limited — your configuration is still correct.
-
-> **Keep `max_tokens` generous.** MiniMax and GLM models are reasoning
-> models: they spend hidden thinking tokens before emitting visible text.
-> With a very small
-> `max_tokens` (say 64) the whole budget can go to reasoning and the response
-> comes back `200` with **empty** `content` and
-> `stop_reason: "max_tokens"` — that's a budget problem, not a setup problem.
-
-Then just run:
+A `200` response with a `message` payload confirms the endpoint and key work.
+A `429` means the endpoint recognized the request but is currently rate
+limited. Then start Claude Code in a project directory:
 
 ```bash
 claude
 ```
 
+## Gateway limitations
+
+The FreeInference setup supports normal terminal coding workflows through the
+Anthropic Messages API, including streaming and tool use supported by the
+selected model. It does not provide an Anthropic subscription or reproduce
+every Anthropic-hosted service.
+
+Features that require a Claude.ai login or Anthropic cloud infrastructure may
+be unavailable with a FreeInference API key. This includes Remote Control
+(which does not support API-key authentication), Claude Code on the web/mobile,
+and account-dependent features such as voice. Other new Claude Code features
+may depend on Anthropic-specific beta headers or model behavior and should be
+tested before relying on them through the gateway.
+
 ## Troubleshooting
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| "Failed to authenticate. API Error: 401 Invalid bearer token" | Claude Code ≥ 2.1.198 ignored `ANTHROPIC_BASE_URL` from `settings.json` and sent your FreeInference key to `api.anthropic.com` | Export `ANTHROPIC_BASE_URL` in your shell profile (see [Manual setup](#manual-setup)), open a new terminal, retry |
-| "There's an issue with the selected model (…). It may not exist or you may not have access to it." | The configured model is not currently in the catalog — either a typo'd ID, or a FreeInference-hosted model (e.g. `qwen3.6-35b`) that is temporarily offline for GPU maintenance | List the live catalog (`https://freeinference.org/v1/models`) and switch to an available model — set `ANTHROPIC_MODEL` (e.g. `glm-5.1`) or use `/model` inside Claude Code, then restart |
-| 401 Authentication error | Bad or missing API key | Check `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json` |
-| 404 Model not found | Model ID not in the public catalog | Set `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` to a model from `https://freeinference.org/v1/models` (e.g. `glm-5.1`) |
-| 200 but empty `content`, `stop_reason: "max_tokens"` | Reasoning model spent the whole tiny `max_tokens` budget on hidden thinking | Raise `max_tokens` (1024+), or use a non-reasoning model for small calls |
-| 429 Rate limited | Too many concurrent/total requests | Wait a moment and retry |
-| 503 Accounts unavailable | Upstream pool exhausted | Wait a moment and retry |
-| Connection timeout | Network issue | Confirm connectivity to `freeinference.org`; raise `API_TIMEOUT_MS` |
+| 401 authentication error | Missing or invalid FreeInference key | Check `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` in `~/.claude/settings.json`. |
+| "There's an issue with the selected model" | The model ID is unavailable to your key or temporarily offline | Run `/model`, or choose an ID returned by `/v1/models`; update the top-level `model` setting for future sessions. |
+| 404 model not found | A Claude alias or explicit model is not mapped to an available public model | Pin `model` and the three `ANTHROPIC_DEFAULT_*_MODEL` variables as shown in [Manual setup](#manual-setup). |
+| 200 but empty `content`, `stop_reason: "max_tokens"` | A reasoning model used the small output budget for thinking | Increase `max_tokens` (for example, to 1024 or more). |
+| 429 rate limited | Too many concurrent or total requests | Wait briefly and retry. |
+| 503 accounts unavailable | The upstream pool is temporarily exhausted | Wait briefly and retry. |
+| Connection timeout | Network or gateway connectivity issue | Confirm access to `freeinference.org` and retry. |
 
 ## See also
 
-- [Quick Start](quickstart.md) — get an API key in a few minutes
-- [IDE & Coding Agent Integrations](integrations.md) — other agents and IDEs
-- [Available Models](models.md) — full model catalog
-- [API Headers Reference](api_headers.md) — authentication and custom headers
+- [Quick Start](quickstart.md) — create an API key
+- [IDE & Coding Agent Integrations](integrations.md) — configure other agents
+- [Available Models](models.md) — browse the model catalog
+- [API Headers Reference](api_headers.md) — authentication and Anthropic headers
+- [Claude Code model configuration](https://code.claude.com/docs/en/model-config)
+- [Claude Code LLM gateway configuration](https://code.claude.com/docs/en/llm-gateway-connect)

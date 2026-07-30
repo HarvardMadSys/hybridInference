@@ -1,7 +1,7 @@
 # Claude Code Setup
 
-Point Claude Code at a HybridInference gateway instead of Anthropic, so it uses
-whatever models that gateway serves and whatever key it issues you.
+Point Claude Code at a HybridInference gateway instead of Anthropic, so it
+uses the models and API key issued by that deployment.
 
 ## Setup
 
@@ -10,76 +10,88 @@ Windows):
 
 ```json
 {
+  "model": "<gateway-model-id>",
   "env": {
     "ANTHROPIC_BASE_URL": "https://<your-gateway>/anthropic",
-    "ANTHROPIC_AUTH_TOKEN": "<your-api-key>",
-    "API_TIMEOUT_MS": "600000"
+    "ANTHROPIC_AUTH_TOKEN": "<your-api-key>"
   }
 }
 ```
 
-`/anthropic` is the gateway's Anthropic-compatible surface — the same one
-`/v1/messages` is served from. `API_TIMEOUT_MS` is raised because a long
-agentic turn can exceed the client default.
+`/anthropic` is the gateway's Anthropic-compatible surface; Claude Code sends
+Messages API requests to `/anthropic/v1/messages`. Current Claude Code
+versions read both gateway variables from the `settings.json` `env` block, so
+no shell-profile export is required.
 
-**Claude Code 2.1.198 and later also need the base URL in the environment.**
-Those versions withhold API-routing variables from the `settings.json` env
-block and fall back to `api.anthropic.com`, where a gateway key fails
-authentication — the settings file alone silently does nothing. Export it from
-your shell profile as well:
+The top-level `model` setting is optional. It selects the initial model and can
+also be changed with `/model`. Claude Code's default request timeout is already
+600 seconds; only add `API_TIMEOUT_MS` if a deployment needs a different value.
 
-```bash
-echo 'export ANTHROPIC_BASE_URL="https://<your-gateway>/anthropic"' >> ~/.zshrc
+For the client-side behavior, see Anthropic's current
+[LLM gateway](https://code.claude.com/docs/en/llm-gateway-connect),
+[model configuration](https://code.claude.com/docs/en/model-config), and
+[installation](https://code.claude.com/docs/en/installation) documentation.
+
+## Model Families and Aliases
+
+Claude Code can send Anthropic family IDs such as `claude-opus-4-8`,
+`claude-sonnet-5`, and `claude-haiku-4-5`. The gateway resolves those IDs
+through aliases in its deployed `models.yaml`. Ask the deployment for
+`GET /v1/models` before assuming a family ID is registered.
+
+To map Claude Code's family selectors explicitly, add any of these supported
+variables to the same `env` block:
+
+```json
+{
+  "ANTHROPIC_DEFAULT_OPUS_MODEL": "<gateway-model-id>",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL": "<gateway-model-id>",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "<fast-gateway-model-id>"
+}
 ```
 
-Keep the token in `settings.json` only, so no secret lands in a shell profile.
-Some deployments ship a script that does both; check the gateway's own
-documentation.
+Use the Haiku mapping for Claude Code's smaller background calls.
+`ANTHROPIC_SMALL_FAST_MODEL` is deprecated in current Claude Code; use
+`ANTHROPIC_DEFAULT_HAIKU_MODEL` instead.
 
-## Which models you get
+Legacy dated Anthropic IDs (`claude-3-5-sonnet-latest`,
+`claude-sonnet-4-5`) first pass through the gateway's fixed compatibility
+table in `serving/adapters/anthropic_aliases.py`. Register the rewritten model
+ID as an alias, not only the legacy source ID. A `404` means the deployment has
+no route for the final ID.
 
-Claude Code sends its default model IDs (`claude-opus-4-8`, `claude-sonnet-5`,
-`claude-haiku-4-5`). A gateway resolves those through the aliases in its
-`config/models.yaml`, so what you actually reach depends on that deployment's
-catalogue — ask it for `/v1/models`, or read its user documentation.
+The FreeInference deployment publishes its current mapping at
+[doc.freeinference.org](https://doc.freeinference.org/claude-code.html#choosing-a-model).
 
-Legacy dated Anthropic IDs (`claude-3-5-sonnet-latest`, `claude-sonnet-4-5`)
-do **not** resolve the same way. They go through a fixed table in
-`serving/adapters/anthropic_aliases.py` first — `claude-3-5-sonnet-latest`
-becomes `claude-sonnet-4.6` before any route lookup — so a deployment that
-registers the legacy ID as a YAML alias will still not see it. What has to
-exist is the model the table rewrites it to.
-
-Either way, a `404` is the gateway saying it serves no such model, not that
-the model does not exist.
-
-The FreeInference deployment publishes its own mapping at
-[doc.freeinference.org](https://doc.freeinference.org/claude-code.html#choosing-a-model),
-as a worked example of what a deployment's documentation covers here.
-
-## Usage
+## Usage and Verification
 
 ```bash
 cd your-project
 claude
 ```
 
-All Claude Code features (tool use, file editing, search) work normally.
+Use `/status` to confirm the active model and gateway configuration, and
+`/model` to change the model. Local agent features such as tool use, file
+editing, and search continue to work when the selected gateway model supports
+the required tool calls.
+
+Gateway credentials do not enable every Anthropic-hosted surface. For example,
+Remote Control and voice mode are unavailable through an LLM gateway, and
+Claude web or Slack sessions do not inherit this local gateway configuration.
 
 ## Troubleshooting
 
 | Error | Cause | Fix |
 |-------|-------|-----|
 | 401 Authentication error | Bad API key | Check `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json` |
-| 404 Model not found | The gateway registers no alias for the ID your client sent | Ask it for `/v1/models`; do not override `ANTHROPIC_DEFAULT_*_MODEL` unless you know what it serves |
-| 429 Rate limited | Too many requests | Wait a minute and retry |
-| 503 Accounts unavailable | The upstream pool that model routes to is exhausted | Wait a minute and retry |
-| Connection timeout | Network issue, or the gateway is down | Check connectivity to your `ANTHROPIC_BASE_URL` |
+| 404 Model not found | The gateway registers no route for the final model ID | Query `GET /v1/models`, then update `model` or the matching `ANTHROPIC_DEFAULT_*_MODEL` |
+| 429 Rate limited | Too many requests | Wait and retry |
+| 502/503 Upstream unavailable | The selected route or provider is unavailable | Retry or choose another model |
+| 504/timeout | A gateway or upstream request exceeded its deadline | Check gateway health, then adjust timeouts only if needed |
 
 ## Uninstall
 
-Remove the three env vars from `~/.claude/settings.json`, or delete the file:
-
-```bash
-rm ~/.claude/settings.json
-```
+Remove the FreeInference or gateway-specific `model` value and the
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and
+`ANTHROPIC_DEFAULT_*_MODEL` keys from `~/.claude/settings.json`. Preserve any
+unrelated Claude Code settings and environment variables in the file.

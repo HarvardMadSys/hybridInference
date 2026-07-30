@@ -23,7 +23,8 @@ Choose your coding agent below and follow the steps. If you want the fastest age
    - API Key: `your-api-key-here`
 6. Select a model:
    - `glm-5.1` for general coding tasks
-   - `glm-5-turbo` for faster edits and shorter loops
+   - `qwen3.6-35b` for faster edits and shorter loops
+   - `deepseek-v4-flash` for complex agentic work
    - `minimax-m3` for long-context or image-aware work
 7. Save the settings
 8. Start a new Kilo Code session and send a short prompt to verify the connection
@@ -40,7 +41,7 @@ Choose your coding agent below and follow the steps. If you want the fastest age
 ### Claude Code
 
 ```bash
-curl -fsSL -o setup_claude_code.sh https://raw.githubusercontent.com/HarvardMadSys/hybridInference/main/ops/setup/setup_claude_code.sh
+curl -fsSL -o setup_claude_code.sh https://doc.freeinference.org/setup_claude_code.sh
 # Inspect the script before running (recommended):
 less setup_claude_code.sh
 bash setup_claude_code.sh

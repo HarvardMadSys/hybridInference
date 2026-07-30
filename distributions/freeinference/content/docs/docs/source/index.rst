@@ -62,29 +62,29 @@ Available Models
 
 .. list-table::
    :header-rows: 1
-   :widths: 40 30 30
+   :widths: 32 18 50
 
    * - Model
      - Context Length
      - Best For
    * - GLM-5.1
      - 200K tokens
-     - Latest GLM-5 generation
-   * - **GLM-5 Turbo** :sup:`recommended`
-     - 200K tokens
-     - Faster GLM-5 variant
-   * - GLM-4.7
-     - 200K tokens
-     - Long context, bilingual
+     - General coding, bilingual, thinking
+   * - **DeepSeek V4 Flash** :sup:`agentic`
+     - 1M tokens
+     - Complex coding and long reasoning chains
+   * - **Qwen3.6 35B** :sup:`fastest`
+     - 262K tokens
+     - Quick edits and background calls
+   * - MiniMax M3
+     - 1M tokens
+     - Long-context and multimodal work
    * - MiniMax M2.5
      - 205K tokens
-     - Ultra-long context, multimodal
-   * - MiniMax M2.7
-     - 205K tokens
-     - Large codebases
-   * - Qwen3.6 35B :sup:`fastest`
+     - General reasoning with long output
+   * - DiffusionGemma
      - 262K tokens
-     - Strong reasoning and coding intelligence
+     - Fast local text generation
 
 See the complete :doc:`models` list for all available models.
 

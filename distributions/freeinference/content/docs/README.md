@@ -31,8 +31,9 @@ FreeInference provides free access to state-of-the-art language models for codin
    - API Key: `your-api-key-here`
 6. Pick a model:
    - `glm-5.1` for general coding work
-   - `glm-5-turbo` for faster iterations
-   - `minimax-m2.5` for long context or image input
+   - `qwen3.6-35b` for faster iterations
+   - `minimax-m3` for long-context or multimodal work
+   - `deepseek-v4-flash` for complex agentic coding
 7. Save settings and start a new Kilo Code session
 
 ### Cursor Setup
@@ -56,12 +57,16 @@ FreeInference provides free access to state-of-the-art language models for codin
 
 ## Available Models
 
-- **GLM-4.7** - 200K context, bilingual coding assistant
-- **GLM-5.1** - 200K context, enhanced version
-- **GLM-5 Turbo** - 200K context, performance variant
-- **Qwen3.6 35B** - 262K context, strong reasoning and coding intelligence
-- **MiniMax M2.7** - 205K context
-- **MiniMax M2.5** - 205K context, multimodal (text + image)
+- **GLM-5.1** - 200K context, general coding and bilingual work
+- **DeepSeek V4 Flash** - 1M context, agentic coding and reasoning
+- **Qwen3.6 35B** - 262K context, fast non-thinking model
+- **MiniMax M3** - 1M context, multimodal input
+- **MiniMax M2.5** - 205K context, thinking mode
+- **DiffusionGemma** - 262K context, fast local text model
+
+Pro-enabled keys also expose **GLM-5.2** and **Kimi K2.7 Code**. Query
+`GET https://freeinference.org/v1/models` with your API key for the current
+catalog available to your account.
 
 See the [Models documentation](https://doc.freeinference.org/models.html) for the complete list.
 
