@@ -742,3 +742,124 @@ class TestPendingResolutionRetriesOffTheSweepTimer:
         # A successful sweep close is a confirmed close: no bound left behind.
         assert not _TRANSITIONS._firing
         assert not _TRANSITIONS._bounds
+
+
+class TestReBreachDuringAnInFlightRecoverySend:
+    """The narrowest window: the condition re-breaks while a recovery send is
+    on the wire.
+
+    The breach path pops the pending entry and (for a state alert) re-creates
+    firing state, but the send that is already in flight completes afterwards.
+    Cleanup after that send must re-validate what it is cleaning: an
+    unconditional ``forget`` would erase the live incident's state and, for a
+    state alert, silently spend the only healthy edge its close will ever get.
+    """
+
+    @staticmethod
+    async def _circuit(breached: bool) -> bool:
+        return await alert_on_transition(
+            key="circuit_open:zhipu",
+            breached=breached,
+            severity=AlertSeverity.ERROR,
+            title="Provider circuit opened",
+            context=dict,
+            cooldown_sec=0,
+            kind="state",
+        )
+
+    async def test_the_edge_close_does_not_forget_a_mid_send_re_breach(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        recoveries = []
+
+        async def post(_url, message):
+            if "Recovered" in message:
+                recoveries.append(message)
+                if len(recoveries) == 1:
+                    # Re-opens while the recovery is on the wire. Its firing
+                    # send is dropped by the in-flight guard; only the tracker
+                    # state records that the breach is live again.
+                    await self._circuit(True)
+            return True
+
+        with patch("serving.observability.alerts._post_to_slack", new=post):
+            await self._circuit(True)
+            await self._circuit(False)
+            # The re-breach must still be tracked after the stale close...
+            assert _STATE_TRANSITIONS.is_firing("circuit_open:zhipu")
+            # ...so the eventual real close still announces.
+            closed = await self._circuit(False)
+
+        assert closed is True
+        assert len(recoveries) == 2
+        assert not _STATE_TRANSITIONS._firing
+        assert not _STATE_TRANSITIONS._bounds
+
+    async def test_the_retry_does_not_forget_a_mid_send_re_breach(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        recoveries = []
+
+        async def post(_url, message):
+            if "Recovered" not in message:
+                return True
+            recoveries.append(message)
+            if len(recoveries) == 1:
+                # The edge close fails, which is what queues the retry.
+                return False
+            if len(recoveries) == 2:
+                # Re-opens while the sweep's retry send is on the wire.
+                await self._circuit(True)
+            return True
+
+        with patch("serving.observability.alerts._post_to_slack", new=post):
+            await self._circuit(True)
+            failed_close = await self._circuit(False)
+            assert failed_close is False
+            assert "circuit_open:zhipu" in _PENDING_RESOLUTIONS
+            await sweep_stale_breaches()
+
+            # The re-breach cancelled the entry mid-send; the delivered text is
+            # stale, but the incident must stay tracked for its real close.
+            assert _STATE_TRANSITIONS.is_firing("circuit_open:zhipu")
+            assert "circuit_open:zhipu" not in _PENDING_RESOLUTIONS
+            closed = await self._circuit(False)
+
+        assert closed is True
+        assert not _STATE_TRANSITIONS._firing
+        assert not _STATE_TRANSITIONS._bounds
+
+    async def test_the_stale_sweep_does_not_forget_a_mid_send_re_breach(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        clock = [1_000.0]
+        monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+
+        async def refire():
+            await alert_on_transition(
+                key="failed_request_rate",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Failed-request rate exceeded",
+                context=dict,
+                cooldown_sec=0,
+                stale_after=3_600.0,
+                now=clock[0],
+            )
+
+        async def post(_url, message):
+            if "no recent samples" in message:
+                # Traffic returns and the metric re-breaches while the sweep's
+                # close is on the wire.
+                await refire()
+            return True
+
+        with patch("serving.observability.alerts._post_to_slack", new=post):
+            await refire()
+            clock[0] += 3_600.0
+            await sweep_stale_breaches()
+
+        # The fresh incident survives the sweep's cleanup, with its own bound.
+        assert _TRANSITIONS.is_firing("failed_request_rate")
+        assert "failed_request_rate" in _TRANSITIONS._bounds

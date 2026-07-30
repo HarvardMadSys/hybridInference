@@ -559,10 +559,16 @@ async def alert_on_transition(
         status="resolved",
     )
     if sent:
-        # Confirmed close: drop the key's staleness bound too, or dynamic keys
-        # (per-user cost, per-period budgets) leave one ``_bounds`` entry each
-        # behind forever.
-        tracker.forget(key)
+        # Confirmed close — but only when no re-breach slipped in while the
+        # send was in flight. ``observe`` deleted the firing state on the
+        # resolved edge, so any state present *now* is a new incident opened by
+        # a concurrent ``breached=True`` call; forgetting it would untrack a
+        # live breach and, for a state alert, silently spend the only healthy
+        # edge its close will ever get. On a clean close ``forget`` just drops
+        # the staleness bound, which dynamic keys (per-user cost, per-period
+        # budgets) would otherwise leak one entry each.
+        if not tracker.is_firing(key):
+            tracker.forget(key)
         _PENDING_RESOLUTIONS.pop(key, None)
     else:
         # ``observe`` already cleared the key, so without this the only
@@ -595,6 +601,10 @@ async def sweep_stale_breaches() -> None:
     # retry there is, and for a metric alert it beats waiting out a fresh
     # settling period that may never come if traffic stopped.
     for key, pending in list(_PENDING_RESOLUTIONS.items()):
+        if _PENDING_RESOLUTIONS.get(key) is not pending:
+            # A re-breach cancelled this entry after the snapshot: the breach
+            # is live again and this recovery would announce it as over.
+            continue
         tracker = _TRANSITIONS if pending.kind == "metric" else _STATE_TRANSITIONS
         sent = False
         try:
@@ -609,7 +619,15 @@ async def sweep_stale_breaches() -> None:
         except Exception:
             # One stuck resolution must not strand every other pending one.
             log.exception("pending resolution retry failed for %s", key)
-        if sent:
+        # Re-validate identity after the await too: a re-breach while the send
+        # was in flight popped this entry, and the firing state it holds now
+        # belongs to a live incident — ``forget`` would untrack it and spend
+        # its future healthy edge. The stale "Recovered" text may already have
+        # reached the channel (nothing can unsend it); what matters is that
+        # the tracker stays correct so the next real transition re-announces
+        # and eventually closes properly. The check is race-free because no
+        # await sits between the send returning and this line.
+        if sent and _PENDING_RESOLUTIONS.get(key) is pending:
             _PENDING_RESOLUTIONS.pop(key, None)
             # Confirmed close: clears the re-armed firing state and the key's
             # staleness bound in one step.
@@ -634,6 +652,13 @@ async def sweep_stale_breaches() -> None:
         except Exception:
             # One stuck resolution must not strand every other open incident.
             log.exception("stale breach resolution failed for %s", key)
+        if _TRANSITIONS.is_firing(key):
+            # The metric re-breached while the send was in flight and opened a
+            # fresh incident: leave its state (and the bound the new ``observe``
+            # just set) alone. Forgetting would untrack the live breach;
+            # re-arming would overwrite its liveness clock with a backdated one
+            # and set up a premature no-samples close.
+            continue
         if sent:
             # Confirmed close: without this, dynamic keys (per-user cost,
             # per-period budgets) each leave a ``_bounds`` entry behind forever.
