@@ -1,8 +1,15 @@
 # Alert Control Plane Worker
 
-This package contains the staged implementation of the unified alert control
-plane described in
-[`docs/agents/specs/2026-07-20-unified-alert-control-plane-target-design.zh.md`](../../docs/agents/specs/2026-07-20-unified-alert-control-plane-target-design.zh.md).
+This service is **status-monitor's alerting backend**. All three status-monitor
+alert types — individual `model_unavailable` incidents (#1032), storm as one
+incident per model (#1050), and `monitoring_cycle_failure` (#1059, #1065) —
+submit through the internal Service Binding and deliver as threaded Slack
+incidents. That is this worker's terminal scope: the once-planned migration of
+the backend gateway's `alert_slack` producers was terminated (see issue #1103),
+and the gateway stays on its own webhook path permanently. The original
+unified-target design is
+[`docs/agents/specs/2026-07-20-unified-alert-control-plane-target-design.zh.md`](../../docs/agents/specs/2026-07-20-unified-alert-control-plane-target-design.zh.md),
+kept as history.
 
 It owns the canonical alert contract, per-incident Durable Object state,
 SQLite outbox, alarm scheduling, deterministic rendering, Slack sink, principal
@@ -11,11 +18,7 @@ ingress. `CONTROL_PLANE_MODE=staging-runtime` composes the C1 executors while
 keeping public ingress closed. C2 uses the separate
 `CONTROL_PLANE_MODE=staging-ingress` gate and opens `/v1/events` only when every
 runtime, identity, and registry binding validates. The checked-in example has
-no mode or credential, so it remains dormant. C3c migrated the first real
-producer: status-monitor's individual `model_unavailable` incidents (at or
-below its storm threshold) submit through the internal Service Binding. Storm
-summaries, cycle alerts, and every backend `alert_slack` producer remain on
-the legacy relay/webhook path.
+no mode or credential, so it remains dormant.
 
 ## Current Phase C2/C3c boundaries
 
@@ -220,15 +223,18 @@ separate approval.
 - C2 uses the GitHub-OIDC registry verifier and manual synthetic lifecycle
   described above. The live Slack readback gate remains a separate
   prerequisite and does not substitute for the full lifecycle.
-- C3 inventories writers by call path. Today that includes status-monitor's
-  relay/webhook fallback and the backend `alert_slack` helper used by endpoint
-  health, alert rules, the failed-request alerter, and health routes.
+- C3 inventoried writers by call path. status-monitor's legacy relay/webhook
+  path survives only as the `ALERT_DEFAULT_OWNER=legacy` /
+  `ALERT_CYCLE_OWNER=legacy` rollback mode. The backend `alert_slack` helper
+  (endpoint health, alert rules, the failed-request alerter, health routes) is
+  a permanent non-goal per issue #1103.
 - C3b rollout was target-first: the control-plane lifecycle ran before the
   caller gained its Version Metadata + Service Binding and synthetic gate.
   C3c (#1032) then performed the single-writer cutover:
   `ALERT_DEFAULT_OWNER=control-plane`, so new individual model incidents open
   on the Control Plane while pre-cutover incidents drain through their pinned
-  legacy writer. Storm and cycle alerts still deliver via relay/webhook only.
+  legacy writer. Storm (#1050) and cycle (#1059, #1065) followed the same
+  cutover pattern and are live on the control plane.
 - A migrated producer retries the same canonical `event_id` when the control
   plane is unavailable. It must not fall back through V1 relay or a direct
   Slack webhook, and old/new writers must never shadow by both posting.
