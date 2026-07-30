@@ -146,9 +146,7 @@ class FakeAgentJobStore:
         )
         return job
 
-    async def fork_thread(
-        self, *, source_job_id: str, user_id: str
-    ) -> dict[str, Any] | None:
+    async def fork_thread(self, *, source_job_id: str, user_id: str) -> dict[str, Any] | None:
         source = self.jobs.get(source_job_id)
         if source is None or source["user_id"] != user_id:
             return None
@@ -159,8 +157,7 @@ class FakeAgentJobStore:
             (
                 job
                 for job in self.jobs.values()
-                if job["thread_id"] == source["thread_id"]
-                and job["turn_no"] <= source["turn_no"]
+                if job["thread_id"] == source["thread_id"] and job["turn_no"] <= source["turn_no"]
             ),
             key=lambda job: job["turn_no"],
         )
