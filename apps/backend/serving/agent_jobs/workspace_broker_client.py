@@ -66,9 +66,11 @@ class WorkspaceBrokerClient:
         return body
 
     async def files(self, workspace_id: str, path: str) -> dict[str, Any]:
+        """Read one file or directory from a live workspace."""
         return await self._request("GET", workspace_id, "files", params={"path": path})
 
     async def write_file(self, workspace_id: str, path: str, content: str) -> dict[str, Any]:
+        """Replace one UTF-8 file in a live workspace."""
         return await self._request(
             "PUT", workspace_id, "files", params={"path": path}, json={"content": content}
         )
@@ -76,6 +78,7 @@ class WorkspaceBrokerClient:
     async def terminal(
         self, workspace_id: str, *, command: str, cwd: str, timeout_seconds: float
     ) -> dict[str, Any]:
+        """Execute one bounded command in an isolated workspace sandbox."""
         return await self._request(
             "POST",
             workspace_id,
@@ -85,6 +88,7 @@ class WorkspaceBrokerClient:
         )
 
     async def git(self, workspace_id: str, base_sha: str | None = None) -> dict[str, Any]:
+        """Read live status, base-relative diff, and recent commits."""
         params = {"base_sha": base_sha} if base_sha else None
         return await self._request("GET", workspace_id, "git", params=params, timeout=70)
 
