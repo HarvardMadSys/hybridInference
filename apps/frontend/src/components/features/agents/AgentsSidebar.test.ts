@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AgentJob } from './types';
-import { groupJobsByConversation } from './AgentsSidebar';
+import { groupJobsByConversation, groupJobsByProject } from './AgentsSidebar';
 
 function job(overrides: Partial<AgentJob>): AgentJob {
   return {
@@ -79,5 +79,35 @@ describe('groupJobsByConversation', () => {
     );
 
     expect(sections.map((section) => section.label)).toEqual(['Today', 'Previous 7 days', 'Older']);
+  });
+});
+
+describe('groupJobsByProject', () => {
+  const at = (day: number, hour = 1) => new Date(2026, 6, day, hour).toISOString();
+
+  it('orders projects by their most recent conversation and labels them by repo name', () => {
+    const sections = groupJobsByProject([
+      job({ id: 'a1', threadId: 'a', repo: 'murphy/awesome-mlsys', createdAt: at(20) }),
+      job({ id: 'h1', threadId: 'h', repo: 'murphy/hybridInference', createdAt: at(29) }),
+      job({ id: 'a2', threadId: 'a2', repo: 'murphy/awesome-mlsys', createdAt: at(24) }),
+    ]);
+
+    expect(sections.map((section) => section.label)).toEqual(['hybridInference', 'awesome-mlsys']);
+    expect(sections[0].repo).toBe('murphy/hybridInference');
+    expect(sections[1].conversations.map((row) => row.job.id)).toEqual(['a2', 'a1']);
+  });
+
+  it('keeps every turn of a conversation in one project folder', () => {
+    const sections = groupJobsByProject([
+      job({ id: 'turn-2', threadId: 't', turnNo: 2, title: 'Follow-up', createdAt: at(29, 10) }),
+      job({ id: 'turn-1', threadId: 't', turnNo: 1, title: 'First ask', createdAt: at(29, 9) }),
+    ]);
+
+    expect(sections).toHaveLength(1);
+    expect(sections[0].conversations).toHaveLength(1);
+    expect(sections[0].conversations[0]).toMatchObject({
+      job: { id: 'turn-2', title: 'First ask' },
+      jobIds: ['turn-1', 'turn-2'],
+    });
   });
 });

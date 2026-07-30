@@ -132,6 +132,23 @@ class AgentJobListResponse(BaseModel):
     jobs: list[AgentJobResponse]
 
 
+class AgentProject(BaseModel):
+    """One repo the caller has run tasks in, summarized for the task tree."""
+
+    repo: str
+    # Conversations, not turns — the sidebar shows one row per conversation.
+    task_count: int
+    # Non-terminal jobs, so a collapsed project can still show live work.
+    active_count: int
+    last_activity_at: str | None = None
+
+
+class AgentProjectListResponse(BaseModel):
+    """Every project the caller has tasks in, most recently active first."""
+
+    projects: list[AgentProject]
+
+
 class AgentJobEvent(BaseModel):
     """One normalized event from an agent job's append-only stream."""
 

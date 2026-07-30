@@ -288,13 +288,56 @@ class FakeAgentJobStore:
         return self.jobs.get(job_id)
 
     async def list_jobs(
-        self, *, user_id: str, limit: int = 50, archived: bool = False
+        self,
+        *,
+        user_id: str,
+        limit: int = 50,
+        archived: bool = False,
+        repo: str | None = None,
     ) -> list[dict[str, Any]]:
         return [
             job
             for job in self.jobs.values()
-            if job["user_id"] == user_id and (job["thread_id"] in self.archived_threads) is archived
+            if job["user_id"] == user_id
+            and (job["thread_id"] in self.archived_threads) is archived
+            and (repo is None or job["repo"] == repo)
         ][:limit]
+
+    async def list_projects(self, *, user_id: str, archived: bool = False) -> list[dict[str, Any]]:
+        projects: dict[str, dict[str, Any]] = {}
+        for job in self.jobs.values():
+            if job["user_id"] != user_id:
+                continue
+            if (job["thread_id"] in self.archived_threads) is not archived:
+                continue
+            project = projects.setdefault(
+                job["repo"],
+                {
+                    "repo": job["repo"],
+                    "task_count": 0,
+                    "active_count": 0,
+                    "last_activity_at": None,
+                    "_threads": set(),
+                },
+            )
+            project["_threads"].add(job["thread_id"])
+            project["task_count"] = len(project["_threads"])
+            if job["state"] in {"queued", "waiting", "running", "publishing"}:
+                project["active_count"] += 1
+            created = job.get("created_at")
+            if created is not None and (
+                project["last_activity_at"] is None or created > project["last_activity_at"]
+            ):
+                project["last_activity_at"] = created
+        for project in projects.values():
+            project.pop("_threads")
+        return sorted(
+            projects.values(),
+            key=lambda project: (
+                project["last_activity_at"] or datetime.min.replace(tzinfo=timezone.utc)
+            ),
+            reverse=True,
+        )
 
     async def set_thread_archived(
         self, *, job_id: str, user_id: str, archived: bool
@@ -625,6 +668,41 @@ async def test_create_get_list_round_trip(client: AsyncClient):
 
     listed = await client.get("/v1/agent/jobs")
     assert [job["id"] for job in listed.json()["jobs"]] == [job_id]
+
+
+async def test_jobs_page_by_repo_and_projects_summarize_the_task_tree(client: AsyncClient):
+    """The sidebar groups by project, so it pages one repo and lists them all."""
+    first = await _create_job(client)
+    second = await client.post(
+        "/v1/agent/jobs",
+        json={"repo": "o/n", "task_prompt": "a second project", "model": "glm-5.1"},
+    )
+    assert second.status_code == 201
+
+    one_repo = await client.get("/v1/agent/jobs?repo=owner/name")
+    assert [job["id"] for job in one_repo.json()["jobs"]] == [first]
+
+    projects = (await client.get("/v1/agent/projects")).json()["projects"]
+    by_repo = {project["repo"]: project for project in projects}
+    assert set(by_repo) == {"owner/name", "o/n"}
+    assert by_repo["o/n"]["task_count"] == 1
+    assert by_repo["o/n"]["active_count"] == 1
+
+
+async def test_repo_filter_rejects_a_value_git_would_read_as_an_option(client: AsyncClient):
+    """The filter is shape-checked like the create field it mirrors."""
+    rejected = await client.get("/v1/agent/jobs?repo=--upload-pack=sh")
+    assert rejected.status_code == 422
+
+
+async def test_archived_threads_leave_the_active_project_tree(client: AsyncClient):
+    """A project with nothing but archived work is not an active folder."""
+    job_id = await _create_job(client)
+    assert (await client.post(f"/v1/agent/jobs/{job_id}/archive")).status_code == 200
+
+    assert (await client.get("/v1/agent/projects")).json() == {"projects": []}
+    archived = (await client.get("/v1/agent/projects?archived=true")).json()["projects"]
+    assert [project["repo"] for project in archived] == ["owner/name"]
 
 
 async def test_archive_and_restore_filter_the_entire_thread_without_cancelling(

@@ -41,6 +41,7 @@ from serving.agent_jobs.egress import (
     build_policy_from_env as build_egress_policy,
 )
 from serving.agent_jobs.entitlement import (
+    REPO_PATTERN,
     RepoNotAllowed,
     repos_for_user,
     require_entitled_repo,
@@ -91,6 +92,8 @@ from serving.schemas_agent_jobs import (
     AgentJobEventsResponse,
     AgentJobListResponse,
     AgentJobResponse,
+    AgentProject,
+    AgentProjectListResponse,
     AgentTerminalRequest,
     AgentTerminalResponse,
     AgentThreadArchiveResponse,
@@ -909,13 +912,43 @@ async def create_agent_job(
 async def list_agent_jobs(
     limit: int = Query(50, ge=1, le=200),
     archived: bool = Query(False),
+    repo: str | None = Query(None, pattern=REPO_PATTERN, max_length=140),
     user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
 ) -> AgentJobListResponse:
-    """List jobs from the authenticated user's active or archived threads."""
+    """List jobs from the authenticated user's active or archived threads.
+
+    ``repo`` narrows the page to one project. It is a filter over what the
+    caller already owns, not an access grant, so an unentitled repo is not an
+    error here — it simply matches none of their rows.
+    """
     job_store = _require_store(store)
-    jobs = await job_store.list_jobs(user_id=user["user_id"], limit=limit, archived=archived)
+    jobs = await job_store.list_jobs(
+        user_id=user["user_id"], limit=limit, archived=archived, repo=repo
+    )
     return AgentJobListResponse(jobs=[_job_response(job) for job in jobs])
+
+
+@router.get("/projects", response_model=AgentProjectListResponse)
+async def list_agent_projects(
+    archived: bool = Query(False),
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> AgentProjectListResponse:
+    """Summarize the caller's projects for the sidebar's task tree."""
+    job_store = _require_store(store)
+    projects = await job_store.list_projects(user_id=user["user_id"], archived=archived)
+    return AgentProjectListResponse(
+        projects=[
+            AgentProject(
+                repo=project["repo"],
+                task_count=project["task_count"],
+                active_count=project["active_count"],
+                last_activity_at=_iso(project["last_activity_at"]),
+            )
+            for project in projects
+        ]
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=AgentJobResponse)

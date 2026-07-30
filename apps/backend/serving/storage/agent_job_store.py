@@ -232,6 +232,10 @@ class AgentJobStore:
                 "ON agent_jobs(thread_id, turn_no)"
             )
             await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_jobs_user_repo "
+                "ON agent_jobs(user_id, repo, created_at DESC)"
+            )
+            await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS agent_attempts (
                     id BIGSERIAL PRIMARY KEY,
@@ -1088,13 +1092,22 @@ class AgentJobStore:
         return _job_row_to_dict(row) if row else None
 
     async def list_jobs(
-        self, *, user_id: str, limit: int = 50, archived: bool = False
+        self,
+        *,
+        user_id: str,
+        limit: int = 50,
+        archived: bool = False,
+        repo: str | None = None,
     ) -> list[dict[str, Any]]:
-        """List a user's jobs from active or archived threads, newest first."""
+        """List a user's jobs from active or archived threads, newest first.
+
+        ``repo`` narrows the page to one project, which is how the sidebar
+        pages a single project past the global newest-first window.
+        """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT {_JOB_COLUMNS} FROM agent_jobs "
-                "WHERE user_id = $1 AND EXISTS ("
+                "WHERE user_id = $1 AND ($4::text IS NULL OR repo = $4) AND EXISTS ("
                 "    SELECT 1 FROM agent_threads t "
                 "    WHERE t.id = agent_jobs.thread_id AND t.user_id = $1 "
                 "      AND (($3 AND t.archived_at IS NOT NULL) "
@@ -1103,8 +1116,48 @@ class AgentJobStore:
                 user_id,
                 limit,
                 archived,
+                repo,
             )
         return [_job_row_to_dict(row) for row in rows]
+
+    async def list_projects(self, *, user_id: str, archived: bool = False) -> list[dict[str, Any]]:
+        """Summarize a user's repos, most recently active first.
+
+        The sidebar groups tasks by project, so it needs every repo the user
+        has ever run in — not just those represented in the newest-first job
+        page, which would silently drop dormant projects from the tree.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT repo,
+                       COUNT(DISTINCT thread_id) AS task_count,
+                       COUNT(*) FILTER (
+                           WHERE state IN ('queued', 'waiting', 'running', 'publishing')
+                       ) AS active_count,
+                       MAX(created_at) AS last_activity_at
+                FROM agent_jobs
+                WHERE user_id = $1 AND EXISTS (
+                    SELECT 1 FROM agent_threads t
+                    WHERE t.id = agent_jobs.thread_id AND t.user_id = $1
+                      AND (($2 AND t.archived_at IS NOT NULL)
+                           OR (NOT $2 AND t.archived_at IS NULL))
+                )
+                GROUP BY repo
+                ORDER BY last_activity_at DESC
+                """,
+                user_id,
+                archived,
+            )
+        return [
+            {
+                "repo": row["repo"],
+                "task_count": int(row["task_count"]),
+                "active_count": int(row["active_count"]),
+                "last_activity_at": row["last_activity_at"],
+            }
+            for row in rows
+        ]
 
     async def set_thread_archived(
         self, *, job_id: str, user_id: str, archived: bool

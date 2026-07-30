@@ -264,11 +264,40 @@ export interface CreateAgentJobRequest {
   budget_usd?: number;
 }
 
-export async function listAgentJobs(limit = 50, archived = false): Promise<AgentJobApi[]> {
-  const archivedQuery = archived ? '&archived=true' : '';
-  const resp = await fetchWithAuth(API_BASE, `/v1/agent/jobs?limit=${limit}${archivedQuery}`);
+export async function listAgentJobs(
+  limit = 50,
+  archived = false,
+  repo?: string,
+): Promise<AgentJobApi[]> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (archived) query.set('archived', 'true');
+  if (repo) query.set('repo', repo);
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/jobs?${query.toString()}`);
   const body = await jsonOrThrow<{ jobs: AgentJobApi[] }>(resp);
   return body.jobs;
+}
+
+export interface AgentProjectApi {
+  repo: string;
+  /** Conversations, not turns. */
+  task_count: number;
+  /** Non-terminal jobs, so a collapsed project can still show live work. */
+  active_count: number;
+  last_activity_at: string | null;
+}
+
+/**
+ * Every repo the caller has tasks in, most recently active first.
+ *
+ * Separate from the job list because the sidebar's folder tree must include
+ * projects with no activity inside the newest-first job window — listing only
+ * the repos present in that page would make dormant projects disappear.
+ */
+export async function listAgentProjects(archived = false): Promise<AgentProjectApi[]> {
+  const query = archived ? '?archived=true' : '';
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/projects${query}`);
+  const body = await jsonOrThrow<{ projects: AgentProjectApi[] }>(resp);
+  return body.projects;
 }
 
 export interface AgentThreadArchiveApi {
