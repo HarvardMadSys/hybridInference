@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { KeyboardEvent, PointerEvent, RefObject } from 'react';
+import type { KeyboardEvent, PointerEvent } from 'react';
 
 // Arrow keys nudge the seam; Shift makes the step coarse enough to cross the
 // pane in a few presses.
@@ -34,9 +34,10 @@ export type ResizablePaneOptions = {
   side: PaneSide;
   /** Cap as a share of the window; the fallback when no container is measured. */
   maxViewportFraction?: number;
-  /** The element holding both panes, measured so the other one keeps its floor. */
-  containerRef?: RefObject<HTMLElement | null>;
-  /** Width the pane across the seam must keep — the real cap on this one. */
+  /**
+   * Width the pane across the seam must keep — the real cap on this one. Needs
+   * `containerRef` attached to the element holding both panes to have any effect.
+   */
   siblingMinWidth?: number;
 };
 
@@ -56,6 +57,11 @@ export type ResizablePane = {
   width: number;
   dragging: boolean;
   reset: () => void;
+  /**
+   * Optional: attach to the element holding both panes —
+   * `<div ref={pane.containerRef}>` — to size against it instead of the window.
+   */
+  containerRef: (node: HTMLElement | null) => void;
   resizerProps: PaneResizerProps;
 };
 
@@ -69,17 +75,15 @@ const DEFAULT_VIEWPORT_FRACTION = 0.6;
 // This is where the pane can actually reach right now, which is also the number
 // the separator reports as its maximum — announcing the configured `maxWidth`
 // would promise a screen reader a range the drag refuses to enter.
-function upperBound(options: ResizablePaneOptions): number {
+function upperBound(options: ResizablePaneOptions, containerWidth: number): number {
   const {
     minWidth,
     maxWidth,
     maxViewportFraction = DEFAULT_VIEWPORT_FRACTION,
-    containerRef,
     siblingMinWidth = 0,
   } = options;
   // A container that reports 0 is one that has not been laid out (or is
   // hidden); fall back to the window rule rather than clamping to the minimum.
-  const containerWidth = containerRef?.current?.clientWidth ?? 0;
   const outerCap =
     containerWidth > 0
       ? containerWidth - siblingMinWidth
@@ -89,8 +93,11 @@ function upperBound(options: ResizablePaneOptions): number {
   return Math.max(minWidth, Math.min(maxWidth, outerCap));
 }
 
-function clampWidth(next: number, options: ResizablePaneOptions): number {
-  return Math.min(Math.max(Math.round(next), options.minWidth), upperBound(options));
+function clampWidth(next: number, options: ResizablePaneOptions, containerWidth: number): number {
+  return Math.min(
+    Math.max(Math.round(next), options.minWidth),
+    upperBound(options, containerWidth),
+  );
 }
 
 /**
@@ -118,12 +125,12 @@ export function useResizablePane(options: ResizablePaneOptions): ResizablePane {
   const widthRef = useRef(width);
   const desiredRef = useRef(defaultWidth);
   const announceRef = useRef(false);
+  const containerNodeRef = useRef<HTMLElement | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
-  const observedRef = useRef<HTMLElement | null>(null);
 
   /** Render the remembered width, narrowed to whatever the layout allows now. */
   const settle = useCallback(() => {
-    const upper = upperBound(optionsRef.current);
+    const upper = upperBound(optionsRef.current, containerNodeRef.current?.clientWidth ?? 0);
     const clamped = Math.min(Math.max(desiredRef.current, optionsRef.current.minWidth), upper);
     widthRef.current = clamped;
     setWidth(clamped);
@@ -134,9 +141,30 @@ export function useResizablePane(options: ResizablePaneOptions): ResizablePane {
   // handle never runs a dead zone where dragging back does nothing.
   const applyGesture = useCallback(
     (next: number) => {
-      desiredRef.current = clampWidth(next, optionsRef.current);
+      desiredRef.current = clampWidth(
+        next,
+        optionsRef.current,
+        containerNodeRef.current?.clientWidth ?? 0,
+      );
       announceRef.current = true;
       settle();
+    },
+    [settle],
+  );
+
+  // Watch the container for size changes no one announced. A callback ref is how
+  // React reports the node arriving, changing, or going away, so the observer
+  // follows it without an effect re-checking on every render. Stable identity:
+  // `settle` never changes, so React does not re-run this between renders.
+  const containerRef = useCallback(
+    (node: HTMLElement | null) => {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      containerNodeRef.current = node;
+      if (!node || typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(settle);
+      observer.observe(node);
+      observerRef.current = observer;
     },
     [settle],
   );
@@ -189,34 +217,6 @@ export function useResizablePane(options: ResizablePaneOptions): ResizablePane {
       window.removeEventListener(PANE_RESIZE_EVENT, settle);
     };
   }, [settle]);
-
-  // Watch the container itself too, for size changes no one announced. Checked
-  // after every render rather than once at mount: a ref holds no identity React
-  // can depend on, so a container that arrives late — or is swapped — would
-  // otherwise leave the observer pointed at nothing, or at a detached node.
-  useEffect(() => {
-    if (typeof ResizeObserver === 'undefined') return;
-    const container = optionsRef.current.containerRef?.current ?? null;
-    if (container === observedRef.current) return;
-    observerRef.current?.disconnect();
-    observedRef.current = container;
-    if (!container) {
-      observerRef.current = null;
-      return;
-    }
-    const observer = new ResizeObserver(settle);
-    observer.observe(container);
-    observerRef.current = observer;
-  });
-
-  useEffect(
-    () => () => {
-      observerRef.current?.disconnect();
-      observerRef.current = null;
-      observedRef.current = null;
-    },
-    [],
-  );
 
   useEffect(() => {
     if (!drag) return;
@@ -283,6 +283,7 @@ export function useResizablePane(options: ResizablePaneOptions): ResizablePane {
     width,
     dragging: drag !== null,
     reset,
+    containerRef,
     resizerProps: {
       role: 'separator',
       'aria-orientation': 'vertical',
