@@ -35,6 +35,8 @@ FROM node:22-bookworm-slim
 # An unpinned agent CLI is a dependency that changes under you between builds.
 ARG CLAUDE_CODE_VERSION=2.1.220
 ARG CODEX_VERSION=0.145.0
+ARG PI_VERSION=0.73.1
+ARG OPENCODE_VERSION=1.18.9
 
 # Tools an agent legitimately needs to understand and change a repository.
 # Deliberately not installed: anything that would let it reach the host
@@ -54,7 +56,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
+        "@mariozechner/pi-coding-agent@${PI_VERSION}" \
+        "opencode-ai@${OPENCODE_VERSION}" \
     && npm cache clean --force
+
+# pi and OpenCode both ignore OPENAI_BASE_URL; each one's supported route to a
+# custom gateway is a provider config file whose content (gateway address,
+# per-job credential, model) is only known at run time. These reviewed
+# wrappers write that file from the environment and exec the real CLI — the
+# runner invokes the wrapper, never the bare binary. The OpenCode wrapper
+# additionally disables its models.dev catalog fetch and default-plugin
+# install, both of which hard-fail in the deny-all sandbox.
+COPY deploy/docker/pi-freeinference /usr/local/bin/pi-freeinference
+COPY deploy/docker/opencode-freeinference /usr/local/bin/opencode-freeinference
+RUN chmod 0755 /usr/local/bin/pi-freeinference /usr/local/bin/opencode-freeinference
+
+# `--ignore-user-config` does not suppress a trusted repository's
+# .codex/config.toml. Codex 0.145 applies this requirements allowlist after all
+# config layers, so the empty table is the fail-closed P0 MCP policy.
+COPY deploy/docker/codex-requirements.toml /etc/codex/requirements.toml
+RUN chmod 0644 /etc/codex/requirements.toml
 
 # Non-root by default. The runner bind-mounts the worktree and the container is
 # disposable, so there is no reason for the agent to have root — and a kernel
@@ -78,11 +99,12 @@ ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     DISABLE_AUTOUPDATER=1 \
     DISABLE_ERROR_REPORTING=1 \
     npm_config_update_notifier=false \
-    CI=1
+    CI=1 \
+    PI_OFFLINE=1
 
 # Fail loudly at build time if a runtime did not land, rather than at 3am when
 # a job claims it and dies.
-RUN claude --version && codex --version
+RUN claude --version && codex --version && pi --version && opencode --version
 
 # No ENTRYPOINT: the runner supplies the full argv from the runtime adapter,
 # so this image never decides what an agent run looks like.

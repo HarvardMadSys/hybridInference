@@ -81,12 +81,26 @@ jobs:
           # depending on which one happens to claim it.
           CLAUDE_CODE_VERSION: "2.1.220"
           CODEX_VERSION: "0.145.0"
+          PI_VERSION: "0.73.1"
+          OPENCODE_VERSION: "1.18.9"
         run: |
           set -euo pipefail
           npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
           npm install -g "@openai/codex@${CODEX_VERSION}"
+          npm install -g "@mariozechner/pi-coding-agent@${PI_VERSION}"
+          npm install -g "opencode-ai@${OPENCODE_VERSION}"
+          # pi and OpenCode reach the gateway via generated provider configs;
+          # the runner invokes these wrappers, which the container substrate
+          # bakes into its image and this substrate takes from the checkout.
+          sudo install -m 0755 deploy/docker/pi-freeinference /usr/local/bin/pi-freeinference
+          sudo install -m 0755 deploy/docker/opencode-freeinference /usr/local/bin/opencode-freeinference
+          # Match the container substrate: an empty Codex MCP requirements
+          # allowlist blocks repository/user MCP config from spawning servers.
+          sudo install -D -m 0644 deploy/docker/codex-requirements.toml /etc/codex/requirements.toml
           claude --version
           codex --version
+          pi --version
+          opencode --version
 
       - name: Preflight (fail closed)
         env:

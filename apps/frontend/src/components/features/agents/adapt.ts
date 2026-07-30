@@ -237,6 +237,40 @@ export interface AdaptOptions {
   thread?: AgentThreadApi | null;
 }
 
+const LIFECYCLE_LABELS: Record<string, string> = {
+  started: 'Setting up environment',
+  init: 'Setting up environment',
+  system: 'Setting up environment',
+  checked_out: 'Repository ready',
+  context_restored: 'Previous work restored',
+  setup: 'Installing project dependencies',
+  compact_boundary: 'Context compacted to keep going',
+  result: 'Agent finished',
+  publishing: 'Opening draft pull request',
+  published: 'Draft pull request ready',
+  cancelled_by_owner: 'Stopped by you',
+};
+
+/**
+ * Render one lifecycle phase, and say whether it is a milestone.
+ *
+ * `milestone: false` is the important half. A phase this build has never heard
+ * of used to be title-cased and given a ✓ like a completed step, so a progress
+ * counter the CLI happened to emit (`thinking_tokens`) read as 408 finished
+ * milestones. An unrecognised phase is a diagnostic: shown, because dropping it
+ * hides a real change in what the runtime reports, but never dressed up as
+ * something the job accomplished.
+ */
+export function lifecyclePhaseLabel(value: string): { text: string; milestone: boolean } {
+  const phase = value.trim().toLowerCase();
+  const known = LIFECYCLE_LABELS[phase];
+  if (known) return { text: known, milestone: true };
+  if (phase.includes('superseded')) {
+    return { text: 'Run restarted after losing its worker', milestone: true };
+  }
+  return { text: value.replaceAll('_', ' '), milestone: false };
+}
+
 /** Preserve attempt boundaries and attach each result to its tool activity. */
 function displayEvents(events: AgentJobEventApi[]): AgentEvent[] {
   const attemptIds = [...new Set(events.map((event) => event.attempt_id))].sort((a, b) => a - b);
@@ -271,6 +305,24 @@ function displayEvents(events: AgentJobEventApi[]): AgentEvent[] {
         };
         continue;
       }
+    }
+
+    // Reasoning is a state, not a sequence of steps. A run emits one of these
+    // per thinking block, and rendering each as its own row turns "the agent
+    // thought about it" into a wall of identical lines. Consecutive ones
+    // collapse into the single status row that was always intended.
+    if (row.kind === 'thinking' && rows[rows.length - 1]?.kind === 'thinking') continue;
+
+    // Same for a milestone repeated back to back: the platform's "started" and
+    // the CLI's "init" both mean "setting up environment", so they rendered as
+    // two identical ticked-off steps.
+    const previous = rows[rows.length - 1];
+    if (
+      row.kind === 'lifecycle' &&
+      previous?.kind === 'lifecycle' &&
+      lifecyclePhaseLabel(previous.text).text === lifecyclePhaseLabel(row.text).text
+    ) {
+      continue;
     }
 
     rows.push(row);

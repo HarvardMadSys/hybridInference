@@ -47,7 +47,11 @@ require_env() {
 }
 
 cmd_up() {
-  local replicas="${1:-1}"
+  # Declared, not passed as --scale: the flag survives only until the next
+  # `docker compose up` without it, which drops the fleet back to one and
+  # reads as "everyone is queueing" long afterwards. One runner takes one job
+  # at a time, so this number is the deployment's job concurrency.
+  local replicas="${1:-${AGENT_RUNNER_REPLICAS:-3}}"
   [[ "$replicas" =~ ^[0-9]+$ ]] || die "replicas must be a number, got '$replicas'"
   command -v docker >/dev/null || die "docker is not installed on this host"
   docker info >/dev/null 2>&1 || die "the Docker daemon is not running (or not accessible)"
@@ -57,8 +61,9 @@ cmd_up() {
   docker build -f deploy/docker/Dockerfile.agent-sandbox -t "$SANDBOX_IMAGE" .
 
   log "starting ${replicas} runner(s); restart policy keeps them up across reboots"
-  AGENT_SANDBOX_IMAGE="$SANDBOX_IMAGE" \
-    "${COMPOSE[@]}" up -d --build --scale "agent-runner=${replicas}" agent-runner
+  log "persist it with AGENT_RUNNER_REPLICAS=${replicas} in .env, or the next deploy uses the default"
+  AGENT_SANDBOX_IMAGE="$SANDBOX_IMAGE" AGENT_RUNNER_REPLICAS="$replicas" \
+    "${COMPOSE[@]}" up -d --build agent-runner
 
   # The runner's own preflight (backend reachable, image spawnable, workdir
   # bind-mountable, egress network resolvable) runs before it claims anything;

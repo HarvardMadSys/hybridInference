@@ -181,12 +181,37 @@ installation covering the repository being published to.
 
 ```bash
 AGENT_GITHUB_APP_ID=123456
-AGENT_GITHUB_APP_PRIVATE_KEY_PATH=/etc/hybridinference/agent-app.pem
+# A path the gateway can open — which in a Compose deployment means a path
+# inside the *backend container*. It mounts `config/`, `distributions/` and
+# `var/data/`, and nothing else: an /etc path on the host reads as "no such
+# file" from in there. `var/data` is gitignored, so the key survives the
+# deploy's `git reset --hard` and is never a candidate for commit.
+AGENT_GITHUB_APP_PRIVATE_KEY_PATH=/app/var/data/agent-app.pem
 ```
+
+Put the file at `<APP_DIR>/var/data/agent-app.pem` on the host, owned by the
+service user and `chmod 600`. Alternatively `AGENT_GITHUB_APP_PRIVATE_KEY`
+takes the PEM inline (escaped `\n` are accepted and unescaped), which avoids
+the mount question entirely at the cost of a very long line in `.env`.
 
 The App needs `contents: write` and `pull_requests: write` and nothing else —
 notably not `workflows`, so a patch touching `.github/` cannot be pushed even
 if the gate were bypassed. Revocation is uninstalling the App.
+
+For the *connect* flow (a user authorizing their own repositories) the App
+also needs its OAuth half, with the callback pointing at this deployment's
+frontend:
+
+```bash
+AGENT_GITHUB_APP_CLIENT_ID=Iv1.xxxxxxxx
+AGENT_GITHUB_APP_CLIENT_SECRET=...
+AGENT_GITHUB_APP_INSTALL_URL=https://github.com/apps/<app-slug>/installations/new
+# App setting "Callback URL": <FRONTEND_URL>/agents/connected?provider=github
+```
+
+Note `FRONTEND_URL` is read from `.env`, which is applied last and so wins
+over the distribution overlay — check the host's value rather than the
+overlay's when composing the callback.
 
 The same App also supplies the runner's clone credential, and the two are
 *not* the same token. An installation token inherits every permission the App
@@ -236,6 +261,27 @@ ops/deploy/agent_runner.sh up 4      # build images, start 4 runners
 ops/deploy/agent_runner.sh status    # replicas + recent log tail
 ops/deploy/agent_runner.sh down      # stop them; the main stack is untouched
 ```
+
+### How many runners
+
+**One runner runs one job at a time.** It claims, runs the job to completion,
+then claims the next — so the replica count *is* how many jobs the deployment
+can run concurrently, and everything else waits in the queue. With one
+replica, two users are serialised; a job that runs to its hour-long timeout
+holds up everyone behind it.
+
+Set it with `AGENT_RUNNER_REPLICAS` (default 3). Replicas need no
+coordination — `claim_job` uses `FOR UPDATE SKIP LOCKED`, so they share one
+queue with no leader and no sharding — and each job's sandbox is capped at
+4g / 2 cpus, so budget roughly that per replica.
+
+Do not scale with a `--scale` flag instead: it survives exactly until the next
+`docker compose up` without it, which drops the fleet back to one and presents
+as "every user is queueing" long after anyone remembers scaling it.
+
+Queue order is global FIFO with no per-user fairness yet, so one user
+submitting a batch can occupy every replica. Per-user concurrency quotas are
+P1 work.
 
 The script validates the required environment before starting and surfaces
 the runner's own preflight verdict (gateway reachable, image spawnable,

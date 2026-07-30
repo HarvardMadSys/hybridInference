@@ -15,10 +15,16 @@ from pathlib import Path
 import pytest
 import yaml
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+    import tomli as tomllib
+
 from serving.agent_jobs.runner import build_parser
 
 _COMPOSE = Path(__file__).resolve().parents[2] / "deploy/docker/docker-compose.agent-runner.yml"
 _DOCKERFILE = Path(__file__).resolve().parents[2] / "deploy/docker/Dockerfile.agent-sandbox"
+_CODEX_REQUIREMENTS = Path(__file__).resolve().parents[2] / "deploy/docker/codex-requirements.toml"
 
 
 @pytest.fixture(scope="module")
@@ -92,6 +98,22 @@ def test_sandbox_image_disables_agent_phone_home():
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     ):
         assert flag in text
+
+
+def test_codex_mcp_is_constrained_to_an_empty_requirements_allowlist():
+    """User, project, and plugin MCP servers are disabled after config merge.
+
+    Codex 0.145 treats the presence of top-level ``mcp_servers`` requirements
+    as the server allowlist. The same empty allowlist is applied a second time
+    to plugin-provided MCP servers, so an empty table is stronger than
+    ``--ignore-user-config`` alone.
+    """
+    requirements = tomllib.loads(_CODEX_REQUIREMENTS.read_text())
+    assert requirements == {"mcp_servers": {}}
+    assert "codex-requirements.toml /etc/codex/requirements.toml" in _DOCKERFILE.read_text()
+
+    workflow = Path(__file__).resolve().parents[2] / ".github/workflows/agent-job-runner.yml"
+    assert "codex-requirements.toml /etc/codex/requirements.toml" in workflow.read_text()
 
 
 # ── the chain from compose file to a running sandbox ───────────────────
@@ -254,12 +276,19 @@ def test_both_substrates_pin_the_same_agent_cli_versions():
     workflow = path.read_text()
     image = _DOCKERFILE.read_text()
 
-    for name in ("CLAUDE_CODE_VERSION", "CODEX_VERSION"):
+    for name in ("CLAUDE_CODE_VERSION", "CODEX_VERSION", "PI_VERSION", "OPENCODE_VERSION"):
         pinned = re.search(rf"^ARG {name}=(\S+)$", image, re.MULTILINE)
         assert pinned, f"{name} must be pinned in the sandbox image"
         assert f'{name}: "{pinned.group(1)}"' in workflow, (
             f"{name} differs between the sandbox image and the Actions workflow"
         )
+
+    # pi and OpenCode are reached through wrappers, so a substrate that
+    # installs the CLI but not the wrapper produces jobs that die at spawn
+    # with "binary missing" — both substrates must ship both.
+    for wrapper in ("pi-freeinference", "opencode-freeinference"):
+        assert wrapper in image, f"the sandbox image does not install {wrapper}"
+        assert wrapper in workflow, f"the Actions runner does not install {wrapper}"
 
 
 def test_the_runner_reads_the_bounds_the_overlay_configures(monkeypatch, compose: dict):
@@ -391,3 +420,232 @@ def test_compose_file_has_no_duplicate_keys():
 
     _StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicates)
     yaml.load(_COMPOSE.read_text(), Loader=_StrictLoader)
+
+
+_PI_WRAPPER = Path(__file__).resolve().parents[2] / "deploy/docker/pi-freeinference"
+
+
+def test_pi_wrapper_writes_the_provider_config_and_execs_pi(tmp_path):
+    """The wrapper turns its environment into pi's models.json, argv untouched.
+
+    Executed for real rather than read: a stub ``pi`` on PATH records the argv
+    it receives, HOME is a temp dir, and the assertions read the exact file the
+    real pi would read. pi ignores OPENAI_BASE_URL, so this file is the ONLY
+    thing standing between a job and api.openai.com.
+    """
+    import json as _json
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    record = tmp_path / "argv.json"
+    stub = stub_dir / "pi"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        f"open({str(record)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+    )
+    stub.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    prompt = 'prompt; with $(dangerous) `chars` "quoted"'
+    result = _subprocess.run(
+        [_sys.executable, str(_PI_WRAPPER), "--provider", "freeinference", "-p", prompt],
+        env={
+            "PATH": f"{stub_dir}:{_os.environ['PATH']}",
+            "HOME": str(home),
+            "OPENAI_BASE_URL": "http://backend:8080/v1",
+            "OPENAI_API_KEY": "ajt.attempt.key",
+            "PI_GATEWAY_MODEL": "glm-5.1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    provider = _json.loads((home / ".pi/agent/models.json").read_text())["providers"][
+        "freeinference"
+    ]
+    assert provider["baseUrl"] == "http://backend:8080/v1"
+    assert provider["apiKey"] == "ajt.attempt.key"
+    assert provider["api"] == "openai-completions"
+    assert provider["models"] == [{"id": "glm-5.1"}]
+    # argv passed through byte-for-byte: the shell-hostile prompt survived.
+    assert _json.loads(record.read_text()) == [
+        "--provider",
+        "freeinference",
+        "-p",
+        prompt,
+    ]
+
+
+def test_pi_wrapper_refuses_to_run_half_configured(tmp_path):
+    """Missing environment is a named refusal, not a job that dials OpenAI."""
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+
+    result = _subprocess.run(
+        [_sys.executable, str(_PI_WRAPPER), "-p", "hi"],
+        env={
+            "PATH": _os.environ["PATH"],
+            "HOME": str(tmp_path),
+            "OPENAI_BASE_URL": "http://backend:8080/v1",
+            # OPENAI_API_KEY and PI_GATEWAY_MODEL deliberately absent.
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 64
+    assert "OPENAI_API_KEY" in result.stderr
+
+
+_OPENCODE_WRAPPER = Path(__file__).resolve().parents[2] / "deploy/docker/opencode-freeinference"
+
+
+def test_opencode_wrapper_writes_config_sets_offline_flags_and_execs(tmp_path):
+    """The wrapper produces OpenCode's config and kills its phone-home paths.
+
+    A stub ``opencode`` on PATH records argv and the environment it received.
+    The offline flags are the load-bearing part: without
+    OPENCODE_DISABLE_MODELS_FETCH the CLI hard-fails fetching models.dev,
+    which in the deny-all sandbox is every single run.
+    """
+    import json as _json
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    record = tmp_path / "seen.json"
+    stub = stub_dir / "opencode"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "seen = {'argv': sys.argv[1:], 'env': {k: v for k, v in os.environ.items()"
+        " if k.startswith('OPENCODE_')}}\n"
+        f"open({str(record)!r}, 'w').write(json.dumps(seen))\n"
+    )
+    stub.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    prompt = 'fix; the $(bug) "carefully"'
+    result = _subprocess.run(
+        [
+            _sys.executable,
+            str(_OPENCODE_WRAPPER),
+            "run",
+            "--format",
+            "json",
+            "--auto",
+            "-m",
+            "freeinference/glm-5.1",
+            prompt,
+        ],
+        env={
+            "PATH": f"{stub_dir}:{_os.environ['PATH']}",
+            "HOME": str(home),
+            "OPENAI_BASE_URL": "http://backend:8080/v1",
+            "OPENAI_API_KEY": "ajt.attempt.key",
+            "OPENCODE_GATEWAY_MODEL": "glm-5.1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    seen = _json.loads(record.read_text())
+    assert seen["argv"] == [
+        "run",
+        "--format",
+        "json",
+        "--auto",
+        "-m",
+        "freeinference/glm-5.1",
+        prompt,
+    ]
+    assert seen["env"]["OPENCODE_DISABLE_MODELS_FETCH"] == "1"
+    assert seen["env"]["OPENCODE_DISABLE_DEFAULT_PLUGINS"] == "1"
+    assert seen["env"]["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    # OpenCode v1.18.9's supported switch prevents both project opencode.json
+    # and project .opencode/ directories from entering the merged config.
+    assert seen["env"]["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
+
+    config = _json.loads(Path(seen["env"]["OPENCODE_CONFIG"]).read_text())
+    provider = config["provider"]["freeinference"]
+    assert provider["npm"] == "@ai-sdk/openai-compatible"
+    assert provider["options"]["baseURL"] == "http://backend:8080/v1"
+    assert provider["options"]["apiKey"] == "ajt.attempt.key"
+    assert provider["models"] == {"glm-5.1": {"name": "glm-5.1"}}
+    # The config lives in HOME, never in the job worktree.
+    assert seen["env"]["OPENCODE_CONFIG"].startswith(str(home))
+
+
+def test_opencode_wrapper_refuses_to_run_half_configured(tmp_path):
+    """Missing environment is a named refusal, not a run that dials out."""
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+
+    result = _subprocess.run(
+        [_sys.executable, str(_OPENCODE_WRAPPER), "run", "hi"],
+        env={
+            "PATH": _os.environ["PATH"],
+            "HOME": str(tmp_path),
+            "OPENAI_BASE_URL": "http://backend:8080/v1",
+            # OPENAI_API_KEY and OPENCODE_GATEWAY_MODEL deliberately absent.
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 64
+    assert "OPENAI_API_KEY" in result.stderr
+
+
+def test_concurrency_is_declared_not_typed_at_deploy_time(compose: dict):
+    """One runner takes one job at a time, so replicas *is* the concurrency.
+
+    A `--scale` passed by hand survives until the next `docker compose up`
+    without it, which silently drops the fleet back to one — presenting as
+    "every user is queueing" long after anyone remembers scaling it. The count
+    therefore belongs in the file the deploy reads.
+    """
+    runner = compose["services"]["agent-runner"]
+    replicas = (runner.get("deploy") or {}).get("replicas")
+    assert replicas, "agent-runner declares no replica count, so a deploy resets concurrency to 1"
+    assert "AGENT_RUNNER_REPLICAS" in str(replicas), "the replica count is not operator-tunable"
+
+
+def test_replicas_are_distinguishable_in_the_lease_ledger(compose: dict):
+    """Replicas must not all claim jobs under the same lease_owner.
+
+    Fencing never reads this string, so a collision is not a correctness bug —
+    it just makes "which runner is stuck" unanswerable exactly when a second
+    replica makes it worth asking.
+    """
+    command = " ".join(compose["services"]["agent-runner"].get("command") or [])
+    assert "--worker-id" not in command, (
+        "a literal --worker-id pins every replica to the same lease_owner; "
+        "let the runner derive one that includes its hostname"
+    )
+
+
+def test_runner_derives_a_distinct_worker_id_per_container(monkeypatch):
+    """The derived id groups by configuration and separates by host."""
+    from serving.agent_jobs.runner import default_worker_id
+
+    monkeypatch.setattr("socket.gethostname", lambda: "abc123")
+    monkeypatch.delenv("AGENT_WORKER_ID", raising=False)
+    assert default_worker_id() == "runner-abc123"
+
+    monkeypatch.setenv("AGENT_WORKER_ID", "staging")
+    assert default_worker_id() == "staging-abc123"

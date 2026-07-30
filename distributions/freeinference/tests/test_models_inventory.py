@@ -28,8 +28,26 @@ def test_production_models_yaml_schema_contract():
 
     ids = [m["id"] for m in models]
     aliases = [alias for m in models for alias in (m.get("aliases") or [])]
+    alias_owner = {alias: model["id"] for model in models for alias in (model.get("aliases") or [])}
     assert len(ids) == len(set(ids)), "duplicate model ids in models.yaml"
+    assert len(aliases) == len(set(aliases)), "duplicate aliases in models.yaml"
     assert not set(ids) & set(aliases), "alias shadows a canonical model id"
+    assert {
+        alias: alias_owner.get(alias)
+        for alias in (
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-haiku-4-5",
+            "Kimi-K2.7-Code",
+            "kimi-k2.7",
+        )
+    } == {
+        "claude-opus-4-8": "deepseek-v4-flash",
+        "claude-sonnet-5": "deepseek-v4-flash",
+        "claude-haiku-4-5": "qwen3.6-35b",
+        "Kimi-K2.7-Code": "kimi-k2.7-code",
+        "kimi-k2.7": "kimi-k2.7-code",
+    }
     for model in models:
         assert model.get("name"), f"model {model['id']!r} missing name"
         assert model.get("provider"), f"model {model['id']!r} missing provider"
@@ -63,8 +81,6 @@ def test_production_models_yaml_registers_full_inventory(monkeypatch):
         target.update(aliases)
         registration_count_expected += 1 + len(aliases)
         if model.get("type") != "embedding":
-            # Duplicate aliases are accepted today; later declarations replace
-            # earlier RouteConfig entries. Pin that deterministic behavior.
             for alias in aliases:
                 chat_alias_owner[alias] = model["id"]
 
@@ -80,8 +96,7 @@ def test_production_models_yaml_registers_full_inventory(monkeypatch):
     )
     assert set(exe.routes) == chat_expected
     assert set(embedding_adapters) == embedding_expected
-    # Count records declarations processed, including duplicate aliases, while
-    # the route dictionaries above naturally contain unique final keys.
+    # Count records all canonical ids and aliases processed.
     assert count == registration_count_expected
     # Registration infos cover every canonical model, embeddings included
     # (the /v1/models listing needs them even though they bypass the router).

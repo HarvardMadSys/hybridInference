@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Markdown } from '@/components/ui/Markdown';
 import { cancelAgentJob, followUpAgentJob } from '@/lib/api/agents';
 
+import { lifecyclePhaseLabel } from './adapt';
 import type { AgentEvent, AgentJob, AgentThreadMessage } from './types';
 import { useAgentJobFiles } from './useAgentJobs';
 
@@ -76,23 +77,20 @@ function ToolIcon({ tool }: { tool: string }) {
   );
 }
 
-function lifecycleLabel(value: string): string {
-  const phase = value.trim().toLowerCase();
-  if (phase === 'started' || phase === 'init' || phase === 'system') {
-    return 'Setting up environment';
-  }
-  if (phase === 'checked_out') return 'Repository ready';
-  if (phase === 'context_restored') return 'Previous work restored';
-  if (phase === 'setup') return 'Installing project dependencies';
-  if (phase === 'result') return 'Agent finished';
-  if (phase === 'publishing') return 'Opening draft pull request';
-  if (phase === 'published') return 'Draft pull request ready';
-  if (phase === 'cancelled_by_owner') return 'Stopped by you';
-  if (phase.includes('superseded')) return 'Run restarted after losing its worker';
-  return value.replaceAll('_', ' ');
-}
-
 function LifecycleRow({ text }: { text: string }) {
+  const { text: label, milestone } = lifecyclePhaseLabel(text);
+
+  // A phase this build does not recognise is a diagnostic, not an achievement:
+  // no tick, muted, and clearly a passthrough of what the runtime said.
+  if (!milestone) {
+    return (
+      <div className="flex items-center gap-2.5 py-1 text-xs text-gray-400">
+        <span className="h-1 w-1 rounded-full bg-gray-300" />
+        <span className="font-mono">{label}</span>
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-center gap-2.5 py-2 text-[13px] text-gray-500">
       <span className="flex h-4 w-4 items-center justify-center rounded-full bg-gray-100 text-gray-500">
@@ -107,7 +105,7 @@ function LifecycleRow({ text }: { text: string }) {
           <path strokeLinecap="round" strokeLinejoin="round" d="m6 12 4 4 8-9" />
         </svg>
       </span>
-      <span className="capitalize">{lifecycleLabel(text)}</span>
+      <span className="capitalize">{label}</span>
     </div>
   );
 }

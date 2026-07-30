@@ -92,6 +92,8 @@ def test_an_unreadable_file_is_a_finding_not_a_skip(tmp_path: Path) -> None:
 # a finding in the exported tree.
 _SCRATCH = "/scr" + "atch/someone/models/x"
 _MACHINE = "spar" + "k2"
+_MACOS_HOME = "/Us" + "ers/example/work/hybridInference"
+_LINUX_HOME = "/ho" + "me/alice/work/hybridInference"
 
 
 @pytest.mark.parametrize(
@@ -120,6 +122,24 @@ def test_this_deployments_machines_are_found_by_bare_name(tmp_path: Path) -> Non
     (tmp_path / "run.sh").write_text(f"ssh {_MACHINE} nvidia-smi\n")
 
     assert "internal hostname" in public_export.audit(["run.sh"], root=tmp_path)
+
+
+@pytest.mark.parametrize("path", [_MACOS_HOME, _LINUX_HOME])
+def test_personal_home_paths_are_found(tmp_path: Path, path: str) -> None:
+    """Recorded local paths disclose a developer identity and machine layout."""
+    (tmp_path / "event.jsonl").write_text(f'{{"cwd": "{path}"}}\n')
+
+    findings = public_export.audit(["event.jsonl"], root=tmp_path)
+
+    assert "personal home path" in findings, f"{path} passed the audit"
+
+
+@pytest.mark.parametrize("path", ["/home/agent", "/home/somebody"])
+def test_synthetic_and_service_home_paths_are_allowed(tmp_path: Path, path: str) -> None:
+    """Stable sandbox identities are not developer-machine disclosures."""
+    (tmp_path / "config.txt").write_text(f"HOME={path}\n")
+
+    assert public_export.audit(["config.txt"], root=tmp_path) == {}
 
 
 def test_materialize_refuses_when_an_overlay_source_is_missing(tmp_path: Path) -> None:

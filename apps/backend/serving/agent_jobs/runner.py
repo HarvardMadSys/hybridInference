@@ -31,6 +31,7 @@ import pathlib
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -42,7 +43,13 @@ from typing import Any
 import httpx
 
 from serving.agent_jobs.patch_gate import validate_patch
-from serving.agent_jobs.runtimes import AgentRuntime, NormalizedEvent, get_runtime
+from serving.agent_jobs.runtimes import (
+    EMPTY_RUNTIME_MCP_CONFIG,
+    AgentRuntime,
+    NormalizedEvent,
+    RuntimeMCPConfig,
+    get_runtime,
+)
 from serving.agent_jobs.sandbox import SandboxBackend, SandboxSpec, build_backend_from_env
 from serving.agent_jobs.setup import build_cache_from_env, run_setup
 from serving.agent_jobs.workspace_snapshot import build_workspace_snapshot
@@ -126,6 +133,15 @@ def detect_blocked_egress(text: str) -> str | None:
 
 class LeaseLost(Exception):
     """Raised when this attempt no longer owns the job and must stop."""
+
+
+class ClaimUnreachable(Exception):
+    """The gateway could not be reached *to claim*, so no job was taken.
+
+    Distinct from a transport failure later in the run: that one leaves an
+    attempt running until its lease expires, and an operator needs to be sent
+    to the job rather than told nothing was claimed.
+    """
 
 
 class WorktreeError(Exception):
@@ -292,12 +308,20 @@ def claim(
     The dispatcher credential is used here and nowhere else — it does not
     travel into the agent's environment.
     """
-    response = httpx.post(
-        f"{base_url.rstrip('/')}/v1/agent/worker/claim",
-        json={"worker_id": worker_id, "lease_ttl_seconds": lease_ttl},
-        headers={"Authorization": f"Bearer {dispatcher_token}"},
-        timeout=30.0,
-    )
+    try:
+        response = httpx.post(
+            f"{base_url.rstrip('/')}/v1/agent/worker/claim",
+            json={"worker_id": worker_id, "lease_ttl_seconds": lease_ttl},
+            headers={"Authorization": f"Bearer {dispatcher_token}"},
+            timeout=30.0,
+        )
+    except httpx.TransportError as exc:
+        # Tagged at the one place where "the gateway is unreachable" also means
+        # "no job was claimed". The same error from a later call — an event, an
+        # artifact, a terminal transition — happens with an attempt already
+        # running, and reporting *that* as an unreached gateway would hide the
+        # job an operator has to go look at.
+        raise ClaimUnreachable(str(exc)) from exc
     response.raise_for_status()
     body = response.json()
     return ClaimedJob.from_response(body) if body else None
@@ -655,6 +679,7 @@ def run_agent(
     heart: Heartbeater,
     timeout_s: float,
     backend: SandboxBackend,
+    mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
 ) -> tuple[int, str, list[str]]:
     """Run the agent, streaming its output back as normalized events.
 
@@ -671,6 +696,10 @@ def run_agent(
         # states — stays out here with the runner, so an agent that leaks its
         # credential can spend the job's capped budget and nothing more.
         credential=job.sandbox_token,
+        # The runner is the only future source of this value. Repository
+        # contents never become runtime MCP configuration, and every adapter
+        # currently rejects a non-empty set until the gateway broker exists.
+        mcp_config=mcp_config,
     )
 
     # Hermetic environment, and the *backend's* idea of it rather than the
@@ -780,12 +809,20 @@ def run_once(
 ) -> int:
     """Claim one job, run it, and report the outcome. Returns a process exit code.
 
-    ``backend`` decides where the agent actually executes. It is checked
-    before a job is claimed so a misconfigured host fails without first
-    taking a job off the queue and burning one of its attempts.
+    ``backend`` decides where the agent actually executes. When this function
+    builds it, it is also preflighted here — a misconfigured host then fails
+    without first taking a job off the queue and burning one of its attempts.
+
+    A caller that *supplies* a backend has already preflighted it, and must
+    not have it re-checked per call. Preflight spawns several ``docker``
+    subprocesses (version, one network inspect per phase) and logs the
+    shared-kernel warning, so running it per claim meant a standing runner
+    polling every 5s spent ~17k probes and 17k warning lines a day doing
+    nothing — found by watching an idle runner, not by reading it.
     """
-    backend = backend or build_backend_from_env()
-    backend.preflight()
+    if backend is None:
+        backend = build_backend_from_env()
+        backend.preflight()
 
     job = claim(
         base_url=base_url,
@@ -1028,6 +1065,15 @@ def run_forever(
             )
         except KeyboardInterrupt:
             return 0
+        except ClaimUnreachable as exc:
+            # Raised only by the claim call, so this really does mean no job was
+            # taken. Normal at startup: compose starts the runner and the
+            # gateway together, and the runner wins the race about half the
+            # time. A transport failure *after* a claim falls through to the
+            # handler below, which does not claim otherwise.
+            print(
+                f"agent runner: gateway unreachable, retrying: {exc}", file=sys.stderr, flush=True
+            )
         except Exception as exc:
             # Keep serving: the store owns this job's outcome, and one bad
             # repository must not stop every other queued job.
@@ -1060,6 +1106,24 @@ def _env_float(name: str, fallback: float) -> float:
         return fallback
 
 
+def default_worker_id() -> str:
+    """Identify this runner, distinctly from its replicas.
+
+    ``lease_owner`` is how an operator answers "which runner has this job" and
+    "which one is stuck". Replicas share an environment, so a plain
+    ``AGENT_WORKER_ID`` makes every one of them report the same name — the
+    question stops being answerable exactly when a second replica makes it
+    worth asking. The hostname is unique per container, so it is appended
+    rather than replaced: the configured value still groups a fleet.
+
+    Not a correctness fix — fencing is on ``(attempt_id, lease_generation)``,
+    never on this string.
+    """
+    base = (os.environ.get("AGENT_WORKER_ID") or "runner").strip() or "runner"
+    host = socket.gethostname().strip()
+    return f"{base}-{host}" if host and not base.endswith(host) else base
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the runner CLI parser.
 
@@ -1074,7 +1138,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url",
         default=os.environ.get("AGENT_GATEWAY_URL") or os.environ.get("FREEINFERENCE_BASE_URL", ""),
     )
-    parser.add_argument("--worker-id", default=os.environ.get("AGENT_WORKER_ID", "runner"))
+    parser.add_argument("--worker-id", default=default_worker_id())
     parser.add_argument("--workdir", default=".")
     # Read from the environment the way --base-url and --workdir-root already
     # do. The compose overlay sets AGENT_LEASE_TTL and AGENT_TIMEOUT_S, and

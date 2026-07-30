@@ -22,7 +22,7 @@ from serving.agent_jobs.runner import (
     conversation_prompt,
     run_agent,
 )
-from serving.agent_jobs.runtimes import ClaudeCodeRuntime, GenericRuntime
+from serving.agent_jobs.runtimes import ClaudeCodeRuntime, GenericRuntime, RuntimeMCPConfig
 from serving.agent_jobs.sandbox import ProcessBackend
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
@@ -141,6 +141,31 @@ def test_agent_output_streams_back_as_events(tmp_path):
         "line 1",
         "line 2",
     ]
+
+
+def test_runner_supplies_an_explicit_empty_mcp_boundary(tmp_path):
+    """MCP configuration comes from the trusted runner, never the checkout."""
+    captured = None
+
+    class _CapturingRuntime(GenericRuntime):
+        def prepare(self, *, mcp_config, **kwargs):
+            nonlocal captured
+            captured = mcp_config
+            return super().prepare(mcp_config=mcp_config, **kwargs)
+
+    runtime = _CapturingRuntime(f"{sys.executable} -c " + repr("print('ok')"))
+    run_agent(
+        runtime,
+        job=_JOB,
+        workdir=str(tmp_path),
+        gateway_base_url="http://gw",
+        control=FakeControl(),
+        heart=FakeHeart(),
+        timeout_s=30,
+        backend=ProcessBackend(acknowledged_unsafe=True),
+    )
+
+    assert captured == RuntimeMCPConfig()
 
 
 def test_losing_the_lease_aborts_instead_of_racing(tmp_path):
@@ -340,3 +365,92 @@ def test_failed_tool_calls_are_reported_not_swallowed(tmp_path):
     assert "permission denied" in errors[0]
     # The owner sees it in the stream, not only in the final detail string.
     assert any(kind == "error" for kind, _payload in control.events)
+
+
+class _CountingBackend:
+    """Records how often a supplied backend is preflighted."""
+
+    name = "counting"
+
+    def __init__(self) -> None:
+        self.preflights = 0
+
+    def preflight(self, workdir_root: str | None = None) -> None:
+        self.preflights += 1
+
+    def has_binary(self, _name: str) -> bool:
+        return True
+
+    def base_env(self) -> dict[str, str]:
+        return {}
+
+
+def test_a_supplied_backend_is_not_preflighted_per_claim(monkeypatch, tmp_path):
+    """An idle standing runner must not re-probe Docker on every poll.
+
+    Preflight spawns several `docker` subprocesses and logs the shared-kernel
+    warning. Running it per claim meant an idle runner polling every 5s burned
+    ~17k probes and wrote ~17k warning lines a day — visible only once a
+    runner actually stood up and idled.
+    """
+    monkeypatch.setattr(runner_mod, "claim", lambda **_kwargs: None)
+    backend = _CountingBackend()
+
+    for _ in range(3):
+        runner_mod.run_once(
+            base_url="http://gw",
+            dispatcher_token="d",
+            worker_id="w",
+            workdir=str(tmp_path),
+            backend=backend,
+        )
+
+    assert backend.preflights == 0, "run_once preflighted a backend its caller already preflighted"
+
+
+def test_a_self_built_backend_is_still_preflighted_before_claiming(monkeypatch, tmp_path):
+    """The one-shot path keeps failing fast on a misconfigured host."""
+    backend = _CountingBackend()
+    monkeypatch.setattr(runner_mod, "build_backend_from_env", lambda: backend)
+    claims: list[bool] = []
+
+    def _claim(**_kwargs):
+        claims.append(True)
+        return None
+
+    monkeypatch.setattr(runner_mod, "claim", _claim)
+
+    runner_mod.run_once(
+        base_url="http://gw",
+        dispatcher_token="d",
+        worker_id="w",
+        workdir=str(tmp_path),
+    )
+
+    assert backend.preflights == 1
+    assert claims, "preflight must not have replaced the claim"
+
+
+def test_only_the_claim_call_reports_an_unreachable_gateway(monkeypatch):
+    """A transport failure after a claim must not be logged as "nothing claimed".
+
+    "Gateway unreachable, retrying" tells an operator no job was taken. Raised
+    for a failure during event reporting or a terminal transition, it hides an
+    attempt that is still running until its lease expires — the one they need
+    to go look at.
+    """
+    import httpx
+
+    from serving.agent_jobs.runner import ClaimUnreachable, claim
+
+    def dead_post(*_args, **_kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "post", dead_post)
+
+    with pytest.raises(ClaimUnreachable):
+        claim(base_url="http://gateway.invalid", dispatcher_token="t", worker_id="w", lease_ttl=60)
+
+    # The same error raised anywhere else stays a plain transport error, so the
+    # loop's handler reports a job rather than an empty claim.
+    assert not issubclass(httpx.ConnectError, ClaimUnreachable)

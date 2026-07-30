@@ -20,3 +20,15 @@ scenarios:
     agent_script: runtime_smoke
     required_capabilities: [chat]
     repetitions: 1
+
+  - id: runtime_pi_smoke
+    type: runtime_pi_smoke
+    agent_script: runtime_smoke
+    required_capabilities: [chat]
+    repetitions: 1
+
+  - id: runtime_opencode_smoke
+    type: runtime_opencode_smoke
+    agent_script: runtime_smoke
+    required_capabilities: [chat]
+    repetitions: 1
