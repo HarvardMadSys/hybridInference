@@ -58,6 +58,8 @@ probe "a planted gateway key" \
     bash -c 'printf "KEY=%s\n" "hyi-$(printf C%.0s $(seq 24))" >> README.md'
 probe "a planted Slack bot token" \
     bash -c 'printf "TOKEN=%s\n" "xoxb-0123456789-planted" >> README.md'
+probe "a planted personal home path" \
+    bash -c 'printf "DIR=/%s/%s/work/hybridInference\n" "Users" "example" >> README.md'
 probe "a planted cluster path" \
     bash -c 'printf "DIR=/scratch/someone/models\n" >> README.md'
 probe "a planted internal hostname" \
