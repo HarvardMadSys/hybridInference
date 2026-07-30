@@ -179,7 +179,8 @@ describe('JobDetail', () => {
     render(<JobDetail job={makeJob()} />);
 
     expect(screen.queryByText('Input tokens')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.queryByRole('button', { name: 'Details' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Run details' }));
     expect(screen.getByRole('dialog', { name: 'Run details' })).toBeInTheDocument();
     expect(screen.getByText('Input tokens')).toBeInTheDocument();
     expect(screen.getByText('Sandbox')).toBeInTheDocument();
@@ -188,13 +189,12 @@ describe('JobDetail', () => {
     expect(screen.getByText('{"event_type":"message"}')).toBeInTheDocument();
   });
 
-  it('keeps the task as the default view behind an accessible workspace toggle', () => {
+  it('keeps the task as the default view behind a labeled, accessible workspace toggle', () => {
     render(<JobDetail job={makeJob()} />);
 
-    expect(screen.getByRole('button', { name: 'Open workspace' })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
+    const workspaceButton = screen.getByRole('button', { name: 'Open workspace' });
+    expect(workspaceButton).toHaveTextContent('Workspace');
+    expect(workspaceButton).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('region', { name: 'Job workspace' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Activity' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Environment' })).not.toBeInTheDocument();
@@ -209,8 +209,10 @@ describe('JobDetail', () => {
     openWorkspace();
 
     const closeButton = screen.getByRole('button', { name: 'Close workspace' });
+    expect(closeButton).toHaveTextContent('Close workspace');
     expect(closeButton).toHaveAttribute('aria-expanded', 'true');
     expect(closeButton).toHaveAttribute('aria-controls', 'job-workspace-pane');
+    expect(closeButton).toHaveClass('bg-gray-900', 'text-white');
     expect(screen.getByRole('region', { name: 'Job workspace' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Git/ })).toHaveAttribute('aria-selected', 'true');
     expect(task).toBeInTheDocument();
@@ -228,10 +230,9 @@ describe('JobDetail', () => {
     expect(screen.getByRole('region', { name: 'Job workspace' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Close workspace' }));
-    expect(screen.getByRole('button', { name: 'Open workspace' })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
+    const reopenButton = screen.getByRole('button', { name: 'Open workspace' });
+    expect(reopenButton).toHaveTextContent('Workspace');
+    expect(reopenButton).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('region', { name: 'Job workspace' })).not.toBeInTheDocument();
 
     openWorkspace();
