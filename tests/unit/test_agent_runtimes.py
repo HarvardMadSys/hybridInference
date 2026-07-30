@@ -19,6 +19,8 @@ from serving.agent_jobs.runtimes import (
     GenericRuntime,
     OpencodeRuntime,
     PiRuntime,
+    RuntimeMCPConfig,
+    RuntimeMCPUnavailableError,
     get_runtime,
 )
 
@@ -104,6 +106,9 @@ def test_claude_prepare_points_at_the_gateway_and_disables_telemetry():
     )
     assert argv[:3] == ["claude", "-p", "do the thing"]
     assert "--output-format" in argv and "stream-json" in argv
+    # Ignore both user-level and committed .mcp.json servers. Platform MCP is
+    # supplied explicitly later; P0's effective set must stay empty.
+    assert "--strict-mcp-config" in argv
     assert env["ANTHROPIC_BASE_URL"] == "https://gateway.example.com"
     assert env["ANTHROPIC_API_KEY"] == "ajt.a.b"
     assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
@@ -211,6 +216,9 @@ def test_pi_runtime_targets_the_gateway_through_its_wrapper():
     assert "do the thing; carefully" in argv
     assert argv[argv.index("--model") + 1] == "glm-5.1"
     assert "--mode" in argv and argv[argv.index("--mode") + 1] == "json"
+    # The pinned pi release implements MCP through executable extensions,
+    # including extensions committed under .pi/.
+    assert "--no-extensions" in argv
     # Everything the wrapper reads to build ~/.pi/agent/models.json.
     assert env["OPENAI_BASE_URL"] == "http://backend:8080/v1"
     assert env["OPENAI_API_KEY"] == "ajt.a.b"
@@ -218,6 +226,56 @@ def test_pi_runtime_targets_the_gateway_through_its_wrapper():
     # Tier 2: structured or not, pi's output is passed through as raw.
     assert runtime.parse_event('{"type":"turn_start"}').event_type == "raw"
     assert runtime.capabilities().tier == 2
+
+
+@pytest.mark.parametrize(
+    "runtime",
+    [
+        ClaudeCodeRuntime(),
+        CodexRuntime(),
+        PiRuntime(),
+        OpencodeRuntime(),
+        GenericRuntime("some-agent {prompt}"),
+    ],
+    ids=["claude", "codex", "pi", "opencode", "generic"],
+)
+def test_mcp_config_fails_closed_until_the_gateway_broker_exists(runtime):
+    """No adapter may silently turn a requested server into direct MCP."""
+    config = RuntimeMCPConfig(server_ids=("repository-supplied-server",))
+
+    with pytest.raises(RuntimeMCPUnavailableError) as raised:
+        runtime.prepare(
+            workdir="/tmp/x",
+            task_prompt="do it",
+            model="glm-5.1",
+            gateway_base_url="http://backend:8080",
+            credential="mcp-secret-must-not-leak",
+            mcp_config=config,
+        )
+
+    # Server ids and credentials do not enter an error that may reach job logs.
+    assert "repository-supplied-server" not in str(raised.value)
+    assert "mcp-secret-must-not-leak" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "runtime",
+    [ClaudeCodeRuntime(), CodexRuntime(), PiRuntime(), OpencodeRuntime()],
+    ids=["claude", "codex", "pi", "opencode"],
+)
+def test_runtime_credentials_stay_out_of_process_arguments(runtime):
+    """The model-scoped token is environment-only, never argv/log material."""
+    credential = "ajt.secret.value"
+    argv, _env = runtime.prepare(
+        workdir="/tmp/x",
+        task_prompt="do it",
+        model="glm-5.1",
+        gateway_base_url="http://backend:8080",
+        credential=credential,
+        mcp_config=RuntimeMCPConfig(),
+    )
+
+    assert all(credential not in argument for argument in argv)
 
 
 def test_opencode_runtime_targets_the_gateway_through_its_wrapper():

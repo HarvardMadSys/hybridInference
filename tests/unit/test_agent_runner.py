@@ -22,7 +22,7 @@ from serving.agent_jobs.runner import (
     conversation_prompt,
     run_agent,
 )
-from serving.agent_jobs.runtimes import ClaudeCodeRuntime, GenericRuntime
+from serving.agent_jobs.runtimes import ClaudeCodeRuntime, GenericRuntime, RuntimeMCPConfig
 from serving.agent_jobs.sandbox import ProcessBackend
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
@@ -141,6 +141,31 @@ def test_agent_output_streams_back_as_events(tmp_path):
         "line 1",
         "line 2",
     ]
+
+
+def test_runner_supplies_an_explicit_empty_mcp_boundary(tmp_path):
+    """MCP configuration comes from the trusted runner, never the checkout."""
+    captured = None
+
+    class _CapturingRuntime(GenericRuntime):
+        def prepare(self, *, mcp_config, **kwargs):
+            nonlocal captured
+            captured = mcp_config
+            return super().prepare(mcp_config=mcp_config, **kwargs)
+
+    runtime = _CapturingRuntime(f"{sys.executable} -c " + repr("print('ok')"))
+    run_agent(
+        runtime,
+        job=_JOB,
+        workdir=str(tmp_path),
+        gateway_base_url="http://gw",
+        control=FakeControl(),
+        heart=FakeHeart(),
+        timeout_s=30,
+        backend=ProcessBackend(acknowledged_unsafe=True),
+    )
+
+    assert captured == RuntimeMCPConfig()
 
 
 def test_losing_the_lease_aborts_instead_of_racing(tmp_path):

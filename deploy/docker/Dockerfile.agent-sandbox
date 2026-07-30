@@ -71,6 +71,12 @@ COPY deploy/docker/pi-freeinference /usr/local/bin/pi-freeinference
 COPY deploy/docker/opencode-freeinference /usr/local/bin/opencode-freeinference
 RUN chmod 0755 /usr/local/bin/pi-freeinference /usr/local/bin/opencode-freeinference
 
+# `--ignore-user-config` does not suppress a trusted repository's
+# .codex/config.toml. Codex 0.145 applies this requirements allowlist after all
+# config layers, so the empty table is the fail-closed P0 MCP policy.
+COPY deploy/docker/codex-requirements.toml /etc/codex/requirements.toml
+RUN chmod 0644 /etc/codex/requirements.toml
+
 # Non-root by default. The runner bind-mounts the worktree and the container is
 # disposable, so there is no reason for the agent to have root — and a kernel
 # escape needs a much better bug when it starts unprivileged.

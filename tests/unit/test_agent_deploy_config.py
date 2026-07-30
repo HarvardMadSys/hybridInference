@@ -15,10 +15,16 @@ from pathlib import Path
 import pytest
 import yaml
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+    import tomli as tomllib
+
 from serving.agent_jobs.runner import build_parser
 
 _COMPOSE = Path(__file__).resolve().parents[2] / "deploy/docker/docker-compose.agent-runner.yml"
 _DOCKERFILE = Path(__file__).resolve().parents[2] / "deploy/docker/Dockerfile.agent-sandbox"
+_CODEX_REQUIREMENTS = Path(__file__).resolve().parents[2] / "deploy/docker/codex-requirements.toml"
 
 
 @pytest.fixture(scope="module")
@@ -92,6 +98,22 @@ def test_sandbox_image_disables_agent_phone_home():
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     ):
         assert flag in text
+
+
+def test_codex_mcp_is_constrained_to_an_empty_requirements_allowlist():
+    """User, project, and plugin MCP servers are disabled after config merge.
+
+    Codex 0.145 treats the presence of top-level ``mcp_servers`` requirements
+    as the server allowlist. The same empty allowlist is applied a second time
+    to plugin-provided MCP servers, so an empty table is stronger than
+    ``--ignore-user-config`` alone.
+    """
+    requirements = tomllib.loads(_CODEX_REQUIREMENTS.read_text())
+    assert requirements == {"mcp_servers": {}}
+    assert "codex-requirements.toml /etc/codex/requirements.toml" in _DOCKERFILE.read_text()
+
+    workflow = Path(__file__).resolve().parents[2] / ".github/workflows/agent-job-runner.yml"
+    assert "codex-requirements.toml /etc/codex/requirements.toml" in workflow.read_text()
 
 
 # ── the chain from compose file to a running sandbox ───────────────────
@@ -553,6 +575,9 @@ def test_opencode_wrapper_writes_config_sets_offline_flags_and_execs(tmp_path):
     assert seen["env"]["OPENCODE_DISABLE_MODELS_FETCH"] == "1"
     assert seen["env"]["OPENCODE_DISABLE_DEFAULT_PLUGINS"] == "1"
     assert seen["env"]["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    # OpenCode v1.18.9's supported switch prevents both project opencode.json
+    # and project .opencode/ directories from entering the merged config.
+    assert seen["env"]["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
 
     config = _json.loads(Path(seen["env"]["OPENCODE_CONFIG"]).read_text())
     provider = config["provider"]["freeinference"]

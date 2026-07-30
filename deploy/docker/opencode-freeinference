@@ -57,6 +57,11 @@ def main() -> None:
     os.environ.update(
         {
             "OPENCODE_CONFIG": config_path,
+            # OpenCode otherwise merges both `opencode.json` and `.opencode/`
+            # from the repository after this reviewed config. Those sources
+            # can declare local MCP commands. Its supported kill switch covers
+            # both project config forms.
+            "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
             # Startup otherwise fetches models.dev and hard-fails without it —
             # in the sandbox that is every run, as a timeout that reads like a
             # broken model.
