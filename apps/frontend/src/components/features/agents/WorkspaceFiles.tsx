@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { AgentJobFileEntryApi } from '@/lib/api/agents';
 
 import { highlightCode, TOKEN_CLASS, type CodeToken } from './codeHighlight';
 import type { AgentJob } from './types';
 import { useWorkspaceFiles, type WorkspaceDirectory } from './useAgentJobs';
+import { PANE_RESIZE_EVENT } from './useResizablePane';
 
 /** Rows rendered at once; the API already caps a preview at 512 KB. */
 const MAX_PREVIEW_LINES = 4000;
@@ -450,7 +451,7 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [paneWidth, setPaneWidth] = useState(0);
   const [mode, setMode] = useState<SidebarMode>('files');
-  const observerRef = useRef<ResizeObserver | null>(null);
+  const paneRef = useRef<HTMLElement | null>(null);
 
   const root = directories[''];
   // The workspace pane is user-resizable, so whether there is room for two
@@ -461,15 +462,28 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
   // walks back to the tree.
   const showTree = sidebarOpen && !(narrow && selected);
 
-  const measurePane = useCallback((node: HTMLElement | null) => {
-    observerRef.current?.disconnect();
-    observerRef.current = null;
-    if (!node) return;
-    setPaneWidth(node.clientWidth);
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => setPaneWidth(node.clientWidth));
-    observer.observe(node);
-    observerRef.current = observer;
+  const attachPane = useCallback((node: HTMLElement | null) => {
+    paneRef.current = node;
+    if (node) setPaneWidth(node.clientWidth);
+  }, []);
+
+  useEffect(() => {
+    const measure = () => {
+      if (paneRef.current) setPaneWidth(paneRef.current.clientWidth);
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener(PANE_RESIZE_EVENT, measure);
+    const observer =
+      typeof ResizeObserver === 'undefined' || !paneRef.current
+        ? null
+        : new ResizeObserver(measure);
+    observer?.observe(paneRef.current as HTMLElement);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener(PANE_RESIZE_EVENT, measure);
+      observer?.disconnect();
+    };
   }, []);
 
   const sourceLabel = root?.error
@@ -482,7 +496,7 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
 
   return (
     <section
-      ref={measurePane}
+      ref={attachPane}
       aria-label="Workspace files"
       className="flex h-[36rem] max-h-[calc(100vh-11rem)] flex-col overflow-hidden rounded-xl border border-gray-200 bg-white"
     >

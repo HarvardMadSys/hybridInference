@@ -511,6 +511,49 @@ describe('JobDetail', () => {
     expect(screen.getByRole('button', { name: /README\.md/ })).toBeInTheDocument();
   });
 
+  it('gives the tree the whole pane when the workspace is too narrow for two', async () => {
+    // The pane is user-resizable, so the layout follows the panel's own width.
+    // jsdom reports 0 for every box; pretend the pane was dragged narrow.
+    const clientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get: () => 420,
+    });
+    try {
+      vi.mocked(getAgentJobFiles)
+        .mockResolvedValueOnce({
+          path: '',
+          kind: 'directory',
+          entries: [{ name: 'README.md', path: 'README.md', kind: 'file' }],
+        })
+        .mockResolvedValue({
+          path: 'README.md',
+          kind: 'file',
+          content: '# Narrow',
+          size: 8,
+          binary: false,
+          truncated: false,
+        });
+      render(<JobDetail job={makeJob()} />);
+      openWorkspace();
+      fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+      fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }));
+
+      // The file takes the pane rather than sharing it with a 200px sidebar…
+      await waitFor(() =>
+        expect(screen.getByLabelText('Workspace files')).toHaveTextContent('# Narrow'),
+      );
+      expect(screen.queryByRole('button', { name: /README\.md/ })).not.toBeInTheDocument();
+
+      // …and the header button walks back to the tree instead of hiding it.
+      fireEvent.click(screen.getByRole('button', { name: 'Show file tree' }));
+      expect(await screen.findByRole('button', { name: /README\.md/ })).toBeInTheDocument();
+    } finally {
+      if (clientWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', clientWidth);
+      else delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth;
+    }
+  });
+
   it('opens a changed file from the Changes list', async () => {
     vi.mocked(getAgentJobFiles)
       .mockResolvedValueOnce({ path: '', kind: 'directory', entries: [] })
