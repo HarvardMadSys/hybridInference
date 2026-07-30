@@ -264,6 +264,96 @@ describe('toDisplayJob', () => {
     ]);
   });
 
+  it('renders a settled turn from durable messages when it has no events', () => {
+    // A fork's copied anchor never streamed: its thread messages are the only
+    // record, prompt included, so the separate prompt card must stand down.
+    const job = toDisplayJob(
+      { ...JOB, id: 'ajob_2', state: 'succeeded', thread_id: 'thread_1', turn_no: 2 },
+      {
+        thread: {
+          thread_id: 'thread_1',
+          jobs: [],
+          messages: [
+            { id: 1, role: 'user', content: 'first question', job_id: 'ajob_0', created_at: null },
+            {
+              id: 2,
+              role: 'assistant',
+              content: 'first answer',
+              job_id: 'ajob_0',
+              created_at: null,
+            },
+            { id: 3, role: 'user', content: 'forked question', job_id: 'ajob_2', created_at: null },
+            {
+              id: 4,
+              role: 'assistant',
+              content: 'forked answer',
+              job_id: 'ajob_2',
+              created_at: null,
+            },
+          ],
+        },
+      },
+    );
+
+    expect(job.threadMessages?.map((message) => message.content)).toEqual([
+      'first question',
+      'first answer',
+      'forked question',
+      'forked answer',
+    ]);
+    expect(job.historyIncludesPrompt).toBe(true);
+  });
+
+  it('keeps a live turn rendering from its stream, not from thread copies', () => {
+    const job = toDisplayJob(
+      { ...JOB, id: 'ajob_2', state: 'running', thread_id: 'thread_1', turn_no: 2 },
+      {
+        thread: {
+          thread_id: 'thread_1',
+          jobs: [],
+          messages: [
+            {
+              id: 3,
+              role: 'user',
+              content: 'current question',
+              job_id: 'ajob_2',
+              created_at: null,
+            },
+          ],
+        },
+      },
+    );
+
+    expect(job.threadMessages).toEqual([]);
+    expect(job.historyIncludesPrompt).toBe(false);
+  });
+
+  it('does not duplicate a settled turn that already streamed its answer', () => {
+    const job = toDisplayJob(
+      { ...JOB, id: 'ajob_2', state: 'succeeded', thread_id: 'thread_1', turn_no: 2 },
+      {
+        events: [event(1, 'message', { text: 'streamed answer' })],
+        thread: {
+          thread_id: 'thread_1',
+          jobs: [],
+          messages: [
+            { id: 3, role: 'user', content: 'q', job_id: 'ajob_2', created_at: null },
+            {
+              id: 4,
+              role: 'assistant',
+              content: 'streamed answer',
+              job_id: 'ajob_2',
+              created_at: null,
+            },
+          ],
+        },
+      },
+    );
+
+    expect(job.threadMessages).toEqual([]);
+    expect(job.historyIncludesPrompt).toBe(false);
+  });
+
   it('does not render turns queued after the job being viewed as history', () => {
     const current = { ...JOB, thread_id: 'thread_1', turn_no: 2 };
     const future = { ...JOB, id: 'ajob_3', thread_id: 'thread_1', turn_no: 3 };

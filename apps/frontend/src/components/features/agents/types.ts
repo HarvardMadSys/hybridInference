@@ -118,4 +118,10 @@ export interface AgentJob {
   turnNo?: number;
   /** Completed turns before this job. The current prompt/activity are separate. */
   threadMessages?: AgentThreadMessage[];
+  /**
+   * True when threadMessages already carries this job's own turn (a forked
+   * copy has no events, so its durable messages are rendered instead) — the
+   * separate current-prompt card would be a duplicate.
+   */
+  historyIncludesPrompt?: boolean;
 }

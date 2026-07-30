@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/components/providers';
 import { archiveAgentJob } from '@/lib/api/agents';
 import { groupJobsByConversation } from './conversations';
@@ -38,6 +38,18 @@ export function AgentsSidebar() {
   const [archiveError, setArchiveError] = useState<string | null>(null);
 
   const { jobs, loading, error, reload } = useAgentJobList();
+
+  // The list polls only while something is live, so a conversation created by
+  // navigation — a new task, a fork — would otherwise not appear until a
+  // manual refresh. Reload on route change; the mount fetch already ran.
+  const mountPath = useRef(true);
+  useEffect(() => {
+    if (mountPath.current) {
+      mountPath.current = false;
+      return;
+    }
+    reload();
+  }, [pathname, reload]);
 
   const sections = groupJobsByConversation(
     jobs.filter((job) => !hiddenThreads.has(job.threadId ?? job.id)),
