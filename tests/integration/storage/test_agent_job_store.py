@@ -293,6 +293,158 @@ async def test_concurrent_follow_ups_form_one_linear_thread(store: AgentJobStore
     assert [job["state"] for job in ordered] == ["waiting", "waiting"]
 
 
+async def _run_to_success(
+    store: AgentJobStore, job: dict, *, message: str | None = None, patch: str | None = None
+) -> dict:
+    """Claim the queued job and finish it as succeeded, with optional output."""
+    claim = await store.claim_job(worker_id="w-fork", lease_ttl_seconds=60)
+    assert claim is not None and claim["id"] == job["id"]
+    if message is not None:
+        await store.append_event(
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+            event_type="message",
+            payload={"text": message},
+        )
+    if patch is not None:
+        await store.save_artifact(
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+            kind="patch",
+            content=patch,
+        )
+    assert await store.transition(
+        job_id=job["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
+    return claim
+
+
+async def test_fork_thread_copies_history_and_carries_the_unpublished_patch(
+    store: AgentJobStore,
+):
+    """A fork is a new thread whose next turn resumes the source's work."""
+    source = await _create_job(store)
+    await _run_to_success(
+        store, source, message="implemented the fix", patch="diff --git a/x b/x\n"
+    )
+
+    fork = await store.fork_thread(source_job_id=source["id"], user_id="user-1")
+
+    assert fork is not None
+    assert fork["thread_id"] != source["thread_id"]
+    assert fork["fork_source_job_id"] == source["id"]
+    assert fork["state"] == "succeeded"
+    assert fork["turn_no"] == 1
+    assert fork["parent_job_id"] is None
+    # The PR (if any) belongs to the source thread; the fork starts unpublished.
+    assert fork["published_pr_url"] is None
+    # Forking queues nothing.
+    assert await store.claim_job(worker_id="w-idle", lease_ttl_seconds=60) is None
+
+    thread = await store.get_thread_for_job(job_id=fork["id"], user_id="user-1")
+    assert thread is not None
+    assert thread["title"].endswith("(fork)")
+    assert [job["id"] for job in thread["jobs"]] == [fork["id"]]
+    assert [(message["role"], message["content"]) for message in thread["messages"]] == [
+        ("user", "fix the flaky test"),
+        ("assistant", "implemented the fix"),
+    ]
+
+    # The next turn in the fork runs immediately (a copy has no patch of its
+    # own to wait on) from the same base, with the source's history and its
+    # still-unpublished patch as context.
+    child = await store.create_follow_up(
+        parent_job_id=fork["id"], user_id="user-1", prompt="continue in the fork"
+    )
+    assert child is not None
+    assert child["state"] == "queued"
+    assert child["turn_no"] == 2
+    assert child["base_sha"] == source["base_sha"]
+    context = await store.follow_up_context(job_id=child["id"])
+    assert context == {
+        "messages": [
+            {"role": "user", "content": "fix the flaky test"},
+            {"role": "assistant", "content": "implemented the fix"},
+        ],
+        "patch": "diff --git a/x b/x\n",
+    }
+
+    # The publisher sees the source turn, never the copy.
+    assert (await store.claim_for_publish())["job_id"] == source["id"]
+    assert await store.claim_for_publish() is None
+
+
+async def test_fork_after_publish_carries_the_commit_not_the_patch(store: AgentJobStore):
+    """A fork of published work bases on the commit instead of re-applying."""
+    source = await _create_job(store)
+    await _run_to_success(store, source, patch="diff --git a/x b/x\n")
+    assert (await store.claim_for_publish())["job_id"] == source["id"]
+    assert await store.record_publish(
+        job_id=source["id"], pr_url="https://x/pr/1", commit_sha="a" * 40
+    )
+
+    fork = await store.fork_thread(source_job_id=source["id"], user_id="user-1")
+
+    assert fork is not None
+    assert fork["published_commit_sha"] == "a" * 40
+    assert fork["published_pr_url"] is None
+    child = await store.create_follow_up(
+        parent_job_id=fork["id"], user_id="user-1", prompt="continue"
+    )
+    assert child is not None
+    assert child["state"] == "queued"
+    assert child["base_sha"] == "a" * 40
+    assert (await store.follow_up_context(job_id=child["id"]))["patch"] is None
+
+
+async def test_fork_thread_refuses_unsettled_and_foreign_anchors(store: AgentJobStore):
+    """Only the owner may fork, and only from a settled turn."""
+    source = await _create_job(store)
+    assert await store.fork_thread(source_job_id=source["id"], user_id="user-1") is None
+
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    assert claim is not None
+    assert await store.fork_thread(source_job_id=source["id"], user_id="user-1") is None
+
+    assert await store.transition(
+        job_id=source["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
+    assert await store.fork_thread(source_job_id=source["id"], user_id="someone-else") is None
+    assert await store.fork_thread(source_job_id=source["id"], user_id="user-1") is not None
+
+
+async def test_fork_from_an_earlier_turn_copies_only_that_prefix(store: AgentJobStore):
+    """Rewind: forking turn one leaves later turns behind in the source."""
+    first = await _create_job(store)
+    await _run_to_success(store, first, message="answer one")
+    second = await store.create_follow_up(
+        parent_job_id=first["id"], user_id="user-1", prompt="second question"
+    )
+    assert second is not None
+    await _run_to_success(store, second, message="answer two")
+
+    fork = await store.fork_thread(source_job_id=first["id"], user_id="user-1")
+
+    assert fork is not None
+    thread = await store.get_thread_for_job(job_id=fork["id"], user_id="user-1")
+    assert thread is not None
+    assert [(message["role"], message["content"]) for message in thread["messages"]] == [
+        ("user", "fix the flaky test"),
+        ("assistant", "answer one"),
+    ]
+    source_thread = await store.get_thread_for_job(job_id=second["id"], user_id="user-1")
+    assert source_thread is not None
+    assert len(source_thread["messages"]) == 4
+
+
 async def test_follow_up_waits_for_successful_patch_to_publish(store: AgentJobStore):
     """Runner success alone is not a usable base for the next turn."""
     parent = await _create_job(store)

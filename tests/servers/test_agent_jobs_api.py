@@ -146,6 +146,72 @@ class FakeAgentJobStore:
         )
         return job
 
+    async def fork_thread(
+        self, *, source_job_id: str, user_id: str
+    ) -> dict[str, Any] | None:
+        source = self.jobs.get(source_job_id)
+        if source is None or source["user_id"] != user_id:
+            return None
+        if source["state"] not in {"succeeded", "failed", "cancelled"}:
+            return None
+        new_thread_id = f"athr_fork_{self._next_job:04d}"
+        turns = sorted(
+            (
+                job
+                for job in self.jobs.values()
+                if job["thread_id"] == source["thread_id"]
+                and job["turn_no"] <= source["turn_no"]
+            ),
+            key=lambda job: job["turn_no"],
+        )
+        copied_id: dict[str, str] = {}
+        previous: str | None = None
+        for turn in turns:
+            copy_id = f"ajob_{self._next_job:04d}"
+            self._next_job += 1
+            self.jobs[copy_id] = {
+                **turn,
+                "id": copy_id,
+                "thread_id": new_thread_id,
+                "parent_job_id": previous,
+                "state": (
+                    turn["state"]
+                    if turn["state"] in {"succeeded", "failed", "cancelled"}
+                    else "cancelled"
+                ),
+                "cancel_requested": False,
+                "current_attempt_id": None,
+                "published_pr_url": None,
+                "fork_source_job_id": turn["id"],
+            }
+            copied_id[turn["id"]] = copy_id
+            previous = copy_id
+        source_messages = sorted(
+            (
+                message
+                for message in self.messages
+                if message["thread_id"] == source["thread_id"]
+                and self.jobs[message["job_id"]]["turn_no"] <= source["turn_no"]
+            ),
+            key=lambda message: (
+                self.jobs[message["job_id"]]["turn_no"],
+                0 if message["role"] == "user" else 1,
+                message["id"],
+            ),
+        )
+        for message in source_messages:
+            self.messages.append(
+                {
+                    "id": len(self.messages) + 1,
+                    "thread_id": new_thread_id,
+                    "job_id": copied_id[message["job_id"]],
+                    "role": message["role"],
+                    "content": message["content"],
+                    "created_at": message["created_at"],
+                }
+            )
+        return self.jobs[copied_id[source["id"]]]
+
     async def resolve_legacy_published_commit(self, *, parent_job_id: str, commit_sha: str) -> bool:
         parent = self.jobs.get(parent_job_id)
         if parent is None or not parent.get("published_pr_url"):
@@ -210,6 +276,15 @@ class FakeAgentJobStore:
             and not parent.get("published_commit_sha")
             else None
         )
+        if patch is None and parent is not None and not parent.get("published_commit_sha"):
+            source = self.jobs.get(parent.get("fork_source_job_id") or "")
+            source_artifact = self.artifacts.get((parent.get("fork_source_job_id"), "patch"))
+            if (
+                source is not None
+                and source_artifact
+                and source["state"] in {"succeeded", "publishing"}
+            ):
+                patch = source_artifact["content"]
         return {"messages": messages, "patch": patch}
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
@@ -709,6 +784,122 @@ async def test_follow_ups_append_to_latest_turn_and_reject_blank_prompts(
         json={"prompt": "   \n  "},
     )
     assert blank.status_code == 422
+
+
+async def test_fork_copies_settled_history_into_a_new_thread(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """Fork duplicates durable turns, queues nothing, and resumes on follow-up."""
+    source_id = await _create_job(client)
+    claim = (await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})).json()
+    auth = {"Authorization": f"Bearer {claim['worker_token']}"}
+    await client.post(
+        f"/v1/agent/worker/jobs/{source_id}/events",
+        json={"event_type": "message", "payload": {"text": "done: fixed"}},
+        headers=auth,
+    )
+    await client.post(
+        f"/v1/agent/worker/jobs/{source_id}/artifacts",
+        json={"kind": "patch", "content": "diff --git a/x b/x"},
+        headers=auth,
+    )
+    await client.post(
+        f"/v1/agent/worker/jobs/{source_id}/finish",
+        json={"state": "succeeded"},
+        headers=auth,
+    )
+
+    forked = await client.post(f"/v1/agent/jobs/{source_id}/fork")
+
+    assert forked.status_code == 201
+    fork = forked.json()
+    assert fork["id"] != source_id
+    assert fork["thread_id"] != store.jobs[source_id]["thread_id"]
+    assert fork["forked_from_job_id"] == source_id
+    assert fork["state"] == "succeeded"
+    assert fork["published_pr_url"] is None
+    assert all(job["state"] != "queued" for job in store.jobs.values())
+
+    thread = await client.get(f"/v1/agent/jobs/{fork['id']}/thread")
+    assert thread.status_code == 200
+    assert [(m["role"], m["content"]) for m in thread.json()["messages"]] == [
+        ("user", "fix it"),
+        ("assistant", "done: fixed"),
+    ]
+
+    follow_up = await client.post(
+        f"/v1/agent/jobs/{fork['id']}/follow-ups",
+        json={"prompt": "continue in the fork"},
+    )
+    assert follow_up.status_code == 201
+    child = follow_up.json()
+    assert child["state"] == "queued"
+    assert child["turn_no"] == 2
+    child_claim = (await client.post("/v1/agent/worker/claim", json={"worker_id": "w2"})).json()
+    assert child_claim["job_id"] == child["id"]
+    assert child_claim["context_messages"] == [
+        {"role": "user", "content": "fix it"},
+        {"role": "assistant", "content": "done: fixed"},
+    ]
+    # The source's still-unpublished patch crosses the fork boundary.
+    assert child_claim["context_patch"] == "diff --git a/x b/x"
+
+
+async def test_fork_from_an_earlier_turn_rewinds_the_conversation(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """Anchoring the fork on turn one leaves later turns behind."""
+    first_id = await _create_job(client)
+    claim = (await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})).json()
+    auth = {"Authorization": f"Bearer {claim['worker_token']}"}
+    await client.post(
+        f"/v1/agent/worker/jobs/{first_id}/events",
+        json={"event_type": "message", "payload": {"text": "answer one"}},
+        headers=auth,
+    )
+    await client.post(
+        f"/v1/agent/worker/jobs/{first_id}/finish",
+        json={"state": "succeeded"},
+        headers=auth,
+    )
+    second = await client.post(
+        f"/v1/agent/jobs/{first_id}/follow-ups",
+        json={"prompt": "second question"},
+    )
+    assert second.status_code == 201
+
+    forked = await client.post(f"/v1/agent/jobs/{first_id}/fork")
+
+    assert forked.status_code == 201
+    thread = await client.get(f"/v1/agent/jobs/{forked.json()['id']}/thread")
+    assert [(m["role"], m["content"]) for m in thread.json()["messages"]] == [
+        ("user", "fix it"),
+        ("assistant", "answer one"),
+    ]
+
+
+async def test_fork_of_an_active_turn_is_refused(client: AsyncClient, store: FakeAgentJobStore):
+    """A running turn's output is not history yet, so it cannot anchor a fork."""
+    job_id = await _create_job(client)
+
+    queued = await client.post(f"/v1/agent/jobs/{job_id}/fork")
+    assert queued.status_code == 409
+    assert queued.json()["detail"]["error"]["type"] == "not_settled"
+
+    store.jobs[job_id]["state"] = "running"
+    running = await client.post(f"/v1/agent/jobs/{job_id}/fork")
+    assert running.status_code == 409
+
+
+async def test_fork_is_owner_scoped(client: AsyncClient, store: FakeAgentJobStore):
+    """Someone else's job id forks as 404, indistinguishable from absent."""
+    job_id = await _create_job(client)
+    store.jobs[job_id]["state"] = "succeeded"
+    store.jobs[job_id]["user_id"] = _OTHER
+
+    response = await client.post(f"/v1/agent/jobs/{job_id}/fork")
+
+    assert response.status_code == 404
 
 
 async def test_follow_up_resolves_a_legacy_draft_pr_branch(
