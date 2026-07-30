@@ -7,6 +7,9 @@ import pytest
 
 from serving.observability.alerts import (
     _EMOJI,
+    _PENDING_RESOLUTIONS,
+    _STATE_TRANSITIONS,
+    _TRANSITIONS,
     AlertSeverity,
     _base_url,
     _detect_environment,
@@ -580,3 +583,162 @@ class TestTheResolutionWaitSpansBothSinks:
             release.set()
             assert await firing is True
             assert await recovery is True
+
+
+class TestPendingResolutionRetriesOffTheSweepTimer:
+    """A failed resolution send is retried by the sweep timer, not by observations.
+
+    The circuit breaker calls ``alert_on_transition`` only on a state *change*,
+    so after its single healthy edge there is no later observation to carry a
+    retry: re-arming alone would leave the incident announced-open forever.
+    """
+
+    async def test_a_failed_state_resolution_is_delivered_by_the_sweep(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(side_effect=[True, False, True]),
+        ) as mock_post:
+            await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            closed = await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            assert closed is False
+            # The breaker reports no further edges; only the timer runs.
+            await sweep_stale_breaches()
+
+            assert mock_post.await_count == 3
+            message = mock_post.await_args.args[1]
+            assert "Recovered: Provider circuit opened" in message
+            # Delivered exactly once: a later sweep must not repeat it.
+            await sweep_stale_breaches()
+            assert mock_post.await_count == 3
+
+        assert not _PENDING_RESOLUTIONS
+        # A confirmed close leaves no tracker residue behind.
+        assert not _STATE_TRANSITIONS._firing
+        assert not _STATE_TRANSITIONS._bounds
+
+    async def test_a_re_breach_cancels_the_pending_resolution(self, monkeypatch):
+        """The queued recovery is stale the moment the condition is real again.
+
+        Sending it later would announce a live outage as recovered, which is
+        strictly worse than the fire-only behaviour this module replaced.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(side_effect=[True, False, True]),
+        ) as mock_post:
+            for breached in (True, False, True):
+                await alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=breached,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+            await sweep_stale_breaches()
+
+        # Fire, failed close, re-fire — and no recovery for the live breach.
+        assert mock_post.await_count == 3
+        assert not _PENDING_RESOLUTIONS
+        assert _STATE_TRANSITIONS.is_firing("circuit_open:zhipu")
+
+    async def test_a_confirmed_metric_close_clears_the_staleness_bound(self, monkeypatch):
+        """Dynamic keys (per-user, per-period) must not leak a bound per incident."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        key = "provider_budget:zhipu:2026-07-30T10"
+        t0 = 1_000.0
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(side_effect=[True, True]),
+        ):
+            await alert_on_transition(
+                key=key,
+                breached=True,
+                severity=AlertSeverity.WARN,
+                title="Provider hourly spend exceeded budget",
+                context=dict,
+                cooldown_sec=0,
+                stale_after=3_600.0,
+                now=t0,
+            )
+            await alert_on_transition(
+                key=key,
+                breached=False,
+                severity=AlertSeverity.WARN,
+                title="Provider hourly spend exceeded budget",
+                context=dict,
+                cooldown_sec=0,
+                stale_after=3_600.0,
+                now=t0 + 1.0,
+            )
+            resolved = await alert_on_transition(
+                key=key,
+                breached=False,
+                severity=AlertSeverity.WARN,
+                title="Provider hourly spend exceeded budget",
+                context=dict,
+                cooldown_sec=0,
+                stale_after=3_600.0,
+                now=t0 + 200.0,
+            )
+
+        assert resolved is True
+        assert not _TRANSITIONS._firing
+        assert not _TRANSITIONS._bounds
+
+    async def test_the_stale_sweep_names_its_weaker_evidence(self, monkeypatch):
+        """A sweep close means "no recent samples", not an observed-clear metric.
+
+        The wording must say so: a rule can go quiet because traffic stopped or
+        the process is draining, and reading that as a measured recovery would
+        mislead whoever is watching the channel during an outage.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        clock = [1_000.0]
+        monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(side_effect=[True, True]),
+        ) as mock_post:
+            await alert_on_transition(
+                key="failed_request_rate",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Failed-request rate exceeded",
+                context=dict,
+                cooldown_sec=0,
+                stale_after=3_600.0,
+                now=clock[0],
+            )
+            clock[0] += 3_600.0
+            await sweep_stale_breaches()
+
+        message = mock_post.await_args.args[1]
+        assert "Recovered (no recent samples): failed_request_rate" in message
+        # A successful sweep close is a confirmed close: no bound left behind.
+        assert not _TRANSITIONS._firing
+        assert not _TRANSITIONS._bounds

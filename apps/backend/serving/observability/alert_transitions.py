@@ -34,6 +34,13 @@ with ``clear_after_sec=0`` and ``stale_after_sec=None``.
 The tracker is deliberately in-process, matching where the existing cooldown
 state lives. Cross-process convergence is the control plane's job: it dedupes by
 fingerprint, so two workers observing the same edge produce one incident.
+
+Known limitation — restarts. Being in-process, all of this state dies with the
+process: an incident that was firing before a deploy produces no ``resolved``
+message after it (the fresh tracker never knew it fired), and a breach that is
+still real simply re-fires on its next evaluation. Both degrade to the
+pre-recovery-edge behaviour, never to a wrong announcement, which is why this
+is documented rather than persisted.
 """
 
 from __future__ import annotations
@@ -176,8 +183,10 @@ class ThresholdTransitionTracker:
         result, so a transient sink failure would otherwise lose the only
         resolution that key will ever produce and leave its incident open with
         nothing able to close it. Re-arming makes the next healthy observation
-        try again; a discrete state alert with no further observations stays
-        open, which is where it was before this module existed.
+        try again. A discrete state alert has no further observations, so
+        re-arming alone cannot retry it — the caller must also queue the failed
+        send itself (see ``_PENDING_RESOLUTIONS`` in ``alerts``), which the
+        sweep timer retries independent of observations.
 
         ``retry_in`` backdates the liveness clock so :meth:`sweep` reconsiders
         the key after roughly that long, rather than after a further full
@@ -196,6 +205,12 @@ class ThresholdTransitionTracker:
         )
 
     def forget(self, key: str) -> None:
-        """Drop state without emitting a transition (for shutdown or reload)."""
+        """Drop state without emitting a transition.
+
+        Two callers: shutdown/reload, and a *confirmed close* — once a
+        resolution is known delivered, the key's ``_bounds`` entry must go too,
+        or dynamic keys (per-user, per-period) each leak one entry forever.
+        Popping an already-resolved key's ``_firing`` entry is a no-op.
+        """
         self._firing.pop(key, None)
         self._bounds.pop(key, None)
