@@ -12,6 +12,7 @@ Quick Links
 * :doc:`quickstart` - Get started in 5 minutes
 * :doc:`integrations` - Configure with Kilo Code, Cursor, Roo Code, and other coding agents
 * :doc:`claude-code` - Use Claude Code with FreeInference's Anthropic-compatible endpoint
+* :doc:`agents` - Run coding agents on your GitHub repos in an isolated cloud sandbox
 * :doc:`models` - View available models
 * :doc:`api_headers` - API headers reference
 
@@ -23,6 +24,7 @@ Quick Links
    quickstart
    integrations
    claude-code
+   agents
    models
    api_headers
 
@@ -37,6 +39,10 @@ Key Features
 
 **IDE Integration**
    Easy setup with Kilo Code, Cursor, Roo Code, and more
+
+**Cloud Agents (Beta)**
+   Delegate a task, get back a draft pull request — agents run in isolated
+   cloud sandboxes with your choice of runtime and model
 
 **Kilo-Friendly Setup**
    Detailed Kilo Code instructions for a fast OpenAI-compatible configuration
