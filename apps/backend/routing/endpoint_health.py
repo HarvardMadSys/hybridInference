@@ -7,8 +7,10 @@ import os
 import threading
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
+from routing.usage_limit import detect_usage_limit
 from serving.observability.alerts import AlertSeverity, alert_slack, escape_slack_text
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -33,6 +35,11 @@ _OFFENDERS_IN_ALERT = 10
 
 def _reason_str(s: str) -> str:
     return s if s and len(s) < 64 else "error"
+
+
+def _iso_utc(epoch: float) -> str:
+    """Render an epoch-seconds instant as an ISO-8601 UTC string."""
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
 
 
 def _http_status_of(exc: BaseException) -> int | None:
@@ -160,6 +167,10 @@ class _CircuitBreaker:
         )
         self.consecutive_failures = 0
         self.last_opened: float | None = None
+        # Wall-clock epoch until which repeat circuit-open alerts are muted for a
+        # subscription usage-limit outage (0.0 = not muted). Set in on_failure
+        # and cleared on recovery in on_success.
+        self._alert_suppressed_until: float = 0.0
         self._offenders: Counter[str] = Counter()
         self._lock = threading.Lock()
 
@@ -180,6 +191,9 @@ class _CircuitBreaker:
         with self._lock:
             self.consecutive_failures = 0
             self._offenders.clear()
+            # Recovery re-arms alerting: a later usage-limit outage should page
+            # again rather than stay muted under a stale suppression deadline.
+            self._alert_suppressed_until = 0.0
             if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
                 duration_ms = (
                     (time.perf_counter() - self.last_opened) * 1000.0
@@ -223,6 +237,27 @@ class _CircuitBreaker:
             if prev_state not in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
                 return
 
+            # A subscription usage-limit outage re-trips on every half-open probe
+            # until the provider's window resets. Fire one alert per outage and
+            # stay quiet until the parsed reset time, instead of re-paging every
+            # few minutes for hours. The deadline is cleared on recovery.
+            now_dt = datetime.now(timezone.utc)
+            usage_limit = detect_usage_limit(detail, now=now_dt)
+            if usage_limit is not None:
+                if now_dt.timestamp() < self._alert_suppressed_until:
+                    logger.info(
+                        "circuit_open_alert_suppressed",
+                        extra={
+                            "event": "circuit_open_alert_suppressed",
+                            "provider": self.provider,
+                            "reason": reason or "unknown",
+                            "quota_reset_at": _iso_utc(self._alert_suppressed_until),
+                            "window": usage_limit.window,
+                        },
+                    )
+                    return
+                self._alert_suppressed_until = usage_limit.reset_at.timestamp()
+
             context: dict[str, Any] = {
                 "provider": self.provider,
                 "consecutive_failures": self.consecutive_failures,
@@ -231,6 +266,8 @@ class _CircuitBreaker:
             }
             if detail:
                 context["upstream_error"] = detail
+            if usage_limit is not None:
+                context["quota_reset_at"] = usage_limit.reset_at.isoformat()
             offenders = self._format_offenders()
             if offenders:
                 context["offending_users"] = offenders
