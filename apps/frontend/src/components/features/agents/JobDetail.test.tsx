@@ -426,7 +426,7 @@ describe('JobDetail', () => {
     expect(screen.getByLabelText('Workspace files')).not.toHaveTextContent('null B');
   });
 
-  it('edits and saves a file from the live worktree', async () => {
+  it('reads a live worktree file without offering to edit it', async () => {
     vi.mocked(getAgentJobFiles)
       .mockResolvedValueOnce({
         path: '',
@@ -445,30 +445,20 @@ describe('JobDetail', () => {
         writable: true,
         source: 'workspace',
       });
-    vi.mocked(writeAgentJobFile).mockResolvedValue({
-      path: 'README.md',
-      kind: 'file',
-      content: '# After',
-      size: 7,
-      binary: false,
-      truncated: false,
-      writable: true,
-      source: 'workspace',
-    });
     render(<JobDetail job={makeJob()} />);
     openWorkspace();
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
     fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
 
-    const editor = await screen.findByRole('textbox', { name: 'Edit README.md' });
-    fireEvent.change(editor, { target: { value: '# After' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-    await waitFor(() =>
-      expect(writeAgentJobFile).toHaveBeenCalledWith('ajob_1', 'README.md', '# After'),
-    );
-    expect(screen.getByLabelText('Workspace files')).toHaveTextContent('Live worktree');
+    const pane = screen.getByLabelText('Workspace files');
+    await waitFor(() => expect(pane).toHaveTextContent('# Before'));
+    // Writable is a fact about the workspace, not an invitation: the pane is a
+    // reader, so nothing here can change the run's files.
+    expect(pane).toHaveTextContent('Live worktree');
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Edit README.md' })).not.toBeInTheDocument();
+    expect(writeAgentJobFile).not.toHaveBeenCalled();
   });
 
   it('expands a directory in place and keeps the tree around the open file', async () => {

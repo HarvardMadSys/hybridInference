@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { writeAgentJobFile, type AgentJobFileEntryApi } from '@/lib/api/agents';
+import type { AgentJobFileEntryApi } from '@/lib/api/agents';
 
 import { highlightCode, TOKEN_CLASS, type CodeToken } from './codeHighlight';
 import type { AgentJob } from './types';
@@ -342,42 +342,6 @@ function CodeView({ path, content }: { path: string; content: string }) {
   );
 }
 
-/** Editable twin of CodeView: same gutter and metrics, no highlighting.
- *
- * The textarea grows to its content and never wraps, so the gutter stays
- * aligned line-for-line without any scroll syncing.
- */
-function CodeEditor({
-  path,
-  draft,
-  onChange,
-}: {
-  path: string;
-  draft: string;
-  onChange: (value: string) => void;
-}) {
-  const count = draft.split('\n').length;
-  return (
-    <div className="flex py-2 font-mono text-[12px] leading-[1.7]">
-      <div aria-hidden="true" className="w-12 shrink-0 select-none pr-4 text-right text-gray-300">
-        {Array.from({ length: count }, (_, index) => (
-          <div key={index}>{index + 1}</div>
-        ))}
-      </div>
-      <textarea
-        value={draft}
-        onChange={(event) => onChange(event.target.value)}
-        aria-label={`Edit ${path}`}
-        spellCheck={false}
-        autoFocus
-        wrap="off"
-        rows={count + 1}
-        className="min-w-0 flex-1 resize-none border-0 bg-white p-0 pr-4 font-mono text-[12px] leading-[1.7] text-gray-700 outline-none"
-      />
-    </div>
-  );
-}
-
 function PaneMessage({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-full items-center justify-center px-6 py-16 text-center text-sm text-gray-400">
@@ -389,8 +353,10 @@ function PaneMessage({ children }: { children: React.ReactNode }) {
 /**
  * Two-pane workspace browser: a lazily expanded tree beside a file viewer.
  *
- * Live worktrees are editable, archived snapshots are read-only — the header
- * says which, so an unexpectedly missing Save button has a visible reason.
+ * Read-only: the workspace write endpoint exists, but changing a run's files
+ * by hand belongs in the conversation, not in this pane. The header still says
+ * whether this is the live worktree or an archived snapshot, because that
+ * decides whether what you are reading can still change.
  */
 export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean }) {
   const {
@@ -410,13 +376,8 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [narrow, setNarrow] = useState(false);
   const [mode, setMode] = useState<SidebarMode>('files');
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
 
   const root = directories[''];
-  const editable = file?.kind === 'file' && Boolean(file.writable) && file.status !== 'deleted';
   // Below sm there is no room for both panes, so the tree and the file take
   // turns and the header button walks back to the tree.
   const showTree = sidebarOpen && !(narrow && selected);
@@ -429,27 +390,6 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
     query.addEventListener('change', onChange);
     return () => query.removeEventListener('change', onChange);
   }, []);
-
-  useEffect(() => {
-    setEditing(false);
-    setSaveError(null);
-    setDraft(file?.kind === 'file' ? (file.content ?? '') : '');
-  }, [file]);
-
-  const save = async () => {
-    if (file?.kind !== 'file' || !editable || saving) return;
-    setSaving(true);
-    setSaveError(null);
-    try {
-      await writeAgentJobFile(job.id, file.path, draft);
-      setEditing(false);
-      reload();
-    } catch (cause) {
-      setSaveError(cause instanceof Error ? cause.message : 'Could not save the file');
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const sourceLabel = root?.error
     ? 'Unavailable'
@@ -506,40 +446,6 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
         <span className="ml-auto shrink-0 rounded bg-white px-2 py-0.5 text-[11px] text-gray-400 ring-1 ring-gray-200">
           {sourceLabel}
         </span>
-
-        {editable ? (
-          editing ? (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  setEditing(false);
-                  setDraft(file?.kind === 'file' ? (file.content ?? '') : '');
-                  setSaveError(null);
-                }}
-                className="shrink-0 rounded-md px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-200/60 hover:text-gray-800"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={save}
-                disabled={saving || draft === (file.kind === 'file' ? (file.content ?? '') : '')}
-                className="shrink-0 rounded-md bg-gray-900 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-gray-800 disabled:bg-gray-200 disabled:text-gray-400"
-              >
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              className="shrink-0 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900"
-            >
-              Edit
-            </button>
-          )
-        ) : null}
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -615,15 +521,6 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
         <div
           className={`min-w-0 flex-1 overflow-auto bg-white ${showTree ? 'hidden sm:block' : ''}`}
         >
-          {saveError ? (
-            <p
-              role="alert"
-              className="border-b border-red-100 bg-red-50 px-4 py-2 text-xs text-red-600"
-            >
-              {saveError}
-            </p>
-          ) : null}
-
           {fileLoading ? (
             <PaneMessage>Loading file…</PaneMessage>
           ) : fileError ? (
@@ -666,17 +563,7 @@ export function WorkspaceFiles({ job, active }: { job: AgentJob; active: boolean
                 ) : null}
                 {file.truncated ? <span>Preview truncated</span> : null}
               </div>
-              {editing ? (
-                <CodeEditor path={file.path} draft={draft} onChange={setDraft} />
-              ) : (
-                <div
-                  onDoubleClick={() => {
-                    if (editable) setEditing(true);
-                  }}
-                >
-                  <CodeView path={file.path} content={file.content ?? ''} />
-                </div>
-              )}
+              <CodeView path={file.path} content={file.content ?? ''} />
             </>
           )}
         </div>
