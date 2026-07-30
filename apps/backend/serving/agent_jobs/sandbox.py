@@ -797,11 +797,18 @@ class ContainerBackend(SandboxBackend):
         if code == "403":
             return
         if code in ("", "000"):
+            # Fatal, even though an unreachable proxy leaves the sandbox *more*
+            # closed rather than less: it means this deployment's setup tier is
+            # broken, and one startup failure is how an operator learns that
+            # instead of one confusing job failure per user. The way out is
+            # named, because otherwise it holds up jobs that never install
+            # anything.
             raise SandboxError(
                 f"the {phase} phase's egress proxy is unreachable from network {network!r}. "
                 "Every dependency install would fail with a connection error. Check that "
                 "the proxy service is running and on that network "
-                f"(docker: {probe.stderr.strip()[:200]})."
+                f"(docker: {probe.stderr.strip()[:200]}). If this deployment does not need "
+                "dependency installation, set AGENT_EGRESS_SETUP_TIER=platform_only."
             )
         raise SandboxError(
             f"the {phase} phase's egress proxy answered {code} for {CANARY_HOST}, which is "

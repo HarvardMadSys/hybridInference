@@ -404,7 +404,11 @@ jobs unless the setup tier is genuinely enforcing:
   config still said `trusted`.
 - *"egress proxy is unreachable"* — the proxy is not running, or not on that
   network. Check `docker compose logs agent-egress-proxy`; a config Squid
-  rejects shows up there as a parse error on the first line.
+  rejects shows up there as a parse error on the first line. This one stops the
+  runner claiming **any** job, including jobs that install nothing — deliberate,
+  because it means the deploy is broken, but if this host genuinely does not
+  need dependency installation, `AGENT_EGRESS_SETUP_TIER=platform_only` skips
+  the tier and its probe entirely.
 - *"egress proxy answered … it is not enforcing an allowlist"* — the proxy
   served a host that does not exist and is on no list. Treat this as an open
   proxy on the sandbox's network.
