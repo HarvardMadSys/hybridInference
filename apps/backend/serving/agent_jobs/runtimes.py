@@ -343,6 +343,20 @@ class CodexRuntime(AgentRuntime):
         item_type = item.get("type") or item.get("item_type")
 
         if kind.startswith("item.") and item_type:
+            if item_type == "command_execution" and kind == "item.completed":
+                output = (
+                    item.get("aggregated_output") or item.get("output") or item.get("stdout") or ""
+                )
+                exit_code = item.get("exit_code")
+                return NormalizedEvent(
+                    TOOL_RESULT,
+                    {
+                        "tool_use_id": item.get("id"),
+                        "is_error": isinstance(exit_code, int) and exit_code != 0,
+                        "content": _truncate(output),
+                        "exit_code": exit_code,
+                    },
+                )
             if item_type in ("command_execution", "function_call", "tool_call"):
                 return NormalizedEvent(
                     TOOL_USE,

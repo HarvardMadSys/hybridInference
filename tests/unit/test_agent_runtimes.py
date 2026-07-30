@@ -144,11 +144,30 @@ def test_codex_events_normalize():
     """Codex item events map onto the same normalized kinds."""
     runtime = CodexRuntime()
     tool = runtime.parse_event(
-        json.dumps(
-            {"type": "item.completed", "item": {"type": "command_execution", "command": "ls"}}
-        )
+        json.dumps({"type": "item.started", "item": {"type": "command_execution", "command": "ls"}})
     )
     assert tool.event_type == "tool_use"
+    result = runtime.parse_event(
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item-1",
+                    "type": "command_execution",
+                    "command": "ls",
+                    "aggregated_output": "README.md\n",
+                    "exit_code": 0,
+                },
+            }
+        )
+    )
+    assert result.event_type == "tool_result"
+    assert result.payload == {
+        "tool_use_id": "item-1",
+        "is_error": False,
+        "content": "README.md\n",
+        "exit_code": 0,
+    }
     message = runtime.parse_event(
         json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "hi"}})
     )

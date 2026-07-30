@@ -14,6 +14,7 @@ import {
   followUpAgentJob,
   getAgentIntegrations,
   getAgentJobArtifact,
+  getAgentJobFiles,
   getAgentJobThread,
   listAgentJobs,
   restoreAgentJob,
@@ -158,6 +159,19 @@ describe('agents api', () => {
     // A job that changed nothing legitimately has no patch.
     fetchWithAuth.mockResolvedValue(jsonResponse({ detail: 'nope' }, 404));
     await expect(getAgentJobArtifact('ajob_1', 'patch')).resolves.toBeNull();
+  });
+
+  it('browses a job workspace with an encoded relative path', async () => {
+    fetchWithAuth.mockResolvedValue(
+      jsonResponse({ path: 'src/a file.ts', kind: 'file', content: 'x', size: 1 }),
+    );
+
+    await getAgentJobFiles('job/one', 'src/a file.ts');
+
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      expect.any(String),
+      '/v1/agent/jobs/job%2Fone/files?path=src%2Fa%20file.ts',
+    );
   });
 
   it('treats a missing thread as an old standalone job', async () => {

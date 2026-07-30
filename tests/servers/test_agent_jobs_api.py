@@ -526,6 +526,22 @@ async def _create_job(client: AsyncClient) -> str:
     return response.json()["id"]
 
 
+class _WorkspaceContentsApp:
+    """GitHub Contents stand-in that records the pinned reads the API makes."""
+
+    def __init__(self, contents: dict[str, Any]) -> None:
+        self.contents = contents
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def repository_contents(self, repo: str, *, path: str, ref: str) -> Any:
+        from serving.agent_jobs.github_app import GitHubAppError
+
+        self.calls.append((repo, path, ref))
+        if path not in self.contents:
+            raise GitHubAppError("not found", status=404)
+        return self.contents[path]
+
+
 async def test_create_get_list_round_trip(client: AsyncClient):
     """A created job is retrievable and listed for its owner."""
     job_id = await _create_job(client)
@@ -853,6 +869,7 @@ async def test_other_users_jobs_are_404_not_403(client: AsyncClient, store: Fake
         f"/v1/agent/jobs/{foreign['id']}",
         f"/v1/agent/jobs/{foreign['id']}/events",
         f"/v1/agent/jobs/{foreign['id']}/artifacts/patch",
+        f"/v1/agent/jobs/{foreign['id']}/files",
     ):
         response = await client.get(path)
         assert response.status_code == 404, path
@@ -863,6 +880,163 @@ async def test_other_users_jobs_are_404_not_403(client: AsyncClient, store: Fake
         assert archive.status_code == 404
         missing = await method("/v1/agent/jobs/ajob_missing/archive")
         assert missing.status_code == 404
+
+
+async def test_workspace_files_merge_pinned_base_and_changed_snapshot(
+    store: FakeAgentJobStore,
+):
+    """Files are read at the job SHA and overlaid with added/modified/deleted entries."""
+    import base64
+
+    from serving.servers.deps import get_agent_app_credentials
+
+    app_creds = _WorkspaceContentsApp(
+        {
+            "": [
+                {"name": "README.md", "path": "README.md", "type": "file", "size": 4},
+                {"name": "config", "path": "config", "type": "file", "size": 3},
+                {"name": "src", "path": "src", "type": "dir", "size": 0},
+            ],
+            "src": [
+                {"name": "base.py", "path": "src/base.py", "type": "file", "size": 5},
+                {"name": "old.py", "path": "src/old.py", "type": "file", "size": 3},
+            ],
+            "src/base.py": {
+                "path": "src/base.py",
+                "type": "file",
+                "size": 5,
+                # GitHub's payload is normally line-wrapped.
+                "content": base64.b64encode(b"base\n").decode() + "\n",
+                "encoding": "base64",
+            },
+        }
+    )
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        store.jobs[job_id]["base_sha"] = "a" * 40
+        store.artifacts[(job_id, "workspace_snapshot")] = {
+            "job_id": job_id,
+            "attempt_id": 100,
+            "kind": "workspace_snapshot",
+            "content": json.dumps(
+                {
+                    "version": 1,
+                    "files": [
+                        {
+                            "path": "README.md",
+                            "status": "modified",
+                            "size": 8,
+                            "content": "changed\n",
+                        },
+                        {
+                            "path": "src/new.py",
+                            "status": "added",
+                            "size": 4,
+                            "content": "new\n",
+                        },
+                        {"path": "src/old.py", "status": "deleted", "size": 0},
+                        {"path": "config", "status": "deleted", "size": 0},
+                        {
+                            "path": "config/app.py",
+                            "status": "added",
+                            "size": 4,
+                            "content": "app\n",
+                        },
+                    ],
+                    "truncated": False,
+                }
+            ),
+            "created_at": None,
+        }
+
+        root = await local_client.get(f"/v1/agent/jobs/{job_id}/files")
+        src = await local_client.get(f"/v1/agent/jobs/{job_id}/files", params={"path": "src"})
+        config = await local_client.get(f"/v1/agent/jobs/{job_id}/files", params={"path": "config"})
+        changed = await local_client.get(
+            f"/v1/agent/jobs/{job_id}/files", params={"path": "README.md"}
+        )
+        unchanged = await local_client.get(
+            f"/v1/agent/jobs/{job_id}/files", params={"path": "src/base.py"}
+        )
+
+    assert root.status_code == 200
+    root_entries = {entry["path"]: entry for entry in root.json()["entries"]}
+    assert root_entries["README.md"]["status"] == "modified"
+    assert root_entries["config"]["kind"] == "directory"
+    assert root_entries["config"]["status"] == "modified"
+    assert root_entries["src"]["status"] == "modified"
+    src_entries = {entry["path"]: entry for entry in src.json()["entries"]}
+    assert src_entries["src/base.py"]["status"] is None
+    assert src_entries["src/new.py"]["status"] == "added"
+    assert src_entries["src/old.py"]["status"] == "deleted"
+    assert config.status_code == 200
+    config_entries = {entry["path"]: entry for entry in config.json()["entries"]}
+    assert config_entries["config/app.py"]["status"] == "added"
+    assert changed.json()["content"] == "changed\n"
+    assert unchanged.json()["content"] == "base\n"
+    assert app_creds.calls == [
+        ("owner/name", "", "a" * 40),
+        ("owner/name", "src", "a" * 40),
+        ("owner/name", "src/base.py", "a" * 40),
+    ]
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [
+        "../secret",
+        "/etc/passwd",
+        "C:/Windows",
+        r"dir\file",
+        ".GIT/config",
+        "a//b",
+        "nul\x00path",
+    ],
+)
+async def test_workspace_files_reject_path_traversal(store: FakeAgentJobStore, unsafe_path: str):
+    """Decoded traversal and platform-specific aliases fail before GitHub is called."""
+    from serving.servers.deps import get_agent_app_credentials
+
+    app_creds = _WorkspaceContentsApp({"": []})
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        store.jobs[job_id]["base_sha"] = "b" * 40
+        response = await local_client.get(
+            f"/v1/agent/jobs/{job_id}/files", params={"path": unsafe_path}
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["type"] == "invalid_path"
+    assert app_creds.calls == []
+
+
+async def test_workspace_files_recheck_repository_entitlement(store: FakeAgentJobStore):
+    """Owning a legacy row does not entitle its repository after access is revoked."""
+    from serving.servers.deps import get_agent_app_credentials
+
+    foreign_repo_job = await store.create_job(
+        user_id=_OWNER,
+        repo="someone/private",
+        task_prompt="old task",
+        runtime="claude-code",
+        model="glm-5.1",
+        base_sha="c" * 40,
+    )
+    app_creds = _WorkspaceContentsApp({"": []})
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        response = await local_client.get(f"/v1/agent/jobs/{foreign_repo_job['id']}/files")
+
+    assert response.status_code == 403
+    assert app_creds.calls == []
 
 
 async def test_cancel_queued_job(client: AsyncClient):
@@ -1786,11 +1960,32 @@ async def test_a_branch_is_pinned_to_a_commit_at_creation(store: FakeAgentJobSto
                 "task_prompt": "fix it",
                 "model": "m",
                 "base_ref": "dev",
+                "metadata": {"_agent_base_ref": "spoofed", "ticket": "ABC-1"},
             },
         )
 
     assert created.status_code == 201
     assert created.json()["base_sha"] == "f" * 40
+    assert created.json()["base_ref"] == "dev"
+    assert created.json()["output_branch"].startswith("agent/")
+    assert created.json()["metadata"] == {"ticket": "ABC-1"}
+
+
+async def test_reserved_base_ref_metadata_cannot_invent_a_branch(client: AsyncClient):
+    """Without base_ref, caller metadata must not forge the Git panel's base branch."""
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={
+            "repo": "owner/name",
+            "task_prompt": "fix it",
+            "model": "m",
+            "metadata": {"_agent_base_ref": "forged"},
+        },
+    )
+
+    assert created.status_code == 201
+    assert created.json()["base_ref"] is None
+    assert created.json()["metadata"] is None
 
 
 async def test_an_unresolvable_branch_is_refused_at_creation(store: FakeAgentJobStore, monkeypatch):

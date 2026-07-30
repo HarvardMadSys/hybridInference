@@ -20,9 +20,11 @@ network round trip and the publisher runs per job.
 from __future__ import annotations
 
 import json as json_module
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import jwt
@@ -39,6 +41,7 @@ _JWT_TTL_S = 540
 # Installation tokens last an hour; refresh early so a job never starts with a
 # credential that expires mid-push.
 _TOKEN_REFRESH_MARGIN_S = 300
+_COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 
 class GitHubAppError(Exception):
@@ -406,6 +409,61 @@ class GitHubAppCredentials:
         if not isinstance(sha, str) or not sha:
             raise GitHubAppError(f"GitHub returned no commit for {ref!r} in {repo}")
         return sha
+
+    async def repository_contents(
+        self, repo: str, *, path: str = "", ref: str
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """Read one file or directory from a repository at a pinned commit.
+
+        The token is narrowed twice: ``contents: read`` and the one repository
+        named by the job.  ``ref`` must be a commit hash rather than a moving
+        branch, otherwise the Files view could silently show a different tree
+        from the one the agent actually edited.
+
+        ``path`` is expected to have passed the owner API's stricter workspace
+        validation.  It is still encoded one segment at a time here so a slash
+        or query marker can never change the GitHub endpoint being called.
+        """
+        owner, separator, name = repo.partition("/")
+        if not owner or separator != "/" or not name or "/" in name:
+            raise GitHubAppError(f"repo must be 'owner/name', got {repo!r}")
+        if not _COMMIT_SHA.fullmatch(ref or ""):
+            raise GitHubAppError("repository contents require a pinned commit sha")
+
+        parts = path.split("/") if path else []
+        if (len(path) >= 3 and path[0].isalpha() and path[1:3] == ":/") or any(
+            not part
+            or part in {".", ".."}
+            or part.casefold() == ".git"
+            or "\\" in part
+            or "\x00" in part
+            for part in parts
+        ):
+            raise GitHubAppError("repository content path is not a safe relative path")
+
+        token = await self.token_for(repo, permissions={"contents": "read"}, repository_scoped=True)
+        endpoint = f"/repos/{quote(owner, safe='')}/{quote(name, safe='')}/contents"
+        if parts:
+            endpoint += "/" + "/".join(quote(part, safe="") for part in parts)
+        async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+            response = await client.get(
+                f"{self._config.api_base}{endpoint}",
+                params={"ref": ref},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+        if response.status_code >= 400:
+            raise GitHubAppError(
+                f"could not read repository contents for {repo} ({response.status_code})",
+                status=response.status_code,
+            )
+        body = response.json()
+        if not isinstance(body, (dict, list)):
+            raise GitHubAppError("GitHub returned malformed repository contents")
+        return body
 
     async def _installation_token(self, installation_id: int) -> str:
         """Mint a plain installation token for a known installation id."""

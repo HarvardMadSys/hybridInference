@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { cancelAgentJob, followUpAgentJob } from '@/lib/api/agents';
+import { cancelAgentJob, followUpAgentJob, getAgentJobFiles } from '@/lib/api/agents';
 
 import { JobDetail } from './JobDetail';
 import type { AgentJob } from './types';
@@ -18,6 +18,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/api/agents', () => ({
   cancelAgentJob: vi.fn(),
   followUpAgentJob: vi.fn(),
+  getAgentJobFiles: vi.fn(),
 }));
 
 function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
@@ -27,6 +28,7 @@ function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
     prompt: 'Current task\nwith all of its detail.',
     state: 'running',
     repo: 'owner/repository',
+    baseRef: 'dev',
     baseSha: 'abcdef1',
     branch: 'agent/ajob_1',
     runtime: 'claude-code',
@@ -52,6 +54,14 @@ function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
     ],
     eventCount: 3,
     diffFiles: ['src/example.ts'],
+    diffFileDetails: [
+      {
+        path: 'src/example.ts',
+        add: 1,
+        del: 0,
+        lines: [{ marker: 'add', text: '+fixed' }],
+      },
+    ],
     diffStat: { add: 1, del: 0 },
     diffLines: [{ marker: 'add', text: '+fixed' }],
     rawLines: ['{"event_type":"message"}'],
@@ -67,6 +77,7 @@ describe('JobDetail', () => {
     navigation.push.mockReset();
     vi.mocked(cancelAgentJob).mockReset();
     vi.mocked(followUpAgentJob).mockReset();
+    vi.mocked(getAgentJobFiles).mockReset();
   });
 
   afterEach(() => cleanup());
@@ -171,5 +182,133 @@ describe('JobDetail', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Raw events/ }));
     expect(screen.getByText('{"event_type":"message"}')).toBeInTheDocument();
+  });
+
+  it('provides Activity, Git, Terminal, Files, and Environment workspaces', () => {
+    render(<JobDetail job={makeJob()} />);
+
+    for (const name of ['Activity', 'Git', 'Terminal', 'Files', 'Environment']) {
+      expect(screen.getByRole('tab', { name: new RegExp(name) })).toBeInTheDocument();
+    }
+    expect(screen.getByRole('tab', { name: 'Activity' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('shows a selectable per-file Git diff with branch and PR facts', () => {
+    render(
+      <JobDetail
+        job={makeJob({
+          state: 'done',
+          prLabel: 'draft PR 44',
+          prUrl: 'https://github.com/owner/repository/pull/44',
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: /Git/ }));
+
+    expect(screen.getByLabelText('Git workspace')).toHaveTextContent('agent/ajob_1');
+    expect(screen.getByLabelText('Git workspace')).toHaveTextContent('src/example.ts');
+    expect(screen.getByRole('link', { name: 'draft PR 44' })).toHaveAttribute(
+      'href',
+      'https://github.com/owner/repository/pull/44',
+    );
+    expect(screen.getByText('+fixed')).toBeInTheDocument();
+  });
+
+  it('renders terminal events as a read-only transcript with no input', () => {
+    render(<JobDetail job={makeJob()} />);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
+
+    const terminal = screen.getByLabelText('Read-only terminal transcript');
+    expect(terminal).toHaveTextContent('$ pytest -q');
+    expect(terminal).toHaveTextContent('2 passed');
+    expect(terminal).toHaveTextContent('Read only');
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  });
+
+  it('loads Files lazily and safely refuses to preview a symlink', async () => {
+    vi.mocked(getAgentJobFiles)
+      .mockResolvedValueOnce({
+        path: '',
+        kind: 'directory',
+        entries: [{ name: 'latest', path: 'latest', kind: 'symlink', size: null, status: null }],
+      })
+      .mockResolvedValueOnce({ path: 'latest', kind: 'symlink' });
+    render(<JobDetail job={makeJob()} />);
+
+    expect(getAgentJobFiles).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+
+    await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledWith('ajob_1', ''));
+    fireEvent.click(await screen.findByRole('button', { name: /latest/ }));
+    await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledWith('ajob_1', 'latest'));
+    expect(await screen.findByText('Symlinks are not previewed.')).toBeInTheDocument();
+  });
+
+  it('opens a changed text file and handles nullable file metadata', async () => {
+    vi.mocked(getAgentJobFiles)
+      .mockResolvedValueOnce({
+        path: '',
+        kind: 'directory',
+        entries: [
+          {
+            name: 'README.md',
+            path: 'README.md',
+            kind: 'file',
+            size: null,
+            status: 'modified',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        path: 'README.md',
+        kind: 'file',
+        content: '# Updated',
+        size: null,
+        binary: false,
+        truncated: false,
+        status: 'modified',
+      });
+    render(<JobDetail job={makeJob()} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }));
+
+    expect(await screen.findByText('# Updated')).toBeInTheDocument();
+    expect(screen.getByLabelText('Workspace files')).not.toHaveTextContent('null B');
+  });
+
+  it('refreshes an open Files workspace once a running job finishes', async () => {
+    vi.mocked(getAgentJobFiles).mockResolvedValue({ path: '', kind: 'directory', entries: [] });
+    const { rerender } = render(<JobDetail job={makeJob({ state: 'running' })} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
+    await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledTimes(1));
+
+    rerender(<JobDetail job={makeJob({ state: 'done' })} />);
+
+    await waitFor(() => expect(getAgentJobFiles).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows only allow-listed environment facts', () => {
+    render(
+      <JobDetail
+        job={makeJob({
+          runtimeVersion: '1.2.3',
+          vmIsolation: 'Firecracker VM',
+          setupCache: 'Hit',
+          setupStatus: 'Restored from cache',
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Environment' }));
+
+    const environment = screen.getByLabelText('Run environment');
+    expect(environment).toHaveTextContent('1.2.3');
+    expect(environment).toHaveTextContent('Firecracker VM');
+    expect(environment).toHaveTextContent('Restored from cache');
+    expect(environment).toHaveTextContent('gateway only');
+    expect(environment).not.toHaveTextContent('environment variables');
   });
 });

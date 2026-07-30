@@ -8,7 +8,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { AgentJobApi, AgentJobEventApi } from '@/lib/api/agents';
 
-import { toDiffFiles, toDiffLines, toDisplayEvent, toDisplayJob, toDisplayState } from './adapt';
+import {
+  toDiffFileDetails,
+  toDiffFiles,
+  toDiffLines,
+  toDisplayEvent,
+  toDisplayJob,
+  toDisplayState,
+} from './adapt';
 
 const JOB: AgentJobApi = {
   id: 'ajob_1',
@@ -116,6 +123,25 @@ describe('toDisplayEvent', () => {
     expect(toDisplayEvent(event(1, 'diff'))).toBeNull();
   });
 
+  it('reads a command and completion output from normalized Codex events', () => {
+    expect(
+      toDisplayEvent(
+        event(1, 'tool_use', {
+          name: 'command_execution',
+          input: { command: 'pytest -q' },
+          output: '1 passed',
+          exit_code: 0,
+        }),
+      ),
+    ).toEqual({
+      kind: 'tool_use',
+      tool: 'command_execution',
+      id: undefined,
+      detail: 'pytest -q',
+      output: ['1 passed'],
+    });
+  });
+
   it('surfaces an unknown event kind instead of dropping it', () => {
     expect(toDisplayEvent(event(1, 'something_new'))).toEqual({
       kind: 'lifecycle',
@@ -127,6 +153,12 @@ describe('toDisplayEvent', () => {
 describe('toDisplayJob', () => {
   it('states the branch the publisher will use', () => {
     expect(toDisplayJob(JOB).branch).toBe('agent/ajob_1');
+  });
+
+  it('uses server-authoritative base and output branch fields', () => {
+    const job = toDisplayJob({ ...JOB, base_ref: 'dev', output_branch: 'agent/thread_7' });
+    expect(job.baseRef).toBe('dev');
+    expect(job.branch).toBe('agent/thread_7');
   });
 
   it('marks a superseded attempt rather than showing it live', () => {
@@ -158,6 +190,32 @@ describe('toDisplayJob', () => {
     expect(job.spentUsd).toBe(0);
   });
 
+  it('adapts only explicit runtime lifecycle facts for Environment', () => {
+    const job = toDisplayJob(JOB, {
+      events: [
+        event(1, 'lifecycle', {
+          phase: 'started',
+          runtime_version: '2.4.1',
+          sandbox_backend: 'docker',
+          vm_isolation: true,
+        }),
+        event(2, 'lifecycle', {
+          phase: 'setup',
+          setup_cache: 'hit',
+          setup_status: 'restored',
+          internal_workdir: '/secret/runner/path',
+        }),
+      ],
+    });
+
+    expect(job.runtimeVersion).toBe('2.4.1');
+    expect(job.sandbox).toBe('docker');
+    expect(job.vmIsolation).toBe('Enabled');
+    expect(job.setupCache).toBe('hit');
+    expect(job.setupStatus).toBe('restored');
+    expect(job).not.toHaveProperty('internalWorkdir');
+  });
+
   it('folds a tool result into its matching activity and preserves its attempt', () => {
     const events = [
       event(1, 'tool_use', { id: 'tool_1', name: 'Bash', input: { command: 'pytest' } }, 7),
@@ -169,7 +227,7 @@ describe('toDisplayJob', () => {
     expect(job.events).toEqual([
       expect.objectContaining({
         kind: 'tool_use',
-        detail: '{\n  "command": "pytest"\n}',
+        detail: 'pytest',
         output: ['1 passed'],
         attemptNo: 1,
       }),
@@ -296,6 +354,20 @@ describe('patch parsing', () => {
 
   it('lists changed files', () => {
     expect(toDiffFiles(PATCH)).toEqual(['src/x.py']);
+  });
+
+  it('creates per-file diffs and stats for the Git workspace', () => {
+    const second = [
+      'diff --git a/src/y.py b/src/y.py',
+      '--- a/src/y.py',
+      '+++ b/src/y.py',
+      '@@ -0,0 +1 @@',
+      '+created',
+    ].join('\n');
+    expect(toDiffFileDetails(`${PATCH}\n${second}`)).toEqual([
+      expect.objectContaining({ path: 'src/x.py', add: 1, del: 1 }),
+      expect.objectContaining({ path: 'src/y.py', add: 1, del: 0 }),
+    ]);
   });
 
   it('tags lines by marker and drops git noise', () => {

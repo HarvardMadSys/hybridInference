@@ -339,3 +339,53 @@ async def test_an_uninstalled_repository_is_distinguishable_from_an_outage(confi
         "a 503 must not be reported as 'the App is not installed here'"
     )
     assert excinfo.value.status == 503
+
+
+async def test_repository_contents_uses_read_only_repo_scope_and_pinned_ref(config):
+    """The Files view cannot inherit write access or follow a moving branch."""
+    token_bodies: list[dict] = []
+    content_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/installation"):
+            return httpx.Response(200, json={"id": 9})
+        if request.url.path.endswith("/access_tokens"):
+            import json as _json
+
+            token_bodies.append(_json.loads(request.content))
+            return httpx.Response(
+                201, json={"token": "ghs_read", "expires_at": "2099-01-01T00:00:00Z"}
+            )
+        content_requests.append(request)
+        return httpx.Response(200, json={"type": "file", "content": "aGk=", "encoding": "base64"})
+
+    original, patched = _client_returning(handler)
+    httpx.AsyncClient = patched
+    try:
+        result = await GitHubAppCredentials(config).repository_contents(
+            "o/n", path="docs/a #.md", ref="a" * 40
+        )
+    finally:
+        httpx.AsyncClient = original
+
+    assert result["type"] == "file"
+    assert token_bodies == [{"permissions": {"contents": "read"}, "repositories": ["n"]}]
+    assert len(content_requests) == 1
+    assert (
+        content_requests[0].url.raw_path == b"/repos/o/n/contents/docs/a%20%23.md?ref=" + b"a" * 40
+    )
+
+
+@pytest.mark.parametrize(
+    "path", ["../secret", "/etc/passwd", "C:/Windows", r"dir\file", ".GIT/config"]
+)
+async def test_repository_contents_rejects_unsafe_paths_before_minting(config, path):
+    """The credential helper remains safe when called without the HTTP route."""
+    with pytest.raises(GitHubAppError, match="safe relative path"):
+        await GitHubAppCredentials(config).repository_contents("o/n", path=path, ref="a" * 40)
+
+
+async def test_repository_contents_rejects_a_moving_ref(config):
+    """A branch name must never make the Files tab diverge from the agent tree."""
+    with pytest.raises(GitHubAppError, match="pinned"):
+        await GitHubAppCredentials(config).repository_contents("o/n", ref="dev")

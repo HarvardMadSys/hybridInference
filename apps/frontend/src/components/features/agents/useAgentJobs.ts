@@ -4,12 +4,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getAgentJob,
   getAgentJobArtifact,
+  getAgentJobFiles,
   getAgentJobThread,
   listAgentJobEvents,
   listAgentJobs,
   streamAgentJob,
 } from '@/lib/api/agents';
-import type { AgentJobApi, AgentJobEventApi, AgentThreadApi } from '@/lib/api/agents';
+import type {
+  AgentJobApi,
+  AgentJobEventApi,
+  AgentJobFilesApi,
+  AgentThreadApi,
+} from '@/lib/api/agents';
 import { toDisplayJob } from './adapt';
 import type { AgentJob } from './types';
 
@@ -171,4 +177,48 @@ export function useAgentJob(jobId: string): {
 
   const job = api ? toDisplayJob(api, { events, patch, thread }) : null;
   return { job, loading, error, reload };
+}
+
+/** Load one workspace path only while the Files tab is active. */
+export function useAgentJobFiles(
+  jobId: string,
+  path: string,
+  enabled: boolean,
+  refreshKey = '',
+): {
+  node: AgentJobFilesApi | null;
+  loading: boolean;
+  error: string | null;
+  reload: () => void;
+} {
+  const [node, setNode] = useState<AgentJobFilesApi | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  const reload = useCallback(() => setTick((value) => value + 1), []);
+
+  useEffect(() => {
+    if (!enabled || !jobId) return undefined;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    getAgentJobFiles(jobId, path)
+      .then((result) => {
+        if (!cancelled) setNode(result);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) {
+          setNode(null);
+          setError(cause instanceof Error ? cause.message : 'Could not load workspace files');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, jobId, path, refreshKey, tick]);
+
+  return { node, loading, error, reload };
 }
