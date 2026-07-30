@@ -187,3 +187,53 @@ def test_capabilities_declare_tiers():
     assert ClaudeCodeRuntime().capabilities().resume is True
     assert GenericRuntime("x").capabilities().tier == 2
     assert GenericRuntime("x").capabilities().normalized_events is False
+
+
+def test_system_telemetry_does_not_become_408_milestones():
+    """A progress counter must not enter the event log once per emission.
+
+    Shape taken from the first real staging job, not from documentation: it
+    stored 412 lifecycle events, 408 of them ``subtype: "thinking_tokens"``,
+    which the UI then drew as 408 ticked-off steps. The first occurrence is
+    kept as a raw diagnostic so a new subtype stays discoverable; the rest are
+    dropped.
+    """
+    runtime = ClaudeCodeRuntime()
+    line = json.dumps({"type": "system", "subtype": "thinking_tokens", "session_id": "s1"})
+
+    first = runtime.parse_event(line)
+    assert first is not None
+    assert first.event_type == "raw", "an unclassified subtype must not pass as a milestone"
+    assert "thinking_tokens" in first.payload["reason"]
+
+    for _ in range(407):
+        assert runtime.parse_event(line) is None, "repeats must be suppressed, not stored"
+
+
+def test_real_milestones_still_arrive_as_lifecycle():
+    """The allowlisted subtypes keep their phase, model and runtime version."""
+    runtime = ClaudeCodeRuntime()
+    event = runtime.parse_event(
+        json.dumps(
+            {
+                "type": "system",
+                "subtype": "init",
+                "model": "glm-5.1",
+                "claude_code_version": "2.1.220",
+            }
+        )
+    )
+    assert event is not None
+    assert event.event_type == "lifecycle"
+    assert event.payload["phase"] == "init"
+    assert event.payload["runtime_version"] == "2.1.220"
+
+    compacted = runtime.parse_event(json.dumps({"type": "system", "subtype": "compact_boundary"}))
+    assert compacted is not None and compacted.event_type == "lifecycle"
+
+
+def test_suppression_does_not_leak_between_jobs():
+    """Each job gets its own adapter, so its first occurrence is still reported."""
+    line = json.dumps({"type": "system", "subtype": "thinking_tokens"})
+    assert ClaudeCodeRuntime().parse_event(line) is not None
+    assert ClaudeCodeRuntime().parse_event(line) is not None

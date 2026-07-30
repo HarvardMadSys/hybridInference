@@ -106,6 +106,22 @@ class ClaudeCodeRuntime(AgentRuntime):
     name = "claude-code"
     binary = "claude"
 
+    # `type: "system"` covers two unrelated things: a few genuine milestones,
+    # and progress telemetry. Only these are milestones. The distinction is not
+    # cosmetic — the first real job on staging stored 412 lifecycle events, 408
+    # of them `subtype: "thinking_tokens"`, so a counter became 408 rows in the
+    # append-only log, 408 SSE frames, and 408 ticked-off steps in the UI.
+    # An allowlist rather than a denylist: a CLI upgrade that invents another
+    # counter must not be able to flood the stream just because nobody had
+    # heard of it yet.
+    MILESTONE_SUBTYPES = frozenset({"init", "compact_boundary"})
+
+    def __init__(self) -> None:
+        """Track which unclassified subtypes this run has already reported."""
+        # One adapter instance per job (see get_runtime), so this is per-run
+        # state — the suppression below cannot leak across jobs.
+        self._reported_subtypes: set[str] = set()
+
     def prepare(
         self,
         *,
@@ -162,10 +178,20 @@ class ClaudeCodeRuntime(AgentRuntime):
 
         kind = event.get("type")
         if kind == "system":
+            subtype = str(event.get("subtype") or "system").strip() or "system"
+            if subtype not in self.MILESTONE_SUBTYPES:
+                # Not discarded outright: the first occurrence is kept as a raw
+                # diagnostic so a subtype nobody has classified yet is still
+                # discoverable in the event log. Repeats are dropped, which is
+                # what turns 408 rows into 1.
+                if subtype in self._reported_subtypes:
+                    return None
+                self._reported_subtypes.add(subtype)
+                return self._raw(line, f"unclassified system subtype {subtype!r}")
             return NormalizedEvent(
                 LIFECYCLE,
                 {
-                    "phase": event.get("subtype") or "system",
+                    "phase": subtype,
                     "model": event.get("model"),
                     "runtime_version": event.get("claude_code_version"),
                 },
