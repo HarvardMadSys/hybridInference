@@ -6,6 +6,13 @@ All agents use the same FreeInference API key. If you don't have one yet, see th
 
 If you are choosing one default setup path, use Kilo Code. It works directly with FreeInference's OpenAI-compatible endpoint and has the most detailed setup guide below.
 
+```{toctree}
+:maxdepth: 1
+:hidden:
+
+claude-code
+```
+
 ## Kilo Code
 
 [Kilo Code](https://kilocode.ai) is an AI coding assistant that works well with FreeInference through the standard OpenAI-compatible endpoint.

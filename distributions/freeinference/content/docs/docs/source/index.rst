@@ -22,7 +22,6 @@ Quick Links
 
    quickstart
    integrations
-   claude-code
    models
    api_headers
 
