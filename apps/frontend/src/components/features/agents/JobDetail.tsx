@@ -301,7 +301,7 @@ function DetailsDrawer({
                   Environment
                 </h3>
                 <dl className="mt-2 divide-y divide-gray-100">
-                  <DetailStat label="Runtime" value={job.runtime} />
+                  <DetailStat label="Agent" value={job.runtime} />
                   <DetailStat label="Model" value={job.model} />
                   <DetailStat label="Sandbox" value={job.sandbox} />
                   <DetailStat label="Setup network" value={job.networkSetup} />

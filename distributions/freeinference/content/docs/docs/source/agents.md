@@ -2,7 +2,7 @@
 
 Describe a task, and FreeInference checks out your GitHub repository, runs a
 coding agent on it in an isolated cloud sandbox, and opens a **draft pull
-request** with the result. Each task picks which agent runtime does the work
+request** with the result. Each task picks which coding agent does the work
 and which model drives it.
 
 > **Beta:** Cloud agents are rolling out gradually. If the Agents page is not
@@ -58,7 +58,7 @@ In the composer:
 1. Describe the change you want, the way you would brief a colleague — e.g.
    *"Fix the SSE total-timeout regression on /v1/messages and add a unit test"*
 2. Pick the **Repository** and the **Branch** to start from
-3. Pick the **Runtime** and the **Model**
+3. Pick the **Agent** and the **Model**
 4. Run the task
 
 The task page streams the agent's activity as it happens — its reasoning, each
@@ -66,15 +66,13 @@ tool call with its result, and the diff as it takes shape. A running task can
 be cancelled at any point. When the task finishes, the draft pull request is
 linked directly from the task page.
 
-## Choosing a runtime and model
+## Choosing an agent and model
 
-The **runtime** is the coding agent that does the work; the **model** is what
-drives it. Both are picked per task, and any listed model can drive any
-runtime:
-
-- **Runtime** — Claude Code and Codex are available today.
-- **Model** — the composer lists the models enabled for agent tasks, which
-  during the beta can be a subset of the full [model catalog](models.md).
+The **agent** is the tool that does the work — Claude Code and Codex are
+available today. The **model** is what drives it: the composer lists the
+models enabled for agent tasks, which during the beta can be a subset of the
+full [model catalog](models.md). Both are picked per task, and any listed
+model can drive either agent.
 
 As with interactive use, larger models suit gnarly, open-ended tasks; faster
 models suit mechanical sweeps and small fixes.

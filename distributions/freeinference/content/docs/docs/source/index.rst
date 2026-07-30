@@ -42,7 +42,7 @@ Key Features
 
 **Cloud Agents (Beta)**
    Delegate a task, get back a draft pull request — agents run in isolated
-   cloud sandboxes with your choice of runtime and model
+   cloud sandboxes with your choice of agent and model
 
 **Kilo-Friendly Setup**
    Detailed Kilo Code instructions for a fast OpenAI-compatible configuration

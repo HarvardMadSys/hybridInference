@@ -65,7 +65,7 @@ describe('TaskComposer source-control onboarding', () => {
     expect(screen.getByRole('textbox')).toBeDisabled();
     expect(screen.getByRole('button', { name: /Run/ })).toBeDisabled();
     expect(screen.queryByLabelText('Repository')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Runtime')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Agent')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Model')).not.toBeInTheDocument();
     expect(listRepoBranches).not.toHaveBeenCalled();
   });
@@ -97,7 +97,7 @@ describe('TaskComposer source-control onboarding', () => {
 
     expect(await screen.findByLabelText('Repository')).toHaveValue('owner/repository');
     expect(await screen.findByLabelText('Branch')).toHaveValue('dev');
-    expect(screen.getByLabelText('Runtime')).toHaveValue('claude-code');
+    expect(screen.getByLabelText('Agent')).toHaveValue('claude-code');
     expect(screen.getByLabelText('Model')).toHaveValue('model-a');
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(screen.getByRole('textbox')).not.toBeDisabled();
