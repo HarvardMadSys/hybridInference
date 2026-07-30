@@ -64,6 +64,26 @@ class RuntimeCapabilities:
     tier: int = 2
 
 
+@dataclass(frozen=True)
+class RuntimeMCPConfig:
+    """Gateway-owned MCP server ids made available to one agent run.
+
+    This boundary deliberately has no endpoint, header, or credential fields.
+    A later broker implementation must resolve these opaque registry ids on
+    the trusted gateway and expose only gateway-local endpoints to the
+    sandbox; secrets must never become CLI arguments or runtime event data.
+    """
+
+    server_ids: tuple[str, ...] = ()
+
+
+EMPTY_RUNTIME_MCP_CONFIG = RuntimeMCPConfig()
+
+
+class RuntimeMCPUnavailableError(RuntimeError):
+    """Raised when MCP is requested before a runtime has a mediated path."""
+
+
 class AgentRuntime:
     """Base adapter. Subclasses override the three questions."""
 
@@ -78,6 +98,7 @@ class AgentRuntime:
         model: str,
         gateway_base_url: str,
         credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Return ``(argv, extra_env)`` to run this task headlessly."""
         raise NotImplementedError
@@ -89,6 +110,13 @@ class AgentRuntime:
     def capabilities(self) -> RuntimeCapabilities:
         """Describe what this runtime supports."""
         return RuntimeCapabilities()
+
+    def _require_empty_mcp_config(self, config: RuntimeMCPConfig) -> None:
+        """Fail closed until this adapter has a gateway-mediated MCP path."""
+        if config.server_ids:
+            raise RuntimeMCPUnavailableError(
+                f"runtime {self.name!r} cannot use MCP servers until the gateway broker is enabled"
+            )
 
     @staticmethod
     def _raw(line: str, reason: str) -> NormalizedEvent:
@@ -114,8 +142,10 @@ class ClaudeCodeRuntime(AgentRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Build the headless invocation and its environment."""
+        self._require_empty_mcp_config(mcp_config)
         argv = [
             self.binary,
             "-p",
@@ -125,6 +155,11 @@ class ClaudeCodeRuntime(AgentRuntime):
             "--output-format",
             "stream-json",
             "--verbose",
+            # A repository can commit .mcp.json and Claude otherwise starts
+            # its stdio commands before the model's first turn.  Platform MCP
+            # will be supplied explicitly through --mcp-config later; until
+            # then strict mode means the effective server set is empty.
+            "--strict-mcp-config",
             # The sandbox IS the boundary, so an interactive permission prompt
             # inside it has nothing left to protect — it only guarantees the
             # agent cannot do the work. Without this the CLI denies every write
@@ -256,8 +291,8 @@ class ClaudeCodeRuntime(AgentRuntime):
 class CodexRuntime(AgentRuntime):
     """OpenAI Codex headless (``codex exec --json``).
 
-    Speaks the OpenAI surface, configured through a scratch ``CODEX_HOME`` so
-    nothing touches the operator's own Codex config.
+    Speaks the OpenAI surface, configured through command-line provider flags
+    so nothing writes to or depends on the operator's own Codex config.
     """
 
     name = "codex"
@@ -271,6 +306,7 @@ class CodexRuntime(AgentRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Build the headless invocation and its environment.
 
@@ -289,6 +325,7 @@ class CodexRuntime(AgentRuntime):
           so there is no scratch ``CODEX_HOME`` to write and nothing to leave
           behind. ``--ignore-user-config`` keeps the operator's own config out.
         """
+        self._require_empty_mcp_config(mcp_config)
         base = gateway_base_url.rstrip("/").removesuffix("/v1")
         provider = "hybridinference"
         argv = [
@@ -392,8 +429,10 @@ class GenericRuntime(AgentRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Expand the template into argv without ever invoking a shell."""
+        self._require_empty_mcp_config(mcp_config)
         argv = [
             part.replace("{prompt}", task_prompt).replace("{model}", model)
             for part in shlex.split(self.command_template)
@@ -438,7 +477,11 @@ class PiRuntime(GenericRuntime):
         """Fix the wrapper invocation; Tier 2 mechanics come from Generic."""
         super().__init__(
             "pi-freeinference --provider freeinference --model {model} "
-            "--mode json --no-session -p {prompt}",
+            # pi has no native MCP client at the pinned version; MCP arrives
+            # through executable extensions, including project-local ones.
+            # Disable their discovery until the gateway supplies a reviewed
+            # extension explicitly.
+            "--mode json --no-session --no-extensions -p {prompt}",
             binary="pi-freeinference",
         )
 
@@ -450,6 +493,7 @@ class PiRuntime(GenericRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Add the model id the wrapper writes into pi's provider config."""
         argv, env = super().prepare(
@@ -458,6 +502,7 @@ class PiRuntime(GenericRuntime):
             model=model,
             gateway_base_url=gateway_base_url,
             credential=credential,
+            mcp_config=mcp_config,
         )
         # models.json wants the model listed under the provider; the wrapper
         # cannot parse it back out of pi's argv without reimplementing pi's
@@ -500,6 +545,7 @@ class OpencodeRuntime(GenericRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Add the model id the wrapper declares in OpenCode's config."""
         argv, env = super().prepare(
@@ -508,6 +554,7 @@ class OpencodeRuntime(GenericRuntime):
             model=model,
             gateway_base_url=gateway_base_url,
             credential=credential,
+            mcp_config=mcp_config,
         )
         env["OPENCODE_GATEWAY_MODEL"] = model
         return argv, env

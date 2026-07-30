@@ -94,6 +94,9 @@ jobs:
           # bakes into its image and this substrate takes from the checkout.
           sudo install -m 0755 deploy/docker/pi-freeinference /usr/local/bin/pi-freeinference
           sudo install -m 0755 deploy/docker/opencode-freeinference /usr/local/bin/opencode-freeinference
+          # Match the container substrate: an empty Codex MCP requirements
+          # allowlist blocks repository/user MCP config from spawning servers.
+          sudo install -D -m 0644 deploy/docker/codex-requirements.toml /etc/codex/requirements.toml
           claude --version
           codex --version
           pi --version

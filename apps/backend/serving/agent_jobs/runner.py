@@ -42,7 +42,13 @@ from typing import Any
 import httpx
 
 from serving.agent_jobs.patch_gate import validate_patch
-from serving.agent_jobs.runtimes import AgentRuntime, NormalizedEvent, get_runtime
+from serving.agent_jobs.runtimes import (
+    EMPTY_RUNTIME_MCP_CONFIG,
+    AgentRuntime,
+    NormalizedEvent,
+    RuntimeMCPConfig,
+    get_runtime,
+)
 from serving.agent_jobs.sandbox import SandboxBackend, SandboxSpec, build_backend_from_env
 from serving.agent_jobs.setup import build_cache_from_env, run_setup
 
@@ -635,6 +641,7 @@ def run_agent(
     heart: Heartbeater,
     timeout_s: float,
     backend: SandboxBackend,
+    mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
 ) -> tuple[int, str, list[str]]:
     """Run the agent, streaming its output back as normalized events.
 
@@ -651,6 +658,10 @@ def run_agent(
         # states — stays out here with the runner, so an agent that leaks its
         # credential can spend the job's capped budget and nothing more.
         credential=job.sandbox_token,
+        # The runner is the only future source of this value. Repository
+        # contents never become runtime MCP configuration, and every adapter
+        # currently rejects a non-empty set until the gateway broker exists.
+        mcp_config=mcp_config,
     )
 
     # Hermetic environment, and the *backend's* idea of it rather than the
