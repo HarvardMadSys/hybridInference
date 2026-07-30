@@ -1,15 +1,19 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentJob } from './types';
 
 const mocks = vi.hoisted(() => ({
   archive: vi.fn(),
   restore: vi.fn(),
   reload: vi.fn(),
+  reloadProjects: vi.fn(),
+  loadRepo: vi.fn(),
   replace: vi.fn(),
   useAgentJobList: vi.fn(),
+  useAgentProjects: vi.fn(),
+  useProjectJobs: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -36,6 +40,8 @@ vi.mock('@/lib/api/agents', () => ({
 
 vi.mock('./useAgentJobs', () => ({
   useAgentJobList: mocks.useAgentJobList,
+  useAgentProjects: mocks.useAgentProjects,
+  useProjectJobs: mocks.useProjectJobs,
 }));
 
 import { ArchivedTasksView } from './ArchivedTasksView';
@@ -72,6 +78,21 @@ function job(overrides: Partial<AgentJob> = {}): AgentJob {
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  mocks.useAgentProjects.mockReturnValue({
+    projects: [],
+    loading: false,
+    error: null,
+    reload: mocks.reloadProjects,
+  });
+  mocks.useProjectJobs.mockReturnValue({
+    jobsByRepo: new Map(),
+    loadingRepos: new Set(),
+    errorRepos: new Map(),
+    load: mocks.loadRepo,
+  });
+});
 
 afterEach(() => {
   cleanup();

@@ -113,6 +113,42 @@ async def test_create_get_list_round_trip(store: AgentJobStore):
     assert await store.get_job("ajob_missing") is None
 
 
+async def test_projects_summarize_a_user_s_repos_and_page_one_at_a_time(store: AgentJobStore):
+    """The sidebar's task tree: a folder per repo, and a page inside one."""
+    first = await _create_job(store)
+    follow_up = await store.create_follow_up(
+        parent_job_id=first["id"], user_id="user-1", prompt="and the docs"
+    )
+    assert follow_up is not None
+    other = await _create_job(store, repo="example-org/other-repo")
+    await _create_job(store, user_id="user-2", repo="example-org/not-mine")
+
+    projects = await store.list_projects(user_id="user-1")
+
+    by_repo = {project["repo"]: project for project in projects}
+    assert set(by_repo) == {"example-org/example-repo", "example-org/other-repo"}
+    # Two turns of one conversation are one task, and both are still queued.
+    assert by_repo["example-org/example-repo"]["task_count"] == 1
+    assert by_repo["example-org/example-repo"]["active_count"] == 2
+    # Most recently active first.
+    assert projects[0]["repo"] == "example-org/other-repo"
+
+    paged = await store.list_jobs(user_id="user-1", repo="example-org/other-repo")
+    assert [job["id"] for job in paged] == [other["id"]]
+    # No filter still means every project.
+    assert len(await store.list_jobs(user_id="user-1")) == 3
+
+
+async def test_archived_threads_leave_the_active_project_tree(store: AgentJobStore):
+    """A repo whose only thread is archived is not an active folder."""
+    job = await _create_job(store)
+    await store.set_thread_archived(job_id=job["id"], user_id="user-1", archived=True)
+
+    assert await store.list_projects(user_id="user-1") == []
+    archived = await store.list_projects(user_id="user-1", archived=True)
+    assert [project["repo"] for project in archived] == ["example-org/example-repo"]
+
+
 async def test_initialize_idempotently_migrates_legacy_threads(store: AgentJobStore):
     """An existing agent_threads table gains archived_at on startup."""
     async with store._pool.acquire() as conn:

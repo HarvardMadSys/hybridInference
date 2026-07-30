@@ -8,6 +8,7 @@ import {
   getAgentJobThread,
   listAgentJobEvents,
   listAgentJobs,
+  listAgentProjects,
   streamAgentJob,
 } from '@/lib/api/agents';
 import type {
@@ -16,6 +17,7 @@ import type {
   AgentJobFileApi,
   AgentJobFileEntryApi,
   AgentJobSymlinkApi,
+  AgentProjectApi,
   AgentThreadApi,
 } from '@/lib/api/agents';
 import { toDisplayJob } from './adapt';
@@ -76,6 +78,104 @@ export function useAgentJobList(
   }, [hasLive, pollMs, reload]);
 
   return { jobs, loading, error, reload };
+}
+
+/** The caller's projects, for the sidebar's folder tree. */
+export function useAgentProjects(archived = false): {
+  projects: AgentProjectApi[];
+  loading: boolean;
+  error: string | null;
+  reload: () => void;
+} {
+  const [projects, setProjects] = useState<AgentProjectApi[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+
+  const reload = useCallback(() => setTick((value) => value + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    listAgentProjects(archived)
+      .then((api) => {
+        if (cancelled) return;
+        setProjects(api);
+        setError(null);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled)
+          setError(cause instanceof Error ? cause.message : 'could not load projects');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [archived, tick]);
+
+  return { projects, loading, error, reload };
+}
+
+/**
+ * One project's jobs, fetched on demand.
+ *
+ * The sidebar's shared job list is a global newest-first page, so a project
+ * that has been quiet holds only its most recent turns there. Expanding such a
+ * folder pulls that project's own page instead of widening the global one.
+ */
+export function useProjectJobs(limit = 200): {
+  jobsByRepo: Map<string, AgentJob[]>;
+  loadingRepos: Set<string>;
+  errorRepos: Map<string, string>;
+  load: (repo: string) => void;
+} {
+  const [jobsByRepo, setJobsByRepo] = useState<Map<string, AgentJob[]>>(new Map());
+  const [loadingRepos, setLoadingRepos] = useState<Set<string>>(new Set());
+  const [errorRepos, setErrorRepos] = useState<Map<string, string>>(new Map());
+  const inFlight = useRef<Set<string>>(new Set());
+
+  const load = useCallback(
+    (repo: string) => {
+      if (inFlight.current.has(repo)) return;
+      inFlight.current.add(repo);
+      setLoadingRepos((current) => new Set(current).add(repo));
+      listAgentJobs(limit, false, repo)
+        .then((api: AgentJobApi[]) => {
+          setJobsByRepo((current) =>
+            new Map(current).set(
+              repo,
+              api.map((job) => toDisplayJob(job)),
+            ),
+          );
+          setErrorRepos((current) => {
+            if (!current.has(repo)) return current;
+            const next = new Map(current);
+            next.delete(repo);
+            return next;
+          });
+        })
+        .catch((cause: unknown) => {
+          setErrorRepos((current) =>
+            new Map(current).set(
+              repo,
+              cause instanceof Error ? cause.message : 'could not load this project',
+            ),
+          );
+        })
+        .finally(() => {
+          inFlight.current.delete(repo);
+          setLoadingRepos((current) => {
+            const next = new Set(current);
+            next.delete(repo);
+            return next;
+          });
+        });
+    },
+    [limit],
+  );
+
+  return { jobsByRepo, loadingRepos, errorRepos, load };
 }
 
 /** One job, its event log, and its patch — kept live over SSE. */
