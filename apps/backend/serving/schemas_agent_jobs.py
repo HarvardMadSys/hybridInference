@@ -93,7 +93,9 @@ class AgentJobResponse(BaseModel):
     task_prompt: str
     runtime: str
     model: str
+    base_ref: str | None = None
     base_sha: str | None = None
+    output_branch: str | None = None
     state: str
     cancel_requested: bool = False
     current_attempt_id: int | None = None
@@ -210,6 +212,33 @@ class AgentJobArtifactResponse(BaseModel):
     kind: str
     content: str
     created_at: str | None = None
+
+
+class AgentWorkspaceEntry(BaseModel):
+    """One safe child in an agent job's read-only workspace browser."""
+
+    name: str
+    path: str
+    kind: Literal["file", "directory", "symlink"]
+    size: int | None = None
+    binary: bool = False
+    truncated: bool = False
+    status: Literal["added", "modified", "deleted"] | None = None
+    omitted_reason: str | None = None
+
+
+class AgentWorkspaceResponse(BaseModel):
+    """A directory listing or bounded text-file preview at the pinned base SHA."""
+
+    path: str
+    kind: Literal["file", "directory", "symlink"]
+    entries: list[AgentWorkspaceEntry] | None = None
+    content: str | None = None
+    size: int | None = None
+    binary: bool = False
+    truncated: bool = False
+    status: Literal["added", "modified", "deleted"] | None = None
+    omitted_reason: str | None = None
 
 
 # ── Worker-facing (capability-token authenticated) ─────────────────────

@@ -37,6 +37,7 @@ export type AgentEvent =
       isError: boolean;
       attemptNo?: number;
     }
+  | { kind: 'terminal'; text: string; isError?: boolean; attemptNo?: number }
   | { kind: 'egress_denied'; host: string; attempts: number; attemptNo?: number }
   | { kind: 'usage'; text: string; attemptNo?: number };
 
@@ -51,6 +52,13 @@ export interface AgentThreadMessage {
 export interface DiffLine {
   marker: 'hunk' | 'ctx' | 'add' | 'del';
   text: string;
+}
+
+export interface AgentDiffFile {
+  path: string;
+  add: number;
+  del: number;
+  lines: DiffLine[];
 }
 
 export interface AgentGate {
@@ -70,6 +78,7 @@ export interface AgentJob {
   /** Short badge text next to the title, e.g. gate hold or failure reason. */
   stateNote?: string;
   repo: string;
+  baseRef?: string;
   baseSha: string;
   /** Output branch, agent/<thread-id> for conversations or agent/<job-id> for legacy jobs. */
   branch: string;
@@ -94,6 +103,7 @@ export interface AgentJob {
   liveNote?: string;
   eventCount: number;
   diffFiles: string[];
+  diffFileDetails?: AgentDiffFile[];
   diffStat?: { add: number; del: number };
   diffLines: DiffLine[];
   rawLines: string[];

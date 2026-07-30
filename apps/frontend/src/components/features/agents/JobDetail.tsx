@@ -8,8 +8,16 @@ import { cancelAgentJob, followUpAgentJob } from '@/lib/api/agents';
 
 import { lifecyclePhaseLabel } from './adapt';
 import type { AgentEvent, AgentJob, AgentThreadMessage } from './types';
+import { useAgentJobFiles } from './useAgentJobs';
 
 type DrawerView = 'overview' | 'diff' | 'raw';
+type WorkspaceTab = 'git' | 'terminal' | 'files';
+
+const WORKSPACE_TABS: Array<{ key: WorkspaceTab; label: string }> = [
+  { key: 'git', label: 'Git' },
+  { key: 'terminal', label: 'Terminal' },
+  { key: 'files', label: 'Files' },
+];
 
 const STATE_PILL: Record<AgentJob['state'], { label: string; className: string; dot?: string }> = {
   running: { label: 'Running', className: 'bg-blue-50 text-blue-700', dot: 'bg-blue-500' },
@@ -175,6 +183,13 @@ function EventRow({ event }: { event: AgentEvent }) {
           {event.text || 'Command completed with no output.'}
         </pre>
       </details>
+    );
+  }
+  if (event.kind === 'terminal') {
+    return (
+      <pre className="my-1 max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-gray-950 px-3 py-2.5 font-mono text-xs text-gray-200">
+        {event.text}
+      </pre>
     );
   }
   if (event.kind === 'egress_denied') {
@@ -445,6 +460,335 @@ function OutcomeCard({ job, onOpenDiff }: { job: AgentJob; onOpenDiff: () => voi
   );
 }
 
+function GitPanel({ job }: { job: AgentJob }) {
+  const files = useMemo(() => job.diffFileDetails ?? [], [job.diffFileDetails]);
+  const [selectedPath, setSelectedPath] = useState(files[0]?.path ?? '');
+  const selected = files.find((file) => file.path === selectedPath) ?? files[0];
+
+  useEffect(() => {
+    if (files.length && !files.some((file) => file.path === selectedPath)) {
+      setSelectedPath(files[0].path);
+    }
+  }, [files, selectedPath]);
+
+  return (
+    <div className="space-y-5" aria-label="Git workspace">
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-xl border border-gray-200 p-4">
+          <p className="text-xs text-gray-400">Output branch</p>
+          <p className="mt-1 break-all font-mono text-sm text-gray-800">{job.branch}</p>
+        </div>
+        <div className="rounded-xl border border-gray-200 p-4">
+          <p className="text-xs text-gray-400">Base branch</p>
+          <p className="mt-1 break-all font-mono text-sm text-gray-800">{job.baseRef || '—'}</p>
+        </div>
+        <div className="rounded-xl border border-gray-200 p-4">
+          <p className="text-xs text-gray-400">Base commit</p>
+          <p className="mt-1 font-mono text-sm text-gray-800">{job.baseSha || '—'}</p>
+        </div>
+        <div className="rounded-xl border border-gray-200 p-4">
+          <p className="text-xs text-gray-400">Pull request</p>
+          {job.prUrl ? (
+            <a
+              href={job.prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-1 inline-block text-sm font-medium text-blue-600 hover:underline"
+            >
+              {job.prLabel ?? 'Open draft PR'}
+            </a>
+          ) : (
+            <p className="mt-1 text-sm text-gray-500">Not published</p>
+          )}
+        </div>
+      </section>
+
+      {files.length ? (
+        <section className="overflow-hidden rounded-xl border border-gray-200 lg:grid lg:grid-cols-[minmax(14rem,0.35fr)_minmax(0,1fr)]">
+          <div className="border-b border-gray-200 bg-gray-50/60 lg:border-b-0 lg:border-r">
+            <div className="flex items-center px-3 py-2.5 text-xs text-gray-500">
+              <span>
+                {files.length} changed file{files.length === 1 ? '' : 's'}
+              </span>
+              {job.diffStat ? (
+                <span className="ml-auto font-mono">
+                  <span className="text-emerald-600">+{job.diffStat.add}</span>{' '}
+                  <span className="text-red-500">−{job.diffStat.del}</span>
+                </span>
+              ) : null}
+            </div>
+            <div className="max-h-[34rem] overflow-auto border-t border-gray-200">
+              {files.map((file) => (
+                <button
+                  key={file.path}
+                  type="button"
+                  onClick={() => setSelectedPath(file.path)}
+                  className={`flex w-full items-center gap-3 border-b border-gray-100 px-3 py-2.5 text-left text-xs last:border-b-0 ${
+                    selected?.path === file.path
+                      ? 'bg-white text-gray-900'
+                      : 'text-gray-600 hover:bg-white'
+                  }`}
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+                  <span className="shrink-0 font-mono">
+                    <span className="text-emerald-600">+{file.add}</span>{' '}
+                    <span className="text-red-500">−{file.del}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="min-w-0 bg-white">
+            <div className="border-b border-gray-100 px-4 py-2.5 font-mono text-xs text-gray-600">
+              {selected?.path}
+            </div>
+            <pre className="max-h-[34rem] overflow-auto font-mono text-xs leading-relaxed">
+              <code>
+                {selected?.lines.map((line, index) => (
+                  <span
+                    key={index}
+                    className={`block min-w-max px-4 ${DIFF_LINE_CLASS[line.marker]}`}
+                  >
+                    {line.text || ' '}
+                  </span>
+                ))}
+              </code>
+            </pre>
+          </div>
+        </section>
+      ) : (
+        <div className="rounded-xl border border-dashed border-gray-200 px-5 py-12 text-center text-sm text-gray-400">
+          No changes yet.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function isTerminalTool(tool: string): boolean {
+  const name = tool.toLowerCase();
+  return ['bash', 'shell', 'command', 'exec', 'terminal'].some((part) => name.includes(part));
+}
+
+type TerminalEvent = Extract<AgentEvent, { kind: 'tool_use' | 'tool_result' | 'terminal' }>;
+
+function isTerminalEvent(event: AgentEvent): event is TerminalEvent {
+  return (
+    (event.kind === 'tool_use' && isTerminalTool(event.tool)) ||
+    event.kind === 'tool_result' ||
+    event.kind === 'terminal'
+  );
+}
+
+function TerminalPanel({ events }: { events: AgentEvent[] }) {
+  const terminalEvents = events.filter(isTerminalEvent);
+
+  return (
+    <section
+      aria-label="Read-only terminal transcript"
+      className="overflow-hidden rounded-xl border border-gray-800 bg-gray-950 shadow-sm"
+    >
+      <div className="flex items-center border-b border-gray-800 px-4 py-2.5 text-xs text-gray-400">
+        <span className="font-medium text-gray-300">Terminal</span>
+        <span className="ml-auto rounded bg-gray-800 px-2 py-0.5">Read only</span>
+      </div>
+      <div className="min-h-80 max-h-[38rem] overflow-auto p-4 font-mono text-xs leading-relaxed text-gray-200">
+        {terminalEvents.length ? (
+          terminalEvents.map((event, index) => {
+            if (event.kind === 'tool_use') {
+              return (
+                <div key={`${event.attemptNo ?? 0}-${index}`} className="mb-5 last:mb-0">
+                  <div className="whitespace-pre-wrap break-words">
+                    <span className="select-none text-emerald-400">$ </span>
+                    {event.detail}
+                  </div>
+                  {event.output ? (
+                    <pre
+                      className={`mt-1 whitespace-pre-wrap break-words ${
+                        event.outputIsError ? 'text-red-300' : 'text-gray-400'
+                      }`}
+                    >
+                      {event.output.join('\n') || 'Command completed with no output.'}
+                    </pre>
+                  ) : (
+                    <p className="mt-1 text-gray-600">Waiting for output…</p>
+                  )}
+                </div>
+              );
+            }
+            return (
+              <pre
+                key={`${event.attemptNo ?? 0}-${index}`}
+                className={`mb-3 whitespace-pre-wrap break-words ${
+                  event.kind === 'tool_result' && event.isError ? 'text-red-300' : 'text-gray-400'
+                }`}
+              >
+                {event.text || 'Command completed with no output.'}
+              </pre>
+            );
+          })
+        ) : (
+          <p className="text-gray-500">No terminal commands have been recorded.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function fileStatusClass(status?: 'added' | 'modified' | 'deleted' | null): string {
+  if (status === 'added') return 'bg-emerald-50 text-emerald-700';
+  if (status === 'deleted') return 'bg-red-50 text-red-700';
+  return 'bg-amber-50 text-amber-700';
+}
+
+function formatFileSize(size?: number | null): string {
+  if (size === undefined || size === null) return '';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function parentPath(path: string): string {
+  const parts = path.split('/').filter(Boolean);
+  parts.pop();
+  return parts.join('/');
+}
+
+function FilesPanel({ job }: { job: AgentJob }) {
+  const [path, setPath] = useState('');
+  const { node, loading, error, reload } = useAgentJobFiles(
+    job.id,
+    path,
+    true,
+    `${job.state}:${job.diffFiles.length}`,
+  );
+  const crumbs = path.split('/').filter(Boolean);
+  const directoryEntries = node?.kind === 'directory' ? (node.entries ?? []) : [];
+
+  return (
+    <section
+      aria-label="Workspace files"
+      className="overflow-hidden rounded-xl border border-gray-200"
+    >
+      <div className="flex min-h-11 items-center gap-1 overflow-x-auto border-b border-gray-200 bg-gray-50/70 px-3 text-xs">
+        <button
+          type="button"
+          onClick={() => setPath('')}
+          className="text-gray-600 hover:text-gray-900"
+        >
+          Files
+        </button>
+        {crumbs.map((crumb, index) => {
+          const crumbPath = crumbs.slice(0, index + 1).join('/');
+          return (
+            <span key={crumbPath} className="flex items-center gap-1">
+              <Chevron className="h-3 w-3 text-gray-300" />
+              <button
+                type="button"
+                onClick={() => setPath(crumbPath)}
+                className="whitespace-nowrap text-gray-600 hover:text-gray-900"
+              >
+                {crumb}
+              </button>
+            </span>
+          );
+        })}
+        <span className="ml-auto shrink-0 rounded bg-white px-2 py-0.5 text-[11px] text-gray-400 ring-1 ring-gray-200">
+          Read only
+        </span>
+      </div>
+
+      {loading ? (
+        <div className="flex min-h-80 items-center justify-center text-sm text-gray-400">
+          Loading files…
+        </div>
+      ) : error ? (
+        <div className="flex min-h-80 flex-col items-center justify-center gap-3 px-5 text-center">
+          <p role="alert" className="text-sm text-red-600">
+            {error}
+          </p>
+          <button
+            type="button"
+            onClick={reload}
+            className="rounded-md border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
+          >
+            Try again
+          </button>
+        </div>
+      ) : node?.kind === 'directory' ? (
+        <div className="min-h-80 divide-y divide-gray-100">
+          {path ? (
+            <button
+              type="button"
+              onClick={() => setPath(parentPath(path))}
+              className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-gray-500 hover:bg-gray-50"
+            >
+              <span className="font-mono">..</span>
+            </button>
+          ) : null}
+          {directoryEntries.map((entry) => (
+            <button
+              key={entry.path}
+              type="button"
+              onClick={() => setPath(entry.path)}
+              className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50"
+            >
+              <span aria-hidden="true" className="text-gray-400">
+                {entry.kind === 'directory' ? '▸' : entry.kind === 'symlink' ? '↗' : '–'}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-xs">{entry.name}</span>
+              {entry.status ? (
+                <span
+                  className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${fileStatusClass(entry.status)}`}
+                >
+                  {entry.status}
+                </span>
+              ) : null}
+              <span className="shrink-0 text-[11px] text-gray-400">
+                {formatFileSize(entry.size)}
+              </span>
+            </button>
+          ))}
+          {directoryEntries.length === 0 ? (
+            <p className="px-4 py-12 text-center text-sm text-gray-400">This directory is empty.</p>
+          ) : null}
+        </div>
+      ) : node?.kind === 'symlink' ? (
+        <div className="flex min-h-80 items-center justify-center px-5 text-center text-sm text-gray-400">
+          Symlinks are not previewed.
+        </div>
+      ) : node?.kind === 'file' ? (
+        <div className="min-h-80">
+          <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-2 text-[11px] text-gray-400">
+            <span>{formatFileSize(node.size)}</span>
+            {node.status ? (
+              <span className={`rounded px-1.5 py-0.5 font-medium ${fileStatusClass(node.status)}`}>
+                {node.status}
+              </span>
+            ) : null}
+            {node.truncated ? <span>Preview truncated</span> : null}
+          </div>
+          {node.status === 'deleted' ? (
+            <p className="px-5 py-12 text-center text-sm text-gray-400">
+              This file was deleted by the run.
+            </p>
+          ) : node.binary ? (
+            <p className="px-5 py-12 text-center text-sm text-gray-400">
+              Binary files cannot be previewed.
+            </p>
+          ) : (
+            <pre className="max-h-[38rem] overflow-auto whitespace-pre p-4 font-mono text-xs leading-relaxed text-gray-700">
+              {node.content ?? ''}
+            </pre>
+          )}
+        </div>
+      ) : (
+        <div className="min-h-80" />
+      )}
+    </section>
+  );
+}
+
 export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => void }) {
   const router = useRouter();
   const liveAttempt = useMemo(
@@ -453,6 +797,8 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   );
   const [attemptNo, setAttemptNo] = useState(liveAttempt);
   const [drawer, setDrawer] = useState<DrawerView | null>(null);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('git');
   const [followUp, setFollowUp] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -466,6 +812,11 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   );
   const pill = STATE_PILL[job.state];
   const isActive = job.state === 'running' || job.state === 'queued';
+
+  function openWorkspace(tab: WorkspaceTab) {
+    setWorkspaceTab(tab);
+    setWorkspaceOpen(true);
+  }
 
   async function stop() {
     setStopping(true);
@@ -496,9 +847,13 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   }
 
   return (
-    <section className="flex min-h-full flex-col bg-white">
-      <header className="sticky top-0 z-20 border-b border-gray-100 bg-white/95 px-5 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-4xl items-center gap-3">
+    <section className="flex h-full min-h-0 flex-col bg-white">
+      <header className="z-20 shrink-0 border-b border-gray-100 bg-white/95 px-5 backdrop-blur">
+        <div
+          className={`mx-auto flex w-full items-center gap-3 py-3 ${
+            workspaceOpen ? 'max-w-[100rem]' : 'max-w-4xl'
+          }`}
+        >
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-[15px] font-semibold text-gray-900">{job.title}</h1>
             <div className="mt-0.5 flex items-center gap-2 text-xs text-gray-500">
@@ -533,7 +888,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
           {job.diffFiles.length ? (
             <button
               type="button"
-              onClick={() => setDrawer('diff')}
+              onClick={() => openWorkspace('git')}
               className="hidden rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 sm:block"
             >
               Changes
@@ -560,121 +915,206 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               {stopping ? 'Stopping…' : 'Stop'}
             </button>
           ) : null}
+          <button
+            type="button"
+            onClick={() => setWorkspaceOpen((current) => !current)}
+            aria-label={workspaceOpen ? 'Close workspace' : 'Open workspace'}
+            aria-expanded={workspaceOpen}
+            aria-controls="job-workspace-pane"
+            className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border text-gray-500 hover:bg-gray-100 hover:text-gray-900 ${
+              workspaceOpen ? 'border-gray-300 bg-gray-100 text-gray-900' : 'border-gray-200'
+            }`}
+          >
+            <svg
+              aria-hidden="true"
+              className="h-4 w-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.8}
+            >
+              <rect x="3.5" y="4" width="17" height="16" rx="2" />
+              <path d="M14.5 4v16" />
+            </svg>
+          </button>
         </div>
       </header>
 
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-5 pb-6 pt-6">
-        <div className="flex-1">
-          {(job.threadMessages ?? []).map((message) => (
-            <ThreadTurn key={message.id} message={message} />
-          ))}
+      <div
+        className={`min-h-0 flex-1 overflow-hidden ${
+          workspaceOpen ? 'lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(28rem,0.9fr)]' : 'flex'
+        }`}
+      >
+        <div
+          role="region"
+          aria-label="Task progress"
+          className={`min-w-0 flex-1 flex-col overflow-y-auto ${
+            workspaceOpen ? 'hidden lg:flex' : 'flex'
+          }`}
+        >
+          <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-5 pb-6 pt-6">
+            <div className="flex-1">
+              {(job.threadMessages ?? []).map((message) => (
+                <ThreadTurn key={message.id} message={message} />
+              ))}
 
-          <div className="my-4 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-            <Markdown text={job.prompt || job.title} />
+              <div className="my-4 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+                <Markdown text={job.prompt || job.title} />
+              </div>
+
+              {job.stateNote && job.state !== 'failed' ? (
+                <p className="mb-2 text-xs text-gray-400">{job.stateNote}</p>
+              ) : null}
+
+              {job.attempts.length > 1 ? (
+                <div className="my-3 flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="mr-1 text-gray-400">Run attempts</span>
+                  {job.attempts.map((attempt) => (
+                    <button
+                      key={attempt.no}
+                      type="button"
+                      onClick={() => setAttemptNo(attempt.no)}
+                      className={`rounded-md px-2 py-1 ${
+                        attempt.no === attemptNo
+                          ? 'bg-gray-900 text-white'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                      }`}
+                    >
+                      {attempt.no} · {attempt.status}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              {selectedAttempt?.status === 'superseded' && selectedAttempt.note ? (
+                <div className="my-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
+                  {selectedAttempt.note}
+                </div>
+              ) : null}
+
+              <div aria-label="Agent activity" className="mt-2">
+                {visibleEvents.map((event, index) => (
+                  <EventRow key={`${event.attemptNo ?? 0}-${index}`} event={event} />
+                ))}
+                {job.liveNote ? (
+                  <div className="flex items-center gap-2.5 py-3 text-[13px] text-gray-500">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+                    {job.liveNote}
+                  </div>
+                ) : null}
+                {job.state === 'queued' && visibleEvents.length === 0 ? (
+                  <div className="flex items-center gap-2.5 py-3 text-[13px] text-gray-500">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-gray-400" />
+                    {job.parentJobId ? 'Queued after the current run' : 'Waiting for a runner'}
+                  </div>
+                ) : null}
+              </div>
+
+              <OutcomeCard job={job} onOpenDiff={() => openWorkspace('git')} />
+            </div>
+
+            <div className="sticky bottom-0 z-10 -mx-2 mt-10 bg-gradient-to-t from-white via-white px-2 pb-2 pt-8">
+              <form
+                onSubmit={(event) => void submitFollowUp(event)}
+                className="rounded-2xl border border-gray-200 bg-white shadow-lg shadow-gray-200/50 focus-within:border-gray-300"
+              >
+                <textarea
+                  rows={2}
+                  value={followUp}
+                  onChange={(event) => setFollowUp(event.target.value)}
+                  placeholder="Add a follow-up"
+                  aria-label="Add a follow-up"
+                  className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-4 pt-3 text-sm leading-relaxed text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
+                />
+                <div className="flex items-center gap-2 px-3 pb-2.5">
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
+                    Inherits {job.runtime} · {job.model}
+                    {isActive ? ' · queued after this run' : ''}
+                  </span>
+                  <button
+                    type="submit"
+                    disabled={!followUp.trim() || submitting}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Send follow-up"
+                  >
+                    {submitting ? (
+                      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    ) : (
+                      <svg
+                        aria-hidden="true"
+                        className="h-4 w-4"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M12 19V5m0 0-6 6m6-6 6 6"
+                        />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </form>
+              {actionError ? (
+                <p className="mt-2 text-center text-xs text-red-600" role="alert">
+                  {actionError}
+                </p>
+              ) : null}
+            </div>
           </div>
+        </div>
 
-          {job.stateNote && job.state !== 'failed' ? (
-            <p className="mb-2 text-xs text-gray-400">{job.stateNote}</p>
-          ) : null}
-
-          {job.attempts.length > 1 ? (
-            <div className="my-3 flex flex-wrap items-center gap-1.5 text-xs">
-              <span className="mr-1 text-gray-400">Run attempts</span>
-              {job.attempts.map((attempt) => (
+        {workspaceOpen ? (
+          <aside
+            id="job-workspace-pane"
+            role="region"
+            aria-label="Job workspace"
+            className="min-w-0 overflow-y-auto border-gray-200 bg-white lg:border-l"
+          >
+            <nav
+              aria-label="Workspace views"
+              role="tablist"
+              className="sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-gray-200 bg-white px-4 text-[13px] font-medium"
+            >
+              {WORKSPACE_TABS.map((tab) => (
                 <button
-                  key={attempt.no}
+                  key={tab.key}
+                  id={`workspace-tab-${tab.key}`}
                   type="button"
-                  onClick={() => setAttemptNo(attempt.no)}
-                  className={`rounded-md px-2 py-1 ${
-                    attempt.no === attemptNo
-                      ? 'bg-gray-900 text-white'
-                      : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                  role="tab"
+                  aria-controls="workspace-tab-panel"
+                  aria-selected={workspaceTab === tab.key}
+                  onClick={() => openWorkspace(tab.key)}
+                  className={`shrink-0 border-b-2 px-3 py-3 ${
+                    workspaceTab === tab.key
+                      ? 'border-gray-900 text-gray-900'
+                      : 'border-transparent text-gray-500 hover:text-gray-900'
                   }`}
                 >
-                  {attempt.no} · {attempt.status}
+                  {tab.label}
+                  {tab.key === 'git' && job.diffFiles.length ? (
+                    <span className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">
+                      {job.diffFiles.length}
+                    </span>
+                  ) : null}
                 </button>
               ))}
+            </nav>
+            <div
+              id="workspace-tab-panel"
+              role="tabpanel"
+              aria-labelledby={`workspace-tab-${workspaceTab}`}
+              className="p-5"
+            >
+              {workspaceTab === 'git' ? <GitPanel job={job} /> : null}
+              {workspaceTab === 'terminal' ? <TerminalPanel events={visibleEvents} /> : null}
+              {workspaceTab === 'files' ? <FilesPanel job={job} /> : null}
             </div>
-          ) : null}
-
-          {selectedAttempt?.status === 'superseded' && selectedAttempt.note ? (
-            <div className="my-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
-              {selectedAttempt.note}
-            </div>
-          ) : null}
-
-          <div aria-label="Agent activity" className="mt-2">
-            {visibleEvents.map((event, index) => (
-              <EventRow key={`${event.attemptNo ?? 0}-${index}`} event={event} />
-            ))}
-            {job.liveNote ? (
-              <div className="flex items-center gap-2.5 py-3 text-[13px] text-gray-500">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
-                {job.liveNote}
-              </div>
-            ) : null}
-            {job.state === 'queued' && visibleEvents.length === 0 ? (
-              <div className="flex items-center gap-2.5 py-3 text-[13px] text-gray-500">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-gray-400" />
-                {job.parentJobId ? 'Queued after the current run' : 'Waiting for a runner'}
-              </div>
-            ) : null}
-          </div>
-
-          <OutcomeCard job={job} onOpenDiff={() => setDrawer('diff')} />
-        </div>
-
-        <div className="sticky bottom-0 z-10 -mx-2 mt-10 bg-gradient-to-t from-white via-white px-2 pb-2 pt-8">
-          <form
-            onSubmit={(event) => void submitFollowUp(event)}
-            className="rounded-2xl border border-gray-200 bg-white shadow-lg shadow-gray-200/50 focus-within:border-gray-300"
-          >
-            <textarea
-              rows={2}
-              value={followUp}
-              onChange={(event) => setFollowUp(event.target.value)}
-              placeholder="Add a follow-up"
-              aria-label="Add a follow-up"
-              className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-4 pt-3 text-sm leading-relaxed text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
-            />
-            <div className="flex items-center gap-2 px-3 pb-2.5">
-              <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
-                Inherits {job.runtime} · {job.model}
-                {isActive ? ' · queued after this run' : ''}
-              </span>
-              <button
-                type="submit"
-                disabled={!followUp.trim() || submitting}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
-                aria-label="Send follow-up"
-              >
-                {submitting ? (
-                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                ) : (
-                  <svg
-                    aria-hidden="true"
-                    className="h-4 w-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M12 19V5m0 0-6 6m6-6 6 6"
-                    />
-                  </svg>
-                )}
-              </button>
-            </div>
-          </form>
-          {actionError ? (
-            <p className="mt-2 text-center text-xs text-red-600" role="alert">
-              {actionError}
-            </p>
-          ) : null}
-        </div>
+          </aside>
+        ) : null}
       </div>
 
       {drawer ? (

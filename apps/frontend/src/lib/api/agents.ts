@@ -32,7 +32,11 @@ export interface AgentJobApi {
   task_prompt: string;
   runtime: string;
   model: string;
+  /** Requested branch/ref before the backend pinned it to base_sha. */
+  base_ref?: string | null;
   base_sha: string | null;
+  /** Server-authoritative branch used by the publisher. */
+  output_branch?: string | null;
   state: AgentJobApiState;
   cancel_requested: boolean;
   current_attempt_id: number | null;
@@ -83,6 +87,45 @@ export interface AgentJobEventApi {
   payload: Record<string, unknown> | null;
   created_at: string | null;
 }
+
+export type AgentJobFileStatus = 'added' | 'modified' | 'deleted';
+
+export interface AgentJobFileEntryApi {
+  name: string;
+  path: string;
+  kind: 'file' | 'directory' | 'symlink';
+  status?: AgentJobFileStatus | null;
+  size?: number | null;
+  binary?: boolean;
+  truncated?: boolean;
+  omitted_reason?: string | null;
+}
+
+export interface AgentJobDirectoryApi {
+  path: string;
+  kind: 'directory';
+  entries: AgentJobFileEntryApi[] | null;
+}
+
+export interface AgentJobFileApi {
+  path: string;
+  kind: 'file';
+  content: string | null;
+  size: number | null;
+  binary: boolean;
+  truncated: boolean;
+  status?: AgentJobFileStatus | null;
+  omitted_reason?: string | null;
+}
+
+export interface AgentJobSymlinkApi {
+  path: string;
+  kind: 'symlink';
+  status?: AgentJobFileStatus | null;
+  omitted_reason?: string | null;
+}
+
+export type AgentJobFilesApi = AgentJobDirectoryApi | AgentJobFileApi | AgentJobSymlinkApi;
 
 export interface AgentConfigApi {
   repos: string[];
@@ -328,6 +371,16 @@ export async function getAgentJobArtifact(
   // A job that changed nothing legitimately has no patch; that is not an error.
   if (resp.status === 404) return null;
   return jsonOrThrow(resp);
+}
+
+/** Browse the immutable base tree with the job's saved changes overlaid. */
+export async function getAgentJobFiles(jobId: string, path = ''): Promise<AgentJobFilesApi> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : '';
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/v1/agent/jobs/${encodeURIComponent(jobId)}/files${query}`,
+  );
+  return jsonOrThrow<AgentJobFilesApi>(resp);
 }
 
 export interface StreamAgentJobOptions {

@@ -52,6 +52,7 @@ from serving.agent_jobs.runtimes import (
 )
 from serving.agent_jobs.sandbox import SandboxBackend, SandboxSpec, build_backend_from_env
 from serving.agent_jobs.setup import build_cache_from_env, run_setup
+from serving.agent_jobs.workspace_snapshot import build_workspace_snapshot
 
 DEFAULT_LEASE_TTL_S = 120.0
 HEARTBEAT_INTERVAL_S = 30.0
@@ -649,6 +650,25 @@ def _read_bounded(process: Any, *, deadline_s: float, max_bytes: int) -> str:
     return "".join(chunks)
 
 
+def save_workspace_snapshot(control: ControlPlane, *, workdir: str, patch: str) -> bool:
+    """Store the changed-file overlay without making it job-critical.
+
+    The patch remains the authoritative publishing artifact. Files are a
+    convenience view, so a local read error or an oversized artifact must not
+    turn an otherwise completed agent run into a failed job. Lease loss is
+    different: the attempt is fenced and must stop immediately.
+    """
+    try:
+        content = build_workspace_snapshot(workdir, patch)
+        control.save_artifact("workspace_snapshot", content)
+    except LeaseLost:
+        raise
+    except Exception as exc:
+        print(f"workspace snapshot unavailable: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
 def run_agent(
     runtime: AgentRuntime,
     *,
@@ -949,6 +969,8 @@ def run_once(
         else:
             control.append_event(NormalizedEvent("diff", {"bytes": 0, "stored": False}))
 
+        save_workspace_snapshot(control, workdir=workdir, patch=patch)
+
         if exit_code != 0:
             control.finish("failed", f"agent exited {exit_code}: {tail[-500:]}", base_sha=base_sha)
             return 1
@@ -1191,4 +1213,5 @@ __all__ = [
     "main",
     "prepare_worktree",
     "run_once",
+    "save_workspace_snapshot",
 ]

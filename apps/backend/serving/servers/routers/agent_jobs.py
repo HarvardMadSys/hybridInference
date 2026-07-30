@@ -45,7 +45,7 @@ from serving.agent_jobs.entitlement import (
     repos_for_user,
     require_entitled_repo,
 )
-from serving.agent_jobs.github_app import AppNotInstalled
+from serving.agent_jobs.github_app import AppNotInstalled, GitHubAppError
 from serving.agent_jobs.model_auth import looks_like_agent_token
 from serving.agent_jobs.patch_gate import branch_name_for
 from serving.agent_jobs.runtimes import registered_runtimes
@@ -64,6 +64,16 @@ from serving.agent_jobs.tokens import (
     parse_worker_token,
 )
 from serving.agent_jobs.visible_models import agent_model_resolvable, agent_visible_models
+from serving.agent_jobs.workspace_browser import (
+    WorkspacePathError,
+    WorkspaceSnapshotError,
+    github_file_response,
+    merge_directory_entries,
+    normalize_workspace_path,
+    overlay_has_directory,
+    parse_workspace_snapshot,
+    snapshot_file_response,
+)
 from serving.schemas_agent_jobs import (
     DEFAULT_JOB_BUDGET_USD,
     EVENT_TYPE_PATTERN,
@@ -79,6 +89,7 @@ from serving.schemas_agent_jobs import (
     AgentThreadArchiveResponse,
     AgentThreadMessageResponse,
     AgentThreadResponse,
+    AgentWorkspaceResponse,
     GitHubConnectionResponse,
     GitHubConnectRequest,
     OAuthConnectRequest,
@@ -144,6 +155,7 @@ _SAFE_EVENT_TYPE = re.compile(EVENT_TYPE_PATTERN)
 # for less. Without this the runner would be handed push rights it must not
 # have, on a host that runs untrusted repository code.
 _CLONE_SCOPE = {"contents": "read"}
+_BASE_REF_METADATA_KEY = "_agent_base_ref"
 
 
 def _looks_like_browser_jwt(authorization: str | None) -> bool:
@@ -274,6 +286,10 @@ def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> A
     """Shape a store job row for the owner-facing API."""
     usage = usage or {}
     setup_tier, agent_tier = _egress_tiers()
+    metadata = dict(job.get("metadata") or {})
+    base_ref = metadata.pop(_BASE_REF_METADATA_KEY, None)
+    if not isinstance(base_ref, str):
+        base_ref = None
     return AgentJobResponse(
         id=job["id"],
         thread_id=job.get("thread_id"),
@@ -283,7 +299,9 @@ def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> A
         task_prompt=job["task_prompt"],
         runtime=job["runtime"],
         model=job["model"],
+        base_ref=base_ref,
         base_sha=job["base_sha"],
+        output_branch=branch_name_for(job.get("thread_id") or job["id"]),
         state=job["state"],
         cancel_requested=job["cancel_requested"],
         current_attempt_id=job["current_attempt_id"],
@@ -291,7 +309,7 @@ def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> A
         published_commit_sha=job.get("published_commit_sha"),
         detail=job["detail"],
         budget_usd=job.get("budget_usd"),
-        metadata=job["metadata"],
+        metadata=metadata or None,
         created_at=_iso(job["created_at"]),
         updated_at=_iso(job["updated_at"]),
         spent_usd=usage.get("spent_usd"),
@@ -854,6 +872,12 @@ async def create_agent_job(
                 },
             ) from exc
 
+    metadata = dict(body.metadata or {})
+    # Reserved display fact: caller metadata must not be able to claim the
+    # job was pinned from a different branch than the one the API resolved.
+    metadata.pop(_BASE_REF_METADATA_KEY, None)
+    if body.base_ref:
+        metadata[_BASE_REF_METADATA_KEY] = body.base_ref
     job = await job_store.create_job(
         user_id=user["user_id"],
         repo=body.repo,
@@ -863,7 +887,7 @@ async def create_agent_job(
         base_sha=base_sha,
         setup_script=body.setup_script,
         budget_usd=body.budget_usd,
-        metadata=body.metadata,
+        metadata=metadata or None,
     )
     logger.info(
         "agent_job_created",
@@ -1129,6 +1153,156 @@ async def get_agent_job_artifact(
         content=artifact["content"],
         created_at=_iso(artifact["created_at"]),
     )
+
+
+@router.get("/jobs/{job_id}/files", response_model=AgentWorkspaceResponse)
+async def get_agent_job_workspace_file(
+    job_id: str,
+    path: str = Query("", max_length=4096),
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> AgentWorkspaceResponse:
+    """Browse the job's pinned repository tree with its changed-file overlay.
+
+    GitHub is read lazily with a short-lived ``contents: read`` token scoped to
+    this one repository.  The runner's bounded snapshot replaces changed files
+    after an attempt ends; it never grants this endpoint access to the runner's
+    worktree or to any credential that entered the sandbox.
+    """
+    job_store = _require_store(store)
+    job = await _owned_job(job_store, job_id, user)
+    try:
+        safe_path = normalize_workspace_path(path)
+    except WorkspacePathError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"type": "invalid_path", "message": str(exc)}},
+        ) from exc
+
+    try:
+        await require_entitled_repo(
+            job["repo"],
+            user["user_id"],
+            store=job_store,
+            app_credentials=app_credentials,
+        )
+    except RepoNotAllowed as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
+        ) from exc
+
+    base_sha = job.get("base_sha")
+    if not base_sha:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "type": "workspace_unavailable",
+                    "message": "This job does not yet have a pinned base commit.",
+                }
+            },
+        )
+    if app_credentials is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "type": "workspace_unavailable",
+                    "message": "Repository browsing requires the GitHub App.",
+                }
+            },
+        )
+
+    snapshot_artifact = await job_store.get_artifact(job_id=job_id, kind="workspace_snapshot")
+    try:
+        overlay = parse_workspace_snapshot(
+            snapshot_artifact["content"] if snapshot_artifact else None
+        )
+    except WorkspaceSnapshotError as exc:
+        logger.warning(
+            "agent_workspace_snapshot_invalid",
+            extra={"event": "agent_workspace_snapshot_invalid", "job_id": job_id},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "type": "workspace_unavailable",
+                    "message": "The changed-files snapshot could not be read.",
+                }
+            },
+        ) from exc
+
+    changed_file = snapshot_file_response(overlay, safe_path) if safe_path else None
+    replaced_file_with_directory = bool(
+        changed_file is not None
+        and changed_file.get("status") == "deleted"
+        and overlay_has_directory(overlay, safe_path)
+    )
+    if changed_file is not None and not replaced_file_with_directory:
+        return AgentWorkspaceResponse(**changed_file)
+
+    if replaced_file_with_directory:
+        baseline: dict[str, Any] | list[dict[str, Any]] = []
+    else:
+        try:
+            baseline = await app_credentials.repository_contents(
+                job["repo"], path=safe_path, ref=base_sha
+            )
+        except GitHubAppError as exc:
+            if exc.status == 404 and overlay_has_directory(overlay, safe_path):
+                baseline = []
+            elif exc.status == 404:
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error": {
+                            "type": "not_found",
+                            "message": f"No such workspace path: {safe_path}",
+                        }
+                    },
+                ) from exc
+            else:
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "error": {
+                            "type": "repository_unavailable",
+                            "message": "The pinned repository contents are temporarily unavailable.",
+                        }
+                    },
+                ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": {
+                        "type": "repository_unavailable",
+                        "message": "The pinned repository contents are temporarily unavailable.",
+                    }
+                },
+            ) from exc
+
+    if isinstance(baseline, list):
+        return AgentWorkspaceResponse(
+            path=safe_path,
+            kind="directory",
+            entries=merge_directory_entries(path=safe_path, baseline=baseline, overlay=overlay),
+        )
+    try:
+        return AgentWorkspaceResponse(**github_file_response(safe_path, baseline))
+    except WorkspaceSnapshotError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": {
+                    "type": "repository_unavailable",
+                    "message": "GitHub returned malformed file content.",
+                }
+            },
+        ) from exc
 
 
 @router.get("/jobs/{job_id}/stream")

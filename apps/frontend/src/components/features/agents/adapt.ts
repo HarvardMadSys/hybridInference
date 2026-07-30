@@ -7,7 +7,7 @@
 
 import type { AgentJobApi, AgentJobEventApi, AgentThreadApi } from '@/lib/api/agents';
 
-import type { AgentEvent, AgentJob, AgentJobState, DiffLine } from './types';
+import type { AgentDiffFile, AgentEvent, AgentJob, AgentJobState, DiffLine } from './types';
 
 /**
  * Map a server state onto a display state.
@@ -47,6 +47,27 @@ function readableValue(value: unknown): string {
   }
 }
 
+function commandText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const input = value as Record<string, unknown>;
+    const command = input.command ?? input.cmd;
+    if (typeof command === 'string') return command;
+    if (Array.isArray(command) && command.every((part) => typeof part === 'string')) {
+      return command.join(' ');
+    }
+  }
+  return readableValue(value);
+}
+
+function toolOutput(payload: Record<string, unknown>): string[] | undefined {
+  const output =
+    readableValue(payload.output) ||
+    readableValue(payload.aggregated_output) ||
+    readableValue(payload.stdout);
+  return output ? output.split('\n') : undefined;
+}
+
 /** Map one stored event onto a UI row, or null when it has nothing to show. */
 export function toDisplayEvent(event: AgentJobEventApi): AgentEvent | null {
   const payload = event.payload ?? {};
@@ -60,18 +81,28 @@ export function toDisplayEvent(event: AgentJobEventApi): AgentEvent | null {
 
   if (type === 'tool_use') {
     const name = asText(payload, 'name', 'tool') || 'Bash';
+    const exitCode = payload.exit_code;
+    const output = toolOutput(payload);
+    const outputIsError =
+      (typeof exitCode === 'number' && exitCode !== 0) || payload.status === 'failed';
     return {
       kind: 'tool_use',
       tool: name,
       id: asText(payload, 'id') || undefined,
-      detail: asText(payload, 'detail', 'text') || readableValue(payload.input) || 'Running tool',
+      detail: asText(payload, 'detail', 'text') || commandText(payload.input) || 'Running tool',
+      ...(output ? { output } : {}),
+      ...(outputIsError ? { outputIsError: true } : {}),
     };
   }
 
   if (type === 'tool_result') {
     return {
       kind: 'tool_result',
-      text: readableValue(payload.content) || asText(payload, 'text', 'detail'),
+      text:
+        readableValue(payload.content) ||
+        readableValue(payload.output) ||
+        readableValue(payload.aggregated_output) ||
+        asText(payload, 'text', 'detail'),
       toolUseId: asText(payload, 'tool_use_id') || undefined,
       isError: payload.is_error === true,
     };
@@ -94,6 +125,9 @@ export function toDisplayEvent(event: AgentJobEventApi): AgentEvent | null {
   }
   if (type === 'lifecycle') {
     return { kind: 'lifecycle', text: asText(payload, 'phase', 'text') || 'lifecycle' };
+  }
+  if (type === 'raw') {
+    return { kind: 'terminal', text: asText(payload, 'text') || readableValue(payload) };
   }
 
   // Diff is rendered from the complete patch artifact rather than a stream
@@ -127,6 +161,35 @@ export function toDiffFiles(patch: string): string[] {
     if (match) files.add(match[2]);
   }
   return [...files];
+}
+
+/** Split a patch into independently selectable files with per-file stats. */
+export function toDiffFileDetails(patch: string): AgentDiffFile[] {
+  if (!patch) return [];
+  const files: AgentDiffFile[] = [];
+  let current: AgentDiffFile | null = null;
+
+  for (const line of patch.split('\n')) {
+    const header = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+    if (header) {
+      current = { path: header[2], add: 0, del: 0, lines: [] };
+      files.push(current);
+      continue;
+    }
+    if (!current || line.startsWith('index ')) continue;
+
+    let marker: DiffLine['marker'] = 'ctx';
+    if (line.startsWith('@@')) marker = 'hunk';
+    else if (line.startsWith('+') && !line.startsWith('+++')) {
+      marker = 'add';
+      current.add += 1;
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      marker = 'del';
+      current.del += 1;
+    }
+    current.lines.push({ marker, text: line });
+  }
+  return files;
 }
 
 function diffStat(patch: string): { add: number; del: number } | undefined {
@@ -328,9 +391,10 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     state: toDisplayState(job),
     stateNote: job.detail ?? (job.state === 'waiting' ? 'Queued after the current run' : undefined),
     repo: job.repo,
+    baseRef: job.base_ref ?? undefined,
     baseSha: (job.base_sha ?? '').slice(0, 7),
     // Every turn in a conversation publishes to the same branch/PR.
-    branch: `agent/${job.thread_id ?? options.thread?.thread_id ?? job.id}`,
+    branch: job.output_branch ?? `agent/${job.thread_id ?? options.thread?.thread_id ?? job.id}`,
     runtime: job.runtime,
     model: job.model,
     // Summed server-side from api_logs. Null there means no ledger is
@@ -347,6 +411,7 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     events: renderedEvents,
     eventCount: events.length,
     diffFiles: toDiffFiles(patch),
+    diffFileDetails: toDiffFileDetails(patch),
     diffStat: diffStat(patch),
     diffLines: toDiffLines(patch),
     rawLines: events.map(rawEventLine),
