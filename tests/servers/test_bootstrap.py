@@ -47,14 +47,16 @@ class TestBootstrapInitialization:
             )
         )
         monkeypatch.setattr(terminal_coordination, "workspace_broker_from_env", lambda: broker)
-        terminal_coordination._PENDING_SETTLED_RESUMES.clear()
-        terminal_coordination.schedule_settled_terminal_resume("ajob_test")
+        store = SimpleNamespace(
+            list_terminal_resumes_pending=AsyncMock(return_value=["ajob_test"]),
+            mark_terminal_resume_complete=AsyncMock(return_value=True),
+        )
 
-        await terminal_coordination.flush_settled_terminal_resumes()
-        assert {"ajob_test"} == terminal_coordination._PENDING_SETTLED_RESUMES
+        await bootstrap._reconcile_settled_agent_terminals(store)
+        store.mark_terminal_resume_complete.assert_not_awaited()
 
-        await terminal_coordination.flush_settled_terminal_resumes()
-        assert set() == terminal_coordination._PENDING_SETTLED_RESUMES
+        await bootstrap._reconcile_settled_agent_terminals(store)
+        store.mark_terminal_resume_complete.assert_awaited_once_with(job_id="ajob_test")
         assert broker.resume_settled_terminals.await_count == 2
         broker.resume_settled_terminals.assert_awaited_with("ajob_test")
 

@@ -33,11 +33,15 @@ const ACTIVE_ATTEMPT_PHASES = new Set([
   'workspace_finalizing',
 ]);
 
-/** Apply one live lifecycle event to the cached owner-facing job row. */
+/** Apply one live attempt-state event to the cached owner-facing job row. */
 export function applyAgentLifecycleEvent(
   current: AgentJobApi,
   event: AgentJobEventApi,
 ): AgentJobApi {
+  if (event.event_type === 'attempt_superseded') {
+    if (current.current_attempt_id !== event.attempt_id) return current;
+    return { ...current, state: 'queued', current_attempt_id: null };
+  }
   if (event.event_type !== 'lifecycle') return current;
   const phase = event.payload?.phase;
   if (typeof phase !== 'string') return current;
@@ -286,9 +290,7 @@ export function useAgentJob(jobId: string): {
         setEvents((current) => [...current, event]);
         // The stream is also the fastest authority for a waiting/queued child
         // becoming active; keep the status pill in step without polling.
-        if (event.event_type === 'lifecycle') {
-          setApi((current) => (current ? applyAgentLifecycleEvent(current, event) : current));
-        }
+        setApi((current) => (current ? applyAgentLifecycleEvent(current, event) : current));
       },
       onFinished: () => reload(),
     }).catch(() => {

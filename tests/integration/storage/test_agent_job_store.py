@@ -739,6 +739,9 @@ async def test_reap_fails_job_after_max_attempts(store: AgentJobStore):
     fetched = await store.get_job(job["id"])
     assert fetched["state"] == "failed"
     assert "exhausted" in fetched["detail"]
+    assert await store.list_terminal_resumes_pending() == [job["id"]]
+    assert await store.mark_terminal_resume_complete(job_id=job["id"]) is True
+    assert await store.list_terminal_resumes_pending() == []
 
 
 async def test_publish_is_one_shot(store: AgentJobStore):
@@ -815,6 +818,8 @@ async def test_cancel_queued_and_running(store: AgentJobStore):
     queued = await _create_job(store)
     assert await store.request_cancel(job_id=queued["id"]) == "cancelled"
     assert (await store.get_job(queued["id"]))["state"] == "cancelled"
+    assert await store.list_terminal_resumes_pending() == [queued["id"]]
+    assert await store.mark_terminal_resume_complete(job_id=queued["id"]) is True
 
     # Owner scoping: the wrong user cannot cancel.
     running = await _create_job(store)
@@ -1281,6 +1286,7 @@ async def test_a_cancelled_job_released_from_a_claim_ends_cancelled(store: Agent
 
     fetched = await store.get_job(job["id"])
     assert fetched["state"] == "cancelled", "a cancelled job must not be requeued"
+    assert await store.list_terminal_resumes_pending() == [job["id"]]
 
 
 async def test_an_uncancelled_job_still_returns_to_the_queue(store: AgentJobStore):

@@ -57,10 +57,7 @@ from serving.agent_jobs.source_control import (
     github_authorization_url,
     issue_oauth_state,
 )
-from serving.agent_jobs.terminal_coordination import (
-    flush_settled_terminal_resumes,
-    schedule_settled_terminal_resume,
-)
+from serving.agent_jobs.terminal_coordination import resume_settled_terminal
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
     SCOPE_MODEL,
@@ -1020,9 +1017,8 @@ async def cancel_agent_job(
     job_store = _require_store(store)
     await _owned_job(job_store, job_id, user)
     state = await job_store.request_cancel(job_id=job_id, user_id=user["user_id"])
-    if state in TERMINAL_STATES:
-        schedule_settled_terminal_resume(job_id)
-        await flush_settled_terminal_resumes()
+    if state in TERMINAL_STATES and await resume_settled_terminal(job_id):
+        await job_store.mark_terminal_resume_complete(job_id=job_id)
     job = await job_store.get_job(job_id)
     return AgentJobCancelResponse(
         id=job_id,
@@ -1388,6 +1384,19 @@ async def _terminal_owner_workspace(
                 }
             },
         )
+    if job.get("terminal_resume_pending"):
+        if not await resume_settled_terminal(_workspace_id(job)):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "workspace_unavailable",
+                        "message": "The settled terminal workspace is still resuming.",
+                    }
+                },
+            )
+        await job_store.mark_terminal_resume_complete(job_id=job_id)
+        job["terminal_resume_pending"] = False
     return job, broker
 
 

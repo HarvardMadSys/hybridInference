@@ -56,6 +56,7 @@ class FakeAgentJobStore:
             "turn_no": 1,
             "state": "queued",
             "cancel_requested": False,
+            "terminal_resume_pending": False,
             "current_attempt_id": None,
             "published_pr_url": None,
             "published_commit_sha": None,
@@ -129,6 +130,7 @@ class FakeAgentJobStore:
                 else "waiting"
             ),
             "cancel_requested": False,
+            "terminal_resume_pending": False,
             "current_attempt_id": None,
             "published_pr_url": None,
             "published_commit_sha": None,
@@ -180,6 +182,7 @@ class FakeAgentJobStore:
                     else "cancelled"
                 ),
                 "cancel_requested": False,
+                "terminal_resume_pending": False,
                 "current_attempt_id": None,
                 "published_pr_url": None,
                 "fork_source_job_id": turn["id"],
@@ -363,6 +366,7 @@ class FakeAgentJobStore:
         job["cancel_requested"] = True
         if job["state"] in {"queued", "waiting"}:
             job["state"] = "cancelled"
+            job["terminal_resume_pending"] = True
         return job["state"]
 
     async def list_events_after(
@@ -379,6 +383,21 @@ class FakeAgentJobStore:
         if not self._fenced(attempt_id, lease_generation):
             return False
         self.terminal_readiness[attempt_id] = False
+        return True
+
+    async def list_terminal_resumes_pending(self, *, limit: int = 100) -> list[str]:
+        return [
+            job["id"]
+            for job in self.jobs.values()
+            if job["terminal_resume_pending"]
+            and job["state"] in {"succeeded", "failed", "cancelled"}
+        ][:limit]
+
+    async def mark_terminal_resume_complete(self, *, job_id: str) -> bool:
+        job = self.jobs[job_id]
+        if not job["terminal_resume_pending"]:
+            return False
+        job["terminal_resume_pending"] = False
         return True
 
     async def get_artifact(self, *, job_id: str, kind: str) -> dict[str, Any] | None:
@@ -484,6 +503,8 @@ class FakeAgentJobStore:
         if job["state"] not in from_states:
             return False
         job["state"] = to_state
+        if to_state in {"succeeded", "failed", "cancelled"}:
+            job["terminal_resume_pending"] = False
         job["detail"] = detail
         # Mirrors the store's COALESCE: a worker may fill in a base the job
         # lacked, never overwrite one the owner pinned.
@@ -1741,6 +1762,30 @@ async def test_worker_suspends_terminals_around_protected_workspace_phases(
     ]
 
 
+async def test_settled_terminal_access_replays_durable_resume_after_restart(
+    store: FakeAgentJobStore,
+    monkeypatch,
+):
+    """The first owner access repairs a persisted resume missed before restart."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    monkeypatch.setattr(terminal_coordination, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        store.jobs[job_id]["state"] = "cancelled"
+        store.jobs[job_id]["terminal_resume_pending"] = True
+        response = await local_client.get(f"/v1/agent/jobs/{job_id}/terminals")
+
+    assert response.status_code == 200
+    assert broker.calls == [
+        ("resume_settled", job_id),
+        ("list", job_id),
+    ]
+    assert store.jobs[job_id]["terminal_resume_pending"] is False
+
+
 async def test_worker_re_suspends_terminals_if_ready_event_loses_lease(
     store: FakeAgentJobStore,
     monkeypatch,
@@ -2056,7 +2101,6 @@ async def test_cancel_requeued_job_authoritatively_resumes_terminals(
     """Cancellation must not strand sessions paused by an expired attempt."""
     broker = _TerminalSessionBroker()
     monkeypatch.setattr(terminal_coordination, "workspace_broker_from_env", lambda: broker)
-    terminal_coordination._PENDING_SETTLED_RESUMES.clear()
     app = _build_app(store)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as local_client:
@@ -2067,7 +2111,7 @@ async def test_cancel_requeued_job_authoritatively_resumes_terminals(
     assert response.status_code == 200
     assert response.json()["state"] == "cancelled"
     assert broker.calls == [("resume_settled", job_id)]
-    assert set() == terminal_coordination._PENDING_SETTLED_RESUMES
+    assert store.jobs[job_id]["terminal_resume_pending"] is False
 
 
 async def test_worker_flow_claim_event_artifact_finish(
