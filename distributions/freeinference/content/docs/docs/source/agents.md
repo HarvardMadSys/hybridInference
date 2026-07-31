@@ -69,7 +69,10 @@ request is linked directly from the task page.
 
 A task also takes **follow-up messages**: send one from the task page and it
 runs as a new isolated pass in the same thread, inheriting the repository and
-— unless you switch them — the agent and model of the turn before.
+the agent of the turn before. Its **model** is chosen per turn: the control
+beside the follow-up box starts on the model the last turn ran and switches
+the next one onto any other listed model — so a thread can open on a fast
+model and move to a larger one where the work turns out to be hard.
 
 The conversation itself carries three actions. Every message has **Copy**.
 **Fork from here** on any earlier answer duplicates the conversation up to
