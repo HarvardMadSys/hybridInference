@@ -161,6 +161,17 @@ describe('AgentsSidebar project tree', () => {
     expect(screen.queryByText('Profile the scheduler')).not.toBeInTheDocument();
   });
 
+  it('offers a separate new-task link for each project', async () => {
+    render(<AgentsSidebar />);
+
+    const project = await screen.findByRole('button', { name: /hybridInference/ });
+    const newTask = screen.getByRole('link', { name: 'New task in hybridInference' });
+
+    expect(newTask).toHaveAttribute('href', '/agents?repo=murphy%2FhybridInference');
+    expect(project).not.toContainElement(newTask);
+    expect(project).toHaveAttribute('aria-expanded', 'true');
+  });
+
   it('loads a quiet project only once its folder is opened, and remembers that', async () => {
     render(<AgentsSidebar />);
     await waitFor(() => expect(screen.getByRole('button', { name: /sglang/ })).toBeInTheDocument());
