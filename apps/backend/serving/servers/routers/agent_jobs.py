@@ -1752,6 +1752,7 @@ async def write_agent_job_terminal_input(
         user=user,
         store=store,
         app_credentials=app_credentials,
+        require_ready=True,
         recheck_entitlement=False,
     )
     try:

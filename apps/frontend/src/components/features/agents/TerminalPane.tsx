@@ -59,6 +59,7 @@ interface TerminalPaneProps {
   terminal: AgentTerminalApi;
   sessions: AgentTerminalApi[];
   paneIndex: number;
+  ready: boolean;
   canCreate: boolean;
   canSplit: boolean;
   busy: boolean;
@@ -73,6 +74,7 @@ export function TerminalPane({
   terminal,
   sessions,
   paneIndex,
+  ready,
   canCreate,
   canSplit,
   busy,
@@ -83,14 +85,18 @@ export function TerminalPane({
 }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const inputEnabledRef = useRef(ready && terminal.state === 'running');
   const tabListRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+  const inputEnabled = ready && terminal.state === 'running';
+  inputEnabledRef.current = inputEnabled;
 
   useEffect(() => {
     if (terminalRef.current) {
-      terminalRef.current.options.disableStdin = terminal.state !== 'running';
+      terminalRef.current.options.disableStdin = !inputEnabled;
+      if (inputEnabled) terminalRef.current.focus();
     }
-  }, [terminal.state]);
+  }, [inputEnabled]);
 
   useEffect(() => {
     const tabList = tabListRef.current;
@@ -140,7 +146,7 @@ export function TerminalPane({
           convertEol: false,
           cursorBlink: true,
           cursorStyle: 'block',
-          disableStdin: terminal.state !== 'running',
+          disableStdin: !inputEnabledRef.current,
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
           fontSize: 13,
           lineHeight: 1.25,
@@ -194,9 +200,13 @@ export function TerminalPane({
 
         const flushInput = async () => {
           if (disposed || flushingInput) return;
+          if (!inputEnabledRef.current) {
+            pendingInput = '';
+            return;
+          }
           flushingInput = true;
           try {
-            while (!disposed && pendingInput) {
+            while (!disposed && inputEnabledRef.current && pendingInput) {
               const batch = pendingInput;
               pendingInput = '';
               await writeAgentTerminalInput(jobId, terminal.id, batch);
@@ -220,7 +230,7 @@ export function TerminalPane({
         };
 
         dataDisposable = xterm.onData((data) => {
-          if (terminal.state !== 'running') return;
+          if (!inputEnabledRef.current) return;
           pendingInput += data;
           if (!inputTimer && !flushingInput) {
             inputTimer = setTimeout(() => {

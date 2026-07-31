@@ -355,7 +355,7 @@ describe('TerminalWorkspace', () => {
     expect(xterm.dispose).toHaveBeenCalled();
   });
 
-  it('only disables input when the terminal process is not running', async () => {
+  it('disables input when the terminal process is not running', async () => {
     const first = { ...terminal('term-1'), state: 'closed' as const };
     vi.mocked(listAgentTerminals).mockResolvedValue([first]);
 
@@ -366,6 +366,28 @@ describe('TerminalWorkspace', () => {
     expect(xtermHarness.instances[0].options.disableStdin).toBe(true);
     xtermHarness.instances[0].emitData('pwd\r');
     expect(writeAgentTerminalInput).not.toHaveBeenCalled();
+  });
+
+  it('pauses an existing terminal during retry preparation and resumes it automatically', async () => {
+    const first = terminal('term-1');
+    vi.mocked(listAgentTerminals).mockResolvedValue([first]);
+
+    const view = render(<TerminalWorkspace jobId="job-1" active ready />);
+    await screen.findByRole('application', { name: 'Terminal 1 terminal' });
+    await waitFor(() => expect(xtermHarness.instances).toHaveLength(1));
+    const xterm = xtermHarness.instances[0];
+
+    view.rerender(<TerminalWorkspace jobId="job-1" active ready={false} />);
+    expect(xterm.options.disableStdin).toBe(true);
+    xterm.emitData('blocked');
+    expect(writeAgentTerminalInput).not.toHaveBeenCalled();
+
+    view.rerender(<TerminalWorkspace jobId="job-1" active ready />);
+    expect(xterm.options.disableStdin).toBe(false);
+    xterm.emitData('resumed');
+    await waitFor(() =>
+      expect(writeAgentTerminalInput).toHaveBeenCalledWith('job-1', first.id, 'resumed'),
+    );
   });
 
   it('cleans up a terminal created after navigating to another job', async () => {

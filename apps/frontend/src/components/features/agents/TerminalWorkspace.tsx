@@ -191,6 +191,7 @@ export function TerminalWorkspace({ jobId, active, ready = true }: TerminalWorks
               terminal={terminal}
               sessions={sessions}
               paneIndex={paneIndex}
+              ready={ready}
               canCreate={canCreate}
               canSplit={canCreate && visible.length < 2}
               busy={busy}

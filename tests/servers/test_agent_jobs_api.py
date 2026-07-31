@@ -1462,27 +1462,39 @@ async def test_interactive_terminal_routes_proxy_owner_session_lifecycle(
 async def test_terminal_controls_use_the_attached_session_capability(
     store: FakeAgentJobStore, monkeypatch
 ):
-    """Attached PTY controls avoid entitlement and readiness queries per keypress."""
+    """Attached PTY controls skip entitlement; only stdin checks readiness."""
     broker = _TerminalSessionBroker()
     monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
 
     async def unexpected_entitlement_recheck(**_kwargs):
         raise AssertionError("attached terminal controls must not call external entitlement")
 
-    async def unexpected_event_query(**_kwargs):
-        raise AssertionError("attached terminal controls must not query lifecycle events")
-
     monkeypatch.setattr(
         agent_jobs_router,
         "_require_workspace_entitlement",
         unexpected_entitlement_recheck,
     )
-    monkeypatch.setattr(store, "list_events_after", unexpected_event_query)
+    original_list_events = store.list_events_after
+    event_queries = 0
+
+    async def recording_event_query(**kwargs):
+        nonlocal event_queries
+        event_queries += 1
+        return await original_list_events(**kwargs)
+
+    monkeypatch.setattr(store, "list_events_after", recording_event_query)
     app = _build_app(store)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as local_client:
         job_id = await _create_job(local_client)
-        store.jobs[job_id]["state"] = "running"
+        claimed = await store.claim_job(worker_id="worker-1", lease_ttl_seconds=60)
+        assert claimed is not None
+        await store.append_event(
+            attempt_id=claimed["attempt_id"],
+            lease_generation=claimed["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
         wrote = await local_client.post(
             f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
             json={"data": "eA=="},
@@ -1496,6 +1508,7 @@ async def test_terminal_controls_use_the_attached_session_capability(
     assert wrote.status_code == 200
     assert resized.status_code == 200
     assert killed.status_code == 200
+    assert event_queries == 1
     assert broker.calls == [
         ("input", job_id, "term_1", "eA=="),
         ("resize", job_id, "term_1", 30, 100),
@@ -1568,9 +1581,32 @@ async def test_full_terminal_lifecycle_is_available_while_agent_runs(
             f"/v1/agent/jobs/{job_id}/terminals",
             json={"rows": 24, "cols": 80},
         )
-        write = await local_client.post(
+        write_before_retry = await local_client.post(
             f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
             json={"data": "bHMK"},
+        )
+        store.jobs[job_id]["state"] = "queued"
+        write_while_requeued = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "cHdkCg=="},
+        )
+        store.jobs[job_id]["state"] = "running"
+        store.jobs[job_id]["current_attempt_id"] = 101
+        store.live_fence = (101, 2)
+        write_while_preparing = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "cHdkCg=="},
+        )
+        retry_event_id = await store.append_event(
+            attempt_id=101,
+            lease_generation=2,
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
+        assert retry_event_id is not None
+        write_after_retry = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "cHdkCg=="},
         )
         resize = await local_client.post(
             f"/v1/agent/jobs/{job_id}/terminals/term_1/resize",
@@ -1583,10 +1619,22 @@ async def test_full_terminal_lifecycle_is_available_while_agent_runs(
     for response in (queued_create, queued_list, early_create, early_list):
         assert response.status_code == 409
         assert response.json()["detail"]["error"]["type"] == "workspace_not_ready"
-    for response in (create, write, resize, listed, killed_once, killed_twice):
+    for response in (write_while_requeued, write_while_preparing):
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"]["type"] == "workspace_not_ready"
+    for response in (
+        create,
+        write_before_retry,
+        write_after_retry,
+        resize,
+        listed,
+        killed_once,
+        killed_twice,
+    ):
         assert response.status_code == 200
     assert create.json()["state"] == "running"
-    assert write.json()["state"] == "running"
+    assert write_before_retry.json()["state"] == "running"
+    assert write_after_retry.json()["state"] == "running"
     assert resize.json()["rows"] == 30
     assert resize.json()["cols"] == 100
     assert listed.status_code == 200
@@ -1596,6 +1644,7 @@ async def test_full_terminal_lifecycle_is_available_while_agent_runs(
     assert broker.calls == [
         ("create", job_id, 24, 80),
         ("input", job_id, "term_1", "bHMK"),
+        ("input", job_id, "term_1", "cHdkCg=="),
         ("resize", job_id, "term_1", 30, 100),
         ("list", job_id),
         ("delete", job_id, "term_1"),
