@@ -37,6 +37,7 @@ class FakeAgentJobStore:
         self.artifacts: dict[tuple[str, str], dict[str, Any]] = {}
         self.messages: list[dict[str, Any]] = []
         self.archived_threads: dict[str, datetime] = {}
+        self.pinned_threads: dict[str, datetime] = {}
         self.live_fence: tuple[int, int] | None = None
         self.released: list[tuple[str, int]] = []
         self._next_event_id = 1
@@ -133,6 +134,7 @@ class FakeAgentJobStore:
             "detail": None,
             "created_at": None,
             "updated_at": None,
+            "pinned_at": self.pinned_threads.get(parent["thread_id"]),
         }
         self.jobs[job_id] = job
         self.messages.append(
@@ -235,7 +237,11 @@ class FakeAgentJobStore:
             return None
         thread_id = job["thread_id"]
         jobs = sorted(
-            (item for item in self.jobs.values() if item["thread_id"] == thread_id),
+            (
+                {**item, "pinned_at": self.pinned_threads.get(thread_id)}
+                for item in self.jobs.values()
+                if item["thread_id"] == thread_id
+            ),
             key=lambda item: item["turn_no"],
         )
         return {
@@ -286,7 +292,10 @@ class FakeAgentJobStore:
         return {"messages": messages, "patch": patch}
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
-        return self.jobs.get(job_id)
+        job = self.jobs.get(job_id)
+        if job is None:
+            return None
+        return {**job, "pinned_at": self.pinned_threads.get(job["thread_id"])}
 
     async def list_jobs(
         self,
@@ -296,13 +305,23 @@ class FakeAgentJobStore:
         archived: bool = False,
         repo: str | None = None,
     ) -> list[dict[str, Any]]:
-        return [
-            job
+        jobs = [
+            {**job, "pinned_at": self.pinned_threads.get(job["thread_id"])}
             for job in self.jobs.values()
             if job["user_id"] == user_id
             and (job["thread_id"] in self.archived_threads) is archived
             and (repo is None or job["repo"] == repo)
-        ][:limit]
+        ]
+        minimum = datetime.min.replace(tzinfo=timezone.utc)
+        jobs.sort(
+            key=lambda job: (
+                job["pinned_at"] is not None,
+                job["pinned_at"] or minimum,
+                job.get("created_at") or minimum,
+            ),
+            reverse=True,
+        )
+        return jobs[:limit]
 
     async def list_projects(self, *, user_id: str, archived: bool = False) -> list[dict[str, Any]]:
         projects: dict[str, dict[str, Any]] = {}
@@ -318,13 +337,22 @@ class FakeAgentJobStore:
                     "task_count": 0,
                     "active_count": 0,
                     "last_activity_at": None,
+                    "pinned_count": 0,
+                    "pinned_at": None,
                     "_threads": set(),
+                    "_pinned_threads": set(),
                 },
             )
             project["_threads"].add(job["thread_id"])
             project["task_count"] = len(project["_threads"])
             if job["state"] in {"queued", "waiting", "running", "publishing"}:
                 project["active_count"] += 1
+            pinned_at = self.pinned_threads.get(job["thread_id"])
+            if pinned_at is not None:
+                project["_pinned_threads"].add(job["thread_id"])
+                project["pinned_count"] = len(project["_pinned_threads"])
+                if project["pinned_at"] is None or pinned_at > project["pinned_at"]:
+                    project["pinned_at"] = pinned_at
             created = job.get("created_at")
             if created is not None and (
                 project["last_activity_at"] is None or created > project["last_activity_at"]
@@ -332,10 +360,14 @@ class FakeAgentJobStore:
                 project["last_activity_at"] = created
         for project in projects.values():
             project.pop("_threads")
+            project.pop("_pinned_threads")
+        minimum = datetime.min.replace(tzinfo=timezone.utc)
         return sorted(
             projects.values(),
             key=lambda project: (
-                project["last_activity_at"] or datetime.min.replace(tzinfo=timezone.utc)
+                project["pinned_at"] is not None,
+                project["pinned_at"] or minimum,
+                project["last_activity_at"] or minimum,
             ),
             reverse=True,
         )
@@ -353,6 +385,20 @@ class FakeAgentJobStore:
             self.archived_threads.pop(thread_id, None)
             archived_at = None
         return {"thread_id": thread_id, "archived_at": archived_at}
+
+    async def set_thread_pinned(
+        self, *, job_id: str, user_id: str, pinned: bool
+    ) -> dict[str, Any] | None:
+        job = self.jobs.get(job_id)
+        if job is None or job["user_id"] != user_id:
+            return None
+        thread_id = job["thread_id"]
+        if pinned:
+            pinned_at = self.pinned_threads.setdefault(thread_id, datetime.now(timezone.utc))
+        else:
+            self.pinned_threads.pop(thread_id, None)
+            pinned_at = None
+        return {"thread_id": thread_id, "pinned_at": pinned_at}
 
     async def request_cancel(self, *, job_id: str, user_id: str | None = None) -> str | None:
         job = self.jobs.get(job_id)
@@ -742,6 +788,80 @@ async def test_archive_and_restore_filter_the_entire_thread_without_cancelling(
     assert (await client.get("/v1/agent/jobs?archived=true")).json() == {"jobs": []}
     active_jobs = (await client.get("/v1/agent/jobs")).json()["jobs"]
     assert {job["id"] for job in active_jobs} == {parent_id, child_id}
+
+
+async def test_pin_and_unpin_are_thread_scoped_idempotent_and_reorder_lists(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """Any turn pins the conversation and its project without touching run state."""
+    parent_id = await _create_job(client)
+    follow_up = await client.post(
+        f"/v1/agent/jobs/{parent_id}/follow-ups",
+        json={"prompt": "also update the docs"},
+    )
+    child_id = follow_up.json()["id"]
+    thread_id = follow_up.json()["thread_id"]
+    newer = await store.create_job(
+        user_id=_OWNER,
+        repo="owner/newer",
+        task_prompt="newer task",
+        runtime="claude-code",
+        model="glm-5.1",
+    )
+    newer_id = newer["id"]
+    store.jobs[parent_id]["created_at"] = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    store.jobs[child_id]["created_at"] = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    store.jobs[newer_id]["created_at"] = datetime(2026, 7, 3, tzinfo=timezone.utc)
+    store.jobs[parent_id]["state"] = "running"
+
+    pinned = await client.post(f"/v1/agent/jobs/{child_id}/pin")
+
+    assert pinned.status_code == 200
+    assert pinned.json()["thread_id"] == thread_id
+    assert pinned.json()["pinned"] is True
+    assert pinned.json()["pinned_at"] is not None
+    pinned_again = await client.post(f"/v1/agent/jobs/{parent_id}/pin")
+    assert pinned_again.json() == pinned.json()
+    assert store.jobs[parent_id]["state"] == "running"
+    assert store.jobs[parent_id]["cancel_requested"] is False
+
+    jobs = (await client.get("/v1/agent/jobs")).json()["jobs"]
+    assert [job["id"] for job in jobs[:2]] == [child_id, parent_id]
+    assert jobs[0]["pinned_at"] == jobs[1]["pinned_at"] == pinned.json()["pinned_at"]
+    assert jobs[2]["id"] == newer_id
+    projects = (await client.get("/v1/agent/projects")).json()["projects"]
+    assert [project["repo"] for project in projects] == ["owner/name", "owner/newer"]
+    assert projects[0]["pinned_count"] == 1
+    assert projects[0]["pinned_at"] == pinned.json()["pinned_at"]
+
+    unpinned = await client.delete(f"/v1/agent/jobs/{parent_id}/pin")
+
+    assert unpinned.json() == {
+        "thread_id": thread_id,
+        "pinned": False,
+        "pinned_at": None,
+    }
+    jobs = (await client.get("/v1/agent/jobs")).json()["jobs"]
+    assert jobs[0]["id"] == newer_id
+    assert all(job["pinned_at"] is None for job in jobs)
+    projects = (await client.get("/v1/agent/projects")).json()["projects"]
+    assert [project["repo"] for project in projects] == ["owner/newer", "owner/name"]
+
+
+async def test_follow_up_response_inherits_the_thread_pin(
+    client: AsyncClient,
+):
+    """A new turn reports the conversation state without waiting for a list refresh."""
+    parent_id = await _create_job(client)
+    pinned = await client.post(f"/v1/agent/jobs/{parent_id}/pin")
+
+    follow_up = await client.post(
+        f"/v1/agent/jobs/{parent_id}/follow-ups",
+        json={"prompt": "also update the docs"},
+    )
+
+    assert follow_up.status_code == 201
+    assert follow_up.json()["pinned_at"] == pinned.json()["pinned_at"]
 
 
 async def test_follow_up_is_a_durable_waiting_turn_with_parent_context(
@@ -1178,6 +1298,10 @@ async def test_other_users_jobs_are_404_not_403(client: AsyncClient, store: Fake
         assert archive.status_code == 404
         missing = await method("/v1/agent/jobs/ajob_missing/archive")
         assert missing.status_code == 404
+        pin = await method(f"/v1/agent/jobs/{foreign['id']}/pin")
+        assert pin.status_code == 404
+        missing_pin = await method("/v1/agent/jobs/ajob_missing/pin")
+        assert missing_pin.status_code == 404
 
 
 async def test_workspace_files_merge_pinned_base_and_changed_snapshot(

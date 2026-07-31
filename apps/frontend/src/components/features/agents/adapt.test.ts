@@ -166,6 +166,12 @@ describe('toDisplayJob', () => {
     expect(toDisplayJob(JOB).branch).toBe('agent/ajob_1');
   });
 
+  it('maps the conversation pin time', () => {
+    expect(toDisplayJob({ ...JOB, pinned_at: '2026-07-29T12:00:00Z' }).pinnedAt).toBe(
+      '2026-07-29T12:00:00Z',
+    );
+  });
+
   it('uses server-authoritative base and output branch fields', () => {
     const job = toDisplayJob({ ...JOB, base_ref: 'dev', output_branch: 'agent/thread_7' });
     expect(job.baseRef).toBe('dev');

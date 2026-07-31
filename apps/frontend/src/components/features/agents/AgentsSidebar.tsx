@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/components/providers';
-import { archiveAgentJob } from '@/lib/api/agents';
+import { archiveAgentJob, pinAgentJob, unpinAgentJob } from '@/lib/api/agents';
 import { groupJobsByProject, projectLabel } from './conversations';
 import type { ConversationRow, ProjectSection } from './conversations';
 import { PaneResizer } from './PaneResizer';
@@ -68,6 +68,8 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
   const [hiddenThreads, setHiddenThreads] = useState<Set<string>>(new Set());
   const [archiving, setArchiving] = useState<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [pinning, setPinning] = useState<string | null>(null);
+  const [pinError, setPinError] = useState<string | null>(null);
   const [expandedOverrides, setExpandedOverrides] = useState<Record<string, boolean>>({});
   const [shownPerRepo, setShownPerRepo] = useState<Record<string, number>>({});
   const pane = useResizablePane({
@@ -189,6 +191,27 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
     }
   }
 
+  async function setConversationPinned(key: string, jobId: string, repo: string, pinned: boolean) {
+    setPinning(key);
+    setPinError(null);
+    try {
+      await (pinned ? pinAgentJob(jobId) : unpinAgentJob(jobId));
+      reload();
+      reloadProjects();
+      loadRepo(repo);
+    } catch (cause: unknown) {
+      setPinError(
+        cause instanceof Error
+          ? cause.message
+          : pinned
+            ? 'Could not pin the task.'
+            : 'Could not unpin the task.',
+      );
+    } finally {
+      setPinning(null);
+    }
+  }
+
   if (collapsed) return null;
 
   const busy = loading || projectsLoading;
@@ -236,7 +259,12 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
               {archiveError}
             </p>
           ) : null}
-          {!busy && !error && !archiveError && folders.length === 0 ? (
+          {pinError ? (
+            <p className="mt-2 px-2 text-[13px] text-red-600" role="alert">
+              {pinError}
+            </p>
+          ) : null}
+          {!busy && !error && !archiveError && !pinError && folders.length === 0 ? (
             <p className="mt-2 px-2 text-[13px] text-gray-400">No jobs yet.</p>
           ) : null}
 
@@ -258,7 +286,9 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
               error={errorRepos.get(folder.repo) ?? null}
               pathname={pathname}
               archiving={archiving}
+              pinning={pinning}
               onArchive={archiveConversation}
+              onSetPinned={setConversationPinned}
             />
           ))}
 
@@ -331,7 +361,9 @@ function ProjectFolder({
   error,
   pathname,
   archiving,
+  pinning,
   onArchive,
+  onSetPinned,
 }: {
   section: ProjectSection;
   expanded: boolean;
@@ -343,7 +375,9 @@ function ProjectFolder({
   error: string | null;
   pathname: string;
   archiving: string | null;
+  pinning: string | null;
   onArchive: (key: string, jobId: string, jobIds: string[]) => void;
+  onSetPinned: (key: string, jobId: string, repo: string, pinned: boolean) => void;
 }) {
   const listId = `agents-project-${section.repo.replace(/[^A-Za-z0-9]/g, '-')}`;
   const visible = section.conversations.slice(0, shown);
@@ -406,7 +440,7 @@ function ProjectFolder({
                 <Link
                   href={href}
                   title={`${job.repo} · ${job.title}`}
-                  className={`flex w-full items-center gap-2 rounded-md py-1.5 pl-4 pr-9 text-left text-[13px] ${
+                  className={`flex w-full items-center gap-2 rounded-md py-1.5 pl-4 pr-16 text-left text-[13px] ${
                     isActive
                       ? 'bg-gray-200/80 font-medium text-gray-900'
                       : 'text-gray-600 hover:bg-gray-200/60'
@@ -417,9 +451,38 @@ function ProjectFolder({
                 </Link>
                 <button
                   type="button"
+                  aria-label={`${job.pinnedAt ? 'Unpin' : 'Pin'} ${job.title}`}
+                  aria-pressed={Boolean(job.pinnedAt)}
+                  aria-busy={pinning === key}
+                  title={job.pinnedAt ? 'Unpin task' : 'Pin task'}
+                  disabled={pinning === key || archiving === key}
+                  onClick={() => onSetPinned(key, job.id, job.repo, !job.pinnedAt)}
+                  className={`absolute right-7 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-gray-500 transition hover:bg-gray-300/70 hover:text-gray-800 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 disabled:cursor-wait disabled:opacity-60 ${
+                    job.pinnedAt
+                      ? 'opacity-100'
+                      : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+                  } ${pinning === key ? 'animate-pulse' : ''}`}
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill={job.pinnedAt ? 'currentColor' : 'none'}
+                    stroke="currentColor"
+                    strokeWidth={1.8}
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="m15 4 5 5-3.5 1.5-4 4L13 19l-1 1-3.5-4.5-4.5-3.5 1-1 4.5.5 4-4L15 4ZM5 19l4-4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+                <button
+                  type="button"
                   aria-label={`Archive ${job.title}`}
                   title="Archive task"
-                  disabled={archiving === key}
+                  disabled={archiving === key || pinning === key}
                   onClick={() => onArchive(key, job.id, jobIds)}
                   className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-gray-500 opacity-0 transition hover:bg-gray-300/70 hover:text-gray-800 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 disabled:cursor-wait disabled:opacity-60 group-hover:opacity-100 group-focus-within:opacity-100"
                 >

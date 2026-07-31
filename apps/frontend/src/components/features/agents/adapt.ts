@@ -425,6 +425,7 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
   return {
     id: job.id,
     createdAt: job.created_at,
+    pinnedAt: job.pinned_at,
     title: (options.thread?.title ?? job.task_prompt.split('\n')[0]).slice(0, 80),
     prompt: job.task_prompt,
     state: toDisplayState(job),

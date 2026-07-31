@@ -118,6 +118,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "fork_source_job_id": row["fork_source_job_id"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "pinned_at": row.get("pinned_at"),
     }
 
 
@@ -128,6 +129,7 @@ _JOB_COLUMNS = (
     "budget_usd, metadata, fork_source_job_id, "
     "created_at, updated_at"
 )
+_QUALIFIED_JOB_COLUMNS = ", ".join(f"j.{column.strip()}" for column in _JOB_COLUMNS.split(","))
 
 
 class AgentJobStore:
@@ -148,6 +150,7 @@ class AgentJobStore:
                     repo TEXT NOT NULL,
                     title TEXT NOT NULL,
                     archived_at TIMESTAMPTZ,
+                    pinned_at TIMESTAMPTZ,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
@@ -155,6 +158,9 @@ class AgentJobStore:
             )
             await conn.execute(
                 "ALTER TABLE agent_threads ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ"
+            )
+            await conn.execute(
+                "ALTER TABLE agent_threads ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ"
             )
             await conn.execute(
                 """
@@ -729,7 +735,7 @@ class AgentJobStore:
             if requested is None:
                 return None
             thread = await conn.fetchrow(
-                "SELECT id FROM agent_threads WHERE id = $1 AND user_id = $2 FOR UPDATE",
+                "SELECT id, pinned_at FROM agent_threads WHERE id = $1 AND user_id = $2 FOR UPDATE",
                 requested["thread_id"],
                 user_id,
             )
@@ -791,7 +797,9 @@ class AgentJobStore:
             await conn.execute(
                 "UPDATE agent_threads SET updated_at = NOW() WHERE id = $1", thread_id
             )
-        return _job_row_to_dict(row)
+        result = _job_row_to_dict(row)
+        result["pinned_at"] = thread["pinned_at"]
+        return result
 
     async def fork_thread(self, *, source_job_id: str, user_id: str) -> dict[str, Any] | None:
         """Duplicate a conversation up to (and including) one settled turn.
@@ -925,7 +933,7 @@ class AgentJobStore:
         async with self._pool.acquire() as conn:
             thread = await conn.fetchrow(
                 """
-                SELECT t.id, t.repo, t.title, t.created_at, t.updated_at
+                SELECT t.id, t.repo, t.title, t.created_at, t.updated_at, t.pinned_at
                 FROM agent_threads t
                 JOIN agent_jobs j ON j.thread_id = t.id
                 WHERE j.id = $1 AND j.user_id = $2
@@ -949,6 +957,9 @@ class AgentJobStore:
                 f"SELECT {_JOB_COLUMNS} FROM agent_jobs WHERE thread_id = $1 ORDER BY turn_no",
                 thread["id"],
             )
+            job_rows = [_job_row_to_dict(job) for job in jobs]
+            for job in job_rows:
+                job["pinned_at"] = thread["pinned_at"]
         return {
             "id": thread["id"],
             "repo": thread["repo"],
@@ -956,7 +967,7 @@ class AgentJobStore:
             "created_at": thread["created_at"],
             "updated_at": thread["updated_at"],
             "messages": [dict(message) for message in messages],
-            "jobs": [_job_row_to_dict(job) for job in jobs],
+            "jobs": job_rows,
         }
 
     async def follow_up_context(self, *, job_id: str) -> dict[str, Any]:
@@ -1087,7 +1098,13 @@ class AgentJobStore:
         """Fetch one job by id."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"SELECT {_JOB_COLUMNS} FROM agent_jobs WHERE id = $1", job_id
+                f"""
+                SELECT {_QUALIFIED_JOB_COLUMNS}, t.pinned_at
+                FROM agent_jobs j
+                LEFT JOIN agent_threads t ON t.id = j.thread_id
+                WHERE j.id = $1
+                """,
+                job_id,
             )
         return _job_row_to_dict(row) if row else None
 
@@ -1099,20 +1116,24 @@ class AgentJobStore:
         archived: bool = False,
         repo: str | None = None,
     ) -> list[dict[str, Any]]:
-        """List a user's jobs from active or archived threads, newest first.
+        """List a user's jobs with pinned threads first, then newest first.
 
         ``repo`` narrows the page to one project, which is how the sidebar
         pages a single project past the global newest-first window.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT {_JOB_COLUMNS} FROM agent_jobs "
-                "WHERE user_id = $1 AND ($4::text IS NULL OR repo = $4) AND EXISTS ("
-                "    SELECT 1 FROM agent_threads t "
-                "    WHERE t.id = agent_jobs.thread_id AND t.user_id = $1 "
-                "      AND (($3 AND t.archived_at IS NOT NULL) "
-                "           OR (NOT $3 AND t.archived_at IS NULL))"
-                ") ORDER BY created_at DESC LIMIT $2",
+                f"""
+                SELECT {_QUALIFIED_JOB_COLUMNS}, t.pinned_at
+                FROM agent_jobs j
+                JOIN agent_threads t ON t.id = j.thread_id AND t.user_id = $1
+                WHERE j.user_id = $1
+                  AND ($4::text IS NULL OR j.repo = $4)
+                  AND (($3 AND t.archived_at IS NOT NULL)
+                       OR (NOT $3 AND t.archived_at IS NULL))
+                ORDER BY t.pinned_at DESC NULLS LAST, j.created_at DESC
+                LIMIT $2
+                """,
                 user_id,
                 limit,
                 archived,
@@ -1130,21 +1151,23 @@ class AgentJobStore:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT repo,
-                       COUNT(DISTINCT thread_id) AS task_count,
+                SELECT j.repo,
+                       COUNT(DISTINCT j.thread_id) AS task_count,
                        COUNT(*) FILTER (
-                           WHERE state IN ('queued', 'waiting', 'running', 'publishing')
+                           WHERE j.state IN ('queued', 'waiting', 'running', 'publishing')
                        ) AS active_count,
-                       MAX(created_at) AS last_activity_at
-                FROM agent_jobs
-                WHERE user_id = $1 AND EXISTS (
-                    SELECT 1 FROM agent_threads t
-                    WHERE t.id = agent_jobs.thread_id AND t.user_id = $1
-                      AND (($2 AND t.archived_at IS NOT NULL)
-                           OR (NOT $2 AND t.archived_at IS NULL))
-                )
-                GROUP BY repo
-                ORDER BY last_activity_at DESC
+                       MAX(j.created_at) AS last_activity_at,
+                       COUNT(DISTINCT j.thread_id) FILTER (
+                           WHERE t.pinned_at IS NOT NULL
+                       ) AS pinned_count,
+                       MAX(t.pinned_at) AS pinned_at
+                FROM agent_jobs j
+                JOIN agent_threads t ON t.id = j.thread_id AND t.user_id = $1
+                WHERE j.user_id = $1
+                  AND (($2 AND t.archived_at IS NOT NULL)
+                       OR (NOT $2 AND t.archived_at IS NULL))
+                GROUP BY j.repo
+                ORDER BY pinned_at DESC NULLS LAST, last_activity_at DESC
                 """,
                 user_id,
                 archived,
@@ -1155,6 +1178,8 @@ class AgentJobStore:
                 "task_count": int(row["task_count"]),
                 "active_count": int(row["active_count"]),
                 "last_activity_at": row["last_activity_at"],
+                "pinned_count": int(row["pinned_count"]),
+                "pinned_at": row["pinned_at"],
             }
             for row in rows
         ]
@@ -1188,6 +1213,36 @@ class AgentJobStore:
         if row is None:
             return None
         return {"thread_id": row["thread_id"], "archived_at": row["archived_at"]}
+
+    async def set_thread_pinned(
+        self, *, job_id: str, user_id: str, pinned: bool
+    ) -> dict[str, Any] | None:
+        """Pin or unpin the owned thread containing ``job_id``."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE agent_threads t
+                SET pinned_at = CASE
+                    WHEN $3 THEN COALESCE(t.pinned_at, NOW())
+                    ELSE NULL
+                END
+                WHERE t.user_id = $2
+                  AND EXISTS (
+                      SELECT 1
+                      FROM agent_jobs j
+                      WHERE j.id = $1
+                        AND j.thread_id = t.id
+                        AND j.user_id = $2
+                  )
+                RETURNING t.id AS thread_id, t.pinned_at
+                """,
+                job_id,
+                user_id,
+                pinned,
+            )
+        if row is None:
+            return None
+        return {"thread_id": row["thread_id"], "pinned_at": row["pinned_at"]}
 
     # ── Claim / lease ──────────────────────────────────────────────────
 

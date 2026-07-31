@@ -7,7 +7,7 @@ export interface ConversationRow {
 }
 
 export interface ConversationSection {
-  label: 'Today' | 'Previous 7 days' | 'Older';
+  label: 'Pinned' | 'Today' | 'Previous 7 days' | 'Older';
   conversations: ConversationRow[];
 }
 
@@ -25,7 +25,7 @@ export function projectLabel(repo: string): string {
   return name || repo;
 }
 
-/** Collapse run records into one row per conversation, newest first. */
+/** Collapse run records into one row per conversation, pinned then newest first. */
 export function toConversationRows(jobs: AgentJob[]): ConversationRow[] {
   const byThread = new Map<string, AgentJob[]>();
   for (const job of jobs) {
@@ -47,6 +47,9 @@ export function toConversationRows(jobs: AgentJob[]): ConversationRow[] {
   });
 
   rows.sort((left, right) => {
+    const leftPinned = Date.parse(left.job.pinnedAt ?? '') || 0;
+    const rightPinned = Date.parse(right.job.pinnedAt ?? '') || 0;
+    if (leftPinned || rightPinned) return rightPinned - leftPinned;
     const leftTime = Date.parse(left.job.createdAt ?? '') || 0;
     const rightTime = Date.parse(right.job.createdAt ?? '') || 0;
     return rightTime - leftTime || (right.job.turnNo ?? 1) - (left.job.turnNo ?? 1);
@@ -65,11 +68,16 @@ export function groupJobsByConversation(
   startToday.setHours(0, 0, 0, 0);
   const weekStart = startToday.getTime() - 6 * 24 * 60 * 60 * 1000;
   const sections = new Map<ConversationSection['label'], ConversationRow[]>([
+    ['Pinned', []],
     ['Today', []],
     ['Previous 7 days', []],
     ['Older', []],
   ]);
   for (const row of rows) {
+    if (row.job.pinnedAt) {
+      sections.get('Pinned')?.push(row);
+      continue;
+    }
     const time = Date.parse(row.job.createdAt ?? '') || 0;
     const label =
       time >= startToday.getTime() ? 'Today' : time >= weekStart ? 'Previous 7 days' : 'Older';

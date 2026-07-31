@@ -103,6 +103,7 @@ from serving.schemas_agent_jobs import (
     AgentTerminalSessionResponse,
     AgentThreadArchiveResponse,
     AgentThreadMessageResponse,
+    AgentThreadPinResponse,
     AgentThreadResponse,
     AgentWorkspaceResponse,
     AgentWorkspaceWriteRequest,
@@ -330,6 +331,7 @@ def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> A
         metadata=metadata or None,
         created_at=_iso(job["created_at"]),
         updated_at=_iso(job["updated_at"]),
+        pinned_at=_iso(job.get("pinned_at")),
         spent_usd=usage.get("spent_usd"),
         tokens_in=usage.get("tokens_in"),
         tokens_out=usage.get("tokens_out"),
@@ -981,6 +983,8 @@ async def list_agent_projects(
                 task_count=project["task_count"],
                 active_count=project["active_count"],
                 last_activity_at=_iso(project["last_activity_at"]),
+                pinned_count=project.get("pinned_count", 0),
+                pinned_at=_iso(project.get("pinned_at")),
             )
             for project in projects
         ]
@@ -1066,6 +1070,52 @@ async def restore_agent_thread(
 ) -> AgentThreadArchiveResponse:
     """Restore the entire task thread containing an owned job."""
     return await _set_agent_thread_archived(job_id=job_id, archived=False, user=user, store=store)
+
+
+async def _set_agent_thread_pinned(
+    *,
+    job_id: str,
+    pinned: bool,
+    user: dict[str, Any],
+    store: AgentJobStore | None,
+) -> AgentThreadPinResponse:
+    """Set pin state without exposing whether another user's job exists."""
+    job_store = _require_store(store)
+    result = await job_store.set_thread_pinned(
+        job_id=job_id,
+        user_id=user["user_id"],
+        pinned=pinned,
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"type": "not_found", "message": f"No such agent job: {job_id}"}},
+        )
+    return AgentThreadPinResponse(
+        thread_id=result["thread_id"],
+        pinned=pinned,
+        pinned_at=_iso(result["pinned_at"]),
+    )
+
+
+@router.post("/jobs/{job_id}/pin", response_model=AgentThreadPinResponse)
+async def pin_agent_thread(
+    job_id: str,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> AgentThreadPinResponse:
+    """Pin the entire task thread containing an owned job."""
+    return await _set_agent_thread_pinned(job_id=job_id, pinned=True, user=user, store=store)
+
+
+@router.delete("/jobs/{job_id}/pin", response_model=AgentThreadPinResponse)
+async def unpin_agent_thread(
+    job_id: str,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> AgentThreadPinResponse:
+    """Unpin the entire task thread containing an owned job."""
+    return await _set_agent_thread_pinned(job_id=job_id, pinned=False, user=user, store=store)
 
 
 @router.post("/jobs/{job_id}/follow-ups", response_model=AgentJobResponse, status_code=201)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -150,24 +151,28 @@ async def test_archived_threads_leave_the_active_project_tree(store: AgentJobSto
 
 
 async def test_initialize_idempotently_migrates_legacy_threads(store: AgentJobStore):
-    """An existing agent_threads table gains archived_at on startup."""
+    """An existing agent_threads table gains thread-state columns on startup."""
     async with store._pool.acquire() as conn:
         await conn.execute("ALTER TABLE agent_threads DROP COLUMN archived_at")
+        await conn.execute("ALTER TABLE agent_threads DROP COLUMN pinned_at")
 
     await store.initialize()
     await store.initialize()
 
     async with store._pool.acquire() as conn:
-        data_type = await conn.fetchval(
+        columns = await conn.fetch(
             """
-            SELECT data_type
+            SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_schema = 'public'
               AND table_name = 'agent_threads'
-              AND column_name = 'archived_at'
+              AND column_name IN ('archived_at', 'pinned_at')
             """
         )
-    assert data_type == "timestamp with time zone"
+    assert {row["column_name"]: row["data_type"] for row in columns} == {
+        "archived_at": "timestamp with time zone",
+        "pinned_at": "timestamp with time zone",
+    }
 
 
 async def test_archive_and_restore_filter_owned_threads_without_cancelling(
@@ -228,6 +233,73 @@ async def test_archive_and_restore_filter_owned_threads_without_cancelling(
         parent["id"],
         child["id"],
     }
+
+
+async def test_pin_and_unpin_owned_threads_are_idempotent_and_reorder_lists(
+    store: AgentJobStore,
+):
+    """A pin covers every turn and its project, while foreign jobs remain private."""
+    parent = await _create_job(store)
+    child = await store.create_follow_up(
+        parent_job_id=parent["id"], user_id="user-1", prompt="also update the docs"
+    )
+    assert child is not None
+    newer = await _create_job(store, repo="example-org/newer-repo")
+    foreign = await _create_job(store, user_id="user-2", repo="example-org/foreign")
+    async with store._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE agent_jobs SET created_at = $2 WHERE id = $1",
+            parent["id"],
+            datetime(2026, 7, 1, tzinfo=timezone.utc),
+        )
+        await conn.execute(
+            "UPDATE agent_jobs SET created_at = $2 WHERE id = $1",
+            child["id"],
+            datetime(2026, 7, 2, tzinfo=timezone.utc),
+        )
+        await conn.execute(
+            "UPDATE agent_jobs SET created_at = $2 WHERE id = $1",
+            newer["id"],
+            datetime(2026, 7, 3, tzinfo=timezone.utc),
+        )
+
+    pinned = await store.set_thread_pinned(job_id=child["id"], user_id="user-1", pinned=True)
+
+    assert pinned is not None
+    assert pinned["thread_id"] == parent["thread_id"]
+    assert pinned["pinned_at"] is not None
+    assert (
+        await store.set_thread_pinned(job_id=parent["id"], user_id="user-1", pinned=True) == pinned
+    )
+    jobs = await store.list_jobs(user_id="user-1")
+    assert [job["id"] for job in jobs] == [child["id"], parent["id"], newer["id"]]
+    assert jobs[0]["pinned_at"] == jobs[1]["pinned_at"] == pinned["pinned_at"]
+    projects = await store.list_projects(user_id="user-1")
+    assert [project["repo"] for project in projects] == [
+        "example-org/example-repo",
+        "example-org/newer-repo",
+    ]
+    assert projects[0]["pinned_count"] == 1
+    assert projects[0]["pinned_at"] == pinned["pinned_at"]
+    assert (
+        await store.set_thread_pinned(job_id=foreign["id"], user_id="user-1", pinned=True) is None
+    )
+    assert (
+        await store.set_thread_pinned(job_id="ajob_missing", user_id="user-1", pinned=True) is None
+    )
+
+    unpinned = await store.set_thread_pinned(job_id=parent["id"], user_id="user-1", pinned=False)
+
+    assert unpinned == {"thread_id": parent["thread_id"], "pinned_at": None}
+    assert [job["id"] for job in await store.list_jobs(user_id="user-1")] == [
+        newer["id"],
+        child["id"],
+        parent["id"],
+    ]
+    assert [project["repo"] for project in await store.list_projects(user_id="user-1")] == [
+        "example-org/newer-repo",
+        "example-org/example-repo",
+    ]
 
 
 async def test_follow_up_waits_then_inherits_thread_messages_and_patch(store: AgentJobStore):
