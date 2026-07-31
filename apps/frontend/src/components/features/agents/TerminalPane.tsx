@@ -88,6 +88,7 @@ export function TerminalPane({
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const disabledRef = useRef(disabled);
+  const tabRefs = useRef(new Map<string, HTMLButtonElement>());
 
   useEffect(() => {
     disabledRef.current = disabled;
@@ -95,6 +96,13 @@ export function TerminalPane({
       terminalRef.current.options.disableStdin = disabled || terminal.state !== 'running';
     }
   }, [disabled, terminal.state]);
+
+  useEffect(() => {
+    tabRefs.current.get(terminal.id)?.scrollIntoView?.({
+      block: 'nearest',
+      inline: 'nearest',
+    });
+  }, [sessions.length, terminal.id]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -277,36 +285,38 @@ export function TerminalPane({
             />
           </svg>
         </span>
-        <span className="relative min-w-0 max-w-48 flex-1">
-          <select
-            aria-label={`Select terminal in pane ${paneIndex + 1}`}
-            value={terminal.id}
-            onChange={(event) => onSelect(event.target.value)}
-            disabled={busy}
-            className="w-full cursor-pointer appearance-none truncate rounded-md bg-transparent py-1 pl-1 pr-6 text-[13px] font-medium text-gray-800 outline-none hover:bg-gray-50 focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-50"
-            title={`${selectedLabel} · ${terminal.shell}`}
-          >
-            {sessions.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {terminalLabel(candidate, sessions)} · {candidate.shell}
-              </option>
-            ))}
-          </select>
-          <svg
-            aria-hidden="true"
-            className="pointer-events-none absolute right-1.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500"
-            fill="none"
-            viewBox="0 0 16 16"
-          >
-            <path
-              d="m4.5 6 3.5 3.5L11.5 6"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="1.5"
-            />
-          </svg>
-        </span>
+        <div
+          role="tablist"
+          aria-label={`Terminals in pane ${paneIndex + 1}`}
+          className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {sessions.map((candidate) => {
+            const label = `${terminalLabel(candidate, sessions)} · ${candidate.shell}`;
+            const selected = candidate.id === terminal.id;
+            return (
+              <button
+                key={candidate.id}
+                ref={(node) => {
+                  if (node) tabRefs.current.set(candidate.id, node);
+                  else tabRefs.current.delete(candidate.id);
+                }}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                title={label}
+                disabled={busy}
+                onClick={() => onSelect(candidate.id)}
+                className={`shrink-0 rounded-md px-2 py-1 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-50 ${
+                  selected
+                    ? 'bg-gray-100 text-gray-900'
+                    : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <button
             type="button"
