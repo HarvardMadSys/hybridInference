@@ -80,6 +80,27 @@ describe('groupJobsByConversation', () => {
 
     expect(sections.map((section) => section.label)).toEqual(['Today', 'Previous 7 days', 'Older']);
   });
+
+  it('orders pinned conversations by pin time ahead of newer unpinned work', () => {
+    const rows = groupJobsByConversation(
+      [
+        job({ id: 'new', createdAt: '2026-07-29T11:00:00Z' }),
+        job({
+          id: 'pin-old',
+          createdAt: '2026-07-01T11:00:00Z',
+          pinnedAt: '2026-07-29T10:00:00Z',
+        }),
+        job({
+          id: 'pin-new',
+          createdAt: '2026-06-01T11:00:00Z',
+          pinnedAt: '2026-07-29T12:00:00Z',
+        }),
+      ],
+      new Date('2026-07-29T13:00:00Z'),
+    ).flatMap((section) => section.conversations);
+
+    expect(rows.map((row) => row.job.id)).toEqual(['pin-new', 'pin-old', 'new']);
+  });
 });
 
 describe('groupJobsByProject', () => {
@@ -109,5 +130,19 @@ describe('groupJobsByProject', () => {
       job: { id: 'turn-2', title: 'First ask' },
       jobIds: ['turn-1', 'turn-2'],
     });
+  });
+
+  it('puts projects containing pinned conversations first', () => {
+    const sections = groupJobsByProject([
+      job({ id: 'new', repo: 'owner/new', createdAt: at(29) }),
+      job({
+        id: 'old-pinned',
+        repo: 'owner/old',
+        createdAt: at(1),
+        pinnedAt: at(30),
+      }),
+    ]);
+
+    expect(sections.map((section) => section.repo)).toEqual(['owner/old', 'owner/new']);
   });
 });

@@ -8,6 +8,8 @@ import type { AgentJobApi, AgentProjectApi } from '@/lib/api/agents';
 const mocks = vi.hoisted(() => ({
   listAgentJobs: vi.fn(),
   listAgentProjects: vi.fn(),
+  pinAgentJob: vi.fn(),
+  unpinAgentJob: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -28,7 +30,9 @@ vi.mock('@/lib/api/agents', () => ({
   listAgentJobEvents: vi.fn(),
   listAgentJobs: mocks.listAgentJobs,
   listAgentProjects: mocks.listAgentProjects,
+  pinAgentJob: mocks.pinAgentJob,
   streamAgentJob: vi.fn(),
+  unpinAgentJob: mocks.unpinAgentJob,
 }));
 
 import { AgentsSidebar, SIDEBAR_WIDTH_STORAGE_KEY } from './AgentsSidebar';
@@ -64,6 +68,16 @@ describe('AgentsSidebar layout', () => {
     window.innerWidth = 1400;
     mocks.listAgentJobs.mockResolvedValue([]);
     mocks.listAgentProjects.mockResolvedValue([]);
+    mocks.pinAgentJob.mockResolvedValue({
+      thread_id: 'thread-1',
+      pinned: true,
+      pinned_at: '2026-07-29T12:00:00Z',
+    });
+    mocks.unpinAgentJob.mockResolvedValue({
+      thread_id: 'thread-1',
+      pinned: false,
+      pinned_at: null,
+    });
   });
 
   afterEach(() => {
@@ -109,6 +123,16 @@ describe('AgentsSidebar project tree', () => {
         last_activity_at: '2026-06-01T10:00:00Z',
       }),
     ]);
+    mocks.pinAgentJob.mockResolvedValue({
+      thread_id: 'hi-1',
+      pinned: true,
+      pinned_at: '2026-07-29T12:00:00Z',
+    });
+    mocks.unpinAgentJob.mockResolvedValue({
+      thread_id: 'hi-2',
+      pinned: false,
+      pinned_at: null,
+    });
     // The shared page is newest-first across every project, so the quiet one
     // has nothing in it — exactly the case a folder must survive.
     mocks.listAgentJobs.mockImplementation(
@@ -133,6 +157,7 @@ describe('AgentsSidebar project tree', () => {
             task_prompt: 'Add Git terminal',
             state: 'running',
             created_at: '2026-07-29T11:00:00Z',
+            pinned_at: '2026-07-29T12:00:00Z',
           }),
         ];
       },
@@ -189,5 +214,26 @@ describe('AgentsSidebar project tree', () => {
 
     await waitFor(() => expect(screen.getByLabelText('1 running or queued')).toBeInTheDocument());
     expect(screen.queryByText('Add Git terminal')).not.toBeInTheDocument();
+  });
+
+  it('renders pinned state and refreshes jobs and projects after pin changes', async () => {
+    render(<AgentsSidebar />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Unpin Add Git terminal' })).toBeInTheDocument(),
+    );
+
+    const unpin = screen.getByRole('button', { name: 'Unpin Add Git terminal' });
+    expect(unpin).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(unpin);
+
+    await waitFor(() => expect(mocks.unpinAgentJob).toHaveBeenCalledWith('hi-2'));
+    await waitFor(() => expect(mocks.listAgentJobs.mock.calls.length).toBeGreaterThan(1));
+    expect(mocks.listAgentJobs).toHaveBeenCalledWith(200, false, 'murphy/hybridInference');
+    expect(mocks.listAgentProjects.mock.calls.length).toBeGreaterThan(1);
+
+    const pin = screen.getByRole('button', { name: 'Pin Explain this repo' });
+    expect(pin).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(pin);
+    await waitFor(() => expect(mocks.pinAgentJob).toHaveBeenCalledWith('hi-1'));
   });
 });
