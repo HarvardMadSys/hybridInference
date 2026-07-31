@@ -17,7 +17,8 @@ Order of operations is load-bearing:
    before a human reads the draft PR.
 3. Push the turn onto its conversation's stable ``agent/<thread-id>`` branch
    with a pinned refspec.
-4. Open a **draft** PR, so a human reviews before anything can merge.
+4. Open a **draft** PR against the branch the job was started from, so a human
+   reviews before anything can merge and the diff is the agent's own work.
 
 A rejected patch fails the job with the reason rather than retrying: gate
 violations are human-review situations, and a retry loop would either spam the
@@ -27,6 +28,7 @@ repository or bury the rejection.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +37,7 @@ import httpx
 from serving.agent_jobs.entitlement import RepoNotAllowed, require_entitled_repo
 from serving.agent_jobs.patch_gate import branch_name_for
 from serving.agent_jobs.publisher import PublishError, publish_patch
+from serving.schemas_agent_jobs import BASE_REF_METADATA_KEY
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -49,6 +52,35 @@ POLL_INTERVAL_S = 15.0
 # `workflows`, so a patch touching `.github/` cannot be pushed even if both
 # gates were bypassed — the credential itself would refuse.
 _PUBLISH_SCOPE = {"contents": "write", "pull_requests": "write"}
+
+# A PR base has to be a branch. `base_ref` is normally one (the composer offers
+# a branch picker), but the API accepts any ref it can resolve, and a caller
+# who passed a commit would otherwise turn a publishable job into a 422.
+_LOOKS_LIKE_SHA = re.compile(r"^[0-9a-fA-F]{7,64}$")
+
+
+def _pr_base_branch(job: dict[str, Any], fallback: str) -> str:
+    """The branch this job's PR should target.
+
+    The job's own ``base_ref`` when it has one: that is the branch the owner
+    picked, and the one ``base_sha`` was resolved from. Using the deployment
+    default instead meant a job started from ``release/x`` opened its PR
+    against ``dev``, which shows every commit between the two branches as part
+    of the agent's change and proposes merging into the wrong line of
+    development.
+
+    Falls back rather than failing when the ref cannot be a base. The ref is a
+    display fact recorded at creation; refusing to publish over it would throw
+    away a finished job's work, and the default still opens a reviewable PR.
+    """
+    metadata = job.get("metadata")
+    base_ref = metadata.get(BASE_REF_METADATA_KEY) if isinstance(metadata, dict) else None
+    if not isinstance(base_ref, str) or not base_ref.strip():
+        return fallback
+    base_ref = base_ref.strip()
+    if _LOOKS_LIKE_SHA.match(base_ref):
+        return fallback
+    return base_ref
 
 
 @dataclass(frozen=True)
@@ -135,6 +167,9 @@ async def publish_one(
 ) -> str | None:
     """Publish at most one pending job. Returns the PR URL, or ``None``.
 
+    ``base_branch`` is the deployment default, used only for a job that did not
+    name a branch of its own — see :func:`_pr_base_branch`.
+
     Never raises for an individual job: a failure is recorded against that job
     so the owner sees why, and the loop stays alive for the next one.
     """
@@ -144,6 +179,7 @@ async def publish_one(
 
     job_id = job["job_id"]
     base_sha = job["base_sha"]
+    pr_base = _pr_base_branch(job, base_branch)
 
     # Re-checked here, before any credential is minted. Publishing happens well
     # after the job ran, and it is the step that asks for *write* authority —
@@ -214,7 +250,7 @@ async def publish_one(
             pr_url = await create_draft_pull_request(
                 repo=job["repo"],
                 head_branch=result.branch,
-                base_branch=base_branch,
+                base_branch=pr_base,
                 title=f"[agent] {job['task_prompt'][:70]}".strip(),
                 body=_pr_body(job, result.changed_files),
                 credential=credential,
@@ -246,6 +282,7 @@ async def publish_one(
             "event": "agent_job_pr_opened",
             "job_id": job_id,
             "branch": branch_name_for(job.get("thread_id") or job_id),
+            "base_branch": pr_base,
             "pr_url": pr_url,
         },
     )

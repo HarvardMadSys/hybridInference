@@ -12,15 +12,28 @@ the network. The design separates it for both reasons:
   the design says resume must not re-run setup, and re-running it is also the
   most expensive thing a retry could do.
 
-The cache key is the repository plus a hash of the script — not the commit.
-Dependencies change with the manifest, not with every commit, so keying on the
-sha would miss almost every hit. A stale entry costs a wrong dependency tree,
-so entries expire (default seven days, as the design specifies) and the key
+The cache key is the repository, a hash of the script, and the sandbox image —
+not the commit. Dependencies change with the manifest, not with every commit,
+so keying on the sha would miss almost every hit. The image is in the key
+because the tree was built against it: a ``.venv`` or a ``node_modules``
+holding compiled extensions is not portable to a different interpreter or
+libc, and restoring one across an image change hands the job a tree that
+imports but does not run. A stale entry costs a wrong dependency tree, so
+entries expire (default seven days, as the design specifies) and the key
 changes the moment the script does.
 
-**Snapshots are per repository, and never shared across tenants.** The tree
-they hold came out of one repository's own setup, which may have run arbitrary
-code from that repository; handing it to another tenant would be the same
+**A snapshot holds what the setup script produced, never the checkout it ran
+against.** Setup and the agent turn are separate throwaway containers sharing
+only the mounted worktree, so anything setup leaves behind durably is by
+necessity a *new* entry in that worktree — which is exactly what is captured.
+Archiving the whole tree instead (as this module first did) was wrong twice
+over: restoring it wrote the saving job's source over the next job's freshly
+checked-out commit, and it let a hit skip a setup whose real output was never
+in the archive at all.
+
+**Snapshots are per repository.** The tree they hold came out of one
+repository's own setup, which may have run arbitrary code from that
+repository; handing it to a job on another repository would be the same
 mistake as sharing a worktree.
 """
 
@@ -33,12 +46,23 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from serving.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = get_logger(__name__)
 
 DEFAULT_TTL_SECONDS = 7 * 24 * 3600
+
+# Bumped when the meaning of a snapshot's *contents* changes, because the key
+# is what decides whether an archive already on disk is still readable. Format
+# 1 captured the whole worktree; serving one of those to this code would
+# restore a stale checkout over a fresh one, so the bump strands them and the
+# TTL sweep reclaims them.
+_SNAPSHOT_FORMAT = 2
 
 # How long an in-progress staging archive may sit before it is treated as
 # abandoned. Comfortably longer than archiving a dependency tree takes, and far
@@ -52,7 +76,8 @@ DEFAULT_MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024 * 1024
 # Never captured into a snapshot. `.git` is the job's own checkout (a later job
 # checks out its own commit), and the credential-bearing files that live there
 # must not be carried into another job even though the runner already scrubs
-# them.
+# them. Belt and braces now that only what setup *created* is captured — `.git`
+# predates setup, so it cannot reach the archive by that route either.
 _EXCLUDED_TOP_LEVEL = (".git",)
 
 
@@ -66,15 +91,35 @@ class SetupResult:
     detail: str = ""
 
 
-def cache_key(repo: str, script: str) -> str:
-    """Key a snapshot by repository and script, not by commit.
+def cache_key(repo: str, script: str, *, image: str = "") -> str:
+    """Key a snapshot by repository, script, and sandbox image — not by commit.
 
     Dependencies follow the manifest, not every commit, so keying on the sha
     would miss nearly every hit and make the cache pointless.
+
+    ``image`` is the sandbox the script ran in. The tree it produced is built
+    against that image, so a ``.venv`` or a ``node_modules`` carrying compiled
+    extensions does not survive an image change — restoring one anyway hands
+    the job a dependency tree that fails at import time, far from its cause.
     """
-    digest = hashlib.sha256(f"{repo}\n{script}".encode()).hexdigest()[:32]
+    digest = hashlib.sha256(f"{_SNAPSHOT_FORMAT}\n{repo}\n{script}\n{image}".encode()).hexdigest()[
+        :32
+    ]
     safe_repo = repo.replace("/", "__")
     return f"{safe_repo}-{digest}"
+
+
+def _top_level_entries(workdir: str) -> set[str]:
+    """The worktree's top-level names, for diffing what setup produced.
+
+    A missing or unreadable worktree yields nothing rather than raising: this
+    is used to decide what to cache, and failing to cache is never worse than
+    failing the job that just installed successfully.
+    """
+    try:
+        return set(os.listdir(workdir))
+    except OSError:
+        return set()
 
 
 class SnapshotCache:
@@ -114,8 +159,18 @@ class SnapshotCache:
             return None
         return path
 
-    def save(self, key: str, workdir: str) -> bool:
-        """Capture the workdir, minus the checkout, as this key's snapshot.
+    def save(self, key: str, workdir: str, *, entries: Sequence[str]) -> bool:
+        """Capture the named top-level entries as this key's snapshot.
+
+        ``entries`` is what the setup script *produced* — the caller diffs the
+        worktree around the run and passes the difference. It is a required
+        argument rather than an optional filter because the safe default does
+        not exist: archiving "everything" is precisely the bug this replaced,
+        where a restore laid one job's source over another job's checkout.
+
+        Returns ``False`` when there is nothing to capture. An empty archive
+        would restore cleanly and so read as a hit, which would make every
+        later job skip a setup it never actually received.
 
         The staging file is unique per writer. Replicas share this directory,
         and two of them cold-starting the same repository and setup script hold
@@ -125,6 +180,22 @@ class SnapshotCache:
         same filesystem), which makes concurrent saves last-writer-wins with a
         *complete* archive: correct, because both wrote the same content.
         """
+        # Plain names only. These come from `os.listdir`, so this rejects
+        # nothing in practice — it keeps `save` safe for any future caller,
+        # since an entry like `../x` would archive outside the worktree.
+        capture = sorted(
+            {
+                entry
+                for entry in entries
+                if entry
+                and entry not in _EXCLUDED_TOP_LEVEL
+                and entry not in (os.curdir, os.pardir)
+                and os.sep not in entry
+                and (os.altsep is None or os.altsep not in entry)
+            }
+        )
+        if not capture:
+            return False
         self.root.mkdir(parents=True, exist_ok=True)
         target = self._path_for(key)
         handle, staged_name = tempfile.mkstemp(
@@ -134,9 +205,7 @@ class SnapshotCache:
         staging = Path(staged_name)
         try:
             with tarfile.open(staging, "w") as archive:
-                for entry in sorted(os.listdir(workdir)):
-                    if entry in _EXCLUDED_TOP_LEVEL:
-                        continue
+                for entry in capture:
                     archive.add(os.path.join(workdir, entry), arcname=entry, recursive=True)
             if staging.stat().st_size > self.max_bytes:
                 staging.unlink(missing_ok=True)
@@ -226,11 +295,21 @@ def run_setup(
     Executed under the *setup* egress tier by passing ``phase="setup"`` to the
     backend, so it can reach a package registry while the agent turn that
     follows cannot.
+
+    What gets cached is the difference the script made to the worktree, taken
+    around the run. Setup and the agent turn are separate throwaway containers
+    sharing only this directory, so anything the script installs elsewhere is
+    already gone by the time the agent starts — the worktree difference is
+    both what survives and the only thing worth restoring.
     """
     if not script.strip():
         return SetupResult(ran=False, restored_from_cache=False)
 
-    key = cache_key(repo, script)
+    # The image is part of the key, so a tree with compiled dependencies is
+    # never restored into a sandbox it was not built for. Read defensively:
+    # the process backend used in tests and local runs has no image.
+    image = str(getattr(backend, "image", "") or "")
+    key = cache_key(repo, script, image=image)
     if cache is not None and cache.restore(key, workdir):
         logger.info("agent_setup_cache_hit", extra={"event": "agent_setup_cache_hit", "key": key})
         return SetupResult(ran=False, restored_from_cache=True, detail="restored from snapshot")
@@ -243,6 +322,9 @@ def run_setup(
         phase="setup",
         env={},
     )
+    # Taken before the script runs: everything here belongs to the checkout,
+    # and none of it may end up in the snapshot.
+    pre_existing = _top_level_entries(workdir)
     process = backend.spawn(spec)  # type: ignore[attr-defined]
     deadline = time.monotonic() + timeout_s
     output: list[str] = []
@@ -267,7 +349,19 @@ def run_setup(
         )
 
     if cache is not None:
-        cache.save(key, workdir)
+        produced = sorted(_top_level_entries(workdir) - pre_existing)
+        if produced:
+            cache.save(key, workdir, entries=produced)
+        else:
+            # Worth saying out loud rather than silently caching nothing: a
+            # script that leaves no trace in the worktree installed into the
+            # container instead, and that container is gone before the agent
+            # starts. The job still runs — it just runs without the
+            # dependencies its author thought they had installed.
+            logger.info(
+                "agent_setup_produced_nothing",
+                extra={"event": "agent_setup_produced_nothing", "key": key},
+            )
     return SetupResult(ran=True, restored_from_cache=False, detail="setup completed")
 
 

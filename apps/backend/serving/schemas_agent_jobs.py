@@ -32,6 +32,14 @@ MAX_JOB_BUDGET_USD = 500.0
 # while still letting runtime adapters introduce new kinds.
 EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 
+# Where a job's `base_ref` lives once it is persisted. The column stores the
+# resolved `base_sha` — a branch moves — so the branch the owner actually
+# picked is kept alongside it in `metadata` under a reserved key, which the API
+# strips back out on the way to the client. Reserved means the creation path
+# drops any caller-supplied copy: it is a fact the server resolved, and the
+# publisher targets the PR at it, so a caller must not be able to forge one.
+BASE_REF_METADATA_KEY = "_agent_base_ref"
+
 
 class AgentJobCreate(BaseModel):
     """Request body for creating an agent job."""
@@ -52,8 +60,9 @@ class AgentJobCreate(BaseModel):
         None,
         max_length=8000,
         description=(
-            "Shell run before the agent, under the setup egress tier. Its result is "
-            "cached per repository and script, so a retry does not reinstall."
+            "Shell run before the agent, under the setup egress tier. What it adds "
+            "to the worktree is cached per repository, script, and sandbox image, "
+            "so a retry does not reinstall."
         ),
     )
     base_ref: str | None = Field(
@@ -61,7 +70,9 @@ class AgentJobCreate(BaseModel):
         max_length=255,
         description=(
             "Branch to work from. Resolved to a commit at creation and stored as "
-            "base_sha — a branch moves, and the publisher applies onto a pinned commit."
+            "base_sha — a branch moves, and the publisher applies onto a pinned commit. "
+            "The draft PR targets this branch; jobs that name none target the "
+            "deployment default."
         ),
     )
     base_sha: str | None = Field(
@@ -505,8 +516,9 @@ class WorkerFinishRequest(BaseModel):
         None,
         max_length=8000,
         description=(
-            "Shell run before the agent, under the setup egress tier. Its result is "
-            "cached per repository and script, so a retry does not reinstall."
+            "Shell run before the agent, under the setup egress tier. What it adds "
+            "to the worktree is cached per repository, script, and sandbox image, "
+            "so a retry does not reinstall."
         ),
     )
     base_ref: str | None = Field(
@@ -514,7 +526,9 @@ class WorkerFinishRequest(BaseModel):
         max_length=255,
         description=(
             "Branch to work from. Resolved to a commit at creation and stored as "
-            "base_sha — a branch moves, and the publisher applies onto a pinned commit."
+            "base_sha — a branch moves, and the publisher applies onto a pinned commit. "
+            "The draft PR targets this branch; jobs that name none target the "
+            "deployment default."
         ),
     )
     base_sha: str | None = Field(

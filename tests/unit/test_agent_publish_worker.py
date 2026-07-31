@@ -120,6 +120,55 @@ async def test_successful_publish_records_the_pr(monkeypatch):
     assert "ajob_1" in captured["body"]
 
 
+async def test_the_pr_targets_the_branch_the_job_was_started_from(monkeypatch):
+    """A job pinned from `release/x` must not propose merging into `dev`.
+
+    The deployment default is a fallback, not an override. Targeting it
+    regardless showed every commit between the two branches as part of the
+    agent's change, and proposed the merge into the wrong line of development.
+    """
+    store = FakeStore({**_JOB, "metadata": {"_agent_base_ref": "release/x"}})
+    _patch_publish(
+        monkeypatch, PublishResult(branch="agent/ajob_1", commit_sha="s", changed_files=["x"])
+    )
+    captured = _patch_pr(monkeypatch)
+
+    await publish_one(store, credential=GitHubCredential("t"), base_branch="dev")
+
+    assert captured["base_branch"] == "release/x"
+
+
+async def test_a_job_that_named_no_branch_targets_the_deployment_default(monkeypatch):
+    """Most jobs name no branch, and those keep the configured default."""
+    store = FakeStore({**_JOB, "metadata": {"ticket": "ABC-1"}})
+    _patch_publish(
+        monkeypatch, PublishResult(branch="agent/ajob_1", commit_sha="s", changed_files=["x"])
+    )
+    captured = _patch_pr(monkeypatch)
+
+    await publish_one(store, credential=GitHubCredential("t"), base_branch="dev")
+
+    assert captured["base_branch"] == "dev"
+
+
+async def test_a_base_ref_that_cannot_be_a_pr_base_falls_back(monkeypatch):
+    """A commit hash is not a branch, so GitHub would refuse the PR.
+
+    The API resolves any ref it can, so a caller may have named a commit. That
+    is not a reason to throw away a finished job's work: the default still
+    opens a reviewable draft.
+    """
+    store = FakeStore({**_JOB, "metadata": {"_agent_base_ref": "a" * 40}})
+    _patch_publish(
+        monkeypatch, PublishResult(branch="agent/ajob_1", commit_sha="s", changed_files=["x"])
+    )
+    captured = _patch_pr(monkeypatch)
+
+    await publish_one(store, credential=GitHubCredential("t"), base_branch="dev")
+
+    assert captured["base_branch"] == "dev"
+
+
 async def test_follow_up_fast_forwards_the_thread_branch_without_opening_another_pr(monkeypatch):
     """One conversation owns one branch and one draft PR across its turns."""
     job = {
