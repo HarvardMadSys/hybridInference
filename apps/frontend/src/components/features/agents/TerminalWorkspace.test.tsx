@@ -187,6 +187,23 @@ describe('TerminalWorkspace', () => {
     expect(screen.getAllByRole('application')).toHaveLength(1);
   });
 
+  it('removes the last terminal when cleanup finishes after delete reports an error', async () => {
+    const only = terminal('term-only');
+    vi.mocked(listAgentTerminals).mockResolvedValueOnce([only]).mockResolvedValueOnce([]);
+    vi.mocked(deleteAgentTerminal).mockRejectedValue(
+      new Error('terminal cleanup could not be confirmed; retry kill'),
+    );
+
+    render(<TerminalWorkspace jobId="job-1" active />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Kill Terminal 1' }));
+
+    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledTimes(2));
+    expect(deleteAgentTerminal).toHaveBeenCalledWith('job-1', only.id);
+    expect(screen.queryByRole('application')).not.toBeInTheDocument();
+    expect(screen.getByText('No open terminals')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('finishes its initial terminal load under React Strict Mode', async () => {
     vi.mocked(listAgentTerminals).mockResolvedValue([]);
 
