@@ -6,12 +6,14 @@ composed command rather than trusted to a container runtime being installed.
 
 from __future__ import annotations
 
+import logging
 import signal
 import subprocess
 from types import SimpleNamespace
 
 import pytest
 
+from serving.agent_jobs import sandbox as sandbox_mod
 from serving.agent_jobs.egress import EgressPolicyError
 from serving.agent_jobs.sandbox import (
     KATA_RUNTIME,
@@ -773,3 +775,90 @@ def test_the_bind_probe_uses_the_runtime_jobs_will_use():
     argv = captured["argv"]
     assert "--runtime" in argv
     assert argv[argv.index("--runtime") + 1] == KATA_RUNTIME
+
+
+# ── Gateway reachability preflight ─────────────────────────────────────
+#
+# The check runs one container on the agent phase's own network and reads a
+# single verdict off its stdout. These pin what each verdict means, because
+# the failure it exists to prevent — every job dying at its first model call,
+# reported as a broken model — is one an operator cannot diagnose from the
+# symptom.
+
+
+def _probe_returns(monkeypatch, verdict: str) -> list[list[str]]:
+    """Stub the probe container, capturing the argv it would have run."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout=f"{verdict}\n", stderr="")
+
+    monkeypatch.setattr(sandbox_mod.subprocess, "run", fake_run)
+    return calls
+
+
+def test_a_reachable_gateway_passes(monkeypatch):
+    calls = _probe_returns(monkeypatch, "ok")
+    backend = ContainerBackend(image="img:1", network="agent-egress")
+
+    backend.check_gateway_reachable("http://agent-gateway:8080")
+
+    argv = calls[0]
+    assert argv[:2] == ["docker", "run"]
+    assert "--network" in argv and "agent-egress" in argv
+    # The probe URL is passed as an argument, never interpolated into the
+    # script: it comes from configuration and ends up inside a shell.
+    assert "http://agent-gateway:8080/health" in argv
+
+
+def test_a_name_that_does_not_resolve_names_the_remote_gateway_case(monkeypatch):
+    _probe_returns(monkeypatch, "unresolved")
+    backend = ContainerBackend(image="img:1", network="agent-egress")
+
+    with pytest.raises(SandboxError) as excinfo:
+        backend.check_gateway_reachable("http://backend:8080")
+
+    message = str(excinfo.value)
+    assert "cannot resolve" in message
+    assert "relay" in message
+
+
+def test_a_relay_that_resolves_but_cannot_forward_is_caught(monkeypatch):
+    """The regression this check was rewritten for.
+
+    DNS alone passes for anything with a record — including a tunnel container
+    that answers to the gateway's name and cannot reach the gateway behind it.
+    That is exactly the shape of a cross-machine deployment, so the one
+    topology that needed the check hardest was the one it could not see.
+    """
+    _probe_returns(monkeypatch, "unreachable")
+    backend = ContainerBackend(image="img:1", network="agent-egress")
+
+    with pytest.raises(SandboxError) as excinfo:
+        backend.check_gateway_reachable("http://agent-gateway:8080")
+
+    message = str(excinfo.value)
+    assert "no HTTP response" in message
+    assert "cannot reach the gateway behind it" in message
+
+
+def test_an_image_without_curl_or_python_degrades_loudly(monkeypatch, caplog):
+    """A deployment-owned image may have neither. Resolving is all that can be
+    asked of it — but the log must not imply the stronger check ran."""
+    _probe_returns(monkeypatch, "dns-only")
+    backend = ContainerBackend(image="custom:1", network="agent-egress")
+
+    with caplog.at_level(logging.WARNING):
+        backend.check_gateway_reachable("http://agent-gateway:8080")
+
+    assert "agent_sandbox_gateway_probe_degraded" in caplog.text
+
+
+def test_a_base_url_with_no_host_is_not_probed(monkeypatch):
+    calls = _probe_returns(monkeypatch, "ok")
+    backend = ContainerBackend(image="img:1", network="agent-egress")
+
+    backend.check_gateway_reachable("not-a-url")
+
+    assert calls == []

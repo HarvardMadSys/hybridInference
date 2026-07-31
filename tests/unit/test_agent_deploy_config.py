@@ -801,3 +801,97 @@ def test_runner_derives_a_distinct_worker_id_per_container(monkeypatch):
 
     monkeypatch.setenv("AGENT_WORKER_ID", "staging")
     assert default_worker_id() == "staging-abc123"
+
+
+# ── Remote runner host (no gateway on this machine) ────────────────────
+
+_REMOTE_COMPOSE = (
+    Path(__file__).resolve().parents[2] / "deploy/docker/docker-compose.agent-remote-runner.yml"
+)
+_TUNNEL_ENTRYPOINT = Path(__file__).resolve().parents[2] / "deploy/docker/agent-gateway-tunnel.sh"
+
+
+@pytest.fixture(scope="module")
+def remote_compose() -> dict:
+    """Parse the standalone remote-runner compose file."""
+    return yaml.safe_load(_REMOTE_COMPOSE.read_text())
+
+
+def test_remote_compose_starts_no_gateway(remote_compose: dict):
+    """The whole reason this file exists separately from the overlay.
+
+    `docker-compose.agent-runner.yml` layers on the main stack and its runner
+    declares `depends_on: backend`, so aiming it at a machine with no gateway
+    starts one there — on a box meant only to run jobs.
+    """
+    assert set(remote_compose["services"]) == {
+        "agent-gateway-tunnel",
+        "agent-workspace-broker",
+        "agent-runner",
+    }
+    for name, service in remote_compose["services"].items():
+        assert "backend" not in (service.get("depends_on") or []), name
+
+
+def test_remote_sandbox_network_is_still_closed(remote_compose: dict):
+    """A remote host must not buy reachability by opening the sandbox up."""
+    assert remote_compose["networks"]["agent-egress"]["internal"] is True
+
+
+def test_the_tunnel_is_the_only_thing_on_both_networks(remote_compose: dict):
+    """Everything else is either closed in with the sandbox or outside it."""
+    on_egress = {
+        name
+        for name, service in remote_compose["services"].items()
+        if "agent-egress" in (service.get("networks") or {})
+    }
+    assert on_egress == {"agent-gateway-tunnel"}
+
+
+def test_runner_and_sandbox_are_pointed_at_the_same_name(remote_compose: dict):
+    """They share one AGENT_GATEWAY_URL, so one name has to serve both.
+
+    The runner claims over it and the sandbox is handed the same value; a URL
+    that only the runner can resolve means jobs are claimed and then die at
+    their first model call.
+    """
+    alias = remote_compose["services"]["agent-gateway-tunnel"]["networks"]["agent-egress"][
+        "aliases"
+    ]
+    assert alias == ["${AGENT_GATEWAY_HOSTNAME:-agent-gateway}"]
+    url = remote_compose["services"]["agent-runner"]["environment"]["AGENT_GATEWAY_URL"]
+    assert "${AGENT_GATEWAY_HOSTNAME:-agent-gateway}" in url
+
+
+def test_the_tunnel_credential_is_mounted_read_only(remote_compose: dict):
+    volumes = remote_compose["services"]["agent-gateway-tunnel"]["volumes"]
+    assert all(volume.endswith(":ro") for volume in volumes), volumes
+
+
+def test_the_tunnel_refuses_to_skip_host_verification():
+    """Encrypting the hop is pointless if anything may answer for the gateway.
+
+    The credentials this tunnel exists to protect — the dispatcher token, every
+    job capability — would go straight to an impostor.
+    """
+    script = _TUNNEL_ENTRYPOINT.read_text()
+    assert "StrictHostKeyChecking=yes" in script
+    assert "StrictHostKeyChecking=no" not in script
+    assert "UserKnownHostsFile" in script
+    # And it must refuse to start without one, rather than quietly trusting
+    # whatever answers the first time.
+    assert re.search(r'\[ -s "\$KNOWN_HOSTS" \] \|\| die', script)
+
+
+def test_the_tunnel_dies_rather_than_listening_on_nothing():
+    """Without this, ssh stays up having bound no port and every sandbox gets
+    connection-refused against a container that looks healthy."""
+    assert "ExitOnForwardFailure=yes" in _TUNNEL_ENTRYPOINT.read_text()
+
+
+def test_the_tunnel_forwards_one_fixed_destination():
+    """A relay, not a proxy: nothing the caller sends chooses where it goes."""
+    script = _TUNNEL_ENTRYPOINT.read_text()
+    assert "-L " in script
+    for proxy_flag in ("-D ", "DynamicForward", "ProxyCommand"):
+        assert proxy_flag not in script, proxy_flag

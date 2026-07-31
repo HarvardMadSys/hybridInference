@@ -120,14 +120,29 @@ moment `AGENT_GATEWAY_URL` points at a remote one. The sandbox then resolves
 nothing and every job dies at its first model call, with an error that reads
 like a broken model.
 
-Preflight now probes this: it starts one container on the agent phase's real
-network and asks whether the gateway host resolves, refusing at startup if not.
-For a remote gateway, give the agent phase a network that routes to it:
+Preflight probes this: it starts one container on the agent phase's real
+network and **makes a request**, refusing at startup if no HTTP response comes
+back. Any status counts, 401 and 404 included — the question is whether packets
+arrive, not what the gateway makes of them. It used to stop at DNS, which
+passes for anything holding a record, including a relay that answers to the
+gateway's name and cannot reach the gateway behind it; that is exactly the
+shape of a cross-machine deployment, so the topology needing the check most was
+the one it could not see. A sandbox image with neither `curl` nor `python3`
+falls back to DNS and logs `agent_sandbox_gateway_probe_degraded` rather than
+letting the weaker check pass for the stronger one.
+
+For a runner host that is not the gateway's, see
+[Running runners on another machine](#running-runners-on-another-machine) — the
+supported answer is a tunnel on the closed network, not a routable one. Opening
+the sandbox's network instead is possible and is a real cost:
 
 ```bash
 AGENT_EGRESS_AGENT_TIER=custom
 AGENT_EGRESS_NETWORK_CUSTOM=agent-routable
 ```
+
+That gives the agent phase general egress — untrusted repository code included
+— which is the property `platform_only` exists to hold.
 
 One more compose detail worth knowing: the overlay *declares* `agent-egress`,
 so compose insists on creating it. A network of that name created by hand
@@ -397,6 +412,72 @@ routable-network configuration from
 [§0 above](#0-a-closed-agent-network-needs-the-gateway-on-it) (or its own
 gateway). Preflight refuses at startup rather than failing every job at its
 first model call, but it refuses *there*, on that machine, not here.
+
+### Running runners on another machine
+
+A second machine is worth adding for capacity, or because it is the one with
+the hardware. What makes it more than "run the script over there" is that a
+sandbox reaches the gateway over a network declared `internal: true` — no route
+off the host at all — which works only because the gateway is normally a
+container on that same network. On a machine with no gateway, that network is
+empty and every job dies at its first model call.
+
+The answer is a **fixed-destination tunnel on the closed network**:
+
+```text
+runner host                                    gateway host
+┌───────────────────────────────────┐
+│ [sandbox] ─┐                      │
+│            ├→ agent-gateway-tunnel│──ssh──→ 127.0.0.1:8080
+│ [runner] ──┘        ↑             │
+│   ✗ internet   one address, fixed │
+└───────────────────────────────────┘
+```
+
+The sandbox's world is unchanged: one endpoint, ours. The tunnel is a relay and
+not a proxy — no CONNECT, no caller-chosen destination — so nothing the agent
+sends can widen it.
+
+**Why ssh rather than exposing the gateway's port.** Every claim carries
+`AGENT_DISPATCHER_TOKEN` and every job call carries that job's capability
+token. Binding `8080` to the lab network puts both in cleartext on a shared
+segment. The tunnel keeps the gateway listening on loopback, which is where it
+already listens.
+
+```bash
+ops/deploy/agent_remote_runner.sh up 4     # tunnel + 4 runners
+ops/deploy/agent_remote_runner.sh check    # probe the gateway from the closed network
+ops/deploy/agent_remote_runner.sh status
+ops/deploy/agent_remote_runner.sh down
+```
+
+**Use that script, not `agent_runner.sh`.** The latter layers its overlay on
+the main compose file, whose `agent-runner` declares `depends_on: backend` —
+pointed at a machine with no gateway it does not fail, it starts one there.
+`docker-compose.agent-remote-runner.yml` is standalone and contains only the
+runners, their workspace broker, the tunnel, and the two networks.
+
+| Variable | Notes |
+|---|---|
+| `AGENT_TUNNEL_SSH_DESTINATION` | `user@gateway-host`. The only address anything on this machine can reach through the tunnel |
+| `AGENT_TUNNEL_SSH_KEY` | Private key, mounted read-only. Give it its own key and restrict it on the gateway: `command="",restrict,permitopen="127.0.0.1:8080"` — a runner host needs one forwarded port, not a shell |
+| `AGENT_TUNNEL_SSH_KNOWN_HOSTS` | The gateway's host key. **Required**, and host checking is not disableable: an unverified hop would hand the dispatcher credential to whatever answers on that address, which is the attack encrypting it is meant to prevent |
+| `AGENT_TUNNEL_REMOTE_PORT` / `_HOST` | Where the gateway listens *on its own machine*; `127.0.0.1:8080` by default |
+| `AGENT_GATEWAY_HOSTNAME` | The name both the runner and the sandbox resolve the tunnel by, `agent-gateway` by default. **Do not override `AGENT_GATEWAY_URL` with the gateway's real address:** the runner would reach it and the sandbox, on the closed network, would not — jobs would be claimed and then die at their first model call |
+
+Generate the known_hosts entry deliberately, and look at it:
+
+```bash
+ssh-keyscan -p 22 <gateway-host> > /etc/agent-tunnel/known_hosts
+```
+
+Then `agent_remote_runner.sh check` answers the only question that matters, from
+the only vantage point whose answer means anything — a container on the closed
+network, asking the gateway for `/health`. Reaching the gateway from the host's
+own shell proves nothing about what a sandbox can reach.
+
+Once it is up, the machine appears in **Admin → Settings → Cloud Agent Host**
+and can be selected there.
 
 ### Three things about this topology that look like details and are not
 
