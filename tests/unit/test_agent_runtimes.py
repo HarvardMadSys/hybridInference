@@ -147,6 +147,24 @@ def test_codex_prepare_and_config_target_the_gateway():
     assert argv[-1] == "do it"
 
 
+def test_codex_sandbox_mode_follows_the_backend_boundary():
+    """Only an outer sandbox may replace Codex's own workspace sandbox."""
+    runtime = CodexRuntime()
+    kwargs = {
+        "workdir": "/tmp/x",
+        "task_prompt": "do it",
+        "model": "glm-5.1",
+        "gateway_base_url": "http://localhost:8000",
+        "credential": "ajt.a.b",
+    }
+
+    process_argv, _ = runtime.prepare(**kwargs)
+    container_argv, _ = runtime.prepare(**kwargs, provides_isolation=True)
+
+    assert process_argv[process_argv.index("--sandbox") + 1] == "workspace-write"
+    assert container_argv[container_argv.index("--sandbox") + 1] == "danger-full-access"
+
+
 def test_codex_events_normalize():
     """Codex item events map onto the same normalized kinds."""
     runtime = CodexRuntime()

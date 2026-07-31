@@ -223,6 +223,26 @@ function tierLabel(tier: string | null): string {
   return TIER_LABELS[tier] ?? tier;
 }
 
+/** Describe the trusted execution backend reported for the current attempt. */
+function sandboxLabel(events: AgentJobEventApi[], currentAttemptId: number | null): string {
+  const started = [...events]
+    .reverse()
+    .find(
+      (event) =>
+        event.event_type === 'lifecycle' &&
+        event.payload?.phase === 'started' &&
+        (currentAttemptId === null || event.attempt_id === currentAttemptId),
+    );
+  if (!started) return '';
+
+  const backend = asText(started.payload, 'sandbox_backend');
+  if (!backend) return '';
+  const runtime = asText(started.payload, 'sandbox_runtime');
+  const image = asText(started.payload, 'sandbox_image');
+  const boundary = runtime ? `${backend} (${runtime})` : backend;
+  return image ? `${boundary} · ${image}` : boundary;
+}
+
 /** Render a token count compactly, or empty when there is no ledger. */
 function formatTokens(value: number | null): string {
   if (value === null || value === undefined) return '';
@@ -425,7 +445,7 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     timeoutLabel: '',
     networkSetup: tierLabel(job.setup_egress_tier),
     networkAgent: tierLabel(job.agent_egress_tier),
-    sandbox: '',
+    sandbox: sandboxLabel(events, job.current_attempt_id),
     attempts,
     events: renderedEvents,
     eventCount: events.length,

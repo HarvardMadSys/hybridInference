@@ -172,6 +172,22 @@ class SandboxBackend(ABC):
 
     name: str = "abstract"
 
+    @property
+    def provides_isolation(self) -> bool:
+        """Whether this backend supplies the agent's execution boundary.
+
+        The process backend runs the CLI directly, so a runtime's own sandbox
+        remains the only command boundary. Container backends isolate the
+        complete CLI already; asking a nested Linux sandbox to create another
+        user namespace is both redundant and incompatible with the outer
+        container's dropped capabilities.
+        """
+        return False
+
+    def sandbox_metadata(self) -> dict[str, str]:
+        """Return trusted, owner-visible metadata for this execution backend."""
+        return {"sandbox_backend": self.name}
+
     @abstractmethod
     def spawn(self, spec: SandboxSpec) -> SandboxProcess:
         """Start the agent and return a handle to it."""
@@ -558,6 +574,21 @@ class ContainerBackend(SandboxBackend):
         # starts. The ephemeral value prevents accidental broad cleanup if a
         # backend is constructed outside that broker-owned lifecycle.
         self._terminal_owner_id = "unscoped-" + secrets.token_hex(12)
+
+    @property
+    def provides_isolation(self) -> bool:
+        """The disposable container, not the agent CLI, is the boundary."""
+        return True
+
+    def sandbox_metadata(self) -> dict[str, str]:
+        """Describe the concrete container image and optional VM runtime."""
+        metadata = {
+            "sandbox_backend": self.name,
+            "sandbox_image": self.image,
+        }
+        if self.runtime:
+            metadata["sandbox_runtime"] = self.runtime
+        return metadata
 
     @property
     def is_vm_isolated(self) -> bool:

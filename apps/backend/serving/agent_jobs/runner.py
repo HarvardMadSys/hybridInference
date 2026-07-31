@@ -733,6 +733,10 @@ def run_agent(
         # states — stays out here with the runner, so an agent that leaks its
         # credential can spend the job's capped budget and nothing more.
         credential=job.sandbox_token,
+        # Runtime-specific permission flags must follow the actual execution
+        # boundary. In particular, Codex cannot nest bubblewrap inside the
+        # capability-dropped container backend.
+        provides_isolation=backend.provides_isolation,
         # The runner is the only future source of this value. Repository
         # contents never become runtime MCP configuration, and every adapter
         # currently rejects a non-empty set until the gateway broker exists.
@@ -911,7 +915,12 @@ def run_once(
         control.append_event(
             NormalizedEvent(
                 "lifecycle",
-                {"phase": "started", "runtime": job.runtime, "attempt_no": job.attempt_no},
+                {
+                    "phase": "started",
+                    "runtime": job.runtime,
+                    "attempt_no": job.attempt_no,
+                    **backend.sandbox_metadata(),
+                },
             )
         )
 

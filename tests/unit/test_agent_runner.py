@@ -143,29 +143,44 @@ def test_agent_output_streams_back_as_events(tmp_path):
     ]
 
 
-def test_runner_supplies_an_explicit_empty_mcp_boundary(tmp_path):
-    """MCP configuration comes from the trusted runner, never the checkout."""
-    captured = None
+def test_runner_supplies_trusted_runtime_boundaries(tmp_path):
+    """MCP and sandbox policy come from the trusted runner, never the checkout."""
+    captured = []
+
+    class _ExternallySandboxedProcessBackend(ProcessBackend):
+        @property
+        def provides_isolation(self) -> bool:
+            return True
 
     class _CapturingRuntime(GenericRuntime):
-        def prepare(self, *, mcp_config, **kwargs):
-            nonlocal captured
-            captured = mcp_config
-            return super().prepare(mcp_config=mcp_config, **kwargs)
+        def prepare(self, *, mcp_config, provides_isolation, **kwargs):
+            captured.append((mcp_config, provides_isolation))
+            return super().prepare(
+                mcp_config=mcp_config,
+                provides_isolation=provides_isolation,
+                **kwargs,
+            )
 
     runtime = _CapturingRuntime(f"{sys.executable} -c " + repr("print('ok')"))
-    run_agent(
-        runtime,
-        job=_JOB,
-        workdir=str(tmp_path),
-        gateway_base_url="http://gw",
-        control=FakeControl(),
-        heart=FakeHeart(),
-        timeout_s=30,
-        backend=ProcessBackend(acknowledged_unsafe=True),
-    )
+    for backend in (
+        ProcessBackend(acknowledged_unsafe=True),
+        _ExternallySandboxedProcessBackend(acknowledged_unsafe=True),
+    ):
+        run_agent(
+            runtime,
+            job=_JOB,
+            workdir=str(tmp_path),
+            gateway_base_url="http://gw",
+            control=FakeControl(),
+            heart=FakeHeart(),
+            timeout_s=30,
+            backend=backend,
+        )
 
-    assert captured == RuntimeMCPConfig()
+    assert captured == [
+        (RuntimeMCPConfig(), False),
+        (RuntimeMCPConfig(), True),
+    ]
 
 
 def test_losing_the_lease_aborts_instead_of_racing(tmp_path):
@@ -367,6 +382,15 @@ def test_live_runner_reuses_one_durable_workspace_per_job(monkeypatch, tmp_path)
     assert code == 0
     assert workdirs == [expected]
     assert applied == [], "the saved patch is already present in a reused live worktree"
+    assert (
+        "lifecycle",
+        {
+            "phase": "started",
+            "runtime": job.runtime,
+            "attempt_no": job.attempt_no,
+            "sandbox_backend": "counting",
+        },
+    ) in control.events
 
 
 def test_empty_queue_is_a_clean_no_op(monkeypatch, tmp_path):
@@ -433,6 +457,7 @@ class _CountingBackend:
     """Records how often a supplied backend is preflighted."""
 
     name = "counting"
+    provides_isolation = False
 
     def __init__(self) -> None:
         self.preflights = 0
@@ -445,6 +470,9 @@ class _CountingBackend:
 
     def base_env(self) -> dict[str, str]:
         return {}
+
+    def sandbox_metadata(self) -> dict[str, str]:
+        return {"sandbox_backend": self.name}
 
 
 def test_a_supplied_backend_is_not_preflighted_per_claim(monkeypatch, tmp_path):
