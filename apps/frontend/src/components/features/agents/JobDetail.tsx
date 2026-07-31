@@ -913,7 +913,13 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const isActive = job.state === 'running' || job.state === 'queued';
   const terminalWorkspaceReady =
     !isActive ||
-    job.events.some((event) => event.kind === 'lifecycle' && event.text === 'checked_out');
+    (job.currentAttemptNo !== undefined &&
+      job.events.some(
+        (event) =>
+          event.kind === 'lifecycle' &&
+          event.text === 'checked_out' &&
+          event.attemptNo === job.currentAttemptNo,
+      ));
 
   function openWorkspace(tab: WorkspaceTab) {
     setWorkspaceTab(tab);

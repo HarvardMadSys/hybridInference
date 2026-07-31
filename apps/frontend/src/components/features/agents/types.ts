@@ -98,6 +98,8 @@ export interface AgentJob {
   networkAgent: string;
   sandbox: string;
   attempts: AgentAttempt[];
+  /** Display number for the server-authoritative current attempt, when it has emitted an event. */
+  currentAttemptNo?: number;
   events: AgentEvent[];
   /** Bottom-of-stream live line while running, e.g. "turn 15 · …". */
   liveNote?: string;

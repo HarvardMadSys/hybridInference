@@ -1603,6 +1603,51 @@ async def test_full_terminal_lifecycle_is_available_while_agent_runs(
     ]
 
 
+async def test_terminal_readiness_ignores_checked_out_from_superseded_attempt(
+    store: FakeAgentJobStore, monkeypatch
+):
+    """A retry must finish its own checkout before terminals become available."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        claimed = await store.claim_job(worker_id="worker-1", lease_ttl_seconds=60)
+        assert claimed is not None
+        event_id = await store.append_event(
+            attempt_id=claimed["attempt_id"],
+            lease_generation=claimed["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "checked_out"},
+        )
+        assert event_id is not None
+
+        store.jobs[job_id]["current_attempt_id"] = 101
+        store.live_fence = (101, 2)
+        before_retry_checkout = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+
+        retry_event_id = await store.append_event(
+            attempt_id=101,
+            lease_generation=2,
+            event_type="lifecycle",
+            payload={"phase": "checked_out"},
+        )
+        assert retry_event_id is not None
+        after_retry_checkout = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+
+    assert before_retry_checkout.status_code == 409
+    assert before_retry_checkout.json()["detail"]["error"]["type"] == "workspace_not_ready"
+    assert after_retry_checkout.status_code == 200
+    assert broker.calls == [("create", job_id, 24, 80)]
+
+
 async def test_terminal_routes_recheck_entitlement_before_contacting_broker(
     store: FakeAgentJobStore, monkeypatch
 ):

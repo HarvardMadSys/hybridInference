@@ -64,6 +64,7 @@ function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
     networkAgent: 'gateway only',
     sandbox: 'container',
     attempts: [{ no: 1, status: 'live' }],
+    currentAttemptNo: 1,
     events: [
       { kind: 'lifecycle', text: 'started', attemptNo: 1 },
       {
@@ -370,7 +371,18 @@ describe('JobDetail', () => {
   });
 
   it('loads the user terminal without warnings once checkout finishes during an active run', async () => {
-    const view = render(<JobDetail job={makeJob()} />);
+    const view = render(
+      <JobDetail
+        job={makeJob({
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
+          events: [{ kind: 'lifecycle', text: 'checked_out', attemptNo: 1 }],
+        })}
+      />,
+    );
 
     openWorkspace();
     fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
@@ -384,9 +396,15 @@ describe('JobDetail', () => {
       <JobDetail
         job={makeJob({
           events: [
-            { kind: 'lifecycle', text: 'started', attemptNo: 1 },
             { kind: 'lifecycle', text: 'checked_out', attemptNo: 1 },
+            { kind: 'lifecycle', text: 'started', attemptNo: 2 },
+            { kind: 'lifecycle', text: 'checked_out', attemptNo: 2 },
           ],
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
         })}
       />,
     );

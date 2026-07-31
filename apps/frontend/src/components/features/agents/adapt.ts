@@ -348,6 +348,8 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
   // exists precisely because it wrote events, and a superseded control event
   // is what marks the takeover.
   const attemptIds = [...new Set(events.map((event) => event.attempt_id))].sort((a, b) => a - b);
+  const currentAttemptIndex =
+    job.current_attempt_id === null ? -1 : attemptIds.indexOf(job.current_attempt_id);
   const supersededIds = new Set(
     events
       .filter((event) => event.event_type === 'attempt_superseded')
@@ -427,6 +429,7 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     networkAgent: tierLabel(job.agent_egress_tier),
     sandbox: '',
     attempts,
+    currentAttemptNo: currentAttemptIndex >= 0 ? currentAttemptIndex + 1 : undefined,
     events: renderedEvents,
     eventCount: events.length,
     diffFiles: toDiffFiles(patch),

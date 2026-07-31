@@ -1353,7 +1353,8 @@ async def _terminal_owner_workspace(
             limit=_EVENT_PAGE_SIZE,
         )
         ready = any(
-            event["event_type"] == "lifecycle"
+            event["attempt_id"] == job["current_attempt_id"]
+            and event["event_type"] == "lifecycle"
             and isinstance(event.get("payload"), dict)
             and event["payload"].get("phase") == "checked_out"
             for event in events
