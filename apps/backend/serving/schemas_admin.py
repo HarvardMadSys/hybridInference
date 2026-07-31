@@ -1994,3 +1994,41 @@ class PublicSiteUpdatesResponse(BaseModel):  # type: ignore[no-any-unimported]
 
     banner: PublicSiteUpdate | None
     updates: list[PublicSiteUpdate]
+
+
+class AgentRunnerHost(BaseModel):  # type: ignore[no-any-unimported]
+    """One machine in the agent runner pool."""
+
+    host: str
+    active: bool
+    last_worker_id: str | None
+    first_seen_at: datetime
+    last_seen_at: datetime
+    seconds_since_seen: float = Field(
+        ...,
+        description=(
+            "Age of the last claim poll, by the server's clock. A runner polls "
+            "only between jobs, so a busy machine can look quiet for as long as "
+            "its longest job."
+        ),
+    )
+
+
+class ListAgentRunnerHostsResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """The runner pool and which member currently takes jobs."""
+
+    hosts: list[AgentRunnerHost]
+    active_host: str | None = Field(
+        None,
+        description="Pinned host, or null when any runner may claim.",
+    )
+
+
+class SetActiveAgentRunnerHostRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Pin agent jobs to one host, or unpin with ``null``."""
+
+    host: str | None = Field(
+        None,
+        max_length=253,
+        description="A host that has polled at least once, or null to unpin.",
+    )

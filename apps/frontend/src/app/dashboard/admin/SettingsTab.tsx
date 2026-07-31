@@ -22,6 +22,7 @@ import { AlertSnoozeSection } from './AlertSnoozeSection';
 import { UsageInsightsSettingsSection } from './UsageInsightsSettingsSection';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
 import { ModelConcurrencySection } from './ModelConcurrencySection';
+import { AgentRunnerHostSection } from './AgentRunnerHostSection';
 
 function relTime(iso: string | null): string {
   if (!iso) return '—';
@@ -423,6 +424,8 @@ export function SettingsTab() {
       <ModelVisibilitySection onToast={flashToast} />
 
       <ModelConcurrencySection onToast={flashToast} />
+
+      <AgentRunnerHostSection onToast={flashToast} />
 
       {/* Signup Policy */}
       <div className="rounded-xl border border-gray-200 bg-white p-5">

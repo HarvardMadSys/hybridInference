@@ -142,6 +142,12 @@ services:
 
       AGENT_LEASE_TTL: ${AGENT_LEASE_TTL:-120}
       AGENT_TIMEOUT_S: ${AGENT_TIMEOUT_S:-3600}
+      # Which *machine* this is, shared by every replica here — the unit an
+      # admin switches agent jobs between. Deliberately not derived in the
+      # container, where the hostname is a container id. `agent_runner.sh`
+      # fills it from the host's own name; unset simply keeps this machine out
+      # of the pool and changes nothing else.
+      AGENT_RUNNER_HOST: ${AGENT_RUNNER_HOST:-}
     command:
       - python
       - -m
