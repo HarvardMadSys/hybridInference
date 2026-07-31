@@ -1298,8 +1298,6 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               key={job.id}
               jobId={job.id}
               active={workspaceOpen && workspaceTab === 'terminal'}
-              disabled={isActive}
-              disabledReason="Terminal input is available after the agent finishes, so both do not modify the workspace at once."
             />
           </div>
           <div

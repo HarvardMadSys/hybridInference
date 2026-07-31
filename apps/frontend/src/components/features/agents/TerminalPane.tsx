@@ -59,8 +59,6 @@ interface TerminalPaneProps {
   terminal: AgentTerminalApi;
   sessions: AgentTerminalApi[];
   paneIndex: number;
-  disabled: boolean;
-  disabledReason?: string;
   canCreate: boolean;
   canSplit: boolean;
   busy: boolean;
@@ -75,8 +73,6 @@ export function TerminalPane({
   terminal,
   sessions,
   paneIndex,
-  disabled,
-  disabledReason,
   canCreate,
   canSplit,
   busy,
@@ -87,16 +83,14 @@ export function TerminalPane({
 }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
-  const disabledRef = useRef(disabled);
   const tabListRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
 
   useEffect(() => {
-    disabledRef.current = disabled;
     if (terminalRef.current) {
-      terminalRef.current.options.disableStdin = disabled || terminal.state !== 'running';
+      terminalRef.current.options.disableStdin = terminal.state !== 'running';
     }
-  }, [disabled, terminal.state]);
+  }, [terminal.state]);
 
   useEffect(() => {
     const tabList = tabListRef.current;
@@ -146,7 +140,7 @@ export function TerminalPane({
           convertEol: false,
           cursorBlink: true,
           cursorStyle: 'block',
-          disableStdin: disabledRef.current || terminal.state !== 'running',
+          disableStdin: terminal.state !== 'running',
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
           fontSize: 13,
           lineHeight: 1.25,
@@ -226,7 +220,7 @@ export function TerminalPane({
         };
 
         dataDisposable = xterm.onData((data) => {
-          if (disabledRef.current || terminal.state !== 'running') return;
+          if (terminal.state !== 'running') return;
           pendingInput += data;
           if (!inputTimer && !flushingInput) {
             inputTimer = setTimeout(() => {
@@ -371,14 +365,6 @@ export function TerminalPane({
           </button>
         </div>
       </header>
-      {disabled && disabledReason ? (
-        <p
-          role="note"
-          className="shrink-0 border-b border-amber-100 bg-amber-50 px-3 py-2 text-[11px] text-amber-800"
-        >
-          {disabledReason}
-        </p>
-      ) : null}
       <div
         ref={hostRef}
         role="application"

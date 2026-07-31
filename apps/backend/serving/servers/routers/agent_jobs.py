@@ -1332,7 +1332,6 @@ async def _terminal_owner_workspace(
     user: dict[str, Any],
     store: AgentJobStore | None,
     app_credentials: Any | None,
-    require_settled: bool,
     recheck_entitlement: bool = True,
 ) -> tuple[dict[str, Any], Any]:
     """Authorize one terminal operation and return its private broker.
@@ -1340,22 +1339,12 @@ async def _terminal_owner_workspace(
     Creating or attaching to a terminal rechecks repository entitlement. Once
     attached, the opaque terminal id acts as a short-lived capability scoped
     to the already-authenticated job owner. Input and resize must not enumerate
-    GitHub installations for every keystroke; they still recheck ownership,
-    settled state and the broker-side workspace/session binding. Delete skips
-    entitlement as well so a revoked owner can always clean up a live process.
+    GitHub installations for every keystroke; they still recheck ownership and
+    the broker-side workspace/session binding. Delete skips entitlement as well
+    so a revoked owner can always clean up a live process.
     """
     job_store = _require_store(store)
     job = await _owned_job(job_store, job_id, user)
-    if require_settled and job["state"] not in TERMINAL_STATES:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": {
-                    "type": "terminal_not_ready",
-                    "message": "Interactive terminals are available after the agent run finishes.",
-                }
-            },
-        )
     if recheck_entitlement:
         await _require_workspace_entitlement(
             job=job,
@@ -1629,13 +1618,12 @@ async def create_agent_job_terminal(
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> AgentTerminalSessionResponse:
-    """Open an interactive PTY after the agent has released its workspace."""
+    """Open an interactive PTY in the agent's workspace."""
     job, broker = await _terminal_owner_workspace(
         job_id=job_id,
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=True,
     )
     try:
         return AgentTerminalSessionResponse(
@@ -1667,7 +1655,6 @@ async def list_agent_job_terminals(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=False,
     )
     try:
         return AgentTerminalSessionListResponse(**(await broker.list_terminals(_workspace_id(job))))
@@ -1691,7 +1678,6 @@ async def stream_agent_job_terminal(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=False,
     )
     try:
         upstream = await broker.stream_terminal(_workspace_id(job), terminal_id, after=after)
@@ -1732,7 +1718,6 @@ async def write_agent_job_terminal_input(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=True,
         recheck_entitlement=False,
     )
     try:
@@ -1761,7 +1746,6 @@ async def resize_agent_job_terminal(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=True,
         recheck_entitlement=False,
     )
     try:
@@ -1793,7 +1777,6 @@ async def delete_agent_job_terminal(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=False,
         recheck_entitlement=False,
     )
     try:

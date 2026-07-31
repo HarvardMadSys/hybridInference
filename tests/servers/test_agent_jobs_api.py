@@ -1524,10 +1524,10 @@ async def test_interactive_terminal_stream_is_relayed_byte_for_byte(
     assert broker.stream.closed is True
 
 
-async def test_terminal_creation_input_and_resize_require_a_settled_job(
+async def test_full_terminal_lifecycle_is_available_while_agent_runs(
     store: FakeAgentJobStore, monkeypatch
 ):
-    """A user cannot race an agent by opening or mutating a PTY while it runs."""
+    """Owners can create and fully control PTYs while the agent is running."""
     broker = _TerminalSessionBroker()
     monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
     app = _build_app(store)
@@ -1551,13 +1551,20 @@ async def test_terminal_creation_input_and_resize_require_a_settled_job(
         killed_once = await local_client.delete(f"/v1/agent/jobs/{job_id}/terminals/term_1")
         killed_twice = await local_client.delete(f"/v1/agent/jobs/{job_id}/terminals/term_1")
 
-    for response in (create, write, resize):
-        assert response.status_code == 409
-        assert response.json()["detail"]["error"]["type"] == "terminal_not_ready"
+    for response in (create, write, resize, listed, killed_once, killed_twice):
+        assert response.status_code == 200
+    assert create.json()["state"] == "running"
+    assert write.json()["state"] == "running"
+    assert resize.json()["rows"] == 30
+    assert resize.json()["cols"] == 100
     assert listed.status_code == 200
-    assert killed_once.status_code == 200
-    assert killed_twice.status_code == 200
+    assert listed.json() == {"terminals": [_terminal_session_descriptor()]}
+    assert killed_once.json()["state"] == "closed"
+    assert killed_twice.json()["state"] == "closed"
     assert broker.calls == [
+        ("create", job_id, 24, 80),
+        ("input", job_id, "term_1", "bHMK"),
+        ("resize", job_id, "term_1", 30, 100),
         ("list", job_id),
         ("delete", job_id, "term_1"),
         ("delete", job_id, "term_1"),

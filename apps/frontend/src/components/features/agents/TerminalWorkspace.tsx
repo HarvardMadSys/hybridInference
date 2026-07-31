@@ -16,16 +16,9 @@ const MAX_SESSIONS = 4;
 interface TerminalWorkspaceProps {
   jobId: string;
   active: boolean;
-  disabled?: boolean;
-  disabledReason?: string;
 }
 
-export function TerminalWorkspace({
-  jobId,
-  active,
-  disabled = false,
-  disabledReason,
-}: TerminalWorkspaceProps) {
+export function TerminalWorkspace({ jobId, active }: TerminalWorkspaceProps) {
   const [sessions, setSessions] = useState<AgentTerminalApi[]>([]);
   const [visibleIds, setVisibleIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -65,7 +58,7 @@ export function TerminalWorkspace({
   }, [jobId]);
 
   useEffect(() => {
-    if (!active || disabled || loadFailed || loadedJobRef.current === jobId) return;
+    if (!active || loadFailed || loadedJobRef.current === jobId) return;
     const generation = jobGenerationRef.current;
     loadedJobRef.current = jobId;
     setLoading(true);
@@ -85,16 +78,16 @@ export function TerminalWorkspace({
       .finally(() => {
         if (requestIsCurrent(jobId, generation)) setLoading(false);
       });
-  }, [active, disabled, jobId, loadFailed]);
+  }, [active, jobId, loadFailed]);
 
   const visible = useMemo(
     () => visibleIds.map((id) => sessions.find((session) => session.id === id)).filter(Boolean),
     [sessions, visibleIds],
   ) as AgentTerminalApi[];
 
-  const awaitingInitialLoad = active && !disabled && !loadFailed && loadedJobRef.current !== jobId;
+  const awaitingInitialLoad = active && !loadFailed && loadedJobRef.current !== jobId;
   const canCreate =
-    !disabled && !loadFailed && !loading && !awaitingInitialLoad && sessions.length < MAX_SESSIONS;
+    !loadFailed && !loading && !awaitingInitialLoad && sessions.length < MAX_SESSIONS;
 
   function retryLoad() {
     loadedJobRef.current = null;
@@ -197,8 +190,6 @@ export function TerminalWorkspace({
               terminal={terminal}
               sessions={sessions}
               paneIndex={paneIndex}
-              disabled={disabled}
-              disabledReason={disabledReason}
               canCreate={canCreate}
               canSplit={canCreate && visible.length < 2}
               busy={busy}
@@ -246,10 +237,6 @@ export function TerminalWorkspace({
             >
               Retry
             </button>
-          ) : disabled && disabledReason ? (
-            <p role="note" className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              {disabledReason}
-            </p>
           ) : (
             <button
               type="button"

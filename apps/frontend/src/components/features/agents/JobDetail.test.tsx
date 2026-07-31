@@ -369,26 +369,19 @@ describe('JobDetail', () => {
     await waitFor(() => expect(getAgentJobGit).toHaveBeenCalledWith('ajob_1'));
   });
 
-  it('keeps agent commands out of the user terminal and locks it while the run is active', async () => {
-    const view = render(<JobDetail job={makeJob()} />);
+  it('keeps the full user terminal available without warnings while the run is active', async () => {
+    render(<JobDetail job={makeJob()} />);
 
     openWorkspace();
     fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
 
     const terminal = screen.getByLabelText('Workspace terminal');
-    expect(listAgentTerminals).not.toHaveBeenCalled();
+    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledWith('ajob_1'));
     expect(terminal).not.toHaveTextContent('pytest -q');
     expect(terminal).not.toHaveTextContent('2 passed');
-    expect(terminal).toHaveTextContent('Terminal input is available after the agent finishes');
-    expect(
-      within(terminal).queryByRole('button', { name: 'New terminal' }),
-    ).not.toBeInTheDocument();
-
-    view.rerender(<JobDetail job={makeJob({ state: 'done' })} />);
-    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledWith('ajob_1'));
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
-    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
+    expect(terminal).not.toHaveTextContent('Terminal input is available after the agent finishes');
+    expect(within(terminal).queryByRole('note')).not.toBeInTheDocument();
+    expect(within(terminal).getByRole('button', { name: 'New terminal' })).toBeEnabled();
     expect(listAgentTerminals).toHaveBeenCalledTimes(1);
   });
 

@@ -339,32 +339,17 @@ describe('TerminalWorkspace', () => {
     expect(xterm.dispose).toHaveBeenCalled();
   });
 
-  it('keeps running jobs read-only and explains why', async () => {
-    const first = terminal('term-1');
+  it('only disables input when the terminal process is not running', async () => {
+    const first = { ...terminal('term-1'), state: 'closed' as const };
     vi.mocked(listAgentTerminals).mockResolvedValue([first]);
 
-    const view = render(
-      <TerminalWorkspace
-        jobId="job-1"
-        active
-        disabled
-        disabledReason="Wait for the agent to finish."
-      />,
-    );
-
-    expect(listAgentTerminals).not.toHaveBeenCalled();
-    expect(screen.getByRole('note')).toHaveTextContent('Wait for the agent to finish.');
-    expect(screen.queryByRole('application')).not.toBeInTheDocument();
-
-    view.rerender(<TerminalWorkspace jobId="job-1" active />);
+    render(<TerminalWorkspace jobId="job-1" active />);
     await screen.findByRole('region', { name: 'Terminal 1 pane' });
     expect(listAgentTerminals).toHaveBeenCalledWith('job-1');
     await waitFor(() => expect(xtermHarness.instances).toHaveLength(1));
-    expect(xtermHarness.instances[0].options.disableStdin).toBe(false);
+    expect(xtermHarness.instances[0].options.disableStdin).toBe(true);
     xtermHarness.instances[0].emitData('pwd\r');
-    await waitFor(() =>
-      expect(writeAgentTerminalInput).toHaveBeenCalledWith('job-1', first.id, 'pwd\r'),
-    );
+    expect(writeAgentTerminalInput).not.toHaveBeenCalled();
   });
 
   it('cleans up a terminal created after navigating to another job', async () => {
