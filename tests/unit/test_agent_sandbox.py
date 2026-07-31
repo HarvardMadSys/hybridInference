@@ -97,6 +97,31 @@ def test_container_terminal_keeps_isolation_and_adds_a_named_tty():
     assert command[command.index("img:1") + 1 :] == ["claude", "-p", "hi"]
 
 
+def test_container_terminal_attaches_docker_client_to_a_real_tty(tmp_path):
+    """Docker rejects ``--tty`` unless its own stdin is a terminal."""
+    fake_docker = tmp_path / "fake-docker"
+    fake_docker.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "container" ]; then exit 0; fi\n'
+        'if [ ! -t 0 ]; then printf "the input device is not a TTY\\n" >&2; exit 1; fi\n'
+        'printf "tty-ready\\n"\n'
+        'printf "size:%s\\n" "$(stty size)"\n'
+        "IFS= read -r value\n"
+        'printf "received:%s\\n" "$value"\n'
+    )
+    fake_docker.chmod(0o700)
+    backend = ContainerBackend(image="img:1", docker_binary=str(fake_docker))
+
+    terminal = backend.spawn_terminal(_SPEC, rows=31, cols=101)
+    terminal.write(b"ping\n")
+    output = b"".join(terminal.chunks())
+
+    assert terminal.wait() == 0
+    assert b"tty-ready" in output
+    assert b"size:31 101" in output
+    assert b"received:ping" in output
+
+
 @pytest.mark.parametrize(
     "failure", [OSError("docker unavailable"), subprocess.TimeoutExpired([], 15)]
 )
@@ -116,7 +141,10 @@ def test_container_terminal_resize_wraps_process_failures(monkeypatch, failure):
 
     monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fail)
     terminal = _ContainerTerminalProcess(
-        _AttachedClient(), docker_binary="docker", container_name="hyi-terminal-test"
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
     )
 
     with pytest.raises(SandboxError, match="cannot be resized"):
@@ -155,7 +183,10 @@ def test_container_terminal_kill_always_kills_client_and_force_removes(monkeypat
         lambda pid, sig: killed_groups.append((pid, sig)),
     )
     terminal = _ContainerTerminalProcess(
-        _AttachedClient(), docker_binary="docker", container_name="hyi-terminal-test"
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
     )
 
     terminal.kill()
@@ -200,7 +231,10 @@ def test_container_terminal_kill_failure_can_be_retried(monkeypatch):
     monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fake_run)
     monkeypatch.setattr("serving.agent_jobs.sandbox.os.killpg", lambda *_args: None)
     terminal = _ContainerTerminalProcess(
-        _AttachedClient(), docker_binary="docker", container_name="hyi-terminal-test"
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
     )
 
     with pytest.raises(SandboxError, match="cleanup could not be confirmed"):
