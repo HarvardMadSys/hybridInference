@@ -976,11 +976,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   return (
     <section className="flex h-full min-h-0 flex-col bg-white">
       <header className="z-20 shrink-0 border-b border-gray-100 bg-white/95 px-5 backdrop-blur">
-        <div
-          className={`mx-auto flex w-full items-center gap-3 py-3 ${
-            workspaceOpen ? 'max-w-[100rem]' : 'max-w-4xl'
-          }`}
-        >
+        <div className="mx-auto flex w-full max-w-[100rem] items-center gap-3 py-3">
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-[15px] font-semibold text-gray-900">{job.title}</h1>
             <div className="mt-0.5 flex items-center gap-2 text-xs text-gray-500">

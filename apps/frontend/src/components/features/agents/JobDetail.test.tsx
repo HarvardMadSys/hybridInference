@@ -267,9 +267,17 @@ describe('JobDetail', () => {
     render(<JobDetail job={makeJob()} />);
 
     const task = screen.getByRole('region', { name: 'Task progress' });
-    openWorkspace();
+    const workspaceButton = screen.getByRole('button', { name: 'Open workspace' });
+    const headerLayout = workspaceButton.parentElement;
+    const headerClassName = headerLayout?.className;
+    expect(headerLayout).toHaveClass('max-w-[100rem]');
+    expect(headerLayout).not.toHaveClass('max-w-4xl');
+    fireEvent.click(workspaceButton);
 
     const closeButton = screen.getByRole('button', { name: 'Close workspace' });
+    expect(closeButton).toBe(workspaceButton);
+    expect(closeButton.parentElement).toBe(headerLayout);
+    expect(closeButton.parentElement?.className).toBe(headerClassName);
     expect(closeButton).toHaveTextContent('');
     expect(closeButton).toHaveAttribute('aria-expanded', 'true');
     expect(closeButton).toHaveAttribute('aria-controls', 'job-workspace-pane');
@@ -291,6 +299,9 @@ describe('JobDetail', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Close workspace' }));
     const reopenButton = screen.getByRole('button', { name: 'Open workspace' });
+    expect(reopenButton).toBe(workspaceButton);
+    expect(reopenButton.parentElement).toBe(headerLayout);
+    expect(reopenButton.parentElement?.className).toBe(headerClassName);
     expect(reopenButton).toHaveTextContent('');
     expect(reopenButton).toHaveAttribute('aria-expanded', 'false');
     expect(workspacePane).toHaveClass('hidden');
