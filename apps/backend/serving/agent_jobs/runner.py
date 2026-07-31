@@ -1006,6 +1006,11 @@ def run_once(
                 )
                 return 1
 
+        # Everything before this point is trusted workspace preparation.
+        # Terminals may run concurrently with the agent, but must not race
+        # checkout, parent-context restoration, or dependency setup.
+        control.append_event(NormalizedEvent("lifecycle", {"phase": "workspace_ready"}))
+
         exit_code, tail, tool_errors = run_agent(
             runtime,
             job=job,

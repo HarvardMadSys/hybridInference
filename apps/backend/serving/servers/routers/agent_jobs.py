@@ -137,7 +137,7 @@ from serving.servers.deps import (
     get_router,
     verify_admin_access,
 )
-from serving.storage.agent_job_store import RUNNING, TERMINAL_STATES
+from serving.storage.agent_job_store import PUBLISHING, RUNNING, TERMINAL_STATES
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -1348,23 +1348,25 @@ async def _terminal_owner_workspace(
     job = await _owned_job(job_store, job_id, user)
     if require_ready and job["state"] not in TERMINAL_STATES:
         cursor = 0
+        eligible = job["state"] in {RUNNING, PUBLISHING} and job["current_attempt_id"] is not None
         ready = False
-        while True:
-            events = await job_store.list_events_after(
-                job_id=job_id,
-                after_id=cursor,
-                limit=_EVENT_PAGE_SIZE,
-            )
-            ready = any(
-                event["attempt_id"] == job["current_attempt_id"]
-                and event["event_type"] == "lifecycle"
-                and isinstance(event.get("payload"), dict)
-                and event["payload"].get("phase") == "checked_out"
-                for event in events
-            )
-            if ready or len(events) < _EVENT_PAGE_SIZE:
-                break
-            cursor = events[-1]["id"]
+        if eligible:
+            while True:
+                events = await job_store.list_events_after(
+                    job_id=job_id,
+                    after_id=cursor,
+                    limit=_EVENT_PAGE_SIZE,
+                )
+                ready = any(
+                    event["attempt_id"] == job["current_attempt_id"]
+                    and event["event_type"] == "lifecycle"
+                    and isinstance(event.get("payload"), dict)
+                    and event["payload"].get("phase") == "workspace_ready"
+                    for event in events
+                )
+                if ready or len(events) < _EVENT_PAGE_SIZE:
+                    break
+                cursor = events[-1]["id"]
         if not ready:
             raise HTTPException(
                 status_code=409,

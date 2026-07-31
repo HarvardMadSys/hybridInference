@@ -370,7 +370,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(getAgentJobGit).toHaveBeenCalledWith('ajob_1'));
   });
 
-  it('loads the user terminal without warnings once checkout finishes during an active run', async () => {
+  it('loads the terminal without warnings once the current workspace is ready', async () => {
     const view = render(
       <JobDetail
         job={makeJob({
@@ -379,7 +379,8 @@ describe('JobDetail', () => {
             { no: 2, status: 'live' },
           ],
           currentAttemptNo: 2,
-          events: [{ kind: 'lifecycle', text: 'checked_out', attemptNo: 1 }],
+          state: 'queued',
+          events: [{ kind: 'lifecycle', text: 'workspace_ready', attemptNo: 1 }],
         })}
       />,
     );
@@ -396,9 +397,26 @@ describe('JobDetail', () => {
       <JobDetail
         job={makeJob({
           events: [
-            { kind: 'lifecycle', text: 'checked_out', attemptNo: 1 },
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 1 },
             { kind: 'lifecycle', text: 'started', attemptNo: 2 },
-            { kind: 'lifecycle', text: 'checked_out', attemptNo: 2 },
+          ],
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
+        })}
+      />,
+    );
+    expect(listAgentTerminals).not.toHaveBeenCalled();
+
+    view.rerender(
+      <JobDetail
+        job={makeJob({
+          events: [
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 1 },
+            { kind: 'lifecycle', text: 'started', attemptNo: 2 },
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 2 },
           ],
           attempts: [
             { no: 1, status: 'superseded' },

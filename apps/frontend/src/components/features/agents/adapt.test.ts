@@ -187,7 +187,7 @@ describe('toDisplayJob', () => {
 
   it('identifies the server-authoritative current attempt for readiness checks', () => {
     const events = [
-      event(1, 'lifecycle', { phase: 'checked_out' }, 10),
+      event(1, 'lifecycle', { phase: 'workspace_ready' }, 10),
       event(2, 'attempt_superseded', { reason: 'lease_expired' }, 10),
       event(3, 'lifecycle', { phase: 'started' }, 11),
     ];
@@ -548,6 +548,10 @@ describe('lifecycle noise', () => {
     expect(text).toBe('thinking tokens');
     expect(lifecyclePhaseLabel('checked_out')).toEqual({
       text: 'Repository ready',
+      milestone: true,
+    });
+    expect(lifecyclePhaseLabel('workspace_ready')).toEqual({
+      text: 'Workspace ready',
       milestone: true,
     });
   });

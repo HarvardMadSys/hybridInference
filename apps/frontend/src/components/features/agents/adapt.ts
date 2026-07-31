@@ -251,6 +251,7 @@ const LIFECYCLE_LABELS: Record<string, string> = {
   checked_out: 'Repository ready',
   context_restored: 'Previous work restored',
   setup: 'Installing project dependencies',
+  workspace_ready: 'Workspace ready',
   compact_boundary: 'Context compacted to keep going',
   result: 'Agent finished',
   publishing: 'Opening draft pull request',

@@ -913,11 +913,12 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const isActive = job.state === 'running' || job.state === 'queued';
   const terminalWorkspaceReady =
     !isActive ||
-    (job.currentAttemptNo !== undefined &&
+    (job.state === 'running' &&
+      job.currentAttemptNo !== undefined &&
       job.events.some(
         (event) =>
           event.kind === 'lifecycle' &&
-          event.text === 'checked_out' &&
+          event.text === 'workspace_ready' &&
           event.attemptNo === job.currentAttemptNo,
       ));
 
