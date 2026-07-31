@@ -23,7 +23,10 @@ from routing.endpoint_health import EndpointHealthRegistry
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
-from serving.agent_jobs.workspace_broker_client import workspace_broker_from_env
+from serving.agent_jobs.terminal_coordination import (
+    flush_settled_terminal_resumes,
+    schedule_settled_terminal_resume,
+)
 from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
@@ -166,17 +169,14 @@ async def _reap_expired_agent_attempts(
     cancelled per the store's policy. The loop never dies on an error — a
     transient database blip must not permanently stop reaping.
     """
-    pending_terminal_resumes: set[str] = set()
     while True:
         await asyncio.sleep(interval_seconds)
         try:
             actions = await store.reap_expired(max_attempts=max_attempts)
-            pending_terminal_resumes.update(
-                action["job_id"]
-                for action in actions
-                if action["action"] in {"failed", "cancelled"}
-            )
-            await _resume_settled_agent_terminals(pending_terminal_resumes)
+            for action in actions:
+                if action["action"] in {"failed", "cancelled"}:
+                    schedule_settled_terminal_resume(action["job_id"])
+            await flush_settled_terminal_resumes()
             if actions:
                 logger.info(
                     "agent_attempts_reaped",
@@ -193,28 +193,6 @@ async def _reap_expired_agent_attempts(
                 )
         except Exception:
             logger.warning("Agent attempt reaper pass failed", exc_info=True)
-
-
-async def _resume_settled_agent_terminals(job_ids: set[str]) -> None:
-    """Retry authoritative terminal resumes until the broker confirms them."""
-    broker = workspace_broker_from_env()
-    if broker is None:
-        job_ids.clear()
-        return
-    for job_id in sorted(job_ids):
-        try:
-            await broker.resume_settled_terminals(job_id)
-        except Exception:
-            logger.warning(
-                "agent_terminal_settled_resume_failed",
-                exc_info=True,
-                extra={
-                    "event": "agent_terminal_settled_resume_failed",
-                    "job_id": job_id,
-                },
-            )
-        else:
-            job_ids.discard(job_id)
 
 
 async def _refresh_weight_override_snapshots(

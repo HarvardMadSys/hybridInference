@@ -15,6 +15,8 @@ from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
+from serving.agent_jobs import terminal_coordination
+from serving.agent_jobs.workspace_broker_client import WorkspaceBrokerError
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.servers import bootstrap
 from serving.servers.deps import AppServices
@@ -38,17 +40,21 @@ class TestBootstrapInitialization:
     ):
         broker = SimpleNamespace(
             resume_settled_terminals=AsyncMock(
-                side_effect=[RuntimeError("broker unavailable"), {"ok": True}]
+                side_effect=[
+                    WorkspaceBrokerError(503, "broker unavailable"),
+                    {"ok": True},
+                ]
             )
         )
-        monkeypatch.setattr(bootstrap, "workspace_broker_from_env", lambda: broker)
-        pending = {"ajob_test"}
+        monkeypatch.setattr(terminal_coordination, "workspace_broker_from_env", lambda: broker)
+        terminal_coordination._PENDING_SETTLED_RESUMES.clear()
+        terminal_coordination.schedule_settled_terminal_resume("ajob_test")
 
-        await bootstrap._resume_settled_agent_terminals(pending)
-        assert pending == {"ajob_test"}
+        await terminal_coordination.flush_settled_terminal_resumes()
+        assert {"ajob_test"} == terminal_coordination._PENDING_SETTLED_RESUMES
 
-        await bootstrap._resume_settled_agent_terminals(pending)
-        assert pending == set()
+        await terminal_coordination.flush_settled_terminal_resumes()
+        assert set() == terminal_coordination._PENDING_SETTLED_RESUMES
         assert broker.resume_settled_terminals.await_count == 2
         broker.resume_settled_terminals.assert_awaited_with("ajob_test")
 

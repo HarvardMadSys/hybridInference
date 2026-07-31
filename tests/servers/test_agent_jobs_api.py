@@ -18,6 +18,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.agent_jobs import terminal_coordination
 from serving.agent_jobs.tokens import mint_worker_token
 from serving.servers.deps import get_agent_job_store
 from serving.servers.routers import agent_jobs as agent_jobs_router
@@ -1422,6 +1423,10 @@ class _TerminalSessionBroker:
         self.calls.append(("resume_all", workspace_id, lease_generation))
         return {"ok": True}
 
+    async def resume_settled_terminals(self, workspace_id: str):
+        self.calls.append(("resume_settled", workspace_id))
+        return {"ok": True}
+
     async def stream_terminal(self, workspace_id: str, terminal_id: str, *, after: int):
         self.calls.append(("stream", workspace_id, terminal_id, after))
         return self.stream
@@ -1736,6 +1741,89 @@ async def test_worker_suspends_terminals_around_protected_workspace_phases(
     ]
 
 
+async def test_worker_re_suspends_terminals_if_ready_event_loses_lease(
+    store: FakeAgentJobStore,
+    monkeypatch,
+):
+    """A lease expiring during broker resume cannot expose background processes."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        claim = await local_client.post(
+            "/v1/agent/worker/claim",
+            json={"worker_id": "worker-1"},
+        )
+        auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+        await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/suspend",
+            json={"phase": "workspace_preparing"},
+            headers=auth,
+        )
+
+        async def lose_lease_before_ready(**_kwargs):
+            store.live_fence = None
+            return None
+
+        monkeypatch.setattr(store, "append_event", lose_lease_before_ready)
+        response = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/resume",
+            headers=auth,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"]["type"] == "lease_lost"
+    assert broker.calls == [
+        ("suspend_all", job_id, 1),
+        ("resume_all", job_id, 1),
+        ("suspend_all", job_id, 1),
+    ]
+
+
+async def test_worker_re_suspends_terminals_if_finish_loses_lease(
+    store: FakeAgentJobStore,
+    monkeypatch,
+):
+    """A failed terminal transition compensates after broker resume."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        claim = await local_client.post(
+            "/v1/agent/worker/claim",
+            json={"worker_id": "worker-1"},
+        )
+        auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+        await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/suspend",
+            json={"phase": "workspace_finalizing"},
+            headers=auth,
+        )
+
+        async def lose_lease_before_finish(**_kwargs):
+            store.live_fence = None
+            return False
+
+        monkeypatch.setattr(store, "transition", lose_lease_before_finish)
+        response = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/finish",
+            json={"state": "succeeded"},
+            headers=auth,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"]["type"] == "lease_lost"
+    assert broker.calls == [
+        ("suspend_all", job_id, 1),
+        ("resume_all", job_id, 1),
+        ("suspend_all", job_id, 1),
+    ]
+
+
 async def test_terminal_readiness_ignores_ready_event_from_superseded_attempt(
     store: FakeAgentJobStore, monkeypatch
 ):
@@ -1959,6 +2047,27 @@ async def test_cancel_queued_job(client: AsyncClient):
     assert response.status_code == 200
     assert response.json()["state"] == "cancelled"
     assert response.json()["cancel_requested"] is True
+
+
+async def test_cancel_requeued_job_authoritatively_resumes_terminals(
+    store: FakeAgentJobStore,
+    monkeypatch,
+):
+    """Cancellation must not strand sessions paused by an expired attempt."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(terminal_coordination, "workspace_broker_from_env", lambda: broker)
+    terminal_coordination._PENDING_SETTLED_RESUMES.clear()
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        store.jobs[job_id]["current_attempt_id"] = 100
+        response = await local_client.post(f"/v1/agent/jobs/{job_id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "cancelled"
+    assert broker.calls == [("resume_settled", job_id)]
+    assert set() == terminal_coordination._PENDING_SETTLED_RESUMES
 
 
 async def test_worker_flow_claim_event_artifact_finish(

@@ -57,6 +57,10 @@ from serving.agent_jobs.source_control import (
     github_authorization_url,
     issue_oauth_state,
 )
+from serving.agent_jobs.terminal_coordination import (
+    flush_settled_terminal_resumes,
+    schedule_settled_terminal_resume,
+)
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
     SCOPE_MODEL,
@@ -66,6 +70,7 @@ from serving.agent_jobs.tokens import (
 )
 from serving.agent_jobs.visible_models import agent_model_resolvable, agent_visible_models
 from serving.agent_jobs.workspace_broker_client import (
+    WorkspaceBrokerClient,
     WorkspaceBrokerError,
     workspace_broker_from_env,
 )
@@ -1015,6 +1020,9 @@ async def cancel_agent_job(
     job_store = _require_store(store)
     await _owned_job(job_store, job_id, user)
     state = await job_store.request_cancel(job_id=job_id, user_id=user["user_id"])
+    if state in TERMINAL_STATES:
+        schedule_settled_terminal_resume(job_id)
+        await flush_settled_terminal_resumes()
     job = await job_store.get_job(job_id)
     return AgentJobCancelResponse(
         id=job_id,
@@ -2006,6 +2014,32 @@ def _match_job(claims: dict[str, Any], job_id: str) -> None:
         raise _lease_lost()
 
 
+async def _restore_terminal_suspension(
+    broker: WorkspaceBrokerClient | None,
+    *,
+    job_id: str,
+    lease_generation: int,
+) -> None:
+    """Best-effort compensation after a worker fails to finalize a resume."""
+    if broker is None:
+        return
+    try:
+        await broker.suspend_terminals(
+            job_id,
+            lease_generation=lease_generation,
+        )
+    except WorkspaceBrokerError:
+        logger.warning(
+            "agent_terminal_resume_compensation_failed",
+            exc_info=True,
+            extra={
+                "event": "agent_terminal_resume_compensation_failed",
+                "job_id": job_id,
+                "lease_generation": lease_generation,
+            },
+        )
+
+
 @router.post("/worker/claim", response_model=WorkerClaimResponse | None)
 async def worker_claim(
     body: WorkerClaimRequest,
@@ -2264,6 +2298,11 @@ async def worker_resume_terminals(
                 lease_generation=claims["lease_generation"],
             )
         except WorkspaceBrokerError as exc:
+            await _restore_terminal_suspension(
+                broker,
+                job_id=job_id,
+                lease_generation=claims["lease_generation"],
+            )
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -2273,13 +2312,26 @@ async def worker_resume_terminals(
                     }
                 },
             ) from exc
-    event_id = await job_store.append_event(
-        attempt_id=claims["attempt_id"],
-        lease_generation=claims["lease_generation"],
-        event_type="lifecycle",
-        payload={"phase": "workspace_ready"},
-    )
+    try:
+        event_id = await job_store.append_event(
+            attempt_id=claims["attempt_id"],
+            lease_generation=claims["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
+    except Exception:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
+        raise
     if event_id is None:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
         raise _lease_lost()
     return WorkerAckResponse(ok=True)
 
@@ -2343,6 +2395,11 @@ async def worker_finish(
                 lease_generation=claims["lease_generation"],
             )
         except WorkspaceBrokerError as exc:
+            await _restore_terminal_suspension(
+                broker,
+                job_id=job_id,
+                lease_generation=claims["lease_generation"],
+            )
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -2352,15 +2409,28 @@ async def worker_finish(
                     }
                 },
             ) from exc
-    ok = await job_store.transition(
-        job_id=job_id,
-        attempt_id=claims["attempt_id"],
-        lease_generation=claims["lease_generation"],
-        from_states=(RUNNING,),
-        to_state=body.state,
-        detail=body.detail,
-        base_sha=body.base_sha,
-    )
+    try:
+        ok = await job_store.transition(
+            job_id=job_id,
+            attempt_id=claims["attempt_id"],
+            lease_generation=claims["lease_generation"],
+            from_states=(RUNNING,),
+            to_state=body.state,
+            detail=body.detail,
+            base_sha=body.base_sha,
+        )
+    except Exception:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
+        raise
     if not ok:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
         raise _lease_lost()
     return WorkerAckResponse(ok=True, state=body.state)
