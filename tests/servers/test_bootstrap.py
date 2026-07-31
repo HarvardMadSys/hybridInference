@@ -32,6 +32,27 @@ class TestBootstrapInitialization:
     """Test bootstrap initialization functions."""
 
     @pytest.mark.asyncio
+    async def test_settled_terminal_resume_retries_until_broker_confirms(
+        self,
+        monkeypatch,
+    ):
+        broker = SimpleNamespace(
+            resume_settled_terminals=AsyncMock(
+                side_effect=[RuntimeError("broker unavailable"), {"ok": True}]
+            )
+        )
+        monkeypatch.setattr(bootstrap, "workspace_broker_from_env", lambda: broker)
+        pending = {"ajob_test"}
+
+        await bootstrap._resume_settled_agent_terminals(pending)
+        assert pending == {"ajob_test"}
+
+        await bootstrap._resume_settled_agent_terminals(pending)
+        assert pending == set()
+        assert broker.resume_settled_terminals.await_count == 2
+        broker.resume_settled_terminals.assert_awaited_with("ajob_test")
+
+    @pytest.mark.asyncio
     async def test_routewise_settings_apply_continues_after_one_router_fails(
         self,
         monkeypatch,

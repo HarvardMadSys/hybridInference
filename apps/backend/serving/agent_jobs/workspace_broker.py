@@ -554,6 +554,24 @@ class _TerminalManager:
             self._suspended_workspaces.discard(workspace_id)
         return {"ok": True, "resumed": len(sessions)}
 
+    def resume_settled(self, workspace_id: str) -> dict[str, Any]:
+        """Authoritatively reopen terminals after a job is terminally settled."""
+        with self._lock:
+            self._workspace_generations[workspace_id] = (
+                self._workspace_generations.get(workspace_id, 0) + 1
+            )
+            sessions = list(self._sessions.get(workspace_id, {}).values())
+            try:
+                for session in sessions:
+                    session.resume()
+            except (SandboxError, OSError) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="terminal resume could not be confirmed; retry resume",
+                ) from exc
+            self._suspended_workspaces.discard(workspace_id)
+        return {"ok": True, "resumed": len(sessions)}
+
     def list(self, workspace_id: str) -> list[dict[str, Any]]:
         """List visible terminals for one workspace only."""
         self.reap()
@@ -1192,6 +1210,13 @@ def create_app(
             workspace_id,
             lease_generation=body.lease_generation,
         )
+
+    @app.post("/workspaces/{workspace_id}/terminals/resume-settled")
+    async def resume_settled_terminals(
+        workspace_id: str,
+        _: None = Depends(authenticate),
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(terminals.resume_settled, workspace_id)
 
     @app.get("/workspaces/{workspace_id}/terminals")
     async def list_terminals(

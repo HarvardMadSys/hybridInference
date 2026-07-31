@@ -438,7 +438,7 @@ class _ContainerTerminalProcess(TerminalProcess):
         action = "pause" if suspended else "unpause"
         with self._state_lock, self._write_lock:
             if self._killed or self._process.poll() is not None:
-                raise SandboxError("terminal is closed")
+                return
             if self._suspended is suspended:
                 return
             try:
@@ -451,7 +451,11 @@ class _ContainerTerminalProcess(TerminalProcess):
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
                 raise SandboxError(f"terminal cannot be {action}d") from exc
-            if result.returncode != 0:
+            stderr = result.stderr.strip()
+            already_stopped = any(
+                message in stderr.lower() for message in ("is not running", "no such container")
+            )
+            if result.returncode != 0 and not already_stopped:
                 raise SandboxError(f"terminal cannot be {action}d: " + result.stderr.strip()[:200])
             self._suspended = suspended
 

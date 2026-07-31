@@ -416,6 +416,25 @@ async def test_broker_suspends_and_resumes_terminal_process_trees(tmp_path):
             json={"lease_generation": 2},
             headers=headers,
         )
+        await client.post(
+            "/workspaces/ajob_test/terminals/suspend",
+            json={"lease_generation": 3},
+            headers=headers,
+        )
+        settled_resume = await client.post(
+            "/workspaces/ajob_test/terminals/resume-settled",
+            headers=headers,
+        )
+        stale_suspend = await client.post(
+            "/workspaces/ajob_test/terminals/suspend",
+            json={"lease_generation": 3},
+            headers=headers,
+        )
+        settled_input = await client.post(
+            f"/workspaces/ajob_test/terminals/{terminal_id}/input",
+            json={"data": "eQ=="},
+            headers=headers,
+        )
         listing = await client.get("/workspaces/ajob_test/terminals", headers=headers)
 
     assert suspended.json() == {"ok": True, "suspended": 1}
@@ -426,8 +445,11 @@ async def test_broker_suspends_and_resumes_terminal_process_trees(tmp_path):
     assert suspended_by_retry.status_code == 200
     assert stale_resume.status_code == 409
     assert current_resume.status_code == 200
-    assert backend.processes[0].suspensions == [True, False, True, False]
-    assert backend.processes[0].inputs == [b"x"]
+    assert settled_resume.json() == {"ok": True, "resumed": 1}
+    assert stale_suspend.status_code == 409
+    assert settled_input.status_code == 200
+    assert backend.processes[0].suspensions == [True, False, True, False, True, False]
+    assert backend.processes[0].inputs == [b"x", b"y"]
     assert listing.json()["terminals"][0]["id"] == terminal_id
 
 

@@ -146,6 +146,15 @@ class WorkspaceBrokerClient:
             timeout=60,
         )
 
+    async def resume_settled_terminals(self, workspace_id: str) -> dict[str, Any]:
+        """Authoritatively resume terminals after the job can no longer retry."""
+        return await self._request(
+            "POST",
+            workspace_id,
+            "terminals/resume-settled",
+            timeout=60,
+        )
+
     async def stream_terminal(
         self, workspace_id: str, terminal_id: str, *, after: int
     ) -> WorkspaceBrokerStream:
