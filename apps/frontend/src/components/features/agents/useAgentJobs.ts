@@ -28,7 +28,9 @@ const ACTIVE_ATTEMPT_PHASES = new Set([
   'checked_out',
   'context_restored',
   'setup',
+  'workspace_preparing',
   'workspace_ready',
+  'workspace_finalizing',
 ]);
 
 /** Apply one live lifecycle event to the cached owner-facing job row. */

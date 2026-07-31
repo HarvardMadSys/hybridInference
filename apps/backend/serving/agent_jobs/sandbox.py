@@ -158,6 +158,14 @@ class TerminalProcess(ABC):
     def resize(self, rows: int, cols: int) -> None:
         """Resize the terminal window."""
 
+    def suspend(self) -> None:
+        """Pause the terminal's complete process hierarchy."""
+        raise TerminalNotSupportedError("this terminal backend cannot suspend process trees")
+
+    def resume(self) -> None:
+        """Resume a terminal process hierarchy paused by :meth:`suspend`."""
+        raise TerminalNotSupportedError("this terminal backend cannot resume process trees")
+
     @abstractmethod
     def kill(self) -> None:
         """Terminate the terminal and its complete process hierarchy."""
@@ -363,6 +371,7 @@ class _ContainerTerminalProcess(TerminalProcess):
         self._state_lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._killed = False
+        self._suspended = False
 
     def chunks(self) -> Iterator[bytes]:
         """Yield the raw combined PTY stream from Docker."""
@@ -423,6 +432,36 @@ class _ContainerTerminalProcess(TerminalProcess):
             raise SandboxError("terminal cannot be resized") from exc
         if result.returncode != 0:
             raise SandboxError("terminal cannot be resized: " + result.stderr.strip()[:200])
+
+    def _set_suspended(self, suspended: bool) -> None:
+        """Pause or resume the named container with input serialized around it."""
+        action = "pause" if suspended else "unpause"
+        with self._state_lock, self._write_lock:
+            if self._killed or self._process.poll() is not None:
+                raise SandboxError("terminal is closed")
+            if self._suspended is suspended:
+                return
+            try:
+                result = subprocess.run(
+                    [self._docker_binary, action, self._container_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise SandboxError(f"terminal cannot be {action}d") from exc
+            if result.returncode != 0:
+                raise SandboxError(f"terminal cannot be {action}d: " + result.stderr.strip()[:200])
+            self._suspended = suspended
+
+    def suspend(self) -> None:
+        """Freeze the complete container process tree without closing its PTY."""
+        self._set_suspended(True)
+
+    def resume(self) -> None:
+        """Resume a container previously frozen for workspace coordination."""
+        self._set_suspended(False)
 
     def kill(self) -> None:
         """Kill the named container and confirm both sides are gone.

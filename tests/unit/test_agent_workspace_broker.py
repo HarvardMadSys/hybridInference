@@ -58,6 +58,8 @@ class _FakeTerminalProcess(TerminalProcess):
         self.inputs: list[bytes] = []
         self.sizes: list[tuple[int, int]] = []
         self.killed = False
+        self.suspended = False
+        self.suspensions: list[bool] = []
         self._natural_exit = False
         self._output: queue.Queue[bytes | None] = queue.Queue()
         self._output.put(b"prompt> ")
@@ -76,6 +78,14 @@ class _FakeTerminalProcess(TerminalProcess):
 
     def resize(self, rows: int, cols: int) -> None:
         self.sizes.append((rows, cols))
+
+    def suspend(self) -> None:
+        self.suspended = True
+        self.suspensions.append(True)
+
+    def resume(self) -> None:
+        self.suspended = False
+        self.suspensions.append(False)
 
     def kill(self) -> None:
         with self._lock:
@@ -348,6 +358,77 @@ async def test_broker_terminal_session_create_list_input_resize_and_resume_strea
     assert "id: 1\n" not in stream.text
     assert 'id: 2\nevent: output\ndata: {"seq":2,"data":"YnllDQo="}\n\n' in stream.text
     assert 'id: 3\nevent: exit\ndata: {"seq":3,"exit_code":0}\n\n' in stream.text
+
+
+@pytest.mark.asyncio
+async def test_broker_suspends_and_resumes_terminal_process_trees(tmp_path):
+    """Protected workspace phases freeze retained PTYs without closing them."""
+    root, _repo = _workspace(tmp_path)
+    backend = _FakeTerminalBackend()
+    app = create_app(backend=backend, workdir_root=str(root), token="broker-secret")
+    headers = {"X-Agent-Workspace-Token": "broker-secret"}
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://broker") as client:
+        created = await client.post(
+            "/workspaces/ajob_test/terminals",
+            json={},
+            headers=headers,
+        )
+        terminal_id = created.json()["id"]
+        suspended = await client.post(
+            "/workspaces/ajob_test/terminals/suspend",
+            json={"lease_generation": 1},
+            headers=headers,
+        )
+        blocked_input = await client.post(
+            f"/workspaces/ajob_test/terminals/{terminal_id}/input",
+            json={"data": "eA=="},
+            headers=headers,
+        )
+        blocked_create = await client.post(
+            "/workspaces/ajob_test/terminals",
+            json={},
+            headers=headers,
+        )
+        resumed = await client.post(
+            "/workspaces/ajob_test/terminals/resume",
+            json={"lease_generation": 1},
+            headers=headers,
+        )
+        accepted_input = await client.post(
+            f"/workspaces/ajob_test/terminals/{terminal_id}/input",
+            json={"data": "eA=="},
+            headers=headers,
+        )
+        suspended_by_retry = await client.post(
+            "/workspaces/ajob_test/terminals/suspend",
+            json={"lease_generation": 2},
+            headers=headers,
+        )
+        stale_resume = await client.post(
+            "/workspaces/ajob_test/terminals/resume",
+            json={"lease_generation": 1},
+            headers=headers,
+        )
+        current_resume = await client.post(
+            "/workspaces/ajob_test/terminals/resume",
+            json={"lease_generation": 2},
+            headers=headers,
+        )
+        listing = await client.get("/workspaces/ajob_test/terminals", headers=headers)
+
+    assert suspended.json() == {"ok": True, "suspended": 1}
+    assert blocked_input.status_code == 409
+    assert blocked_create.status_code == 409
+    assert resumed.json() == {"ok": True, "resumed": 1}
+    assert accepted_input.status_code == 200
+    assert suspended_by_retry.status_code == 200
+    assert stale_resume.status_code == 409
+    assert current_resume.status_code == 200
+    assert backend.processes[0].suspensions == [True, False, True, False]
+    assert backend.processes[0].inputs == [b"x"]
+    assert listing.json()["terminals"][0]["id"] == terminal_id
 
 
 @pytest.mark.asyncio

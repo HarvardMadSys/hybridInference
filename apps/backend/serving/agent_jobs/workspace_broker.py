@@ -102,6 +102,12 @@ class TerminalResizeRequest(BaseModel):
     cols: int = Field(..., ge=20, le=500)
 
 
+class TerminalCoordinationRequest(BaseModel):
+    """Monotonic worker fence for terminal suspension and resumption."""
+
+    lease_generation: int = Field(..., ge=1)
+
+
 @dataclass(frozen=True)
 class _TerminalEvent:
     """One resumable event in a terminal's bounded output ring."""
@@ -142,6 +148,7 @@ class _TerminalSession:
         self._condition = threading.Condition(threading.RLock())
         self._close_lock = threading.Lock()
         self._closed = False
+        self._suspended = False
         self._total_output_bytes = 0
         self._active_streams = 0
         self._async_waiters: set[asyncio.Future[None]] = set()
@@ -185,16 +192,36 @@ class _TerminalSession:
     def write(self, data: bytes, *, now: float) -> dict[str, Any]:
         """Write terminal input, rejecting writes after exit/close."""
         with self._condition:
-            if self.state != "running" or self._closed:
+            if self.state != "running" or self._closed or self._suspended:
                 raise HTTPException(status_code=409, detail="terminal is not running")
             self.last_active_at = now
-        try:
-            self._process.write(data)
-        except SandboxError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            try:
+                self._process.write(data)
+            except SandboxError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         with contextlib.suppress(OSError):
             os.utime(self._workdir, None)
         return self.descriptor()
+
+    def suspend(self) -> None:
+        """Freeze the process tree, serialized against accepted input."""
+        with self._condition:
+            if self.state != "running" or self._closed or self._suspended:
+                return
+            self._suspended = True
+            try:
+                self._process.suspend()
+            except (SandboxError, OSError):
+                self._suspended = False
+                raise
+
+    def resume(self) -> None:
+        """Resume a process tree frozen for workspace preparation or capture."""
+        with self._condition:
+            if self.state != "running" or self._closed or not self._suspended:
+                return
+            self._process.resume()
+            self._suspended = False
 
     def resize(self, *, rows: int, cols: int, now: float) -> dict[str, Any]:
         """Resize a running terminal and persist the accepted dimensions."""
@@ -401,6 +428,8 @@ class _TerminalManager:
         self._hard_ttl_s = hard_ttl_s
         self._max_sessions = max_sessions
         self._sessions: dict[str, dict[str, _TerminalSession]] = {}
+        self._suspended_workspaces: set[str] = set()
+        self._workspace_generations: dict[str, int] = {}
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._reaper: threading.Thread | None = None
@@ -423,6 +452,8 @@ class _TerminalManager:
         with self._lock:
             sessions = [session for group in self._sessions.values() for session in group.values()]
             self._sessions.clear()
+            self._suspended_workspaces.clear()
+            self._workspace_generations.clear()
         for session in sessions:
             try:
                 session.close()
@@ -437,6 +468,8 @@ class _TerminalManager:
         terminal_id = "term_" + secrets.token_urlsafe(18)
         now = time.monotonic()
         with self._lock:
+            if workspace_id in self._suspended_workspaces:
+                raise HTTPException(status_code=409, detail="terminal workspace is not ready")
             group = self._sessions.setdefault(workspace_id, {})
             global_active = sum(
                 not session.is_closed
@@ -482,6 +515,44 @@ class _TerminalManager:
             group[terminal_id] = session
         session.start()
         return session.descriptor()
+
+    def suspend(self, workspace_id: str, *, lease_generation: int) -> dict[str, Any]:
+        """Fence new PTYs and freeze every existing terminal process tree."""
+        with self._lock:
+            current_generation = self._workspace_generations.get(workspace_id, 0)
+            if lease_generation < current_generation:
+                raise HTTPException(status_code=409, detail="stale terminal workspace fence")
+            self._workspace_generations[workspace_id] = lease_generation
+            self._suspended_workspaces.add(workspace_id)
+            sessions = list(self._sessions.get(workspace_id, {}).values())
+            try:
+                for session in sessions:
+                    session.suspend()
+            except (SandboxError, OSError) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="terminal suspension could not be confirmed; retry suspension",
+                ) from exc
+        return {"ok": True, "suspended": len(sessions)}
+
+    def resume(self, workspace_id: str, *, lease_generation: int) -> dict[str, Any]:
+        """Resume retained PTYs, opening the workspace only after all succeed."""
+        with self._lock:
+            current_generation = self._workspace_generations.get(workspace_id, 0)
+            if lease_generation < current_generation:
+                raise HTTPException(status_code=409, detail="stale terminal workspace fence")
+            self._workspace_generations[workspace_id] = lease_generation
+            sessions = list(self._sessions.get(workspace_id, {}).values())
+            try:
+                for session in sessions:
+                    session.resume()
+            except (SandboxError, OSError) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="terminal resume could not be confirmed; retry resume",
+                ) from exc
+            self._suspended_workspaces.discard(workspace_id)
+        return {"ok": True, "resumed": len(sessions)}
 
     def list(self, workspace_id: str) -> list[dict[str, Any]]:
         """List visible terminals for one workspace only."""
@@ -1096,6 +1167,30 @@ def create_app(
             workdir,
             rows=body.rows,
             cols=body.cols,
+        )
+
+    @app.post("/workspaces/{workspace_id}/terminals/suspend")
+    async def suspend_terminals(
+        workspace_id: str,
+        body: TerminalCoordinationRequest,
+        _: None = Depends(authenticate),
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            terminals.suspend,
+            workspace_id,
+            lease_generation=body.lease_generation,
+        )
+
+    @app.post("/workspaces/{workspace_id}/terminals/resume")
+    async def resume_terminals(
+        workspace_id: str,
+        body: TerminalCoordinationRequest,
+        _: None = Depends(authenticate),
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            terminals.resume,
+            workspace_id,
+            lease_generation=body.lease_generation,
         )
 
     @app.get("/workspaces/{workspace_id}/terminals")

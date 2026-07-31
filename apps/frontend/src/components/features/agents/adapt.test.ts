@@ -554,6 +554,10 @@ describe('lifecycle noise', () => {
       text: 'Workspace ready',
       milestone: true,
     });
+    expect(lifecyclePhaseLabel('workspace_finalizing')).toEqual({
+      text: 'Saving workspace changes',
+      milestone: true,
+    });
   });
 
   it('collapses consecutive reasoning rows into one status', () => {

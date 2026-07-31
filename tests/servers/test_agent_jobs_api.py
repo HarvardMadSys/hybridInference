@@ -38,6 +38,7 @@ class FakeAgentJobStore:
         self.messages: list[dict[str, Any]] = []
         self.archived_threads: dict[str, datetime] = {}
         self.live_fence: tuple[int, int] | None = None
+        self.terminal_readiness: dict[int, bool] = {}
         self.released: list[tuple[str, int]] = []
         self._next_event_id = 1
         self._next_job = 1
@@ -370,6 +371,15 @@ class FakeAgentJobStore:
             event for event in self.events if event["job_id"] == job_id and event["id"] > after_id
         ][:limit]
 
+    async def terminal_workspace_ready(self, *, attempt_id: int) -> bool:
+        return self.terminal_readiness.get(attempt_id, False)
+
+    async def fence_terminal_workspace(self, *, attempt_id: int, lease_generation: int) -> bool:
+        if not self._fenced(attempt_id, lease_generation):
+            return False
+        self.terminal_readiness[attempt_id] = False
+        return True
+
     async def get_artifact(self, *, job_id: str, kind: str) -> dict[str, Any] | None:
         return self.artifacts.get((job_id, kind))
 
@@ -385,6 +395,7 @@ class FakeAgentJobStore:
         job["state"] = "running"
         job["current_attempt_id"] = 100
         self.live_fence = (100, 1)
+        self.terminal_readiness[100] = False
         return {**job, "attempt_id": 100, "attempt_no": 1, "lease_generation": 1}
 
     async def heartbeat(
@@ -422,6 +433,11 @@ class FakeAgentJobStore:
         }
         self._next_event_id += 1
         self.events.append(event)
+        phase = (payload or {}).get("phase") if event_type == "lifecycle" else None
+        if phase == "workspace_ready":
+            self.terminal_readiness[attempt_id] = True
+        elif phase in {"workspace_preparing", "workspace_finalizing"}:
+            self.terminal_readiness[attempt_id] = False
         if event_type == "message" and isinstance((payload or {}).get("text"), str):
             self.messages.append(
                 {
@@ -1398,6 +1414,14 @@ class _TerminalSessionBroker:
         self.calls.append(("list", workspace_id))
         return {"terminals": [_terminal_session_descriptor()]}
 
+    async def suspend_terminals(self, workspace_id: str, *, lease_generation: int):
+        self.calls.append(("suspend_all", workspace_id, lease_generation))
+        return {"ok": True}
+
+    async def resume_terminals(self, workspace_id: str, *, lease_generation: int):
+        self.calls.append(("resume_all", workspace_id, lease_generation))
+        return {"ok": True}
+
     async def stream_terminal(self, workspace_id: str, terminal_id: str, *, after: int):
         self.calls.append(("stream", workspace_id, terminal_id, after))
         return self.stream
@@ -1462,7 +1486,7 @@ async def test_interactive_terminal_routes_proxy_owner_session_lifecycle(
 async def test_terminal_controls_use_the_attached_session_capability(
     store: FakeAgentJobStore, monkeypatch
 ):
-    """Attached PTY controls skip entitlement; only stdin checks readiness."""
+    """Attached PTY controls skip entitlement and never replay the event log."""
     broker = _TerminalSessionBroker()
     monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
 
@@ -1474,15 +1498,11 @@ async def test_terminal_controls_use_the_attached_session_capability(
         "_require_workspace_entitlement",
         unexpected_entitlement_recheck,
     )
-    original_list_events = store.list_events_after
-    event_queries = 0
 
-    async def recording_event_query(**kwargs):
-        nonlocal event_queries
-        event_queries += 1
-        return await original_list_events(**kwargs)
+    async def unexpected_event_query(**_kwargs):
+        raise AssertionError("terminal input must use the attempt readiness field")
 
-    monkeypatch.setattr(store, "list_events_after", recording_event_query)
+    monkeypatch.setattr(store, "list_events_after", unexpected_event_query)
     app = _build_app(store)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as local_client:
@@ -1508,7 +1528,6 @@ async def test_terminal_controls_use_the_attached_session_capability(
     assert wrote.status_code == 200
     assert resized.status_code == 200
     assert killed.status_code == 200
-    assert event_queries == 1
     assert broker.calls == [
         ("input", job_id, "term_1", "eA=="),
         ("resize", job_id, "term_1", 30, 100),
@@ -1649,6 +1668,71 @@ async def test_full_terminal_lifecycle_is_available_while_agent_runs(
         ("list", job_id),
         ("delete", job_id, "term_1"),
         ("delete", job_id, "term_1"),
+    ]
+
+
+async def test_worker_suspends_terminals_around_protected_workspace_phases(
+    store: FakeAgentJobStore, monkeypatch
+):
+    """Preparation and capture pause PTYs; execution and settled jobs resume them."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        claim = await local_client.post(
+            "/v1/agent/worker/claim",
+            json={"worker_id": "worker-1"},
+        )
+        auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+
+        preparing = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/suspend",
+            json={"phase": "workspace_preparing"},
+            headers=auth,
+        )
+        resumed = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/resume",
+            headers=auth,
+        )
+        input_during_run = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "eA=="},
+        )
+        finalizing = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/suspend",
+            json={"phase": "workspace_finalizing"},
+            headers=auth,
+        )
+        input_during_capture = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "eA=="},
+        )
+        finished = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/finish",
+            json={"state": "succeeded"},
+            headers=auth,
+        )
+        input_after_finish = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "eA=="},
+        )
+
+    assert preparing.status_code == 200
+    assert resumed.status_code == 200
+    assert input_during_run.status_code == 200
+    assert finalizing.status_code == 200
+    assert input_during_capture.status_code == 409
+    assert finished.status_code == 200
+    assert input_after_finish.status_code == 200
+    assert broker.calls == [
+        ("suspend_all", job_id, 1),
+        ("resume_all", job_id, 1),
+        ("input", job_id, "term_1", "eA=="),
+        ("suspend_all", job_id, 1),
+        ("resume_all", job_id, 1),
+        ("input", job_id, "term_1", "eA=="),
     ]
 
 

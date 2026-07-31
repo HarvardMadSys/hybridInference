@@ -244,6 +244,7 @@ class AgentJobStore:
                     lease_owner TEXT NOT NULL,
                     lease_generation BIGINT NOT NULL,
                     lease_expires_at TIMESTAMPTZ NOT NULL,
+                    terminal_ready BOOLEAN NOT NULL DEFAULT FALSE,
                     sandbox_id TEXT,
                     base_sha TEXT,
                     status TEXT NOT NULL DEFAULT 'running',
@@ -252,6 +253,10 @@ class AgentJobStore:
                     UNIQUE (job_id, attempt_no)
                 )
                 """
+            )
+            await conn.execute(
+                "ALTER TABLE agent_attempts "
+                "ADD COLUMN IF NOT EXISTS terminal_ready BOOLEAN NOT NULL DEFAULT FALSE"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_attempts_expiry "
@@ -1497,6 +1502,17 @@ class AgentJobStore:
                 or attempt["expired"]
             ):
                 return None
+            phase = (payload or {}).get("phase") if event_type == "lifecycle" else None
+            if phase == "workspace_ready":
+                await conn.execute(
+                    "UPDATE agent_attempts SET terminal_ready = TRUE WHERE id = $1",
+                    attempt_id,
+                )
+            elif phase in {"workspace_preparing", "workspace_finalizing"}:
+                await conn.execute(
+                    "UPDATE agent_attempts SET terminal_ready = FALSE WHERE id = $1",
+                    attempt_id,
+                )
             return await self._insert_event(
                 conn,
                 job_id=attempt["job_id"],
@@ -1504,6 +1520,50 @@ class AgentJobStore:
                 event_type=event_type,
                 payload=payload,
             )
+
+    async def terminal_workspace_ready(self, *, attempt_id: int) -> bool:
+        """Return whether the live attempt currently permits terminal writes.
+
+        This is deliberately a primary-key lookup rather than an event-log
+        replay: terminal input is latency-sensitive and may arrive every few
+        milliseconds. Expired or superseded attempts are never considered
+        ready, even before the reaper updates the owning job row.
+        """
+        async with self._pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    """
+                    SELECT terminal_ready
+                    FROM agent_attempts
+                    WHERE id = $1
+                      AND status = 'running'
+                      AND lease_expires_at > NOW()
+                    """,
+                    attempt_id,
+                )
+            )
+
+    async def fence_terminal_workspace(
+        self,
+        *,
+        attempt_id: int,
+        lease_generation: int,
+    ) -> bool:
+        """Revoke readiness only for the still-live fenced attempt."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE agent_attempts
+                SET terminal_ready = FALSE
+                WHERE id = $1
+                  AND lease_generation = $2
+                  AND status = 'running'
+                  AND lease_expires_at > NOW()
+                """,
+                attempt_id,
+                lease_generation,
+            )
+        return result == "UPDATE 1"
 
     async def list_events_after(
         self,

@@ -87,6 +87,20 @@ class FakeControl:
     def save_artifact(self, kind: str, content: str) -> None:
         self.artifacts[kind] = content
 
+    def suspend_terminals(self, phase: str) -> None:
+        self.append_event(
+            type("Event", (), {"event_type": "lifecycle", "payload": {"phase": phase}})()
+        )
+
+    def resume_terminals(self) -> None:
+        self.append_event(
+            type(
+                "Event",
+                (),
+                {"event_type": "lifecycle", "payload": {"phase": "workspace_ready"}},
+            )()
+        )
+
     def finish(self, state: str, detail: str | None = None) -> None:
         self.finished = (state, detail)
 
@@ -426,7 +440,11 @@ def test_workspace_ready_follows_context_restore_and_setup(monkeypatch, tmp_path
         "run_agent",
         lambda *_args, **_kwargs: timeline.append("agent_started") or (0, "", []),
     )
-    monkeypatch.setattr(runner_mod, "build_patch", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(
+        runner_mod,
+        "build_patch",
+        lambda *_args, **_kwargs: timeline.append("patch_captured") or "",
+    )
     monkeypatch.setattr(runner_mod, "save_workspace_snapshot", lambda *_args, **_kwargs: True)
 
     code = runner_mod.run_once(
@@ -439,12 +457,15 @@ def test_workspace_ready_follows_context_restore_and_setup(monkeypatch, tmp_path
     )
 
     assert code == 0
+    assert timeline.index("workspace_preparing") < timeline.index("checked_out")
     assert timeline.index("checked_out") < timeline.index("context_patch_applied")
     assert timeline.index("context_patch_applied") < timeline.index("context_restored")
     assert timeline.index("context_restored") < timeline.index("setup_finished")
     assert timeline.index("setup_finished") < timeline.index("setup")
     assert timeline.index("setup") < timeline.index("workspace_ready")
     assert timeline.index("workspace_ready") < timeline.index("agent_started")
+    assert timeline.index("agent_started") < timeline.index("workspace_finalizing")
+    assert timeline.index("workspace_finalizing") < timeline.index("patch_captured")
 
 
 def test_empty_queue_is_a_clean_no_op(monkeypatch, tmp_path):

@@ -434,6 +434,24 @@ describe('JobDetail', () => {
     expect(within(terminal).queryByRole('note')).not.toBeInTheDocument();
     expect(within(terminal).getByRole('button', { name: 'New terminal' })).toBeEnabled();
     expect(listAgentTerminals).toHaveBeenCalledTimes(1);
+
+    view.rerender(
+      <JobDetail
+        job={makeJob({
+          events: [
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 2 },
+            { kind: 'lifecycle', text: 'workspace_finalizing', attemptNo: 2 },
+          ],
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
+        })}
+      />,
+    );
+    expect(terminal).toHaveTextContent('Loading terminals…');
+    expect(within(terminal).queryByRole('note')).not.toBeInTheDocument();
   });
 
   it('loads terminals for settled jobs without requiring a checkout event', async () => {

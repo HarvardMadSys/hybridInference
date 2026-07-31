@@ -29,5 +29,9 @@ describe('applyAgentLifecycleEvent', () => {
 
     const ready = applyAgentLifecycleEvent(started, lifecycle(11, 'workspace_ready'));
     expect(ready.current_attempt_id).toBe(11);
+
+    const finalizing = applyAgentLifecycleEvent(ready, lifecycle(11, 'workspace_finalizing'));
+    expect(finalizing.state).toBe('running');
+    expect(finalizing.current_attempt_id).toBe(11);
   });
 });

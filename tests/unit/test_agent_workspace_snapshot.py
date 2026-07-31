@@ -272,6 +272,13 @@ def test_runner_stores_snapshot_before_the_terminal_transition(tmp_path, monkeyp
         def save_artifact(self, kind: str, _content: str) -> None:
             order.append(f"artifact:{kind}")
 
+        def suspend_terminals(self, phase: str) -> None:
+            if phase == "workspace_finalizing":
+                order.append("suspend")
+
+        def resume_terminals(self) -> None:
+            pass
+
         def finish(self, _state: str, _detail=None, *, base_sha=None) -> None:
             order.append("finish")
 
@@ -330,4 +337,4 @@ def test_runner_stores_snapshot_before_the_terminal_transition(tmp_path, monkeyp
     )
 
     assert result == 0
-    assert order == ["artifact:patch", "artifact:workspace_snapshot", "finish"]
+    assert order == ["suspend", "artifact:patch", "artifact:workspace_snapshot", "finish"]

@@ -911,16 +911,23 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   );
   const pill = STATE_PILL[job.state];
   const isActive = job.state === 'running' || job.state === 'queued';
+  const latestTerminalEvent = [...job.events]
+    .reverse()
+    .find(
+      (event) =>
+        event.kind === 'lifecycle' &&
+        event.attemptNo === job.currentAttemptNo &&
+        (event.text === 'workspace_preparing' ||
+          event.text === 'workspace_ready' ||
+          event.text === 'workspace_finalizing'),
+    );
+  const latestTerminalPhase =
+    latestTerminalEvent?.kind === 'lifecycle' ? latestTerminalEvent.text : undefined;
   const terminalWorkspaceReady =
     !isActive ||
     (job.state === 'running' &&
       job.currentAttemptNo !== undefined &&
-      job.events.some(
-        (event) =>
-          event.kind === 'lifecycle' &&
-          event.text === 'workspace_ready' &&
-          event.attemptNo === job.currentAttemptNo,
-      ));
+      latestTerminalPhase === 'workspace_ready');
 
   function openWorkspace(tab: WorkspaceTab) {
     setWorkspaceTab(tab);

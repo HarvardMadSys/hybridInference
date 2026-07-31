@@ -635,6 +635,40 @@ async def test_event_seq_and_global_cursor(store: AgentJobStore):
     assert [event["id"] for event in tail] == [ids[2]]
 
 
+async def test_terminal_readiness_is_fenced_attempt_state(store: AgentJobStore):
+    """Hot-path terminal checks do not replay events and stale workers cannot toggle them."""
+    await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is False
+    assert (
+        await store.append_event(
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
+        is not None
+    )
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is True
+    assert (
+        await store.fence_terminal_workspace(
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"] + 1,
+        )
+        is False
+    )
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is True
+    assert (
+        await store.fence_terminal_workspace(
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+        )
+        is True
+    )
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is False
+
+
 async def test_zombie_worker_is_fenced_out_after_reap(store: AgentJobStore):
     """After a reap, every write path of the old attempt is rejected."""
     job = await _create_job(store)
