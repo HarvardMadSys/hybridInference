@@ -1347,18 +1347,24 @@ async def _terminal_owner_workspace(
     job_store = _require_store(store)
     job = await _owned_job(job_store, job_id, user)
     if require_ready and job["state"] not in TERMINAL_STATES:
-        events = await job_store.list_events_after(
-            job_id=job_id,
-            after_id=0,
-            limit=_EVENT_PAGE_SIZE,
-        )
-        ready = any(
-            event["attempt_id"] == job["current_attempt_id"]
-            and event["event_type"] == "lifecycle"
-            and isinstance(event.get("payload"), dict)
-            and event["payload"].get("phase") == "checked_out"
-            for event in events
-        )
+        cursor = 0
+        ready = False
+        while True:
+            events = await job_store.list_events_after(
+                job_id=job_id,
+                after_id=cursor,
+                limit=_EVENT_PAGE_SIZE,
+            )
+            ready = any(
+                event["attempt_id"] == job["current_attempt_id"]
+                and event["event_type"] == "lifecycle"
+                and isinstance(event.get("payload"), dict)
+                and event["payload"].get("phase") == "checked_out"
+                for event in events
+            )
+            if ready or len(events) < _EVENT_PAGE_SIZE:
+                break
+            cursor = events[-1]["id"]
         if not ready:
             raise HTTPException(
                 status_code=409,

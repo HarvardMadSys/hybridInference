@@ -1622,6 +1622,19 @@ async def test_terminal_readiness_ignores_checked_out_from_superseded_attempt(
             payload={"phase": "checked_out"},
         )
         assert event_id is not None
+        store.events.extend(
+            {
+                "id": event_id + offset,
+                "job_id": job_id,
+                "attempt_id": claimed["attempt_id"],
+                "seq": event_id + offset,
+                "event_type": "message",
+                "payload": {"text": "old attempt noise"},
+                "created_at": None,
+            }
+            for offset in range(1, agent_jobs_router._EVENT_PAGE_SIZE)
+        )
+        store._next_event_id = agent_jobs_router._EVENT_PAGE_SIZE + 1
 
         store.jobs[job_id]["current_attempt_id"] = 101
         store.live_fence = (101, 2)
