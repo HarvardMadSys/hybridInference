@@ -21,20 +21,26 @@ class FakeHostStore:
 
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
+        # The singleton policy row: one fact, in one place, as in the store.
+        self.active_host: str | None = None
 
     def seed(self, host: str, *, active: bool = False, seen_minutes_ago: float = 0.0) -> None:
         seen = datetime.now(timezone.utc) - timedelta(minutes=seen_minutes_ago)
         self.rows[host] = {
             "host": host,
-            "is_active": active,
             "last_worker_id": f"w-{host}",
             "first_seen_at": seen,
             "last_seen_at": seen,
         }
+        if active:
+            self.active_host = host
+
+    async def active_runner_host(self) -> str | None:
+        return self.active_host
 
     async def list_runner_hosts(self) -> list[dict[str, Any]]:
         return sorted(
-            (dict(row) for row in self.rows.values()),
+            ({**row, "is_active": row["host"] == self.active_host} for row in self.rows.values()),
             key=lambda row: row["last_seen_at"],
             reverse=True,
         )
@@ -43,10 +49,7 @@ class FakeHostStore:
         # Mirrors the store: an unknown host changes nothing at all.
         if host is not None and host not in self.rows:
             return False
-        for row in self.rows.values():
-            row["is_active"] = False
-        if host is not None:
-            self.rows[host]["is_active"] = True
+        self.active_host = host
         return True
 
     async def forget_runner_host(self, *, host: str) -> bool:
@@ -119,8 +122,7 @@ async def test_switching_host_returns_the_new_pool_state(admin_client):
 
     assert response.status_code == 200
     assert response.json()["active_host"] == "runner-b"
-    assert store.rows["runner-a"]["is_active"] is False
-    assert store.rows["runner-b"]["is_active"] is True
+    assert store.active_host == "runner-b"
 
 
 @pytest.mark.asyncio
@@ -134,7 +136,7 @@ async def test_unpinning_lets_any_runner_claim_again(admin_client):
 
     assert response.status_code == 200
     assert response.json()["active_host"] is None
-    assert store.rows["runner-b"]["is_active"] is False
+    assert store.active_host is None
 
 
 @pytest.mark.asyncio
@@ -155,7 +157,7 @@ async def test_pinning_an_unknown_host_is_refused(admin_client):
     assert response.status_code == 404
     assert "has ever polled" in response.json()["detail"]
     # And the previously active host keeps running jobs.
-    assert store.rows["runner-a"]["is_active"] is True
+    assert store.active_host == "runner-a"
 
 
 @pytest.mark.asyncio

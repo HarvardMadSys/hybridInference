@@ -43,6 +43,7 @@ class FakeAgentJobStore:
         self.terminal_readiness: dict[int, bool] = {}
         self.released: list[tuple[str, int]] = []
         self.runner_hosts: dict[str, dict[str, Any]] = {}
+        self.active_host: str | None = None
         self._next_event_id = 1
         self._next_job = 1
 
@@ -454,26 +455,31 @@ class FakeAgentJobStore:
     def _fenced(self, attempt_id: int, lease_generation: int) -> bool:
         return self.live_fence == (attempt_id, lease_generation)
 
-    async def touch_runner_host(self, *, host: str | None, worker_id: str) -> str | None:
+    async def touch_runner_host(self, *, host: str | None, worker_id: str) -> None:
+        if not host:
+            return
         now = datetime.now(timezone.utc)
-        if host:
-            entry = self.runner_hosts.setdefault(
-                host,
-                {
-                    "host": host,
-                    "is_active": False,
-                    "last_worker_id": worker_id,
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                },
-            )
-            entry["last_seen_at"] = now
-            entry["last_worker_id"] = worker_id
-        return next((h for h, e in self.runner_hosts.items() if e["is_active"]), None)
+        entry = self.runner_hosts.setdefault(
+            host,
+            {
+                "host": host,
+                "last_worker_id": worker_id,
+                "first_seen_at": now,
+                "last_seen_at": now,
+            },
+        )
+        entry["last_seen_at"] = now
+        entry["last_worker_id"] = worker_id
+
+    async def active_runner_host(self) -> str | None:
+        return self.active_host
 
     async def list_runner_hosts(self) -> list[dict[str, Any]]:
         return sorted(
-            (dict(entry) for entry in self.runner_hosts.values()),
+            (
+                {**entry, "is_active": entry["host"] == self.active_host}
+                for entry in self.runner_hosts.values()
+            ),
             key=lambda e: e["last_seen_at"],
             reverse=True,
         )
@@ -481,10 +487,7 @@ class FakeAgentJobStore:
     async def set_active_runner_host(self, *, host: str | None) -> bool:
         if host is not None and host not in self.runner_hosts:
             return False
-        for entry in self.runner_hosts.values():
-            entry["is_active"] = False
-        if host is not None:
-            self.runner_hosts[host]["is_active"] = True
+        self.active_host = host
         return True
 
     async def forget_runner_host(self, *, host: str) -> bool:
@@ -493,8 +496,8 @@ class FakeAgentJobStore:
     async def claim_job(
         self, *, worker_id: str, lease_ttl_seconds: float, host: str | None = None
     ) -> dict[str, Any] | None:
-        active = await self.touch_runner_host(host=host, worker_id=worker_id)
-        if active is not None and host != active:
+        await self.touch_runner_host(host=host, worker_id=worker_id)
+        if self.active_host is not None and host != self.active_host:
             return None
         queued = [job for job in self.jobs.values() if job["state"] == "queued"]
         if not queued:

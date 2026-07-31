@@ -50,7 +50,7 @@ describe('AgentRunnerHostSection', () => {
     expect(screen.getByText(/Last polled 2h ago/)).toBeInTheDocument();
   });
 
-  it('pins the chosen host and says running jobs are left alone', async () => {
+  it('pins the chosen host and says the switch is not preemptive', async () => {
     vi.mocked(getAgentRunnerHosts).mockResolvedValue({
       hosts: [host('runner-a', { active: true }), host('runner-b')],
       active_host: 'runner-a',
@@ -65,7 +65,32 @@ describe('AgentRunnerHostSection', () => {
 
     await waitFor(() => expect(setActiveAgentRunnerHost).toHaveBeenCalledWith('runner-b'));
     await waitFor(() => expect(screen.getByLabelText(/runner-b/)).toBeChecked());
-    expect(onToast).toHaveBeenCalledWith(expect.stringContaining('finish where they are'));
+    expect(onToast).toHaveBeenCalledWith(expect.stringContaining('keep running there'));
+  });
+
+  it('warns outright when the pinned host has gone quiet', async () => {
+    // Pinning removes the failover: if this machine is down, nothing claims.
+    vi.mocked(getAgentRunnerHosts).mockResolvedValue({
+      hosts: [host('runner-a', { active: true, seconds_since_seen: 3600 })],
+      active_host: 'runner-a',
+    });
+
+    render(<AgentRunnerHostSection onToast={onToast} />);
+
+    expect(await screen.findByText(/last polled 1h ago/)).toBeInTheDocument();
+    expect(screen.getByText(/the queue is stopped/)).toBeInTheDocument();
+  });
+
+  it('does not warn about a stale host that is not the pinned one', async () => {
+    vi.mocked(getAgentRunnerHosts).mockResolvedValue({
+      hosts: [host('runner-a', { active: true }), host('old-box', { seconds_since_seen: 90000 })],
+      active_host: 'runner-a',
+    });
+
+    render(<AgentRunnerHostSection onToast={onToast} />);
+    await screen.findByText('old-box');
+
+    expect(screen.queryByText(/last polled 1h ago/)).not.toBeInTheDocument();
   });
 
   it('unpins through the "Any host" choice', async () => {

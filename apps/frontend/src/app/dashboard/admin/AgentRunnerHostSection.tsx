@@ -74,7 +74,7 @@ export function AgentRunnerHostSection({ onToast }: AgentRunnerHostSectionProps)
         setActiveHost(next.active_host);
         onToast(
           host
-            ? `New agent jobs now run on ${host}. Jobs already running elsewhere finish where they are.`
+            ? `New agent jobs now go to ${host}. Jobs already running elsewhere keep running there.`
             : 'Agent jobs unpinned — any runner may claim.',
         );
       } catch (e) {
@@ -85,6 +85,10 @@ export function AgentRunnerHostSection({ onToast }: AgentRunnerHostSectionProps)
     },
     [onToast],
   );
+
+  // Only the pinned host's silence is an incident: nothing else can pick the
+  // queue up, because pinning is what turned the others off.
+  const staleActive = hosts.find((h) => h.active && h.seconds_since_seen > RECENT_POLL_SECONDS);
 
   const handleForget = useCallback(
     async (host: string) => {
@@ -109,10 +113,10 @@ export function AgentRunnerHostSection({ onToast }: AgentRunnerHostSectionProps)
       <div className="mb-3">
         <h2 className="text-[14px] font-semibold text-gray-900">Cloud Agent Host</h2>
         <p className="mt-1 text-[12px] text-gray-500">
-          Which machine runs cloud agent jobs. A host appears here once a runner on it polls for
-          work, so the list is the set of machines that are actually configured and reachable.
-          Switching takes effect on the next poll; jobs already running elsewhere finish where they
-          are rather than being interrupted.
+          Which machine runs cloud agent jobs. A host appears here once a runner on it has reported
+          in, so this is the set of machines that have polled — not a claim that any of them is
+          reachable right now. Switching is not a drain: the new host starts claiming immediately,
+          while jobs already running on the old one keep running to the end.
         </p>
       </div>
 
@@ -122,6 +126,22 @@ export function AgentRunnerHostSection({ onToast }: AgentRunnerHostSectionProps)
           <button type="button" onClick={() => void load()} className="ml-2 font-medium underline">
             Retry
           </button>
+        </div>
+      )}
+
+      {staleActive && (
+        // The failure this feature can cause: pin a machine, its runner dies,
+        // and the queue stops with nothing claiming — there is no failover.
+        // A grey dot in a list is not enough warning for "all agent work is
+        // stopped", so it gets said outright.
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+          <span className="font-semibold">
+            {staleActive.host} last polled {formatAge(staleActive.seconds_since_seen)}.
+          </span>{' '}
+          Agent jobs are pinned to it, so nothing else will claim while it stays selected. If its
+          runner is down, the queue is stopped — switch hosts or choose Any host. (A machine whose
+          runners are all busy on long jobs also stops polling, so check before assuming it is
+          down.)
         </div>
       )}
 

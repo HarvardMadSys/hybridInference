@@ -67,6 +67,9 @@ async def store():
     async with pool.acquire() as conn:
         for table in _TABLES_IN_FK_ORDER:
             await conn.execute(f"DELETE FROM {table}")
+        # Reset rather than delete: the policy is a singleton row, and a test
+        # that left a host pinned would otherwise gate every later claim.
+        await conn.execute("UPDATE agent_runner_policy SET active_host = NULL")
 
     try:
         yield job_store
@@ -74,6 +77,7 @@ async def store():
         async with pool.acquire() as conn:
             for table in _TABLES_IN_FK_ORDER:
                 await conn.execute(f"DELETE FROM {table}")
+            await conn.execute("UPDATE agent_runner_policy SET active_host = NULL")
         await pool.close()
 
 
@@ -1467,3 +1471,43 @@ async def test_forgetting_a_host_removes_it_until_it_polls_again(store: AgentJob
 
     await store.touch_runner_host(host="old-box", worker_id="w1")
     assert [h["host"] for h in await store.list_runner_hosts()] == ["old-box"]
+
+
+async def test_a_switch_in_flight_makes_a_claim_wait_rather_than_race_it(store: AgentJobStore):
+    """Regression: the claim used to read the policy on its own connection.
+
+    Old host reads "still me", the admin switches, the old host then dequeues —
+    and the machine the operator just moved away from takes one more job while
+    the page says the switch succeeded. The check now runs inside the claiming
+    transaction and takes the policy row shared, so a switch that has not
+    committed blocks the claim instead of being overtaken by it.
+    """
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+    await store.set_active_runner_host(host="runner-a")
+    await _create_job(store)
+
+    async with store._pool.acquire() as conn, conn.transaction():
+        # An admin switch that has taken the row but not yet committed.
+        await conn.execute("UPDATE agent_runner_policy SET active_host = 'runner-b' WHERE id")
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                store.claim_job(worker_id="w1", lease_ttl_seconds=60, host="runner-a"),
+                timeout=1.0,
+            )
+
+    # Once it commits, the old host is out and the new one takes the job.
+    assert await store.claim_job(worker_id="w1", lease_ttl_seconds=60, host="runner-a") is None
+    assert await store.claim_job(worker_id="w2", lease_ttl_seconds=60, host="runner-b") is not None
+
+
+async def test_the_policy_row_is_a_singleton(store: AgentJobStore):
+    """One fact in one place — the property the claim's lock depends on."""
+    from asyncpg.exceptions import CheckViolationError
+
+    async with store._pool.acquire() as conn:
+        with pytest.raises(CheckViolationError):
+            await conn.execute(
+                "INSERT INTO agent_runner_policy (id, active_host) VALUES (FALSE, 'x')"
+            )
+        assert await conn.fetchval("SELECT count(*) FROM agent_runner_policy") == 1

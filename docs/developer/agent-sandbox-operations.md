@@ -363,9 +363,11 @@ the gateway cannot push a job at a machine, and the only moment it gets to say
 "not you" is when a runner asks for work. Three consequences worth knowing
 before using it:
 
-- **Switching drains, it does not interrupt.** A job already running elsewhere
-  holds its lease and reports through to the end; only the *next* claim moves.
-  Expect the old host to stay busy for as long as its longest running job.
+- **The switch is not preemptive, and not a drain.** The new host starts
+  claiming immediately; jobs already running on the old one keep running to the
+  end, holding their leases. The two overlap — a drain would mean waiting for
+  the old host to empty first, and this does not do that. Expect the old host
+  to stay busy for as long as its longest running job.
 - **A runner reporting no host is refused while any host is pinned.** Failing
   closed is deliberate: leaving the machine you just switched away from able to
   claim would make the switch a lie. A runner without `AGENT_RUNNER_HOST` set
@@ -375,6 +377,18 @@ before using it:
   turned away, which is what makes it selectable in the first place. Pinning to
   a name nothing has ever polled from is refused, because the symptom is a
   queue that hangs with nothing in the logs.
+- **A host name is a scheduling label, not a machine identity.** The runner
+  reports it, so anything holding `AGENT_DISPATCHER_TOKEN` can report any name;
+  two machines configured alike are one entry in the list. The credential is
+  the actual boundary. Use this to decide where *our* machines run *our* jobs,
+  and do not build anything on it that must survive a hostile runner.
+- **There is no failover.** Pinning turns the other machines off, so if the
+  pinned host's runners stop, the queue stops with them — nothing takes over.
+  The admin page warns when the pinned host has not polled recently, but that
+  signal is imperfect in the other direction too: `last_seen` is refreshed by
+  claims alone, so a machine whose runners are all busy on long jobs looks
+  exactly like one that is down. An independent heartbeat is the fix and is not
+  built yet.
 
 Adding a *second* machine is not only this switch. A sandbox reaches the
 gateway over a network declared `internal: true`, which resolves nothing off

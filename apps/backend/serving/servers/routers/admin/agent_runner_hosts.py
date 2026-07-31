@@ -8,6 +8,14 @@ runners may claim, and the switch takes effect on the losing host's next poll.
 A host joins the pool by polling, never by being registered here. That keeps
 the list to machines that actually exist and are actually configured, which is
 the difference between switching to a host and switching to a typo.
+
+**A host name is a scheduling label, not a machine identity.** The runner
+reports it, so anything holding the dispatcher credential can report any name:
+two machines configured alike are one entry, and a runner that wants another
+host's work only has to claim its name. That is acceptable because the
+credential is already the boundary — it opens the claim door for every host —
+and this switch decides *where our own machines run our own jobs*. Do not
+build anything on it that needs to survive a hostile runner.
 """
 
 from __future__ import annotations
@@ -64,11 +72,17 @@ def _to_item(row: dict) -> AgentRunnerHost:
 
 
 async def _snapshot(store: AgentJobStore) -> ListAgentRunnerHostsResponse:
-    """The pool as it stands — the response every endpoint here returns."""
+    """The pool as it stands — the response every endpoint here returns.
+
+    ``active_host`` is read from the policy rather than derived from the list.
+    They agree in every normal case; where they would not — a pinned host
+    deleted out from under the policy — the honest answer is the name the claim
+    gate is actually enforcing, not "unpinned" while the queue sits still.
+    """
     hosts = [_to_item(row) for row in await store.list_runner_hosts()]
     return ListAgentRunnerHostsResponse(
         hosts=hosts,
-        active_host=next((h.host for h in hosts if h.active), None),
+        active_host=await store.active_runner_host(),
     )
 
 
@@ -91,13 +105,14 @@ async def set_active_agent_runner_host(
 ) -> ListAgentRunnerHostsResponse:
     """Pin agent jobs to one host, or unpin so any runner may claim.
 
-    Jobs already running elsewhere are left alone: they hold a lease, and their
-    runner reports through to the end without claiming again. So a switch
-    drains rather than interrupts, and the queue moves to the new host as those
-    finish.
+    Non-preemptive, and worth being precise about: the new host starts claiming
+    at once, while jobs already running on the old one keep running to the end
+    — they hold a lease and their runner reports through without claiming
+    again. The two overlap. This is not a drain, which would mean waiting for
+    the old host to empty before the new one starts.
     """
     job_store = _require_store(store)
-    previous = (await _snapshot(job_store)).active_host
+    previous = await job_store.active_runner_host()
 
     if not await job_store.set_active_runner_host(host=payload.host):
         # Pinning to a machine that has never polled parks the queue on a host
@@ -137,8 +152,7 @@ async def forget_agent_runner_host(
     opposite of what removing a host from a list looks like it does.
     """
     job_store = _require_store(store)
-    rows = await job_store.list_runner_hosts()
-    if any(row["host"] == host and row["is_active"] for row in rows):
+    if host == await job_store.active_runner_host():
         raise HTTPException(
             status_code=409,
             detail=(
