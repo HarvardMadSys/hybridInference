@@ -35,6 +35,7 @@ import struct
 import subprocess
 import termios
 import threading
+import time
 import tty
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -491,25 +492,34 @@ class _ContainerTerminalProcess(TerminalProcess):
                     except subprocess.TimeoutExpired:
                         pass
 
-            # ``docker kill`` can race container creation or a natural exit.
-            # Once the client is gone, force-remove either confirms deletion or
-            # confirms that the server-generated name no longer exists.
-            try:
-                removed = subprocess.run(
-                    [self._docker_binary, "rm", "--force", self._container_name],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
+            # ``docker kill`` can race container creation, natural exit, or
+            # ``docker run --rm`` removing the container asynchronously. Retry
+            # only that known transitional response; every other failure still
+            # retains the session so a later kill can confirm cleanup.
+            for attempt in range(20):
+                try:
+                    removed = subprocess.run(
+                        [self._docker_binary, "rm", "--force", self._container_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    raise SandboxError("terminal container cleanup could not be confirmed") from exc
+                stderr = removed.stderr.lower()
+                missing = "no such container" in stderr
+                if removed.returncode == 0 or missing:
+                    break
+                removal_in_progress = (
+                    "removal of container" in stderr and "is already in progress" in stderr
                 )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise SandboxError("terminal container cleanup could not be confirmed") from exc
-            missing = "no such container" in removed.stderr.lower()
-            if removed.returncode != 0 and not missing:
-                raise SandboxError(
-                    "terminal container cleanup could not be confirmed: "
-                    + removed.stderr.strip()[:200]
-                )
+                if not removal_in_progress or attempt == 19:
+                    raise SandboxError(
+                        "terminal container cleanup could not be confirmed: "
+                        + removed.stderr.strip()[:200]
+                    )
+                time.sleep(0.05)
             if not client_stopped or self._process.poll() is None:
                 raise SandboxError("terminal Docker client could not be stopped")
             self._close_input()

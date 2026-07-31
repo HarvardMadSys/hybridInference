@@ -141,20 +141,34 @@ export function TerminalWorkspace({
     if (busy) return;
     const requestJobId = jobId;
     const generation = jobGenerationRef.current;
+    const replaceSessions = (nextSessions: AgentTerminalApi[]) => {
+      const availableIds = new Set(nextSessions.map((session) => session.id));
+      const nextVisible = visibleIds.filter((id) => availableIds.has(id));
+      if (nextVisible.length === 0 && nextSessions.length > 0) {
+        nextVisible.push(nextSessions[0].id);
+      }
+      setSessions(nextSessions);
+      setVisibleIds(nextVisible);
+    };
     setBusy(true);
     setError(null);
     try {
       await deleteAgentTerminal(requestJobId, terminalId);
       if (!requestIsCurrent(requestJobId, generation)) return;
-      const remaining = sessions.filter((session) => session.id !== terminalId);
-      const nextVisible = visibleIds.filter((id) => id !== terminalId);
-      if (nextVisible.length === 0 && remaining.length > 0) nextVisible.push(remaining[0].id);
-      setSessions(remaining);
-      setVisibleIds(nextVisible);
+      replaceSessions(sessions.filter((session) => session.id !== terminalId));
     } catch (cause: unknown) {
-      if (requestIsCurrent(requestJobId, generation)) {
-        setError(cause instanceof Error ? cause.message : 'Could not kill terminal');
+      if (!requestIsCurrent(requestJobId, generation)) return;
+      try {
+        const refreshed = await listAgentTerminals(requestJobId);
+        if (!requestIsCurrent(requestJobId, generation)) return;
+        if (!refreshed.some((session) => session.id === terminalId)) {
+          replaceSessions(refreshed);
+          return;
+        }
+      } catch {
+        // Preserve the original kill error when reconciliation is unavailable.
       }
+      setError(cause instanceof Error ? cause.message : 'Could not kill terminal');
     } finally {
       if (requestIsCurrent(requestJobId, generation)) setBusy(false);
     }

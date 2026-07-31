@@ -222,6 +222,62 @@ def test_container_terminal_kill_always_kills_client_and_force_removes(monkeypat
     assert killed_groups == [(4321, signal.SIGKILL)]
 
 
+def test_container_terminal_kill_waits_for_auto_remove(monkeypatch):
+    """Docker ``--rm`` cleanup in progress must not become a false 503."""
+    calls: list[list[str]] = []
+    remove_attempts = 0
+
+    class _AttachedClient:
+        pid = 4321
+        stdout = None
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = -signal.SIGKILL
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -signal.SIGKILL
+
+    def fake_run(argv, **kwargs):
+        nonlocal remove_attempts
+        calls.append(argv)
+        if argv[1] == "rm":
+            remove_attempts += 1
+            if remove_attempts == 1:
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr="removal of container hyi-terminal-test is already in progress",
+                )
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="Error response from daemon: No such container: hyi-terminal-test",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("serving.agent_jobs.sandbox.os.killpg", lambda *_args: None)
+    terminal = _ContainerTerminalProcess(
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
+    )
+
+    terminal.kill()
+
+    assert calls == [
+        ["docker", "kill", "hyi-terminal-test"],
+        ["docker", "rm", "--force", "hyi-terminal-test"],
+        ["docker", "rm", "--force", "hyi-terminal-test"],
+    ]
+
+
 def test_container_terminal_kill_failure_can_be_retried(monkeypatch):
     """Cleanup is not marked complete until force-removal is confirmed."""
     calls: list[list[str]] = []
