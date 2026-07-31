@@ -31,6 +31,11 @@ const xtermHarness = vi.hoisted(() => ({
   }>,
   fits: [] as Array<{ fit: ReturnType<typeof vi.fn> }>,
 }));
+const scrolledTabs: HTMLElement[] = [];
+const originalScrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  'scrollIntoView',
+);
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class MockTerminal {
@@ -93,6 +98,13 @@ function terminal(id: string, shell = 'zsh'): AgentTerminalApi {
 
 describe('TerminalWorkspace', () => {
   beforeEach(() => {
+    scrolledTabs.length = 0;
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value(this: HTMLElement) {
+        scrolledTabs.push(this);
+      },
+    });
     xtermHarness.instances.length = 0;
     xtermHarness.fits.length = 0;
     vi.mocked(createAgentTerminal).mockReset();
@@ -107,7 +119,18 @@ describe('TerminalWorkspace', () => {
       });
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    if (originalScrollIntoViewDescriptor) {
+      Object.defineProperty(
+        HTMLElement.prototype,
+        'scrollIntoView',
+        originalScrollIntoViewDescriptor,
+      );
+    } else {
+      Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+    }
+  });
 
   it('creates, switches, splits, and kills real terminal sessions', async () => {
     const first = terminal('term-1');
@@ -134,12 +157,24 @@ describe('TerminalWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New terminal' }));
     await waitFor(() => expect(createAgentTerminal).toHaveBeenCalledTimes(2));
     expect(screen.getByRole('application', { name: 'Terminal 2 terminal' })).toBeInTheDocument();
-    const selector = screen.getByRole('combobox', { name: 'Select terminal in pane 1' });
-    expect(within(selector).getAllByRole('option')).toHaveLength(2);
-    fireEvent.change(selector, { target: { value: first.id } });
+    const tablist = screen.getByRole('tablist', { name: 'Terminals in pane 1' });
+    expect(within(tablist).getAllByRole('tab')).toHaveLength(2);
+    expect(within(tablist).getByRole('tab', { name: 'Terminal 1 · zsh' })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+    expect(within(tablist).getByRole('tab', { name: 'Terminal 2 · bash' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    fireEvent.click(within(tablist).getByRole('tab', { name: 'Terminal 1 · zsh' }));
     expect(
       await screen.findByRole('application', { name: 'Terminal 1 terminal' }),
     ).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Terminal 1 · zsh' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
 
     fireEvent.click(screen.getByRole('button', { name: 'Split terminal' }));
     await waitFor(() => expect(createAgentTerminal).toHaveBeenCalledTimes(3));
@@ -168,6 +203,57 @@ describe('TerminalWorkspace', () => {
 
     expect(await screen.findByRole('button', { name: 'New terminal' })).toBeEnabled();
     expect(screen.queryByText('Loading terminals…')).not.toBeInTheDocument();
+  });
+
+  it('keeps the selected tab visible when switching terminals', async () => {
+    const first = terminal('term-1');
+    const second = terminal('term-2', 'bash');
+    vi.mocked(listAgentTerminals).mockResolvedValue([first, second]);
+
+    render(<TerminalWorkspace jobId="job-1" active />);
+
+    const firstTab = await screen.findByRole('tab', { name: 'Terminal 1 · zsh' });
+    await waitFor(() => expect(scrolledTabs[scrolledTabs.length - 1]).toBe(firstTab));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Terminal 2 · bash' }));
+
+    expect(
+      await screen.findByRole('application', { name: 'Terminal 2 terminal' }),
+    ).toBeInTheDocument();
+    const secondTab = screen.getByRole('tab', { name: 'Terminal 2 · bash' });
+    expect(secondTab).toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => expect(scrolledTabs[scrolledTabs.length - 1]).toBe(secondTab));
+  });
+
+  it('swaps panes when selecting a terminal already visible in the other pane', async () => {
+    const first = terminal('term-1');
+    const second = terminal('term-2', 'bash');
+    vi.mocked(listAgentTerminals).mockResolvedValue([first]);
+    vi.mocked(createAgentTerminal).mockResolvedValue(second);
+
+    render(<TerminalWorkspace jobId="job-1" active />);
+    await screen.findByRole('application', { name: 'Terminal 1 terminal' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Split terminal' }));
+    await screen.findByRole('application', { name: 'Terminal 2 terminal' });
+
+    const firstPane = screen.getByRole('region', { name: 'Terminal 1 pane' });
+    fireEvent.click(within(firstPane).getByRole('tab', { name: 'Terminal 2 · bash' }));
+
+    await waitFor(() => {
+      const firstPaneTabs = screen.getByRole('tablist', { name: 'Terminals in pane 1' });
+      const secondPaneTabs = screen.getByRole('tablist', { name: 'Terminals in pane 2' });
+      expect(within(firstPaneTabs).getByRole('tab', { name: 'Terminal 2 · bash' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      expect(within(secondPaneTabs).getByRole('tab', { name: 'Terminal 1 · zsh' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+    });
+    expect(screen.getAllByRole('application', { name: 'Terminal 1 terminal' })).toHaveLength(1);
+    expect(screen.getAllByRole('application', { name: 'Terminal 2 terminal' })).toHaveLength(1);
   });
 
   it('writes streamed bytes, sends xterm input, fits and resizes, then cleans up', async () => {
@@ -307,14 +393,15 @@ describe('TerminalWorkspace', () => {
 
     const view = render(<TerminalWorkspace jobId="job-a" active />);
     fireEvent.click(await screen.findByRole('button', { name: 'Kill Terminal 1' }));
-    expect(screen.getByRole('combobox', { name: 'Select terminal in pane 1' })).toBeDisabled();
+    expect(screen.getByRole('tab', { name: 'Terminal 1 · zsh' })).toBeDisabled();
     view.rerender(<TerminalWorkspace jobId="job-b" active />);
-    const selector = await screen.findByRole('combobox', { name: 'Select terminal in pane 1' });
-    expect(selector).toHaveValue(newTerminal.id);
+    const selectedTab = await screen.findByRole('tab', { name: 'Terminal 1 · zsh' });
+    expect(selectedTab).toHaveAttribute('aria-selected', 'true');
+    expect(selectedTab).toBeEnabled();
 
     resolveKill();
     await waitFor(() => expect(deleteAgentTerminal).toHaveBeenCalledWith('job-a', oldTerminal.id));
-    expect(selector).toHaveValue(newTerminal.id);
+    expect(selectedTab).toHaveAttribute('aria-selected', 'true');
   });
 
   it('batches input while preserving byte order across an in-flight write', async () => {
