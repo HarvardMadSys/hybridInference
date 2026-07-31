@@ -611,11 +611,62 @@ class OpencodeRuntime(GenericRuntime):
         return argv, env
 
 
+class KiloRuntime(GenericRuntime):
+    """Tier 2: Kilo Code headless, streamed as raw JSON lines.
+
+    Kilo's CLI is an OpenCode fork and keeps its invocation surface
+    (``run --format json --auto -m provider/model``) and both of its gaps:
+    ``OPENAI_BASE_URL`` is ignored, and startup fetches the models.dev
+    catalog. The ``kilo-freeinference`` wrapper closes them the same way the
+    OpenCode wrapper does — the fork renamed every kill switch to ``KILO_*``
+    but kept the semantics (verified against the pinned binary).
+
+    What the fork adds is more phone-home: PostHog telemetry, session ingest
+    and share links to app.kilo.ai, presence, LSP downloads. Each has a
+    supported kill switch, and the wrapper sets them all — the egress
+    allowlist blocks the traffic anyway, but a disabled path never becomes a
+    mid-job timeout. Smoke-verified end to end against the pinned CLI: config
+    injection, tool calls through the gateway, and JSON events on stdout.
+    """
+
+    name = "kilo"
+
+    def __init__(self) -> None:
+        """Fix the wrapper invocation; Tier 2 mechanics come from Generic."""
+        super().__init__(
+            "kilo-freeinference run --format json --auto -m freeinference/{model} {prompt}",
+            binary="kilo-freeinference",
+        )
+
+    def prepare(
+        self,
+        *,
+        workdir: str,
+        task_prompt: str,
+        model: str,
+        gateway_base_url: str,
+        credential: str,
+        mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
+    ) -> tuple[list[str], dict[str, str]]:
+        """Add the model id the wrapper declares in Kilo's config."""
+        argv, env = super().prepare(
+            workdir=workdir,
+            task_prompt=task_prompt,
+            model=model,
+            gateway_base_url=gateway_base_url,
+            credential=credential,
+            mcp_config=mcp_config,
+        )
+        env["KILO_GATEWAY_MODEL"] = model
+        return argv, env
+
+
 _REGISTRY: dict[str, type[AgentRuntime]] = {
     ClaudeCodeRuntime.name: ClaudeCodeRuntime,
     CodexRuntime.name: CodexRuntime,
     PiRuntime.name: PiRuntime,
     OpencodeRuntime.name: OpencodeRuntime,
+    KiloRuntime.name: KiloRuntime,
 }
 
 

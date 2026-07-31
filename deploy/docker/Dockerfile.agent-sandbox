@@ -37,6 +37,7 @@ ARG CLAUDE_CODE_VERSION=2.1.220
 ARG CODEX_VERSION=0.145.0
 ARG PI_VERSION=0.73.1
 ARG OPENCODE_VERSION=1.18.9
+ARG KILO_VERSION=7.4.17
 
 # Tools an agent legitimately needs to understand and change a repository.
 # Deliberately not installed: anything that would let it reach the host
@@ -58,18 +59,22 @@ RUN npm install -g \
         "@openai/codex@${CODEX_VERSION}" \
         "@mariozechner/pi-coding-agent@${PI_VERSION}" \
         "opencode-ai@${OPENCODE_VERSION}" \
+        "@kilocode/cli@${KILO_VERSION}" \
     && npm cache clean --force
 
-# pi and OpenCode both ignore OPENAI_BASE_URL; each one's supported route to a
-# custom gateway is a provider config file whose content (gateway address,
-# per-job credential, model) is only known at run time. These reviewed
-# wrappers write that file from the environment and exec the real CLI — the
-# runner invokes the wrapper, never the bare binary. The OpenCode wrapper
-# additionally disables its models.dev catalog fetch and default-plugin
-# install, both of which hard-fail in the deny-all sandbox.
+# pi, OpenCode, and Kilo all ignore OPENAI_BASE_URL; each one's supported
+# route to a custom gateway is a provider config file whose content (gateway
+# address, per-job credential, model) is only known at run time. These
+# reviewed wrappers write that file from the environment and exec the real
+# CLI — the runner invokes the wrapper, never the bare binary. The OpenCode
+# and Kilo wrappers additionally disable the models.dev catalog fetch and
+# default-plugin install, both of which hard-fail in the deny-all sandbox
+# (Kilo's wrapper also kills the fork's extra phone-home paths).
 COPY deploy/docker/pi-freeinference /usr/local/bin/pi-freeinference
 COPY deploy/docker/opencode-freeinference /usr/local/bin/opencode-freeinference
-RUN chmod 0755 /usr/local/bin/pi-freeinference /usr/local/bin/opencode-freeinference
+COPY deploy/docker/kilo-freeinference /usr/local/bin/kilo-freeinference
+RUN chmod 0755 /usr/local/bin/pi-freeinference /usr/local/bin/opencode-freeinference \
+        /usr/local/bin/kilo-freeinference
 
 # `--ignore-user-config` does not suppress a trusted repository's
 # .codex/config.toml. Codex 0.145 applies this requirements allowlist after all
@@ -104,7 +109,8 @@ ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
 
 # Fail loudly at build time if a runtime did not land, rather than at 3am when
 # a job claims it and dies.
-RUN claude --version && codex --version && pi --version && opencode --version
+RUN claude --version && codex --version && pi --version && opencode --version \
+    && kilo --version
 
 # No ENTRYPOINT: the runner supplies the full argv from the runtime adapter,
 # so this image never decides what an agent run looks like.
