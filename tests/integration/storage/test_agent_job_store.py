@@ -823,6 +823,37 @@ async def test_reap_fails_job_after_max_attempts(store: AgentJobStore):
     assert await store.list_terminal_resumes_pending() == []
 
 
+async def test_a_publish_claim_carries_the_branch_the_job_was_started_from(store: AgentJobStore):
+    """The publisher targets its PR at the job's own base, so it must see it.
+
+    ``base_ref`` is not a column — the column holds the resolved ``base_sha``,
+    because a branch moves — so the branch the owner picked rides along in
+    ``metadata``. Leaving ``metadata`` out of this claim is what made every
+    draft PR target the deployment default no matter what the job was pinned
+    from.
+    """
+    job = await _create_job(store, metadata={"_agent_base_ref": "release/x"})
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content="diff --git a/x b/x\n",
+    )
+    await store.transition(
+        job_id=job["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
+
+    taken = await store.claim_for_publish()
+
+    assert taken is not None
+    assert taken["metadata"] == {"_agent_base_ref": "release/x"}
+
+
 async def test_publish_is_one_shot(store: AgentJobStore):
     """A finished job is published at most once, by the platform publisher.
 

@@ -2028,7 +2028,7 @@ class AgentJobStore:
             row = await conn.fetchrow(
                 """
                 SELECT j.id, j.thread_id, j.parent_job_id, j.user_id, j.repo, j.base_sha,
-                       j.task_prompt, a.content AS patch,
+                       j.task_prompt, j.metadata, a.content AS patch,
                        thread_publish.published_pr_url AS parent_pr_url
                 FROM agent_jobs j
                 JOIN agent_job_artifacts a
@@ -2073,6 +2073,10 @@ class AgentJobStore:
             "repo": row["repo"],
             "base_sha": row["base_sha"],
             "task_prompt": row["task_prompt"],
+            # Carries the branch the owner started from. The publisher targets
+            # its PR at that branch, so without it every PR went to the
+            # deployment default no matter what the job was pinned from.
+            "metadata": _load_json(row["metadata"]),
             "patch": row["patch"],
         }
 

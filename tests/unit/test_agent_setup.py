@@ -17,6 +17,7 @@ import pytest
 from serving.agent_jobs.setup import SnapshotCache, cache_key, run_setup
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 
@@ -37,6 +38,21 @@ def test_the_key_follows_the_script_not_the_commit():
     assert first != other_repo, "a snapshot must never be shared across repositories"
 
 
+def test_the_key_follows_the_sandbox_image():
+    """A tree with compiled dependencies is not portable across images.
+
+    A `.venv` or a `node_modules` carrying native extensions is built against
+    one interpreter and libc. Restoring it into a rebuilt sandbox hands the job
+    a tree that fails at import time, a long way from the cause.
+    """
+    first = cache_key("o/n", "pip install -e .", image="sandbox:1")
+    again = cache_key("o/n", "pip install -e .", image="sandbox:1")
+    rebuilt = cache_key("o/n", "pip install -e .", image="sandbox:2")
+
+    assert first == again
+    assert first != rebuilt, "a snapshot built against one image was served to another"
+
+
 def test_a_snapshot_round_trips(tmp_path: Path):
     """What setup produced is what a later job gets back."""
     work = tmp_path / "job1"
@@ -44,7 +60,7 @@ def test_a_snapshot_round_trips(tmp_path: Path):
     (work / "node_modules" / "pkg" / "index.js").write_text("module.exports = 1;\n")
     cache = SnapshotCache(str(tmp_path / "cache"))
 
-    assert cache.save("k", str(work)) is True
+    assert cache.save("k", str(work), entries=["node_modules"]) is True
 
     restored = tmp_path / "job2"
     restored.mkdir()
@@ -64,7 +80,7 @@ def test_the_checkout_is_never_captured(tmp_path: Path):
     (work / "vendor").mkdir()
     (work / "vendor" / "lib.py").write_text("x = 1\n")
     cache = SnapshotCache(str(tmp_path / "cache"))
-    cache.save("k", str(work))
+    cache.save("k", str(work), entries=[".git", "vendor"])
 
     restored = tmp_path / "job2"
     restored.mkdir()
@@ -80,7 +96,7 @@ def test_an_expired_snapshot_is_dropped_not_served(tmp_path: Path):
     work.mkdir()
     (work / "dep.txt").write_text("old\n")
     cache = SnapshotCache(str(tmp_path / "cache"), ttl_seconds=1)
-    cache.save("k", str(work))
+    cache.save("k", str(work), entries=["dep.txt"])
 
     stored = tmp_path / "cache" / "k.tar"
     os.utime(stored, (time.time() - 10, time.time() - 10))
@@ -121,8 +137,8 @@ def test_purging_removes_only_what_expired(tmp_path: Path):
     work.mkdir()
     (work / "f").write_text("x")
     cache = SnapshotCache(str(tmp_path / "cache"), ttl_seconds=60)
-    cache.save("fresh", str(work))
-    cache.save("stale", str(work))
+    cache.save("fresh", str(work), entries=["f"])
+    cache.save("stale", str(work), entries=["f"])
     stale = tmp_path / "cache" / "stale.tar"
     os.utime(stale, (time.time() - 3600, time.time() - 3600))
 
@@ -132,14 +148,23 @@ def test_purging_removes_only_what_expired(tmp_path: Path):
 
 
 class _FakeBackend:
-    """Records the spec it was asked to spawn."""
+    """Records the spec it was asked to spawn.
 
-    def __init__(self, exit_code: int = 0) -> None:
+    ``creates`` stands in for what a real setup script leaves in the worktree —
+    a `node_modules`, a `.venv`. It is what the cache is allowed to capture, so
+    a backend that creates nothing models the very common script that installs
+    into the container instead.
+    """
+
+    def __init__(self, exit_code: int = 0, creates: Sequence[str] = ()) -> None:
         self.exit_code = exit_code
+        self.creates = list(creates)
         self.specs: list = []
 
     def spawn(self, spec):
         self.specs.append(spec)
+        for name in self.creates:
+            os.makedirs(os.path.join(spec.workdir, name), exist_ok=True)
         backend = self
 
         class _Process:
@@ -183,7 +208,7 @@ def test_a_cache_hit_skips_the_install_entirely(tmp_path: Path):
     work.mkdir()
     (work / "vendor.txt").write_text("installed\n")
     cache = SnapshotCache(str(tmp_path / "cache"))
-    cache.save(cache_key("o/n", "install"), str(work))
+    cache.save(cache_key("o/n", "install"), str(work), entries=["vendor.txt"])
 
     second = tmp_path / "job2"
     second.mkdir()
@@ -195,6 +220,80 @@ def test_a_cache_hit_skips_the_install_entirely(tmp_path: Path):
     assert result.restored_from_cache is True
     assert backend.specs == [], "a cache hit must not spawn anything"
     assert (second / "vendor.txt").read_text() == "installed\n"
+
+
+def test_a_snapshot_never_carries_the_checkout_into_another_job(tmp_path: Path):
+    """The cache key is the repository and script, so two commits share it.
+
+    Capturing the whole worktree therefore meant the next job on that key had
+    its freshly checked-out source overwritten by whatever the saving job
+    happened to hold — a different branch, an older commit — silently, before
+    the agent ever ran. Only what setup *created* may be captured.
+    """
+    first = tmp_path / "job1"
+    (first / ".git").mkdir(parents=True)
+    (first / "app.py").write_text("# turn one's source\n")
+    cache = SnapshotCache(str(tmp_path / "cache"))
+
+    run_setup(
+        script="install",
+        workdir=str(first),
+        repo="o/n",
+        backend=_FakeBackend(creates=["node_modules"]),
+        cache=cache,
+    )
+
+    second = tmp_path / "job2"
+    second.mkdir()
+    (second / "app.py").write_text("# turn two's own checkout\n")
+    result = run_setup(
+        script="install", workdir=str(second), repo="o/n", backend=_FakeBackend(), cache=cache
+    )
+
+    assert result.restored_from_cache is True
+    assert (second / "node_modules").is_dir(), "the dependency tree was not restored"
+    assert (second / "app.py").read_text() == "# turn two's own checkout\n", (
+        "the snapshot wrote another job's source over this job's checkout"
+    )
+    assert not (second / ".git").exists()
+
+
+def test_a_setup_that_leaves_nothing_behind_is_not_cached(tmp_path: Path):
+    """An empty snapshot restores cleanly, and so reads as a hit.
+
+    Setup and the agent turn are separate throwaway containers sharing only
+    the worktree, so a script installing outside it leaves nothing durable.
+    Caching that would make every later job skip an install it never received
+    — worse than a miss, because it looks like a success.
+    """
+    work = tmp_path / "job"
+    work.mkdir()
+    (work / "app.py").write_text("x = 1\n")
+    cache = SnapshotCache(str(tmp_path / "cache"))
+    assert cache.save("k", str(work), entries=[]) is False
+
+    run_setup(
+        script="pip install --user thing",
+        workdir=str(work),
+        repo="o/n",
+        backend=_FakeBackend(),
+        cache=cache,
+    )
+    assert cache.lookup(cache_key("o/n", "pip install --user thing")) is None
+
+    second = tmp_path / "job2"
+    second.mkdir()
+    backend = _FakeBackend()
+    result = run_setup(
+        script="pip install --user thing",
+        workdir=str(second),
+        repo="o/n",
+        backend=backend,
+        cache=cache,
+    )
+
+    assert result.restored_from_cache is False
+    assert backend.specs, "the install was skipped on the strength of an empty snapshot"
 
 
 def test_a_failed_setup_is_reported_and_not_cached(tmp_path: Path):
@@ -259,8 +358,8 @@ def test_saves_of_one_key_never_share_a_staging_path(tmp_path, monkeypatch):
 
     monkeypatch.setattr("serving.agent_jobs.setup.tarfile.open", recording_open)
 
-    assert cache.save("same-key", str(workdir)) is True
-    assert cache.save("same-key", str(workdir)) is True
+    assert cache.save("same-key", str(workdir), entries=["deps.txt"]) is True
+    assert cache.save("same-key", str(workdir), entries=["deps.txt"]) is True
 
     assert len(seen) == 2
     assert seen[0] != seen[1], (

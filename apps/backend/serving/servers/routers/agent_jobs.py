@@ -82,6 +82,7 @@ from serving.agent_jobs.workspace_browser import (
     snapshot_file_response,
 )
 from serving.schemas_agent_jobs import (
+    BASE_REF_METADATA_KEY,
     DEFAULT_JOB_BUDGET_USD,
     EVENT_TYPE_PATTERN,
     AgentConfigResponse,
@@ -176,7 +177,6 @@ _TERMINAL_ID_PATTERN = r"^term_[A-Za-z0-9_-]{1,80}$"
 # for less. Without this the runner would be handed push rights it must not
 # have, on a host that runs untrusted repository code.
 _CLONE_SCOPE = {"contents": "read"}
-_BASE_REF_METADATA_KEY = "_agent_base_ref"
 
 
 def _looks_like_browser_jwt(authorization: str | None) -> bool:
@@ -308,7 +308,7 @@ def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> A
     usage = usage or {}
     setup_tier, agent_tier = _egress_tiers()
     metadata = dict(job.get("metadata") or {})
-    base_ref = metadata.pop(_BASE_REF_METADATA_KEY, None)
+    base_ref = metadata.pop(BASE_REF_METADATA_KEY, None)
     if not isinstance(base_ref, str):
         base_ref = None
     return AgentJobResponse(
@@ -928,9 +928,9 @@ async def create_agent_job(
     metadata = dict(body.metadata or {})
     # Reserved display fact: caller metadata must not be able to claim the
     # job was pinned from a different branch than the one the API resolved.
-    metadata.pop(_BASE_REF_METADATA_KEY, None)
+    metadata.pop(BASE_REF_METADATA_KEY, None)
     if body.base_ref:
-        metadata[_BASE_REF_METADATA_KEY] = body.base_ref
+        metadata[BASE_REF_METADATA_KEY] = body.base_ref
     job = await job_store.create_job(
         user_id=user["user_id"],
         repo=body.repo,
