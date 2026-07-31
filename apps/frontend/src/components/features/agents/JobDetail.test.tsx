@@ -350,6 +350,13 @@ describe('JobDetail', () => {
     expect(screen.getByText('{"event_type":"message"}')).toBeInTheDocument();
   });
 
+  it('wraps unbroken failure details inside the outcome card', () => {
+    const stateNote = `agent exited 1: ${'x'.repeat(300)}`;
+    render(<JobDetail job={makeJob({ state: 'failed', stateNote })} />);
+
+    expect(screen.getByText(stateNote)).toHaveClass('[overflow-wrap:anywhere]');
+  });
+
   it('keeps the task as the default view behind an icon-only, accessible workspace toggle', () => {
     render(<JobDetail job={makeJob()} />);
 

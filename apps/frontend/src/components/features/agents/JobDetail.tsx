@@ -634,7 +634,9 @@ function OutcomeCard({ job, onOpenDiff }: { job: AgentJob; onOpenDiff: () => voi
                   ? 'Run failed'
                   : 'Run stopped'}
           </p>
-          {job.stateNote ? <p className="mt-0.5 text-xs text-gray-500">{job.stateNote}</p> : null}
+          {job.stateNote ? (
+            <p className="mt-0.5 text-xs text-gray-500 [overflow-wrap:anywhere]">{job.stateNote}</p>
+          ) : null}
           {job.state === 'cancelled' ? (
             <p className="mt-1 text-xs text-gray-500">
               Send a follow-up to continue from any saved intermediate changes.
