@@ -1039,7 +1039,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isActive, stop]);
 
-  async function submitComposer(event: FormEvent<HTMLFormElement>) {
+  async function submitFollowUp(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const prompt = followUp.trim();
     if (!prompt || submitting) return;
@@ -1301,7 +1301,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
 
             <div className="sticky bottom-0 z-10 -mx-2 mt-10 bg-gradient-to-t from-gray-50 via-gray-50/95 px-2 pb-2 pt-8">
               <form
-                onSubmit={(event) => void submitComposer(event)}
+                onSubmit={(event) => void submitFollowUp(event)}
                 className="rounded-xl border border-gray-200/90 bg-white shadow-[0_16px_40px_-28px_rgba(17,24,39,0.55)] transition focus-within:border-crimson/30 focus-within:ring-4 focus-within:ring-crimson/[0.05]"
               >
                 <textarea
