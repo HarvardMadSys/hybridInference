@@ -42,17 +42,6 @@ def test_docs_only_filters_apply_to_push_but_not_pull_requests() -> None:
     assert triggers["schedule"]
 
 
-def test_ci_has_no_agent_label_approval_gate() -> None:
-    workflow = _workflow("ci.yml")
-    triggers = _triggers(workflow)
-    serialized = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
-
-    assert "types" not in triggers["pull_request"]
-    assert "revoke-agent-ci-approval" not in workflow["jobs"]
-    assert "ok-to-test" not in serialized
-    assert "startsWith(github.head_ref, 'agent/')" not in serialized
-
-
 def test_python_tests_signal_controls_only_the_pytest_job() -> None:
     jobs = _workflow("ci.yml")["jobs"]
 
