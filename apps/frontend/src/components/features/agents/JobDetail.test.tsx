@@ -15,7 +15,6 @@ import {
   getAgentJobGit,
   listAgentTerminals,
   resizeAgentTerminal,
-  restartAgentJob,
   streamAgentTerminal,
   writeAgentTerminalInput,
   writeAgentJobFile,
@@ -42,7 +41,6 @@ vi.mock('@/lib/api/agents', () => ({
   getAgentJobGit: vi.fn(),
   listAgentTerminals: vi.fn(),
   resizeAgentTerminal: vi.fn(),
-  restartAgentJob: vi.fn(),
   streamAgentTerminal: vi.fn(),
   writeAgentTerminalInput: vi.fn(),
   writeAgentJobFile: vi.fn(),
@@ -132,7 +130,6 @@ describe('JobDetail', () => {
     vi.mocked(cancelAgentJob).mockReset();
     vi.mocked(followUpAgentJob).mockReset();
     vi.mocked(forkAgentJob).mockReset();
-    vi.mocked(restartAgentJob).mockReset();
     vi.mocked(getAgentConfig).mockReset();
     vi.mocked(getAgentConfig).mockResolvedValue(AGENT_CONFIG);
     vi.mocked(getAgentJobFiles).mockReset();
@@ -796,58 +793,6 @@ describe('JobDetail', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Copy message' })[0]);
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('Earlier question'));
-  });
-
-  it('edits the current initial prompt in restart mode and can cancel it', () => {
-    render(<JobDetail job={makeJob()} />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit & restart' }));
-
-    const composer = screen.getByLabelText('Add a follow-up');
-    expect(composer).toHaveValue('Current task\nwith all of its detail.');
-    expect(composer).toHaveFocus();
-    expect(screen.getByText(/restarts from the original base/i)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel restart' }));
-    expect(composer).toHaveValue('');
-    expect(screen.queryByText(/restarts from the original base/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Send follow-up' })).toBeInTheDocument();
-  });
-
-  it('submits an edited current initial prompt as a new root task', async () => {
-    vi.mocked(restartAgentJob).mockResolvedValue({ id: 'ajob_restart' } as never);
-    render(<JobDetail job={makeJob()} />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit & restart' }));
-    fireEvent.change(screen.getByLabelText('Add a follow-up'), {
-      target: { value: 'Corrected initial direction' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Restart task' }));
-
-    await waitFor(() =>
-      expect(restartAgentJob).toHaveBeenCalledWith('ajob_1', {
-        prompt: 'Corrected initial direction',
-      }),
-    );
-    expect(followUpAgentJob).not.toHaveBeenCalled();
-    expect(navigation.push).toHaveBeenCalledWith('/agents/ajob_restart');
-  });
-
-  it('restarts from the durable first prompt while retaining later rewind actions', async () => {
-    vi.mocked(restartAgentJob).mockResolvedValue({ id: 'ajob_restart' } as never);
-    render(<JobDetail job={makeJob({ threadMessages: HISTORY })} />);
-
-    expect(screen.getByRole('button', { name: 'Edit & rewind' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit & restart' }));
-    expect(screen.getByLabelText('Add a follow-up')).toHaveValue('Earlier question');
-    fireEvent.click(screen.getByRole('button', { name: 'Restart task' }));
-
-    await waitFor(() =>
-      expect(restartAgentJob).toHaveBeenCalledWith('ajob_0', {
-        prompt: 'Earlier question',
-      }),
-    );
-    expect(navigation.push).toHaveBeenCalledWith('/agents/ajob_restart');
   });
 
   it('explains that a stopped run can continue from saved intermediate work', () => {

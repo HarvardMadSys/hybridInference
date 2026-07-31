@@ -24,7 +24,6 @@ import {
   listAgentJobs,
   pinAgentJob,
   resizeAgentTerminal,
-  restartAgentJob,
   restoreAgentJob,
   streamAgentTerminal,
   streamAgentJob,
@@ -159,23 +158,6 @@ describe('agents api', () => {
       expect.any(String),
       '/v1/agent/jobs/job%2Fone/fork',
       { method: 'POST' },
-    );
-  });
-
-  it('restarts a task with an edited initial prompt', async () => {
-    fetchWithAuth.mockResolvedValue(jsonResponse({ id: 'ajob_restart', state: 'queued' }));
-
-    const restarted = await restartAgentJob('job/one', { prompt: 'corrected direction' });
-
-    expect(restarted.id).toBe('ajob_restart');
-    expect(fetchWithAuth).toHaveBeenCalledWith(
-      expect.any(String),
-      '/v1/agent/jobs/job%2Fone/restart',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'corrected direction' }),
-      },
     );
   });
 

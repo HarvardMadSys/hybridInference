@@ -20,7 +20,6 @@ import {
   forkAgentJob,
   getAgentConfig,
   getAgentJobGit,
-  restartAgentJob,
   type AgentGitWorkspaceApi,
 } from '@/lib/api/agents';
 
@@ -317,13 +316,11 @@ function ThreadTurn({
   busy,
   onFork,
   onRewind,
-  onRestart,
 }: {
   message: AgentThreadMessage;
   busy?: boolean;
   onFork?: () => void;
   onRewind?: () => void;
-  onRestart?: () => void;
 }) {
   if (message.role === 'assistant') {
     return (
@@ -354,12 +351,6 @@ function ThreadTurn({
           <MessageActionButton label="Edit & rewind" onClick={onRewind} disabled={busy}>
             <RewindIcon />
             Edit & rewind
-          </MessageActionButton>
-        ) : null}
-        {onRestart ? (
-          <MessageActionButton label="Edit & restart" onClick={onRestart} disabled={busy}>
-            <RewindIcon />
-            Edit & restart
           </MessageActionButton>
         ) : null}
       </MessageActions>
@@ -913,14 +904,12 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('git');
   const [followUp, setFollowUp] = useState('');
-  const [restartSourceJobId, setRestartSourceJobId] = useState<string | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState(job.model);
   const [submitting, setSubmitting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [forking, setForking] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const composerRef = useRef<HTMLTextAreaElement>(null);
   const stopRequestedRef = useRef(false);
   const workspacePane = useResizablePane({
     storageKey: WORKSPACE_WIDTH_STORAGE_KEY,
@@ -1011,10 +1000,6 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
     }
   }, [isActive]);
 
-  useEffect(() => {
-    if (restartSourceJobId) composerRef.current?.focus();
-  }, [restartSourceJobId]);
-
   function openWorkspace(tab: WorkspaceTab) {
     setWorkspaceTab(tab);
     setWorkspaceOpen(true);
@@ -1061,40 +1046,17 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
     setSubmitting(true);
     setActionError(null);
     try {
-      let child;
-      if (restartSourceJobId) {
-        child = await restartAgentJob(restartSourceJobId, { prompt });
-      } else {
-        child = await followUpAgentJob(job.id, {
-          prompt,
-          // Only an actual switch is sent. Omitted, the turn inherits the
-          // parent's model, which was validated when it was chosen.
-          ...(model && model !== job.model ? { model } : {}),
-        });
-      }
+      const child = await followUpAgentJob(job.id, {
+        prompt,
+        // Only an actual switch is sent. Omitted, the turn inherits the
+        // parent's model, which was validated when it was chosen.
+        ...(model && model !== job.model ? { model } : {}),
+      });
       router.push(`/agents/${child.id}`);
     } catch (cause: unknown) {
-      setActionError(
-        cause instanceof Error
-          ? cause.message
-          : restartSourceJobId
-            ? 'Could not restart the task'
-            : 'Could not queue the follow-up',
-      );
+      setActionError(cause instanceof Error ? cause.message : 'Could not queue the follow-up');
       setSubmitting(false);
     }
-  }
-
-  function beginRestart(sourceJobId: string, draft: string) {
-    setRestartSourceJobId(sourceJobId);
-    setFollowUp(draft);
-    setActionError(null);
-  }
-
-  function cancelRestart() {
-    setRestartSourceJobId(null);
-    setFollowUp('');
-    setActionError(null);
   }
 
   // Fork duplicates the conversation up to the anchor turn into a new thread
@@ -1124,7 +1086,6 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const lastHistoryJobId = threadMessages.length
     ? threadMessages[threadMessages.length - 1].jobId
     : undefined;
-  const firstUserMessageId = threadMessages.find((message) => message.role === 'user')?.id;
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-gray-50/40">
@@ -1258,11 +1219,6 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                     onRewind={
                       rewindAnchor ? () => void forkFrom(rewindAnchor, message.content) : undefined
                     }
-                    onRestart={
-                      message.role === 'user' && message.id === firstUserMessageId
-                        ? () => beginRestart(message.jobId, message.content)
-                        : undefined
-                    }
                   />
                 );
               })}
@@ -1286,15 +1242,6 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                       >
                         <RewindIcon />
                         Edit &amp; rewind
-                      </MessageActionButton>
-                    ) : !lastHistoryJobId ? (
-                      <MessageActionButton
-                        label="Edit & restart"
-                        onClick={() => beginRestart(job.id, job.prompt || job.title)}
-                        disabled={submitting}
-                      >
-                        <RewindIcon />
-                        Edit &amp; restart
                       </MessageActionButton>
                     ) : null}
                   </MessageActions>
@@ -1358,7 +1305,6 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                 className="rounded-xl border border-gray-200/90 bg-white shadow-[0_16px_40px_-28px_rgba(17,24,39,0.55)] transition focus-within:border-crimson/30 focus-within:ring-4 focus-within:ring-crimson/[0.05]"
               >
                 <textarea
-                  ref={composerRef}
                   rows={2}
                   value={followUp}
                   onChange={(event) => setFollowUp(event.target.value)}
@@ -1367,20 +1313,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                   className="w-full resize-none rounded-t-xl border-0 bg-transparent px-4 pt-3 text-sm leading-relaxed text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
                 />
                 <div className="flex items-center gap-1.5 px-3 pb-2.5">
-                  {restartSourceJobId ? (
-                    <>
-                      <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
-                        Restarts from the original base · intermediate direction is discarded
-                      </span>
-                      <button
-                        type="button"
-                        onClick={cancelRestart}
-                        className="shrink-0 rounded px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-                      >
-                        Cancel restart
-                      </button>
-                    </>
-                  ) : modelOptions.length > 0 ? (
+                  {modelOptions.length > 0 ? (
                     <>
                       {/* The harness stays the thread's; the model is offered
                           again. Nothing binds it to the turn before — the next
@@ -1416,7 +1349,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                     type="submit"
                     disabled={!followUp.trim() || submitting}
                     className="ml-auto inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-crimson text-white shadow-sm transition-colors hover:bg-crimson-dark disabled:cursor-not-allowed disabled:opacity-40"
-                    aria-label={restartSourceJobId ? 'Restart task' : 'Send follow-up'}
+                    aria-label="Send follow-up"
                   >
                     {submitting ? (
                       <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />

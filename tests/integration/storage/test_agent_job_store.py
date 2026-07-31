@@ -506,6 +506,12 @@ async def test_cancelled_parent_patch_resumes_in_its_waiting_follow_up(
 
     claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
     patch = "diff --git a/partial b/partial\n"
+    await store.append_event(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        event_type="message",
+        payload={"text": "I started the fix before you stopped me"},
+    )
     await store.save_artifact(
         attempt_id=claim["attempt_id"],
         lease_generation=claim["lease_generation"],
@@ -521,7 +527,13 @@ async def test_cancelled_parent_patch_resumes_in_its_waiting_follow_up(
     )
 
     assert (await store.get_job(child["id"]))["state"] == "queued"
-    assert (await store.follow_up_context(job_id=child["id"]))["patch"] == patch
+    assert await store.follow_up_context(job_id=child["id"]) == {
+        "messages": [
+            {"role": "user", "content": "fix the flaky test"},
+            {"role": "assistant", "content": "I started the fix before you stopped me"},
+        ],
+        "patch": patch,
+    }
     resumed = await store.claim_job(worker_id="w2", lease_ttl_seconds=60)
     assert resumed["id"] == child["id"]
     assert await store.claim_for_publish() is None

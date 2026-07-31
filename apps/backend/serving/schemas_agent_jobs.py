@@ -214,21 +214,6 @@ class AgentFollowUpRequest(BaseModel):
         return prompt
 
 
-class AgentRestartRequest(BaseModel):
-    """Replacement prompt for a fresh task rooted at an existing job's base."""
-
-    prompt: str = Field(..., min_length=1, max_length=100_000)
-
-    @field_validator("prompt")
-    @classmethod
-    def validate_prompt(cls, value: str) -> str:
-        """Reject visually empty prompts and persist the user's trimmed text."""
-        prompt = value.strip()
-        if not prompt:
-            raise ValueError("prompt must not be blank")
-        return prompt
-
-
 class AgentThreadMessageResponse(BaseModel):
     """One durable user or assistant message in a task thread."""
 

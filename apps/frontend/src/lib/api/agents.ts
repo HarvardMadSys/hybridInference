@@ -387,27 +387,6 @@ export async function cancelAgentJob(
   return jsonOrThrow(resp);
 }
 
-export interface RestartAgentJobRequest {
-  prompt: string;
-}
-
-/** Start a new root task from an existing job's original pinned base. */
-export async function restartAgentJob(
-  jobId: string,
-  body: RestartAgentJobRequest,
-): Promise<AgentJobApi> {
-  const resp = await fetchWithAuth(
-    API_BASE,
-    `/v1/agent/jobs/${encodeURIComponent(jobId)}/restart`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    },
-  );
-  return jsonOrThrow<AgentJobApi>(resp);
-}
-
 export interface FollowUpAgentJobRequest {
   prompt: string;
   /** Omitted values inherit the parent run's harness and model. */
