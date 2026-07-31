@@ -31,11 +31,6 @@ const xtermHarness = vi.hoisted(() => ({
   }>,
   fits: [] as Array<{ fit: ReturnType<typeof vi.fn> }>,
 }));
-const scrolledTabs: HTMLElement[] = [];
-const originalScrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(
-  HTMLElement.prototype,
-  'scrollIntoView',
-);
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class MockTerminal {
@@ -98,13 +93,6 @@ function terminal(id: string, shell = 'zsh'): AgentTerminalApi {
 
 describe('TerminalWorkspace', () => {
   beforeEach(() => {
-    scrolledTabs.length = 0;
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
-      configurable: true,
-      value(this: HTMLElement) {
-        scrolledTabs.push(this);
-      },
-    });
     xtermHarness.instances.length = 0;
     xtermHarness.fits.length = 0;
     vi.mocked(createAgentTerminal).mockReset();
@@ -121,15 +109,7 @@ describe('TerminalWorkspace', () => {
 
   afterEach(() => {
     cleanup();
-    if (originalScrollIntoViewDescriptor) {
-      Object.defineProperty(
-        HTMLElement.prototype,
-        'scrollIntoView',
-        originalScrollIntoViewDescriptor,
-      );
-    } else {
-      Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
-    }
+    vi.restoreAllMocks();
   });
 
   it('creates, switches, splits, and kills real terminal sessions', async () => {
@@ -205,24 +185,49 @@ describe('TerminalWorkspace', () => {
     expect(screen.queryByText('Loading terminals…')).not.toBeInTheDocument();
   });
 
-  it('keeps the selected tab visible when switching terminals', async () => {
+  it('keeps the selected tab visible when a split narrows the first pane', async () => {
     const first = terminal('term-1');
     const second = terminal('term-2', 'bash');
-    vi.mocked(listAgentTerminals).mockResolvedValue([first, second]);
+    const third = terminal('term-3');
+    const fourth = terminal('term-4', 'bash');
+    vi.mocked(listAgentTerminals).mockResolvedValue([first, second, third]);
+    vi.mocked(createAgentTerminal).mockResolvedValue(fourth);
+    const rect = (left: number, right: number): DOMRect =>
+      ({
+        bottom: 20,
+        height: 20,
+        left,
+        right,
+        top: 0,
+        width: right - left,
+        x: left,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      if (this.getAttribute('role') === 'tablist') {
+        return rect(0, document.querySelectorAll('[role="tablist"]').length > 1 ? 100 : 300);
+      }
+      if (this.textContent?.includes('Terminal 3')) return rect(220, 300);
+      return rect(0, 80);
+    });
 
     render(<TerminalWorkspace jobId="job-1" active />);
 
-    const firstTab = await screen.findByRole('tab', { name: 'Terminal 1 · zsh' });
-    await waitFor(() => expect(scrolledTabs[scrolledTabs.length - 1]).toBe(firstTab));
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Terminal 2 · bash' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Terminal 3 · zsh' }));
 
     expect(
-      await screen.findByRole('application', { name: 'Terminal 2 terminal' }),
+      await screen.findByRole('application', { name: 'Terminal 3 terminal' }),
     ).toBeInTheDocument();
-    const secondTab = screen.getByRole('tab', { name: 'Terminal 2 · bash' });
-    expect(secondTab).toHaveAttribute('aria-selected', 'true');
-    await waitFor(() => expect(scrolledTabs[scrolledTabs.length - 1]).toBe(secondTab));
+    expect(screen.getByRole('tablist', { name: 'Terminals in pane 1' }).scrollLeft).toBe(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Split terminal' }));
+
+    const firstPane = await screen.findByRole('region', { name: 'Terminal 3 pane' });
+    const tablist = within(firstPane).getByRole('tablist', { name: 'Terminals in pane 1' });
+    await waitFor(() => expect(tablist.scrollLeft).toBe(200));
   });
 
   it('swaps panes when selecting a terminal already visible in the other pane', async () => {

@@ -88,6 +88,7 @@ export function TerminalPane({
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const disabledRef = useRef(disabled);
+  const tabListRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
 
   useEffect(() => {
@@ -98,10 +99,17 @@ export function TerminalPane({
   }, [disabled, terminal.state]);
 
   useEffect(() => {
-    tabRefs.current.get(terminal.id)?.scrollIntoView?.({
-      block: 'nearest',
-      inline: 'nearest',
-    });
+    const tabList = tabListRef.current;
+    const tab = tabRefs.current.get(terminal.id);
+    if (!tabList || !tab) return;
+
+    const listRect = tabList.getBoundingClientRect();
+    const tabRect = tab.getBoundingClientRect();
+    if (tabRect.left < listRect.left) {
+      tabList.scrollLeft += tabRect.left - listRect.left;
+    } else if (tabRect.right > listRect.right) {
+      tabList.scrollLeft += tabRect.right - listRect.right;
+    }
   }, [sessions.length, terminal.id]);
 
   useEffect(() => {
@@ -286,6 +294,7 @@ export function TerminalPane({
           </svg>
         </span>
         <div
+          ref={tabListRef}
           role="tablist"
           aria-label={`Terminals in pane ${paneIndex + 1}`}
           className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
