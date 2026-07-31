@@ -172,6 +172,26 @@ describe('toDisplayJob', () => {
     expect(job.branch).toBe('agent/thread_7');
   });
 
+  it('shows trusted sandbox metadata for the current attempt', () => {
+    const events = [
+      event(1, 'lifecycle', { phase: 'started', sandbox_backend: 'process' }, 10),
+      event(
+        2,
+        'lifecycle',
+        {
+          phase: 'started',
+          sandbox_backend: 'container',
+          sandbox_runtime: 'io.containerd.kata.v2',
+          sandbox_image: 'registry.example/agent:1',
+        },
+        11,
+      ),
+    ];
+    const job = toDisplayJob({ ...JOB, current_attempt_id: 11 }, { events });
+
+    expect(job.sandbox).toBe('container (io.containerd.kata.v2) · registry.example/agent:1');
+  });
+
   it('marks a superseded attempt rather than showing it live', () => {
     const events = [
       event(1, 'message', {}, 10),

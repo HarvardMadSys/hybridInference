@@ -38,6 +38,29 @@ def test_process_backend_runs_when_acknowledged():
     ProcessBackend(acknowledged_unsafe=True).preflight()
 
 
+def test_backends_report_the_boundary_they_actually_supply():
+    """Runtime policy and UI metadata derive from backend capability."""
+    process = ProcessBackend(acknowledged_unsafe=True)
+    container = ContainerBackend(image="registry.example/agent:1")
+    kata = ContainerBackend(image="registry.example/agent:1", runtime=KATA_RUNTIME)
+
+    assert process.provides_isolation is False
+    assert process.sandbox_metadata() == {"sandbox_backend": "process"}
+
+    assert container.provides_isolation is True
+    assert container.sandbox_metadata() == {
+        "sandbox_backend": "container",
+        "sandbox_image": "registry.example/agent:1",
+    }
+
+    assert kata.provides_isolation is True
+    assert kata.sandbox_metadata() == {
+        "sandbox_backend": "container",
+        "sandbox_image": "registry.example/agent:1",
+        "sandbox_runtime": KATA_RUNTIME,
+    }
+
+
 def test_process_backend_executes_and_streams():
     """The process backend really runs a command and yields its output."""
     backend = ProcessBackend(acknowledged_unsafe=True)

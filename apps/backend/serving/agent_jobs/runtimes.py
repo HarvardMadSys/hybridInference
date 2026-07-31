@@ -99,6 +99,7 @@ class AgentRuntime:
         model: str,
         gateway_base_url: str,
         credential: str,
+        provides_isolation: bool = False,
         mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Return ``(argv, extra_env)`` to run this task headlessly."""
@@ -159,6 +160,7 @@ class ClaudeCodeRuntime(AgentRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        provides_isolation: bool = False,
         mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Build the headless invocation and its environment."""
@@ -333,6 +335,7 @@ class CodexRuntime(AgentRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        provides_isolation: bool = False,
         mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Build the headless invocation and its environment.
@@ -362,11 +365,13 @@ class CodexRuntime(AgentRuntime):
             "--skip-git-repo-check",
             # The operator's own Codex config must not reach a sandbox run.
             "--ignore-user-config",
-            # The container is the boundary, so Codex's own sandbox only needs
-            # to permit the work: writing the checked-out worktree. Same
-            # reasoning as the Claude runtime's permission mode.
+            # A container backend is already the boundary. Running Codex's
+            # bubblewrap sandbox inside that non-root, capability-dropped
+            # container cannot create its user namespace, so every shell
+            # command fails before it starts. The process backend has no such
+            # outer boundary and must retain Codex's workspace sandbox.
             "--sandbox",
-            "workspace-write",
+            "danger-full-access" if provides_isolation else "workspace-write",
             "--model",
             model,
             "-c",
@@ -470,6 +475,7 @@ class GenericRuntime(AgentRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        provides_isolation: bool = False,
         mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Expand the template into argv without ever invoking a shell."""
@@ -534,6 +540,7 @@ class PiRuntime(GenericRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        provides_isolation: bool = False,
         mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Add the model id the wrapper writes into pi's provider config."""
@@ -543,6 +550,7 @@ class PiRuntime(GenericRuntime):
             model=model,
             gateway_base_url=gateway_base_url,
             credential=credential,
+            provides_isolation=provides_isolation,
             mcp_config=mcp_config,
         )
         # models.json wants the model listed under the provider; the wrapper
@@ -586,6 +594,7 @@ class OpencodeRuntime(GenericRuntime):
         model: str,
         gateway_base_url: str,
         credential: str,
+        provides_isolation: bool = False,
         mcp_config: RuntimeMCPConfig = EMPTY_RUNTIME_MCP_CONFIG,
     ) -> tuple[list[str], dict[str, str]]:
         """Add the model id the wrapper declares in OpenCode's config."""
@@ -595,6 +604,7 @@ class OpencodeRuntime(GenericRuntime):
             model=model,
             gateway_base_url=gateway_base_url,
             credential=credential,
+            provides_isolation=provides_isolation,
             mcp_config=mcp_config,
         )
         env["OPENCODE_GATEWAY_MODEL"] = model

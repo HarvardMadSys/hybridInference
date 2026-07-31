@@ -280,6 +280,7 @@ def test_runner_stores_snapshot_before_the_terminal_transition(tmp_path, monkeyp
 
     class Backend:
         name = "test"
+        provides_isolation = False
 
         def preflight(self) -> None:
             pass
@@ -289,6 +290,9 @@ def test_runner_stores_snapshot_before_the_terminal_transition(tmp_path, monkeyp
 
         def adopt_workdir(self, _workdir: str) -> None:
             pass
+
+        def sandbox_metadata(self) -> dict[str, str]:
+            return {"sandbox_backend": self.name}
 
     control = Control()
     job = runner_mod.ClaimedJob(
