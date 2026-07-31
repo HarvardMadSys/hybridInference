@@ -16,9 +16,10 @@ const MAX_SESSIONS = 4;
 interface TerminalWorkspaceProps {
   jobId: string;
   active: boolean;
+  ready?: boolean;
 }
 
-export function TerminalWorkspace({ jobId, active }: TerminalWorkspaceProps) {
+export function TerminalWorkspace({ jobId, active, ready = true }: TerminalWorkspaceProps) {
   const [sessions, setSessions] = useState<AgentTerminalApi[]>([]);
   const [visibleIds, setVisibleIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -58,7 +59,7 @@ export function TerminalWorkspace({ jobId, active }: TerminalWorkspaceProps) {
   }, [jobId]);
 
   useEffect(() => {
-    if (!active || loadFailed || loadedJobRef.current === jobId) return;
+    if (!active || !ready || loadFailed || loadedJobRef.current === jobId) return;
     const generation = jobGenerationRef.current;
     loadedJobRef.current = jobId;
     setLoading(true);
@@ -78,14 +79,14 @@ export function TerminalWorkspace({ jobId, active }: TerminalWorkspaceProps) {
       .finally(() => {
         if (requestIsCurrent(jobId, generation)) setLoading(false);
       });
-  }, [active, jobId, loadFailed]);
+  }, [active, jobId, loadFailed, ready]);
 
   const visible = useMemo(
     () => visibleIds.map((id) => sessions.find((session) => session.id === id)).filter(Boolean),
     [sessions, visibleIds],
   ) as AgentTerminalApi[];
 
-  const awaitingInitialLoad = active && !loadFailed && loadedJobRef.current !== jobId;
+  const awaitingInitialLoad = active && !loadFailed && (!ready || loadedJobRef.current !== jobId);
   const canCreate =
     !loadFailed && !loading && !awaitingInitialLoad && sessions.length < MAX_SESSIONS;
 

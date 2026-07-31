@@ -1462,23 +1462,27 @@ async def test_interactive_terminal_routes_proxy_owner_session_lifecycle(
 async def test_terminal_controls_use_the_attached_session_capability(
     store: FakeAgentJobStore, monkeypatch
 ):
-    """Typing and resize stay local instead of enumerating GitHub per keypress."""
+    """Attached PTY controls avoid entitlement and readiness queries per keypress."""
     broker = _TerminalSessionBroker()
     monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
 
     async def unexpected_entitlement_recheck(**_kwargs):
         raise AssertionError("attached terminal controls must not call external entitlement")
 
+    async def unexpected_event_query(**_kwargs):
+        raise AssertionError("attached terminal controls must not query lifecycle events")
+
     monkeypatch.setattr(
         agent_jobs_router,
         "_require_workspace_entitlement",
         unexpected_entitlement_recheck,
     )
+    monkeypatch.setattr(store, "list_events_after", unexpected_event_query)
     app = _build_app(store)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as local_client:
         job_id = await _create_job(local_client)
-        store.jobs[job_id]["state"] = "succeeded"
+        store.jobs[job_id]["state"] = "running"
         wrote = await local_client.post(
             f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
             json={"data": "eA=="},
@@ -1505,6 +1509,11 @@ async def test_interactive_terminal_stream_is_relayed_byte_for_byte(
     """Output and exit SSE frames cross the gateway without re-encoding."""
     broker = _TerminalSessionBroker()
     monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+
+    async def unexpected_event_query(**_kwargs):
+        raise AssertionError("attached terminal streams must not query lifecycle events")
+
+    monkeypatch.setattr(store, "list_events_after", unexpected_event_query)
     app = _build_app(store)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as local_client:
@@ -1527,14 +1536,34 @@ async def test_interactive_terminal_stream_is_relayed_byte_for_byte(
 async def test_full_terminal_lifecycle_is_available_while_agent_runs(
     store: FakeAgentJobStore, monkeypatch
 ):
-    """Owners can create and fully control PTYs while the agent is running."""
+    """PTY creation waits for checkout, then stays available during the run."""
     broker = _TerminalSessionBroker()
     monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
     app = _build_app(store)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as local_client:
         job_id = await _create_job(local_client)
-        store.jobs[job_id]["state"] = "running"
+        queued_create = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+        queued_list = await local_client.get(f"/v1/agent/jobs/{job_id}/terminals")
+
+        claimed = await store.claim_job(worker_id="worker-1", lease_ttl_seconds=60)
+        assert claimed is not None
+        early_create = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+        early_list = await local_client.get(f"/v1/agent/jobs/{job_id}/terminals")
+
+        event_id = await store.append_event(
+            attempt_id=claimed["attempt_id"],
+            lease_generation=claimed["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "checked_out"},
+        )
+        assert event_id is not None
         create = await local_client.post(
             f"/v1/agent/jobs/{job_id}/terminals",
             json={"rows": 24, "cols": 80},
@@ -1551,6 +1580,9 @@ async def test_full_terminal_lifecycle_is_available_while_agent_runs(
         killed_once = await local_client.delete(f"/v1/agent/jobs/{job_id}/terminals/term_1")
         killed_twice = await local_client.delete(f"/v1/agent/jobs/{job_id}/terminals/term_1")
 
+    for response in (queued_create, queued_list, early_create, early_list):
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"]["type"] == "workspace_not_ready"
     for response in (create, write, resize, listed, killed_once, killed_twice):
         assert response.status_code == 200
     assert create.json()["state"] == "running"

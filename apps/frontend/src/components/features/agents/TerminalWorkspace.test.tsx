@@ -200,6 +200,22 @@ describe('TerminalWorkspace', () => {
     expect(screen.queryByText('Loading terminals…')).not.toBeInTheDocument();
   });
 
+  it('waits for workspace readiness, then loads automatically', async () => {
+    vi.mocked(listAgentTerminals).mockResolvedValue([]);
+
+    const view = render(<TerminalWorkspace jobId="job-1" active ready={false} />);
+
+    expect(screen.getByText('Loading terminals…')).toBeInTheDocument();
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    expect(listAgentTerminals).not.toHaveBeenCalled();
+
+    view.rerender(<TerminalWorkspace jobId="job-1" active ready />);
+
+    expect(await screen.findByRole('button', { name: 'New terminal' })).toBeEnabled();
+    expect(listAgentTerminals).toHaveBeenCalledWith('job-1');
+    expect(screen.queryByText('Loading terminals…')).not.toBeInTheDocument();
+  });
+
   it('keeps the selected tab visible when a split narrows the first pane', async () => {
     const first = terminal('term-1');
     const second = terminal('term-2', 'bash');

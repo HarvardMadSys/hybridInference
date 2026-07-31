@@ -1332,6 +1332,7 @@ async def _terminal_owner_workspace(
     user: dict[str, Any],
     store: AgentJobStore | None,
     app_credentials: Any | None,
+    require_ready: bool = False,
     recheck_entitlement: bool = True,
 ) -> tuple[dict[str, Any], Any]:
     """Authorize one terminal operation and return its private broker.
@@ -1345,6 +1346,28 @@ async def _terminal_owner_workspace(
     """
     job_store = _require_store(store)
     job = await _owned_job(job_store, job_id, user)
+    if require_ready and job["state"] not in TERMINAL_STATES:
+        events = await job_store.list_events_after(
+            job_id=job_id,
+            after_id=0,
+            limit=_EVENT_PAGE_SIZE,
+        )
+        ready = any(
+            event["event_type"] == "lifecycle"
+            and isinstance(event.get("payload"), dict)
+            and event["payload"].get("phase") == "checked_out"
+            for event in events
+        )
+        if not ready:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": {
+                        "type": "workspace_not_ready",
+                        "message": "The terminal workspace is still being prepared.",
+                    }
+                },
+            )
     if recheck_entitlement:
         await _require_workspace_entitlement(
             job=job,
@@ -1624,6 +1647,7 @@ async def create_agent_job_terminal(
         user=user,
         store=store,
         app_credentials=app_credentials,
+        require_ready=True,
     )
     try:
         return AgentTerminalSessionResponse(
@@ -1655,6 +1679,7 @@ async def list_agent_job_terminals(
         user=user,
         store=store,
         app_credentials=app_credentials,
+        require_ready=True,
     )
     try:
         return AgentTerminalSessionListResponse(**(await broker.list_terminals(_workspace_id(job))))

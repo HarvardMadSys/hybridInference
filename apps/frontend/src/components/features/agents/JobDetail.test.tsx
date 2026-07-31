@@ -369,13 +369,28 @@ describe('JobDetail', () => {
     await waitFor(() => expect(getAgentJobGit).toHaveBeenCalledWith('ajob_1'));
   });
 
-  it('keeps the full user terminal available without warnings while the run is active', async () => {
-    render(<JobDetail job={makeJob()} />);
+  it('loads the user terminal without warnings once checkout finishes during an active run', async () => {
+    const view = render(<JobDetail job={makeJob()} />);
 
     openWorkspace();
     fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
 
     const terminal = screen.getByLabelText('Workspace terminal');
+    expect(terminal).toHaveTextContent('Loading terminals…');
+    expect(listAgentTerminals).not.toHaveBeenCalled();
+    expect(within(terminal).queryByRole('note')).not.toBeInTheDocument();
+
+    view.rerender(
+      <JobDetail
+        job={makeJob({
+          events: [
+            { kind: 'lifecycle', text: 'started', attemptNo: 1 },
+            { kind: 'lifecycle', text: 'checked_out', attemptNo: 1 },
+          ],
+        })}
+      />,
+    );
+
     await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledWith('ajob_1'));
     expect(terminal).not.toHaveTextContent('pytest -q');
     expect(terminal).not.toHaveTextContent('2 passed');
@@ -383,6 +398,16 @@ describe('JobDetail', () => {
     expect(within(terminal).queryByRole('note')).not.toBeInTheDocument();
     expect(within(terminal).getByRole('button', { name: 'New terminal' })).toBeEnabled();
     expect(listAgentTerminals).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads terminals for settled jobs without requiring a checkout event', async () => {
+    render(<JobDetail job={makeJob({ state: 'done', events: [] })} />);
+
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
+
+    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledWith('ajob_1'));
+    expect(screen.getByRole('button', { name: 'New terminal' })).toBeEnabled();
   });
 
   it('loads Files lazily and safely refuses to preview a symlink', async () => {

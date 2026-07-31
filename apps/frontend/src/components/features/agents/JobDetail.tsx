@@ -911,6 +911,9 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   );
   const pill = STATE_PILL[job.state];
   const isActive = job.state === 'running' || job.state === 'queued';
+  const terminalWorkspaceReady =
+    !isActive ||
+    job.events.some((event) => event.kind === 'lifecycle' && event.text === 'checked_out');
 
   function openWorkspace(tab: WorkspaceTab) {
     setWorkspaceTab(tab);
@@ -1298,6 +1301,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               key={job.id}
               jobId={job.id}
               active={workspaceOpen && workspaceTab === 'terminal'}
+              ready={terminalWorkspaceReady}
             />
           </div>
           <div
