@@ -10,6 +10,7 @@ import {
   deleteAgentTerminal,
   followUpAgentJob,
   forkAgentJob,
+  getAgentConfig,
   getAgentJobFiles,
   getAgentJobGit,
   listAgentTerminals,
@@ -36,6 +37,7 @@ vi.mock('@/lib/api/agents', () => ({
   deleteAgentTerminal: vi.fn(),
   followUpAgentJob: vi.fn(),
   forkAgentJob: vi.fn(),
+  getAgentConfig: vi.fn(),
   getAgentJobFiles: vi.fn(),
   getAgentJobGit: vi.fn(),
   listAgentTerminals: vi.fn(),
@@ -45,6 +47,17 @@ vi.mock('@/lib/api/agents', () => ({
   writeAgentTerminalInput: vi.fn(),
   writeAgentJobFile: vi.fn(),
 }));
+
+const AGENT_CONFIG = {
+  repos: ['owner/repository'],
+  runtimes: ['claude-code'],
+  models: ['qwen-test', 'glm-test'],
+  default_budget_usd: 2,
+  setup_egress_tier: 'trusted',
+  agent_egress_tier: 'platform_only',
+  github_connected: true,
+  github_install_url: null,
+};
 
 function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
   return {
@@ -66,6 +79,7 @@ function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
     networkAgent: 'gateway only',
     sandbox: 'container',
     attempts: [{ no: 1, status: 'live' }],
+    currentAttemptNo: 1,
     events: [
       { kind: 'lifecycle', text: 'started', attemptNo: 1 },
       {
@@ -119,6 +133,8 @@ describe('JobDetail', () => {
     vi.mocked(followUpAgentJob).mockReset();
     vi.mocked(forkAgentJob).mockReset();
     vi.mocked(restartAgentJob).mockReset();
+    vi.mocked(getAgentConfig).mockReset();
+    vi.mocked(getAgentConfig).mockResolvedValue(AGENT_CONFIG);
     vi.mocked(getAgentJobFiles).mockReset();
     vi.mocked(getAgentJobFiles).mockResolvedValue({
       path: '',
@@ -274,6 +290,55 @@ describe('JobDetail', () => {
     expect(navigation.push).toHaveBeenCalledWith('/agents/ajob_child');
   });
 
+  it('switches the model for the next turn without leaving the thread', async () => {
+    vi.mocked(followUpAgentJob).mockResolvedValue({ id: 'ajob_child' } as never);
+    render(<JobDetail job={makeJob()} />);
+
+    const picker = await screen.findByLabelText('Model for this turn');
+    expect(picker).toHaveValue('qwen-test');
+
+    fireEvent.change(picker, { target: { value: 'glm-test' } });
+    fireEvent.change(screen.getByLabelText('Add a follow-up'), {
+      target: { value: 'Now try it on the other model' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send follow-up' }));
+
+    await waitFor(() =>
+      expect(followUpAgentJob).toHaveBeenCalledWith('ajob_1', {
+        prompt: 'Now try it on the other model',
+        model: 'glm-test',
+      }),
+    );
+  });
+
+  it('keeps the running model selectable after the deployment stops offering it', async () => {
+    vi.mocked(getAgentConfig).mockResolvedValue({ ...AGENT_CONFIG, models: ['glm-test'] });
+    render(<JobDetail job={makeJob()} />);
+
+    // Otherwise the control would show the deployment's first model while the
+    // turn still ran on the parent's — the composer lying about the job again.
+    expect(await screen.findByLabelText('Model for this turn')).toHaveValue('qwen-test');
+  });
+
+  it('names the inherited model when the model list will not load', async () => {
+    vi.mocked(getAgentConfig).mockRejectedValue(new Error('config unavailable'));
+    vi.mocked(followUpAgentJob).mockResolvedValue({ id: 'ajob_child' } as never);
+    render(<JobDetail job={makeJob()} />);
+
+    await waitFor(() => expect(getAgentConfig).toHaveBeenCalled());
+    expect(screen.queryByLabelText('Model for this turn')).not.toBeInTheDocument();
+    expect(screen.getByText(/Inherits claude-code · qwen-test/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Add a follow-up'), {
+      target: { value: 'Carry on' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send follow-up' }));
+
+    await waitFor(() =>
+      expect(followUpAgentJob).toHaveBeenCalledWith('ajob_1', { prompt: 'Carry on' }),
+    );
+  });
+
   it('moves diff, raw events, usage, and sandbox data into a secondary drawer', () => {
     render(<JobDetail job={makeJob()} />);
 
@@ -411,27 +476,98 @@ describe('JobDetail', () => {
     await waitFor(() => expect(getAgentJobGit).toHaveBeenCalledWith('ajob_1'));
   });
 
-  it('keeps agent commands out of the user terminal and locks it while the run is active', async () => {
-    const view = render(<JobDetail job={makeJob()} />);
+  it('loads the terminal without warnings once the current workspace is ready', async () => {
+    const view = render(
+      <JobDetail
+        job={makeJob({
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
+          state: 'queued',
+          events: [{ kind: 'lifecycle', text: 'workspace_ready', attemptNo: 1 }],
+        })}
+      />,
+    );
 
     openWorkspace();
     fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
 
     const terminal = screen.getByLabelText('Workspace terminal');
+    expect(terminal).toHaveTextContent('Loading terminals…');
     expect(listAgentTerminals).not.toHaveBeenCalled();
+    expect(within(terminal).queryByRole('note')).not.toBeInTheDocument();
+
+    view.rerender(
+      <JobDetail
+        job={makeJob({
+          events: [
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 1 },
+            { kind: 'lifecycle', text: 'started', attemptNo: 2 },
+          ],
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
+        })}
+      />,
+    );
+    expect(listAgentTerminals).not.toHaveBeenCalled();
+
+    view.rerender(
+      <JobDetail
+        job={makeJob({
+          events: [
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 1 },
+            { kind: 'lifecycle', text: 'started', attemptNo: 2 },
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 2 },
+          ],
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
+        })}
+      />,
+    );
+
+    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledWith('ajob_1'));
     expect(terminal).not.toHaveTextContent('pytest -q');
     expect(terminal).not.toHaveTextContent('2 passed');
-    expect(terminal).toHaveTextContent('Terminal input is available after the agent finishes');
-    expect(
-      within(terminal).queryByRole('button', { name: 'New terminal' }),
-    ).not.toBeInTheDocument();
-
-    view.rerender(<JobDetail job={makeJob({ state: 'done' })} />);
-    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledWith('ajob_1'));
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
-    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
+    expect(terminal).not.toHaveTextContent('Terminal input is available after the agent finishes');
+    expect(within(terminal).queryByRole('note')).not.toBeInTheDocument();
+    expect(within(terminal).getByRole('button', { name: 'New terminal' })).toBeEnabled();
     expect(listAgentTerminals).toHaveBeenCalledTimes(1);
+
+    view.rerender(
+      <JobDetail
+        job={makeJob({
+          events: [
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 2 },
+            { kind: 'lifecycle', text: 'workspace_finalizing', attemptNo: 2 },
+          ],
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
+        })}
+      />,
+    );
+    expect(terminal).toHaveTextContent('Loading terminals…');
+    expect(within(terminal).queryByRole('note')).not.toBeInTheDocument();
+  });
+
+  it('loads terminals for settled jobs without requiring a checkout event', async () => {
+    render(<JobDetail job={makeJob({ state: 'done', events: [] })} />);
+
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
+
+    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledWith('ajob_1'));
+    expect(screen.getByRole('button', { name: 'New terminal' })).toBeEnabled();
   });
 
   it('loads Files lazily and safely refuses to preview a symlink', async () => {
@@ -717,7 +853,7 @@ describe('JobDetail', () => {
     render(<JobDetail job={makeJob({ state: 'cancelled' })} />);
 
     expect(screen.getByText(/send a follow-up to continue/i)).toBeInTheDocument();
-    expect(screen.getByText(/restores any saved intermediate changes/i)).toBeInTheDocument();
+    expect(screen.getByText(/restores any saved changes/i)).toBeInTheDocument();
   });
 
   it('forks the conversation from an earlier assistant message', async () => {

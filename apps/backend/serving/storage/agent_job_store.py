@@ -109,6 +109,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "model": row["model"],
         "state": row["state"],
         "cancel_requested": row["cancel_requested"],
+        "terminal_resume_pending": row["terminal_resume_pending"],
         "current_attempt_id": row["current_attempt_id"],
         "published_pr_url": row["published_pr_url"],
         "published_commit_sha": row["published_commit_sha"],
@@ -118,16 +119,19 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "fork_source_job_id": row["fork_source_job_id"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "pinned_at": row.get("pinned_at"),
     }
 
 
 _JOB_COLUMNS = (
     "id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha, task_prompt, "
     "setup_script, runtime, model, state, "
-    "cancel_requested, current_attempt_id, published_pr_url, published_commit_sha, detail, "
+    "cancel_requested, terminal_resume_pending, current_attempt_id, "
+    "published_pr_url, published_commit_sha, detail, "
     "budget_usd, metadata, fork_source_job_id, "
     "created_at, updated_at"
 )
+_QUALIFIED_JOB_COLUMNS = ", ".join(f"j.{column.strip()}" for column in _JOB_COLUMNS.split(","))
 
 
 class AgentJobStore:
@@ -148,6 +152,7 @@ class AgentJobStore:
                     repo TEXT NOT NULL,
                     title TEXT NOT NULL,
                     archived_at TIMESTAMPTZ,
+                    pinned_at TIMESTAMPTZ,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
@@ -155,6 +160,9 @@ class AgentJobStore:
             )
             await conn.execute(
                 "ALTER TABLE agent_threads ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ"
+            )
+            await conn.execute(
+                "ALTER TABLE agent_threads ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ"
             )
             await conn.execute(
                 """
@@ -172,6 +180,7 @@ class AgentJobStore:
                     model TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'queued',
                     cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+                    terminal_resume_pending BOOLEAN NOT NULL DEFAULT FALSE,
                     current_attempt_id BIGINT,
                     published_pr_url TEXT,
                     published_commit_sha TEXT,
@@ -187,6 +196,10 @@ class AgentJobStore:
             # revision (CREATE TABLE IF NOT EXISTS never adds columns).
             await conn.execute(
                 "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS budget_usd NUMERIC(12, 6)"
+            )
+            await conn.execute(
+                "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS "
+                "terminal_resume_pending BOOLEAN NOT NULL DEFAULT FALSE"
             )
             await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS setup_script TEXT")
             await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS thread_id TEXT")
@@ -244,6 +257,7 @@ class AgentJobStore:
                     lease_owner TEXT NOT NULL,
                     lease_generation BIGINT NOT NULL,
                     lease_expires_at TIMESTAMPTZ NOT NULL,
+                    terminal_ready BOOLEAN NOT NULL DEFAULT FALSE,
                     sandbox_id TEXT,
                     base_sha TEXT,
                     status TEXT NOT NULL DEFAULT 'running',
@@ -252,6 +266,10 @@ class AgentJobStore:
                     UNIQUE (job_id, attempt_no)
                 )
                 """
+            )
+            await conn.execute(
+                "ALTER TABLE agent_attempts "
+                "ADD COLUMN IF NOT EXISTS terminal_ready BOOLEAN NOT NULL DEFAULT FALSE"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_attempts_expiry "
@@ -729,7 +747,7 @@ class AgentJobStore:
             if requested is None:
                 return None
             thread = await conn.fetchrow(
-                "SELECT id FROM agent_threads WHERE id = $1 AND user_id = $2 FOR UPDATE",
+                "SELECT id, pinned_at FROM agent_threads WHERE id = $1 AND user_id = $2 FOR UPDATE",
                 requested["thread_id"],
                 user_id,
             )
@@ -791,7 +809,9 @@ class AgentJobStore:
             await conn.execute(
                 "UPDATE agent_threads SET updated_at = NOW() WHERE id = $1", thread_id
             )
-        return _job_row_to_dict(row)
+        result = _job_row_to_dict(row)
+        result["pinned_at"] = thread["pinned_at"]
+        return result
 
     async def fork_thread(self, *, source_job_id: str, user_id: str) -> dict[str, Any] | None:
         """Duplicate a conversation up to (and including) one settled turn.
@@ -925,7 +945,7 @@ class AgentJobStore:
         async with self._pool.acquire() as conn:
             thread = await conn.fetchrow(
                 """
-                SELECT t.id, t.repo, t.title, t.created_at, t.updated_at
+                SELECT t.id, t.repo, t.title, t.created_at, t.updated_at, t.pinned_at
                 FROM agent_threads t
                 JOIN agent_jobs j ON j.thread_id = t.id
                 WHERE j.id = $1 AND j.user_id = $2
@@ -949,6 +969,9 @@ class AgentJobStore:
                 f"SELECT {_JOB_COLUMNS} FROM agent_jobs WHERE thread_id = $1 ORDER BY turn_no",
                 thread["id"],
             )
+            job_rows = [_job_row_to_dict(job) for job in jobs]
+            for job in job_rows:
+                job["pinned_at"] = thread["pinned_at"]
         return {
             "id": thread["id"],
             "repo": thread["repo"],
@@ -956,7 +979,7 @@ class AgentJobStore:
             "created_at": thread["created_at"],
             "updated_at": thread["updated_at"],
             "messages": [dict(message) for message in messages],
-            "jobs": [_job_row_to_dict(job) for job in jobs],
+            "jobs": job_rows,
         }
 
     async def follow_up_context(self, *, job_id: str) -> dict[str, Any]:
@@ -1087,7 +1110,13 @@ class AgentJobStore:
         """Fetch one job by id."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"SELECT {_JOB_COLUMNS} FROM agent_jobs WHERE id = $1", job_id
+                f"""
+                SELECT {_QUALIFIED_JOB_COLUMNS}, t.pinned_at
+                FROM agent_jobs j
+                LEFT JOIN agent_threads t ON t.id = j.thread_id
+                WHERE j.id = $1
+                """,
+                job_id,
             )
         return _job_row_to_dict(row) if row else None
 
@@ -1099,20 +1128,24 @@ class AgentJobStore:
         archived: bool = False,
         repo: str | None = None,
     ) -> list[dict[str, Any]]:
-        """List a user's jobs from active or archived threads, newest first.
+        """List a user's jobs with pinned threads first, then newest first.
 
         ``repo`` narrows the page to one project, which is how the sidebar
         pages a single project past the global newest-first window.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT {_JOB_COLUMNS} FROM agent_jobs "
-                "WHERE user_id = $1 AND ($4::text IS NULL OR repo = $4) AND EXISTS ("
-                "    SELECT 1 FROM agent_threads t "
-                "    WHERE t.id = agent_jobs.thread_id AND t.user_id = $1 "
-                "      AND (($3 AND t.archived_at IS NOT NULL) "
-                "           OR (NOT $3 AND t.archived_at IS NULL))"
-                ") ORDER BY created_at DESC LIMIT $2",
+                f"""
+                SELECT {_QUALIFIED_JOB_COLUMNS}, t.pinned_at
+                FROM agent_jobs j
+                JOIN agent_threads t ON t.id = j.thread_id AND t.user_id = $1
+                WHERE j.user_id = $1
+                  AND ($4::text IS NULL OR j.repo = $4)
+                  AND (($3 AND t.archived_at IS NOT NULL)
+                       OR (NOT $3 AND t.archived_at IS NULL))
+                ORDER BY t.pinned_at DESC NULLS LAST, j.created_at DESC
+                LIMIT $2
+                """,
                 user_id,
                 limit,
                 archived,
@@ -1130,21 +1163,23 @@ class AgentJobStore:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT repo,
-                       COUNT(DISTINCT thread_id) AS task_count,
+                SELECT j.repo,
+                       COUNT(DISTINCT j.thread_id) AS task_count,
                        COUNT(*) FILTER (
-                           WHERE state IN ('queued', 'waiting', 'running', 'publishing')
+                           WHERE j.state IN ('queued', 'waiting', 'running', 'publishing')
                        ) AS active_count,
-                       MAX(created_at) AS last_activity_at
-                FROM agent_jobs
-                WHERE user_id = $1 AND EXISTS (
-                    SELECT 1 FROM agent_threads t
-                    WHERE t.id = agent_jobs.thread_id AND t.user_id = $1
-                      AND (($2 AND t.archived_at IS NOT NULL)
-                           OR (NOT $2 AND t.archived_at IS NULL))
-                )
-                GROUP BY repo
-                ORDER BY last_activity_at DESC
+                       MAX(j.created_at) AS last_activity_at,
+                       COUNT(DISTINCT j.thread_id) FILTER (
+                           WHERE t.pinned_at IS NOT NULL
+                       ) AS pinned_count,
+                       MAX(t.pinned_at) AS pinned_at
+                FROM agent_jobs j
+                JOIN agent_threads t ON t.id = j.thread_id AND t.user_id = $1
+                WHERE j.user_id = $1
+                  AND (($2 AND t.archived_at IS NOT NULL)
+                       OR (NOT $2 AND t.archived_at IS NULL))
+                GROUP BY j.repo
+                ORDER BY pinned_at DESC NULLS LAST, last_activity_at DESC
                 """,
                 user_id,
                 archived,
@@ -1155,6 +1190,8 @@ class AgentJobStore:
                 "task_count": int(row["task_count"]),
                 "active_count": int(row["active_count"]),
                 "last_activity_at": row["last_activity_at"],
+                "pinned_count": int(row["pinned_count"]),
+                "pinned_at": row["pinned_at"],
             }
             for row in rows
         ]
@@ -1188,6 +1225,36 @@ class AgentJobStore:
         if row is None:
             return None
         return {"thread_id": row["thread_id"], "archived_at": row["archived_at"]}
+
+    async def set_thread_pinned(
+        self, *, job_id: str, user_id: str, pinned: bool
+    ) -> dict[str, Any] | None:
+        """Pin or unpin the owned thread containing ``job_id``."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE agent_threads t
+                SET pinned_at = CASE
+                    WHEN $3 THEN COALESCE(t.pinned_at, NOW())
+                    ELSE NULL
+                END
+                WHERE t.user_id = $2
+                  AND EXISTS (
+                      SELECT 1
+                      FROM agent_jobs j
+                      WHERE j.id = $1
+                        AND j.thread_id = t.id
+                        AND j.user_id = $2
+                  )
+                RETURNING t.id AS thread_id, t.pinned_at
+                """,
+                job_id,
+                user_id,
+                pinned,
+            )
+        if row is None:
+            return None
+        return {"thread_id": row["thread_id"], "pinned_at": row["pinned_at"]}
 
     # ── Claim / lease ──────────────────────────────────────────────────
 
@@ -1344,6 +1411,7 @@ class AgentJobStore:
                 """
                 UPDATE agent_jobs
                 SET state = CASE WHEN cancel_requested THEN 'cancelled' ELSE 'queued' END,
+                    terminal_resume_pending = cancel_requested,
                     current_attempt_id = NULL,
                     updated_at = NOW()
                 WHERE id = $1 AND current_attempt_id = $2 AND state = 'running'
@@ -1451,6 +1519,10 @@ class AgentJobStore:
                     "WHERE id = $1 AND status = 'running'",
                     attempt_id,
                 )
+                await conn.execute(
+                    "UPDATE agent_jobs SET terminal_resume_pending = FALSE WHERE id = $1",
+                    job_id,
+                )
                 has_patch = await conn.fetchval(
                     "SELECT EXISTS (SELECT 1 FROM agent_job_artifacts "
                     "WHERE job_id = $1 AND kind = 'patch')",
@@ -1497,6 +1569,17 @@ class AgentJobStore:
                 or attempt["expired"]
             ):
                 return None
+            phase = (payload or {}).get("phase") if event_type == "lifecycle" else None
+            if phase == "workspace_ready":
+                await conn.execute(
+                    "UPDATE agent_attempts SET terminal_ready = TRUE WHERE id = $1",
+                    attempt_id,
+                )
+            elif phase in {"workspace_preparing", "workspace_finalizing"}:
+                await conn.execute(
+                    "UPDATE agent_attempts SET terminal_ready = FALSE WHERE id = $1",
+                    attempt_id,
+                )
             return await self._insert_event(
                 conn,
                 job_id=attempt["job_id"],
@@ -1504,6 +1587,83 @@ class AgentJobStore:
                 event_type=event_type,
                 payload=payload,
             )
+
+    async def terminal_workspace_ready(self, *, attempt_id: int) -> bool:
+        """Return whether the live attempt currently permits terminal writes.
+
+        This is deliberately a primary-key lookup rather than an event-log
+        replay: terminal input is latency-sensitive and may arrive every few
+        milliseconds. Expired or superseded attempts are never considered
+        ready, even before the reaper updates the owning job row.
+        """
+        async with self._pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    """
+                    SELECT terminal_ready
+                    FROM agent_attempts
+                    WHERE id = $1
+                      AND status = 'running'
+                      AND lease_expires_at > NOW()
+                    """,
+                    attempt_id,
+                )
+            )
+
+    async def fence_terminal_workspace(
+        self,
+        *,
+        attempt_id: int,
+        lease_generation: int,
+    ) -> bool:
+        """Revoke readiness only for the still-live fenced attempt."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE agent_attempts
+                SET terminal_ready = FALSE
+                WHERE id = $1
+                  AND lease_generation = $2
+                  AND status = 'running'
+                  AND lease_expires_at > NOW()
+                """,
+                attempt_id,
+                lease_generation,
+            )
+        return result == "UPDATE 1"
+
+    async def list_terminal_resumes_pending(self, *, limit: int = 100) -> list[str]:
+        """List settled workspaces whose broker resume still needs confirmation."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id
+                FROM agent_jobs
+                WHERE terminal_resume_pending = TRUE
+                  AND state = ANY($1::text[])
+                ORDER BY updated_at
+                LIMIT $2
+                """,
+                list(TERMINAL_STATES),
+                limit,
+            )
+        return [row["id"] for row in rows]
+
+    async def mark_terminal_resume_complete(self, *, job_id: str) -> bool:
+        """Clear durable recovery state after the broker confirms a resume."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE agent_jobs
+                SET terminal_resume_pending = FALSE
+                WHERE id = $1
+                  AND terminal_resume_pending = TRUE
+                  AND state = ANY($2::text[])
+                """,
+                job_id,
+                list(TERMINAL_STATES),
+            )
+        return result == "UPDATE 1"
 
     async def list_events_after(
         self,
@@ -1677,7 +1837,7 @@ class AgentJobStore:
             if state in (WAITING, QUEUED):
                 await conn.execute(
                     "UPDATE agent_jobs SET state = 'cancelled', cancel_requested = TRUE, "
-                    "updated_at = NOW() WHERE id = $1",
+                    "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                     job_id,
                 )
                 await conn.execute(
@@ -1926,22 +2086,22 @@ class AgentJobStore:
                     action = FAILED
                     await conn.execute(
                         "UPDATE agent_jobs SET state = 'failed', detail = $2, "
-                        "updated_at = NOW() WHERE id = $1",
+                        "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                         job_id,
                         "publish attempt lease expired; manual review required",
                     )
                 elif row["cancel_requested"]:
                     action = CANCELLED
                     await conn.execute(
-                        "UPDATE agent_jobs SET state = 'cancelled', updated_at = NOW() "
-                        "WHERE id = $1",
+                        "UPDATE agent_jobs SET state = 'cancelled', "
+                        "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                         job_id,
                     )
                 elif await self._attempts_spent(conn, job_id) >= max_attempts:
                     action = FAILED
                     await conn.execute(
                         "UPDATE agent_jobs SET state = 'failed', detail = $2, "
-                        "updated_at = NOW() WHERE id = $1",
+                        "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                         job_id,
                         f"exhausted {max_attempts} attempts (lease expired)",
                     )

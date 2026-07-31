@@ -35,6 +35,7 @@ import struct
 import subprocess
 import termios
 import threading
+import time
 import tty
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -157,6 +158,14 @@ class TerminalProcess(ABC):
     @abstractmethod
     def resize(self, rows: int, cols: int) -> None:
         """Resize the terminal window."""
+
+    def suspend(self) -> None:
+        """Pause the terminal's complete process hierarchy."""
+        raise TerminalNotSupportedError("this terminal backend cannot suspend process trees")
+
+    def resume(self) -> None:
+        """Resume a terminal process hierarchy paused by :meth:`suspend`."""
+        raise TerminalNotSupportedError("this terminal backend cannot resume process trees")
 
     @abstractmethod
     def kill(self) -> None:
@@ -379,6 +388,7 @@ class _ContainerTerminalProcess(TerminalProcess):
         self._state_lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._killed = False
+        self._suspended = False
 
     def chunks(self) -> Iterator[bytes]:
         """Yield the raw combined PTY stream from Docker."""
@@ -440,6 +450,40 @@ class _ContainerTerminalProcess(TerminalProcess):
         if result.returncode != 0:
             raise SandboxError("terminal cannot be resized: " + result.stderr.strip()[:200])
 
+    def _set_suspended(self, suspended: bool) -> None:
+        """Pause or resume the named container with input serialized around it."""
+        action = "pause" if suspended else "unpause"
+        with self._state_lock, self._write_lock:
+            if self._killed or self._process.poll() is not None:
+                return
+            if self._suspended is suspended:
+                return
+            try:
+                result = subprocess.run(
+                    [self._docker_binary, action, self._container_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise SandboxError(f"terminal cannot be {action}d") from exc
+            stderr = result.stderr.strip()
+            already_stopped = any(
+                message in stderr.lower() for message in ("is not running", "no such container")
+            )
+            if result.returncode != 0 and not already_stopped:
+                raise SandboxError(f"terminal cannot be {action}d: " + result.stderr.strip()[:200])
+            self._suspended = suspended
+
+    def suspend(self) -> None:
+        """Freeze the complete container process tree without closing its PTY."""
+        self._set_suspended(True)
+
+    def resume(self) -> None:
+        """Resume a container previously frozen for workspace coordination."""
+        self._set_suspended(False)
+
     def kill(self) -> None:
         """Kill the named container and confirm both sides are gone.
 
@@ -491,25 +535,34 @@ class _ContainerTerminalProcess(TerminalProcess):
                     except subprocess.TimeoutExpired:
                         pass
 
-            # ``docker kill`` can race container creation or a natural exit.
-            # Once the client is gone, force-remove either confirms deletion or
-            # confirms that the server-generated name no longer exists.
-            try:
-                removed = subprocess.run(
-                    [self._docker_binary, "rm", "--force", self._container_name],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
+            # ``docker kill`` can race container creation, natural exit, or
+            # ``docker run --rm`` removing the container asynchronously. Retry
+            # only that known transitional response; every other failure still
+            # retains the session so a later kill can confirm cleanup.
+            for attempt in range(20):
+                try:
+                    removed = subprocess.run(
+                        [self._docker_binary, "rm", "--force", self._container_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    raise SandboxError("terminal container cleanup could not be confirmed") from exc
+                stderr = removed.stderr.lower()
+                missing = "no such container" in stderr
+                if removed.returncode == 0 or missing:
+                    break
+                removal_in_progress = (
+                    "removal of container" in stderr and "is already in progress" in stderr
                 )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise SandboxError("terminal container cleanup could not be confirmed") from exc
-            missing = "no such container" in removed.stderr.lower()
-            if removed.returncode != 0 and not missing:
-                raise SandboxError(
-                    "terminal container cleanup could not be confirmed: "
-                    + removed.stderr.strip()[:200]
-                )
+                if not removal_in_progress or attempt == 19:
+                    raise SandboxError(
+                        "terminal container cleanup could not be confirmed: "
+                        + removed.stderr.strip()[:200]
+                    )
+                time.sleep(0.05)
             if not client_stopped or self._process.poll() is None:
                 raise SandboxError("terminal Docker client could not be stopped")
             self._close_input()

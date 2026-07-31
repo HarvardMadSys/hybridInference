@@ -22,11 +22,13 @@ import {
   getAgentJobThread,
   listAgentTerminals,
   listAgentJobs,
+  pinAgentJob,
   resizeAgentTerminal,
   restartAgentJob,
   restoreAgentJob,
   streamAgentTerminal,
   streamAgentJob,
+  unpinAgentJob,
   writeAgentTerminalInput,
   writeAgentJobFile,
 } from '../agents';
@@ -120,6 +122,29 @@ describe('agents api', () => {
     expect(fetchWithAuth).toHaveBeenLastCalledWith(
       expect.any(String),
       '/v1/agent/jobs/job%2Fone/archive',
+      { method: 'DELETE' },
+    );
+  });
+
+  it('pins and unpins a whole task conversation', async () => {
+    fetchWithAuth.mockResolvedValue(
+      jsonResponse({ thread_id: 'athr_1', pinned: true, pinned_at: '2026-07-29T12:00:00Z' }),
+    );
+
+    await pinAgentJob('job/one');
+    expect(fetchWithAuth).toHaveBeenLastCalledWith(
+      expect.any(String),
+      '/v1/agent/jobs/job%2Fone/pin',
+      { method: 'POST' },
+    );
+
+    fetchWithAuth.mockResolvedValue(
+      jsonResponse({ thread_id: 'athr_1', pinned: false, pinned_at: null }),
+    );
+    await unpinAgentJob('job/one');
+    expect(fetchWithAuth).toHaveBeenLastCalledWith(
+      expect.any(String),
+      '/v1/agent/jobs/job%2Fone/pin',
       { method: 'DELETE' },
     );
   });

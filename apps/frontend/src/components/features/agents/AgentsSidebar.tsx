@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/components/providers';
-import { archiveAgentJob } from '@/lib/api/agents';
+import { archiveAgentJob, pinAgentJob, unpinAgentJob } from '@/lib/api/agents';
 import { groupJobsByProject, projectLabel } from './conversations';
 import type { ConversationRow, ProjectSection } from './conversations';
 import { PaneResizer } from './PaneResizer';
@@ -68,6 +68,8 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
   const [hiddenThreads, setHiddenThreads] = useState<Set<string>>(new Set());
   const [archiving, setArchiving] = useState<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [pinning, setPinning] = useState<string | null>(null);
+  const [pinError, setPinError] = useState<string | null>(null);
   const [expandedOverrides, setExpandedOverrides] = useState<Record<string, boolean>>({});
   const [shownPerRepo, setShownPerRepo] = useState<Record<string, number>>({});
   const pane = useResizablePane({
@@ -189,6 +191,27 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
     }
   }
 
+  async function setConversationPinned(key: string, jobId: string, repo: string, pinned: boolean) {
+    setPinning(key);
+    setPinError(null);
+    try {
+      await (pinned ? pinAgentJob(jobId) : unpinAgentJob(jobId));
+      reload();
+      reloadProjects();
+      loadRepo(repo);
+    } catch (cause: unknown) {
+      setPinError(
+        cause instanceof Error
+          ? cause.message
+          : pinned
+            ? 'Could not pin the task.'
+            : 'Could not unpin the task.',
+      );
+    } finally {
+      setPinning(null);
+    }
+  }
+
   if (collapsed) return null;
 
   const busy = loading || projectsLoading;
@@ -236,7 +259,12 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
               {archiveError}
             </p>
           ) : null}
-          {!busy && !error && !archiveError && folders.length === 0 ? (
+          {pinError ? (
+            <p className="mt-2 px-2 text-[13px] text-red-600" role="alert">
+              {pinError}
+            </p>
+          ) : null}
+          {!busy && !error && !archiveError && !pinError && folders.length === 0 ? (
             <p className="mt-2 px-2 text-[13px] text-gray-400">No jobs yet.</p>
           ) : null}
 
@@ -258,7 +286,9 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
               error={errorRepos.get(folder.repo) ?? null}
               pathname={pathname}
               archiving={archiving}
+              pinning={pinning}
               onArchive={archiveConversation}
+              onSetPinned={setConversationPinned}
             />
           ))}
 
@@ -331,7 +361,9 @@ function ProjectFolder({
   error,
   pathname,
   archiving,
+  pinning,
   onArchive,
+  onSetPinned,
 }: {
   section: ProjectSection;
   expanded: boolean;
@@ -343,7 +375,9 @@ function ProjectFolder({
   error: string | null;
   pathname: string;
   archiving: string | null;
+  pinning: string | null;
   onArchive: (key: string, jobId: string, jobIds: string[]) => void;
+  onSetPinned: (key: string, jobId: string, repo: string, pinned: boolean) => void;
 }) {
   const listId = `agents-project-${section.repo.replace(/[^A-Za-z0-9]/g, '-')}`;
   const visible = section.conversations.slice(0, shown);
@@ -351,50 +385,73 @@ function ProjectFolder({
 
   return (
     <div className="mt-3">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        aria-controls={listId}
-        title={section.repo}
-        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-gray-700 hover:bg-gray-200/60"
-      >
-        <svg
-          className={`h-3 w-3 shrink-0 text-gray-400 transition-transform ${
-            expanded ? 'rotate-90' : ''
-          }`}
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2.4}
-          aria-hidden="true"
+      <div className="group flex items-center gap-0.5">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-controls={listId}
+          title={section.repo}
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-gray-700 hover:bg-gray-200/60"
         >
-          <path d="m9 6 6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-        <svg
-          className="h-4 w-4 shrink-0 text-gray-500"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.8}
-          aria-hidden="true"
+          <svg
+            className={`h-3 w-3 shrink-0 text-gray-400 transition-transform ${
+              expanded ? 'rotate-90' : ''
+            }`}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.4}
+            aria-hidden="true"
+          >
+            <path d="m9 6 6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <svg
+            className="h-4 w-4 shrink-0 text-gray-500"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+            aria-hidden="true"
+          >
+            <path
+              d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17V7.5Z"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          <span className="min-w-0 flex-1 truncate">{section.label}</span>
+          {/* A folded folder must still say it is hiding live work — the same
+              reason the rows carry status dots at all. */}
+          {!expanded && activeCount > 0 ? (
+            <span
+              className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-500"
+              aria-label={`${activeCount} running or queued`}
+            />
+          ) : null}
+        </button>
+        <Link
+          href={`/agents?repo=${encodeURIComponent(section.repo)}`}
+          aria-label={`New task in ${section.label}`}
+          title={`New task in ${section.label}`}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 opacity-70 transition hover:bg-gray-200/70 hover:text-gray-700 hover:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 group-hover:opacity-100"
         >
-          <path
-            d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17V7.5Z"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <span className="min-w-0 flex-1 truncate">{section.label}</span>
-        {/* A folded folder must still say it is hiding live work — the same
-            reason the rows carry status dots at all. */}
-        {!expanded && activeCount > 0 ? (
-          <span
-            className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-500"
-            aria-label={`${activeCount} running or queued`}
-          />
-        ) : null}
-      </button>
+          <svg
+            className="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+            aria-hidden="true"
+          >
+            <path
+              d="M13.5 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-7.5M16.5 3.5a2.12 2.12 0 0 1 3 3L11 15l-4 1 1-4 8.5-8.5Z"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </Link>
+      </div>
 
       {expanded ? (
         <div id={listId} className="mt-0.5 space-y-0.5">
@@ -406,7 +463,7 @@ function ProjectFolder({
                 <Link
                   href={href}
                   title={`${job.repo} · ${job.title}`}
-                  className={`flex w-full items-center gap-2 rounded-md py-1.5 pl-4 pr-9 text-left text-[13px] ${
+                  className={`flex w-full items-center gap-2 rounded-md py-1.5 pl-4 pr-16 text-left text-[13px] ${
                     isActive
                       ? 'bg-gray-200/80 font-medium text-gray-900'
                       : 'text-gray-600 hover:bg-gray-200/60'
@@ -417,9 +474,38 @@ function ProjectFolder({
                 </Link>
                 <button
                   type="button"
+                  aria-label={`${job.pinnedAt ? 'Unpin' : 'Pin'} ${job.title}`}
+                  aria-pressed={Boolean(job.pinnedAt)}
+                  aria-busy={pinning === key}
+                  title={job.pinnedAt ? 'Unpin task' : 'Pin task'}
+                  disabled={pinning === key || archiving === key}
+                  onClick={() => onSetPinned(key, job.id, job.repo, !job.pinnedAt)}
+                  className={`absolute right-7 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-gray-500 transition hover:bg-gray-300/70 hover:text-gray-800 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 disabled:cursor-wait disabled:opacity-60 ${
+                    job.pinnedAt
+                      ? 'opacity-100'
+                      : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+                  } ${pinning === key ? 'animate-pulse' : ''}`}
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill={job.pinnedAt ? 'currentColor' : 'none'}
+                    stroke="currentColor"
+                    strokeWidth={1.8}
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="m15 4 5 5-3.5 1.5-4 4L13 19l-1 1-3.5-4.5-4.5-3.5 1-1 4.5.5 4-4L15 4ZM5 19l4-4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+                <button
+                  type="button"
                   aria-label={`Archive ${job.title}`}
                   title="Archive task"
-                  disabled={archiving === key}
+                  disabled={archiving === key || pinning === key}
                   onClick={() => onArchive(key, job.id, jobIds)}
                   className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-gray-500 opacity-0 transition hover:bg-gray-300/70 hover:text-gray-800 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 disabled:cursor-wait disabled:opacity-60 group-hover:opacity-100 group-focus-within:opacity-100"
                 >

@@ -174,6 +174,61 @@ def test_container_terminal_resize_wraps_process_failures(monkeypatch, failure):
         terminal.resize(30, 100)
 
 
+def test_container_terminal_suspend_accepts_an_already_exited_client(monkeypatch):
+    """A shell exit racing suspension is already safely quiesced."""
+
+    class _AttachedClient:
+        pid = 1234
+        stdout = None
+
+        @staticmethod
+        def poll():
+            return 0
+
+    monkeypatch.setattr(
+        "serving.agent_jobs.sandbox.subprocess.run",
+        lambda *_args, **_kwargs: pytest.fail("docker should not be called"),
+    )
+    terminal = _ContainerTerminalProcess(
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
+    )
+
+    terminal.suspend()
+    terminal.resume()
+
+
+def test_container_terminal_suspend_accepts_container_exit_race(monkeypatch):
+    """Docker reporting a just-exited container is also safely quiesced."""
+
+    class _AttachedClient:
+        pid = 1234
+        stdout = None
+
+        @staticmethod
+        def poll():
+            return None
+
+    monkeypatch.setattr(
+        "serving.agent_jobs.sandbox.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="Error response from daemon: Container x is not running",
+        ),
+    )
+    terminal = _ContainerTerminalProcess(
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
+    )
+
+    terminal.suspend()
+
+
 def test_container_terminal_kill_always_kills_client_and_force_removes(monkeypatch):
     """A timed-out Docker kill cannot skip either fallback cleanup step."""
     calls: list[list[str]] = []
@@ -220,6 +275,62 @@ def test_container_terminal_kill_always_kills_client_and_force_removes(monkeypat
         ["docker", "rm", "--force", "hyi-terminal-test"],
     ]
     assert killed_groups == [(4321, signal.SIGKILL)]
+
+
+def test_container_terminal_kill_waits_for_auto_remove(monkeypatch):
+    """Docker ``--rm`` cleanup in progress must not become a false 503."""
+    calls: list[list[str]] = []
+    remove_attempts = 0
+
+    class _AttachedClient:
+        pid = 4321
+        stdout = None
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = -signal.SIGKILL
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -signal.SIGKILL
+
+    def fake_run(argv, **kwargs):
+        nonlocal remove_attempts
+        calls.append(argv)
+        if argv[1] == "rm":
+            remove_attempts += 1
+            if remove_attempts == 1:
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr="removal of container hyi-terminal-test is already in progress",
+                )
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="Error response from daemon: No such container: hyi-terminal-test",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("serving.agent_jobs.sandbox.os.killpg", lambda *_args: None)
+    terminal = _ContainerTerminalProcess(
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
+    )
+
+    terminal.kill()
+
+    assert calls == [
+        ["docker", "kill", "hyi-terminal-test"],
+        ["docker", "rm", "--force", "hyi-terminal-test"],
+        ["docker", "rm", "--force", "hyi-terminal-test"],
+    ]
 
 
 def test_container_terminal_kill_failure_can_be_retried(monkeypatch):

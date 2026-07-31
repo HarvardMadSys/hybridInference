@@ -16,16 +16,10 @@ const MAX_SESSIONS = 4;
 interface TerminalWorkspaceProps {
   jobId: string;
   active: boolean;
-  disabled?: boolean;
-  disabledReason?: string;
+  ready?: boolean;
 }
 
-export function TerminalWorkspace({
-  jobId,
-  active,
-  disabled = false,
-  disabledReason,
-}: TerminalWorkspaceProps) {
+export function TerminalWorkspace({ jobId, active, ready = true }: TerminalWorkspaceProps) {
   const [sessions, setSessions] = useState<AgentTerminalApi[]>([]);
   const [visibleIds, setVisibleIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -65,7 +59,7 @@ export function TerminalWorkspace({
   }, [jobId]);
 
   useEffect(() => {
-    if (!active || disabled || loadFailed || loadedJobRef.current === jobId) return;
+    if (!active || !ready || loadFailed || loadedJobRef.current === jobId) return;
     const generation = jobGenerationRef.current;
     loadedJobRef.current = jobId;
     setLoading(true);
@@ -85,16 +79,16 @@ export function TerminalWorkspace({
       .finally(() => {
         if (requestIsCurrent(jobId, generation)) setLoading(false);
       });
-  }, [active, disabled, jobId, loadFailed]);
+  }, [active, jobId, loadFailed, ready]);
 
   const visible = useMemo(
     () => visibleIds.map((id) => sessions.find((session) => session.id === id)).filter(Boolean),
     [sessions, visibleIds],
   ) as AgentTerminalApi[];
 
-  const awaitingInitialLoad = active && !disabled && !loadFailed && loadedJobRef.current !== jobId;
+  const awaitingInitialLoad = active && !loadFailed && (!ready || loadedJobRef.current !== jobId);
   const canCreate =
-    !disabled && !loadFailed && !loading && !awaitingInitialLoad && sessions.length < MAX_SESSIONS;
+    !loadFailed && !loading && !awaitingInitialLoad && sessions.length < MAX_SESSIONS;
 
   function retryLoad() {
     loadedJobRef.current = null;
@@ -141,20 +135,34 @@ export function TerminalWorkspace({
     if (busy) return;
     const requestJobId = jobId;
     const generation = jobGenerationRef.current;
+    const replaceSessions = (nextSessions: AgentTerminalApi[]) => {
+      const availableIds = new Set(nextSessions.map((session) => session.id));
+      const nextVisible = visibleIds.filter((id) => availableIds.has(id));
+      if (nextVisible.length === 0 && nextSessions.length > 0) {
+        nextVisible.push(nextSessions[0].id);
+      }
+      setSessions(nextSessions);
+      setVisibleIds(nextVisible);
+    };
     setBusy(true);
     setError(null);
     try {
       await deleteAgentTerminal(requestJobId, terminalId);
       if (!requestIsCurrent(requestJobId, generation)) return;
-      const remaining = sessions.filter((session) => session.id !== terminalId);
-      const nextVisible = visibleIds.filter((id) => id !== terminalId);
-      if (nextVisible.length === 0 && remaining.length > 0) nextVisible.push(remaining[0].id);
-      setSessions(remaining);
-      setVisibleIds(nextVisible);
+      replaceSessions(sessions.filter((session) => session.id !== terminalId));
     } catch (cause: unknown) {
-      if (requestIsCurrent(requestJobId, generation)) {
-        setError(cause instanceof Error ? cause.message : 'Could not kill terminal');
+      if (!requestIsCurrent(requestJobId, generation)) return;
+      try {
+        const refreshed = await listAgentTerminals(requestJobId);
+        if (!requestIsCurrent(requestJobId, generation)) return;
+        if (!refreshed.some((session) => session.id === terminalId)) {
+          replaceSessions(refreshed);
+          return;
+        }
+      } catch {
+        // Preserve the original kill error when reconciliation is unavailable.
       }
+      setError(cause instanceof Error ? cause.message : 'Could not kill terminal');
     } finally {
       if (requestIsCurrent(requestJobId, generation)) setBusy(false);
     }
@@ -197,8 +205,7 @@ export function TerminalWorkspace({
               terminal={terminal}
               sessions={sessions}
               paneIndex={paneIndex}
-              disabled={disabled}
-              disabledReason={disabledReason}
+              ready={ready}
               canCreate={canCreate}
               canSplit={canCreate && visible.length < 2}
               busy={busy}
@@ -246,10 +253,6 @@ export function TerminalWorkspace({
             >
               Retry
             </button>
-          ) : disabled && disabledReason ? (
-            <p role="note" className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              {disabledReason}
-            </p>
           ) : (
             <button
               type="button"

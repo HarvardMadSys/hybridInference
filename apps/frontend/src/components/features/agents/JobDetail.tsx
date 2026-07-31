@@ -18,6 +18,7 @@ import {
   cancelAgentJob,
   followUpAgentJob,
   forkAgentJob,
+  getAgentConfig,
   getAgentJobGit,
   restartAgentJob,
   type AgentGitWorkspaceApi,
@@ -25,6 +26,7 @@ import {
 
 import { lifecyclePhaseLabel, toDiffFileDetails } from './adapt';
 import { PaneResizer } from './PaneResizer';
+import { Picker } from './Picker';
 import { TerminalWorkspace } from './TerminalWorkspace';
 import type { AgentEvent, AgentJob, AgentThreadMessage } from './types';
 import { useResizablePane } from './useResizablePane';
@@ -892,6 +894,8 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('git');
   const [followUp, setFollowUp] = useState('');
   const [restartSourceJobId, setRestartSourceJobId] = useState<string | null>(null);
+  const [models, setModels] = useState<string[]>([]);
+  const [model, setModel] = useState(job.model);
   const [submitting, setSubmitting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [forking, setForking] = useState(false);
@@ -909,6 +913,33 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   });
 
   useEffect(() => setAttemptNo(liveAttempt), [liveAttempt]);
+
+  // Every turn is its own sandbox run, and its context is a runtime-neutral
+  // replay of the conversation — so the model is a per-turn choice, not a
+  // property of the thread. Offer the same list the create endpoint accepts.
+  useEffect(() => {
+    let cancelled = false;
+    getAgentConfig()
+      .then((config) => {
+        if (!cancelled) setModels(config.models ?? []);
+      })
+      .catch(() => {
+        // A list we could not load is not a list to pick from: the composer
+        // falls back to naming the inherited model, which is what a turn with
+        // no override runs on anyway.
+        if (!cancelled) setModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The parent's model leads even when this deployment has stopped offering
+  // it, so the control cannot show one model while the turn would run another.
+  const modelOptions = useMemo(() => {
+    if (models.length === 0) return [];
+    return models.includes(job.model) ? models : [job.model, ...models];
+  }, [job.model, models]);
 
   // An "Edit & rewind" fork leaves the edited prompt behind for its landing
   // page. Session-scoped and consumed once, so a reload does not resurrect it.
@@ -930,6 +961,23 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   );
   const pill = STATE_PILL[job.state];
   const isActive = job.state === 'running' || job.state === 'queued';
+  const latestTerminalEvent = [...job.events]
+    .reverse()
+    .find(
+      (event) =>
+        event.kind === 'lifecycle' &&
+        event.attemptNo === job.currentAttemptNo &&
+        (event.text === 'workspace_preparing' ||
+          event.text === 'workspace_ready' ||
+          event.text === 'workspace_finalizing'),
+    );
+  const latestTerminalPhase =
+    latestTerminalEvent?.kind === 'lifecycle' ? latestTerminalEvent.text : undefined;
+  const terminalWorkspaceReady =
+    !isActive ||
+    (job.state === 'running' &&
+      job.currentAttemptNo !== undefined &&
+      latestTerminalPhase === 'workspace_ready');
 
   useEffect(() => {
     stopRequestedRef.current = false;
@@ -993,9 +1041,17 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
     setSubmitting(true);
     setActionError(null);
     try {
-      const child = restartSourceJobId
-        ? await restartAgentJob(restartSourceJobId, { prompt })
-        : await followUpAgentJob(job.id, { prompt });
+      let child;
+      if (restartSourceJobId) {
+        child = await restartAgentJob(restartSourceJobId, { prompt });
+      } else {
+        child = await followUpAgentJob(job.id, {
+          prompt,
+          // Only an actual switch is sent. Omitted, the turn inherits the
+          // parent's model, which was validated when it was chosen.
+          ...(model && model !== job.model ? { model } : {}),
+        });
+      }
       router.push(`/agents/${child.id}`);
     } catch (cause: unknown) {
       setActionError(
@@ -1288,32 +1344,56 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                   aria-label="Add a follow-up"
                   className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-4 pt-3 text-sm leading-relaxed text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
                 />
-                <div className="flex items-center gap-2 px-3 pb-2.5">
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
-                    {restartSourceJobId ? (
-                      <>Restarts from the original base · intermediate direction is discarded</>
-                    ) : (
-                      <>
-                        {job.state === 'cancelled'
-                          ? 'Restores any saved intermediate changes'
-                          : `Inherits ${job.runtime} · ${job.model}`}
-                        {isActive ? ' · queued after this run' : ''}
-                      </>
-                    )}
-                  </span>
+                <div className="flex items-center gap-1.5 px-3 pb-2.5">
                   {restartSourceJobId ? (
-                    <button
-                      type="button"
-                      onClick={cancelRestart}
-                      className="shrink-0 rounded px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-                    >
-                      Cancel restart
-                    </button>
-                  ) : null}
+                    <>
+                      <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
+                        Restarts from the original base · intermediate direction is discarded
+                      </span>
+                      <button
+                        type="button"
+                        onClick={cancelRestart}
+                        className="shrink-0 rounded px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                      >
+                        Cancel restart
+                      </button>
+                    </>
+                  ) : modelOptions.length > 0 ? (
+                    <>
+                      {/* The harness stays the thread's; the model is offered
+                          again. Nothing binds it to the turn before — the next
+                          run is a fresh sandbox handed a runtime-neutral replay
+                          of the conversation, so it can be answered by a model
+                          the thread has not used. */}
+                      <span className="shrink-0 text-[11px] text-gray-400">
+                        {job.state === 'cancelled'
+                          ? `Restores any saved changes · ${job.runtime} ·`
+                          : `Inherits ${job.runtime} ·`}
+                      </span>
+                      <Picker
+                        label="Model for this turn"
+                        value={model}
+                        options={modelOptions}
+                        onChange={setModel}
+                      />
+                      {isActive ? (
+                        <span className="min-w-0 truncate text-[11px] text-gray-400">
+                          · queued after this run
+                        </span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
+                      {job.state === 'cancelled'
+                        ? `Restores any saved changes · ${job.runtime} · ${job.model}`
+                        : `Inherits ${job.runtime} · ${job.model}`}
+                      {isActive ? ' · queued after this run' : ''}
+                    </span>
+                  )}
                   <button
                     type="submit"
                     disabled={!followUp.trim() || submitting}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="ml-auto inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label={restartSourceJobId ? 'Restart task' : 'Send follow-up'}
                   >
                     {submitting ? (
@@ -1414,8 +1494,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               key={job.id}
               jobId={job.id}
               active={workspaceOpen && workspaceTab === 'terminal'}
-              disabled={isActive}
-              disabledReason="Terminal input is available after the agent finishes, so both do not modify the workspace at once."
+              ready={terminalWorkspaceReady}
             />
           </div>
           <div

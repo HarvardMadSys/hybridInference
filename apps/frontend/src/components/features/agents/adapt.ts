@@ -271,6 +271,9 @@ const LIFECYCLE_LABELS: Record<string, string> = {
   checked_out: 'Repository ready',
   context_restored: 'Previous work restored',
   setup: 'Installing project dependencies',
+  workspace_preparing: 'Preparing workspace',
+  workspace_ready: 'Workspace ready',
+  workspace_finalizing: 'Saving workspace changes',
   compact_boundary: 'Context compacted to keep going',
   result: 'Agent finished',
   publishing: 'Opening draft pull request',
@@ -368,6 +371,8 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
   // exists precisely because it wrote events, and a superseded control event
   // is what marks the takeover.
   const attemptIds = [...new Set(events.map((event) => event.attempt_id))].sort((a, b) => a - b);
+  const currentAttemptIndex =
+    job.current_attempt_id === null ? -1 : attemptIds.indexOf(job.current_attempt_id);
   const supersededIds = new Set(
     events
       .filter((event) => event.event_type === 'attempt_superseded')
@@ -425,6 +430,7 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
   return {
     id: job.id,
     createdAt: job.created_at,
+    pinnedAt: job.pinned_at,
     title: (options.thread?.title ?? job.task_prompt.split('\n')[0]).slice(0, 80),
     prompt: job.task_prompt,
     state: toDisplayState(job),
@@ -447,6 +453,7 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     networkAgent: tierLabel(job.agent_egress_tier),
     sandbox: sandboxLabel(events, job.current_attempt_id),
     attempts,
+    currentAttemptNo: currentAttemptIndex >= 0 ? currentAttemptIndex + 1 : undefined,
     events: renderedEvents,
     eventCount: events.length,
     diffFiles: toDiffFiles(patch),

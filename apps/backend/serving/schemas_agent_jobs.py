@@ -110,6 +110,7 @@ class AgentJobResponse(BaseModel):
     metadata: dict[str, Any] | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    pinned_at: str | None = None
     # Read from the billing ledger, never from anything the agent reports about
     # itself — the same rule the budget check already follows.
     spent_usd: float | None = None
@@ -143,6 +144,8 @@ class AgentProject(BaseModel):
     # Non-terminal jobs, so a collapsed project can still show live work.
     active_count: int
     last_activity_at: str | None = None
+    pinned_count: int = 0
+    pinned_at: str | None = None
 
 
 class AgentProjectListResponse(BaseModel):
@@ -183,6 +186,14 @@ class AgentThreadArchiveResponse(BaseModel):
     thread_id: str
     archived: bool
     archived_at: str | None = None
+
+
+class AgentThreadPinResponse(BaseModel):
+    """Pin state for the thread containing a requested job."""
+
+    thread_id: str
+    pinned: bool
+    pinned_at: str | None = None
 
 
 class AgentFollowUpRequest(BaseModel):
@@ -466,6 +477,12 @@ class WorkerEventResponse(BaseModel):
     """Accepted event id (the SSE cursor value)."""
 
     event_id: int
+
+
+class WorkerTerminalSuspendRequest(BaseModel):
+    """Protected workspace phase that requires every owner PTY to pause."""
+
+    phase: Literal["workspace_preparing", "workspace_finalizing"]
 
 
 class WorkerArtifactRequest(BaseModel):

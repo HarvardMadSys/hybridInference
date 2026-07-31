@@ -244,6 +244,17 @@ class ControlPlane:
             {"kind": kind, "content": content},
         )
 
+    def suspend_terminals(self, phase: str) -> None:
+        """Freeze owner PTYs before workspace preparation or artifact capture."""
+        self._post(
+            f"/v1/agent/worker/jobs/{self.job_id}/terminals/suspend",
+            {"phase": phase},
+        )
+
+    def resume_terminals(self) -> None:
+        """Resume retained PTYs and publish readiness for this attempt."""
+        self._post(f"/v1/agent/worker/jobs/{self.job_id}/terminals/resume")
+
     def finish(self, state: str, detail: str | None = None, base_sha: str | None = None) -> None:
         """Drive the fenced terminal transition.
 
@@ -889,11 +900,26 @@ def run_once(
     control = ControlPlane(base_url, job.worker_token)
     control.job_id = job.job_id
     heart = Heartbeater(control, ttl=lease_ttl, interval=HEARTBEAT_INTERVAL_S)
+    terminals_suspended = False
+
+    def finish_attempt(
+        state: str,
+        detail: str | None = None,
+        *,
+        base_sha: str | None = None,
+    ) -> None:
+        """Finish through the gateway, which also resumes retained terminals."""
+        nonlocal terminals_suspended
+        if base_sha is None:
+            control.finish(state, detail)
+        else:
+            control.finish(state, detail, base_sha=base_sha)
+        terminals_suspended = False
 
     try:
         runtime = get_runtime(job.runtime, generic_command=generic_command)
     except KeyError as exc:
-        control.finish("failed", str(exc))
+        finish_attempt("failed", str(exc))
         control.close()
         return 2
 
@@ -906,12 +932,17 @@ def run_once(
         control.append_event(
             NormalizedEvent("error", {"text": f"runtime binary {runtime.binary!r} missing"})
         )
-        control.finish("failed", f"runtime binary {runtime.binary!r} is not installed")
+        finish_attempt("failed", f"runtime binary {runtime.binary!r} is not installed")
         control.close()
         return 2
 
     heart.start()
     try:
+        # A replacement attempt may inherit live user shells from the expired
+        # owner. Freeze their complete process trees before checkout or setup;
+        # stdin fencing alone cannot stop a watcher or background process.
+        terminals_suspended = True
+        control.suspend_terminals("workspace_preparing")
         control.append_event(
             NormalizedEvent(
                 "lifecycle",
@@ -958,7 +989,7 @@ def run_once(
             backend.adopt_workdir(workdir)
         except WorktreeError as exc:
             control.append_event(NormalizedEvent("error", {"text": str(exc)}))
-            control.finish("failed", str(exc))
+            finish_attempt("failed", str(exc))
             return 2
         control.append_event(
             NormalizedEvent("lifecycle", {"phase": "checked_out", "base_sha": base_sha})
@@ -973,7 +1004,7 @@ def run_once(
                 apply_context_patch(workdir, job.context_patch)
             except WorktreeError as exc:
                 control.append_event(NormalizedEvent("error", {"text": str(exc)}))
-                control.finish("failed", str(exc), base_sha=base_sha)
+                finish_attempt("failed", str(exc), base_sha=base_sha)
                 return 2
             control.append_event(
                 NormalizedEvent(
@@ -1008,12 +1039,17 @@ def run_once(
                 # and letting the agent start anyway produces a confusing
                 # failure much later, in the model's voice rather than the
                 # installer's.
-                control.finish(
+                finish_attempt(
                     "failed",
                     f"setup failed ({setup.exit_code}): {setup.detail}",
                     base_sha=base_sha,
                 )
                 return 1
+
+        # Everything before this point is trusted workspace preparation.
+        # Retained terminals resume only for the agent execution window.
+        control.resume_terminals()
+        terminals_suspended = False
 
         exit_code, tail, tool_errors = run_agent(
             runtime,
@@ -1026,6 +1062,11 @@ def run_once(
             backend=backend,
         )
 
+        # Freeze both interactive input and already-running terminal process
+        # trees before taking the patch and workspace snapshot. The finish
+        # endpoint resumes them immediately before the terminal state change.
+        terminals_suspended = True
+        control.suspend_terminals("workspace_finalizing")
         patch = build_patch(workdir, backend, base_sha=job.base_sha or base_sha)
         if patch.strip():
             control.save_artifact("patch", patch)
@@ -1038,11 +1079,15 @@ def run_once(
         save_workspace_snapshot(control, workdir=workdir, patch=patch)
 
         if exit_code == 130:
-            control.finish("cancelled", "cancelled by owner", base_sha=base_sha)
+            finish_attempt("cancelled", "cancelled by owner", base_sha=base_sha)
             return 0
 
         if exit_code != 0:
-            control.finish("failed", f"agent exited {exit_code}: {tail[-500:]}", base_sha=base_sha)
+            finish_attempt(
+                "failed",
+                f"agent exited {exit_code}: {tail[-500:]}",
+                base_sha=base_sha,
+            )
             return 1
 
         # The publisher runs outside the sandbox and drives publish/*; the
@@ -1055,17 +1100,17 @@ def run_once(
             # as a clean run — the owner would see "succeeded" on a job that
             # did nothing and never learn why.
             if tool_errors:
-                control.finish(
+                finish_attempt(
                     "failed",
                     f"agent produced no changes after {len(tool_errors)} failed "
                     f"tool call(s): {tool_errors[0]}",
                     base_sha=base_sha,
                 )
                 return 1
-            control.finish("succeeded", "agent completed (no changes)", base_sha=base_sha)
+            finish_attempt("succeeded", "agent completed (no changes)", base_sha=base_sha)
             return 0
 
-        control.finish("succeeded", "agent completed", base_sha=base_sha)
+        finish_attempt("succeeded", "agent completed", base_sha=base_sha)
         return 0
     except WorktreeError as exc:
         # Patch generation raises this on a Git failure, timeout or byte cap.
@@ -1075,12 +1120,18 @@ def run_once(
         print(f"patch generation failed: {exc}", file=sys.stderr)
         with contextlib.suppress(Exception):
             control.append_event(NormalizedEvent("error", {"text": str(exc)}))
-            control.finish("failed", str(exc), base_sha=base_sha)
+            finish_attempt("failed", str(exc), base_sha=base_sha)
         return 2
     except LeaseLost as exc:
         print(f"lease lost, stopping: {exc}", file=sys.stderr)
         return 3
     finally:
+        # A surprising runner-side exception must not strand retained user
+        # terminals in a suspended state. A stale attempt cannot resume them:
+        # the worker endpoint fences this call against its live lease.
+        if terminals_suspended:
+            with contextlib.suppress(Exception):
+                control.resume_terminals()
         if workspace_root is not None:
             with contextlib.suppress(OSError):
                 os.utime(workdir, None)
