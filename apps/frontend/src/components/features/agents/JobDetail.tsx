@@ -16,12 +16,14 @@ import {
   cancelAgentJob,
   followUpAgentJob,
   forkAgentJob,
+  getAgentConfig,
   getAgentJobGit,
   type AgentGitWorkspaceApi,
 } from '@/lib/api/agents';
 
 import { lifecyclePhaseLabel, toDiffFileDetails } from './adapt';
 import { PaneResizer } from './PaneResizer';
+import { Picker } from './Picker';
 import { TerminalWorkspace } from './TerminalWorkspace';
 import type { AgentEvent, AgentJob, AgentThreadMessage } from './types';
 import { useResizablePane } from './useResizablePane';
@@ -895,6 +897,8 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('git');
   const [followUp, setFollowUp] = useState('');
+  const [models, setModels] = useState<string[]>([]);
+  const [model, setModel] = useState(job.model);
   const [submitting, setSubmitting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [forking, setForking] = useState(false);
@@ -910,6 +914,33 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   });
 
   useEffect(() => setAttemptNo(liveAttempt), [liveAttempt]);
+
+  // Every turn is its own sandbox run, and its context is a runtime-neutral
+  // replay of the conversation — so the model is a per-turn choice, not a
+  // property of the thread. Offer the same list the create endpoint accepts.
+  useEffect(() => {
+    let cancelled = false;
+    getAgentConfig()
+      .then((config) => {
+        if (!cancelled) setModels(config.models ?? []);
+      })
+      .catch(() => {
+        // A list we could not load is not a list to pick from: the composer
+        // falls back to naming the inherited model, which is what a turn with
+        // no override runs on anyway.
+        if (!cancelled) setModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The parent's model leads even when this deployment has stopped offering
+  // it, so the control cannot show one model while the turn would run another.
+  const modelOptions = useMemo(() => {
+    if (models.length === 0) return [];
+    return models.includes(job.model) ? models : [job.model, ...models];
+  }, [job.model, models]);
 
   // An "Edit & rewind" fork leaves the edited prompt behind for its landing
   // page. Session-scoped and consumed once, so a reload does not resurrect it.
@@ -974,7 +1005,12 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
     setSubmitting(true);
     setActionError(null);
     try {
-      const child = await followUpAgentJob(job.id, { prompt });
+      const child = await followUpAgentJob(job.id, {
+        prompt,
+        // Only an actual switch is sent. Omitted, the turn inherits the
+        // parent's model, which was validated when it was chosen.
+        ...(model && model !== job.model ? { model } : {}),
+      });
       router.push(`/agents/${child.id}`);
     } catch (cause: unknown) {
       setActionError(cause instanceof Error ? cause.message : 'Could not queue the follow-up');
@@ -1228,15 +1264,39 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                   aria-label="Add a follow-up"
                   className="w-full resize-none rounded-t-xl border-0 bg-transparent px-4 pt-3 text-sm leading-relaxed text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
                 />
-                <div className="flex items-center gap-2 px-3 pb-2.5">
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
-                    Inherits {job.runtime} · {job.model}
-                    {isActive ? ' · queued after this run' : ''}
-                  </span>
+                <div className="flex items-center gap-1.5 px-3 pb-2.5">
+                  {modelOptions.length > 0 ? (
+                    <>
+                      {/* The harness stays the thread's; the model is offered
+                          again. Nothing binds it to the turn before — the next
+                          run is a fresh sandbox handed a runtime-neutral replay
+                          of the conversation, so it can be answered by a model
+                          the thread has not used. */}
+                      <span className="shrink-0 text-[11px] text-gray-400">
+                        Inherits {job.runtime} ·
+                      </span>
+                      <Picker
+                        label="Model for this turn"
+                        value={model}
+                        options={modelOptions}
+                        onChange={setModel}
+                      />
+                      {isActive ? (
+                        <span className="min-w-0 truncate text-[11px] text-gray-400">
+                          · queued after this run
+                        </span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
+                      Inherits {job.runtime} · {job.model}
+                      {isActive ? ' · queued after this run' : ''}
+                    </span>
+                  )}
                   <button
                     type="submit"
                     disabled={!followUp.trim() || submitting}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-crimson text-white shadow-sm transition-colors hover:bg-crimson-dark disabled:cursor-not-allowed disabled:opacity-40"
+                    className="ml-auto inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-crimson text-white shadow-sm transition-colors hover:bg-crimson-dark disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="Send follow-up"
                   >
                     {submitting ? (
