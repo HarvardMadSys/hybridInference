@@ -59,8 +59,7 @@ interface TerminalPaneProps {
   terminal: AgentTerminalApi;
   sessions: AgentTerminalApi[];
   paneIndex: number;
-  disabled: boolean;
-  disabledReason?: string;
+  ready: boolean;
   canCreate: boolean;
   canSplit: boolean;
   busy: boolean;
@@ -75,8 +74,7 @@ export function TerminalPane({
   terminal,
   sessions,
   paneIndex,
-  disabled,
-  disabledReason,
+  ready,
   canCreate,
   canSplit,
   busy,
@@ -87,16 +85,18 @@ export function TerminalPane({
 }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
-  const disabledRef = useRef(disabled);
+  const inputEnabledRef = useRef(ready && terminal.state === 'running');
   const tabListRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+  const inputEnabled = ready && terminal.state === 'running';
+  inputEnabledRef.current = inputEnabled;
 
   useEffect(() => {
-    disabledRef.current = disabled;
     if (terminalRef.current) {
-      terminalRef.current.options.disableStdin = disabled || terminal.state !== 'running';
+      terminalRef.current.options.disableStdin = !inputEnabled;
+      if (inputEnabled) terminalRef.current.focus();
     }
-  }, [disabled, terminal.state]);
+  }, [inputEnabled]);
 
   useEffect(() => {
     const tabList = tabListRef.current;
@@ -146,7 +146,7 @@ export function TerminalPane({
           convertEol: false,
           cursorBlink: true,
           cursorStyle: 'block',
-          disableStdin: disabledRef.current || terminal.state !== 'running',
+          disableStdin: !inputEnabledRef.current,
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
           fontSize: 13,
           lineHeight: 1.25,
@@ -200,9 +200,13 @@ export function TerminalPane({
 
         const flushInput = async () => {
           if (disposed || flushingInput) return;
+          if (!inputEnabledRef.current) {
+            pendingInput = '';
+            return;
+          }
           flushingInput = true;
           try {
-            while (!disposed && pendingInput) {
+            while (!disposed && inputEnabledRef.current && pendingInput) {
               const batch = pendingInput;
               pendingInput = '';
               await writeAgentTerminalInput(jobId, terminal.id, batch);
@@ -226,7 +230,7 @@ export function TerminalPane({
         };
 
         dataDisposable = xterm.onData((data) => {
-          if (disabledRef.current || terminal.state !== 'running') return;
+          if (!inputEnabledRef.current) return;
           pendingInput += data;
           if (!inputTimer && !flushingInput) {
             inputTimer = setTimeout(() => {
@@ -371,14 +375,6 @@ export function TerminalPane({
           </button>
         </div>
       </header>
-      {disabled && disabledReason ? (
-        <p
-          role="note"
-          className="shrink-0 border-b border-amber-100 bg-amber-50 px-3 py-2 text-[11px] text-amber-800"
-        >
-          {disabledReason}
-        </p>
-      ) : null}
       <div
         ref={hostRef}
         role="application"

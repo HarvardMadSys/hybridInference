@@ -124,6 +124,37 @@ class WorkspaceBrokerClient:
         """List the interactive terminals retained by a workspace."""
         return await self._request("GET", workspace_id, "terminals")
 
+    async def suspend_terminals(
+        self, workspace_id: str, *, lease_generation: int
+    ) -> dict[str, Any]:
+        """Freeze every interactive terminal process tree in a workspace."""
+        return await self._request(
+            "POST",
+            workspace_id,
+            "terminals/suspend",
+            json={"lease_generation": lease_generation},
+            timeout=60,
+        )
+
+    async def resume_terminals(self, workspace_id: str, *, lease_generation: int) -> dict[str, Any]:
+        """Resume retained interactive terminals after a protected phase."""
+        return await self._request(
+            "POST",
+            workspace_id,
+            "terminals/resume",
+            json={"lease_generation": lease_generation},
+            timeout=60,
+        )
+
+    async def resume_settled_terminals(self, workspace_id: str) -> dict[str, Any]:
+        """Authoritatively resume terminals after the job can no longer retry."""
+        return await self._request(
+            "POST",
+            workspace_id,
+            "terminals/resume-settled",
+            timeout=60,
+        )
+
     async def stream_terminal(
         self, workspace_id: str, terminal_id: str, *, after: int
     ) -> WorkspaceBrokerStream:

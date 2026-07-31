@@ -453,6 +453,12 @@ class WorkerEventResponse(BaseModel):
     event_id: int
 
 
+class WorkerTerminalSuspendRequest(BaseModel):
+    """Protected workspace phase that requires every owner PTY to pause."""
+
+    phase: Literal["workspace_preparing", "workspace_finalizing"]
+
+
 class WorkerArtifactRequest(BaseModel):
     """An artifact produced by a worker (e.g. the git patch)."""
 

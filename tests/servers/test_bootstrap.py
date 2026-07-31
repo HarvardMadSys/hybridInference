@@ -15,6 +15,8 @@ from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
+from serving.agent_jobs import terminal_coordination
+from serving.agent_jobs.workspace_broker_client import WorkspaceBrokerError
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.servers import bootstrap
 from serving.servers.deps import AppServices
@@ -30,6 +32,33 @@ def _mock_routewise(*, config: RouteWiseConfig | None = None) -> MagicMock:
 
 class TestBootstrapInitialization:
     """Test bootstrap initialization functions."""
+
+    @pytest.mark.asyncio
+    async def test_settled_terminal_resume_retries_until_broker_confirms(
+        self,
+        monkeypatch,
+    ):
+        broker = SimpleNamespace(
+            resume_settled_terminals=AsyncMock(
+                side_effect=[
+                    WorkspaceBrokerError(503, "broker unavailable"),
+                    {"ok": True},
+                ]
+            )
+        )
+        monkeypatch.setattr(terminal_coordination, "workspace_broker_from_env", lambda: broker)
+        store = SimpleNamespace(
+            list_terminal_resumes_pending=AsyncMock(return_value=["ajob_test"]),
+            mark_terminal_resume_complete=AsyncMock(return_value=True),
+        )
+
+        await bootstrap._reconcile_settled_agent_terminals(store)
+        store.mark_terminal_resume_complete.assert_not_awaited()
+
+        await bootstrap._reconcile_settled_agent_terminals(store)
+        store.mark_terminal_resume_complete.assert_awaited_once_with(job_id="ajob_test")
+        assert broker.resume_settled_terminals.await_count == 2
+        broker.resume_settled_terminals.assert_awaited_with("ajob_test")
 
     @pytest.mark.asyncio
     async def test_routewise_settings_apply_continues_after_one_router_fails(

@@ -87,6 +87,20 @@ class FakeControl:
     def save_artifact(self, kind: str, content: str) -> None:
         self.artifacts[kind] = content
 
+    def suspend_terminals(self, phase: str) -> None:
+        self.append_event(
+            type("Event", (), {"event_type": "lifecycle", "payload": {"phase": phase}})()
+        )
+
+    def resume_terminals(self) -> None:
+        self.append_event(
+            type(
+                "Event",
+                (),
+                {"event_type": "lifecycle", "payload": {"phase": "workspace_ready"}},
+            )()
+        )
+
     def finish(self, state: str, detail: str | None = None) -> None:
         self.finished = (state, detail)
 
@@ -391,6 +405,91 @@ def test_live_runner_reuses_one_durable_workspace_per_job(monkeypatch, tmp_path)
             "sandbox_backend": "counting",
         },
     ) in control.events
+
+
+def test_workspace_ready_follows_context_restore_and_setup(monkeypatch, tmp_path):
+    """Terminal readiness is emitted only after trusted workspace preparation."""
+
+    timeline: list[str] = []
+
+    class Control(FakeControl):
+        def append_event(self, event) -> None:
+            if event.event_type == "lifecycle":
+                timeline.append(event.payload["phase"])
+            super().append_event(event)
+
+        def finish(self, state, detail=None, **_kwargs):
+            self.finished = (state, detail)
+
+    class Backend(_CountingBackend):
+        def adopt_workdir(self, _path: str) -> None:
+            pass
+
+    job = ClaimedJob(
+        **{
+            **_JOB.__dict__,
+            "thread_id": "athr_follow_up",
+            "parent_job_id": "ajob_parent",
+            "context_patch": "diff --git a/a b/a\n",
+            "setup_script": "uv sync",
+        }
+    )
+    control = Control()
+    monkeypatch.setattr(runner_mod, "claim", lambda **_kwargs: job)
+    monkeypatch.setattr(runner_mod, "ControlPlane", lambda *_args, **_kwargs: control)
+    monkeypatch.setattr(runner_mod, "Heartbeater", lambda *_args, **_kwargs: FakeHeart())
+    runtime = type("Runtime", (), {"binary": "fake"})()
+    monkeypatch.setattr(runner_mod, "get_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(runner_mod, "existing_checkout_sha", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner_mod, "prepare_worktree", lambda **_kwargs: "abcdef1")
+    monkeypatch.setattr(runner_mod, "checkout_output_branch", lambda *_args, **_kwargs: "agent/x")
+    monkeypatch.setattr(
+        runner_mod,
+        "apply_context_patch",
+        lambda *_args, **_kwargs: timeline.append("context_patch_applied"),
+    )
+    monkeypatch.setattr(runner_mod, "build_cache_from_env", lambda: object())
+    setup = type(
+        "Setup",
+        (),
+        {"restored_from_cache": False, "ran": True, "exit_code": 0, "detail": ""},
+    )()
+    monkeypatch.setattr(
+        runner_mod,
+        "run_setup",
+        lambda **_kwargs: timeline.append("setup_finished") or setup,
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "run_agent",
+        lambda *_args, **_kwargs: timeline.append("agent_started") or (0, "", []),
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "build_patch",
+        lambda *_args, **_kwargs: timeline.append("patch_captured") or "",
+    )
+    monkeypatch.setattr(runner_mod, "save_workspace_snapshot", lambda *_args, **_kwargs: True)
+
+    code = runner_mod.run_once(
+        base_url="http://gw",
+        dispatcher_token="d",
+        worker_id="w",
+        workdir=str(tmp_path / "unused"),
+        workspace_root=str(tmp_path / "workspaces"),
+        backend=Backend(),
+    )
+
+    assert code == 0
+    assert timeline.index("workspace_preparing") < timeline.index("checked_out")
+    assert timeline.index("checked_out") < timeline.index("context_patch_applied")
+    assert timeline.index("context_patch_applied") < timeline.index("context_restored")
+    assert timeline.index("context_restored") < timeline.index("setup_finished")
+    assert timeline.index("setup_finished") < timeline.index("setup")
+    assert timeline.index("setup") < timeline.index("workspace_ready")
+    assert timeline.index("workspace_ready") < timeline.index("agent_started")
+    assert timeline.index("agent_started") < timeline.index("workspace_finalizing")
+    assert timeline.index("workspace_finalizing") < timeline.index("patch_captured")
 
 
 def test_empty_queue_is_a_clean_no_op(monkeypatch, tmp_path):

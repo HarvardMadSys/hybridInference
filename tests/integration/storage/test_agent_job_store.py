@@ -635,6 +635,40 @@ async def test_event_seq_and_global_cursor(store: AgentJobStore):
     assert [event["id"] for event in tail] == [ids[2]]
 
 
+async def test_terminal_readiness_is_fenced_attempt_state(store: AgentJobStore):
+    """Hot-path terminal checks do not replay events and stale workers cannot toggle them."""
+    await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is False
+    assert (
+        await store.append_event(
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
+        is not None
+    )
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is True
+    assert (
+        await store.fence_terminal_workspace(
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"] + 1,
+        )
+        is False
+    )
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is True
+    assert (
+        await store.fence_terminal_workspace(
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+        )
+        is True
+    )
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is False
+
+
 async def test_zombie_worker_is_fenced_out_after_reap(store: AgentJobStore):
     """After a reap, every write path of the old attempt is rejected."""
     job = await _create_job(store)
@@ -705,6 +739,9 @@ async def test_reap_fails_job_after_max_attempts(store: AgentJobStore):
     fetched = await store.get_job(job["id"])
     assert fetched["state"] == "failed"
     assert "exhausted" in fetched["detail"]
+    assert await store.list_terminal_resumes_pending() == [job["id"]]
+    assert await store.mark_terminal_resume_complete(job_id=job["id"]) is True
+    assert await store.list_terminal_resumes_pending() == []
 
 
 async def test_publish_is_one_shot(store: AgentJobStore):
@@ -781,6 +818,8 @@ async def test_cancel_queued_and_running(store: AgentJobStore):
     queued = await _create_job(store)
     assert await store.request_cancel(job_id=queued["id"]) == "cancelled"
     assert (await store.get_job(queued["id"]))["state"] == "cancelled"
+    assert await store.list_terminal_resumes_pending() == [queued["id"]]
+    assert await store.mark_terminal_resume_complete(job_id=queued["id"]) is True
 
     # Owner scoping: the wrong user cannot cancel.
     running = await _create_job(store)
@@ -1247,6 +1286,7 @@ async def test_a_cancelled_job_released_from_a_claim_ends_cancelled(store: Agent
 
     fetched = await store.get_job(job["id"])
     assert fetched["state"] == "cancelled", "a cancelled job must not be requeued"
+    assert await store.list_terminal_resumes_pending() == [job["id"]]
 
 
 async def test_an_uncancelled_job_still_returns_to_the_queue(store: AgentJobStore):

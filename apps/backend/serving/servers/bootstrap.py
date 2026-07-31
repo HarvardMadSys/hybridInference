@@ -23,6 +23,7 @@ from routing.endpoint_health import EndpointHealthRegistry
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
+from serving.agent_jobs.terminal_coordination import resume_settled_terminal
 from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
@@ -165,10 +166,15 @@ async def _reap_expired_agent_attempts(
     cancelled per the store's policy. The loop never dies on an error — a
     transient database blip must not permanently stop reaping.
     """
+    try:
+        await _reconcile_settled_agent_terminals(store)
+    except Exception:
+        logger.warning("Initial settled terminal reconciliation failed", exc_info=True)
     while True:
         await asyncio.sleep(interval_seconds)
         try:
             actions = await store.reap_expired(max_attempts=max_attempts)
+            await _reconcile_settled_agent_terminals(store)
             if actions:
                 logger.info(
                     "agent_attempts_reaped",
@@ -185,6 +191,13 @@ async def _reap_expired_agent_attempts(
                 )
         except Exception:
             logger.warning("Agent attempt reaper pass failed", exc_info=True)
+
+
+async def _reconcile_settled_agent_terminals(store: AgentJobStore) -> None:
+    """Replay durable settled-terminal recovery markers after restarts."""
+    for job_id in await store.list_terminal_resumes_pending():
+        if await resume_settled_terminal(job_id):
+            await store.mark_terminal_resume_complete(job_id=job_id)
 
 
 async def _refresh_weight_override_snapshots(

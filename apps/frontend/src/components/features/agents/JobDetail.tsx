@@ -911,6 +911,23 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   );
   const pill = STATE_PILL[job.state];
   const isActive = job.state === 'running' || job.state === 'queued';
+  const latestTerminalEvent = [...job.events]
+    .reverse()
+    .find(
+      (event) =>
+        event.kind === 'lifecycle' &&
+        event.attemptNo === job.currentAttemptNo &&
+        (event.text === 'workspace_preparing' ||
+          event.text === 'workspace_ready' ||
+          event.text === 'workspace_finalizing'),
+    );
+  const latestTerminalPhase =
+    latestTerminalEvent?.kind === 'lifecycle' ? latestTerminalEvent.text : undefined;
+  const terminalWorkspaceReady =
+    !isActive ||
+    (job.state === 'running' &&
+      job.currentAttemptNo !== undefined &&
+      latestTerminalPhase === 'workspace_ready');
 
   function openWorkspace(tab: WorkspaceTab) {
     setWorkspaceTab(tab);
@@ -1298,8 +1315,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               key={job.id}
               jobId={job.id}
               active={workspaceOpen && workspaceTab === 'terminal'}
-              disabled={isActive}
-              disabledReason="Terminal input is available after the agent finishes, so both do not modify the workspace at once."
+              ready={terminalWorkspaceReady}
             />
           </div>
           <div

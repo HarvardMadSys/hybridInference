@@ -109,6 +109,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "model": row["model"],
         "state": row["state"],
         "cancel_requested": row["cancel_requested"],
+        "terminal_resume_pending": row["terminal_resume_pending"],
         "current_attempt_id": row["current_attempt_id"],
         "published_pr_url": row["published_pr_url"],
         "published_commit_sha": row["published_commit_sha"],
@@ -124,7 +125,8 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
 _JOB_COLUMNS = (
     "id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha, task_prompt, "
     "setup_script, runtime, model, state, "
-    "cancel_requested, current_attempt_id, published_pr_url, published_commit_sha, detail, "
+    "cancel_requested, terminal_resume_pending, current_attempt_id, "
+    "published_pr_url, published_commit_sha, detail, "
     "budget_usd, metadata, fork_source_job_id, "
     "created_at, updated_at"
 )
@@ -172,6 +174,7 @@ class AgentJobStore:
                     model TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'queued',
                     cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+                    terminal_resume_pending BOOLEAN NOT NULL DEFAULT FALSE,
                     current_attempt_id BIGINT,
                     published_pr_url TEXT,
                     published_commit_sha TEXT,
@@ -187,6 +190,10 @@ class AgentJobStore:
             # revision (CREATE TABLE IF NOT EXISTS never adds columns).
             await conn.execute(
                 "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS budget_usd NUMERIC(12, 6)"
+            )
+            await conn.execute(
+                "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS "
+                "terminal_resume_pending BOOLEAN NOT NULL DEFAULT FALSE"
             )
             await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS setup_script TEXT")
             await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS thread_id TEXT")
@@ -244,6 +251,7 @@ class AgentJobStore:
                     lease_owner TEXT NOT NULL,
                     lease_generation BIGINT NOT NULL,
                     lease_expires_at TIMESTAMPTZ NOT NULL,
+                    terminal_ready BOOLEAN NOT NULL DEFAULT FALSE,
                     sandbox_id TEXT,
                     base_sha TEXT,
                     status TEXT NOT NULL DEFAULT 'running',
@@ -252,6 +260,10 @@ class AgentJobStore:
                     UNIQUE (job_id, attempt_no)
                 )
                 """
+            )
+            await conn.execute(
+                "ALTER TABLE agent_attempts "
+                "ADD COLUMN IF NOT EXISTS terminal_ready BOOLEAN NOT NULL DEFAULT FALSE"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_attempts_expiry "
@@ -1344,6 +1356,7 @@ class AgentJobStore:
                 """
                 UPDATE agent_jobs
                 SET state = CASE WHEN cancel_requested THEN 'cancelled' ELSE 'queued' END,
+                    terminal_resume_pending = cancel_requested,
                     current_attempt_id = NULL,
                     updated_at = NOW()
                 WHERE id = $1 AND current_attempt_id = $2 AND state = 'running'
@@ -1451,6 +1464,10 @@ class AgentJobStore:
                     "WHERE id = $1 AND status = 'running'",
                     attempt_id,
                 )
+                await conn.execute(
+                    "UPDATE agent_jobs SET terminal_resume_pending = FALSE WHERE id = $1",
+                    job_id,
+                )
                 has_patch = await conn.fetchval(
                     "SELECT EXISTS (SELECT 1 FROM agent_job_artifacts "
                     "WHERE job_id = $1 AND kind = 'patch')",
@@ -1497,6 +1514,17 @@ class AgentJobStore:
                 or attempt["expired"]
             ):
                 return None
+            phase = (payload or {}).get("phase") if event_type == "lifecycle" else None
+            if phase == "workspace_ready":
+                await conn.execute(
+                    "UPDATE agent_attempts SET terminal_ready = TRUE WHERE id = $1",
+                    attempt_id,
+                )
+            elif phase in {"workspace_preparing", "workspace_finalizing"}:
+                await conn.execute(
+                    "UPDATE agent_attempts SET terminal_ready = FALSE WHERE id = $1",
+                    attempt_id,
+                )
             return await self._insert_event(
                 conn,
                 job_id=attempt["job_id"],
@@ -1504,6 +1532,83 @@ class AgentJobStore:
                 event_type=event_type,
                 payload=payload,
             )
+
+    async def terminal_workspace_ready(self, *, attempt_id: int) -> bool:
+        """Return whether the live attempt currently permits terminal writes.
+
+        This is deliberately a primary-key lookup rather than an event-log
+        replay: terminal input is latency-sensitive and may arrive every few
+        milliseconds. Expired or superseded attempts are never considered
+        ready, even before the reaper updates the owning job row.
+        """
+        async with self._pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    """
+                    SELECT terminal_ready
+                    FROM agent_attempts
+                    WHERE id = $1
+                      AND status = 'running'
+                      AND lease_expires_at > NOW()
+                    """,
+                    attempt_id,
+                )
+            )
+
+    async def fence_terminal_workspace(
+        self,
+        *,
+        attempt_id: int,
+        lease_generation: int,
+    ) -> bool:
+        """Revoke readiness only for the still-live fenced attempt."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE agent_attempts
+                SET terminal_ready = FALSE
+                WHERE id = $1
+                  AND lease_generation = $2
+                  AND status = 'running'
+                  AND lease_expires_at > NOW()
+                """,
+                attempt_id,
+                lease_generation,
+            )
+        return result == "UPDATE 1"
+
+    async def list_terminal_resumes_pending(self, *, limit: int = 100) -> list[str]:
+        """List settled workspaces whose broker resume still needs confirmation."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id
+                FROM agent_jobs
+                WHERE terminal_resume_pending = TRUE
+                  AND state = ANY($1::text[])
+                ORDER BY updated_at
+                LIMIT $2
+                """,
+                list(TERMINAL_STATES),
+                limit,
+            )
+        return [row["id"] for row in rows]
+
+    async def mark_terminal_resume_complete(self, *, job_id: str) -> bool:
+        """Clear durable recovery state after the broker confirms a resume."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE agent_jobs
+                SET terminal_resume_pending = FALSE
+                WHERE id = $1
+                  AND terminal_resume_pending = TRUE
+                  AND state = ANY($2::text[])
+                """,
+                job_id,
+                list(TERMINAL_STATES),
+            )
+        return result == "UPDATE 1"
 
     async def list_events_after(
         self,
@@ -1677,7 +1782,7 @@ class AgentJobStore:
             if state in (WAITING, QUEUED):
                 await conn.execute(
                     "UPDATE agent_jobs SET state = 'cancelled', cancel_requested = TRUE, "
-                    "updated_at = NOW() WHERE id = $1",
+                    "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                     job_id,
                 )
                 await conn.execute(
@@ -1926,22 +2031,22 @@ class AgentJobStore:
                     action = FAILED
                     await conn.execute(
                         "UPDATE agent_jobs SET state = 'failed', detail = $2, "
-                        "updated_at = NOW() WHERE id = $1",
+                        "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                         job_id,
                         "publish attempt lease expired; manual review required",
                     )
                 elif row["cancel_requested"]:
                     action = CANCELLED
                     await conn.execute(
-                        "UPDATE agent_jobs SET state = 'cancelled', updated_at = NOW() "
-                        "WHERE id = $1",
+                        "UPDATE agent_jobs SET state = 'cancelled', "
+                        "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                         job_id,
                     )
                 elif await self._attempts_spent(conn, job_id) >= max_attempts:
                     action = FAILED
                     await conn.execute(
                         "UPDATE agent_jobs SET state = 'failed', detail = $2, "
-                        "updated_at = NOW() WHERE id = $1",
+                        "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                         job_id,
                         f"exhausted {max_attempts} attempts (lease expired)",
                     )

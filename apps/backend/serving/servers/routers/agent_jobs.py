@@ -57,6 +57,7 @@ from serving.agent_jobs.source_control import (
     github_authorization_url,
     issue_oauth_state,
 )
+from serving.agent_jobs.terminal_coordination import resume_settled_terminal
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
     SCOPE_MODEL,
@@ -66,6 +67,7 @@ from serving.agent_jobs.tokens import (
 )
 from serving.agent_jobs.visible_models import agent_model_resolvable, agent_visible_models
 from serving.agent_jobs.workspace_broker_client import (
+    WorkspaceBrokerClient,
     WorkspaceBrokerError,
     workspace_broker_from_env,
 )
@@ -124,6 +126,7 @@ from serving.schemas_agent_jobs import (
     WorkerFinishRequest,
     WorkerHeartbeatRequest,
     WorkerHeartbeatResponse,
+    WorkerTerminalSuspendRequest,
 )
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import (
@@ -137,7 +140,7 @@ from serving.servers.deps import (
     get_router,
     verify_admin_access,
 )
-from serving.storage.agent_job_store import RUNNING, TERMINAL_STATES
+from serving.storage.agent_job_store import PUBLISHING, RUNNING, TERMINAL_STATES
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -1014,6 +1017,8 @@ async def cancel_agent_job(
     job_store = _require_store(store)
     await _owned_job(job_store, job_id, user)
     state = await job_store.request_cancel(job_id=job_id, user_id=user["user_id"])
+    if state in TERMINAL_STATES and await resume_settled_terminal(job_id):
+        await job_store.mark_terminal_resume_complete(job_id=job_id)
     job = await job_store.get_job(job_id)
     return AgentJobCancelResponse(
         id=job_id,
@@ -1332,7 +1337,7 @@ async def _terminal_owner_workspace(
     user: dict[str, Any],
     store: AgentJobStore | None,
     app_credentials: Any | None,
-    require_settled: bool,
+    require_ready: bool = False,
     recheck_entitlement: bool = True,
 ) -> tuple[dict[str, Any], Any]:
     """Authorize one terminal operation and return its private broker.
@@ -1340,22 +1345,27 @@ async def _terminal_owner_workspace(
     Creating or attaching to a terminal rechecks repository entitlement. Once
     attached, the opaque terminal id acts as a short-lived capability scoped
     to the already-authenticated job owner. Input and resize must not enumerate
-    GitHub installations for every keystroke; they still recheck ownership,
-    settled state and the broker-side workspace/session binding. Delete skips
-    entitlement as well so a revoked owner can always clean up a live process.
+    GitHub installations for every keystroke; they still recheck ownership and
+    the broker-side workspace/session binding. Delete skips entitlement as well
+    so a revoked owner can always clean up a live process.
     """
     job_store = _require_store(store)
     job = await _owned_job(job_store, job_id, user)
-    if require_settled and job["state"] not in TERMINAL_STATES:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": {
-                    "type": "terminal_not_ready",
-                    "message": "Interactive terminals are available after the agent run finishes.",
-                }
-            },
+    if require_ready and job["state"] not in {*TERMINAL_STATES, PUBLISHING}:
+        eligible = job["state"] == RUNNING and job["current_attempt_id"] is not None
+        ready = eligible and await job_store.terminal_workspace_ready(
+            attempt_id=job["current_attempt_id"]
         )
+        if not ready:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": {
+                        "type": "workspace_not_ready",
+                        "message": "The terminal workspace is still being prepared.",
+                    }
+                },
+            )
     if recheck_entitlement:
         await _require_workspace_entitlement(
             job=job,
@@ -1374,6 +1384,19 @@ async def _terminal_owner_workspace(
                 }
             },
         )
+    if job.get("terminal_resume_pending"):
+        if not await resume_settled_terminal(_workspace_id(job)):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "workspace_unavailable",
+                        "message": "The settled terminal workspace is still resuming.",
+                    }
+                },
+            )
+        await job_store.mark_terminal_resume_complete(job_id=job_id)
+        job["terminal_resume_pending"] = False
     return job, broker
 
 
@@ -1629,13 +1652,13 @@ async def create_agent_job_terminal(
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> AgentTerminalSessionResponse:
-    """Open an interactive PTY after the agent has released its workspace."""
+    """Open an interactive PTY in the agent's workspace."""
     job, broker = await _terminal_owner_workspace(
         job_id=job_id,
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=True,
+        require_ready=True,
     )
     try:
         return AgentTerminalSessionResponse(
@@ -1667,7 +1690,7 @@ async def list_agent_job_terminals(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=False,
+        require_ready=True,
     )
     try:
         return AgentTerminalSessionListResponse(**(await broker.list_terminals(_workspace_id(job))))
@@ -1691,7 +1714,6 @@ async def stream_agent_job_terminal(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=False,
     )
     try:
         upstream = await broker.stream_terminal(_workspace_id(job), terminal_id, after=after)
@@ -1732,7 +1754,7 @@ async def write_agent_job_terminal_input(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=True,
+        require_ready=True,
         recheck_entitlement=False,
     )
     try:
@@ -1761,7 +1783,6 @@ async def resize_agent_job_terminal(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=True,
         recheck_entitlement=False,
     )
     try:
@@ -1793,7 +1814,6 @@ async def delete_agent_job_terminal(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=False,
         recheck_entitlement=False,
     )
     try:
@@ -2003,6 +2023,32 @@ def _match_job(claims: dict[str, Any], job_id: str) -> None:
         raise _lease_lost()
 
 
+async def _restore_terminal_suspension(
+    broker: WorkspaceBrokerClient | None,
+    *,
+    job_id: str,
+    lease_generation: int,
+) -> None:
+    """Best-effort compensation after a worker fails to finalize a resume."""
+    if broker is None:
+        return
+    try:
+        await broker.suspend_terminals(
+            job_id,
+            lease_generation=lease_generation,
+        )
+    except WorkspaceBrokerError:
+        logger.warning(
+            "agent_terminal_resume_compensation_failed",
+            exc_info=True,
+            extra={
+                "event": "agent_terminal_resume_compensation_failed",
+                "job_id": job_id,
+                "lease_generation": lease_generation,
+            },
+        )
+
+
 @router.post("/worker/claim", response_model=WorkerClaimResponse | None)
 async def worker_claim(
     body: WorkerClaimRequest,
@@ -2198,6 +2244,107 @@ async def worker_append_event(
     return WorkerEventResponse(event_id=event_id)
 
 
+@router.post("/worker/jobs/{job_id}/terminals/suspend", response_model=WorkerAckResponse)
+async def worker_suspend_terminals(
+    job_id: str,
+    body: WorkerTerminalSuspendRequest,
+    authorization: str | None = Header(None),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> WorkerAckResponse:
+    """Fence terminal writes, then freeze retained PTYs for a protected phase."""
+    job_store = _require_store(store)
+    claims = _worker_claims(authorization)
+    _match_job(claims, job_id)
+    event_id = await job_store.append_event(
+        attempt_id=claims["attempt_id"],
+        lease_generation=claims["lease_generation"],
+        event_type="lifecycle",
+        payload={"phase": body.phase},
+    )
+    if event_id is None:
+        raise _lease_lost()
+    broker = workspace_broker_from_env()
+    if broker is not None:
+        try:
+            await broker.suspend_terminals(
+                job_id,
+                lease_generation=claims["lease_generation"],
+            )
+        except WorkspaceBrokerError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "workspace_unavailable",
+                        "message": exc.message,
+                    }
+                },
+            ) from exc
+    return WorkerAckResponse(ok=True)
+
+
+@router.post("/worker/jobs/{job_id}/terminals/resume", response_model=WorkerAckResponse)
+async def worker_resume_terminals(
+    job_id: str,
+    authorization: str | None = Header(None),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> WorkerAckResponse:
+    """Resume retained PTYs, then atomically publish workspace readiness."""
+    job_store = _require_store(store)
+    claims = _worker_claims(authorization)
+    _match_job(claims, job_id)
+    fenced = await job_store.fence_terminal_workspace(
+        attempt_id=claims["attempt_id"],
+        lease_generation=claims["lease_generation"],
+    )
+    if not fenced:
+        raise _lease_lost()
+    broker = workspace_broker_from_env()
+    if broker is not None:
+        try:
+            await broker.resume_terminals(
+                job_id,
+                lease_generation=claims["lease_generation"],
+            )
+        except WorkspaceBrokerError as exc:
+            await _restore_terminal_suspension(
+                broker,
+                job_id=job_id,
+                lease_generation=claims["lease_generation"],
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "workspace_unavailable",
+                        "message": exc.message,
+                    }
+                },
+            ) from exc
+    try:
+        event_id = await job_store.append_event(
+            attempt_id=claims["attempt_id"],
+            lease_generation=claims["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
+    except Exception:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
+        raise
+    if event_id is None:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
+        raise _lease_lost()
+    return WorkerAckResponse(ok=True)
+
+
 @router.post(
     "/worker/jobs/{job_id}/artifacts", response_model=WorkerArtifactResponse, status_code=201
 )
@@ -2243,15 +2390,56 @@ async def worker_finish(
                 }
             },
         )
-    ok = await job_store.transition(
-        job_id=job_id,
+    fenced = await job_store.fence_terminal_workspace(
         attempt_id=claims["attempt_id"],
         lease_generation=claims["lease_generation"],
-        from_states=(RUNNING,),
-        to_state=body.state,
-        detail=body.detail,
-        base_sha=body.base_sha,
     )
+    if not fenced:
+        raise _lease_lost()
+    broker = workspace_broker_from_env()
+    if broker is not None:
+        try:
+            await broker.resume_terminals(
+                job_id,
+                lease_generation=claims["lease_generation"],
+            )
+        except WorkspaceBrokerError as exc:
+            await _restore_terminal_suspension(
+                broker,
+                job_id=job_id,
+                lease_generation=claims["lease_generation"],
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "workspace_unavailable",
+                        "message": exc.message,
+                    }
+                },
+            ) from exc
+    try:
+        ok = await job_store.transition(
+            job_id=job_id,
+            attempt_id=claims["attempt_id"],
+            lease_generation=claims["lease_generation"],
+            from_states=(RUNNING,),
+            to_state=body.state,
+            detail=body.detail,
+            base_sha=body.base_sha,
+        )
+    except Exception:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
+        raise
     if not ok:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
         raise _lease_lost()
     return WorkerAckResponse(ok=True, state=body.state)

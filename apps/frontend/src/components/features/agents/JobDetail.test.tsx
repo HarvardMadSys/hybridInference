@@ -64,6 +64,7 @@ function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
     networkAgent: 'gateway only',
     sandbox: 'container',
     attempts: [{ no: 1, status: 'live' }],
+    currentAttemptNo: 1,
     events: [
       { kind: 'lifecycle', text: 'started', attemptNo: 1 },
       {
@@ -369,27 +370,98 @@ describe('JobDetail', () => {
     await waitFor(() => expect(getAgentJobGit).toHaveBeenCalledWith('ajob_1'));
   });
 
-  it('keeps agent commands out of the user terminal and locks it while the run is active', async () => {
-    const view = render(<JobDetail job={makeJob()} />);
+  it('loads the terminal without warnings once the current workspace is ready', async () => {
+    const view = render(
+      <JobDetail
+        job={makeJob({
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
+          state: 'queued',
+          events: [{ kind: 'lifecycle', text: 'workspace_ready', attemptNo: 1 }],
+        })}
+      />,
+    );
 
     openWorkspace();
     fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
 
     const terminal = screen.getByLabelText('Workspace terminal');
+    expect(terminal).toHaveTextContent('Loading terminals…');
     expect(listAgentTerminals).not.toHaveBeenCalled();
+    expect(within(terminal).queryByRole('note')).not.toBeInTheDocument();
+
+    view.rerender(
+      <JobDetail
+        job={makeJob({
+          events: [
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 1 },
+            { kind: 'lifecycle', text: 'started', attemptNo: 2 },
+          ],
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
+        })}
+      />,
+    );
+    expect(listAgentTerminals).not.toHaveBeenCalled();
+
+    view.rerender(
+      <JobDetail
+        job={makeJob({
+          events: [
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 1 },
+            { kind: 'lifecycle', text: 'started', attemptNo: 2 },
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 2 },
+          ],
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
+        })}
+      />,
+    );
+
+    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledWith('ajob_1'));
     expect(terminal).not.toHaveTextContent('pytest -q');
     expect(terminal).not.toHaveTextContent('2 passed');
-    expect(terminal).toHaveTextContent('Terminal input is available after the agent finishes');
-    expect(
-      within(terminal).queryByRole('button', { name: 'New terminal' }),
-    ).not.toBeInTheDocument();
-
-    view.rerender(<JobDetail job={makeJob({ state: 'done' })} />);
-    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledWith('ajob_1'));
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
-    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
+    expect(terminal).not.toHaveTextContent('Terminal input is available after the agent finishes');
+    expect(within(terminal).queryByRole('note')).not.toBeInTheDocument();
+    expect(within(terminal).getByRole('button', { name: 'New terminal' })).toBeEnabled();
     expect(listAgentTerminals).toHaveBeenCalledTimes(1);
+
+    view.rerender(
+      <JobDetail
+        job={makeJob({
+          events: [
+            { kind: 'lifecycle', text: 'workspace_ready', attemptNo: 2 },
+            { kind: 'lifecycle', text: 'workspace_finalizing', attemptNo: 2 },
+          ],
+          attempts: [
+            { no: 1, status: 'superseded' },
+            { no: 2, status: 'live' },
+          ],
+          currentAttemptNo: 2,
+        })}
+      />,
+    );
+    expect(terminal).toHaveTextContent('Loading terminals…');
+    expect(within(terminal).queryByRole('note')).not.toBeInTheDocument();
+  });
+
+  it('loads terminals for settled jobs without requiring a checkout event', async () => {
+    render(<JobDetail job={makeJob({ state: 'done', events: [] })} />);
+
+    openWorkspace();
+    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }));
+
+    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledWith('ajob_1'));
+    expect(screen.getByRole('button', { name: 'New terminal' })).toBeEnabled();
   });
 
   it('loads Files lazily and safely refuses to preview a symlink', async () => {
