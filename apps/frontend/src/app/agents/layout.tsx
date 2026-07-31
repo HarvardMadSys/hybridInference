@@ -31,7 +31,7 @@ function AgentsHeader({
   };
 
   return (
-    <header className="flex shrink-0 items-center justify-between border-b border-gray-200 px-5 py-2.5">
+    <header className="flex shrink-0 items-center justify-between border-b border-gray-200/80 bg-white/95 px-5 py-2.5 shadow-[0_1px_0_rgba(17,24,39,0.02)] backdrop-blur">
       <div className="flex min-w-0 items-baseline gap-2">
         <button
           type="button"
@@ -40,7 +40,7 @@ function AgentsHeader({
           aria-expanded={!sidebarCollapsed}
           aria-controls="agents-sidebar"
           title={sidebarCollapsed ? 'Expand task list' : 'Collapse task list'}
-          className="-ml-1.5 self-center rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+          className="-ml-1.5 self-center rounded-md p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crimson/25"
         >
           <svg
             aria-hidden="true"
@@ -54,13 +54,16 @@ function AgentsHeader({
             <path d="M9.5 4v16" />
           </svg>
         </button>
-        <Link href="/" className="text-lg font-bold tracking-tight">
+        <Link
+          href="/"
+          className="text-[17px] font-semibold tracking-[-0.02em] text-gray-950 transition-colors hover:text-crimson"
+        >
           {branding.appName}
         </Link>
         {branding.orgName && (
           <a
             href={branding.orgUrl}
-            className="font-serif text-[13px] text-gray-500 hover:text-crimson"
+            className="font-serif text-[13px] tracking-[0.01em] text-gray-500 transition-colors hover:text-crimson"
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -68,10 +71,13 @@ function AgentsHeader({
           </a>
         )}
       </div>
-      <div className="flex items-center gap-1 text-[13px] font-medium text-gray-600">
+      <nav
+        aria-label="Product navigation"
+        className="flex items-center gap-0.5 text-[13px] font-medium text-gray-600"
+      >
         <a
           href={branding.statusUrl}
-          className="rounded-md px-2.5 py-1 hover:bg-gray-100 hover:text-gray-900"
+          className="rounded-md px-2.5 py-1.5 transition-colors hover:bg-gray-100 hover:text-gray-900"
           target="_blank"
           rel="noopener noreferrer"
         >
@@ -80,26 +86,28 @@ function AgentsHeader({
         {features.rag && (
           <Link
             href="/chat"
-            className="rounded-md px-2.5 py-1 hover:bg-gray-100 hover:text-gray-900"
+            className="rounded-md px-2.5 py-1.5 transition-colors hover:bg-gray-100 hover:text-gray-900"
           >
             Docs Assistant
           </Link>
         )}
-        <span className="rounded-md bg-gray-100 px-2.5 py-1 text-gray-900">Agents</span>
+        <span className="rounded-md bg-crimson/[0.06] px-2.5 py-1.5 text-crimson ring-1 ring-inset ring-crimson/10">
+          Agents
+        </span>
         <Link
           href="/dashboard"
-          className="rounded-md px-2.5 py-1 hover:bg-gray-100 hover:text-gray-900"
+          className="rounded-md px-2.5 py-1.5 transition-colors hover:bg-gray-100 hover:text-gray-900"
         >
           Dashboard
         </Link>
         <button
           type="button"
           onClick={handleLogout}
-          className="rounded-md px-2.5 py-1 hover:bg-gray-100 hover:text-gray-900"
+          className="rounded-md px-2.5 py-1.5 transition-colors hover:bg-gray-100 hover:text-gray-900"
         >
           Log out
         </button>
-      </div>
+      </nav>
     </header>
   );
 }
@@ -132,7 +140,7 @@ function AgentsShell({
   return (
     <div className="flex min-h-0 flex-1">
       <AgentsSidebar collapsed={sidebarCollapsed} />
-      <main className="min-w-0 flex-1 overflow-y-auto bg-white">{children}</main>
+      <main className="min-w-0 flex-1 overflow-y-auto bg-gray-50/40">{children}</main>
     </div>
   );
 }
@@ -164,7 +172,7 @@ export default function AgentsLayout({ children }: { children: React.ReactNode }
 
   return (
     <ProtectedRoute>
-      <div className="fixed inset-0 z-50 flex flex-col bg-white">
+      <div className="fixed inset-0 z-50 flex flex-col bg-gray-50">
         <AgentsHeader sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
         <AgentsShell sidebarCollapsed={sidebarCollapsed}>{children}</AgentsShell>
       </div>
