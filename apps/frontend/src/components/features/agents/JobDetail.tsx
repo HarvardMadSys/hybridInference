@@ -45,12 +45,32 @@ const WORKSPACE_TABS: Array<{ key: WorkspaceTab; label: string }> = [
 ];
 
 const STATE_PILL: Record<AgentJob['state'], { label: string; className: string; dot?: string }> = {
-  running: { label: 'Running', className: 'bg-blue-50 text-blue-700', dot: 'bg-blue-500' },
-  queued: { label: 'Queued', className: 'bg-gray-100 text-gray-600', dot: 'bg-gray-400' },
-  needs_review: { label: 'Needs review', className: 'bg-amber-50 text-amber-700' },
-  done: { label: 'Done', className: 'bg-emerald-50 text-emerald-700' },
-  failed: { label: 'Failed', className: 'bg-red-50 text-red-600' },
-  cancelled: { label: 'Cancelled', className: 'bg-gray-100 text-gray-500' },
+  running: {
+    label: 'Running',
+    className: 'bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-100',
+    dot: 'bg-blue-500',
+  },
+  queued: {
+    label: 'Queued',
+    className: 'bg-gray-100 text-gray-600 ring-1 ring-inset ring-gray-200/70',
+    dot: 'bg-gray-400',
+  },
+  needs_review: {
+    label: 'Needs review',
+    className: 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-100',
+  },
+  done: {
+    label: 'Done',
+    className: 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-100',
+  },
+  failed: {
+    label: 'Failed',
+    className: 'bg-red-50 text-red-600 ring-1 ring-inset ring-red-100',
+  },
+  cancelled: {
+    label: 'Cancelled',
+    className: 'bg-gray-100 text-gray-500 ring-1 ring-inset ring-gray-200/70',
+  },
 };
 
 const DIFF_LINE_CLASS = {
@@ -991,11 +1011,13 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
     : undefined;
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-white">
-      <header className="z-20 shrink-0 border-b border-gray-100 bg-white/95 px-5 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-[100rem] items-center gap-3 py-3">
+    <section className="flex h-full min-h-0 flex-col bg-gray-50/40">
+      <header className="relative z-20 shrink-0 border-b border-gray-200/80 bg-white/95 px-6 shadow-[0_1px_0_rgba(17,24,39,0.02)] backdrop-blur">
+        <div className="flex w-full items-center gap-3 py-3.5 pr-14">
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-[15px] font-semibold text-gray-900">{job.title}</h1>
+            <h1 className="truncate text-base font-semibold tracking-[-0.01em] text-gray-950">
+              {job.title}
+            </h1>
             <div className="mt-0.5 flex items-center gap-2 text-xs text-gray-500">
               <svg
                 aria-hidden="true"
@@ -1017,7 +1039,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               <button
                 type="button"
                 onClick={() => setDrawer('overview')}
-                className="shrink-0 font-medium text-gray-500 hover:text-gray-900 hover:underline"
+                className="shrink-0 font-medium text-gray-500 transition-colors hover:text-crimson hover:underline"
               >
                 Run details
               </button>
@@ -1037,7 +1059,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
             <button
               type="button"
               onClick={() => openWorkspace('git')}
-              className="hidden rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100 sm:block"
+              className="hidden rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:block"
             >
               Changes
               <span className="ml-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px]">
@@ -1050,37 +1072,37 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               type="button"
               onClick={() => void stop()}
               disabled={stopping}
-              className="inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-2.5 py-1.5 text-[13px] font-medium text-white hover:bg-gray-800 disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-2.5 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-gray-800 disabled:opacity-60"
             >
               <span className="h-2.5 w-2.5 rounded-sm bg-white" />
               {stopping ? 'Stopping…' : 'Stop'}
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={() => setWorkspaceOpen((current) => !current)}
-            aria-label={workspaceOpen ? 'Close workspace' : 'Open workspace'}
-            aria-expanded={workspaceOpen}
-            aria-controls="job-workspace-pane"
-            className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors ${
-              workspaceOpen
-                ? 'border-gray-900 bg-gray-900 text-white hover:bg-gray-800'
-                : 'border-gray-200 text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-            }`}
-          >
-            <svg
-              aria-hidden="true"
-              className="h-4 w-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={1.8}
-            >
-              <rect x="3.5" y="4" width="17" height="16" rx="2" />
-              <path d="M14.5 4v16" />
-            </svg>
-          </button>
         </div>
+        <button
+          type="button"
+          onClick={() => setWorkspaceOpen((current) => !current)}
+          aria-label={workspaceOpen ? 'Close workspace' : 'Open workspace'}
+          aria-expanded={workspaceOpen}
+          aria-controls="job-workspace-pane"
+          className={`absolute right-6 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-md border transition-colors ${
+            workspaceOpen
+              ? 'border-gray-900 bg-gray-900 text-white hover:bg-gray-800'
+              : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+          }`}
+        >
+          <svg
+            aria-hidden="true"
+            className="h-4 w-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={1.8}
+          >
+            <rect x="3.5" y="4" width="17" height="16" rx="2" />
+            <path d="M14.5 4v16" />
+          </svg>
+        </button>
       </header>
 
       <div
@@ -1094,7 +1116,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
             workspaceOpen ? 'hidden lg:flex' : 'flex'
           }`}
         >
-          <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-5 pb-6 pt-6">
+          <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col px-6 pb-6 pt-7">
             <div className="flex-1">
               {threadMessages.map((message, index) => {
                 const previous = index > 0 ? threadMessages[index - 1] : undefined;
@@ -1118,7 +1140,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               })}
 
               {job.historyIncludesPrompt ? null : (
-                <div className="group my-4 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+                <div className="group my-4 rounded-xl border border-gray-200/90 bg-white px-4 py-3 shadow-subtle">
                   <Markdown text={job.prompt || job.title} />
                   <MessageActions align="end">
                     <MessageActionButton
@@ -1193,10 +1215,10 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               <OutcomeCard job={job} onOpenDiff={() => openWorkspace('git')} />
             </div>
 
-            <div className="sticky bottom-0 z-10 -mx-2 mt-10 bg-gradient-to-t from-white via-white px-2 pb-2 pt-8">
+            <div className="sticky bottom-0 z-10 -mx-2 mt-10 bg-gradient-to-t from-gray-50 via-gray-50/95 px-2 pb-2 pt-8">
               <form
                 onSubmit={(event) => void submitFollowUp(event)}
-                className="rounded-2xl border border-gray-200 bg-white shadow-lg shadow-gray-200/50 focus-within:border-gray-300"
+                className="rounded-xl border border-gray-200/90 bg-white shadow-[0_16px_40px_-28px_rgba(17,24,39,0.55)] transition focus-within:border-crimson/30 focus-within:ring-4 focus-within:ring-crimson/[0.05]"
               >
                 <textarea
                   rows={2}
@@ -1204,7 +1226,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                   onChange={(event) => setFollowUp(event.target.value)}
                   placeholder="Add a follow-up"
                   aria-label="Add a follow-up"
-                  className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-4 pt-3 text-sm leading-relaxed text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
+                  className="w-full resize-none rounded-t-xl border-0 bg-transparent px-4 pt-3 text-sm leading-relaxed text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0"
                 />
                 <div className="flex items-center gap-2 px-3 pb-2.5">
                   <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
@@ -1214,7 +1236,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                   <button
                     type="submit"
                     disabled={!followUp.trim() || submitting}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-crimson text-white shadow-sm transition-colors hover:bg-crimson-dark disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="Send follow-up"
                   >
                     {submitting ? (

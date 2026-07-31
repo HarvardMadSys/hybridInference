@@ -271,8 +271,9 @@ describe('JobDetail', () => {
     const workspaceButton = screen.getByRole('button', { name: 'Open workspace' });
     const headerLayout = workspaceButton.parentElement;
     const headerClassName = headerLayout?.className;
-    expect(headerLayout).toHaveClass('max-w-[100rem]');
+    expect(headerLayout).toHaveClass('relative');
     expect(headerLayout).not.toHaveClass('max-w-4xl');
+    expect(workspaceButton).toHaveClass('absolute', 'right-6');
     fireEvent.click(workspaceButton);
 
     const closeButton = screen.getByRole('button', { name: 'Close workspace' });
