@@ -42,6 +42,7 @@ class FakeAgentJobStore:
         self.live_fence: tuple[int, int] | None = None
         self.terminal_readiness: dict[int, bool] = {}
         self.released: list[tuple[str, int]] = []
+        self.runner_hosts: dict[str, dict[str, Any]] = {}
         self._next_event_id = 1
         self._next_job = 1
 
@@ -453,7 +454,48 @@ class FakeAgentJobStore:
     def _fenced(self, attempt_id: int, lease_generation: int) -> bool:
         return self.live_fence == (attempt_id, lease_generation)
 
-    async def claim_job(self, *, worker_id: str, lease_ttl_seconds: float) -> dict[str, Any] | None:
+    async def touch_runner_host(self, *, host: str | None, worker_id: str) -> str | None:
+        now = datetime.now(timezone.utc)
+        if host:
+            entry = self.runner_hosts.setdefault(
+                host,
+                {
+                    "host": host,
+                    "is_active": False,
+                    "last_worker_id": worker_id,
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                },
+            )
+            entry["last_seen_at"] = now
+            entry["last_worker_id"] = worker_id
+        return next((h for h, e in self.runner_hosts.items() if e["is_active"]), None)
+
+    async def list_runner_hosts(self) -> list[dict[str, Any]]:
+        return sorted(
+            (dict(entry) for entry in self.runner_hosts.values()),
+            key=lambda e: e["last_seen_at"],
+            reverse=True,
+        )
+
+    async def set_active_runner_host(self, *, host: str | None) -> bool:
+        if host is not None and host not in self.runner_hosts:
+            return False
+        for entry in self.runner_hosts.values():
+            entry["is_active"] = False
+        if host is not None:
+            self.runner_hosts[host]["is_active"] = True
+        return True
+
+    async def forget_runner_host(self, *, host: str) -> bool:
+        return self.runner_hosts.pop(host, None) is not None
+
+    async def claim_job(
+        self, *, worker_id: str, lease_ttl_seconds: float, host: str | None = None
+    ) -> dict[str, Any] | None:
+        active = await self.touch_runner_host(host=host, worker_id=worker_id)
+        if active is not None and host != active:
+            return None
         queued = [job for job in self.jobs.values() if job["state"] == "queued"]
         if not queued:
             return None
@@ -3232,3 +3274,102 @@ async def test_branches_are_only_listed_for_an_entitled_repo(store: FakeAgentJob
     assert mine.status_code == 200
     assert mine.json()["default"] == "main"
     assert theirs.status_code == 403
+
+
+# ── Runner host pool ───────────────────────────────────────────────────
+#
+# Runners pull, so the claim is the only place the platform can say "not this
+# machine". These cover that gate from the wire in, because everything the
+# admin switch promises reduces to what /worker/claim answers.
+
+
+async def _queue_one(store: FakeAgentJobStore) -> str:
+    job = await store.create_job(
+        user_id="u1",
+        repo="owner/name",
+        task_prompt="fix it",
+        runtime="claude-code",
+        model="glm-5.1",
+    )
+    return job["id"]
+
+
+async def test_claim_is_unrestricted_until_a_host_is_pinned(client, store):
+    """The compatible default: an unpinned pool behaves as it always has."""
+    job_id = await _queue_one(store)
+
+    claim = await client.post(
+        "/v1/agent/worker/claim", json={"worker_id": "w1", "host": "runner-a"}
+    )
+
+    assert claim.status_code == 200
+    assert claim.json()["job_id"] == job_id
+
+
+async def test_a_host_joins_the_pool_even_while_it_is_being_turned_away(client, store):
+    """The chicken-and-egg case: you cannot switch to a host you cannot see.
+
+    A new machine polls, is refused because another host is pinned, and must
+    still appear in the pool — otherwise it could only become visible once it
+    was already active, and no operator could ever pick it.
+    """
+    await store.touch_runner_host(host="runner-a", worker_id="w0")
+    await store.set_active_runner_host(host="runner-a")
+    await _queue_one(store)
+
+    refused = await client.post(
+        "/v1/agent/worker/claim", json={"worker_id": "w2", "host": "runner-b"}
+    )
+
+    assert refused.status_code == 200
+    assert refused.json() is None
+    assert "runner-b" in store.runner_hosts
+
+
+async def test_pinning_moves_new_work_to_the_named_host(client, store):
+    # Both machines join the pool by polling an empty queue, which is how a
+    # newly added host becomes selectable in the first place.
+    await client.post("/v1/agent/worker/claim", json={"worker_id": "w1", "host": "runner-a"})
+    await client.post("/v1/agent/worker/claim", json={"worker_id": "w2", "host": "runner-b"})
+    await store.set_active_runner_host(host="runner-b")
+    job_id = await _queue_one(store)
+
+    wrong_host = await client.post(
+        "/v1/agent/worker/claim", json={"worker_id": "w1", "host": "runner-a"}
+    )
+    right_host = await client.post(
+        "/v1/agent/worker/claim", json={"worker_id": "w2", "host": "runner-b"}
+    )
+
+    assert wrong_host.json() is None
+    assert right_host.json()["job_id"] == job_id
+
+
+async def test_a_runner_reporting_no_host_is_refused_while_one_is_pinned(client, store):
+    """Fail closed. A runner left on the old machine must not keep claiming.
+
+    Runners that predate host reporting send no host at all; treating that as
+    "allowed" would leave the machine an operator just switched away from still
+    taking jobs, which makes the switch a lie.
+    """
+    await client.post("/v1/agent/worker/claim", json={"worker_id": "w2", "host": "runner-b"})
+    await store.set_active_runner_host(host="runner-b")
+    await _queue_one(store)
+
+    legacy = await client.post("/v1/agent/worker/claim", json={"worker_id": "w-old"})
+
+    assert legacy.status_code == 200
+    assert legacy.json() is None
+
+
+async def test_claim_rejects_a_host_that_is_not_a_hostname(client, store):
+    """The field is a primary key an admin reads off a page and clicks."""
+    await _queue_one(store)
+
+    response = await client.post(
+        "/v1/agent/worker/claim",
+        json={"worker_id": "w1", "host": "runner-a; DROP TABLE agent_jobs"},
+    )
+
+    assert response.status_code == 422
+    assert store.runner_hosts == {}

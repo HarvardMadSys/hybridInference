@@ -326,6 +326,7 @@ runners share one queue with no leader and no sharding.
 | `AGENT_SNAPSHOT_TTL_S` | `604800` | Seven days, as the design specifies. A stale entry means a wrong dependency tree |
 | `AGENT_EGRESS_ALLOWLIST` | — | Checked at startup: it may not contain an agent vendor's telemetry domain, which would let a "closed" sandbox report on the repository it was given |
 | `AGENT_WORKDIR_ROOT` | `/var/lib/hybridinference/agent-jobs` | **A host path, bind-mounted at the same path inside the runner.** Preflight test-mounts it and fails at startup if not — otherwise every job dies at spawn with an opaque exit 125 |
+| `AGENT_RUNNER_HOST` | — | Names the *machine*, shared by its replicas: the unit the admin host switch picks between. `agent_runner.sh` and `deploy_staging.sh` fill it from the host's own name. Never derived inside the container, where the hostname is a container id. Unset keeps the machine out of the pool and changes nothing else |
 | `AGENT_SANDBOX_UID` / `_GID` | `10001` | Only for a custom sandbox image; must match its user |
 | `AGENT_REPO_ALLOWLIST` | — | Comma-separated `owner/name`, or `owner/*`, for the single-tenant dogfood. Users who connect the App themselves do not need it; unset simply means the only entitlement is a user's own connection |
 | `AGENT_GITHUB_APP_CLIENT_ID` / `_CLIENT_SECRET` | — | The App's OAuth half. Only the user-facing connect flow needs it; minting installation tokens uses the private key alone |
@@ -349,6 +350,39 @@ tokens. GitLab is intentionally narrower in this release: it verifies the
 authenticated GitLab user and shows their accessible projects for discovery.
 GitLab projects do not appear in the Agent task composer, and the gateway does
 not claim to read their source or publish GitLab merge requests yet.
+
+### Which machine runs the jobs
+
+**Admin → Settings → Cloud Agent Host.** The list is every machine that has
+polled for work, and the radio button picks the one whose runners may claim.
+"Any host" is the default and means what it always meant: whoever polls first
+takes the job.
+
+Runners *pull*, so this is a gate on the claim rather than a dispatch target —
+the gateway cannot push a job at a machine, and the only moment it gets to say
+"not you" is when a runner asks for work. Three consequences worth knowing
+before using it:
+
+- **Switching drains, it does not interrupt.** A job already running elsewhere
+  holds its lease and reports through to the end; only the *next* claim moves.
+  Expect the old host to stay busy for as long as its longest running job.
+- **A runner reporting no host is refused while any host is pinned.** Failing
+  closed is deliberate: leaving the machine you just switched away from able to
+  claim would make the switch a lie. A runner without `AGENT_RUNNER_HOST` set
+  therefore stops taking work the moment anything is pinned.
+- **A machine joins the pool by polling, not by being registered.** Start a
+  runner there and it appears within seconds — including while it is being
+  turned away, which is what makes it selectable in the first place. Pinning to
+  a name nothing has ever polled from is refused, because the symptom is a
+  queue that hangs with nothing in the logs.
+
+Adding a *second* machine is not only this switch. A sandbox reaches the
+gateway over a network declared `internal: true`, which resolves nothing off
+its own host — so a runner box that is not the gateway's host needs the
+routable-network configuration from
+[§0 above](#0-a-closed-agent-network-needs-the-gateway-on-it) (or its own
+gateway). Preflight refuses at startup rather than failing every job at its
+first model call, but it refuses *there*, on that machine, not here.
 
 ### Three things about this topology that look like details and are not
 

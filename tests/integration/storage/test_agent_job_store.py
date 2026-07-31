@@ -27,6 +27,9 @@ _TABLES_IN_FK_ORDER = (
     "agent_attempts",
     "agent_jobs",
     "agent_threads",
+    # No FK, but every claim writes here now: a host left active by one test
+    # would gate the claims of the next one.
+    "agent_runner_hosts",
 )
 
 
@@ -1374,3 +1377,93 @@ async def test_an_uncancelled_job_still_returns_to_the_queue(store: AgentJobStor
 
     assert (await store.get_job(job["id"]))["state"] == "queued"
     assert await store.claim_job(worker_id="w2", lease_ttl_seconds=60) is not None
+
+
+# ── Runner host pool ───────────────────────────────────────────────────
+
+
+async def test_a_polling_host_joins_the_pool(store: AgentJobStore):
+    await store.touch_runner_host(host="runner-a", worker_id="runner-1")
+
+    hosts = await store.list_runner_hosts()
+
+    assert [h["host"] for h in hosts] == ["runner-a"]
+    assert hosts[0]["is_active"] is False
+    assert hosts[0]["last_worker_id"] == "runner-1"
+
+
+async def test_claims_are_unrestricted_until_a_host_is_pinned(store: AgentJobStore):
+    await _create_job(store)
+
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60, host="runner-a")
+
+    assert claim is not None
+
+
+async def test_a_pinned_host_is_the_only_one_that_claims(store: AgentJobStore):
+    await _create_job(store)
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+    assert await store.set_active_runner_host(host="runner-b")
+
+    assert await store.claim_job(worker_id="w1", lease_ttl_seconds=60, host="runner-a") is None
+    # ...and a runner predating host reporting is refused with them.
+    assert await store.claim_job(worker_id="w-old", lease_ttl_seconds=60) is None
+    assert await store.claim_job(worker_id="w2", lease_ttl_seconds=60, host="runner-b") is not None
+
+
+async def test_a_refused_host_still_enters_the_pool(store: AgentJobStore):
+    """You cannot switch to a host you cannot see."""
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.set_active_runner_host(host="runner-a")
+    await _create_job(store)
+
+    assert await store.claim_job(worker_id="w2", lease_ttl_seconds=60, host="runner-b") is None
+
+    assert "runner-b" in {h["host"] for h in await store.list_runner_hosts()}
+
+
+async def test_pinning_an_unknown_host_leaves_the_current_pin_alone(store: AgentJobStore):
+    """Regression: clearing first meant a typo silently unpinned the deployment.
+
+    The failed switch reported itself correctly and then handed every machine
+    the queue back — the one outcome worse than refusing the change.
+    """
+    await store.touch_runner_host(host="runner-b", worker_id="w1")
+    await store.set_active_runner_host(host="runner-b")
+
+    assert await store.set_active_runner_host(host="runner-b-typo") is False
+
+    hosts = {h["host"]: h["is_active"] for h in await store.list_runner_hosts()}
+    assert hosts == {"runner-b": True}
+
+
+async def test_only_one_host_can_be_active(store: AgentJobStore):
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+
+    await store.set_active_runner_host(host="runner-a")
+    await store.set_active_runner_host(host="runner-b")
+
+    active = [h["host"] for h in await store.list_runner_hosts() if h["is_active"]]
+    assert active == ["runner-b"]
+
+
+async def test_unpinning_restores_open_claiming(store: AgentJobStore):
+    await _create_job(store)
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+    await store.set_active_runner_host(host="runner-b")
+
+    assert await store.set_active_runner_host(host=None) is True
+
+    assert await store.claim_job(worker_id="w1", lease_ttl_seconds=60, host="runner-a") is not None
+
+
+async def test_forgetting_a_host_removes_it_until_it_polls_again(store: AgentJobStore):
+    await store.touch_runner_host(host="old-box", worker_id="w1")
+
+    assert await store.forget_runner_host(host="old-box") is True
+    assert await store.list_runner_hosts() == []
+    assert await store.forget_runner_host(host="old-box") is False
+
+    await store.touch_runner_host(host="old-box", worker_id="w1")
+    assert [h["host"] for h in await store.list_runner_hosts()] == ["old-box"]

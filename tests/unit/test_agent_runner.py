@@ -643,3 +643,68 @@ def test_only_the_claim_call_reports_an_unreachable_gateway(monkeypatch):
     # The same error raised anywhere else stays a plain transport error, so the
     # loop's handler reports a job rather than an empty claim.
     assert not issubclass(httpx.ConnectError, ClaimUnreachable)
+
+
+# ── Host reporting ─────────────────────────────────────────────────────
+
+
+def test_a_runner_reports_no_host_unless_one_is_configured(monkeypatch):
+    """Unset must mean "no host", never a guess.
+
+    ``socket.gethostname()`` is the container id in every containerised
+    deployment, so guessing would fill the operator's machine list with rows of
+    hex — one per replica, another set after every restart.
+    """
+    monkeypatch.delenv("AGENT_RUNNER_HOST", raising=False)
+    assert runner_mod.default_runner_host() is None
+
+    monkeypatch.setenv("AGENT_RUNNER_HOST", "  ")
+    assert runner_mod.default_runner_host() is None
+
+    monkeypatch.setenv("AGENT_RUNNER_HOST", " runner-b ")
+    assert runner_mod.default_runner_host() == "runner-b"
+
+
+def test_replicas_on_one_machine_share_a_host_but_not_a_worker_id(monkeypatch):
+    """The pool is machines; ``lease_owner`` is still per-replica."""
+    monkeypatch.setenv("AGENT_RUNNER_HOST", "runner-b")
+    monkeypatch.setenv("AGENT_WORKER_ID", "runner")
+
+    assert runner_mod.default_runner_host() == "runner-b"
+    assert runner_mod.default_worker_id() != "runner-b"
+
+
+def test_claim_sends_the_host_only_when_there_is_one(monkeypatch):
+    """An unreporting runner must post exactly the payload it always did."""
+    sent: list[dict] = []
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return None
+
+    def _post(_url, *, json, headers, timeout):
+        sent.append(json)
+        return _Response()
+
+    monkeypatch.setattr(runner_mod.httpx, "post", _post)
+
+    runner_mod.claim(base_url="http://gw", dispatcher_token="t", worker_id="w1", lease_ttl=60)
+    runner_mod.claim(
+        base_url="http://gw", dispatcher_token="t", worker_id="w1", lease_ttl=60, host="runner-b"
+    )
+
+    assert "host" not in sent[0]
+    assert sent[1]["host"] == "runner-b"
+
+
+def test_the_host_flag_defaults_from_the_environment(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNNER_HOST", "runner-a")
+
+    args = runner_mod.build_parser().parse_args([])
+
+    assert args.host == "runner-a"

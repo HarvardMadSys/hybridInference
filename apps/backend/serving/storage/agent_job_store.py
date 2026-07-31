@@ -403,6 +403,25 @@ class AgentJobStore:
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_runner_hosts (
+                    host TEXT PRIMARY KEY,
+                    last_worker_id TEXT,
+                    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+                    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            # At most one host may be active. Enforced in the schema rather than
+            # in the setter alone: "which machine runs the agents" answered two
+            # ways at once is the failure this feature exists to prevent, and a
+            # concurrent pair of admin writes is exactly how it would happen.
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runner_hosts_one_active "
+                "ON agent_runner_hosts (is_active) WHERE is_active"
+            )
 
     # ── Repository grants ──────────────────────────────────────────────
     #
@@ -1256,6 +1275,85 @@ class AgentJobStore:
             return None
         return {"thread_id": row["thread_id"], "pinned_at": row["pinned_at"]}
 
+    # ── Runner hosts ───────────────────────────────────────────────────
+    #
+    # The pool of machines that can run agent jobs, and which one currently
+    # does. Runners pull work, so the gateway cannot push a job at a chosen
+    # host; the only place "run agents over there now" can be decided is the
+    # claim. A host therefore enters the pool by polling, not by being
+    # registered — start a runner on a machine and it appears; stop it and the
+    # row goes stale — and switching hosts is a gate on that same poll.
+    #
+    # Recording happens before the gate, deliberately: an operator has to be
+    # able to see a host in order to switch to it, and a host that only became
+    # visible once it was already active could never be picked in the first
+    # place.
+
+    async def touch_runner_host(self, *, host: str | None, worker_id: str) -> str | None:
+        """Record a polling runner and return the pinned host, if any.
+
+        ``host`` is ``None`` for a runner predating host reporting.
+        """
+        async with self._pool.acquire() as conn:
+            if host:
+                await conn.execute(
+                    """
+                    INSERT INTO agent_runner_hosts (host, last_worker_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT (host) DO UPDATE
+                    SET last_seen_at = NOW(), last_worker_id = EXCLUDED.last_worker_id
+                    """,
+                    host,
+                    worker_id,
+                )
+            return await conn.fetchval(
+                "SELECT host FROM agent_runner_hosts WHERE is_active LIMIT 1"
+            )
+
+    async def list_runner_hosts(self) -> list[dict[str, Any]]:
+        """Return every host seen polling, newest heartbeat first."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT host, last_worker_id, is_active, first_seen_at, last_seen_at "
+                "FROM agent_runner_hosts ORDER BY last_seen_at DESC"
+            )
+        return [dict(row) for row in rows]
+
+    async def set_active_runner_host(self, *, host: str | None) -> bool:
+        """Pin agent jobs to one host, or unpin with ``None``.
+
+        Returns ``False`` when ``host`` names a machine that has never polled —
+        pinning to one would park the queue on a host that may not exist, which
+        presents as "every job hangs" with nothing in the logs.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            # Checked before anything is cleared. Clearing first and reporting
+            # the miss afterwards leaves the deployment *unpinned* — a typo in
+            # the host name would quietly hand every machine the queue back,
+            # which is the opposite of what a refused switch should do.
+            if host is not None:
+                known = await conn.fetchval(
+                    "SELECT 1 FROM agent_runner_hosts WHERE host = $1", host
+                )
+                if not known:
+                    return False
+            # Clearing before setting keeps the one-active index satisfied at
+            # every point in the transaction, not just at commit.
+            await conn.execute("UPDATE agent_runner_hosts SET is_active = FALSE WHERE is_active")
+            if host is not None:
+                await conn.execute(
+                    "UPDATE agent_runner_hosts SET is_active = TRUE WHERE host = $1", host
+                )
+            return True
+
+    async def forget_runner_host(self, *, host: str) -> bool:
+        """Drop a host from the pool. A runner still polling re-adds itself."""
+        async with self._pool.acquire() as conn:
+            deleted = await conn.fetchval(
+                "DELETE FROM agent_runner_hosts WHERE host = $1 RETURNING host", host
+            )
+        return deleted is not None
+
     # ── Claim / lease ──────────────────────────────────────────────────
 
     async def claim_job(
@@ -1263,13 +1361,24 @@ class AgentJobStore:
         *,
         worker_id: str,
         lease_ttl_seconds: float,
+        host: str | None = None,
     ) -> dict[str, Any] | None:
         """Claim the oldest queued job, creating a new fenced attempt.
 
         Returns the job dict extended with ``attempt_id``, ``attempt_no`` and
         ``lease_generation``, or ``None`` when the queue is empty. Concurrent
         workers are safe via ``FOR UPDATE SKIP LOCKED``.
+
+        When an operator has pinned a host, a runner reporting any other one —
+        or none at all — claims nothing. Unpinned is the default and behaves as
+        it always has: whoever polls first takes the job.
         """
+        active_host = await self.touch_runner_host(host=host, worker_id=worker_id)
+        if active_host is not None and host != active_host:
+            # Fail closed, including for a runner that reports no host: leaving
+            # the machine an operator just switched away from able to claim is
+            # the one outcome that makes the switch a lie.
+            return None
         async with self._pool.acquire() as conn, conn.transaction():
             # Follow-ups may be submitted while a run is active. Promote only
             # those whose direct parent has settled; a chain therefore

@@ -392,6 +392,19 @@ class WorkerClaimRequest(BaseModel):
         le=MAX_LEASE_TTL_SECONDS,
         description="How long the lease is valid without a heartbeat.",
     )
+    # Bounded and charset-checked because it is a primary key an admin reads
+    # off a page and clicks: an unconstrained field here lets a runner write
+    # whatever it likes into the machine list.
+    host: str | None = Field(
+        None,
+        max_length=253,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        description=(
+            "Machine this runner sits on, shared by its replicas. Joins the "
+            "pool an operator can pin agent jobs to. Omitted by runners that "
+            "predate host reporting."
+        ),
+    )
 
 
 class WorkerClaimResponse(BaseModel):
