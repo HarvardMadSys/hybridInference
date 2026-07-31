@@ -335,3 +335,94 @@ def test_runner_stores_snapshot_before_the_terminal_transition(tmp_path, monkeyp
 
     assert result == 0
     assert order == ["artifact:patch", "artifact:workspace_snapshot", "finish"]
+
+
+@pytest.mark.parametrize("patch", ["diff --git a/x b/x\n", ""])
+def test_cancelled_runner_stores_recoverable_workspace_before_finish(
+    tmp_path, monkeypatch, patch: str
+):
+    """Stopping preserves partial work, while a no-change stop stays safe."""
+    order: list[str] = []
+
+    class Control:
+        job_id = ""
+
+        def append_event(self, _event) -> None:
+            pass
+
+        def save_artifact(self, kind: str, _content: str) -> None:
+            order.append(f"artifact:{kind}")
+
+        def finish(self, state: str, _detail=None, *, base_sha=None) -> None:
+            assert state == "cancelled"
+            order.append("finish:cancelled")
+
+        def close(self) -> None:
+            pass
+
+    class Heart:
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    class Backend:
+        name = "test"
+        provides_isolation = False
+
+        def preflight(self) -> None:
+            pass
+
+        def has_binary(self, _binary: str) -> bool:
+            return True
+
+        def adopt_workdir(self, _workdir: str) -> None:
+            pass
+
+        def sandbox_metadata(self) -> dict[str, str]:
+            return {"sandbox_backend": self.name}
+
+    job = runner_mod.ClaimedJob(
+        job_id="ajob_1",
+        attempt_id=1,
+        attempt_no=1,
+        repo="owner/repo",
+        base_sha="abcdef0",
+        task_prompt="task",
+        runtime="generic",
+        model="model",
+        worker_token="worker-token",
+        sandbox_token="model-token",
+    )
+    monkeypatch.setattr(runner_mod, "claim", lambda **_kwargs: job)
+    monkeypatch.setattr(runner_mod, "ControlPlane", lambda *_args, **_kwargs: Control())
+    monkeypatch.setattr(runner_mod, "Heartbeater", lambda *_args, **_kwargs: Heart())
+    monkeypatch.setattr(
+        runner_mod, "get_runtime", lambda *_args, **_kwargs: SimpleNamespace(binary="x")
+    )
+    monkeypatch.setattr(runner_mod, "existing_checkout_sha", lambda *_args: "abcdef0")
+    monkeypatch.setattr(runner_mod, "align_existing_checkout", lambda *_args, **_kwargs: "abcdef0")
+    monkeypatch.setattr(runner_mod, "run_agent", lambda *_args, **_kwargs: (130, "", []))
+    monkeypatch.setattr(runner_mod, "build_patch", lambda *_args, **_kwargs: patch)
+
+    def snapshot(_control, *, workdir: str, patch: str) -> bool:
+        assert workdir == str(tmp_path)
+        order.append("artifact:workspace_snapshot")
+        return True
+
+    monkeypatch.setattr(runner_mod, "save_workspace_snapshot", snapshot)
+
+    result = runner_mod.run_once(
+        base_url="http://gateway",
+        dispatcher_token="dispatcher",
+        worker_id="worker",
+        workdir=str(tmp_path),
+        backend=Backend(),
+    )
+
+    assert result == 0
+    expected = ["artifact:workspace_snapshot", "finish:cancelled"]
+    if patch:
+        expected.insert(0, "artifact:patch")
+    assert order == expected

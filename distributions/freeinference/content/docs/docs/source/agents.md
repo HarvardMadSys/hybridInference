@@ -62,10 +62,13 @@ In the composer:
 4. Run the task
 
 The task page streams the agent's activity as it happens — its reasoning, each
-tool call with its result, and the diff as it takes shape. A task can be
-cancelled while the agent is working; cancellation does not recall a result
-that is already being published. When the task finishes, the draft pull
-request is linked directly from the task page.
+tool call with its result, and the diff as it takes shape. **Stop** (or
+**Escape** while focus is outside a text field) interrupts a working agent.
+Any intermediate changes are saved but not published; send a follow-up after
+the task stops to restore those changes and continue in a new isolated pass.
+Cancellation does not recall a result that is already being published. When
+the task finishes, the draft pull request is linked directly from the task
+page.
 
 A task also takes **follow-up messages**: send one from the task page and it
 runs as a new isolated pass in the same thread, inheriting the repository and
@@ -79,7 +82,10 @@ be tried without disturbing the original. **Edit & rewind** on one of your
 own messages forks the conversation from just before it and prefills the
 composer with that message, ready to resend changed — without the turns that
 followed. Forking copies recorded history only: a reply still streaming stays
-with the original task.
+with the original task. **Edit & restart** on the first message instead
+prefills that original request and starts a new task from the same pinned base
+commit. It deliberately discards the original task's intermediate direction;
+the original keeps running unless you stop it explicitly.
 
 ## Choosing an agent and model
 

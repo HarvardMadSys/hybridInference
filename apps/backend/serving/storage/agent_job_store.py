@@ -960,7 +960,7 @@ class AgentJobStore:
         }
 
     async def follow_up_context(self, *, job_id: str) -> dict[str, Any]:
-        """Return prior turns and the successful parent patch for a claimed run."""
+        """Return prior turns and the resumable parent patch for a claimed run."""
         async with self._pool.acquire() as conn:
             job = await conn.fetchrow(
                 "SELECT thread_id, parent_job_id, turn_no FROM agent_jobs WHERE id = $1",
@@ -985,7 +985,7 @@ class AgentJobStore:
                 FROM agent_job_artifacts a
                 JOIN agent_jobs p ON p.id = a.job_id
                 WHERE a.job_id = $1 AND a.kind = 'patch'
-                  AND p.state IN ('succeeded', 'publishing')
+                  AND p.state IN ('succeeded', 'publishing', 'cancelled')
                   AND p.published_commit_sha IS NULL
                 ORDER BY a.created_at DESC
                 LIMIT 1
@@ -1008,7 +1008,7 @@ class AgentJobStore:
                     JOIN agent_job_artifacts a ON a.job_id = src.id AND a.kind = 'patch'
                     WHERE parent.id = $1
                       AND parent.published_commit_sha IS NULL
-                      AND src.state IN ('succeeded', 'publishing')
+                      AND src.state IN ('succeeded', 'publishing', 'cancelled')
                     ORDER BY a.created_at DESC
                     LIMIT 1
                     """,

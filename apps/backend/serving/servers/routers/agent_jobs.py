@@ -94,6 +94,7 @@ from serving.schemas_agent_jobs import (
     AgentJobResponse,
     AgentProject,
     AgentProjectListResponse,
+    AgentRestartRequest,
     AgentTerminalRequest,
     AgentTerminalResponse,
     AgentTerminalSessionCreateRequest,
@@ -1020,6 +1021,60 @@ async def cancel_agent_job(
         state=state or (job or {}).get("state", "unknown"),
         cancel_requested=bool((job or {}).get("cancel_requested")),
     )
+
+
+@router.post("/jobs/{job_id}/restart", response_model=AgentJobResponse, status_code=201)
+async def restart_agent_job(
+    job_id: str,
+    body: AgentRestartRequest,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+    router_exec: Any = Depends(get_router),
+    model_visibility_resolver: Any = Depends(get_model_visibility_resolver),
+) -> AgentJobResponse:
+    """Start a new root task from an owned job's original pinned base."""
+    job_store = _require_store(store)
+    source = await _owned_job(job_store, job_id, user)
+    await _require_resolvable_model(
+        source["model"],
+        router_exec=router_exec,
+        model_visibility_resolver=model_visibility_resolver,
+        user=user,
+    )
+    try:
+        await require_entitled_repo(
+            source["repo"],
+            user["user_id"],
+            store=job_store,
+            app_credentials=app_credentials,
+        )
+    except RepoNotAllowed as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
+        ) from exc
+
+    restarted = await job_store.create_job(
+        user_id=user["user_id"],
+        repo=source["repo"],
+        task_prompt=body.prompt,
+        runtime=source["runtime"],
+        model=source["model"],
+        base_sha=source.get("base_sha"),
+        setup_script=source.get("setup_script"),
+        budget_usd=source.get("budget_usd"),
+        metadata=dict(source.get("metadata") or {}) or None,
+    )
+    logger.info(
+        "agent_job_restarted",
+        extra={
+            "event": "agent_job_restarted",
+            "job_id": restarted["id"],
+            "source_job_id": job_id,
+        },
+    )
+    return _job_response(restarted)
 
 
 async def _set_agent_thread_archived(

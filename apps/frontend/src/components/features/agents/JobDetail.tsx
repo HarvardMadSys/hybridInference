@@ -1,8 +1,10 @@
 'use client';
 
 import {
+  useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type FormEvent,
@@ -17,6 +19,7 @@ import {
   followUpAgentJob,
   forkAgentJob,
   getAgentJobGit,
+  restartAgentJob,
   type AgentGitWorkspaceApi,
 } from '@/lib/api/agents';
 
@@ -292,11 +295,13 @@ function ThreadTurn({
   busy,
   onFork,
   onRewind,
+  onRestart,
 }: {
   message: AgentThreadMessage;
   busy?: boolean;
   onFork?: () => void;
   onRewind?: () => void;
+  onRestart?: () => void;
 }) {
   if (message.role === 'assistant') {
     return (
@@ -327,6 +332,12 @@ function ThreadTurn({
           <MessageActionButton label="Edit & rewind" onClick={onRewind} disabled={busy}>
             <RewindIcon />
             Edit & rewind
+          </MessageActionButton>
+        ) : null}
+        {onRestart ? (
+          <MessageActionButton label="Edit & restart" onClick={onRestart} disabled={busy}>
+            <RewindIcon />
+            Edit & restart
           </MessageActionButton>
         ) : null}
       </MessageActions>
@@ -611,6 +622,11 @@ function OutcomeCard({ job, onOpenDiff }: { job: AgentJob; onOpenDiff: () => voi
                   : 'Run stopped'}
           </p>
           {job.stateNote ? <p className="mt-0.5 text-xs text-gray-500">{job.stateNote}</p> : null}
+          {job.state === 'cancelled' ? (
+            <p className="mt-1 text-xs text-gray-500">
+              Send a follow-up to continue from any saved intermediate changes.
+            </p>
+          ) : null}
         </div>
         {job.diffFiles.length ? (
           <button
@@ -875,10 +891,13 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('git');
   const [followUp, setFollowUp] = useState('');
+  const [restartSourceJobId, setRestartSourceJobId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [forking, setForking] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const stopRequestedRef = useRef(false);
   const workspacePane = useResizablePane({
     storageKey: WORKSPACE_WIDTH_STORAGE_KEY,
     defaultWidth: WORKSPACE_DEFAULT_WIDTH,
@@ -912,37 +931,94 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const pill = STATE_PILL[job.state];
   const isActive = job.state === 'running' || job.state === 'queued';
 
+  useEffect(() => {
+    stopRequestedRef.current = false;
+    setStopping(false);
+  }, [job.id]);
+
+  useEffect(() => {
+    if (!isActive) {
+      stopRequestedRef.current = false;
+      setStopping(false);
+    }
+  }, [isActive]);
+
+  useEffect(() => {
+    if (restartSourceJobId) composerRef.current?.focus();
+  }, [restartSourceJobId]);
+
   function openWorkspace(tab: WorkspaceTab) {
     setWorkspaceTab(tab);
     setWorkspaceOpen(true);
   }
 
-  async function stop() {
+  const stop = useCallback(async () => {
+    if (stopRequestedRef.current) return;
+    stopRequestedRef.current = true;
     setStopping(true);
     setActionError(null);
     try {
       await cancelAgentJob(job.id);
       onReload?.();
     } catch (cause: unknown) {
-      setActionError(cause instanceof Error ? cause.message : 'Could not stop this run');
-    } finally {
+      stopRequestedRef.current = false;
       setStopping(false);
+      setActionError(cause instanceof Error ? cause.message : 'Could not stop this run');
     }
-  }
+  }, [job.id, onReload]);
 
-  async function submitFollowUp(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    if (!isActive) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (
+        event.key !== 'Escape' ||
+        event.repeat ||
+        event.defaultPrevented ||
+        target?.closest('input, textarea, select, [contenteditable="true"]')
+      ) {
+        return;
+      }
+      event.preventDefault();
+      void stop();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isActive, stop]);
+
+  async function submitComposer(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const prompt = followUp.trim();
     if (!prompt || submitting) return;
     setSubmitting(true);
     setActionError(null);
     try {
-      const child = await followUpAgentJob(job.id, { prompt });
+      const child = restartSourceJobId
+        ? await restartAgentJob(restartSourceJobId, { prompt })
+        : await followUpAgentJob(job.id, { prompt });
       router.push(`/agents/${child.id}`);
     } catch (cause: unknown) {
-      setActionError(cause instanceof Error ? cause.message : 'Could not queue the follow-up');
+      setActionError(
+        cause instanceof Error
+          ? cause.message
+          : restartSourceJobId
+            ? 'Could not restart the task'
+            : 'Could not queue the follow-up',
+      );
       setSubmitting(false);
     }
+  }
+
+  function beginRestart(sourceJobId: string, draft: string) {
+    setRestartSourceJobId(sourceJobId);
+    setFollowUp(draft);
+    setActionError(null);
+  }
+
+  function cancelRestart() {
+    setRestartSourceJobId(null);
+    setFollowUp('');
+    setActionError(null);
   }
 
   // Fork duplicates the conversation up to the anchor turn into a new thread
@@ -972,6 +1048,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const lastHistoryJobId = threadMessages.length
     ? threadMessages[threadMessages.length - 1].jobId
     : undefined;
+  const firstUserMessageId = threadMessages.find((message) => message.role === 'user')?.id;
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-white">
@@ -1033,10 +1110,17 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               type="button"
               onClick={() => void stop()}
               disabled={stopping}
+              aria-label="Stop"
+              title="Stop run (Esc)"
               className="inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-2.5 py-1.5 text-[13px] font-medium text-white hover:bg-gray-800 disabled:opacity-60"
             >
               <span className="h-2.5 w-2.5 rounded-sm bg-white" />
               {stopping ? 'Stopping…' : 'Stop'}
+              {!stopping ? (
+                <kbd aria-hidden="true" className="rounded bg-white/15 px-1 text-[10px]">
+                  Esc
+                </kbd>
+              ) : null}
             </button>
           ) : null}
           <button
@@ -1096,6 +1180,11 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                     onRewind={
                       rewindAnchor ? () => void forkFrom(rewindAnchor, message.content) : undefined
                     }
+                    onRestart={
+                      message.role === 'user' && message.id === firstUserMessageId
+                        ? () => beginRestart(message.jobId, message.content)
+                        : undefined
+                    }
                   />
                 );
               })}
@@ -1119,6 +1208,15 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                       >
                         <RewindIcon />
                         Edit &amp; rewind
+                      </MessageActionButton>
+                    ) : !lastHistoryJobId ? (
+                      <MessageActionButton
+                        label="Edit & restart"
+                        onClick={() => beginRestart(job.id, job.prompt || job.title)}
+                        disabled={submitting}
+                      >
+                        <RewindIcon />
+                        Edit &amp; restart
                       </MessageActionButton>
                     ) : null}
                   </MessageActions>
@@ -1178,10 +1276,11 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
 
             <div className="sticky bottom-0 z-10 -mx-2 mt-10 bg-gradient-to-t from-white via-white px-2 pb-2 pt-8">
               <form
-                onSubmit={(event) => void submitFollowUp(event)}
+                onSubmit={(event) => void submitComposer(event)}
                 className="rounded-2xl border border-gray-200 bg-white shadow-lg shadow-gray-200/50 focus-within:border-gray-300"
               >
                 <textarea
+                  ref={composerRef}
                   rows={2}
                   value={followUp}
                   onChange={(event) => setFollowUp(event.target.value)}
@@ -1191,14 +1290,31 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                 />
                 <div className="flex items-center gap-2 px-3 pb-2.5">
                   <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
-                    Inherits {job.runtime} · {job.model}
-                    {isActive ? ' · queued after this run' : ''}
+                    {restartSourceJobId ? (
+                      <>Restarts from the original base · intermediate direction is discarded</>
+                    ) : (
+                      <>
+                        {job.state === 'cancelled'
+                          ? 'Restores any saved intermediate changes'
+                          : `Inherits ${job.runtime} · ${job.model}`}
+                        {isActive ? ' · queued after this run' : ''}
+                      </>
+                    )}
                   </span>
+                  {restartSourceJobId ? (
+                    <button
+                      type="button"
+                      onClick={cancelRestart}
+                      className="shrink-0 rounded px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                    >
+                      Cancel restart
+                    </button>
+                  ) : null}
                   <button
                     type="submit"
                     disabled={!followUp.trim() || submitting}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900 text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
-                    aria-label="Send follow-up"
+                    aria-label={restartSourceJobId ? 'Restart task' : 'Send follow-up'}
                   >
                     {submitting ? (
                       <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />

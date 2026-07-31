@@ -414,6 +414,73 @@ async def test_fork_thread_copies_history_and_carries_the_unpublished_patch(
     assert await store.claim_for_publish() is None
 
 
+async def test_cancelled_parent_patch_resumes_in_its_waiting_follow_up(
+    store: AgentJobStore,
+):
+    """A stopped run releases its queued conversation turn with partial work."""
+    parent = await _create_job(store)
+    child = await store.create_follow_up(
+        parent_job_id=parent["id"], user_id="user-1", prompt="continue after the stop"
+    )
+    assert child is not None
+    assert child["state"] == "waiting"
+
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    patch = "diff --git a/partial b/partial\n"
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content=patch,
+    )
+    assert await store.transition(
+        job_id=parent["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="cancelled",
+    )
+
+    assert (await store.get_job(child["id"]))["state"] == "queued"
+    assert (await store.follow_up_context(job_id=child["id"]))["patch"] == patch
+    resumed = await store.claim_job(worker_id="w2", lease_ttl_seconds=60)
+    assert resumed["id"] == child["id"]
+    assert await store.claim_for_publish() is None
+
+
+async def test_forked_cancelled_source_patch_resumes_in_the_fork(
+    store: AgentJobStore,
+):
+    """A fork of a stopped turn retains its source's recoverable partial patch."""
+    source = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    patch = "diff --git a/partial b/partial\n"
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content=patch,
+    )
+    assert await store.transition(
+        job_id=source["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="cancelled",
+    )
+
+    fork = await store.fork_thread(source_job_id=source["id"], user_id="user-1")
+    assert fork is not None
+    assert fork["state"] == "cancelled"
+    child = await store.create_follow_up(
+        parent_job_id=fork["id"], user_id="user-1", prompt="continue in the fork"
+    )
+    assert child is not None
+    assert child["state"] == "queued"
+    assert (await store.follow_up_context(job_id=child["id"]))["patch"] == patch
+    assert await store.claim_for_publish() is None
+
+
 async def test_fork_after_publish_carries_the_commit_not_the_patch(store: AgentJobStore):
     """A fork of published work bases on the commit instead of re-applying."""
     source = await _create_job(store)
