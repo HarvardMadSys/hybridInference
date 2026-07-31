@@ -283,7 +283,7 @@ class FakeAgentJobStore:
             artifact["content"]
             if artifact
             and parent
-            and parent["state"] in {"succeeded", "publishing"}
+            and parent["state"] in {"succeeded", "publishing", "cancelled"}
             and not parent.get("published_commit_sha")
             else None
         )
@@ -293,7 +293,7 @@ class FakeAgentJobStore:
             if (
                 source is not None
                 and source_artifact
-                and source["state"] in {"succeeded", "publishing"}
+                and source["state"] in {"succeeded", "publishing", "cancelled"}
             ):
                 patch = source_artifact["content"]
         return {"messages": messages, "patch": patch}
