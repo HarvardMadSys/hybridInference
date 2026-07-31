@@ -1249,7 +1249,9 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
           aria-label="Job workspace"
           hidden={!workspaceOpen}
           style={{ '--job-workspace-width': `${workspacePane.width}px` } as CSSProperties}
-          className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-white lg:w-[var(--job-workspace-width)] lg:shrink-0"
+          className={`${
+            workspaceOpen ? 'flex' : 'hidden'
+          } min-h-0 min-w-0 flex-col overflow-hidden bg-white lg:w-[var(--job-workspace-width)] lg:shrink-0`}
         >
           <nav
             aria-label="Workspace views"

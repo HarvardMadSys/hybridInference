@@ -250,9 +250,12 @@ describe('JobDetail', () => {
     render(<JobDetail job={makeJob()} />);
 
     const workspaceButton = screen.getByRole('button', { name: 'Open workspace' });
+    const workspacePane = document.getElementById('job-workspace-pane');
     expect(workspaceButton).toHaveTextContent('');
     expect(workspaceButton).toHaveClass('h-9', 'w-9', 'justify-center');
     expect(workspaceButton).toHaveAttribute('aria-expanded', 'false');
+    expect(workspacePane).toHaveClass('hidden');
+    expect(workspacePane).not.toHaveClass('flex');
     expect(screen.queryByRole('region', { name: 'Job workspace' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Activity' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Environment' })).not.toBeInTheDocument();
@@ -271,14 +274,13 @@ describe('JobDetail', () => {
     expect(closeButton).toHaveAttribute('aria-expanded', 'true');
     expect(closeButton).toHaveAttribute('aria-controls', 'job-workspace-pane');
     expect(closeButton).toHaveClass('bg-gray-900', 'text-white');
-    expect(screen.getByRole('region', { name: 'Job workspace' })).toBeInTheDocument();
+    const workspacePane = screen.getByRole('region', { name: 'Job workspace' });
+    expect(workspacePane).toHaveClass('flex');
+    expect(workspacePane).not.toHaveClass('hidden');
     expect(screen.getByRole('tab', { name: /Git/ })).toHaveAttribute('aria-selected', 'true');
     expect(task).toBeInTheDocument();
     expect(task).toHaveClass('hidden', 'lg:flex', 'overflow-y-auto');
-    expect(screen.getByRole('region', { name: 'Job workspace' })).toHaveClass(
-      'overflow-hidden',
-      'lg:w-[var(--job-workspace-width)]',
-    );
+    expect(workspacePane).toHaveClass('overflow-hidden', 'lg:w-[var(--job-workspace-width)]');
 
     const terminalTab = screen.getByRole('tab', { name: 'Terminal' });
     fireEvent.click(terminalTab);
@@ -291,6 +293,8 @@ describe('JobDetail', () => {
     const reopenButton = screen.getByRole('button', { name: 'Open workspace' });
     expect(reopenButton).toHaveTextContent('');
     expect(reopenButton).toHaveAttribute('aria-expanded', 'false');
+    expect(workspacePane).toHaveClass('hidden');
+    expect(workspacePane).not.toHaveClass('flex');
     expect(screen.queryByRole('region', { name: 'Job workspace' })).not.toBeInTheDocument();
 
     openWorkspace();
