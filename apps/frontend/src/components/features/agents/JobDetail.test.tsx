@@ -10,6 +10,7 @@ import {
   deleteAgentTerminal,
   followUpAgentJob,
   forkAgentJob,
+  getAgentConfig,
   getAgentJobFiles,
   getAgentJobGit,
   listAgentTerminals,
@@ -35,6 +36,7 @@ vi.mock('@/lib/api/agents', () => ({
   deleteAgentTerminal: vi.fn(),
   followUpAgentJob: vi.fn(),
   forkAgentJob: vi.fn(),
+  getAgentConfig: vi.fn(),
   getAgentJobFiles: vi.fn(),
   getAgentJobGit: vi.fn(),
   listAgentTerminals: vi.fn(),
@@ -43,6 +45,17 @@ vi.mock('@/lib/api/agents', () => ({
   writeAgentTerminalInput: vi.fn(),
   writeAgentJobFile: vi.fn(),
 }));
+
+const AGENT_CONFIG = {
+  repos: ['owner/repository'],
+  runtimes: ['claude-code'],
+  models: ['qwen-test', 'glm-test'],
+  default_budget_usd: 2,
+  setup_egress_tier: 'trusted',
+  agent_egress_tier: 'platform_only',
+  github_connected: true,
+  github_install_url: null,
+};
 
 function makeJob(overrides: Partial<AgentJob> = {}): AgentJob {
   return {
@@ -117,6 +130,8 @@ describe('JobDetail', () => {
     vi.mocked(cancelAgentJob).mockReset();
     vi.mocked(followUpAgentJob).mockReset();
     vi.mocked(forkAgentJob).mockReset();
+    vi.mocked(getAgentConfig).mockReset();
+    vi.mocked(getAgentConfig).mockResolvedValue(AGENT_CONFIG);
     vi.mocked(getAgentJobFiles).mockReset();
     vi.mocked(getAgentJobFiles).mockResolvedValue({
       path: '',
@@ -231,6 +246,55 @@ describe('JobDetail', () => {
       }),
     );
     expect(navigation.push).toHaveBeenCalledWith('/agents/ajob_child');
+  });
+
+  it('switches the model for the next turn without leaving the thread', async () => {
+    vi.mocked(followUpAgentJob).mockResolvedValue({ id: 'ajob_child' } as never);
+    render(<JobDetail job={makeJob()} />);
+
+    const picker = await screen.findByLabelText('Model for this turn');
+    expect(picker).toHaveValue('qwen-test');
+
+    fireEvent.change(picker, { target: { value: 'glm-test' } });
+    fireEvent.change(screen.getByLabelText('Add a follow-up'), {
+      target: { value: 'Now try it on the other model' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send follow-up' }));
+
+    await waitFor(() =>
+      expect(followUpAgentJob).toHaveBeenCalledWith('ajob_1', {
+        prompt: 'Now try it on the other model',
+        model: 'glm-test',
+      }),
+    );
+  });
+
+  it('keeps the running model selectable after the deployment stops offering it', async () => {
+    vi.mocked(getAgentConfig).mockResolvedValue({ ...AGENT_CONFIG, models: ['glm-test'] });
+    render(<JobDetail job={makeJob()} />);
+
+    // Otherwise the control would show the deployment's first model while the
+    // turn still ran on the parent's — the composer lying about the job again.
+    expect(await screen.findByLabelText('Model for this turn')).toHaveValue('qwen-test');
+  });
+
+  it('names the inherited model when the model list will not load', async () => {
+    vi.mocked(getAgentConfig).mockRejectedValue(new Error('config unavailable'));
+    vi.mocked(followUpAgentJob).mockResolvedValue({ id: 'ajob_child' } as never);
+    render(<JobDetail job={makeJob()} />);
+
+    await waitFor(() => expect(getAgentConfig).toHaveBeenCalled());
+    expect(screen.queryByLabelText('Model for this turn')).not.toBeInTheDocument();
+    expect(screen.getByText(/Inherits claude-code · qwen-test/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Add a follow-up'), {
+      target: { value: 'Carry on' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send follow-up' }));
+
+    await waitFor(() =>
+      expect(followUpAgentJob).toHaveBeenCalledWith('ajob_1', { prompt: 'Carry on' }),
+    );
   });
 
   it('moves diff, raw events, usage, and sandbox data into a secondary drawer', () => {
