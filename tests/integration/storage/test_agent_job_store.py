@@ -1465,9 +1465,9 @@ async def test_unpinning_restores_open_claiming(store: AgentJobStore):
 async def test_forgetting_a_host_removes_it_until_it_polls_again(store: AgentJobStore):
     await store.touch_runner_host(host="old-box", worker_id="w1")
 
-    assert await store.forget_runner_host(host="old-box") is True
+    assert await store.forget_runner_host(host="old-box") == "deleted"
     assert await store.list_runner_hosts() == []
-    assert await store.forget_runner_host(host="old-box") is False
+    assert await store.forget_runner_host(host="old-box") == "unknown"
 
     await store.touch_runner_host(host="old-box", worker_id="w1")
     assert [h["host"] for h in await store.list_runner_hosts()] == ["old-box"]
@@ -1511,3 +1511,64 @@ async def test_the_policy_row_is_a_singleton(store: AgentJobStore):
                 "INSERT INTO agent_runner_policy (id, active_host) VALUES (FALSE, 'x')"
             )
         assert await conn.fetchval("SELECT count(*) FROM agent_runner_policy") == 1
+
+
+async def test_removing_a_host_cannot_outrun_a_switch_onto_it(store: AgentJobStore):
+    """Regression: the refusal used to be a read the switch could outrun.
+
+    The endpoint saw the host idle, an admin pinned it, and the delete then
+    removed the row the gate was pointing at — silently unpinning the
+    deployment and handing every machine the queue back.
+    """
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+    await store.set_active_runner_host(host="runner-a")
+
+    async with store._pool.acquire() as conn, conn.transaction():
+        # A switch onto runner-b that has taken the policy row, uncommitted.
+        await conn.execute("UPDATE agent_runner_policy SET active_host = 'runner-b' WHERE id")
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(store.forget_runner_host(host="runner-b"), timeout=1.0)
+
+    # Once it commits, runner-b is the active host and removal is refused.
+    assert await store.forget_runner_host(host="runner-b") == "active"
+    assert "runner-b" in {h["host"] for h in await store.list_runner_hosts()}
+
+
+async def test_pinning_a_host_cannot_outrun_its_removal(store: AgentJobStore):
+    """The mirror case: pinning must not land on a row that is being deleted.
+
+    A bare existence check lets the removal commit first, leaving the queue
+    pinned to a machine that is gone — every job queues forever.
+    """
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+
+    async with store._pool.acquire() as conn, conn.transaction():
+        await conn.execute("DELETE FROM agent_runner_hosts WHERE host = 'runner-b'")
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(store.set_active_runner_host(host="runner-b"), timeout=1.0)
+
+    assert await store.set_active_runner_host(host="runner-b") is False
+    assert await store.active_runner_host() is None
+
+
+async def test_forget_reports_which_of_the_three_things_happened(store: AgentJobStore):
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.touch_runner_host(host="old-box", worker_id="w3")
+    await store.set_active_runner_host(host="runner-a")
+
+    assert await store.forget_runner_host(host="runner-a") == "active"
+    assert await store.forget_runner_host(host="old-box") == "deleted"
+    assert await store.forget_runner_host(host="old-box") == "unknown"
+
+
+async def test_the_pool_and_the_pinned_host_come_from_one_read(store: AgentJobStore):
+    """The list and the header cannot name different hosts."""
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+    await store.set_active_runner_host(host="runner-b")
+
+    hosts, active = await store.runner_pool()
+
+    assert active == "runner-b"
+    assert [h["host"] for h in hosts if h["is_active"]] == ["runner-b"]
