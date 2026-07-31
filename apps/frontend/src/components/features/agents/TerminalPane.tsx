@@ -100,16 +100,28 @@ export function TerminalPane({
 
   useEffect(() => {
     const tabList = tabListRef.current;
-    const tab = tabRefs.current.get(terminal.id);
-    if (!tabList || !tab) return;
+    if (!tabList) return;
 
-    const listRect = tabList.getBoundingClientRect();
-    const tabRect = tab.getBoundingClientRect();
-    if (tabRect.left < listRect.left) {
-      tabList.scrollLeft += tabRect.left - listRect.left;
-    } else if (tabRect.right > listRect.right) {
-      tabList.scrollLeft += tabRect.right - listRect.right;
-    }
+    const keepSelectedTabVisible = () => {
+      const tab = tabRefs.current.get(terminal.id);
+      if (!tab) return;
+
+      const listRect = tabList.getBoundingClientRect();
+      const tabRect = tab.getBoundingClientRect();
+      if (tabRect.left < listRect.left) {
+        tabList.scrollLeft += tabRect.left - listRect.left;
+      } else if (tabRect.right > listRect.right) {
+        tabList.scrollLeft += tabRect.right - listRect.right;
+      }
+    };
+
+    keepSelectedTabVisible();
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? undefined
+        : new ResizeObserver(keepSelectedTabVisible);
+    observer?.observe(tabList);
+    return () => observer?.disconnect();
   }, [sessions.length, terminal.id]);
 
   useEffect(() => {

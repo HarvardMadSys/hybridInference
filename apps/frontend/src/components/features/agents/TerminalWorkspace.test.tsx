@@ -91,6 +91,20 @@ function terminal(id: string, shell = 'zsh'): AgentTerminalApi {
   };
 }
 
+function rect(left: number, right: number): DOMRect {
+  return {
+    bottom: 20,
+    height: 20,
+    left,
+    right,
+    top: 0,
+    width: right - left,
+    x: left,
+    y: 0,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
 describe('TerminalWorkspace', () => {
   beforeEach(() => {
     xtermHarness.instances.length = 0;
@@ -110,6 +124,7 @@ describe('TerminalWorkspace', () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('creates, switches, splits, and kills real terminal sessions', async () => {
@@ -192,23 +207,12 @@ describe('TerminalWorkspace', () => {
     const fourth = terminal('term-4', 'bash');
     vi.mocked(listAgentTerminals).mockResolvedValue([first, second, third]);
     vi.mocked(createAgentTerminal).mockResolvedValue(fourth);
-    const rect = (left: number, right: number): DOMRect =>
-      ({
-        bottom: 20,
-        height: 20,
-        left,
-        right,
-        top: 0,
-        width: right - left,
-        x: left,
-        y: 0,
-        toJSON: () => ({}),
-      }) as DOMRect;
+    let split = false;
     vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
       this: Element,
     ) {
       if (this.getAttribute('role') === 'tablist') {
-        return rect(0, document.querySelectorAll('[role="tablist"]').length > 1 ? 100 : 300);
+        return rect(0, split ? 100 : 300);
       }
       if (this.textContent?.includes('Terminal 3')) return rect(220, 300);
       return rect(0, 80);
@@ -223,11 +227,54 @@ describe('TerminalWorkspace', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('tablist', { name: 'Terminals in pane 1' }).scrollLeft).toBe(0);
 
+    split = true;
     fireEvent.click(screen.getByRole('button', { name: 'Split terminal' }));
 
     const firstPane = await screen.findByRole('region', { name: 'Terminal 3 pane' });
     const tablist = within(firstPane).getByRole('tablist', { name: 'Terminals in pane 1' });
     await waitFor(() => expect(tablist.scrollLeft).toBe(200));
+  });
+
+  it('keeps the selected tab visible when the tab strip resizes', async () => {
+    const first = terminal('term-1');
+    const second = terminal('term-2', 'bash');
+    const third = terminal('term-3');
+    vi.mocked(listAgentTerminals).mockResolvedValue([first, second, third]);
+    let paneWidth = 300;
+    let resizeTabList: (() => void) | undefined;
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(target: Element) {
+          if (target.getAttribute('role') === 'tablist') {
+            resizeTabList = () => this.callback([], this as unknown as ResizeObserver);
+          }
+        }
+        disconnect() {}
+        unobserve() {}
+      },
+    );
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      if (this.getAttribute('role') === 'tablist') return rect(0, paneWidth);
+      if (this.textContent?.includes('Terminal 3')) return rect(220, 300);
+      return rect(0, 80);
+    });
+
+    render(<TerminalWorkspace jobId="job-1" active />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Terminal 3 · zsh' }));
+
+    const tablist = screen.getByRole('tablist', { name: 'Terminals in pane 1' });
+    expect(tablist.scrollLeft).toBe(0);
+    await waitFor(() => expect(resizeTabList).toBeTypeOf('function'));
+
+    paneWidth = 100;
+    resizeTabList?.();
+
+    expect(tablist.scrollLeft).toBe(200);
   });
 
   it('swaps panes when selecting a terminal already visible in the other pane', async () => {
