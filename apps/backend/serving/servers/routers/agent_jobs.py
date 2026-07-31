@@ -2163,7 +2163,12 @@ async def worker_claim(
 ) -> WorkerClaimResponse | None:
     """Claim the next queued job and mint this attempt's capability token.
 
-    Returns ``null`` (HTTP 200) when the queue is empty.
+    Returns ``null`` (HTTP 200) when the queue is empty, and equally when an
+    operator has pinned agent jobs to a different host than the one this runner
+    reports. The two are deliberately the same answer on the wire: a runner
+    that has been switched away from should idle exactly as it does when there
+    is no work, not treat it as an error worth retrying differently. Which host
+    is active is an admin question, answered on the admin surface.
 
     **Dispatcher-only.** ``claim_job`` takes the oldest queued job across all
     tenants, and the response carries that job's repo, prompt, and metadata
@@ -2181,7 +2186,9 @@ async def worker_claim(
     """
     job_store = _require_store(store)
     claim = await job_store.claim_job(
-        worker_id=body.worker_id, lease_ttl_seconds=body.lease_ttl_seconds
+        worker_id=body.worker_id,
+        lease_ttl_seconds=body.lease_ttl_seconds,
+        host=body.host,
     )
     if claim is None:
         return None

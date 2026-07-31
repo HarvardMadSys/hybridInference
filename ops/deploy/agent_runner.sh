@@ -60,6 +60,16 @@ cmd_up() {
   log "building the sandbox image (${SANDBOX_IMAGE})"
   docker build -f deploy/docker/Dockerfile.agent-sandbox -t "$SANDBOX_IMAGE" .
 
+  # Which machine this is, for the admin host switch. Resolved here because
+  # this script runs on the host: inside the runner container the hostname is
+  # a container id, so the name has to be handed in from out here.
+  if [[ -z "${AGENT_RUNNER_HOST:-}" ]] && ! grep -q '^AGENT_RUNNER_HOST=..*' .env 2>/dev/null; then
+    AGENT_RUNNER_HOST="$(hostname -s 2>/dev/null || hostname)"
+    export AGENT_RUNNER_HOST
+    log "this machine joins the host pool as '${AGENT_RUNNER_HOST}'" \
+        "(set AGENT_RUNNER_HOST in .env to rename it)"
+  fi
+
   log "starting ${replicas} runner(s); restart policy keeps them up across reboots"
   log "persist it with AGENT_RUNNER_REPLICAS=${replicas} in .env, or the next deploy uses the default"
   AGENT_SANDBOX_IMAGE="$SANDBOX_IMAGE" AGENT_RUNNER_REPLICAS="$replicas" \

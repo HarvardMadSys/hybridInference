@@ -221,17 +221,19 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
       <aside
         id="agents-sidebar"
         style={{ width: pane.width }}
-        className="flex shrink-0 flex-col bg-gray-50"
+        className="flex shrink-0 flex-col border-r border-gray-200/70 bg-gray-50/80"
       >
-        <div className="flex-1 overflow-y-auto px-3 py-3">
+        <div className="flex-1 overflow-y-auto px-3.5 py-4">
           <Link
             href="/agents"
-            className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-200/60 ${
-              pathname === '/agents' ? 'bg-gray-200/80 text-gray-900' : ''
+            className={`flex w-full items-center gap-2 rounded-lg border border-transparent px-2.5 py-2 text-[13px] font-medium transition-colors ${
+              pathname === '/agents'
+                ? 'border-crimson/10 bg-crimson/[0.06] text-crimson-dark'
+                : 'text-gray-700 hover:bg-white/80 hover:text-gray-900'
             }`}
           >
             <svg
-              className="h-4 w-4 text-gray-500"
+              className={`h-4 w-4 ${pathname === '/agents' ? 'text-crimson' : 'text-gray-500'}`}
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -294,8 +296,10 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
 
           <Link
             href="/agents/archived"
-            className={`mt-3 flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium hover:bg-gray-200/60 ${
-              pathname === '/agents/archived' ? 'bg-gray-200/80 text-gray-900' : 'text-gray-600'
+            className={`mt-4 flex items-center gap-2 rounded-lg border border-transparent px-2.5 py-2 text-[13px] font-medium transition-colors ${
+              pathname === '/agents/archived'
+                ? 'border-crimson/10 bg-crimson/[0.06] text-crimson-dark'
+                : 'text-gray-600 hover:bg-white/80 hover:text-gray-900'
             }`}
           >
             <svg
@@ -317,8 +321,10 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
 
           <Link
             href="/agents/integrations"
-            className={`mt-1 flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium hover:bg-gray-200/60 ${
-              pathname === '/agents/integrations' ? 'bg-gray-200/80 text-gray-900' : 'text-gray-600'
+            className={`mt-0.5 flex items-center gap-2 rounded-lg border border-transparent px-2.5 py-2 text-[13px] font-medium transition-colors ${
+              pathname === '/agents/integrations'
+                ? 'border-crimson/10 bg-crimson/[0.06] text-crimson-dark'
+                : 'text-gray-600 hover:bg-white/80 hover:text-gray-900'
             }`}
           >
             <svg
@@ -338,8 +344,8 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
           </Link>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2.5 border-t border-gray-200 px-4 py-3">
-          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-crimson/10 text-[11px] font-semibold text-crimson">
+        <div className="flex shrink-0 items-center gap-2.5 border-t border-gray-200/80 bg-white/50 px-4 py-3">
+          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-crimson/[0.08] text-[11px] font-semibold text-crimson ring-1 ring-inset ring-crimson/10">
             {initialsOf(state.user?.user_name, state.user?.email)}
           </span>
           <span className="truncate text-[13px] font-medium text-gray-800">{displayName}</span>
@@ -384,7 +390,7 @@ function ProjectFolder({
   const hidden = section.conversations.length - visible.length;
 
   return (
-    <div className="mt-3">
+    <div className="mt-4">
       <div className="group flex items-center gap-0.5">
         <button
           type="button"
@@ -392,7 +398,7 @@ function ProjectFolder({
           aria-expanded={expanded}
           aria-controls={listId}
           title={section.repo}
-          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-gray-700 hover:bg-gray-200/60"
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 py-2 text-left text-[13px] font-medium text-gray-700 transition-colors hover:bg-white/80 hover:text-gray-900"
         >
           <svg
             className={`h-3 w-3 shrink-0 text-gray-400 transition-transform ${
@@ -434,7 +440,7 @@ function ProjectFolder({
           href={`/agents?repo=${encodeURIComponent(section.repo)}`}
           aria-label={`New task in ${section.label}`}
           title={`New task in ${section.label}`}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 opacity-70 transition hover:bg-gray-200/70 hover:text-gray-700 hover:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 group-hover:opacity-100"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 opacity-70 transition hover:bg-white hover:text-gray-700 hover:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 group-hover:opacity-100"
         >
           <svg
             className="h-4 w-4"
@@ -454,7 +460,7 @@ function ProjectFolder({
       </div>
 
       {expanded ? (
-        <div id={listId} className="mt-0.5 space-y-0.5">
+        <div id={listId} className="mt-1 space-y-0.5">
           {visible.map(({ key, job, jobIds }: ConversationRow) => {
             const href = `/agents/${job.id}`;
             const isActive = jobIds.some((id) => pathname === `/agents/${id}`);
@@ -463,10 +469,10 @@ function ProjectFolder({
                 <Link
                   href={href}
                   title={`${job.repo} · ${job.title}`}
-                  className={`flex w-full items-center gap-2 rounded-md py-1.5 pl-4 pr-16 text-left text-[13px] ${
+                  className={`flex w-full items-center gap-2 rounded-lg border border-transparent py-1.5 pl-4 pr-16 text-left text-[13px] transition-colors ${
                     isActive
-                      ? 'bg-gray-200/80 font-medium text-gray-900'
-                      : 'text-gray-600 hover:bg-gray-200/60'
+                      ? 'border-gray-200/80 bg-white font-medium text-gray-900 shadow-subtle'
+                      : 'text-gray-600 hover:bg-white/70 hover:text-gray-900'
                   }`}
                 >
                   <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[job.state]}`} />
@@ -480,7 +486,7 @@ function ProjectFolder({
                   title={job.pinnedAt ? 'Unpin task' : 'Pin task'}
                   disabled={pinning === key || archiving === key}
                   onClick={() => onSetPinned(key, job.id, job.repo, !job.pinnedAt)}
-                  className={`absolute right-7 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-gray-500 transition hover:bg-gray-300/70 hover:text-gray-800 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 disabled:cursor-wait disabled:opacity-60 ${
+                  className={`absolute right-7 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 disabled:cursor-wait disabled:opacity-60 ${
                     job.pinnedAt
                       ? 'opacity-100'
                       : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
@@ -507,7 +513,7 @@ function ProjectFolder({
                   title="Archive task"
                   disabled={archiving === key || pinning === key}
                   onClick={() => onArchive(key, job.id, jobIds)}
-                  className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-gray-500 opacity-0 transition hover:bg-gray-300/70 hover:text-gray-800 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 disabled:cursor-wait disabled:opacity-60 group-hover:opacity-100 group-focus-within:opacity-100"
+                  className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-gray-500 opacity-0 transition hover:bg-gray-100 hover:text-gray-800 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 disabled:cursor-wait disabled:opacity-60 group-hover:opacity-100 group-focus-within:opacity-100"
                 >
                   <svg
                     className="h-4 w-4"
@@ -540,7 +546,7 @@ function ProjectFolder({
             <button
               type="button"
               onClick={onShowMore}
-              className="w-full rounded-md px-4 py-1 text-left text-[12px] text-gray-400 hover:bg-gray-200/60 hover:text-gray-600"
+              className="w-full rounded-md px-4 py-1.5 text-left text-[12px] text-gray-400 transition-colors hover:bg-white/70 hover:text-gray-600"
             >
               Show {hidden} more
             </button>

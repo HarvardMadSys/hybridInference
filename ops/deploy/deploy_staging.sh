@@ -78,6 +78,13 @@ main() {
     sandbox_image="$(grep -E '^AGENT_SANDBOX_IMAGE=..+' .env | tail -1 | cut -d= -f2- || true)"
     export AGENT_SANDBOX_IMAGE="${sandbox_image:-hybridinference-agent-sandbox:latest}"
     log "Agent runner enabled (AGENT_DISPATCHER_TOKEN is set); sandbox image ${AGENT_SANDBOX_IMAGE}."
+    # Name this machine for the admin host switch. Resolved out here because
+    # the runner container's own hostname is a container id, so it cannot
+    # answer "which machine am I" for itself.
+    if ! grep -qE '^AGENT_RUNNER_HOST=..+' .env; then
+      export AGENT_RUNNER_HOST="${AGENT_RUNNER_HOST:-$(hostname -s 2>/dev/null || hostname)}"
+      log "Runner host pool entry: ${AGENT_RUNNER_HOST} (set AGENT_RUNNER_HOST in .env to rename)."
+    fi
   fi
 
   # Refuse only when the working tree diverges from HEAD for tracked files,

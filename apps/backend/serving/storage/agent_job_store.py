@@ -403,6 +403,41 @@ class AgentJobStore:
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_runner_hosts (
+                    host TEXT PRIMARY KEY,
+                    last_worker_id TEXT,
+                    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            # Which host takes work is *one* fact, so it lives in one row that
+            # always exists — not a flag spread across the pool. That is what
+            # lets a claim lock it: readers take the row shared, an admin
+            # switch takes it exclusively, and the two can no longer interleave
+            # into "the switch succeeded and the old machine took one more job".
+            # A per-host flag has no such row to lock while nothing is pinned.
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_runner_policy (
+                    id BOOLEAN PRIMARY KEY DEFAULT TRUE,
+                    active_host TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT agent_runner_policy_singleton CHECK (id)
+                )
+                """
+            )
+            await conn.execute(
+                "INSERT INTO agent_runner_policy (id, active_host) VALUES (TRUE, NULL) "
+                "ON CONFLICT (id) DO NOTHING"
+            )
+            # The flag this replaces. Dropped rather than left behind: two
+            # places answering "which host is active" is the split brain the
+            # policy row exists to prevent.
+            await conn.execute("ALTER TABLE agent_runner_hosts DROP COLUMN IF EXISTS is_active")
+            await conn.execute("DROP INDEX IF EXISTS idx_agent_runner_hosts_one_active")
 
     # ── Repository grants ──────────────────────────────────────────────
     #
@@ -1256,6 +1291,105 @@ class AgentJobStore:
             return None
         return {"thread_id": row["thread_id"], "pinned_at": row["pinned_at"]}
 
+    # ── Runner hosts ───────────────────────────────────────────────────
+    #
+    # The pool of machines that can run agent jobs, and which one currently
+    # does. Runners pull work, so the gateway cannot push a job at a chosen
+    # host; the only place "run agents over there now" can be decided is the
+    # claim. A host therefore enters the pool by polling, not by being
+    # registered — start a runner on a machine and it appears; stop it and the
+    # row goes stale — and switching hosts is a gate on that same poll.
+    #
+    # Recording happens before the gate, deliberately: an operator has to be
+    # able to see a host in order to switch to it, and a host that only became
+    # visible once it was already active could never be picked in the first
+    # place.
+
+    async def touch_runner_host(self, *, host: str | None, worker_id: str) -> None:
+        """Record a polling runner. ``None`` predates host reporting.
+
+        Deliberately not part of the claim's transaction: being visible in the
+        pool is not a decision, and holding a host row for the length of a
+        claim would make every poll contend with every other.
+        """
+        if not host:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO agent_runner_hosts (host, last_worker_id)
+                VALUES ($1, $2)
+                ON CONFLICT (host) DO UPDATE
+                SET last_seen_at = NOW(), last_worker_id = EXCLUDED.last_worker_id
+                """,
+                host,
+                worker_id,
+            )
+
+    async def active_runner_host(self) -> str | None:
+        """The pinned host, or ``None`` when any runner may claim."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval("SELECT active_host FROM agent_runner_policy WHERE id")
+
+    async def list_runner_hosts(self) -> list[dict[str, Any]]:
+        """Return every host seen polling, most recent poll first."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT host, last_worker_id, first_seen_at, last_seen_at,
+                       (SELECT active_host FROM agent_runner_policy WHERE id)
+                           IS NOT DISTINCT FROM host AS is_active
+                FROM agent_runner_hosts
+                ORDER BY last_seen_at DESC
+                """
+            )
+        return [dict(row) for row in rows]
+
+    async def set_active_runner_host(self, *, host: str | None) -> bool:
+        """Pin agent jobs to one host, or unpin with ``None``.
+
+        Returns ``False`` when ``host`` names a machine that has never polled —
+        pinning to one would park the queue on a host that may not exist, which
+        presents as "every job hangs" with nothing in the logs.
+
+        The write takes the policy row exclusively, so a claim already past its
+        own read of that row finishes first and a claim that has not reached it
+        waits and then sees this value. Either order is defensible; the one
+        this rules out is both.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            # Checked before anything is written. Clearing first and reporting
+            # the miss afterwards leaves the deployment *unpinned* — a typo in
+            # the host name would quietly hand every machine the queue back,
+            # which is the opposite of what a refused switch should do.
+            if host is not None:
+                known = await conn.fetchval(
+                    "SELECT 1 FROM agent_runner_hosts WHERE host = $1", host
+                )
+                if not known:
+                    return False
+            # Upsert, not a bare UPDATE: against a database whose policy row is
+            # missing, an UPDATE touches nothing and still reports success —
+            # the switch would read as applied while the gate kept using the
+            # old value.
+            await conn.execute(
+                """
+                INSERT INTO agent_runner_policy (id, active_host) VALUES (TRUE, $1)
+                ON CONFLICT (id) DO UPDATE
+                SET active_host = EXCLUDED.active_host, updated_at = NOW()
+                """,
+                host,
+            )
+            return True
+
+    async def forget_runner_host(self, *, host: str) -> bool:
+        """Drop a host from the pool. A runner still polling re-adds itself."""
+        async with self._pool.acquire() as conn:
+            deleted = await conn.fetchval(
+                "DELETE FROM agent_runner_hosts WHERE host = $1 RETURNING host", host
+            )
+        return deleted is not None
+
     # ── Claim / lease ──────────────────────────────────────────────────
 
     async def claim_job(
@@ -1263,14 +1397,35 @@ class AgentJobStore:
         *,
         worker_id: str,
         lease_ttl_seconds: float,
+        host: str | None = None,
     ) -> dict[str, Any] | None:
         """Claim the oldest queued job, creating a new fenced attempt.
 
         Returns the job dict extended with ``attempt_id``, ``attempt_no`` and
         ``lease_generation``, or ``None`` when the queue is empty. Concurrent
         workers are safe via ``FOR UPDATE SKIP LOCKED``.
+
+        When an operator has pinned a host, a runner reporting any other one —
+        or none at all — claims nothing. Unpinned is the default and behaves as
+        it always has: whoever polls first takes the job.
+
+        The host check is the first statement of the *claiming* transaction and
+        takes the policy row shared, so it cannot be overtaken by a switch
+        committing between the check and the dequeue. Read on its own
+        connection, as it was, that window was real: the old host reads "still
+        me", the admin switches, and the machine the operator just moved away
+        from takes one more job while the page says the switch succeeded.
         """
+        await self.touch_runner_host(host=host, worker_id=worker_id)
         async with self._pool.acquire() as conn, conn.transaction():
+            active_host = await conn.fetchval(
+                "SELECT active_host FROM agent_runner_policy WHERE id FOR SHARE"
+            )
+            if active_host is not None and host != active_host:
+                # Fail closed, including for a runner that reports no host:
+                # leaving the machine an operator just switched away from able
+                # to claim is the one outcome that makes the switch a lie.
+                return None
             # Follow-ups may be submitted while a run is active. Promote only
             # those whose direct parent has settled; a chain therefore
             # advances one turn at a time even with multiple waiting messages.

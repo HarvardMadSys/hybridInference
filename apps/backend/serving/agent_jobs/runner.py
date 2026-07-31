@@ -312,17 +312,29 @@ class Heartbeater:
 
 
 def claim(
-    *, base_url: str, dispatcher_token: str, worker_id: str, lease_ttl: float
+    *,
+    base_url: str,
+    dispatcher_token: str,
+    worker_id: str,
+    lease_ttl: float,
+    host: str | None = None,
 ) -> ClaimedJob | None:
     """Claim the next queued job with the dispatcher credential.
 
     The dispatcher credential is used here and nowhere else — it does not
     travel into the agent's environment.
+
+    ``host`` names the machine this runner sits on, which is how it joins the
+    pool an operator picks from. Replicas on one machine share it; it is not
+    ``worker_id``, which is deliberately unique per replica.
     """
+    payload: dict[str, Any] = {"worker_id": worker_id, "lease_ttl_seconds": lease_ttl}
+    if host:
+        payload["host"] = host
     try:
         response = httpx.post(
             f"{base_url.rstrip('/')}/v1/agent/worker/claim",
-            json={"worker_id": worker_id, "lease_ttl_seconds": lease_ttl},
+            json=payload,
             headers={"Authorization": f"Bearer {dispatcher_token}"},
             timeout=30.0,
         )
@@ -859,6 +871,7 @@ def run_once(
     generic_command: str | None = None,
     backend: SandboxBackend | None = None,
     workspace_root: str | None = None,
+    host: str | None = None,
 ) -> int:
     """Claim one job, run it, and report the outcome. Returns a process exit code.
 
@@ -882,6 +895,7 @@ def run_once(
         dispatcher_token=dispatcher_token,
         worker_id=worker_id,
         lease_ttl=lease_ttl,
+        host=host,
     )
     if job is None:
         print("no queued agent job; nothing to do")
@@ -1151,6 +1165,7 @@ def run_forever(
     idle_sleep_s: float = 5.0,
     backend: SandboxBackend | None = None,
     workspace_ttl_s: float = DEFAULT_WORKSPACE_TTL_S,
+    host: str | None = None,
 ) -> int:
     """Claim and run jobs until interrupted — the long-lived runner.
 
@@ -1176,7 +1191,11 @@ def run_forever(
     checker = getattr(backend, "check_gateway_reachable", None)
     if checker is not None:
         checker(base_url)
-    print(f"agent runner {worker_id} started (sandbox backend: {backend.name})", flush=True)
+    where = f" on host {host}" if host else " (no host reported)"
+    print(
+        f"agent runner {worker_id} started{where} (sandbox backend: {backend.name})",
+        flush=True,
+    )
 
     while True:
         try:
@@ -1190,6 +1209,7 @@ def run_forever(
                 generic_command=generic_command,
                 backend=backend,
                 workspace_root=str(root),
+                host=host,
             )
         except KeyboardInterrupt:
             return 0
@@ -1251,6 +1271,22 @@ def default_worker_id() -> str:
     return f"{base}-{host}" if host and not base.endswith(host) else base
 
 
+def default_runner_host() -> str | None:
+    """Name the *machine* this runner sits on, for the host pool.
+
+    Explicit configuration only. ``socket.gethostname()`` is what
+    :func:`default_worker_id` uses and is exactly wrong here: inside a
+    container it returns the container id, so every replica would enter the
+    pool as its own "host" and every restart would add another one — an
+    operator picking a machine would be choosing between rows of hex.
+
+    Unset means this runner joins no pool and stays invisible to the switch.
+    That is also the compatible default: with no host pinned, an unreporting
+    runner claims exactly as it always has.
+    """
+    return (os.environ.get("AGENT_RUNNER_HOST") or "").strip() or None
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the runner CLI parser.
 
@@ -1266,6 +1302,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("AGENT_GATEWAY_URL") or os.environ.get("FREEINFERENCE_BASE_URL", ""),
     )
     parser.add_argument("--worker-id", default=default_worker_id())
+    parser.add_argument(
+        "--host",
+        default=default_runner_host(),
+        help=(
+            "Machine this runner sits on (AGENT_RUNNER_HOST). Shared by every "
+            "replica here; joins the pool an admin can switch between."
+        ),
+    )
     parser.add_argument("--workdir", default=".")
     # Read from the environment the way --base-url and --workdir-root already
     # do. The compose overlay sets AGENT_LEASE_TTL and AGENT_TIMEOUT_S, and
@@ -1320,6 +1364,7 @@ def main(argv: list[str] | None = None) -> int:
             agent_timeout_s=args.agent_timeout,
             generic_command=args.generic_command,
             workspace_ttl_s=args.workspace_ttl,
+            host=args.host,
         )
 
     return run_once(
@@ -1330,6 +1375,7 @@ def main(argv: list[str] | None = None) -> int:
         lease_ttl=args.lease_ttl,
         agent_timeout_s=args.agent_timeout,
         generic_command=args.generic_command,
+        host=args.host,
     )
 
 
