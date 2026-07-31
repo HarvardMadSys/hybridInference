@@ -23,7 +23,7 @@ const TIER_LABELS: Record<string, string> = {
   full: 'Open',
 };
 
-export function TaskComposer() {
+export function TaskComposer({ initialRepo }: { initialRepo?: string }) {
   const router = useRouter();
   const [task, setTask] = useState('');
   const [config, setConfig] = useState<AgentConfigApi | null>(null);
@@ -48,7 +48,9 @@ export function TaskComposer() {
         const modelIds = cfg.models ?? [];
         setConfig(cfg);
         setModels(modelIds);
-        setRepo(cfg.repos[0] ?? '');
+        setRepo(
+          initialRepo && cfg.repos.includes(initialRepo) ? initialRepo : (cfg.repos[0] ?? ''),
+        );
         setRuntime(cfg.runtimes[0] ?? '');
         setModel(modelIds[0] ?? '');
       })
@@ -61,7 +63,7 @@ export function TaskComposer() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [initialRepo]);
 
   // Branches follow the selected repository, so they reload when it changes.
   useEffect(() => {

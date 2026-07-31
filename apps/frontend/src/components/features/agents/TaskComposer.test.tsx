@@ -116,4 +116,26 @@ describe('TaskComposer source-control onboarding', () => {
     );
     expect(navigation.push).toHaveBeenCalledWith('/agents/ajob_1');
   });
+
+  it('preselects a requested repository that is available in backend config', async () => {
+    vi.mocked(getAgentConfig).mockResolvedValue(
+      config({ repos: ['owner/default', 'owner/requested'] }),
+    );
+
+    render(<TaskComposer initialRepo="owner/requested" />);
+
+    expect(await screen.findByLabelText('Repository')).toHaveValue('owner/requested');
+    expect(listRepoBranches).toHaveBeenCalledWith('owner/requested');
+  });
+
+  it('falls back to the first configured repository for a stale request', async () => {
+    vi.mocked(getAgentConfig).mockResolvedValue(
+      config({ repos: ['owner/default', 'owner/another'] }),
+    );
+
+    render(<TaskComposer initialRepo="owner/deleted" />);
+
+    expect(await screen.findByLabelText('Repository')).toHaveValue('owner/default');
+    expect(listRepoBranches).toHaveBeenCalledWith('owner/default');
+  });
 });
