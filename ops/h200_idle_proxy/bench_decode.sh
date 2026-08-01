@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ops/h200_idle_proxy/bench_decode.sh — decode-throughput benchmark for the
-# running DeepSeek-V4-Flash backend (sglang, NVFP4, TP=2 on GPUs 2,3).
+# running DeepSeek-V4-Flash backend (sglang, PP=3 on GPUs 0,2,3).
 #
 # Runs sglang.bench_serving *inside* the backend container against
 # 127.0.0.1:8001, so no host-side sglang install is needed. Output length is
