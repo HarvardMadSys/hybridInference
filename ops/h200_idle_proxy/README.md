@@ -1,13 +1,13 @@
 # h200-idle-proxy
 
-Idle reverse proxy for **DeepSeek-V4-Flash (NVFP4)** on a multi-GPU **H200** box.
+Idle reverse proxy for **DeepSeek-V4-Flash-0731 (NVFP4)** on a multi-GPU **H200** box.
 Reuses [`local_deployment_proxy.py`](../local_deployment_proxy/local_deployment_proxy.py)
 with a dedicated model profile and port.
 
 | Setting | Value |
 |---|---|
 | Listen port | **8003** (8001 = local RTX Qwen, 8002 = Spark) |
-| Model | `deepseek-v4-flash` → `nvidia/DeepSeek-V4-Flash-NVFP4` |
+| Model | `deepseek-v4-flash` → `auroter/DeepSeek-V4-Flash-0731-NVFP4` |
 | Engine | sglang, `tensor_parallel_size: 2`, MTP (EAGLE), `marlin` MoE |
 | GPUs | **2,3** (GPUs **0,1** left free for other tenants) |
 | Max context | **1,048,576** tokens (1M — model's YARN-extended architectural max) |
@@ -79,18 +79,19 @@ See [`models.json`](models.json):
 | `gpu_index` | `"2,3"` — pins the 2 TP ranks; GPUs 0,1 are never claimed |
 | `tensor_parallel_size` | `2` |
 | `backend_port` | `18003` |
-| `model_dir` | `/netscratch/juncheng/models/DeepSeek-V4-Flash` (NVFP4) |
+| `model_dir` | `/netscratch/juncheng/models/DeepSeek-V4-Flash-0731-NVFP4` (NVFP4) |
 | `max_model_len` | `1048576` (1M — the model's YARN architectural max; not VRAM-bound at NVFP4) |
 | `mem_fraction` | `0.90` |
 | `moe_runner_backend` | `marlin` — **required** for NVFP4 on H200 (SM90) |
 | `mtp` / `speculative_algorithm` | `true` / `EAGLE` — native MTP speculative decoding |
 
-> **Why NVFP4 + TP=2 (not FP8 PP=3)?** The FP8 weights are ~274 GiB, which does
-> not fit at TP=2 on two 143 GiB H200s — the earlier profile worked around this
-> with PP=3 across 3 GPUs (0,2,3). The **NVFP4** checkpoint (4-bit MoE experts,
-> FP8 attention) is only ~149 GiB, i.e. **~91 GiB per rank at TP=2** with ~13 GiB
-> free per GPU for KV even at the full 1M context — so it fits on **two** GPUs and
-> frees a third. `marlin` is mandatory: on pre-Blackwell (SM90) GPUs the default
+> **Why NVFP4 + TP=2 (not FP8 PP=3)?** The official 0731 block-FP8 weights are
+> ~300 GiB, which does not fit at TP=2 on two 143 GiB H200s — that would force
+> PP=3 across 3 GPUs (0,2,3). The **NVFP4** checkpoint (4-bit MoE experts,
+> FP8 attention) is only ~160 GiB, so at TP=2 it splits to **~80 GiB of weights
+> per rank** with tens of GiB free per GPU for KV even at the full 1M context — so
+> it fits on **two** GPUs and frees a third. `marlin` is mandatory: on
+> pre-Blackwell (SM90) GPUs the default
 > `triton` MoE runner asserts "Hidden size mismatch" on the packed FP4 experts.
 > MTP uses `EAGLE` (sglang rejects `NEXTN` for this arch); the checkpoint ships a
 > single native MTP layer, and speculative decoding (accept length ~2.0) roughly
@@ -101,6 +102,10 @@ See [`models.json`](models.json):
 Serving throughput measured at **TP=2 NVFP4 on 2×H200** with sglang's
 `bench_serving` (1024-token input / 512-token output, output length fixed via
 `ignore_eos`, saturating load). Output-token throughput (tok/s):
+
+> Captured on the earlier `nvidia/DeepSeek-V4-Flash-NVFP4` build; treat as
+> indicative for the `auroter` 0731 NVFP4 build until re-measured with
+> [`bench_decode.sh`](bench_decode.sh).
 
 | Concurrency | No MTP | With MTP (EAGLE) |
 |---:|---:|---:|
