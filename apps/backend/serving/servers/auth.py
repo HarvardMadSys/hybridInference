@@ -28,6 +28,7 @@ from serving.servers.deps import (
     get_log_store,
     get_operational_store,
 )
+from serving.utils.auth_failure_blocklist import is_ip_blocked, record_auth_failure
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip, get_client_ip_info
 
@@ -118,11 +119,31 @@ async def _authenticate_by_api_key(
     Returns ``(user_row, key_hash)``. Raises ``HTTPException(401)`` for a
     missing/invalid key and ``HTTPException(403)`` for an unverified email.
     """
+    # Refuse sources already blocked for repeated auth failures, before any key
+    # extraction or DB lookup so a flood is shed cheaply. ``ip_info`` is computed
+    # once here and reused by the failure logs below.
+    ip_info = get_client_ip_info(request)
+    blocked, retry_after = await is_ip_blocked(ip_info.client_ip)
+    if blocked:
+        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+            log_rejection(
+                request=request,
+                status_code=429,
+                error_code="ip_blocked",
+                reason="auth_failures_exceeded",
+                user=None,
+            )
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Too many authentication failures from this IP. Temporarily blocked.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     # Extract API key from headers
     api_key = _extract_api_key(authorization, x_api_key)
 
     if not api_key:
-        ip_info = get_client_ip_info(request)
         logger.warning(
             "auth_failure",
             extra={
@@ -134,6 +155,7 @@ async def _authenticate_by_api_key(
                 "reason": "missing_api_key",
             },
         )
+        await record_auth_failure(ip_info.client_ip)
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 request=request,
@@ -160,7 +182,6 @@ async def _authenticate_by_api_key(
     user = await op_store.get_auth_context_by_key_hash(key_hash)
 
     if not user:
-        ip_info = get_client_ip_info(request)
         logger.warning(
             "auth_failure",
             extra={
@@ -172,6 +193,7 @@ async def _authenticate_by_api_key(
                 "reason": "invalid_api_key",
             },
         )
+        await record_auth_failure(ip_info.client_ip)
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 request=request,
