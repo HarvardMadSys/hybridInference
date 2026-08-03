@@ -608,6 +608,47 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.consume_identity_auth_code(code_hash)
 
+    # -- inference grants (never cached) -------------------------------------
+    #
+    # A grant's whole job is to stop authorizing the moment it is revoked or
+    # expires. A cached read would answer "live" for a capability the database
+    # has already withdrawn, which is the one wrong answer this table exists to
+    # prevent.
+
+    async def upsert_agent_grant(
+        self,
+        *,
+        grant_id: str,
+        user_id: str,
+        external_job_id: str,
+        external_attempt_id: str,
+        allowed_models: list[str],
+        allowed_mcp: list[str],
+        expires_at: datetime,
+    ) -> Row:
+        """Delegate to wrapped store."""
+        return await self._store.upsert_agent_grant(
+            grant_id=grant_id,
+            user_id=user_id,
+            external_job_id=external_job_id,
+            external_attempt_id=external_attempt_id,
+            allowed_models=allowed_models,
+            allowed_mcp=allowed_mcp,
+            expires_at=expires_at,
+        )
+
+    async def get_agent_grant(self, grant_id: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_agent_grant(grant_id)
+
+    async def renew_agent_grant(self, grant_id: str, *, expires_at: datetime) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.renew_agent_grant(grant_id, expires_at=expires_at)
+
+    async def revoke_agent_grant(self, grant_id: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.revoke_agent_grant(grant_id)
+
     # -- audit (pass-through) ------------------------------------------------
 
     async def log_admin_action(
