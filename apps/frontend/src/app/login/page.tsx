@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import toast from 'react-hot-toast';
@@ -9,12 +9,18 @@ import { loginSchema, LoginFormData } from '@/lib/schemas/auth';
 import { useAuth } from '@/components/providers';
 import { resendVerification } from '@/lib/api/auth';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
+import { internalPathOr } from '@/lib/utils/navigation';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
 
-export default function LoginPage() {
+function LoginContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // Where to land after login. Internal paths only — /authorize round-trips
+  // through here with its query attached, and a crafted ?next= must never be
+  // able to send a fresh session off-site.
+  const nextPath = internalPathOr('/dashboard', searchParams.get('next'));
   const { login, state } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,9 +40,9 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!state.loading && state.isAuthenticated) {
-      router.replace('/dashboard');
+      router.replace(nextPath);
     }
-  }, [state.loading, state.isAuthenticated, router]);
+  }, [state.loading, state.isAuthenticated, router, nextPath]);
 
   const onSubmit = async (data: LoginFormData) => {
     setIsLoading(true);
@@ -47,7 +53,7 @@ export default function LoginPage() {
     try {
       await login(data.email, data.password);
       toast.success('Login successful!');
-      router.push('/dashboard');
+      router.push(nextPath);
     } catch (err) {
       // For a suspended account, prefer the admin-authored message (when set)
       // over the generic "account suspended" text.
@@ -163,5 +169,19 @@ export default function LoginPage() {
         </form>
       </Card>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex w-full items-center justify-center">
+          <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600"></div>
+        </div>
+      }
+    >
+      <LoginContent />
+    </Suspense>
   );
 }
