@@ -74,13 +74,13 @@ Then diff against this file; every new path must be classified before Phase D st
 | `apps/backend/serving/storage/agent_job_store.py` | E1 | 1,955 lines, **11 tables** → Alembic baseline. Includes `agent_runner_hosts` and `agent_runner_policy` (#1158) — an earlier revision said nine, read from a stale checkout. Deliberate exception: omit `agent_jobs.budget_usd` and its store plumbing; do not alter the old DB. |
 | `apps/backend/serving/schemas_agent_jobs.py` | E2 | omit task-budget constants and request/response/config fields; keep informational usage fields |
 | `apps/backend/serving/agent_jobs/tokens.py` | E3 | re-key to `AGENT_CONTROL_TOKEN_SECRET` |
-| `apps/backend/serving/agent_jobs/entitlement.py` | E4 | reads plan/role from identity claims |
+| `apps/backend/serving/agent_jobs/entitlement.py` | E4 | reads `role` from identity claims; catalog via C9, **not** `GET /v1/models` (that route cannot authenticate an identity JWT) |
 | `apps/backend/serving/agent_jobs/github_app.py` | E5 | |
-| `apps/backend/serving/agent_jobs/source_control.py` | E5 | |
+| `apps/backend/serving/agent_jobs/source_control.py` | E5 | re-key `SourceControlCipher` to `AGENT_SOURCE_CONTROL_ENCRYPTION_KEY` **in E5** — moved as-is it still reads `API_KEY_SECRET` (line 40), which never reaches this service, so it can neither store a new credential nor read what H1 re-wraps |
 | `apps/backend/serving/agent_jobs/publisher.py` | E5 | |
 | `apps/backend/serving/agent_jobs/publish_worker.py` | E5 | |
-| `apps/backend/serving/servers/routers/agent_jobs.py` | E6 | 2,257 lines — **move whole, do not split**, except remove `budget_usd` handling and preserve usage via C7 |
-| `apps/backend/serving/servers/routers/admin/agent_runner_hosts.py` | E6 | from #1158 |
+| `apps/backend/serving/servers/routers/agent_jobs.py` | E6 | 2,257 lines — **move whole, do not split**, except: remove `budget_usd` handling; re-point `mcp_registry` (line 50) at C9 and the `get_log_store` cost/usage reads (lines 203, 283–287, 1043) at C7. Both stay in the gateway, and both fail *quietly* if ignored — the registry import breaks the module, the `getattr`-guarded usage reads just report zero |
+| `apps/backend/serving/servers/routers/admin/agent_runner_hosts.py` | E6 | from #1158. Moves for parity, then **retires at F4**: it returns a scheduling label (`host`, `active`, `last_seen_at`), not the `host_id`/slots/capabilities the dynamic pool needs. Its two legacy tables drop in a Phase G migration |
 | `apps/backend/serving/agent_jobs/__init__.py` | E6 | package docstring only |
 | `tests/unit/test_agent_job_tokens.py` | E3 | |
 | `tests/unit/test_agent_entitlement.py` | E4 | |
@@ -133,8 +133,9 @@ Added by the pre-freeze merges:
 | `apps/backend/serving/servers/routers/embeddings.py:172` | Same, embeddings surface. |
 | `apps/backend/serving/servers/routers/agent_mcp.py` | The MCP proxy endpoint (#1148). See the note below — this is a gateway capability surface, not control-plane code. |
 | `apps/backend/serving/agent_jobs/mcp_proxy.py` | Its allowlist/filtering logic. |
-| `apps/backend/serving/agent_jobs/mcp_registry.py` | The deployment's MCP server registry — overlay config shaped like `models.yaml`, holding upstream credentials. |
+| `apps/backend/serving/agent_jobs/mcp_registry.py` | The deployment's MCP server registry — overlay config shaped like `models.yaml`, holding upstream credentials. Because it stays, C9 must expose the *names* over HTTP: `agent_jobs.py:50` imports it, and E6 cannot move that file without a replacement. |
 | `apps/backend/serving/config/settings.py:159-161` | Points at that registry file. |
+| `apps/backend/serving/servers/routers/models.py:110-115` | `/v1/models` resolves visibility through `optional_verify_api_key`, which does not accept an identity JWT. C9 adds a `user_id`-keyed catalog endpoint rather than the control plane reusing this one and silently receiving the anonymous list. |
 | `tests/servers/test_agent_mcp_api.py`, `tests/unit/test_agent_mcp.py` | Their tests. |
 
 ## stay:edit-at-H4 — wiring stripped after cutover

@@ -45,7 +45,7 @@
 | ID | Decision | Default / recommendation | Blocks |
 |----|----------|--------------------------|--------|
 | DR1 | License for new repo | ✅ **MIT** — resolved. The source is MIT, `Copyright (c) 2026 Harvard SEAS`; the new repo carries that licence and copyright line forward. Apache-2.0 was set initially and reverted: it may contain MIT code but only while retaining the notice, and relicensing is the copyright holder's call, not this project's | B1 |
-| DR2 | GitHub App: reuse org App `4436561` or create a new one | Reuse; add new callback/setup URLs for agent domains. Rotate the key that leaked into Slack while at it | B4, E5 |
+| DR2 | GitHub App: reuse the existing org App or create a new one | Reuse; add new callback/setup URLs for agent domains. Rotating the key that was pasted into Slack is a **prerequisite of E5**, not a nicety — it is currently a live credential in a chat history. The App id and key live in the operator's private overlay: this file is excluded from the public export, the new repository is not, so neither value may be copied into it | B4, E5 |
 | DR3 | New Postgres: same instance new database (`cloud_agent`) vs new instance | Same staging instance, new database; prod decides at H3 | B4, E1 |
 | DR4 | Domains | `agents.freeinference.org` / `agents.staging.freeinference.org`; API on same host under `/api` | B4, F5 |
 | DR5 | Old job history | Leave in old DB unchanged; old UI read-only until H4. **Export a read-only archive before H4 rather than letting it become unreachable** — cheap, and the alternative is telling users their history is gone. Job/thread/attempt rows, including legacy `budget_usd`, do not migrate. Only `agent_repo_grants` + `agent_gitlab_connections` migrate, and the GitLab rows need re-wrapping (H1) | H1 |
@@ -215,9 +215,48 @@ outbox behind it.
 - `GET /internal/agent-grants/{grant_id}/usage` (dispatch-token auth) → `{spent_usd, request_count}` summed from the ledger for that grant's job id. This is informational attribution for the control plane UI, not a per-job enforcement limit.
 - **Acceptance:** unit test with seeded ledger rows.
 
+### C9. The three lookups the moved code does by import today (M)
+- Repo: old. Deps: C5 (same dispatch-token auth), DR7.
+
+Phase E moves modules that answer three questions by importing gateway code.
+After the split those imports are gone. Each one needs an endpoint **before** the
+task that moves its caller, or that task either fails to import or silently
+degrades — and a silent degrade here looks like a feature that stopped working
+for no reason:
+
+| Endpoint | Replaces the in-process call | Blocks |
+|---|---|---|
+| `GET /internal/mcp-registry` | `agent_jobs/mcp_registry.get_registry()`, imported at `agent_jobs.py:50` and used both to answer "which servers may this job use" and to validate the requested set | E6 |
+| `GET /internal/model-catalog?user_id=…` | `visible_models.py`'s gateway-internal catalog read | E4 |
+| `GET /internal/users/{user_id}/status` | the gateway user-row read `entitlement.py` does in-process | E7, E8, and C5's own liveness check |
+
+- **`mcp-registry` returns names and display metadata only — never an upstream
+  credential.** The registry is deployment overlay config shaped like
+  `models.yaml` and the credentials in it are exactly what the split is keeping on
+  the gateway side. The control plane needs to know *which* servers exist to
+  populate a picker and reject an unknown name; it never needs to reach them.
+- **`model-catalog` must not be `GET /v1/models`.** That route authenticates with
+  `optional_verify_api_key` (`servers/routers/models.py:115`), which does not
+  recognise an identity JWT — so a control plane calling it receives the
+  **anonymous** catalog and every `pro`/`internal`/`admin` user silently loses the
+  models their role can reach. `ModelItem` also does not carry the role a model
+  requires, so the caller cannot filter locally. This endpoint takes the gateway
+  `user_id` and returns that user's resolved catalog.
+- **`users/{id}/status` returns `{status, role}` and nothing else.** It is the
+  revalidation primitive E8 depends on: without it a local session is a claim
+  nobody can re-check, and a user suspended on the gateway keeps this service's
+  privileges until the cookie expires. Cheap, cacheable for seconds, not minutes.
+- All three are dispatch-token authenticated like C5, per environment, and are
+  reads: no endpoint here mutates gateway state.
+- **Acceptance:** unit tests per endpoint; the MCP response contains no field
+  whose value is a credential (assert against the configured secret, not against
+  a field name); a `pro` user's catalog differs from the anonymous one; an unknown
+  or suspended user is reported as such rather than 404-as-active; 401 without the
+  dispatch token; no route reachable without the env set.
+
 ### C8. contracts/ mirrors (S)
-- Repo: new. Deps: C3, C5, C7.
-- Write `contracts/identity.openapi.yaml` and `contracts/inference-grants.openapi.yaml` describing exactly what C1–C7 shipped (hand-written, small). These are the reference for E7/E9 and for Juncheng's review.
+- Repo: new. Deps: C3, C5, C7, C9. **Cross-repo:** C8 lands in the *new* repo but every task it describes lands in the *old* one — wait for those to merge, or the YAML documents a contract that then changes under it.
+- Write `contracts/identity.openapi.yaml`, `contracts/inference-grants.openapi.yaml` and `contracts/gateway-lookups.openapi.yaml` describing exactly what C1–C7 and C9 shipped (hand-written, small). These are the reference for E4/E7/E9 and for Juncheng's review.
 - **Acceptance:** YAMLs lint (`openapi-spec-validator` in CI); the inference-grant contract contains no `budget_usd` and describes usage as informational.
 
 ---
@@ -253,6 +292,7 @@ outbox behind it.
 
 ### D6. Runner + broker client (L)
 - Deps: D2–D5. Move `runner.py`, `workspace_broker_client.py`; tests `test_agent_runner.py`, `test_agent_runner_worktree.py`, `test_agent_workspace_broker_client.py`. The runner's gateway-facing URLs/token env names stay AS-IS for now (E9 re-points them).
+- **One `base_url` currently serves two destinations that the split separates.** At the freeze SHA `runner.py` builds `{base_url}/v1/agent/worker/claim` (line 341) from the same value it passes down as `gateway_base_url` for the sandbox's model and MCP calls (lines 742, 1077). After E6 the worker API lives on the control plane while inference and MCP stay on the gateway, so a single value cannot be right: pointed at the control plane the sandbox loses inference; pointed at the gateway the runner claims against an API that is no longer there. **Do not fix it here** — this task is move-as-is and the two hosts do not exist yet. Record it as E9's job and leave a `TODO(E9)` at both call sites so the split is visible in the code rather than only in this plan.
 - Budget-removal exception to move-as-is: rewrite the runner comments that claim a leaked sandbox credential is bounded by a per-job spend cap. The actual boundary after E9 is the grant's scope/TTL plus the owning user's gateway quota; do not add a budget field to host-side job types.
 
 ### D7. Host deploy files (M)
@@ -279,27 +319,47 @@ outbox behind it.
 - **Note:** model-scope tokens disappear from this module at E9 (grants replace them); until then keep both scopes so moved tests pass.
 
 ### E4. Entitlement + visible models (M)
-- Deps: E2, DR7. Move `entitlement.py` (reads `role` from the identity claims instead of gateway user rows — there is no `plan` claim; smallest possible edit, flag every changed line in the PR). Replace `visible_models.py`'s gateway-internal calls with `GET {GATEWAY_BASE_URL}/v1/models`, filtered by what the **current identity's role** may reach; keep its public function signatures. Move `test_agent_entitlement.py`, `test_agent_visible_models.py` (adapt mocks to HTTP).
+- Deps: E2, DR7, **C9**. Move `entitlement.py` (reads `role` from the identity claims instead of gateway user rows — there is no `plan` claim; smallest possible edit, flag every changed line in the PR). Replace `visible_models.py`'s gateway-internal calls with C9's `GET /internal/model-catalog?user_id=…`; keep its public function signatures. Move `test_agent_entitlement.py`, `test_agent_visible_models.py` (adapt mocks to HTTP).
+- **Not `GET /v1/models`.** That route resolves visibility through `optional_verify_api_key`, which does not accept an identity JWT — calling it returns the anonymous catalog, so every `pro`/`internal`/`admin` user would silently see a *smaller* model list than before the split, with nothing failing. C9 exists for this.
 - **Filter by role, not by a grant.** The model picker and create-time validation run before a job is claimed, so no grant exists yet to read `allowed_models` from — filtering on one would empty the composer. The order is the other way round: this task computes the allowlist from the role, and E9 passes it as the *requested* models when the attempt starts. The gateway clamps that against the same role, so the two agree by construction rather than by coordination.
 
 ### E5. Source control + publishing (L)
 - Deps: E1, DR2. Move `github_app.py`, `source_control.py`, `publisher.py`, `publish_worker.py`; tests `test_agent_github_app.py`, `test_agent_source_control.py`, `test_agent_publish_worker.py`, `tests/integration/test_agent_publisher.py` (dbtest marker as-is).
+- **`SourceControlCipher` is rekeyed here, not at H1.** At the freeze SHA it derives its Fernet key from `os.getenv("API_KEY_SECRET")` (`source_control.py:40`), and B4 forbids that secret from ever reaching this service. Moved as-is, the class cannot encrypt a newly connected GitLab account or an OAuth state, and it cannot read back the ciphertext H1 re-wraps under `AGENT_SOURCE_CONTROL_ENCRYPTION_KEY` — H1 would introduce a key that nothing consumes. Switch the derivation to `AGENT_SOURCE_CONTROL_ENCRYPTION_KEY`, provision it in B4, and refuse to start without it rather than falling back to a default (a default key is a plaintext store with extra steps).
+- **Acceptance:** a connect → store → read-back round trip under the new key; the module has no reference to `API_KEY_SECRET`; startup fails loudly when the new variable is unset.
 
 ### E6. API router moved AS-IS + app shell (L)
-- Deps: E1–E5. Move `servers/routers/agent_jobs.py` (2,257 lines) → `backend/cloud_agent/api/routes.py` **without splitting it**; move `servers/routers/admin/agent_runner_hosts.py` → `api/admin_hosts.py`. Create `backend/cloud_agent/app.py` (FastAPI, lifespan starts store + reaper + publish loop — port the ~40 lines of wiring from old `bootstrap.py:783+`) and `deps.py` (temporary local auth stub returning a fixed test user; replaced by E7). Keep every route path identical (`/v1/agent/...`, admin paths). Apply only the budget-removal exception: job create/follow-up/config/response paths neither accept nor emit `budget_usd`; retain spend/token/model-call usage, fetched through C7 rather than a task cap.
-- **Acceptance:** app boots against migrated DB; `GET /healthz` added; route table diff vs old repo shows identical agent paths; OpenAPI has no `budget_usd`, while job detail can still report attributed usage.
+- Deps: E1–E5, **C7, C9**. Move `servers/routers/agent_jobs.py` (2,257 lines) → `backend/cloud_agent/api/routes.py` **without splitting it**; move `servers/routers/admin/agent_runner_hosts.py` → `api/admin_hosts.py`. Create `backend/cloud_agent/app.py` (FastAPI, lifespan starts store + reaper + publish loop — port the ~40 lines of wiring from old `bootstrap.py:783+`) and `deps.py` (temporary local auth stub returning a fixed test user; replaced by E7). Keep every route path identical (`/v1/agent/...`, admin paths). Apply only the budget-removal exception: job create/follow-up/config/response paths neither accept nor emit `budget_usd`; retain spend/token/model-call usage, fetched through C7 rather than a task cap.
+- **Two imports in this file do not exist on the other side, and both fail quietly.**
+  - `from serving.agent_jobs.mcp_registry import McpRegistryError, get_registry` (line 50) — the registry and its credentials stay on the gateway. Re-point both call sites (the config response and the requested-server validation) at C9's `GET /internal/mcp-registry`. Left as-is the module does not import; deleted, MCP job creation stops working.
+  - `log_store=Depends(get_log_store)` with `getattr(log_store, "get_agent_job_cost", None)` / `get_agent_job_usage` (lines 203, 283–287, 1043) — the billing ledger stays on the gateway. Because those reads are `getattr` with a `None` fallback, an absent log store does **not** raise: job detail simply reports no spend, no tokens and no model calls, and looks like a job that cost nothing. Re-point them at C7.
+- **Acceptance:** app boots against migrated DB; `GET /healthz` added; route table diff vs old repo shows identical agent paths; OpenAPI has no `budget_usd`; `rg 'mcp_registry|get_log_store' backend/` has no hits; a job that made model calls reports non-zero usage in its detail response (the assertion that catches the silent-zero failure).
 
 ### E7. Identity adapter (M)
-- Deps: E6, C1–C3. Replace the E6 auth stub: verify `Authorization: Bearer <identity JWT>` against `GATEWAY_JWKS_URL` (cache keys, honor `kid`), require `aud=cloud-agent`; upsert local `users(id, external_user_id unique, email, role)` row — no `plan` column, since the identity token carries none; inject as the "current user" dependency with the same shape routes already expect. Note `id` is this service's own key and `external_user_id` is the gateway's `sub`; H1 depends on that distinction being real.
-- **Acceptance:** unit tests with a locally-generated RS256 keypair: valid/expired/wrong-aud/unknown-kid.
+- Deps: E6, C1–C3. Replace the E6 auth stub: verify `Authorization: Bearer <identity JWT>` against `GATEWAY_JWKS_URL` (cache keys, honor `kid`), require `aud=cloud-agent`; upsert a local `users` row; inject as the "current user" dependency with the same shape routes already expect.
+- **This task creates the table it writes to: `migrations/0002_users.py`.** E1's baseline contains the 11 copied agent tables and nothing else, so on the fresh database this plan prescribes there is no `users` table for the first upsert to land in — valid login would fail against an undefined relation, and E11's smoke could never pass. No earlier task creates it; this one must.
+
+  ```text
+  users(
+    id ulid pk,                      -- this service's own key; agent tables reference it
+    external_user_id text unique,    -- the gateway's `sub`, and nothing else
+    email text, role text,
+    created_at, updated_at
+  )
+  ```
+
+  No `plan` column: the identity token carries none (DR7). **The two id columns are not interchangeable** — `id` is local, `external_user_id` is the gateway's. H1 resolves one to the other, and conflating them points a foreign key at an id that means something else.
+- **Acceptance:** `alembic upgrade head` on a fresh database then a real login round trip; unit tests with a locally-generated RS256 keypair: valid/expired/wrong-aud/unknown-kid; a second login for the same `sub` updates the existing row rather than inserting a duplicate.
 
 ### E8. Session BFF endpoints (M)
-- Deps: E7. `POST /v1/session/callback` (see F3 — the code exchange happens here, not in the browser), `POST /v1/session/logout`, `GET /v1/session/me`. HttpOnly SameSite=Lax cookie signed with `AGENT_SESSION_SECRET`. Cookie auth accepted everywhere the bearer identity JWT is (web uses cookies; workers keep bearer control tokens).
-- **Session lifetime is not seven days.** A 7-day cookie means a user suspended or downgraded on the gateway keeps this service's privileges for a week, because nothing re-asks. Instead: a short session (hours), refreshed against the gateway rather than extended locally. Any privileged action — and every grant mint (E9) — revalidates that the gateway user is still active and still has the role the session claims. The session is a cache of an authorization decision, and it has to expire like one.
-- **Acceptance:** cookie round-trip tests; `me` returns user; logout clears; a session whose gateway user has since been suspended is refused at the next privileged call rather than at expiry.
+- Deps: E7, **C9**. `GET /v1/session/callback`, `POST /v1/session/logout`, `GET /v1/session/me`. HttpOnly SameSite=Lax cookie signed with `AGENT_SESSION_SECRET`. Cookie auth accepted everywhere the bearer identity JWT is (web uses cookies; workers keep bearer control tokens).
+- **The callback is a `GET`, not a `POST`.** C4 finishes by redirecting the browser to `redirect_uri?code=…`, and a redirect is a GET navigation. A POST-only callback means *every* browser login arrives with the wrong method and fails before the exchange is even attempted — the login flow would not work once, for anyone. It performs the server-side exchange (C3), sets the session cookie, and redirects into the app.
+- **Session lifetime is not seven days.** A 7-day cookie means a user suspended or downgraded on the gateway keeps this service's privileges for a week, because nothing re-asks. Instead: a short session (hours), and revalidation through C9's `GET /internal/users/{id}/status` on any privileged action and on every grant mint (E9) — not a locally extended expiry. The session is a cache of an authorization decision, and it has to expire like one. Without C9 there is nothing to revalidate *against*: JWKS verification only re-checks the claims already inside a token this service issued to itself, which is why "refresh against the gateway" needs an endpoint rather than a policy.
+- **Acceptance:** a browser-shaped `GET` to the callback with a real code completes login (the regression test for the method mismatch); cookie round-trip tests; `me` returns user; logout clears; a session whose gateway user has since been suspended is refused at the next privileged call rather than at expiry.
 
 ### E9. Grant client — sandbox credentials via gateway (M)
 - Deps: E6, C5, C6. Where the old code minted `scope=model` tokens in-process, call `POST {GATEWAY_BASE_URL}/internal/agent-grants` with `GATEWAY_GRANT_DISPATCH_TOKEN` per attempt (requested model/MCP scope from entitlement; the gateway narrows it); inject the returned token into the sandbox env exactly where the old token went. Remove `SCOPE_MODEL` minting from E3's module. Do not send, store or expect `budget_usd`.
+- **Split the runner's one URL into two, here.** D6 left `base_url` serving both the worker API and the sandbox's model/MCP calls. Introduce `AGENT_CONTROL_PLANE_URL` (claim, heartbeat, events, artifacts) and `AGENT_GATEWAY_URL` (inference and MCP, the only destination the sandbox ever gets), and carry the split through the host deploy units from D7 — #1170's relay currently pins one address on the closed `agent-egress` network, and the sandbox must keep reaching exactly one endpoint even though the runner now talks to two. Without this, E11 cannot pass: whichever way the single value points, one half of the job breaks.
 - **Renewal is part of this task, not an optimisation.** C5 deliberately issues
   short-lived grants so that an abandoned attempt loses model/MCP access without
   anyone having to successfully revoke it. The consequence is that *something
@@ -323,6 +383,9 @@ outbox behind it.
   token is unusable within one TTL of the last renewal **even when every revoke
   call fails** — that is the property the short TTL buys, and it is the one worth
   a test; renewal jitter is non-zero; revoke fired on supersede (reaper test).
+  Plus the URL split: a test asserts the claim call goes to the control plane and
+  the sandbox environment carries only the gateway address — one value serving
+  both is the failure this catches.
 
 ### E10. Parity test port (L)
 - Deps: E6–E9. Port `tests/servers/test_agent_jobs_api.py`, `tests/servers/test_admin_agent_runner_hosts.py`, `tests/integration/servers/test_agent_jobs_lifecycle.py` (dbtest). Auth fixtures switch to identity-JWT/test-keypair. **Do not weaken assertions**, with one explicit exception: remove/replace assertions that exercise legacy per-job monetary budgets. Replace them with contract tests that create, follow-up, list and inspect jobs without `budget_usd`, verify OpenAPI/JSON omit the field, and verify usage attribution still reports spend/tokens/model calls. Any other test that cannot pass unmodified indicates a parity break: stop and report, do not adapt it.
@@ -345,12 +408,16 @@ outbox behind it.
 
 ### F3. Move pages (M)
 - Deps: F2. Move `app/agents/{page,layout}.tsx` + `[jobId]/`, `archived/`, `connected/`, `integrations/` to `web/src/app/` **as the root app** (`/` = task list; keep sub-route names).
+- **Mounting at the root means the `/agents` prefix inside the components is now wrong, and this is the one place move-as-is has to yield.** The moved components navigate to it directly — `TaskComposer.tsx:114` does `router.push(\`/agents/${job.id}\`)`, and the sidebar, job detail and integration callback carry the same prefix. The new site only has `/`, `/{jobId}`, `/archived`, `/connected`, `/integrations`, so creating a job, opening one, forking, and returning from an integration all land on routes that do not exist. Rewrite the prefix and update the affected tests in this task; do not leave it for a later cleanup, because every one of those paths is a primary flow.
+- **Acceptance addendum:** `rg "'/agents|\"/agents|\`/agents" web/src/` → no hits; a test drives create → navigate → job detail and asserts the resolved path.
 - **The whole login exchange runs server-side.** Unauthenticated → the BFF generates the PKCE verifier, keeps it in a short-lived HttpOnly cookie, and redirects to the gateway's `/authorize` (C4). The gateway redirects back to a BFF **route handler**, not a page: it exchanges the code (C3), sets the session cookie, and redirects into the app.
 - An earlier revision had a client page do the exchange. That puts the identity JWT and the PKCE verifier in browser-reachable JavaScript, which is precisely what a backend-for-frontend exists to avoid — the token is bounded and audience-scoped, so the exposure is small, but it is also unnecessary, and "we call it a BFF" should mean the browser never holds a bearer credential.
 - **Acceptance:** unauthenticated request → redirect to the gateway with a challenge present and the verifier only in an HttpOnly cookie; the callback handler is a server route; `rg` finds no identity token or verifier in client-side code; authenticated → task list renders.
 
 ### F4. Admin hosts UI (M)
-- Deps: F3, E6 (admin routes). New `/admin/hosts` page: list hosts (status, slots, last heartbeat), actions wired to E6/G6 endpoints. Guard: `role=admin` from session. Plain table UI — match existing admin styling, no new design system.
+- Deps: F3, **G1 (the table), G6 (the list endpoint and the actions)** — not E6. New `/admin/hosts` page: list hosts (status, slots, capabilities, last heartbeat), actions wired to G6. Guard: `role=admin` from session. Plain table UI — match existing admin styling, no new design system.
+- **E6's moved admin route cannot feed this page.** It reads the legacy `agent_runner_hosts`/`agent_runner_policy` pair and returns `host`, `active`, `last_seen_at`, `seconds_since_seen` — a scheduling *label* plus a pin flag, by design (#1158: "a host name is a scheduling label, not a machine identity"). It has no `host_id`, no slots, no capabilities, and no status beyond active/inactive, so the UI cannot identify a host to drain or remove. This page is therefore blocked on the dynamic pool, not on E6, and is why it sits after Phase G rather than beside F3.
+- **Retire the legacy route rather than leaving two host APIs.** Once G5's list endpoint exists, `api/admin_hosts.py` and the two legacy tables have no reader: delete the route in this task and drop the tables in a Phase G migration. Two host inventories disagreeing is the bug an operator would be using this page to diagnose.
 
 ### F5. Staging deploy (M) — **human-assisted**
 - Deps: F3, B4, DR4. Deploy web + control plane to staging host; DNS `agents.staging.freeinference.org`; register redirect URI in gateway env (`IDENTITY_ALLOWED_REDIRECTS`).
@@ -361,11 +428,14 @@ outbox behind it.
 ## Phase G — Dynamic host pool (new repo; builds on #1158 admin switching + #1170 relay)
 
 ### G1. `agent_hosts` table + store methods (M)
-- Deps: E1. Migration `0002_hosts.py`: `agent_hosts(host_id ulid pk, name unique, status enum(enrolling,online,draining,disabled,offline), labels jsonb, capabilities jsonb, slots_total int, slots_used int, runner_version text, broker_url text, last_heartbeat_at, credential_hash, created_at)`; add `agent_attempts.host_id` (nullable FK) via `0003`. Store CRUD + heartbeat upsert + atomic slot claim/release (respect #1167's lock-order rule — read that PR's description first).
+- Deps: E1, E7 (which owns `0002_users.py` — number after it, not over it). Migration `0003_hosts.py`: `agent_hosts(host_id ulid pk, name unique, status enum(enrolling,online,draining,disabled,offline), labels jsonb, capabilities jsonb, slots_total int, slots_used int, runner_version text, broker_url text, last_heartbeat_at, credential_hash, created_at)`; add `agent_attempts.host_id` (nullable FK) via `0004`. Store CRUD + heartbeat upsert + atomic slot claim/release (respect #1167's lock-order rule — read that PR's description first).
+- `broker_url` is written by the control plane from the enrollment record, never from a host's own payload — see G5. It is a column, not an input.
 
 ### G2. Enrollment (M)
-- Deps: G1. Admin API `POST /admin/hosts/enroll-token` → one-time token (15 min TTL, hashed at rest). Host boot: `POST /v1/host/register {enroll_token, name, capabilities, slots_total, broker_url}` → host credential (HMAC token via E3 module, new scope `host`) + `host_id`; credential hash stored; token single-use.
-- **Acceptance:** tests: replayed enroll token rejected; credential auths subsequent host calls.
+- Deps: G1. Admin API `POST /admin/hosts/enroll-token {name, reachability}` → one-time token (15 min TTL, hashed at rest). The operator states where the host can be reached **when creating the token**; the control plane stores it and derives `agent_hosts.broker_url` from it.
+- Host boot: `POST /v1/host/register {enroll_token, name, capabilities, slots_total}` → host credential (HMAC token via E3 module, new scope `host`) + `host_id`; credential hash stored; token single-use.
+- **`broker_url` is deliberately absent from that payload.** An earlier revision had the host submit it, which contradicts G5: an address the control plane then fetches, supplied by the party being addressed, is a request-forgery primitive, and enrollment being authenticated bounds who can aim it rather than whether they can. Accepting it here and validating it in G5 also cannot both be implemented as written — one of the two would have to win, silently. The operator is the source. If the deployment keeps #1170's host-initiated relay, `reachability` is the relay identity and there is no address to fetch at all.
+- **Acceptance:** tests: replayed enroll token rejected; credential auths subsequent host calls; a register payload *containing* `broker_url` is rejected rather than ignored (ignoring it makes a host think it set something it did not); the stored `broker_url` matches the enrollment record and no request path can change it.
 
 ### G3. Heartbeat + status machine (M)
 - Deps: G2. `POST /v1/host/heartbeat` (credential-authed): slots, version, broker health. Reaper marks `offline` after 3 missed intervals; `enrolling→online` on first heartbeat. Status transitions table-driven and unit-tested; invalid transitions 409.
@@ -395,11 +465,12 @@ outbox behind it.
   so the connection goes to the address that was validated, since a name that
   passes validation and resolves differently a moment later is DNS rebinding.
   mTLS on top, so reaching the address is not the same as being trusted at it.
-- **Acceptance:** unit test: two fake hosts, terminal/files requests hit the right base URL; a host attempting to register `http://`, `127.0.0.1`, `169.254.169.254`, or an off-allowlist port is refused at enrollment and at heartbeat.
+- **Acceptance:** unit test: two fake hosts, terminal/files requests hit the right base URL; the address is read from the host row and no host-supplied field can change it (assert a register/heartbeat payload carrying `broker_url` neither sets nor overwrites it); and, for a deployment that has opted into operator-supplied addresses, `http://`, `127.0.0.1`, `169.254.169.254` and an off-allowlist port are refused **when the enrollment token is created** — the point where a human is present to see the refusal.
 
 ### G6. Drain / remove / revoke (M)
-- Deps: G4. Admin endpoints: `POST /admin/hosts/{id}/drain` (no new claims; existing attempts finish), `POST /admin/hosts/{id}/remove` (allowed only when `slots_used=0` unless `force=true` → revoke credential, mark disabled; forced removal relies on lease expiry to requeue in-flight attempts). Wire into F4 UI.
-- **Acceptance:** tests for both paths; forced removal → attempt requeues exactly once (fencing regression test).
+- Deps: G4. Admin endpoints: `GET /admin/hosts` (the pool as F4 needs to render it — `host_id`, name, status, slots total/used, capabilities, runner version, last heartbeat), `POST /admin/hosts/{id}/drain` (no new claims; existing attempts finish), `POST /admin/hosts/{id}/remove` (allowed only when `slots_used=0` unless `force=true` → revoke credential, mark disabled; forced removal relies on lease expiry to requeue in-flight attempts).
+- The list endpoint is not optional polish: without a `host_id` there is nothing for drain and remove to address, so F4 could render a table but no button on it would work. It replaces E6's legacy `agent_runner_hosts` route, which returns a scheduling label rather than a host identity — F4 retires that route.
+- **Acceptance:** tests for all three paths; forced removal → attempt requeues exactly once (fencing regression test); the list response carries every field F4 renders, so a UI change is not silently blocked on a backend one.
 
 ### G7. Host-loss chaos test (M)
 - Deps: G5, G6. Integration test (dbtest): host stops heartbeating mid-attempt → offline → lease expires → attempt superseded → grant revoked (E9) → job re-claimed by second host → publish happens once. This is the "no duplicate PR" guarantee — assert on publish call count.
@@ -411,6 +482,7 @@ outbox behind it.
 ### H1. Connection-data migration, with a re-wrap step (M)
 - Repo: **old** for the export half (it is the only side that can decrypt), new for the import half. Deps: E1, E5, DR5.
 - This migration is intentionally limited to `agent_repo_grants` and `agent_gitlab_connections`. Do not import job/thread/attempt rows or legacy `budget_usd`. Export the old job history as the read-only archive required by DR5, but run no `UPDATE`, `ALTER` or `DROP` against the old database.
+- **The archive gets its own acceptance, not a mention.** It is the only thing standing between H4 deleting the old UI and a user's history becoming unreachable, and an artifact nobody checked is indistinguishable from one that was never produced: a named file exists, its row count matches the source tables, and one job is opened from it end to end. H4 names it as a precondition rather than inheriting it through the H1→H2→H3 chain.
 
 **Why this is not a copy.** `source_control.py` encrypts GitLab tokens with a
 Fernet key derived from the gateway's `API_KEY_SECRET`. The split forbids the new
@@ -469,7 +541,7 @@ So the credential is **re-wrapped**, not moved:
 - Deps: H2 + ≥1 week staging soak with real dogfood use. Same runbook + user announcement. Coordinate so this deploy shares nothing with the open-source-split's prod cutover (see Coordination rules).
 
 ### H4. Old-repo removal PR (L)
-- Repo: old. Deps: H3. Delete `agent_jobs/` (EXCEPT `model_auth.py` grant path — relocate the surviving `agr` verification + `agent_grants` DDL into gateway-owned modules, e.g. `serving/grants.py`; delete legacy `ajt` model-token acceptance), `servers/routers/agent_jobs.py`, `admin/agent_runner_hosts.py`, `schemas_agent_jobs.py`, `storage/agent_job_store.py`, frontend `agents/` trees + `lib/api/agents.ts`, agent deploy files, the 25 agent test files. `bootstrap.py` loses store/reaper/publish wiring; `auth.py` import updated to the new grants module. `/agents` route → redirect to new domain.
+- Repo: old. Deps: H3, **and the DR5 archive verified per H1** — this task deletes its only reader. Delete `agent_jobs/` (EXCEPT `model_auth.py` grant path — relocate the surviving `agr` verification + `agent_grants` DDL into gateway-owned modules, e.g. `serving/grants.py`; delete legacy `ajt` model-token acceptance), `servers/routers/agent_jobs.py`, `admin/agent_runner_hosts.py`, `schemas_agent_jobs.py`, `storage/agent_job_store.py`, frontend `agents/` trees + `lib/api/agents.ts`, agent deploy files, the 25 agent test files. `bootstrap.py` loses store/reaper/publish wiring; `auth.py` import updated to the new grants module. `/agents` route → redirect to new domain.
 - The surviving `agr` path is capability verification plus existing per-user quota enforcement and `api_logs.agent_job_id` attribution only; no per-job budget code or `budget_usd` moves into the gateway-owned module. Removing application code must not mutate or drop the old agent tables: the read-only history/archive remains as recorded in DR5.
 - **Acceptance:** gateway boots with zero agent env vars and creates no agent tables (fresh-DB test asserts table absence, `agent_grants` + `identity_auth_codes` excepted); `agent_grants` has no `budget_usd`; full `make test` green; grep gate `rg 'agent_jobs' apps/` → no hits; a migration rehearsal confirms the existing old database is unchanged.
 
@@ -509,16 +581,21 @@ Acceptance: the three test files pass in CI; git diff vs pristine copies shows o
 
 ## Milestone shape (8 weeks, Glen full-time + agent sessions)
 
-| Week | Lands |
-|---|---|
-| 1 | A1–A3, B1–B4, C1 |
-| 2 | C2–C8 (Murphy reviews C5/C6 design) |
-| 3 | D1–D7 |
-| 4 | E1–E6 |
-| 5 | E7–E11 |
-| 6 | F1–F5 |
-| 7 | G1–G7 |
-| 8 | H1–H2 staging cutover + soak start; H3–H5 the following week |
+| Week | Old repo | New repo |
+|---|---|---|
+| 1 | A1–A3, C1 | B1–B4 |
+| 2 | C2–C7, C9 (Murphy reviews C5/C6/C9) | C8, after those merge |
+| 3 | — | D1–D7 |
+| 4 | — | E1–E6 |
+| 5 | — | E7–E11 |
+| 6 | — | F1–F3, F5 |
+| 7 | — | G1–G7, then F4 |
+| 8 | H1 export half | H1 import half, H2 staging cutover + soak start |
+
+H3–H5 land the week after the soak. The two columns matter because the repo a
+task belongs to decides who reviews it and which CI runs — C8 in particular
+describes old-repo endpoints from inside the new repo, and F4 moved out of the
+F-block because it needs Phase G's host inventory to exist.
 
 ---
 
