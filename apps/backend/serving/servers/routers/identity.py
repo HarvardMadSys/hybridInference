@@ -33,6 +33,7 @@ from serving.utils.identity_tokens import (
     TOKEN_TTL_SECONDS,
     IdentityNotConfigured,
     InvalidAuthorizationRequest,
+    assert_issuance_configured,
     expires_at,
     hash_code,
     mint_identity_token,
@@ -157,10 +158,15 @@ async def create_authorization_code(
 
     Raises:
         HTTPException: 400 for an unacceptable request, 404 if identity is not
-            configured here.
+            configured here, 500 if it is configured but unusable.
     """
     store = _require_store(store)
     try:
+        # Everything issuance needs, checked before a code exists. A redirect
+        # allowlist without a usable signing key would otherwise mint a code that
+        # /token consumes and then cannot redeem — and the failed exchange burns
+        # it, so the caller retries into the same wall with nothing to go on.
+        assert_issuance_configured()
         validate_authorization_request(
             client_id=body.client_id,
             redirect_uri=body.redirect_uri,
@@ -168,8 +174,12 @@ async def create_authorization_code(
         )
     except InvalidAuthorizationRequest as exc:
         raise _error(status.HTTP_400_BAD_REQUEST, "invalid_request", str(exc)) from exc
-    except IdentityNotConfigured as exc:
+    except (IdentityNotConfigured, IdentityKeyUnavailable) as exc:
         raise _error(status.HTTP_404_NOT_FOUND, "identity_not_configured", str(exc)) from exc
+    except IdentityKeyMisconfigured as exc:
+        raise _error(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "identity_key_misconfigured", str(exc)
+        ) from exc
 
     code, code_hash = new_code()
     await store.create_identity_auth_code(

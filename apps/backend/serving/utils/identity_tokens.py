@@ -125,12 +125,34 @@ def allowed_redirects() -> tuple[str, ...]:
     return values
 
 
+def assert_issuance_configured() -> None:
+    """Check that every part of issuance is configured, not just some.
+
+    Called **before** an authorization code is created. A deployment with a
+    redirect allowlist but no usable signing key would otherwise hand out a code
+    that ``/token`` consumes and then fails to redeem — and since the failed
+    exchange burns the code, the caller retries into the same wall with no
+    indication of why. Partial configuration must refuse at the first step.
+
+    Raises:
+        IdentityNotConfigured: If the issuer or redirect allowlist is missing.
+        IdentityKeyUnavailable: If no signing key is configured.
+        IdentityKeyMisconfigured: If the signing key is configured but unusable.
+    """
+    issuer()
+    allowed_redirects()
+    signing_kid()
+
+
 def issuance_enabled() -> bool:
-    """Report whether this deployment can issue identity tokens."""
+    """Report whether this deployment can issue identity tokens.
+
+    Raises:
+        IdentityKeyMisconfigured: If a signing key is present but unusable —
+            that is not "issuance is off", and must not be reported as such.
+    """
     try:
-        issuer()
-        allowed_redirects()
-        signing_kid()
+        assert_issuance_configured()
     except (IdentityNotConfigured, IdentityKeyUnavailable):
         return False
     return True

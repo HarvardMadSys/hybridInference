@@ -320,6 +320,48 @@ def test_code_endpoint_404s_when_identity_is_not_configured(client: TestClient) 
     assert response.json()["error"]["type"] == "identity_not_configured"
 
 
+@pytest.mark.parametrize(
+    ("missing", "expected_status", "expected_type"),
+    [
+        ("key", 404, "identity_not_configured"),
+        ("issuer", 404, "identity_not_configured"),
+        ("broken_key", 500, "identity_key_misconfigured"),
+    ],
+)
+def test_code_endpoint_refuses_partial_issuance_configuration(
+    client: TestClient,
+    store: FakeStore,
+    monkeypatch,
+    rsa_pem: str,
+    missing: str,
+    expected_status: int,
+    expected_type: str,
+) -> None:
+    """A code is only worth issuing if it can actually be redeemed.
+
+    With redirects configured but the signing key missing or broken, the old
+    behaviour minted a code happily; /token then consumed it and failed. Since a
+    failed exchange burns the code, the caller retried into the same wall with
+    nothing pointing at the real cause.
+    """
+    monkeypatch.setenv(ENV_ALLOWED_REDIRECTS, REDIRECT)
+    if missing == "key":
+        monkeypatch.setenv(ENV_ISSUER, ISSUER)
+        monkeypatch.delenv(ENV_PRIVATE_KEY, raising=False)
+    elif missing == "issuer":
+        monkeypatch.setenv(ENV_PRIVATE_KEY, rsa_pem)
+        monkeypatch.delenv(ENV_ISSUER, raising=False)
+    else:
+        monkeypatch.setenv(ENV_ISSUER, ISSUER)
+        monkeypatch.setenv(ENV_PRIVATE_KEY, "definitely not a key")
+
+    response = _request_code(client)
+    assert response.status_code == expected_status
+    assert response.json()["error"]["type"] == expected_type
+    # And nothing was handed out: no code exists to be burned later.
+    assert store.codes == {}
+
+
 def test_exchange_returns_a_verifiable_identity_token(client: TestClient, configured) -> None:
     code = _request_code(client).json()["code"]
     response = _exchange(client, code)
@@ -349,11 +391,14 @@ def test_a_code_cannot_be_exchanged_twice(client: TestClient, configured) -> Non
 
 
 def test_a_failed_exchange_burns_the_code(client: TestClient, configured) -> None:
-    """The security property that makes an intercepted code useless.
+    """One redemption attempt per code, whatever its outcome.
 
-    If a wrong verifier left the code usable, an attacker who stole it could
-    keep trying, and the legitimate client's later success would hide that it
-    happened. One attempt, whatever the outcome.
+    Not what makes a stolen code useless — PKCE already does that, since a code
+    without its verifier cannot be redeemed at all. This is the narrower
+    property: a code gets one attempt, so it cannot be probed for the rest of
+    its lifetime. The cost is that anyone able to read a code can spend that one
+    attempt and force the real client to restart; see the trade recorded in
+    ``serving.utils.identity_tokens``.
     """
     code = _request_code(client).json()["code"]
     assert _exchange(client, code, code_verifier="b" * 64).status_code == 400
