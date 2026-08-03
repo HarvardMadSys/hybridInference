@@ -93,6 +93,49 @@ describe('AgentRunnerHostSection', () => {
     expect(screen.queryByText(/last polled 1h ago/)).not.toBeInTheDocument();
   });
 
+  it('keeps polling, so a host that goes quiet after load still raises the warning', async () => {
+    // Fetched once, the ages freeze and the warning can never fire for a
+    // machine that dies while the operator is looking at the page.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(getAgentRunnerHosts)
+      .mockResolvedValueOnce({
+        hosts: [host('runner-a', { active: true, seconds_since_seen: 4 })],
+        active_host: 'runner-a',
+      })
+      .mockResolvedValue({
+        hosts: [host('runner-a', { active: true, seconds_since_seen: 3600 })],
+        active_host: 'runner-a',
+      });
+
+    render(<AgentRunnerHostSection onToast={onToast} />);
+    await screen.findByText('runner-a');
+    expect(screen.queryByText(/last polled 1h ago/)).not.toBeInTheDocument();
+
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    await waitFor(() => expect(screen.getByText(/last polled 1h ago/)).toBeInTheDocument());
+    vi.useRealTimers();
+  });
+
+  it('leaves the last good pool on screen when a background poll fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(getAgentRunnerHosts)
+      .mockResolvedValueOnce({
+        hosts: [host('runner-a', { active: true })],
+        active_host: 'runner-a',
+      })
+      .mockRejectedValue(new Error('gateway hiccup'));
+
+    render(<AgentRunnerHostSection onToast={onToast} />);
+    await screen.findByText('runner-a');
+
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    expect(screen.getByText('runner-a')).toBeInTheDocument();
+    expect(screen.queryByText(/gateway hiccup/)).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
   it('unpins through the "Any host" choice', async () => {
     vi.mocked(getAgentRunnerHosts).mockResolvedValue({
       hosts: [host('runner-b', { active: true })],

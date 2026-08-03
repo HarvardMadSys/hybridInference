@@ -474,8 +474,8 @@ class FakeAgentJobStore:
     async def active_runner_host(self) -> str | None:
         return self.active_host
 
-    async def list_runner_hosts(self) -> list[dict[str, Any]]:
-        return sorted(
+    async def runner_pool(self) -> tuple[list[dict[str, Any]], str | None]:
+        rows = sorted(
             (
                 {**entry, "is_active": entry["host"] == self.active_host}
                 for entry in self.runner_hosts.values()
@@ -483,6 +483,7 @@ class FakeAgentJobStore:
             key=lambda e: e["last_seen_at"],
             reverse=True,
         )
+        return rows, self.active_host
 
     async def set_active_runner_host(self, *, host: str | None) -> bool:
         if host is not None and host not in self.runner_hosts:
@@ -490,8 +491,10 @@ class FakeAgentJobStore:
         self.active_host = host
         return True
 
-    async def forget_runner_host(self, *, host: str) -> bool:
-        return self.runner_hosts.pop(host, None) is not None
+    async def forget_runner_host(self, *, host: str) -> str:
+        if host == self.active_host:
+            return "active"
+        return "deleted" if self.runner_hosts.pop(host, None) is not None else "unknown"
 
     async def claim_job(
         self, *, worker_id: str, lease_ttl_seconds: float, host: str | None = None
