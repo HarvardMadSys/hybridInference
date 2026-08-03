@@ -74,7 +74,7 @@ Then diff against this file; every new path must be classified before Phase D st
 | `apps/backend/serving/storage/agent_job_store.py` | E1 | 1,955 lines, **11 tables** → Alembic baseline. Includes `agent_runner_hosts` and `agent_runner_policy` (#1158) — an earlier revision said nine, read from a stale checkout. Deliberate exception: omit `agent_jobs.budget_usd` and its store plumbing; do not alter the old DB. |
 | `apps/backend/serving/schemas_agent_jobs.py` | E2 | omit task-budget constants and request/response/config fields; keep informational usage fields |
 | `apps/backend/serving/agent_jobs/tokens.py` | E3 | re-key to `AGENT_CONTROL_TOKEN_SECRET` |
-| `apps/backend/serving/agent_jobs/entitlement.py` | E4 | reads `role` from identity claims; catalog via C9, **not** `GET /v1/models` (that route cannot authenticate an identity JWT) |
+| `apps/backend/serving/agent_jobs/entitlement.py` | E4 | **repository** allowlist from env config — reads no user row, role or identity claim. Pure import/path move; do not "adapt it to identity claims" |
 | `apps/backend/serving/agent_jobs/github_app.py` | E5 | |
 | `apps/backend/serving/agent_jobs/source_control.py` | E5 | re-key `SourceControlCipher` to `AGENT_SOURCE_CONTROL_ENCRYPTION_KEY` **in E5** — moved as-is it still reads `API_KEY_SECRET` (line 40), which never reaches this service, so it can neither store a new credential nor read what H1 re-wraps |
 | `apps/backend/serving/agent_jobs/publisher.py` | E5 | |
@@ -94,7 +94,7 @@ Then diff against this file; every new path must be classified before Phase D st
 | `tests/servers/test_admin_agent_runner_hosts.py` | E10 | |
 | `tests/integration/servers/test_agent_jobs_lifecycle.py` | E10 | `dbtest` |
 
-**Rewritten, not moved:** `apps/backend/serving/agent_jobs/visible_models.py` (E4) — replaced by an HTTP call to `GET {GATEWAY_BASE_URL}/v1/models`; public function signatures preserved.
+**Rewritten, not moved:** `apps/backend/serving/agent_jobs/visible_models.py` (E4) — replaced by an HTTP call to **C9's `GET /internal/model-catalog?user_id=…`**, not `GET /v1/models`: that route resolves visibility through `optional_verify_api_key`, which does not accept an identity JWT, so it would return the anonymous catalog. Public function signatures preserved.
 
 ## move:web — frontend (Phase F)
 
@@ -125,6 +125,7 @@ Added by the pre-freeze merges:
 | Path | Why |
 |---|---|
 | `apps/backend/serving/agent_jobs/model_auth.py` | Grant verification seam. C6 adds the `agr` path; H4 drops legacy `ajt` and relocates the survivor to a gateway-owned module (e.g. `serving/grants.py`). |
+| `apps/backend/serving/servers/auth.py:354-371` vs `:413-451` | The agent-token branch **returns before the quota gate** — that is why C6 has to build the metering rather than inherit it. `quota_daily_cost_usd` is on `api_keys` (DDL:238) while spend is on `user_daily_cost`, so a grant, having no API key, has nothing to read the limit off. |
 | `apps/backend/serving/storage/log_schema.py:88,143,245` | `api_logs.agent_job_id` column + partial index. Billing attribution — never moves. |
 | `apps/backend/serving/storage/postgres_log.py:310,324` | `get_agent_job_cost` / `get_agent_job_usage` — data source for C7's informational usage endpoint and per-job cost attribution. User-level quota enforcement remains on the gateway's existing quota path. |
 | `apps/backend/serving/storage/database.py:835,897` | `agent_job_id` in the api_logs INSERT (hand-duplicated with postgres_log.py — see the api_logs schema split-brain rule). |
@@ -178,11 +179,17 @@ Added by the pre-freeze merges:
 
    Consequences for the plan:
    - **C5** grants must carry an MCP server/tool allowlist alongside
-     `allowed_models`; the grant is one capability, not a model-only one.
+     `allowed_models`; the grant is one capability, not a model-only one. The
+     clamp is `requested ∩ registry` and nothing more: `McpServer` has no
+     `required_role`, so a role dimension would be a new feature designed inside
+     a migration task.
+   - **C9** must expose the registry's *names* over HTTP, because `agent_jobs.py`
+     imports `get_registry()` directly and E6 cannot move that file otherwise.
+     Names and display metadata only — the credentials are the thing staying put.
    - **C6** must add the `agr` path to **both** `authenticate_agent_model` and
      `authenticate_agent_tool_call`. Both enforce grant scope and attempt
-     fencing; inference requests must additionally continue through the
-     gateway's existing per-user quota path.
+     fencing; inference requests must additionally be metered against the owning
+     user's quota, which today's control flow skips entirely (see note 5).
    - **H4** keeps `mcp_proxy.py`, `mcp_registry.py` and `agent_mcp.py` when it
      deletes the rest of `agent_jobs/`; they move to the gateway-owned grants
      module along with the surviving half of `model_auth.py`.
@@ -195,4 +202,4 @@ Added by the pre-freeze merges:
    data. A migration that copies the bytes appears to succeed and fails later as
    "reconnect your GitLab".
 
-5. **Attempt/lease fencing moves repos; user-level quota enforcement stays in the gateway.** After the split the gateway can no longer consult `AgentJobStore` to fence a model token; that is why C5 introduces a gateway-owned `agent_grants` table with explicit revoke. Preserve revoke-on-supersede (E9), ensure `agr` inference requests do not bypass the gateway's existing per-user quota checks, and keep `api_logs.agent_job_id` for attribution. The new repo does not migrate `budget_usd`; old job history remains read-only and unchanged.
+5. **Attempt/lease fencing moves repos; user-level quota enforcement stays in the gateway.** After the split the gateway can no longer consult `AgentJobStore` to fence a model token; that is why C5 introduces a gateway-owned `agent_grants` table with explicit revoke. Preserve revoke-on-supersede (E9) and keep `api_logs.agent_job_id` for attribution. **"Do not bypass the existing quota check" is work, not a constraint to observe:** today the agent branch in `auth.py` returns at line 371 and the gate sits at 413+, so `agr` calls are authenticated and never metered — C6 spells out the grant → user → active-key-quota → `user_daily_cost` chain, because removing the task budget without it leaves the calls unbounded rather than user-bounded. The new repo does not migrate `budget_usd`; old job history remains read-only and unchanged.

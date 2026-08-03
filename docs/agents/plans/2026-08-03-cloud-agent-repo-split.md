@@ -155,12 +155,24 @@ The request carries a requested scope and lifetime, which the gateway clamps:
 |---|---|
 | `user_id` | Caller names it; gateway **looks it up** and refuses unless the account exists and is active |
 | `allowed_models` | Clamped to what that user's role may reach — never widened by the request |
-| `allowed_mcp` | Clamped to the deployment's registry ∩ what the role may reach |
+| `allowed_mcp` | `requested ∩ the deployment's registry` — **no role dimension**, see below |
 | `ttl_seconds` | `min(requested, MAX_GRANT_TTL)` |
 
 - `allowed_mcp` is not optional polish: `agent_mcp.py` authenticates tool calls
   with the same token, so a grant describing only models would either lock the
   sandbox out of MCP or leave tool access ungoverned.
+- **But the clamp is registry-only. There is no role-based MCP entitlement, and
+  this split is not the place to invent one.** An earlier revision said "∩ what
+  the role may reach", which reads like a rule and is actually a new feature:
+  `McpServer` at the freeze SHA carries `name`, `url`, `headers`, `tools`,
+  `description`, `default` — **no `required_role`**, and nothing anywhere maps a
+  role to a set of servers. An implementer told to clamp by role would have to
+  design that mapping, add the field, and decide the default for every existing
+  entry, inside a task whose job is to move code without changing behaviour. The
+  honest clamp is the one the data supports: reject anything not in the registry,
+  which is exactly the check `agent_jobs.py` performs today. If per-role MCP
+  access is wanted later it is its own design, with its own decision about what
+  an unlabelled server means.
 
 **Table.** Created in a gateway-owned module (`serving/grants.py`), **not** in
 `agent_job_store` — that file is frozen and leaves at H4:
@@ -206,9 +218,33 @@ outbox behind it.
 
 ### C6. Grant verification path in model_auth (L)
 - Repo: old. Deps: C5.
-- `model_auth.authenticate_agent_model` accepts BOTH token kinds during transition: legacy `ajt` (unchanged behavior) and new `agr` → verify signature, load grant row, reject revoked/expired/model-not-allowed, and resolve the grant's gateway `user_id`. The resulting inference request must pass through the **same existing per-user quota gate** as that user's ordinary API calls; the `agr` path must not bypass it or implement a separate per-job limit. Write `external_job_id` to `api_logs.agent_job_id` so existing cost/usage attribution keeps working.
+- `model_auth.authenticate_agent_model` accepts BOTH token kinds during transition: legacy `ajt` (unchanged behavior) and new `agr` → verify signature, load grant row, reject revoked/expired/model-not-allowed, and resolve the grant's gateway `user_id`. Write `external_job_id` to `api_logs.agent_job_id` so existing cost/usage attribution keeps working.
+
+**"Reuses the existing quota" is not something the current control flow does — this task has to build it.** In `servers/auth.py`, `verify_api_key` branches on `looks_like_agent_token` (line 354) and **returns** at line 371. The quota gate is at lines 413–451, below that return, and its own comment says so: *"Everything below — quota gate, cost counter, returned context —"*. So an agent token reaches inference having been authenticated and never metered. Deleting the per-task budget without closing this leaves the calls unbounded rather than user-bounded, which is the opposite of the intent.
+
+The gate cannot simply be hoisted, because of where the two halves live:
+
+| | Stored on | Keyed by |
+|---|---|---|
+| the limit, `quota_daily_cost_usd` | `api_keys` (DDL:238; `get_auth_context_by_key_hash` selects `k.quota_daily_cost_usd`) | **API key** |
+| the spend | `user_daily_cost` | **user** |
+
+A grant has no API key, so there is nothing to read the limit off. The chain to implement:
+
+1. Grant → `user_id`, and require `users.status = 'active'`.
+2. Resolve that user's **active, unexpired** API keys and take the limit from them. A user may hold several with different quotas: use the **most permissive**, because the bound being enforced is *"an agent must not spend more than the user could spend themselves"*, and the user can already reach for their most generous key. Taking the minimum would make the agent weaker than the person who asked for it, for no security gain.
+3. `NULL` keeps meaning `1000.0`, exactly as line 414 already treats it. Diverging here would make the agent path and the direct path disagree on the same account.
+4. Compare against `user_daily_cost` spend and answer **429** with the same envelope and `X-RateLimit-*` headers the direct path uses — a client should not be able to tell which door it came through.
+5. **Fail closed**, not open: no active key, no active user, or a store read that fails → refuse. This is the case where a wrong default is unmetered spend, so the absence of a limit must never be read as the absence of a ceiling.
 - `model_auth.authenticate_agent_tool_call` gets the same `agr` signature, row, revoke/expiry and MCP-scope checks. Tool calls do not invoke an inference provider, so they do not consume model quota. Skipping this function would break MCP the moment grants replace `ajt`.
-- **Acceptance:** all existing `test_agent_model_auth.py` and `test_agent_mcp.py` tests still pass (legacy path untouched); new tests for the `agr` path on both functions, including revoke-then-call → 401, model call by a user with exhausted gateway quota → the existing quota rejection, a tool outside `allowed_mcp` refused, and successful model calls logged with both the owning `user_id` and `api_logs.agent_job_id`. No `agr` test or implementation reads a per-job budget.
+- **Acceptance:** all existing `test_agent_model_auth.py` and `test_agent_mcp.py` tests still pass (legacy path untouched); new tests for the `agr` path on both functions:
+  - a user whose **custom** `quota_daily_cost_usd` is already spent → **429** on an `agr` model call (the test that fails today, and the one that proves the bypass is closed — write it against a configured quota, not the 1000.0 default, or a passing test proves nothing);
+  - the same call under an unspent quota → allowed, and the 429 response body and `X-RateLimit-*` headers match the direct path's;
+  - a user with **no active API key**, and one whose account is not active → refused, not defaulted;
+  - revoke-then-call → 401; a tool outside `allowed_mcp` refused; tool calls unaffected by model quota;
+  - successful model calls logged with both the owning `user_id` and `api_logs.agent_job_id`.
+  - **Mutation-check the metering**: removing the quota lookup must make the 429 tests fail. Without that check the gate can be present in the diff and unreachable in the control flow, which is exactly the state this task exists to fix.
+  No `agr` test or implementation reads a per-job budget.
 
 ### C7. Grant usage endpoint (S)
 - Repo: old. Deps: C5.
@@ -221,7 +257,7 @@ outbox behind it.
 - **Acceptance:** YAMLs lint (`openapi-spec-validator` in CI); the inference-grant contract contains no `budget_usd` and describes usage as informational.
 
 ### C9. The three lookups the moved code does by import today (M)
-- Repo: old. Deps: C5 (same dispatch-token auth), DR7.
+- Repo: old. Deps: DR7. **Not C5**, despite sharing its dispatch-token auth: whichever of the two lands first defines that helper and the other imports it. An earlier revision listed C5 as a dependency *and* had C5 consume this endpoint, which is a cycle that only looks like one — C5 runs inside the gateway and reads the user row in-process. These endpoints exist for the control plane, which is the party that no longer can.
 
 Phase E moves modules that answer three questions by importing gateway code.
 After the split those imports are gone. Each one needs an endpoint **before** the
@@ -233,7 +269,7 @@ for no reason:
 |---|---|---|
 | `GET /internal/mcp-registry` | `agent_jobs/mcp_registry.get_registry()`, imported at `agent_jobs.py:50` and used both to answer "which servers may this job use" and to validate the requested set | E6 |
 | `GET /internal/model-catalog?user_id=…` | `visible_models.py`'s gateway-internal catalog read | E4 |
-| `GET /internal/users/{user_id}/status` | the gateway user-row read `entitlement.py` does in-process | E7, E8, and C5's own liveness check |
+| `GET /internal/users/{user_id}/status` | the gateway `users` row read that the control plane can no longer do | E7, E8 |
 
 - **`mcp-registry` returns names and display metadata only — never an upstream
   credential.** The registry is deployment overlay config shaped like
@@ -319,7 +355,10 @@ for no reason:
 - **Note:** model-scope tokens disappear from this module at E9 (grants replace them); until then keep both scopes so moved tests pass.
 
 ### E4. Entitlement + visible models (M)
-- Deps: E2, DR7, **C9**. Move `entitlement.py` (reads `role` from the identity claims instead of gateway user rows — there is no `plan` claim; smallest possible edit, flag every changed line in the PR). Replace `visible_models.py`'s gateway-internal calls with C9's `GET /internal/model-catalog?user_id=…`; keep its public function signatures. Move `test_agent_entitlement.py`, `test_agent_visible_models.py` (adapt mocks to HTTP).
+- Deps: E2, DR7, **C9**. Two files, and they are less alike than this task's title suggests:
+  - **`entitlement.py` moves unchanged.** It answers *which repositories a job may target* (`allowed_repos`, `repo_is_allowed`, `require_allowed_repo`) from deployment env config. It reads no user row, no role and no identity claim — earlier revisions of this task said it read `plan`/`role`, which is simply not what the file does, and "adapt it to identity claims" would have an implementer rewriting a repo allowlist into an entitlement system nobody asked for. A pure import/path move.
+  - **`visible_models.py` is rewritten**, not moved: replace the gateway-internal catalog read with C9's `GET /internal/model-catalog?user_id=…`; keep its public function signatures.
+  - Move `test_agent_entitlement.py` as-is; `test_agent_visible_models.py` gets HTTP mocks.
 - **Not `GET /v1/models`.** That route resolves visibility through `optional_verify_api_key`, which does not accept an identity JWT — calling it returns the anonymous catalog, so every `pro`/`internal`/`admin` user would silently see a *smaller* model list than before the split, with nothing failing. C9 exists for this.
 - **Filter by role, not by a grant.** The model picker and create-time validation run before a job is claimed, so no grant exists yet to read `allowed_models` from — filtering on one would empty the composer. The order is the other way round: this task computes the allowlist from the role, and E9 passes it as the *requested* models when the attempt starts. The gateway clamps that against the same role, so the two agree by construction rather than by coordination.
 
@@ -352,10 +391,21 @@ for no reason:
 - **Acceptance:** `alembic upgrade head` on a fresh database then a real login round trip; unit tests with a locally-generated RS256 keypair: valid/expired/wrong-aud/unknown-kid; a second login for the same `sub` updates the existing row rather than inserting a duplicate.
 
 ### E8. Session BFF endpoints (M)
-- Deps: E7, **C9**. `GET /v1/session/callback`, `POST /v1/session/logout`, `GET /v1/session/me`. HttpOnly SameSite=Lax cookie signed with `AGENT_SESSION_SECRET`. Cookie auth accepted everywhere the bearer identity JWT is (web uses cookies; workers keep bearer control tokens).
-- **The callback is a `GET`, not a `POST`.** C4 finishes by redirecting the browser to `redirect_uri?code=…`, and a redirect is a GET navigation. A POST-only callback means *every* browser login arrives with the wrong method and fails before the exchange is even attempted — the login flow would not work once, for anyone. It performs the server-side exchange (C3), sets the session cookie, and redirects into the app.
+- Deps: E7, **C9**. Four endpoints, and **this task owns the entire login flow** — F3 contributes a link to it and nothing else:
+
+| Endpoint | Does |
+|---|---|
+| `GET /v1/session/login` | Generate the PKCE verifier **and a `state`**, put both in short-lived HttpOnly cookies, redirect to the gateway's `/authorize` (C4) |
+| `GET /v1/session/callback` | Validate `state`, exchange the code (C3), set the session cookie, redirect into the app |
+| `POST /v1/session/logout` | Clear it |
+| `GET /v1/session/me` | The current user |
+
+  HttpOnly SameSite=Lax cookie signed with `AGENT_SESSION_SECRET`. Cookie auth accepted everywhere the bearer identity JWT is (web uses cookies; workers keep bearer control tokens).
+- **One owner, because two would each assume the other did it.** An earlier revision had this task exchange the code *and* F3 describe a Next.js route handler exchanging it. Whoever implements second finds the flow apparently already built; the verifier gets minted in one process and looked for in another, and the failure is a login that works locally and not in a deployment where they are separate services. The exchange happens here.
+- **`state` is generated and verified here, and nowhere else.** C2/C3 deliberately keep it out of the gateway API — it is the *client's* CSRF value, and a server that accepts it and ignores it is worse than one that does not accept it. That makes it this service's job, and no task claimed it: without it the callback accepts any `code` anyone can cause a victim's browser to arrive with, which is login CSRF — an attacker's account silently occupying the victim's session, or the victim's code redeemed into the attacker's. Bind `state` to the verifier cookie, compare in constant time, and clear both on use so a replayed callback fails.
+- **The callback is a `GET`, not a `POST`.** C4 finishes by redirecting the browser to `redirect_uri?code=…`, and a redirect is a GET navigation. A POST-only callback means *every* browser login arrives with the wrong method and fails before the exchange is even attempted — the login flow would not work once, for anyone.
 - **Session lifetime is not seven days.** A 7-day cookie means a user suspended or downgraded on the gateway keeps this service's privileges for a week, because nothing re-asks. Instead: a short session (hours), and revalidation through C9's `GET /internal/users/{id}/status` on any privileged action and on every grant mint (E9) — not a locally extended expiry. The session is a cache of an authorization decision, and it has to expire like one. Without C9 there is nothing to revalidate *against*: JWKS verification only re-checks the claims already inside a token this service issued to itself, which is why "refresh against the gateway" needs an endpoint rather than a policy.
-- **Acceptance:** a browser-shaped `GET` to the callback with a real code completes login (the regression test for the method mismatch); cookie round-trip tests; `me` returns user; logout clears; a session whose gateway user has since been suspended is refused at the next privileged call rather than at expiry.
+- **Acceptance:** a browser-shaped `GET` to the callback with a real code completes login (the regression test for the method mismatch); a callback with a **missing, mismatched or replayed `state`** is refused before the code is exchanged; the verifier and `state` cookies never appear in a response body; cookie round-trip tests; `me` returns user; logout clears; a session whose gateway user has since been suspended is refused at the next privileged call rather than at expiry.
 
 ### E9. Grant client — sandbox credentials via gateway (M)
 - Deps: E6, C5, C6. Where the old code minted `scope=model` tokens in-process, call `POST {GATEWAY_BASE_URL}/internal/agent-grants` with `GATEWAY_GRANT_DISPATCH_TOKEN` per attempt (requested model/MCP scope from entitlement; the gateway narrows it); inject the returned token into the sandbox env exactly where the old token went. Remove `SCOPE_MODEL` minting from E3's module. Do not send, store or expect `budget_usd`.
@@ -410,14 +460,14 @@ for no reason:
 - Deps: F2. Move `app/agents/{page,layout}.tsx` + `[jobId]/`, `archived/`, `connected/`, `integrations/` to `web/src/app/` **as the root app** (`/` = task list; keep sub-route names).
 - **Mounting at the root means the `/agents` prefix inside the components is now wrong, and this is the one place move-as-is has to yield.** The moved components navigate to it directly — `TaskComposer.tsx:114` does `router.push(\`/agents/${job.id}\`)`, and the sidebar, job detail and integration callback carry the same prefix. The new site only has `/`, `/{jobId}`, `/archived`, `/connected`, `/integrations`, so creating a job, opening one, forking, and returning from an integration all land on routes that do not exist. Rewrite the prefix and update the affected tests in this task; do not leave it for a later cleanup, because every one of those paths is a primary flow.
 - **Acceptance addendum:** `rg "'/agents|\"/agents|\`/agents" web/src/` → no hits; a test drives create → navigate → job detail and asserts the resolved path.
-- **The whole login exchange runs server-side.** Unauthenticated → the BFF generates the PKCE verifier, keeps it in a short-lived HttpOnly cookie, and redirects to the gateway's `/authorize` (C4). The gateway redirects back to a BFF **route handler**, not a page: it exchanges the code (C3), sets the session cookie, and redirects into the app.
-- An earlier revision had a client page do the exchange. That puts the identity JWT and the PKCE verifier in browser-reachable JavaScript, which is precisely what a backend-for-frontend exists to avoid — the token is bounded and audience-scoped, so the exposure is small, but it is also unnecessary, and "we call it a BFF" should mean the browser never holds a bearer credential.
-- **Acceptance:** unauthenticated request → redirect to the gateway with a challenge present and the verifier only in an HttpOnly cookie; the callback handler is a server route; `rg` finds no identity token or verifier in client-side code; authenticated → task list renders.
+- **This task builds no part of the login flow.** Unauthenticated → redirect to E8's `GET /v1/session/login`, and that is the whole contribution. E8 owns verifier, `state`, exchange and session; an earlier revision had a Next.js route handler exchange the code as well, which meant two owners for one flow and a verifier minted in one process being looked for in another.
+- The reason it lives there rather than here is what a backend-for-frontend is for: a client page doing the exchange puts the identity JWT and the PKCE verifier in browser-reachable JavaScript. The token is bounded and audience-scoped, so the exposure is small — but it is also unnecessary, and "we call it a BFF" should mean the browser never holds a bearer credential.
+- **Acceptance:** unauthenticated request → redirect to `/v1/session/login`; `rg` finds no identity token, verifier, `state` or code exchange anywhere under `web/`; authenticated → task list renders.
 
 ### F4. Admin hosts UI (M)
 - Deps: F3, **G1 (the table), G6 (the list endpoint and the actions)** — not E6. New `/admin/hosts` page: list hosts (status, slots, capabilities, last heartbeat), actions wired to G6. Guard: `role=admin` from session. Plain table UI — match existing admin styling, no new design system.
 - **E6's moved admin route cannot feed this page.** It reads the legacy `agent_runner_hosts`/`agent_runner_policy` pair and returns `host`, `active`, `last_seen_at`, `seconds_since_seen` — a scheduling *label* plus a pin flag, by design (#1158: "a host name is a scheduling label, not a machine identity"). It has no `host_id`, no slots, no capabilities, and no status beyond active/inactive, so the UI cannot identify a host to drain or remove. This page is therefore blocked on the dynamic pool, not on E6, and is why it sits after Phase G rather than beside F3.
-- **Retire the legacy route rather than leaving two host APIs.** Once G5's list endpoint exists, `api/admin_hosts.py` and the two legacy tables have no reader: delete the route in this task and drop the tables in a Phase G migration. Two host inventories disagreeing is the bug an operator would be using this page to diagnose.
+- **Retire the legacy route rather than leaving two host APIs.** Once G6's list endpoint exists, `api/admin_hosts.py` and the two legacy tables have no reader: delete the route in this task and drop the tables in a Phase G migration. Two host inventories disagreeing is the bug an operator would be using this page to diagnose.
 
 ### F5. Staging deploy (M) — **human-assisted**
 - Deps: F3, B4, DR4. Deploy web + control plane to staging host; DNS `agents.staging.freeinference.org`; register redirect URI in gateway env (`IDENTITY_ALLOWED_REDIRECTS`).
