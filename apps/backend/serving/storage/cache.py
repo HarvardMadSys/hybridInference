@@ -579,6 +579,35 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_user_reset_tokens(user_id)
 
+    # -- identity authorization codes (never cached) -------------------------
+    #
+    # Single-use codes must not be served from a cache: a cached read would
+    # answer "unused" for a code the database has already burned.
+
+    async def create_identity_auth_code(
+        self,
+        *,
+        code_hash: str,
+        user_id: str,
+        client_id: str,
+        redirect_uri: str,
+        code_challenge: str,
+        expires_at: datetime,
+    ) -> None:
+        """Delegate to wrapped store."""
+        return await self._store.create_identity_auth_code(
+            code_hash=code_hash,
+            user_id=user_id,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            code_challenge=code_challenge,
+            expires_at=expires_at,
+        )
+
+    async def consume_identity_auth_code(self, code_hash: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.consume_identity_auth_code(code_hash)
+
     # -- audit (pass-through) ------------------------------------------------
 
     async def log_admin_action(
