@@ -71,7 +71,7 @@ Then diff against this file; every new path must be classified before Phase D st
 
 | Path | Task | Note |
 |---|---|---|
-| `apps/backend/serving/storage/agent_job_store.py` | E1 | 1,955 lines, 9 tables → Alembic baseline |
+| `apps/backend/serving/storage/agent_job_store.py` | E1 | 1,955 lines, **11 tables** → Alembic baseline. Includes `agent_runner_hosts` and `agent_runner_policy` (#1158) — an earlier revision said nine, read from a stale checkout. |
 | `apps/backend/serving/schemas_agent_jobs.py` | E2 | |
 | `apps/backend/serving/agent_jobs/tokens.py` | E3 | re-key to `AGENT_CONTROL_TOKEN_SECRET` |
 | `apps/backend/serving/agent_jobs/entitlement.py` | E4 | reads plan/role from identity claims |
@@ -184,4 +184,12 @@ Added by the pre-freeze merges:
      deletes the rest of `agent_jobs/`; they move to the gateway-owned grants
      module along with the surviving half of `model_auth.py`.
 
-4. **Attempt/lease fencing moves repos, budget enforcement does not.** After the split the gateway can no longer consult `AgentJobStore` to fence a model token; that is why C5 introduces a gateway-owned `agent_grants` table with explicit revoke. Any design change to grants must preserve: revoke-on-supersede (E9) and fail-closed-on-missing-budget (`model_auth.py`).
+4. **GitLab credentials are encrypted with a gateway secret, so they cannot be
+   copied.** `source_control.py`'s `SourceControlCipher` derives a Fernet key from
+   `API_KEY_SECRET`. The new service must never hold that secret, so the ciphertext
+   in `agent_gitlab_connections` is unreadable there. H1 re-wraps rather than
+   copies; check `agent_repo_grants` for the same shape before treating it as plain
+   data. A migration that copies the bytes appears to succeed and fails later as
+   "reconnect your GitLab".
+
+5. **Attempt/lease fencing moves repos, budget enforcement does not.** After the split the gateway can no longer consult `AgentJobStore` to fence a model token; that is why C5 introduces a gateway-owned `agent_grants` table with explicit revoke. Any design change to grants must preserve: revoke-on-supersede (E9) and fail-closed-on-missing-budget (`model_auth.py`).

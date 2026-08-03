@@ -20,7 +20,8 @@
 > - `apps/backend/serving/agent_jobs/tokens.py` derives worker/model token keys from the gateway's `API_KEY_SECRET` (line ~45).
 > - `apps/backend/serving/agent_jobs/model_auth.py` enforces per-job budget from the billing ledger (`api_logs`, keyed by `agent_job_id`), fail-closed, and checks attempt fencing via `AgentJobStore`.
 > - `apps/backend/serving/servers/bootstrap.py` (~line 783+) conditionally wires `AgentJobStore`, the attempt reaper, and the publish loop.
-> - 9 Postgres tables created at startup by `apps/backend/serving/storage/agent_job_store.py`: `agent_threads`, `agent_jobs`, `agent_attempts`, `agent_job_events`, `agent_thread_messages`, `agent_job_artifacts`, `agent_repo_grants`, `agent_oauth_states`, `agent_gitlab_connections`.
+> - **11** Postgres tables created at startup by `apps/backend/serving/storage/agent_job_store.py`: `agent_threads`, `agent_jobs`, `agent_attempts`, `agent_job_events`, `agent_thread_messages`, `agent_job_artifacts`, `agent_repo_grants`, `agent_oauth_states`, `agent_gitlab_connections`, `agent_runner_hosts`, `agent_runner_policy`.
+> - `apps/backend/serving/agent_jobs/source_control.py` encrypts GitLab tokens with a Fernet key derived from the gateway's `API_KEY_SECRET`. That ciphertext is **not portable** to a service that (correctly) never sees that secret — see H1.
 > - Workspace broker is addressed by a single global `AGENT_WORKSPACE_BROKER_URL` (`workspace_broker_client.py:195`).
 > - `servers/routers/agent_mcp.py` proxies MCP for the sandbox and authenticates with `model_auth.authenticate_agent_tool_call` — the **same** capability token and `AgentJobStore` fence as model calls, minus the budget check. It stays in the gateway; the grant work in Phase C must cover it.
 > - Gateway JWTs have no `iss`/`aud`; the frontend keeps the access token in `sessionStorage` (no cookie session).
@@ -43,13 +44,13 @@
 
 | ID | Decision | Default / recommendation | Blocks |
 |----|----------|--------------------------|--------|
-| DR1 | License for new repo | Apache-2.0 | B1 |
+| DR1 | License for new repo | ✅ **MIT** — resolved. The source is MIT, `Copyright (c) 2026 Harvard SEAS`; the new repo carries that licence and copyright line forward. Apache-2.0 was set initially and reverted: it may contain MIT code but only while retaining the notice, and relicensing is the copyright holder's call, not this project's | B1 |
 | DR2 | GitHub App: reuse org App `4436561` or create a new one | Reuse; add new callback/setup URLs for agent domains. Rotate the key that leaked into Slack while at it | B4, E5 |
 | DR3 | New Postgres: same instance new database (`cloud_agent`) vs new instance | Same staging instance, new database; prod decides at H3 | B4, E1 |
-| DR4 | Domains | `agents.freeinference.org` / `agents.staging.freeinference.org`; API on same host under `/api` | B4, F6 |
-| DR5 | Old job history | Leave in old DB; old UI read-only until H4, then gone. Only `agent_repo_grants` + `agent_gitlab_connections` migrate | H1 |
+| DR4 | Domains | `agents.freeinference.org` / `agents.staging.freeinference.org`; API on same host under `/api` | B4, F5 |
+| DR5 | Old job history | Leave in old DB; old UI read-only until H4. **Export a read-only archive before H4 rather than letting it become unreachable** — cheap, and the alternative is telling users their history is gone. Only `agent_repo_grants` + `agent_gitlab_connections` migrate, and the GitLab rows need re-wrapping (H1) | H1 |
 | DR6 | Identity token signing alg | RS256 (PyJWT + `cryptography`, JWKS-friendly) | C1 |
-| DR7 | Plan/entitlement source of truth | Identity JWT carries `role`/`plan` claims; control plane enforces its own limits | C3, E4 |
+| DR7 | Plan/entitlement source of truth | ✅ Resolved by implementation: this gateway has no `plan` concept — `users.role` (`free`/`pro`/`internal`/`admin`) is it, so the identity JWT carries `role` alone. The gateway derives grant ceilings from it (C5); the control plane enforces its own operational limits on top | C3, E4 |
 
 ---
 
@@ -137,13 +138,75 @@
 - `apps/frontend/src/app/authorize/page.tsx`: reads `client_id,redirect_uri,code_challenge,state` from query; if not logged in → existing login flow then back; calls `POST /v1/identity/code` with bearer token; redirects to `redirect_uri?code=...&state=...`. Reject on API error with visible message. Minimal UI ("Continue to Cloud Agent as <email>" + button).
 - **Acceptance:** component test for param validation + redirect construction; manual staging check listed in PR description.
 
-### C5. `agent_grants` table + mint/revoke endpoints (L)
-- Repo: old. Deps: none technically, but design-review with Murphy before merge (this is the money boundary).
-- New table (created in `agent_job_store` startup DDL for now — it stays gateway-side at H4, move DDL to gateway-owned module then): `agent_grants(grant_id ulid pk, user_id, external_job_id, external_attempt_id, allowed_models jsonb, budget_usd numeric not null, expires_at, revoked_at, created_at)`.
-- `POST /internal/agent-grants` — auth: `Authorization: Bearer <GATEWAY_GRANT_DISPATCH_TOKEN>` (new env, constant-time compare). Body: user_id, external_job_id, external_attempt_id, allowed_models, **allowed_mcp** (server → tool allowlist), budget_usd, ttl_seconds. Returns `{grant_id, token}`. Token format: reuse `tokens.py` HMAC style, new prefix `agr`, new signing context, still derived from gateway `API_KEY_SECRET` (gateway mints AND verifies; secret never leaves).
-- `allowed_mcp` is not optional polish: `agent_mcp.py` authenticates tool calls with the same token, so a grant that only describes models would either lock the sandbox out of MCP or leave tool access ungoverned.
-- `POST /internal/agent-grants/{grant_id}/revoke` — same auth; sets `revoked_at`.
-- **Acceptance:** unit tests for mint/verify/revoke/expiry; dispatch-token auth (401 on miss); no route reachable without the env set.
+### C5. `agent_grants` table + mint/renew/revoke endpoints (L)
+- Repo: old. Deps: none technically, but **design-review with Murphy before merge** — this is the money boundary.
+
+**The gateway decides, the control plane asks.** An earlier revision of this task
+had the control plane submit `user_id`, `allowed_models` and `budget_usd`, with
+the gateway only signing them. That hands the spending limit to the service being
+constrained: a leaked dispatch token, or a compromised control plane, mints
+itself any budget for any user. The gateway must derive the ceiling from state
+only it owns.
+
+So the request carries **requested** caps, and every one is clamped:
+
+| Field | Who decides |
+|---|---|
+| `user_id` | Caller names it; gateway **looks it up** and refuses unless the account exists and is active |
+| `allowed_models` | Clamped to what that user's role may reach — never widened by the request |
+| `allowed_mcp` | Clamped to the deployment's registry ∩ what the role may reach |
+| `budget_usd` | `min(requested, ceiling(role))`, and further reduced by what the job has already spent |
+| `ttl_seconds` | `min(requested, MAX_GRANT_TTL)` |
+
+- The role → ceiling mapping is gateway config. **Murphy sets the numbers**; the
+  mechanism does not depend on them. Absent config, fail closed — no ceiling means
+  no grant, not an unlimited one.
+- `allowed_mcp` is not optional polish: `agent_mcp.py` authenticates tool calls
+  with the same token, so a grant describing only models would either lock the
+  sandbox out of MCP or leave tool access ungoverned.
+
+**Table.** Created in a gateway-owned module (`serving/grants.py`), **not** in
+`agent_job_store` — that file is frozen and leaves at H4:
+
+```text
+agent_grants(
+  grant_id ulid pk, user_id, external_job_id, external_attempt_id,
+  allowed_models jsonb, allowed_mcp jsonb,
+  budget_usd numeric not null, expires_at, revoked_at, created_at,
+  unique (external_job_id, external_attempt_id)
+)
+```
+
+The unique constraint makes minting idempotent: a control plane that retries
+after a timeout gets the same grant back rather than a second one with a second
+budget.
+
+**Endpoints** — auth `Authorization: Bearer <GATEWAY_GRANT_DISPATCH_TOKEN>`
+(per-environment, constant-time compare):
+
+- `POST /internal/agent-grants` — mint, clamped as above. Returns
+  `{grant_id, token, budget_usd, allowed_models, allowed_mcp, expires_at}`:
+  the **effective** values, so the caller can see it was clamped rather than
+  discovering it at spend time. Token: `tokens.py` HMAC style, prefix `agr`, its
+  own signing context, key from `API_KEY_SECRET` (gateway mints *and* verifies;
+  the secret never leaves).
+- `POST /internal/agent-grants/{id}/renew` — extends `expires_at` by another
+  bounded step, re-checking account state and the attempt fence each time.
+- `POST /internal/agent-grants/{id}/revoke` — sets `revoked_at`.
+
+**Short TTL with renewal, not long TTL with revocation.** Revocation over the
+network can fail, and a failed revoke on a long-lived grant leaves an abandoned
+attempt spending. With a bounded TTL the grant dies on its own if the control
+plane stops renewing — for any reason, including the control plane being gone.
+Revoke stays, as an *acceleration* of something that would happen anyway, which
+is the only kind of revoke that does not need a durable outbox behind it.
+
+- **Acceptance:** unit tests for mint/renew/revoke/expiry; that a request asking
+  for more budget, more models, or a longer TTL than the role allows receives the
+  clamped values and not an error; that an unknown or suspended `user_id` is
+  refused; that re-minting the same `(job, attempt)` returns the first grant
+  rather than a second; dispatch-token auth (401 on miss); no route reachable
+  without the env set.
 
 ### C6. Grant verification path in model_auth (L)
 - Repo: old. Deps: C5.
@@ -197,12 +260,13 @@
 ## Phase E — Move the control plane (new repo `backend/`)
 
 ### E1. Store + Alembic baseline (L)
-- Deps: B1, DR3. Move `storage/agent_job_store.py` → `backend/cloud_agent/storage/store.py` unchanged, EXCEPT: delete startup `CREATE TABLE` execution and generate `migrations/0001_baseline.py` producing the IDENTICAL DDL for the 9 tables (copy the SQL verbatim; do not "normalize" types). `agent_grants` (C5) is NOT copied — it belongs to the gateway.
+- Deps: B1, DR3. Move `storage/agent_job_store.py` → `backend/cloud_agent/storage/store.py` unchanged, EXCEPT: delete startup `CREATE TABLE` execution and generate `migrations/0001_baseline.py` producing the IDENTICAL DDL for **all 11 tables** (copy the SQL verbatim; do not "normalize" types). `agent_grants` (C5) is NOT copied — it belongs to the gateway.
+- The 11: `agent_threads`, `agent_jobs`, `agent_attempts`, `agent_job_events`, `agent_thread_messages`, `agent_job_artifacts`, `agent_repo_grants`, `agent_oauth_states`, `agent_gitlab_connections`, **`agent_runner_hosts`**, **`agent_runner_policy`**. Do not take this list on trust — regenerate it from the freeze commit (`git show 764a6f97:… | grep 'CREATE TABLE'`) before writing the migration. An earlier revision of this plan said nine, having been read from a stale checkout; the last two arrived with #1158 and E6 moves the admin router that depends on them.
 - Move `tests/integration/storage/test_agent_job_store.py` (marker `dbtest`).
 - **Acceptance:** `alembic upgrade head` on a fresh Postgres → store integration tests pass with `-m dbtest`.
 
 ### E2. Schemas (S)
-- Deps: B1. Move `schemas_agent_jobs.py` → `backend/cloud_agent/schemas.py`; move `test_agent_name_from_prompt.py` if it imports it.
+- Deps: B1. Move `schemas_agent_jobs.py` → `backend/cloud_agent/schemas.py`. **`test_agent_name_from_prompt.py` stays** — it tests `serving/storage/utils.py`, which is log analytics, not agent code (see the manifest's `stay:unrelated`).
 
 ### E3. Control tokens with new secret (S)
 - Deps: B1. Move `tokens.py` → `backend/cloud_agent/tokens.py`; replace the `API_KEY_SECRET` derivation with env `AGENT_CONTROL_TOKEN_SECRET`; keep format/scopes identical. Move `test_agent_job_tokens.py`.
@@ -254,7 +318,7 @@
 - **Acceptance:** e2e-ish test with mocked BFF: unauth → redirect URL correct (challenge present); auth → task list renders.
 
 ### F4. Admin hosts UI (M)
-- Deps: F3, E6 (admin routes). New `/admin/hosts` page: list hosts (status, slots, last heartbeat), actions wired to E10/G6 endpoints. Guard: `role=admin` from session. Plain table UI — match existing admin styling, no new design system.
+- Deps: F3, E6 (admin routes). New `/admin/hosts` page: list hosts (status, slots, last heartbeat), actions wired to E6/G6 endpoints. Guard: `role=admin` from session. Plain table UI — match existing admin styling, no new design system.
 
 ### F5. Staging deploy (M) — **human-assisted**
 - Deps: F3, B4, DR4. Deploy web + control plane to staging host; DNS `agents.staging.freeinference.org`; register redirect URI in gateway env (`IDENTITY_ALLOWED_REDIRECTS`).
@@ -293,9 +357,39 @@
 
 ## Phase H — Cutover & removal
 
-### H1. Connection-data migration script (M)
-- Repo: new, `deploy/migrate/`. Deps: E1, DR5. Script exports ONLY `agent_repo_grants` + `agent_gitlab_connections` from the gateway DB and imports into the new DB (id-preserving, idempotent re-run, row-count + checksum report). Job/thread/event history intentionally left behind.
-- **Acceptance:** rehearsal on staging copies; re-run is a no-op.
+### H1. Connection-data migration, with a re-wrap step (M)
+- Repo: **old** for the export half (it is the only side that can decrypt), new for the import half. Deps: E1, E5, DR5.
+
+**Why this is not a copy.** `source_control.py` encrypts GitLab tokens with a
+Fernet key derived from the gateway's `API_KEY_SECRET`. The split forbids the new
+service from ever holding that secret — correctly — so copying the ciphertext
+produces rows nothing can decrypt, and the failure surfaces later as "reconnect
+your GitLab", after the migration was declared successful. An earlier revision of
+this plan said id-preserving copy; that was wrong.
+
+So the credential is **re-wrapped**, not moved:
+
+1. Export runs in the old repo with `API_KEY_SECRET` available. For each row it
+   decrypts, re-encrypts under `AGENT_SOURCE_CONTROL_ENCRYPTION_KEY` (the new
+   service's own key), and writes only the new ciphertext.
+2. Plaintext exists in memory for one statement and is **never written to disk**,
+   not even to a temp file — a migration artifact containing live GitLab tokens is
+   a worse problem than the one being solved.
+3. `user_id` is translated to the new service's `external_user_id` (the identity
+   `sub`, which is the same gateway user id — assert the mapping is total and
+   fail if any row has no corresponding user, rather than importing an orphan).
+4. Import is idempotent, with a row-count and per-row decrypt-check report: every
+   imported row is decrypted once under the new key before the migration is
+   called done.
+- Check whether `agent_repo_grants` also stores wrapped secrets before assuming
+  it is plain data; if it does, it takes the same path.
+- **Fallback, if re-wrap proves awkward:** ship nothing and let users reconnect.
+  That is an acceptable outcome at current scale and must be *chosen*, not arrived
+  at by discovering the ciphertext is dead. Murphy decides; the re-wrap is the
+  default because it costs one script and the reconnect costs every user a detour.
+- **Acceptance:** rehearsal on staging copies; re-run is a no-op; every migrated
+  row decrypts under the new key; no plaintext in any file the script produces
+  (grep the artifact for the token prefix as part of the run).
 
 ### H2. Staging cutover (M) — **human-led, runbook produced**
 - Deps: E11, F5, G-phase, H1. Ordered runbook: announce → disable new-job creation on old stack (feature flag/env) → drain old runner → run H1 → point staging runner host at new control plane (re-enroll via G2) → smoke (E11 checklist) → old `/agents` UI shows a banner linking to the new domain. No proxy, no dual-write; old in-flight terminal sessions are closed deliberately (they are broker-memory state and non-migratable).
@@ -362,7 +456,7 @@ Acceptance: the three test files pass in CI; git diff vs pristine copies shows o
 **Backend package `apps/backend/serving/agent_jobs/` (21 files):** `__init__.py`, `egress.py`, `entitlement.py`, `github_app.py`, `model_auth.py`*, `patch_gate.py`, `publish_worker.py`, `publisher.py`, `runner.py`, `runtimes.py`, `sandbox.py`, `setup.py`, `source_control.py`, `terminal_coordination.py`, `tokens.py`, `visible_models.py`†, `workspace_broker.py`, `workspace_broker_client.py`, `workspace_browser.py`, `workspace_paths.py`, `workspace_snapshot.py`
 (* stays in gateway as the grant-verification seam; † replaced by an HTTP call, not moved)
 
-**Backend other:** `servers/routers/agent_jobs.py` (2,257 lines), `servers/routers/admin/agent_runner_hosts.py`, `schemas_agent_jobs.py`, `storage/agent_job_store.py` (1,955 lines; 9 tables), wiring in `servers/bootstrap.py`, import in `servers/auth.py:15`, attribution column `api_logs.agent_job_id`.
+**Backend other:** `servers/routers/agent_jobs.py` (2,257 lines), `servers/routers/admin/agent_runner_hosts.py`, `schemas_agent_jobs.py`, `storage/agent_job_store.py` (1,955 lines; 11 tables), wiring in `servers/bootstrap.py`, import in `servers/auth.py:15`, attribution column `api_logs.agent_job_id`.
 
 **Frontend:** `app/agents/{page,layout,layout.test}.tsx` + `[jobId]/ archived/ connected/ integrations/`; `components/features/agents/` (30 files); `lib/api/agents.ts`.
 
