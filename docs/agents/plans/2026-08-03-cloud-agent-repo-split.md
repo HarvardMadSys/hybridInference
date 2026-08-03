@@ -64,16 +64,10 @@
 - Add a short section to the old repo `CLAUDE.md`: agent paths (`apps/backend/serving/agent_jobs/`, `servers/routers/agent_jobs.py`, `servers/routers/admin/agent_runner_hosts.py`, `storage/agent_job_store.py`, `schemas_agent_jobs.py`, `apps/frontend/src/{app,components/features}/agents/`, `apps/frontend/src/lib/api/agents.ts`, agent deploy files) are **frozen except Phase C contract work**; new agent features go to the new repo.
 - **Acceptance:** CLAUDE.md note merged to `dev`; `FREEZE_SHA` written into this plan and into B3's MIGRATION.md.
 
-### A3. Generate the migration manifest (S)
+### A3. Generate the migration manifest (S) — ✅ **done 2026-08-03**
 - Repo: old. Deps: A2.
-- At `<FREEZE_SHA>` run and save output to `docs/agents/plans/cloud-agent-split-manifest.txt`:
-  ```bash
-  git ls-tree -r <FREEZE_SHA> --name-only \
-    | grep -Ei '(agent[_-]|/agents?(/|$)|agent_jobs)' \
-    | grep -vE '^docs/agents/'
-  ```
-  Cross-check against the Appendix list; investigate any diff (new files since 3f955493 must be classified move/stay).
-- **Acceptance:** manifest committed; every file tagged `move:host`, `move:control`, `move:web`, `move:deploy`, `stay:contract`, or `stay:delete-at-H4`.
+- Delivered as [cloud-agent-split-manifest.md](cloud-agent-split-manifest.md), which carries its own regeneration command and the tag legend. Every path at `<FREEZE_SHA>` is classified `move:host`, `move:control`, `move:web`, `move:deploy`, `move:docs`, `stay:contract`, `stay:edit-at-H4` or `stay:unrelated`.
+- **Re-run it if the freeze moves**, and diff rather than replace: a path that changed classification is the interesting case, and a regenerated file hides it.
 
 ---
 
@@ -117,6 +111,8 @@
 ## Phase C — Contracts in HybridInference (old repo; only permitted agent-area change during freeze)
 
 > Design note for C4–C6: today, sandbox model tokens are fenced via `AgentJobStore` lookups. After the split the gateway has no job store, so the fence is replaced by a gateway-owned `agent_grants` table + an explicit revoke call from the control plane. Grants are pure capabilities: user/job/attempt identity, model/MCP scope, TTL and revocation. They carry no per-job monetary cap. Model calls continue through the gateway's existing per-user quota and cost-accounting path; `api_logs.agent_job_id` remains only for per-job attribution and usage reporting.
+>
+> **If any Phase C task adds an `api_logs` column, it is a five-place edit.** Nothing here needs one, but should one appear (say `grant_id`), the INSERT is hand-duplicated across `storage/postgres_log.py` and `storage/database.py`: the change must touch `storage/log_schema.py` + **both** INSERTs + the `LogStore` ABC + the export path. Doing half of it compiles and passes tests.
 
 ### C1. Identity keys + JWKS endpoint (S)
 - Repo: old. Deps: none (may start before freeze).
@@ -612,9 +608,13 @@ So the credential is **re-wrapped**, not moved:
 - Deps: H2 + ≥1 week staging soak with real dogfood use. Same runbook + user announcement. Coordinate so this deploy shares nothing with the open-source-split's prod cutover (see Coordination rules).
 
 ### H4. Old-repo removal PR (L)
-- Repo: old. Deps: H3, **and the DR5 archive verified per H1** — this task deletes its only reader. Delete `agent_jobs/` (EXCEPT `model_auth.py` grant path — relocate the surviving `agr` verification + `agent_grants` DDL into gateway-owned modules, e.g. `serving/grants.py`; delete legacy `ajt` model-token acceptance), `servers/routers/agent_jobs.py`, `admin/agent_runner_hosts.py`, `schemas_agent_jobs.py`, `storage/agent_job_store.py`, frontend `agents/` trees + `lib/api/agents.ts`, agent deploy files, the 25 agent test files. `bootstrap.py` loses store/reaper/publish wiring; `auth.py` import updated to the new grants module. `/agents` route → redirect to new domain.
+- Repo: old. Deps: H3, **and the DR5 archive verified per H1** — this task deletes its only reader. Delete `agent_jobs/` (three exceptions below), `servers/routers/agent_jobs.py`, `admin/agent_runner_hosts.py`, `schemas_agent_jobs.py`, `storage/agent_job_store.py`, frontend `agents/` trees + `lib/api/agents.ts`, agent deploy files, the 25 agent test files. `bootstrap.py` loses store/reaper/publish wiring; `auth.py` import updated to the new grants module. `/agents` route → redirect to new domain.
+- **Three files inside `agent_jobs/` survive, and two of them are easy to miss.** Relocate all three into gateway-owned modules, re-point their importers, then delete the package:
+  - `model_auth.py` — the surviving `agr` verification + `agent_grants` DDL (e.g. `serving/grants.py`); delete legacy `ajt` model-token acceptance.
+  - `mcp_proxy.py` and `mcp_registry.py` — the MCP proxy's allowlist logic and the deployment registry that holds the upstream MCP credentials. Both are gateway capability surface, not control-plane code. `servers/routers/agent_mcp.py` is **not** under `agent_jobs/`, stays, and imports both; re-point those imports in this PR.
+  - Deleting the two MCP modules breaks `agent_mcp.py` at import, which fails loudly. The dangerous repair is deleting `agent_mcp.py` as well: that satisfies the grep gate below and removes MCP from the product with every remaining test green. The gate checks that the package is gone, and is not a licence to delete whatever still mentions it.
 - The surviving `agr` path is capability verification plus existing per-user quota enforcement and `api_logs.agent_job_id` attribution only; no per-job budget code or `budget_usd` moves into the gateway-owned module. Removing application code must not mutate or drop the old agent tables: the read-only history/archive remains as recorded in DR5.
-- **Acceptance:** gateway boots with zero agent env vars and creates no agent tables (fresh-DB test asserts table absence, `agent_grants` + `identity_auth_codes` excepted); `agent_grants` has no `budget_usd`; full `make test` green; grep gate `rg 'agent_jobs' apps/` → no hits; a migration rehearsal confirms the existing old database is unchanged.
+- **Acceptance:** gateway boots with zero agent env vars and creates no agent tables (fresh-DB test asserts table absence, `agent_grants` + `identity_auth_codes` excepted); `agent_grants` has no `budget_usd`; full `make test` green; grep gate `rg 'agent_jobs' apps/` → no hits; **`test_agent_mcp.py` and `test_agent_mcp_api.py` still pass and the MCP proxy route still answers** — the assertion that catches a grep gate satisfied by deletion; a migration rehearsal confirms the existing old database is unchanged.
 
 ### H5. Post-cutover close-out (S)
 - Old repo CLAUDE.md agent sections → pointer to new repo. `docs/developer/agent-sandbox-operations.md` moves to new repo `docs/operations.md`. New repo README gets architecture diagram + "powered by FreeInference" contract description. File the open-source-readiness issue (license headers, public CI, secret-history audit — trivial since history is clean by construction).
@@ -626,6 +626,7 @@ So the credential is **re-wrapped**, not moved:
 1. **Deploy isolation:** the neutral split's prod cutover (manifest first run + alert label flip) rides alone; no agent change shares that deploy. H3 likewise rides alone.
 2. **Freeze discipline:** between A2 and E10, repo-wide sweeps in the old repo (config extraction, import re-orgs, branding) must exclude agent paths — otherwise the A3 manifest chases a moving target.
 3. **Auth single-writer:** C1–C6 and the open-source split's auth/IdP phases (P3/P4 of the 2026-06-18 epic draft) touch the same auth layer. One person (Murphy) owns sequencing; recommended order: agent contracts first, pluggable-IdP abstraction on top of them later. Never two concurrent PRs editing `auth.py`.
+4. **The export tool hard-references a file this split deletes.** `ops/release/public_export.py:36` points at `apps/backend/serving/agent_jobs/patch_gate.py`, which leaves at D4 and whose package is deleted at H4. Whoever owns the neutral-upstream split drops or re-points that reference before H4 lands — this is the concrete instance of rule 2, not a separate concern.
 
 ---
 
