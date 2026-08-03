@@ -155,24 +155,31 @@ The request carries a requested scope and lifetime, which the gateway clamps:
 |---|---|
 | `user_id` | Caller names it; gateway **looks it up** and refuses unless the account exists and is active |
 | `allowed_models` | Clamped to what that user's role may reach — never widened by the request |
-| `allowed_mcp` | `requested ∩ the deployment's registry` — **no role dimension**, see below |
+| `allowed_mcp` | `requested` must be a **subset** of the deployment's registry, else refuse to mint. Not an intersection, and no role dimension — see below |
 | `ttl_seconds` | `min(requested, MAX_GRANT_TTL)` |
 
 - `allowed_mcp` is not optional polish: `agent_mcp.py` authenticates tool calls
   with the same token, so a grant describing only models would either lock the
   sandbox out of MCP or leave tool access ungoverned.
-- **But the clamp is registry-only. There is no role-based MCP entitlement, and
-  this split is not the place to invent one.** An earlier revision said "∩ what
-  the role may reach", which reads like a rule and is actually a new feature:
-  `McpServer` at the freeze SHA carries `name`, `url`, `headers`, `tools`,
-  `description`, `default` — **no `required_role`**, and nothing anywhere maps a
-  role to a set of servers. An implementer told to clamp by role would have to
-  design that mapping, add the field, and decide the default for every existing
-  entry, inside a task whose job is to move code without changing behaviour. The
-  honest clamp is the one the data supports: reject anything not in the registry,
-  which is exactly the check `agent_jobs.py` performs today. If per-role MCP
-  access is wanted later it is its own design, with its own decision about what
-  an unlabelled server means.
+- **An unknown server name refuses the mint. It is not quietly dropped.**
+  `McpRegistry.resolve` already decides this and says why: *"Unknown names raise —
+  a job that asked for a tool surface it will not get should fail at creation, not
+  discover mid-run that the agent is missing the one capability the task depended
+  on."* So the word "clamp" is wrong for this field. `allowed_models` is clamped —
+  narrowing a model list leaves a working job. `allowed_mcp` is **validated**:
+  silently intersecting would hand back a grant that looks fine and produce an
+  agent running without the tool the task was written around, failing far from the
+  cause. An earlier revision of this task said "∩", which prescribes exactly that
+  regression while claiming to preserve current behaviour.
+- **And there is no role dimension, because there is no data for one.** Another
+  earlier revision said "∩ what the role may reach". `McpServer` at the freeze SHA
+  carries `name`, `url`, `headers`, `tools`, `description`, `default` — **no
+  `required_role`** — and nothing anywhere maps a role to a set of servers. An
+  implementer told to clamp by role would have to design that mapping, add the
+  field, and pick a default for every existing entry, inside a task whose job is
+  to move code without changing behaviour. If per-role MCP access is wanted later
+  it is its own design, with its own decision about what an unlabelled server
+  means.
 
 **Table.** Created in a gateway-owned module (`serving/grants.py`), **not** in
 `agent_job_store` — that file is frozen and leaves at H4:
@@ -198,7 +205,14 @@ after a timeout gets the same grant back rather than a second capability.
   own signing context, key from `API_KEY_SECRET` (gateway mints *and* verifies;
   the secret never leaves).
 - `POST /internal/agent-grants/{id}/renew` — extends `expires_at` by another
-  bounded step, re-checking account state and the attempt fence each time.
+  bounded step, re-checking each time that the grant is not revoked, not expired,
+  and that the owning user is still active. **Not the attempt fence.** After the
+  split the gateway has no attempt or lease state at all — `agent_attempts` lives
+  in the control plane's database — so an earlier revision asking it to "re-check
+  the attempt fence" describes a lookup with nothing to look at. The fence stays
+  where the data is: E9 stops renewing once its own store says the attempt was
+  superseded, and the grant then dies of its TTL whether or not revoke succeeds.
+  That is the whole reason the TTL is short.
 - `POST /internal/agent-grants/{id}/revoke` — sets `revoked_at`.
 
 **Short TTL with renewal, not long TTL with revocation.** Revocation over the
@@ -210,11 +224,17 @@ happen anyway, which is the only kind of revoke that does not need a durable
 outbox behind it.
 
 - **Acceptance:** unit tests for mint/renew/revoke/expiry; that a request asking
-  for more models/MCP access or a longer TTL than the role allows receives the
-  clamped scope/lifetime and not an error; that an unknown or suspended `user_id`
-  is refused; that re-minting the same `(job, attempt)` returns the first grant
-  rather than a second; dispatch-token auth (401 on miss); no route reachable
-  without the env set; grant rows, tokens and responses contain no `budget_usd`.
+  for more models than the role allows, or a longer TTL than `MAX_GRANT_TTL`
+  (gateway policy — the TTL has no role dimension either), receives the
+  clamped scope/lifetime and not an error; that an **unknown MCP server name
+  refuses the mint** rather than being dropped from the returned set — the
+  assertion that catches the intersect-instead-of-validate regression; that an
+  unknown or suspended `user_id` is refused; that re-minting the same
+  `(job, attempt)` returns the first grant rather than a second; that renew
+  refuses a revoked grant and one whose user is no longer active, and does **not**
+  attempt any attempt/lease lookup; dispatch-token auth (401 on miss); no route
+  reachable without the env set; grant rows, tokens and responses contain no
+  `budget_usd`.
 
 ### C6. Grant verification path in model_auth (L)
 - Repo: old. Deps: C5.
@@ -232,15 +252,16 @@ The gate cannot simply be hoisted, because of where the two halves live:
 A grant has no API key, so there is nothing to read the limit off. The chain to implement:
 
 1. Grant → `user_id`, and require `users.status = 'active'`.
-2. Resolve that user's **active, unexpired** API keys and take the limit from them. A user may hold several with different quotas: use the **most permissive**, because the bound being enforced is *"an agent must not spend more than the user could spend themselves"*, and the user can already reach for their most generous key. Taking the minimum would make the agent weaker than the person who asked for it, for no security gain.
-3. `NULL` keeps meaning `1000.0`, exactly as line 414 already treats it. Diverging here would make the agent path and the direct path disagree on the same account.
-4. Compare against `user_daily_cost` spend and answer **429** with the same envelope and `X-RateLimit-*` headers the direct path uses — a client should not be able to tell which door it came through.
-5. **Fail closed**, not open: no active key, no active user, or a store read that fails → refuse. This is the case where a wrong default is unmetered spend, so the absence of a limit must never be read as the absence of a ceiling.
+2. Read the limit from that user's **one** active, unexpired API key. A user has at most one: `idx_api_keys_user_unique` is `UNIQUE (user_id) WHERE status = 'active'`, `idx_api_keys_account_active_unique` does the same per `account_id`, and key creation converts either violation into `DuplicateAPIKeyError("You already have an active API key")`. So the query is a single row, not a set. An earlier revision of this task said to take the most permissive of several — inventing a multi-key quota policy for a state the schema forbids, and pre-deciding a question that belongs to whoever actually adds multi-key support.
+3. If there is **no** such key, refuse. If the query somehow returns more than one, refuse **and alarm**: that means a unique index is gone, and picking a winner would paper over a schema failure with a spending decision.
+4. `NULL` keeps meaning `1000.0`, exactly as line 414 already treats it. Diverging here would make the agent path and the direct path disagree on the same account.
+5. Compare against `user_daily_cost` spend and answer **429** with the same envelope and `X-RateLimit-*` headers the direct path uses — a client should not be able to tell which door it came through.
+6. **Fail closed throughout**: a store read that errors refuses the call rather than letting it proceed unmetered. This is the one place where a wrong default *is* unbounded spend, so the absence of a limit must never be read as the absence of a ceiling.
 - `model_auth.authenticate_agent_tool_call` gets the same `agr` signature, row, revoke/expiry and MCP-scope checks. Tool calls do not invoke an inference provider, so they do not consume model quota. Skipping this function would break MCP the moment grants replace `ajt`.
 - **Acceptance:** all existing `test_agent_model_auth.py` and `test_agent_mcp.py` tests still pass (legacy path untouched); new tests for the `agr` path on both functions:
   - a user whose **custom** `quota_daily_cost_usd` is already spent → **429** on an `agr` model call (the test that fails today, and the one that proves the bypass is closed — write it against a configured quota, not the 1000.0 default, or a passing test proves nothing);
   - the same call under an unspent quota → allowed, and the 429 response body and `X-RateLimit-*` headers match the direct path's;
-  - a user with **no active API key**, and one whose account is not active → refused, not defaulted;
+  - a user with **no active API key**, and one whose account is not active → refused, not defaulted (the schema guarantees at most one active key, so there is no "which key" case to test — only present and absent);
   - revoke-then-call → 401; a tool outside `allowed_mcp` refused; tool calls unaffected by model quota;
   - successful model calls logged with both the owning `user_id` and `api_logs.agent_job_id`.
   - **Mutation-check the metering**: removing the quota lookup must make the 429 tests fail. Without that check the gate can be present in the diff and unreachable in the control flow, which is exactly the state this task exists to fix.
