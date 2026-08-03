@@ -215,6 +215,11 @@ outbox behind it.
 - `GET /internal/agent-grants/{grant_id}/usage` (dispatch-token auth) → `{spent_usd, request_count}` summed from the ledger for that grant's job id. This is informational attribution for the control plane UI, not a per-job enforcement limit.
 - **Acceptance:** unit test with seeded ledger rows.
 
+### C8. contracts/ mirrors (S)
+- Repo: new. Deps: C3, C5, C7, C9. **Cross-repo:** C8 lands in the *new* repo but every task it describes lands in the *old* one — wait for those to merge, or the YAML documents a contract that then changes under it.
+- Write `contracts/identity.openapi.yaml`, `contracts/inference-grants.openapi.yaml` and `contracts/gateway-lookups.openapi.yaml` describing exactly what C1–C7 and C9 shipped (hand-written, small). These are the reference for E4/E7/E9 and for Juncheng's review.
+- **Acceptance:** YAMLs lint (`openapi-spec-validator` in CI); the inference-grant contract contains no `budget_usd` and describes usage as informational.
+
 ### C9. The three lookups the moved code does by import today (M)
 - Repo: old. Deps: C5 (same dispatch-token auth), DR7.
 
@@ -253,11 +258,6 @@ for no reason:
   a field name); a `pro` user's catalog differs from the anonymous one; an unknown
   or suspended user is reported as such rather than 404-as-active; 401 without the
   dispatch token; no route reachable without the env set.
-
-### C8. contracts/ mirrors (S)
-- Repo: new. Deps: C3, C5, C7, C9. **Cross-repo:** C8 lands in the *new* repo but every task it describes lands in the *old* one — wait for those to merge, or the YAML documents a contract that then changes under it.
-- Write `contracts/identity.openapi.yaml`, `contracts/inference-grants.openapi.yaml` and `contracts/gateway-lookups.openapi.yaml` describing exactly what C1–C7 and C9 shipped (hand-written, small). These are the reference for E4/E7/E9 and for Juncheng's review.
-- **Acceptance:** YAMLs lint (`openapi-spec-validator` in CI); the inference-grant contract contains no `budget_usd` and describes usage as informational.
 
 ---
 
