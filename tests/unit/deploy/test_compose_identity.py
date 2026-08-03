@@ -179,6 +179,21 @@ def test_the_makefile_feeds_the_overlay_too() -> None:
     ), "the server's .env must come last so per-host overrides still win"
 
 
+def test_the_makefile_accepts_extra_env_files_before_the_server_env() -> None:
+    """Staging overrides must reach the Compose command used by `make build`."""
+    makefile = (REPO / "Makefile").read_text()
+    compose_line = next(
+        (line for line in makefile.splitlines() if line.startswith("COMPOSE :=")), ""
+    )
+    assert "COMPOSE_EXTRA_ENV_FILES ?=" in makefile
+    assert "$(wildcard $(COMPOSE_EXTRA_ENV_FILES))" in makefile
+    assert "$(COMPOSE_EXTRA_ENV_ARGS)" in compose_line
+    assert compose_line.index("$(DISTRIBUTION_ENV_FILES)") < compose_line.index(
+        "$(COMPOSE_EXTRA_ENV_ARGS)"
+    )
+    assert compose_line.index("$(COMPOSE_EXTRA_ENV_ARGS)") < compose_line.index("--env-file .env")
+
+
 def test_the_bottom_of_the_precedence_names_files_that_exist() -> None:
     """A checkout with no distribution and no environment must still resolve.
 

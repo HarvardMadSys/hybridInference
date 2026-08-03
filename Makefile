@@ -178,6 +178,11 @@ $(error DISTRIBUTION=$(DISTRIBUTION) matches no distributions/$(DISTRIBUTION)/de
 endif
 $(info Using distribution '$(DISTRIBUTION)' — its identity is compiled into the console. DISTRIBUTION=none for a neutral stack.)
 endif
+# Deploy scripts may append environment files for a deployment-specific
+# environment, such as staging. These are inserted after the shared
+# distribution files and before `.env`, preserving host-local overrides.
+COMPOSE_EXTRA_ENV_FILES ?=
+COMPOSE_EXTRA_ENV_ARGS := $(patsubst %,--env-file %,$(wildcard $(COMPOSE_EXTRA_ENV_FILES)))
 # Cloud-agent runner overlay (issue #1041). A host opts in with AGENT_RUNNER=1
 # and the runner rides the SAME compose invocation as the main stack. That is
 # a correctness requirement, not convenience: the overlay attaches `backend`
@@ -188,7 +193,7 @@ COMPOSE_FILE_ARGS := -f deploy/docker/docker-compose.yml -f deploy/docker/docker
 else
 COMPOSE_FILE_ARGS := -f deploy/docker/docker-compose.yml
 endif
-COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) --env-file .env
+COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) --env-file .env
 DOCKER_VOLUMES := hybridinference_postgres_data
 
 docker-volumes:  ## Create external Docker volumes required by production compose
