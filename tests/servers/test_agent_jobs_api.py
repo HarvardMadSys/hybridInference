@@ -3403,6 +3403,8 @@ async def test_the_claim_hands_the_runner_the_job_s_servers(
     body = claimed.json()
     assert body["mcp_servers"] == ["deepwiki", "github"]
     assert "mcp.example.com" not in json.dumps(body)
+
+
 # ── Runner host pool ───────────────────────────────────────────────────
 #
 # Runners pull, so the claim is the only place the platform can say "not this
