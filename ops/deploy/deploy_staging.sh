@@ -23,7 +23,7 @@ done
 # The files above are the site's, and their values are production's. Anything
 # that has to differ on staging belongs in deploy/staging/, which is read after
 # them and before `.env` — so it can be reviewed in the repository rather than
-# living only on the host. Nothing there yet; the loop is a no-op until there is.
+# living only on the host.
 for env_file in "$APP_DIR"/distributions/freeinference/deploy/staging/*.env; do
   if [[ -f "$env_file" ]]; then
     COMPOSE+=(--env-file "$env_file")
@@ -136,8 +136,10 @@ main() {
 
   log "Rebuilding and restarting Docker Compose services."
   # The rebuild needs this site's identity too: the console's is compiled in
-  # as build args, and `make` no longer discovers an overlay on its own.
-  make build DISTRIBUTION=freeinference AGENT_RUNNER="$AGENT_RUNNER"
+  # as build args. Make builds its own Compose command, so pass the staging
+  # files explicitly rather than relying on the diagnostic COMPOSE array above.
+  make build DISTRIBUTION=freeinference AGENT_RUNNER="$AGENT_RUNNER" \
+    COMPOSE_EXTRA_ENV_FILES='distributions/freeinference/deploy/staging/*.env'
 
   log "Current service state:"
   "${COMPOSE[@]}" ps

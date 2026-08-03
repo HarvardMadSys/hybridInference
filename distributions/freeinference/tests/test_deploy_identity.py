@@ -121,12 +121,17 @@ def test_staging_uses_the_staging_documentation_site() -> None:
     staging_overlay_at = deploy_script.index("distributions/freeinference/deploy/staging/*.env")
     server_env_at = deploy_script.index("COMPOSE+=(--env-file .env)")
     assert shared_overlay_at < staging_overlay_at < server_env_at
-    assert "NEXT_PUBLIC_DOCS_URL=https://doc.staging.freeinference.org/" in (
-        staging / "frontend.env"
-    ).read_text()
-    assert "SITE_DOCS_URL=https://doc.staging.freeinference.org" in (
-        staging / "backend.env"
-    ).read_text()
+    assert "COMPOSE_EXTRA_ENV_FILES='distributions/freeinference/deploy/staging/*.env'" in (
+        deploy_script
+    )
+    assert (
+        "NEXT_PUBLIC_DOCS_URL=https://doc.staging.freeinference.org/"
+        in (staging / "frontend.env").read_text()
+    )
+    assert (
+        "SITE_DOCS_URL=https://doc.staging.freeinference.org"
+        in (staging / "backend.env").read_text()
+    )
 
 
 def test_overlay_cors_still_admits_the_public_site() -> None:
