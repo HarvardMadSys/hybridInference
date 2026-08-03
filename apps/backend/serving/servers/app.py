@@ -26,6 +26,7 @@ from .routers import (
     completions,
     embeddings,
     health,
+    identity,
     internal,
     models,
     playground,
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(user_routes.router)
     app.include_router(internal.router)
     app.include_router(playground.router)
+    app.include_router(identity.router)
 
     # Override HTTPException handler to emit Anthropic-format errors on
     # /v1/messages and /anthropic/... paths (must register after install_error_handlers).
