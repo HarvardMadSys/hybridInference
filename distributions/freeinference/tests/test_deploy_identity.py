@@ -113,6 +113,22 @@ def test_the_environment_label_is_stated_not_inferred() -> None:
     )
 
 
+def test_staging_uses_the_staging_documentation_site() -> None:
+    """Staging must not send users to production docs."""
+    staging = OVERLAY / "staging"
+    deploy_script = (REPO / "ops" / "deploy" / "deploy_staging.sh").read_text()
+    shared_overlay_at = deploy_script.index("distributions/freeinference/deploy/*.env")
+    staging_overlay_at = deploy_script.index("distributions/freeinference/deploy/staging/*.env")
+    server_env_at = deploy_script.index("COMPOSE+=(--env-file .env)")
+    assert shared_overlay_at < staging_overlay_at < server_env_at
+    assert "NEXT_PUBLIC_DOCS_URL=https://doc.staging.freeinference.org/" in (
+        staging / "frontend.env"
+    ).read_text()
+    assert "SITE_DOCS_URL=https://doc.staging.freeinference.org" in (
+        staging / "backend.env"
+    ).read_text()
+
+
 def test_overlay_cors_still_admits_the_public_site() -> None:
     """Dropping an origin here would break the site's own browser clients."""
     origins = _overlay_values()["CORS_ALLOWED_ORIGINS"].split(",")
