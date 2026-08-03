@@ -71,6 +71,8 @@ export interface AgentJob {
   id: string;
   /** Used to group conversation rows in the recent-tasks sidebar. */
   createdAt?: string | null;
+  /** Conversation-level pin time. Every turn in the same thread shares it. */
+  pinnedAt?: string | null;
   title: string;
   /** Complete current-turn prompt. Older fixtures may only have `title`. */
   prompt?: string;
@@ -98,6 +100,8 @@ export interface AgentJob {
   networkAgent: string;
   sandbox: string;
   attempts: AgentAttempt[];
+  /** Display number for the server-authoritative current attempt, when it has emitted an event. */
+  currentAttemptNo?: number;
   events: AgentEvent[];
   /** Bottom-of-stream live line while running, e.g. "turn 15 · …". */
   liveNote?: string;

@@ -109,6 +109,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "model": row["model"],
         "state": row["state"],
         "cancel_requested": row["cancel_requested"],
+        "terminal_resume_pending": row["terminal_resume_pending"],
         "current_attempt_id": row["current_attempt_id"],
         "published_pr_url": row["published_pr_url"],
         "published_commit_sha": row["published_commit_sha"],
@@ -116,18 +117,26 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "budget_usd": float(row["budget_usd"]) if row["budget_usd"] is not None else None,
         "metadata": _load_json(row["metadata"]),
         "fork_source_job_id": row["fork_source_job_id"],
+        # Resolved once, at creation, against the deployment registry — not
+        # re-read per attempt. A job runs with the tool surface it was created
+        # with, so removing a server from the registry stops new jobs from
+        # asking for it without changing what a running one was promised.
+        "mcp_servers": list(row["mcp_servers"] or []),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "pinned_at": row.get("pinned_at"),
     }
 
 
 _JOB_COLUMNS = (
     "id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha, task_prompt, "
     "setup_script, runtime, model, state, "
-    "cancel_requested, current_attempt_id, published_pr_url, published_commit_sha, detail, "
-    "budget_usd, metadata, fork_source_job_id, "
+    "cancel_requested, terminal_resume_pending, current_attempt_id, "
+    "published_pr_url, published_commit_sha, detail, "
+    "budget_usd, metadata, fork_source_job_id, mcp_servers, "
     "created_at, updated_at"
 )
+_QUALIFIED_JOB_COLUMNS = ", ".join(f"j.{column.strip()}" for column in _JOB_COLUMNS.split(","))
 
 
 class AgentJobStore:
@@ -148,6 +157,7 @@ class AgentJobStore:
                     repo TEXT NOT NULL,
                     title TEXT NOT NULL,
                     archived_at TIMESTAMPTZ,
+                    pinned_at TIMESTAMPTZ,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
@@ -155,6 +165,9 @@ class AgentJobStore:
             )
             await conn.execute(
                 "ALTER TABLE agent_threads ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ"
+            )
+            await conn.execute(
+                "ALTER TABLE agent_threads ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ"
             )
             await conn.execute(
                 """
@@ -172,12 +185,14 @@ class AgentJobStore:
                     model TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'queued',
                     cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+                    terminal_resume_pending BOOLEAN NOT NULL DEFAULT FALSE,
                     current_attempt_id BIGINT,
                     published_pr_url TEXT,
                     published_commit_sha TEXT,
                     detail TEXT,
                     budget_usd NUMERIC(12, 6),
                     metadata JSONB,
+                    mcp_servers TEXT[],
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
@@ -187,6 +202,10 @@ class AgentJobStore:
             # revision (CREATE TABLE IF NOT EXISTS never adds columns).
             await conn.execute(
                 "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS budget_usd NUMERIC(12, 6)"
+            )
+            await conn.execute(
+                "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS "
+                "terminal_resume_pending BOOLEAN NOT NULL DEFAULT FALSE"
             )
             await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS setup_script TEXT")
             await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS thread_id TEXT")
@@ -203,6 +222,10 @@ class AgentJobStore:
             await conn.execute(
                 "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS fork_source_job_id TEXT"
             )
+            # Nullable rather than DEFAULT '{}': a job created before MCP
+            # existed asked for no servers, and NULL says that without claiming
+            # someone chose it.
+            await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS mcp_servers TEXT[]")
             # Existing P0 jobs predate conversations. Give each one a one-turn
             # thread so old links and history immediately participate in the
             # new UI instead of becoming a second, legacy product surface.
@@ -244,6 +267,7 @@ class AgentJobStore:
                     lease_owner TEXT NOT NULL,
                     lease_generation BIGINT NOT NULL,
                     lease_expires_at TIMESTAMPTZ NOT NULL,
+                    terminal_ready BOOLEAN NOT NULL DEFAULT FALSE,
                     sandbox_id TEXT,
                     base_sha TEXT,
                     status TEXT NOT NULL DEFAULT 'running',
@@ -252,6 +276,10 @@ class AgentJobStore:
                     UNIQUE (job_id, attempt_no)
                 )
                 """
+            )
+            await conn.execute(
+                "ALTER TABLE agent_attempts "
+                "ADD COLUMN IF NOT EXISTS terminal_ready BOOLEAN NOT NULL DEFAULT FALSE"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_attempts_expiry "
@@ -385,6 +413,41 @@ class AgentJobStore:
                 )
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_runner_hosts (
+                    host TEXT PRIMARY KEY,
+                    last_worker_id TEXT,
+                    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            # Which host takes work is *one* fact, so it lives in one row that
+            # always exists — not a flag spread across the pool. That is what
+            # lets a claim lock it: readers take the row shared, an admin
+            # switch takes it exclusively, and the two can no longer interleave
+            # into "the switch succeeded and the old machine took one more job".
+            # A per-host flag has no such row to lock while nothing is pinned.
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_runner_policy (
+                    id BOOLEAN PRIMARY KEY DEFAULT TRUE,
+                    active_host TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT agent_runner_policy_singleton CHECK (id)
+                )
+                """
+            )
+            await conn.execute(
+                "INSERT INTO agent_runner_policy (id, active_host) VALUES (TRUE, NULL) "
+                "ON CONFLICT (id) DO NOTHING"
+            )
+            # The flag this replaces. Dropped rather than left behind: two
+            # places answering "which host is active" is the split brain the
+            # policy row exists to prevent.
+            await conn.execute("ALTER TABLE agent_runner_hosts DROP COLUMN IF EXISTS is_active")
+            await conn.execute("DROP INDEX IF EXISTS idx_agent_runner_hosts_one_active")
 
     # ── Repository grants ──────────────────────────────────────────────
     #
@@ -593,6 +656,7 @@ class AgentJobStore:
         setup_script: str | None = None,
         budget_usd: float | None = None,
         metadata: dict[str, Any] | None = None,
+        mcp_servers: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a queued job and return it."""
         job_id = _new_job_id()
@@ -612,8 +676,8 @@ class AgentJobStore:
                 f"""
                 INSERT INTO agent_jobs
                     (id, thread_id, turn_no, user_id, repo, base_sha, task_prompt,
-                     setup_script, runtime, model, budget_usd, metadata)
-                VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+                     setup_script, runtime, model, budget_usd, metadata, mcp_servers)
+                VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)
                 RETURNING {_JOB_COLUMNS}
                 """,
                 job_id,
@@ -627,6 +691,7 @@ class AgentJobStore:
                 model,
                 Decimal(str(budget_usd)) if budget_usd is not None else None,
                 json.dumps(metadata) if metadata is not None else None,
+                list(mcp_servers or []),
             )
             await conn.execute(
                 """
@@ -729,7 +794,7 @@ class AgentJobStore:
             if requested is None:
                 return None
             thread = await conn.fetchrow(
-                "SELECT id FROM agent_threads WHERE id = $1 AND user_id = $2 FOR UPDATE",
+                "SELECT id, pinned_at FROM agent_threads WHERE id = $1 AND user_id = $2 FOR UPDATE",
                 requested["thread_id"],
                 user_id,
             )
@@ -756,8 +821,9 @@ class AgentJobStore:
                 f"""
                 INSERT INTO agent_jobs
                     (id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha,
-                     task_prompt, setup_script, runtime, model, state, budget_usd, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+                     task_prompt, setup_script, runtime, model, state, budget_usd, metadata,
+                     mcp_servers)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15)
                 RETURNING {_JOB_COLUMNS}
                 """,
                 job_id,
@@ -778,6 +844,10 @@ class AgentJobStore:
                 json.dumps(_load_json(parent["metadata"]))
                 if parent["metadata"] is not None
                 else None,
+                # Inherited, not re-resolved: the next turn of a conversation
+                # gets the tool surface the thread has been running with, so a
+                # follow-up cannot quietly gain a server the owner never chose.
+                list(parent["mcp_servers"] or []),
             )
             await conn.execute(
                 """
@@ -791,7 +861,9 @@ class AgentJobStore:
             await conn.execute(
                 "UPDATE agent_threads SET updated_at = NOW() WHERE id = $1", thread_id
             )
-        return _job_row_to_dict(row)
+        result = _job_row_to_dict(row)
+        result["pinned_at"] = thread["pinned_at"]
+        return result
 
     async def fork_thread(self, *, source_job_id: str, user_id: str) -> dict[str, Any] | None:
         """Duplicate a conversation up to (and including) one settled turn.
@@ -866,9 +938,9 @@ class AgentJobStore:
                         (id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha,
                          task_prompt, setup_script, runtime, model, state,
                          published_commit_sha, detail, budget_usd, metadata,
-                         fork_source_job_id, created_at, updated_at)
+                         fork_source_job_id, mcp_servers, created_at, updated_at)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                            $13, $14, $15, $16::jsonb, $17,
+                            $13, $14, $15, $16::jsonb, $17, $18,
                             clock_timestamp(), clock_timestamp())
                     """,
                     copy_id,
@@ -893,6 +965,12 @@ class AgentJobStore:
                     if turn["metadata"] is not None
                     else None,
                     turn["id"],
+                    # Carried with the turn, like its runtime and model. A fork
+                    # that dropped these would give the copy a strictly smaller
+                    # tool surface than the conversation it claims to continue,
+                    # and the next turn would fail in a way that looks like the
+                    # model got worse.
+                    list(turn["mcp_servers"] or []),
                 )
                 previous_copy = copy_id
             # clock_timestamp(), not NOW(): NOW() is frozen for the whole
@@ -925,7 +1003,7 @@ class AgentJobStore:
         async with self._pool.acquire() as conn:
             thread = await conn.fetchrow(
                 """
-                SELECT t.id, t.repo, t.title, t.created_at, t.updated_at
+                SELECT t.id, t.repo, t.title, t.created_at, t.updated_at, t.pinned_at
                 FROM agent_threads t
                 JOIN agent_jobs j ON j.thread_id = t.id
                 WHERE j.id = $1 AND j.user_id = $2
@@ -949,6 +1027,9 @@ class AgentJobStore:
                 f"SELECT {_JOB_COLUMNS} FROM agent_jobs WHERE thread_id = $1 ORDER BY turn_no",
                 thread["id"],
             )
+            job_rows = [_job_row_to_dict(job) for job in jobs]
+            for job in job_rows:
+                job["pinned_at"] = thread["pinned_at"]
         return {
             "id": thread["id"],
             "repo": thread["repo"],
@@ -956,11 +1037,11 @@ class AgentJobStore:
             "created_at": thread["created_at"],
             "updated_at": thread["updated_at"],
             "messages": [dict(message) for message in messages],
-            "jobs": [_job_row_to_dict(job) for job in jobs],
+            "jobs": job_rows,
         }
 
     async def follow_up_context(self, *, job_id: str) -> dict[str, Any]:
-        """Return prior turns and the successful parent patch for a claimed run."""
+        """Return prior turns and the resumable parent patch for a claimed run."""
         async with self._pool.acquire() as conn:
             job = await conn.fetchrow(
                 "SELECT thread_id, parent_job_id, turn_no FROM agent_jobs WHERE id = $1",
@@ -985,7 +1066,7 @@ class AgentJobStore:
                 FROM agent_job_artifacts a
                 JOIN agent_jobs p ON p.id = a.job_id
                 WHERE a.job_id = $1 AND a.kind = 'patch'
-                  AND p.state IN ('succeeded', 'publishing')
+                  AND p.state IN ('succeeded', 'publishing', 'cancelled')
                   AND p.published_commit_sha IS NULL
                 ORDER BY a.created_at DESC
                 LIMIT 1
@@ -1008,7 +1089,7 @@ class AgentJobStore:
                     JOIN agent_job_artifacts a ON a.job_id = src.id AND a.kind = 'patch'
                     WHERE parent.id = $1
                       AND parent.published_commit_sha IS NULL
-                      AND src.state IN ('succeeded', 'publishing')
+                      AND src.state IN ('succeeded', 'publishing', 'cancelled')
                     ORDER BY a.created_at DESC
                     LIMIT 1
                     """,
@@ -1046,7 +1127,8 @@ class AgentJobStore:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT j.user_id, j.id AS job_id, j.budget_usd, j.model, j.state
+                SELECT j.user_id, j.id AS job_id, j.budget_usd, j.model, j.state,
+                       j.mcp_servers
                 FROM agent_attempts a
                 JOIN agent_jobs j ON j.id = a.job_id
                 WHERE a.id = $1
@@ -1079,6 +1161,11 @@ class AgentJobStore:
             "user_id": row["user_id"],
             "role": role,
             "job_id": row["job_id"],
+            # What this job may reach through the MCP proxy. Carried on the same
+            # fenced lookup as the model credential so the two cannot disagree:
+            # the instant the token stops buying inference it also stops
+            # reaching tools.
+            "mcp_servers": list(row["mcp_servers"] or []),
             "budget_usd": float(row["budget_usd"]) if row["budget_usd"] is not None else None,
             "model": row["model"],
         }
@@ -1087,7 +1174,13 @@ class AgentJobStore:
         """Fetch one job by id."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"SELECT {_JOB_COLUMNS} FROM agent_jobs WHERE id = $1", job_id
+                f"""
+                SELECT {_QUALIFIED_JOB_COLUMNS}, t.pinned_at
+                FROM agent_jobs j
+                LEFT JOIN agent_threads t ON t.id = j.thread_id
+                WHERE j.id = $1
+                """,
+                job_id,
             )
         return _job_row_to_dict(row) if row else None
 
@@ -1099,20 +1192,24 @@ class AgentJobStore:
         archived: bool = False,
         repo: str | None = None,
     ) -> list[dict[str, Any]]:
-        """List a user's jobs from active or archived threads, newest first.
+        """List a user's jobs with pinned threads first, then newest first.
 
         ``repo`` narrows the page to one project, which is how the sidebar
         pages a single project past the global newest-first window.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT {_JOB_COLUMNS} FROM agent_jobs "
-                "WHERE user_id = $1 AND ($4::text IS NULL OR repo = $4) AND EXISTS ("
-                "    SELECT 1 FROM agent_threads t "
-                "    WHERE t.id = agent_jobs.thread_id AND t.user_id = $1 "
-                "      AND (($3 AND t.archived_at IS NOT NULL) "
-                "           OR (NOT $3 AND t.archived_at IS NULL))"
-                ") ORDER BY created_at DESC LIMIT $2",
+                f"""
+                SELECT {_QUALIFIED_JOB_COLUMNS}, t.pinned_at
+                FROM agent_jobs j
+                JOIN agent_threads t ON t.id = j.thread_id AND t.user_id = $1
+                WHERE j.user_id = $1
+                  AND ($4::text IS NULL OR j.repo = $4)
+                  AND (($3 AND t.archived_at IS NOT NULL)
+                       OR (NOT $3 AND t.archived_at IS NULL))
+                ORDER BY t.pinned_at DESC NULLS LAST, j.created_at DESC
+                LIMIT $2
+                """,
                 user_id,
                 limit,
                 archived,
@@ -1130,21 +1227,23 @@ class AgentJobStore:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT repo,
-                       COUNT(DISTINCT thread_id) AS task_count,
+                SELECT j.repo,
+                       COUNT(DISTINCT j.thread_id) AS task_count,
                        COUNT(*) FILTER (
-                           WHERE state IN ('queued', 'waiting', 'running', 'publishing')
+                           WHERE j.state IN ('queued', 'waiting', 'running', 'publishing')
                        ) AS active_count,
-                       MAX(created_at) AS last_activity_at
-                FROM agent_jobs
-                WHERE user_id = $1 AND EXISTS (
-                    SELECT 1 FROM agent_threads t
-                    WHERE t.id = agent_jobs.thread_id AND t.user_id = $1
-                      AND (($2 AND t.archived_at IS NOT NULL)
-                           OR (NOT $2 AND t.archived_at IS NULL))
-                )
-                GROUP BY repo
-                ORDER BY last_activity_at DESC
+                       MAX(j.created_at) AS last_activity_at,
+                       COUNT(DISTINCT j.thread_id) FILTER (
+                           WHERE t.pinned_at IS NOT NULL
+                       ) AS pinned_count,
+                       MAX(t.pinned_at) AS pinned_at
+                FROM agent_jobs j
+                JOIN agent_threads t ON t.id = j.thread_id AND t.user_id = $1
+                WHERE j.user_id = $1
+                  AND (($2 AND t.archived_at IS NOT NULL)
+                       OR (NOT $2 AND t.archived_at IS NULL))
+                GROUP BY j.repo
+                ORDER BY pinned_at DESC NULLS LAST, last_activity_at DESC
                 """,
                 user_id,
                 archived,
@@ -1155,6 +1254,8 @@ class AgentJobStore:
                 "task_count": int(row["task_count"]),
                 "active_count": int(row["active_count"]),
                 "last_activity_at": row["last_activity_at"],
+                "pinned_count": int(row["pinned_count"]),
+                "pinned_at": row["pinned_at"],
             }
             for row in rows
         ]
@@ -1189,6 +1290,162 @@ class AgentJobStore:
             return None
         return {"thread_id": row["thread_id"], "archived_at": row["archived_at"]}
 
+    async def set_thread_pinned(
+        self, *, job_id: str, user_id: str, pinned: bool
+    ) -> dict[str, Any] | None:
+        """Pin or unpin the owned thread containing ``job_id``."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE agent_threads t
+                SET pinned_at = CASE
+                    WHEN $3 THEN COALESCE(t.pinned_at, NOW())
+                    ELSE NULL
+                END
+                WHERE t.user_id = $2
+                  AND EXISTS (
+                      SELECT 1
+                      FROM agent_jobs j
+                      WHERE j.id = $1
+                        AND j.thread_id = t.id
+                        AND j.user_id = $2
+                  )
+                RETURNING t.id AS thread_id, t.pinned_at
+                """,
+                job_id,
+                user_id,
+                pinned,
+            )
+        if row is None:
+            return None
+        return {"thread_id": row["thread_id"], "pinned_at": row["pinned_at"]}
+
+    # ── Runner hosts ───────────────────────────────────────────────────
+    #
+    # The pool of machines that can run agent jobs, and which one currently
+    # does. Runners pull work, so the gateway cannot push a job at a chosen
+    # host; the only place "run agents over there now" can be decided is the
+    # claim. A host therefore enters the pool by polling, not by being
+    # registered — start a runner on a machine and it appears; stop it and the
+    # row goes stale — and switching hosts is a gate on that same poll.
+    #
+    # Recording happens before the gate, deliberately: an operator has to be
+    # able to see a host in order to switch to it, and a host that only became
+    # visible once it was already active could never be picked in the first
+    # place.
+
+    async def touch_runner_host(self, *, host: str | None, worker_id: str) -> None:
+        """Record a polling runner. ``None`` predates host reporting.
+
+        Deliberately not part of the claim's transaction: being visible in the
+        pool is not a decision, and holding a host row for the length of a
+        claim would make every poll contend with every other.
+        """
+        if not host:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO agent_runner_hosts (host, last_worker_id)
+                VALUES ($1, $2)
+                ON CONFLICT (host) DO UPDATE
+                SET last_seen_at = NOW(), last_worker_id = EXCLUDED.last_worker_id
+                """,
+                host,
+                worker_id,
+            )
+
+    async def active_runner_host(self) -> str | None:
+        """The pinned host, or ``None`` when any runner may claim."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval("SELECT active_host FROM agent_runner_policy WHERE id")
+
+    async def runner_pool(self) -> tuple[list[dict[str, Any]], str | None]:
+        """The pool and the pinned host, read together.
+
+        One transaction because the two are shown side by side: read
+        separately, a switch landing between them renders a page whose list and
+        whose header name different hosts, which reads as a bug in the thing
+        the operator is using to fix a bug.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            active = await conn.fetchval("SELECT active_host FROM agent_runner_policy WHERE id")
+            rows = await conn.fetch(
+                """
+                SELECT host, last_worker_id, first_seen_at, last_seen_at
+                FROM agent_runner_hosts
+                ORDER BY last_seen_at DESC
+                """
+            )
+        return [{**dict(row), "is_active": row["host"] == active} for row in rows], active
+
+    async def list_runner_hosts(self) -> list[dict[str, Any]]:
+        """Return every host seen polling, most recent poll first."""
+        hosts, _ = await self.runner_pool()
+        return hosts
+
+    async def set_active_runner_host(self, *, host: str | None) -> bool:
+        """Pin agent jobs to one host, or unpin with ``None``.
+
+        Returns ``False`` when ``host`` names a machine that has never polled —
+        pinning to one would park the queue on a host that may not exist, which
+        presents as "every job hangs" with nothing in the logs.
+
+        Takes the policy row exclusively *first*, then the host row it is about
+        to point at. Every writer here uses that order, and the claim takes the
+        policy row shared, so the paths serialize with no cycle to deadlock on:
+        a claim past its own read finishes before this commits, one that has
+        not reached it waits and then sees this value, and a concurrent removal
+        of the host being pinned cannot slip in between the check and the write.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT active_host FROM agent_runner_policy WHERE id FOR UPDATE")
+            # Checked before anything is written — and locked, not merely read:
+            # a bare existence check lets a concurrent removal commit before
+            # this does, leaving the queue pinned to a host that is gone.
+            if host is not None:
+                known = await conn.fetchval(
+                    "SELECT 1 FROM agent_runner_hosts WHERE host = $1 FOR SHARE", host
+                )
+                if not known:
+                    return False
+            # Upsert, not a bare UPDATE: against a database whose policy row is
+            # missing, an UPDATE touches nothing and still reports success —
+            # the switch would read as applied while the gate kept using the
+            # old value.
+            await conn.execute(
+                """
+                INSERT INTO agent_runner_policy (id, active_host) VALUES (TRUE, $1)
+                ON CONFLICT (id) DO UPDATE
+                SET active_host = EXCLUDED.active_host, updated_at = NOW()
+                """,
+                host,
+            )
+            return True
+
+    async def forget_runner_host(self, *, host: str) -> str:
+        """Drop a host from the pool. A runner still polling re-adds itself.
+
+        Returns ``"deleted"``, ``"active"`` (refused) or ``"unknown"``.
+
+        The active-host refusal lives here rather than in the caller because
+        checking there is a read the switch can outrun: the endpoint sees the
+        host idle, an admin pins it, and the delete then removes the row the
+        gate is pointing at — silently unpinning the deployment and handing
+        every machine the queue back. Same policy row, same order as the
+        switch, so the two serialize.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            active = await conn.fetchval(
+                "SELECT active_host FROM agent_runner_policy WHERE id FOR UPDATE"
+            )
+            if active == host:
+                return "active"
+            deleted = await conn.fetchval(
+                "DELETE FROM agent_runner_hosts WHERE host = $1 RETURNING host", host
+            )
+        return "deleted" if deleted is not None else "unknown"
+
     # ── Claim / lease ──────────────────────────────────────────────────
 
     async def claim_job(
@@ -1196,14 +1453,35 @@ class AgentJobStore:
         *,
         worker_id: str,
         lease_ttl_seconds: float,
+        host: str | None = None,
     ) -> dict[str, Any] | None:
         """Claim the oldest queued job, creating a new fenced attempt.
 
         Returns the job dict extended with ``attempt_id``, ``attempt_no`` and
         ``lease_generation``, or ``None`` when the queue is empty. Concurrent
         workers are safe via ``FOR UPDATE SKIP LOCKED``.
+
+        When an operator has pinned a host, a runner reporting any other one —
+        or none at all — claims nothing. Unpinned is the default and behaves as
+        it always has: whoever polls first takes the job.
+
+        The host check is the first statement of the *claiming* transaction and
+        takes the policy row shared, so it cannot be overtaken by a switch
+        committing between the check and the dequeue. Read on its own
+        connection, as it was, that window was real: the old host reads "still
+        me", the admin switches, and the machine the operator just moved away
+        from takes one more job while the page says the switch succeeded.
         """
+        await self.touch_runner_host(host=host, worker_id=worker_id)
         async with self._pool.acquire() as conn, conn.transaction():
+            active_host = await conn.fetchval(
+                "SELECT active_host FROM agent_runner_policy WHERE id FOR SHARE"
+            )
+            if active_host is not None and host != active_host:
+                # Fail closed, including for a runner that reports no host:
+                # leaving the machine an operator just switched away from able
+                # to claim is the one outcome that makes the switch a lie.
+                return None
             # Follow-ups may be submitted while a run is active. Promote only
             # those whose direct parent has settled; a chain therefore
             # advances one turn at a time even with multiple waiting messages.
@@ -1344,6 +1622,7 @@ class AgentJobStore:
                 """
                 UPDATE agent_jobs
                 SET state = CASE WHEN cancel_requested THEN 'cancelled' ELSE 'queued' END,
+                    terminal_resume_pending = cancel_requested,
                     current_attempt_id = NULL,
                     updated_at = NOW()
                 WHERE id = $1 AND current_attempt_id = $2 AND state = 'running'
@@ -1451,6 +1730,10 @@ class AgentJobStore:
                     "WHERE id = $1 AND status = 'running'",
                     attempt_id,
                 )
+                await conn.execute(
+                    "UPDATE agent_jobs SET terminal_resume_pending = FALSE WHERE id = $1",
+                    job_id,
+                )
                 has_patch = await conn.fetchval(
                     "SELECT EXISTS (SELECT 1 FROM agent_job_artifacts "
                     "WHERE job_id = $1 AND kind = 'patch')",
@@ -1497,6 +1780,17 @@ class AgentJobStore:
                 or attempt["expired"]
             ):
                 return None
+            phase = (payload or {}).get("phase") if event_type == "lifecycle" else None
+            if phase == "workspace_ready":
+                await conn.execute(
+                    "UPDATE agent_attempts SET terminal_ready = TRUE WHERE id = $1",
+                    attempt_id,
+                )
+            elif phase in {"workspace_preparing", "workspace_finalizing"}:
+                await conn.execute(
+                    "UPDATE agent_attempts SET terminal_ready = FALSE WHERE id = $1",
+                    attempt_id,
+                )
             return await self._insert_event(
                 conn,
                 job_id=attempt["job_id"],
@@ -1504,6 +1798,83 @@ class AgentJobStore:
                 event_type=event_type,
                 payload=payload,
             )
+
+    async def terminal_workspace_ready(self, *, attempt_id: int) -> bool:
+        """Return whether the live attempt currently permits terminal writes.
+
+        This is deliberately a primary-key lookup rather than an event-log
+        replay: terminal input is latency-sensitive and may arrive every few
+        milliseconds. Expired or superseded attempts are never considered
+        ready, even before the reaper updates the owning job row.
+        """
+        async with self._pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    """
+                    SELECT terminal_ready
+                    FROM agent_attempts
+                    WHERE id = $1
+                      AND status = 'running'
+                      AND lease_expires_at > NOW()
+                    """,
+                    attempt_id,
+                )
+            )
+
+    async def fence_terminal_workspace(
+        self,
+        *,
+        attempt_id: int,
+        lease_generation: int,
+    ) -> bool:
+        """Revoke readiness only for the still-live fenced attempt."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE agent_attempts
+                SET terminal_ready = FALSE
+                WHERE id = $1
+                  AND lease_generation = $2
+                  AND status = 'running'
+                  AND lease_expires_at > NOW()
+                """,
+                attempt_id,
+                lease_generation,
+            )
+        return result == "UPDATE 1"
+
+    async def list_terminal_resumes_pending(self, *, limit: int = 100) -> list[str]:
+        """List settled workspaces whose broker resume still needs confirmation."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id
+                FROM agent_jobs
+                WHERE terminal_resume_pending = TRUE
+                  AND state = ANY($1::text[])
+                ORDER BY updated_at
+                LIMIT $2
+                """,
+                list(TERMINAL_STATES),
+                limit,
+            )
+        return [row["id"] for row in rows]
+
+    async def mark_terminal_resume_complete(self, *, job_id: str) -> bool:
+        """Clear durable recovery state after the broker confirms a resume."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE agent_jobs
+                SET terminal_resume_pending = FALSE
+                WHERE id = $1
+                  AND terminal_resume_pending = TRUE
+                  AND state = ANY($2::text[])
+                """,
+                job_id,
+                list(TERMINAL_STATES),
+            )
+        return result == "UPDATE 1"
 
     async def list_events_after(
         self,
@@ -1677,7 +2048,7 @@ class AgentJobStore:
             if state in (WAITING, QUEUED):
                 await conn.execute(
                     "UPDATE agent_jobs SET state = 'cancelled', cancel_requested = TRUE, "
-                    "updated_at = NOW() WHERE id = $1",
+                    "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                     job_id,
                 )
                 await conn.execute(
@@ -1713,7 +2084,7 @@ class AgentJobStore:
             row = await conn.fetchrow(
                 """
                 SELECT j.id, j.thread_id, j.parent_job_id, j.user_id, j.repo, j.base_sha,
-                       j.task_prompt, a.content AS patch,
+                       j.task_prompt, j.metadata, a.content AS patch,
                        thread_publish.published_pr_url AS parent_pr_url
                 FROM agent_jobs j
                 JOIN agent_job_artifacts a
@@ -1758,6 +2129,10 @@ class AgentJobStore:
             "repo": row["repo"],
             "base_sha": row["base_sha"],
             "task_prompt": row["task_prompt"],
+            # Carries the branch the owner started from. The publisher targets
+            # its PR at that branch, so without it every PR went to the
+            # deployment default no matter what the job was pinned from.
+            "metadata": _load_json(row["metadata"]),
             "patch": row["patch"],
         }
 
@@ -1926,22 +2301,22 @@ class AgentJobStore:
                     action = FAILED
                     await conn.execute(
                         "UPDATE agent_jobs SET state = 'failed', detail = $2, "
-                        "updated_at = NOW() WHERE id = $1",
+                        "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                         job_id,
                         "publish attempt lease expired; manual review required",
                     )
                 elif row["cancel_requested"]:
                     action = CANCELLED
                     await conn.execute(
-                        "UPDATE agent_jobs SET state = 'cancelled', updated_at = NOW() "
-                        "WHERE id = $1",
+                        "UPDATE agent_jobs SET state = 'cancelled', "
+                        "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                         job_id,
                     )
                 elif await self._attempts_spent(conn, job_id) >= max_attempts:
                     action = FAILED
                     await conn.execute(
                         "UPDATE agent_jobs SET state = 'failed', detail = $2, "
-                        "updated_at = NOW() WHERE id = $1",
+                        "terminal_resume_pending = TRUE, updated_at = NOW() WHERE id = $1",
                         job_id,
                         f"exhausted {max_attempts} attempts (lease expired)",
                     )

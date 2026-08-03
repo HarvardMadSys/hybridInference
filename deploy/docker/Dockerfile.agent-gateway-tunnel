@@ -1,0 +1,23 @@
+# The fixed-destination hop that lets a runner host without a gateway still
+# give its sandboxes one — and only one — thing to talk to.
+#
+# Small on purpose: it sits on the closed agent network, so everything
+# installed here is something a sandbox can reach. openssh-client and a shell,
+# nothing else.
+FROM alpine:3.21
+
+RUN apk add --no-cache openssh-client
+
+COPY deploy/docker/agent-gateway-tunnel.sh /usr/local/bin/agent-gateway-tunnel
+RUN chmod +x /usr/local/bin/agent-gateway-tunnel
+
+# No HEALTHCHECK, deliberately. ssh already supervises itself here in ways this
+# image can rely on: ExitOnForwardFailure means it dies rather than sit there
+# having bound nothing, and the keepalives mean a peer that stops answering
+# ends the process. Both turn into a restart via the compose policy. A port
+# probe would need a TCP-testing tool in the image, and the only one available
+# in this base is BusyBox's nc, whose flags vary by build — a healthcheck that
+# is wrong about its own tooling reports a working tunnel as unhealthy forever.
+# What actually answers the question is `agent_remote_runner.sh check`, which
+# asks from inside the closed network where it matters.
+ENTRYPOINT ["/usr/local/bin/agent-gateway-tunnel"]

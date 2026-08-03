@@ -17,6 +17,7 @@ from serving.agent_jobs.runtimes import (
     ClaudeCodeRuntime,
     CodexRuntime,
     GenericRuntime,
+    KiloRuntime,
     OpencodeRuntime,
     PiRuntime,
     RuntimeMCPConfig,
@@ -147,6 +148,24 @@ def test_codex_prepare_and_config_target_the_gateway():
     assert argv[-1] == "do it"
 
 
+def test_codex_sandbox_mode_follows_the_backend_boundary():
+    """Only an outer sandbox may replace Codex's own workspace sandbox."""
+    runtime = CodexRuntime()
+    kwargs = {
+        "workdir": "/tmp/x",
+        "task_prompt": "do it",
+        "model": "glm-5.1",
+        "gateway_base_url": "http://localhost:8000",
+        "credential": "ajt.a.b",
+    }
+
+    process_argv, _ = runtime.prepare(**kwargs)
+    container_argv, _ = runtime.prepare(**kwargs, provides_isolation=True)
+
+    assert process_argv[process_argv.index("--sandbox") + 1] == "workspace-write"
+    assert container_argv[container_argv.index("--sandbox") + 1] == "danger-full-access"
+
+
 def test_codex_events_normalize():
     """Codex item events map onto the same normalized kinds."""
     runtime = CodexRuntime()
@@ -204,6 +223,7 @@ def test_registry_resolution_and_refusal():
     assert isinstance(get_runtime("codex"), CodexRuntime)
     assert isinstance(get_runtime("pi"), PiRuntime)
     assert isinstance(get_runtime("opencode"), OpencodeRuntime)
+    assert isinstance(get_runtime("kilo"), KiloRuntime)
     assert isinstance(
         get_runtime("some-new-cli", generic_command="some-new-cli run"), GenericRuntime
     )
@@ -250,16 +270,20 @@ def test_pi_runtime_targets_the_gateway_through_its_wrapper():
 @pytest.mark.parametrize(
     "runtime",
     [
-        ClaudeCodeRuntime(),
         CodexRuntime(),
         PiRuntime(),
         OpencodeRuntime(),
+        KiloRuntime(),
         GenericRuntime("some-agent {prompt}"),
     ],
-    ids=["claude", "codex", "pi", "opencode", "generic"],
+    ids=["codex", "pi", "opencode", "kilo", "generic"],
 )
-def test_mcp_config_fails_closed_until_the_gateway_broker_exists(runtime):
-    """No adapter may silently turn a requested server into direct MCP."""
+def test_mcp_config_fails_closed_without_a_gateway_broker(runtime):
+    """An adapter with no mediated path refuses rather than dropping servers.
+
+    ``ClaudeCodeRuntime`` is excluded because it now *has* that path; the
+    invariant it has to satisfy instead is the next test's.
+    """
     config = RuntimeMCPConfig(server_ids=("repository-supplied-server",))
 
     with pytest.raises(RuntimeMCPUnavailableError) as raised:
@@ -277,10 +301,34 @@ def test_mcp_config_fails_closed_until_the_gateway_broker_exists(runtime):
     assert "mcp-secret-must-not-leak" not in str(raised.value)
 
 
+def test_a_brokered_runtime_emits_only_gateway_endpoints_and_no_credential():
+    """The same rule, for the adapter that does resolve servers.
+
+    "Fails closed" was only ever a stand-in for this: a requested server must
+    not become direct MCP, and the credential must not become a CLI argument.
+    An adapter that gained a broker has to keep both, not inherit an exemption.
+    """
+    argv, env = ClaudeCodeRuntime().prepare(
+        workdir="/tmp/x",
+        task_prompt="do it",
+        model="glm-5.1",
+        gateway_base_url="http://backend:8080",
+        credential="mcp-secret-must-not-leak",
+        mcp_config=RuntimeMCPConfig(server_ids=("github",)),
+    )
+    rendered = " ".join(argv)
+
+    assert "mcp-secret-must-not-leak" not in rendered
+    assert env["AGENT_MCP_TOKEN"] == "mcp-secret-must-not-leak"
+    servers = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]
+    assert servers["github"]["url"] == "http://backend:8080/v1/agent/mcp/github"
+    assert "--strict-mcp-config" in argv
+
+
 @pytest.mark.parametrize(
     "runtime",
-    [ClaudeCodeRuntime(), CodexRuntime(), PiRuntime(), OpencodeRuntime()],
-    ids=["claude", "codex", "pi", "opencode"],
+    [ClaudeCodeRuntime(), CodexRuntime(), PiRuntime(), OpencodeRuntime(), KiloRuntime()],
+    ids=["claude", "codex", "pi", "opencode", "kilo"],
 )
 def test_runtime_credentials_stay_out_of_process_arguments(runtime):
     """The model-scoped token is environment-only, never argv/log material."""
@@ -325,6 +373,39 @@ def test_opencode_runtime_targets_the_gateway_through_its_wrapper():
     assert env["OPENAI_BASE_URL"] == "http://backend:8080/v1"
     assert env["OPENAI_API_KEY"] == "ajt.a.b"
     assert env["OPENCODE_GATEWAY_MODEL"] == "glm-5.1"
+    assert runtime.parse_event('{"type":"text"}').event_type == "raw"
+    assert runtime.capabilities().tier == 2
+
+
+def test_kilo_runtime_targets_the_gateway_through_its_wrapper():
+    """Kilo is invoked via the wrapper, with everything it needs.
+
+    Kilo's CLI is an OpenCode fork and inherits both gaps: OPENAI_BASE_URL is
+    ignored, and startup fetches the models.dev catalog. The wrapper declares
+    a chat-completions provider over the SDK package bundled in the binary,
+    disables that fetch, and additionally kills the fork's own phone-home
+    paths (PostHog, session ingest and share links to app.kilo.ai).
+    """
+    runtime = KiloRuntime()
+    argv, env = runtime.prepare(
+        workdir="/tmp/x",
+        task_prompt="fix the bug; then run tests",
+        model="glm-5.1",
+        gateway_base_url="http://backend:8080",
+        credential="ajt.a.b",
+    )
+
+    assert argv[0] == "kilo-freeinference"
+    assert runtime.binary == "kilo-freeinference"
+    assert "fix the bug; then run tests" in argv
+    # The model rides inside the provider-qualified -m argument.
+    assert argv[argv.index("-m") + 1] == "freeinference/glm-5.1"
+    # The sandbox is the boundary; an interactive permission gate inside it
+    # only guarantees the agent cannot do the work.
+    assert "--auto" in argv
+    assert env["OPENAI_BASE_URL"] == "http://backend:8080/v1"
+    assert env["OPENAI_API_KEY"] == "ajt.a.b"
+    assert env["KILO_GATEWAY_MODEL"] == "glm-5.1"
     assert runtime.parse_event('{"type":"text"}').event_type == "raw"
     assert runtime.capabilities().tier == 2
 

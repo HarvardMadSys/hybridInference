@@ -23,6 +23,37 @@ import type {
 import { toDisplayJob } from './adapt';
 import type { AgentJob } from './types';
 
+const ACTIVE_ATTEMPT_PHASES = new Set([
+  'started',
+  'checked_out',
+  'context_restored',
+  'setup',
+  'workspace_preparing',
+  'workspace_ready',
+  'workspace_finalizing',
+]);
+
+/** Apply one live attempt-state event to the cached owner-facing job row. */
+export function applyAgentLifecycleEvent(
+  current: AgentJobApi,
+  event: AgentJobEventApi,
+): AgentJobApi {
+  if (event.event_type === 'attempt_superseded') {
+    if (current.current_attempt_id !== event.attempt_id) return current;
+    return { ...current, state: 'queued', current_attempt_id: null };
+  }
+  if (event.event_type !== 'lifecycle') return current;
+  const phase = event.payload?.phase;
+  if (typeof phase !== 'string') return current;
+  if (ACTIVE_ATTEMPT_PHASES.has(phase)) {
+    return { ...current, state: 'running', current_attempt_id: event.attempt_id };
+  }
+  if (phase === 'publishing') {
+    return { ...current, state: 'publishing', current_attempt_id: event.attempt_id };
+  }
+  return current;
+}
+
 // Data hooks for the /agents surface.
 //
 // The API client and the adapter were both complete and tested while the UI
@@ -259,14 +290,7 @@ export function useAgentJob(jobId: string): {
         setEvents((current) => [...current, event]);
         // The stream is also the fastest authority for a waiting/queued child
         // becoming active; keep the status pill in step without polling.
-        if (event.event_type === 'lifecycle') {
-          const phase = event.payload?.phase;
-          if (phase === 'started' || phase === 'checked_out' || phase === 'setup') {
-            setApi((current) => (current ? { ...current, state: 'running' } : current));
-          } else if (phase === 'publishing') {
-            setApi((current) => (current ? { ...current, state: 'publishing' } : current));
-          }
-        }
+        setApi((current) => (current ? applyAgentLifecycleEvent(current, event) : current));
       },
       onFinished: () => reload(),
     }).catch(() => {

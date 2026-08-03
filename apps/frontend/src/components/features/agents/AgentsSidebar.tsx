@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/components/providers';
-import { archiveAgentJob } from '@/lib/api/agents';
+import { archiveAgentJob, pinAgentJob, unpinAgentJob } from '@/lib/api/agents';
 import { groupJobsByProject, projectLabel } from './conversations';
 import type { ConversationRow, ProjectSection } from './conversations';
 import { PaneResizer } from './PaneResizer';
@@ -68,6 +68,8 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
   const [hiddenThreads, setHiddenThreads] = useState<Set<string>>(new Set());
   const [archiving, setArchiving] = useState<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [pinning, setPinning] = useState<string | null>(null);
+  const [pinError, setPinError] = useState<string | null>(null);
   const [expandedOverrides, setExpandedOverrides] = useState<Record<string, boolean>>({});
   const [shownPerRepo, setShownPerRepo] = useState<Record<string, number>>({});
   const pane = useResizablePane({
@@ -189,6 +191,27 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
     }
   }
 
+  async function setConversationPinned(key: string, jobId: string, repo: string, pinned: boolean) {
+    setPinning(key);
+    setPinError(null);
+    try {
+      await (pinned ? pinAgentJob(jobId) : unpinAgentJob(jobId));
+      reload();
+      reloadProjects();
+      loadRepo(repo);
+    } catch (cause: unknown) {
+      setPinError(
+        cause instanceof Error
+          ? cause.message
+          : pinned
+            ? 'Could not pin the task.'
+            : 'Could not unpin the task.',
+      );
+    } finally {
+      setPinning(null);
+    }
+  }
+
   if (collapsed) return null;
 
   const busy = loading || projectsLoading;
@@ -198,17 +221,19 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
       <aside
         id="agents-sidebar"
         style={{ width: pane.width }}
-        className="flex shrink-0 flex-col bg-gray-50"
+        className="flex shrink-0 flex-col border-r border-gray-200/70 bg-gray-50/80"
       >
-        <div className="flex-1 overflow-y-auto px-3 py-3">
+        <div className="flex-1 overflow-y-auto px-3.5 py-4">
           <Link
             href="/agents"
-            className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium text-gray-700 hover:bg-gray-200/60 ${
-              pathname === '/agents' ? 'bg-gray-200/80 text-gray-900' : ''
+            className={`flex w-full items-center gap-2 rounded-lg border border-transparent px-2.5 py-2 text-[13px] font-medium transition-colors ${
+              pathname === '/agents'
+                ? 'border-crimson/10 bg-crimson/[0.06] text-crimson-dark'
+                : 'text-gray-700 hover:bg-white/80 hover:text-gray-900'
             }`}
           >
             <svg
-              className="h-4 w-4 text-gray-500"
+              className={`h-4 w-4 ${pathname === '/agents' ? 'text-crimson' : 'text-gray-500'}`}
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -236,7 +261,12 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
               {archiveError}
             </p>
           ) : null}
-          {!busy && !error && !archiveError && folders.length === 0 ? (
+          {pinError ? (
+            <p className="mt-2 px-2 text-[13px] text-red-600" role="alert">
+              {pinError}
+            </p>
+          ) : null}
+          {!busy && !error && !archiveError && !pinError && folders.length === 0 ? (
             <p className="mt-2 px-2 text-[13px] text-gray-400">No jobs yet.</p>
           ) : null}
 
@@ -258,14 +288,18 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
               error={errorRepos.get(folder.repo) ?? null}
               pathname={pathname}
               archiving={archiving}
+              pinning={pinning}
               onArchive={archiveConversation}
+              onSetPinned={setConversationPinned}
             />
           ))}
 
           <Link
             href="/agents/archived"
-            className={`mt-3 flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium hover:bg-gray-200/60 ${
-              pathname === '/agents/archived' ? 'bg-gray-200/80 text-gray-900' : 'text-gray-600'
+            className={`mt-4 flex items-center gap-2 rounded-lg border border-transparent px-2.5 py-2 text-[13px] font-medium transition-colors ${
+              pathname === '/agents/archived'
+                ? 'border-crimson/10 bg-crimson/[0.06] text-crimson-dark'
+                : 'text-gray-600 hover:bg-white/80 hover:text-gray-900'
             }`}
           >
             <svg
@@ -287,8 +321,10 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
 
           <Link
             href="/agents/integrations"
-            className={`mt-1 flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium hover:bg-gray-200/60 ${
-              pathname === '/agents/integrations' ? 'bg-gray-200/80 text-gray-900' : 'text-gray-600'
+            className={`mt-0.5 flex items-center gap-2 rounded-lg border border-transparent px-2.5 py-2 text-[13px] font-medium transition-colors ${
+              pathname === '/agents/integrations'
+                ? 'border-crimson/10 bg-crimson/[0.06] text-crimson-dark'
+                : 'text-gray-600 hover:bg-white/80 hover:text-gray-900'
             }`}
           >
             <svg
@@ -308,8 +344,8 @@ export function AgentsSidebar({ collapsed = false }: { collapsed?: boolean }) {
           </Link>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2.5 border-t border-gray-200 px-4 py-3">
-          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-crimson/10 text-[11px] font-semibold text-crimson">
+        <div className="flex shrink-0 items-center gap-2.5 border-t border-gray-200/80 bg-white/50 px-4 py-3">
+          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-crimson/[0.08] text-[11px] font-semibold text-crimson ring-1 ring-inset ring-crimson/10">
             {initialsOf(state.user?.user_name, state.user?.email)}
           </span>
           <span className="truncate text-[13px] font-medium text-gray-800">{displayName}</span>
@@ -331,7 +367,9 @@ function ProjectFolder({
   error,
   pathname,
   archiving,
+  pinning,
   onArchive,
+  onSetPinned,
 }: {
   section: ProjectSection;
   expanded: boolean;
@@ -343,61 +381,86 @@ function ProjectFolder({
   error: string | null;
   pathname: string;
   archiving: string | null;
+  pinning: string | null;
   onArchive: (key: string, jobId: string, jobIds: string[]) => void;
+  onSetPinned: (key: string, jobId: string, repo: string, pinned: boolean) => void;
 }) {
   const listId = `agents-project-${section.repo.replace(/[^A-Za-z0-9]/g, '-')}`;
   const visible = section.conversations.slice(0, shown);
   const hidden = section.conversations.length - visible.length;
 
   return (
-    <div className="mt-3">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        aria-controls={listId}
-        title={section.repo}
-        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[13px] font-medium text-gray-700 hover:bg-gray-200/60"
-      >
-        <svg
-          className={`h-3 w-3 shrink-0 text-gray-400 transition-transform ${
-            expanded ? 'rotate-90' : ''
-          }`}
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2.4}
-          aria-hidden="true"
+    <div className="mt-4">
+      <div className="group flex items-center gap-0.5">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-controls={listId}
+          title={section.repo}
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 py-2 text-left text-[13px] font-medium text-gray-700 transition-colors hover:bg-white/80 hover:text-gray-900"
         >
-          <path d="m9 6 6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-        <svg
-          className="h-4 w-4 shrink-0 text-gray-500"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.8}
-          aria-hidden="true"
+          <svg
+            className={`h-3 w-3 shrink-0 text-gray-400 transition-transform ${
+              expanded ? 'rotate-90' : ''
+            }`}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.4}
+            aria-hidden="true"
+          >
+            <path d="m9 6 6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <svg
+            className="h-4 w-4 shrink-0 text-gray-500"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+            aria-hidden="true"
+          >
+            <path
+              d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17V7.5Z"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          <span className="min-w-0 flex-1 truncate">{section.label}</span>
+          {/* A folded folder must still say it is hiding live work — the same
+              reason the rows carry status dots at all. */}
+          {!expanded && activeCount > 0 ? (
+            <span
+              className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-500"
+              aria-label={`${activeCount} running or queued`}
+            />
+          ) : null}
+        </button>
+        <Link
+          href={`/agents?repo=${encodeURIComponent(section.repo)}`}
+          aria-label={`New task in ${section.label}`}
+          title={`New task in ${section.label}`}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 opacity-70 transition hover:bg-white hover:text-gray-700 hover:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 group-hover:opacity-100"
         >
-          <path
-            d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17V7.5Z"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <span className="min-w-0 flex-1 truncate">{section.label}</span>
-        {/* A folded folder must still say it is hiding live work — the same
-            reason the rows carry status dots at all. */}
-        {!expanded && activeCount > 0 ? (
-          <span
-            className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-500"
-            aria-label={`${activeCount} running or queued`}
-          />
-        ) : null}
-      </button>
+          <svg
+            className="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+            aria-hidden="true"
+          >
+            <path
+              d="M13.5 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-7.5M16.5 3.5a2.12 2.12 0 0 1 3 3L11 15l-4 1 1-4 8.5-8.5Z"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </Link>
+      </div>
 
       {expanded ? (
-        <div id={listId} className="mt-0.5 space-y-0.5">
+        <div id={listId} className="mt-1 space-y-0.5">
           {visible.map(({ key, job, jobIds }: ConversationRow) => {
             const href = `/agents/${job.id}`;
             const isActive = jobIds.some((id) => pathname === `/agents/${id}`);
@@ -406,10 +469,10 @@ function ProjectFolder({
                 <Link
                   href={href}
                   title={`${job.repo} · ${job.title}`}
-                  className={`flex w-full items-center gap-2 rounded-md py-1.5 pl-4 pr-9 text-left text-[13px] ${
+                  className={`flex w-full items-center gap-2 rounded-lg border border-transparent py-1.5 pl-4 pr-16 text-left text-[13px] transition-colors ${
                     isActive
-                      ? 'bg-gray-200/80 font-medium text-gray-900'
-                      : 'text-gray-600 hover:bg-gray-200/60'
+                      ? 'border-gray-200/80 bg-white font-medium text-gray-900 shadow-subtle'
+                      : 'text-gray-600 hover:bg-white/70 hover:text-gray-900'
                   }`}
                 >
                   <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_CLASS[job.state]}`} />
@@ -417,11 +480,40 @@ function ProjectFolder({
                 </Link>
                 <button
                   type="button"
+                  aria-label={`${job.pinnedAt ? 'Unpin' : 'Pin'} ${job.title}`}
+                  aria-pressed={Boolean(job.pinnedAt)}
+                  aria-busy={pinning === key}
+                  title={job.pinnedAt ? 'Unpin task' : 'Pin task'}
+                  disabled={pinning === key || archiving === key}
+                  onClick={() => onSetPinned(key, job.id, job.repo, !job.pinnedAt)}
+                  className={`absolute right-7 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 disabled:cursor-wait disabled:opacity-60 ${
+                    job.pinnedAt
+                      ? 'opacity-100'
+                      : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+                  } ${pinning === key ? 'animate-pulse' : ''}`}
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill={job.pinnedAt ? 'currentColor' : 'none'}
+                    stroke="currentColor"
+                    strokeWidth={1.8}
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="m15 4 5 5-3.5 1.5-4 4L13 19l-1 1-3.5-4.5-4.5-3.5 1-1 4.5.5 4-4L15 4ZM5 19l4-4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+                <button
+                  type="button"
                   aria-label={`Archive ${job.title}`}
                   title="Archive task"
-                  disabled={archiving === key}
+                  disabled={archiving === key || pinning === key}
                   onClick={() => onArchive(key, job.id, jobIds)}
-                  className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-gray-500 opacity-0 transition hover:bg-gray-300/70 hover:text-gray-800 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 disabled:cursor-wait disabled:opacity-60 group-hover:opacity-100 group-focus-within:opacity-100"
+                  className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-gray-500 opacity-0 transition hover:bg-gray-100 hover:text-gray-800 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-crimson/30 disabled:cursor-wait disabled:opacity-60 group-hover:opacity-100 group-focus-within:opacity-100"
                 >
                   <svg
                     className="h-4 w-4"
@@ -454,7 +546,7 @@ function ProjectFolder({
             <button
               type="button"
               onClick={onShowMore}
-              className="w-full rounded-md px-4 py-1 text-left text-[12px] text-gray-400 hover:bg-gray-200/60 hover:text-gray-600"
+              className="w-full rounded-md px-4 py-1.5 text-left text-[12px] text-gray-400 transition-colors hover:bg-white/70 hover:text-gray-600"
             >
               Show {hidden} more
             </button>

@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1.7
+#
+# The allowlist proxy for the Trusted egress tier (issue #1041).
+#
+# This container is the only thing on the sandbox's setup network with a route
+# to the internet. The network itself is `internal: true`, so this is not a
+# policy the sandbox is asked to respect — it is the only door in the room.
+#
+# It holds no credentials and mounts no socket. Its whole job is to accept
+# CONNECT for a host on the generated allowlist and refuse everything else,
+# which is why it is a separate image from the runner: the runner is trusted
+# and holds the dispatcher token, and nothing that talks to an untrusted
+# sandbox should share an image with it.
+#
+# The configuration is NOT baked in. It is rendered by
+# `serving.agent_jobs.egress_proxy` into a volume this container reads at
+# start, because the allowlist is deployment configuration and rendering it
+# there is what runs the validation that keeps a hostile value out of a config
+# file. See docker-compose.agent-runner.yml.
+
+FROM debian:bookworm-slim
+
+# Squid from the distribution, so security updates arrive with the base image.
+# The tag pins a major version; a production deployment should pin the base by
+# digest as well.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        squid \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# `-k parse` first: a config Squid rejects should say so on the first line of
+# this container's logs, not present as "the proxy is unreachable" three layers
+# away in a runner's preflight. `&&` means a rejected config never reaches the
+# run step.
+#
+# Then `-N` to stay in the foreground (the container *is* the supervisor) and
+# `-f` to use the generated file rather than the package's default config,
+# which permits far more than this deployment intends.
+#
+# No fallback to /etc/squid/squid.conf if the generated file is missing: this
+# must fail rather than quietly start an allow-by-default proxy on the
+# sandbox's network.
+CMD ["/bin/sh", "-c", "squid -k parse -f /etc/squid/generated/squid.conf && exec squid -N -f /etc/squid/generated/squid.conf"]

@@ -23,7 +23,7 @@ const TIER_LABELS: Record<string, string> = {
   full: 'Open',
 };
 
-export function TaskComposer() {
+export function TaskComposer({ initialRepo }: { initialRepo?: string }) {
   const router = useRouter();
   const [task, setTask] = useState('');
   const [config, setConfig] = useState<AgentConfigApi | null>(null);
@@ -48,7 +48,9 @@ export function TaskComposer() {
         const modelIds = cfg.models ?? [];
         setConfig(cfg);
         setModels(modelIds);
-        setRepo(cfg.repos[0] ?? '');
+        setRepo(
+          initialRepo && cfg.repos.includes(initialRepo) ? initialRepo : (cfg.repos[0] ?? ''),
+        );
         setRuntime(cfg.runtimes[0] ?? '');
         setModel(modelIds[0] ?? '');
       })
@@ -61,7 +63,7 @@ export function TaskComposer() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [initialRepo]);
 
   // Branches follow the selected repository, so they reload when it changes.
   useEffect(() => {
@@ -118,16 +120,18 @@ export function TaskComposer() {
 
   if (loading) {
     return (
-      <section className="mx-auto w-full max-w-2xl px-6 pt-24">
+      <section className="mx-auto w-full max-w-3xl px-6 pt-28">
         <p className="text-center text-sm text-gray-500">Loading…</p>
       </section>
     );
   }
 
   return (
-    <section className="mx-auto w-full max-w-2xl px-6 pb-16 pt-24">
-      <h1 className="text-center text-2xl font-bold text-gray-900">What should the agent do?</h1>
-      <p className="mt-1.5 text-center text-sm text-gray-500">
+    <section className="mx-auto w-full max-w-3xl px-6 pb-20 pt-28">
+      <h1 className="text-center text-[28px] font-semibold tracking-[-0.025em] text-gray-950">
+        What should the agent do?
+      </h1>
+      <p className="mt-2 text-center text-sm leading-relaxed text-gray-500">
         Runs in an isolated sandbox. No credentials inside — the output is a draft PR.
       </p>
 
@@ -139,10 +143,10 @@ export function TaskComposer() {
 
       <div
         aria-disabled={disconnected || undefined}
-        className={`rounded-2xl shadow-sm ring-1 ring-gray-200 ${
+        className={`rounded-xl border border-gray-200/90 shadow-[0_14px_40px_-28px_rgba(17,24,39,0.5)] transition ${
           disconnected
             ? 'mt-4 bg-gray-50'
-            : 'mt-8 bg-white focus-within:ring-2 focus-within:ring-gray-300'
+            : 'mt-8 bg-white focus-within:border-crimson/30 focus-within:ring-4 focus-within:ring-crimson/[0.05]'
         }`}
       >
         <textarea
@@ -155,10 +159,10 @@ export function TaskComposer() {
               ? 'Connect GitHub to describe a task'
               : 'Describe a task… e.g. Fix the SSE total-timeout regression on /v1/messages and add a unit test'
           }
-          className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-5 pt-4 text-[15px] leading-relaxed placeholder:text-gray-400 focus:outline-none focus:ring-0 disabled:cursor-not-allowed"
+          className="w-full resize-none rounded-t-xl border-0 bg-transparent px-5 pb-2 pt-4 text-[15px] leading-relaxed text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-0 disabled:cursor-not-allowed"
         />
 
-        <div className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3.5 py-2.5">
+        <div className="flex flex-wrap items-center gap-2 border-t border-gray-100/90 px-3.5 py-2.5">
           {disconnected ? (
             <span className="inline-flex min-w-0 flex-1 items-center gap-2 text-[13px] text-gray-400">
               <svg
@@ -201,8 +205,8 @@ export function TaskComposer() {
             type="button"
             disabled={!canRun}
             onClick={() => void run()}
-            className={`ml-auto inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white ${
-              canRun ? 'hover:bg-gray-800' : 'cursor-not-allowed opacity-60'
+            className={`ml-auto inline-flex items-center gap-1.5 rounded-lg bg-crimson px-3.5 py-1.5 text-[13px] font-medium text-white shadow-sm transition-colors ${
+              canRun ? 'hover:bg-crimson-dark' : 'cursor-not-allowed opacity-60'
             }`}
           >
             {submitting ? 'Starting…' : 'Run'}
@@ -229,7 +233,7 @@ export function TaskComposer() {
           a fixed "$2.00" the composer never sent — it is a backend cap, not a
           choice made on this screen, so it belongs on the job instead. */}
       {config?.github_connected && config.agent_egress_tier ? (
-        <p className="mt-3 text-center text-[12px] text-gray-400">
+        <p className="mt-3 text-center text-[12px] text-gray-500">
           Network: setup {TIER_LABELS[config.setup_egress_tier ?? ''] ?? config.setup_egress_tier} ·
           agent {TIER_LABELS[config.agent_egress_tier] ?? config.agent_egress_tier}
         </p>

@@ -45,8 +45,11 @@ export interface AgentJobApi {
   detail: string | null;
   budget_usd: number | null;
   metadata: Record<string, unknown> | null;
+  /** Names only; optional so a pre-MCP deployment stays readable. */
+  mcp_servers?: string[];
   created_at: string | null;
   updated_at: string | null;
+  pinned_at?: string | null;
   // Read server-side from the billing ledger, never from the agent's own
   // report. Null means "no ledger configured", which is not the same as zero.
   spent_usd: number | null;
@@ -141,10 +144,23 @@ export interface AgentConfigApi {
   /** Models an agent job can actually call — the create endpoint's own list. */
   models: string[];
   default_budget_usd: number;
+  /** MCP servers this deployment offers. Never carries a URL or a credential. */
+  mcp_servers?: AgentMcpServerApi[];
+  /** Runtimes that can be given MCP servers; others refuse such a job. */
+  mcp_runtimes?: string[];
   setup_egress_tier: string | null;
   agent_egress_tier: string | null;
   github_connected: boolean;
   github_install_url: string | null;
+}
+
+export interface AgentMcpServerApi {
+  name: string;
+  description: string;
+  /** Tools exposed. Empty means every tool the server offers. */
+  tools: string[];
+  /** Applied when a job does not choose its servers explicitly. */
+  default: boolean;
 }
 
 /** What this deployment will actually accept — the source for the pickers. */
@@ -286,6 +302,8 @@ export interface AgentProjectApi {
   /** Non-terminal jobs, so a collapsed project can still show live work. */
   active_count: number;
   last_activity_at: string | null;
+  pinned_count?: number;
+  pinned_at?: string | null;
 }
 
 /**
@@ -329,6 +347,28 @@ export async function restoreAgentJob(jobId: string): Promise<AgentThreadArchive
       method: 'DELETE',
     },
   );
+  return jsonOrThrow(resp);
+}
+
+export interface AgentThreadPinApi {
+  thread_id: string;
+  pinned: boolean;
+  pinned_at: string | null;
+}
+
+/** Keep the entire conversation containing this job at the top of task history. */
+export async function pinAgentJob(jobId: string): Promise<AgentThreadPinApi> {
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/jobs/${encodeURIComponent(jobId)}/pin`, {
+    method: 'POST',
+  });
+  return jsonOrThrow(resp);
+}
+
+/** Return a pinned conversation to normal activity ordering. */
+export async function unpinAgentJob(jobId: string): Promise<AgentThreadPinApi> {
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/jobs/${encodeURIComponent(jobId)}/pin`, {
+    method: 'DELETE',
+  });
   return jsonOrThrow(resp);
 }
 

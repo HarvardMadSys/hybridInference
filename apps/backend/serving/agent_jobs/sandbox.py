@@ -35,6 +35,7 @@ import struct
 import subprocess
 import termios
 import threading
+import time
 import tty
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -47,12 +48,49 @@ from serving.agent_jobs.egress import (
     EgressTier,
     build_policy_from_env,
 )
+from serving.agent_jobs.egress_proxy import CANARY_HOST
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 logger = get_logger(__name__)
+
+# Run inside one throwaway sandbox container on the agent phase's own network,
+# with $1 = the URL to probe and $2 = its hostname. Prints exactly one verdict.
+#
+# curl and python3 are both in the shipped sandbox image; a deployment-owned
+# image might have neither, and "dns-only" says so rather than letting a
+# weaker check pass for the same thing. Any HTTP status counts as reachable —
+# the question is whether packets arrive, not what the gateway makes of them.
+_GATEWAY_PROBE_SH = """
+url="$1"; host="$2"
+if command -v curl >/dev/null 2>&1; then
+    # Captured immediately: after an `if`, $? is the compound statement's own
+    # status, not curl's, and every failure would read as the same verdict.
+    curl -sS -o /dev/null --max-time 15 "$url"; rc=$?
+    # 6 is curl's "could not resolve host"; everything else got that far.
+    if [ "$rc" -eq 0 ]; then echo ok
+    elif [ "$rc" -eq 6 ]; then echo unresolved
+    else echo unreachable; fi
+    exit 0
+fi
+if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import socket, sys, urllib.error, urllib.request
+try:
+    urllib.request.urlopen(sys.argv[1], timeout=15)
+except urllib.error.HTTPError:
+    print("ok")
+except urllib.error.URLError as exc:
+    print("unresolved" if isinstance(exc.reason, socket.gaierror) else "unreachable")
+except Exception:
+    print("unreachable")
+else:
+    print("ok")' "$url"
+    exit 0
+fi
+if getent hosts "$host" >/dev/null 2>&1; then echo dns-only; else echo unresolved; fi
+"""
 
 # There is no default image, deliberately. Upstream publishes none, and an
 # unqualified name is not an inert placeholder: `docker run hybridinference/
@@ -158,6 +196,14 @@ class TerminalProcess(ABC):
     def resize(self, rows: int, cols: int) -> None:
         """Resize the terminal window."""
 
+    def suspend(self) -> None:
+        """Pause the terminal's complete process hierarchy."""
+        raise TerminalNotSupportedError("this terminal backend cannot suspend process trees")
+
+    def resume(self) -> None:
+        """Resume a terminal process hierarchy paused by :meth:`suspend`."""
+        raise TerminalNotSupportedError("this terminal backend cannot resume process trees")
+
     @abstractmethod
     def kill(self) -> None:
         """Terminate the terminal and its complete process hierarchy."""
@@ -171,6 +217,22 @@ class SandboxBackend(ABC):
     """Creates isolated execution environments for agent jobs."""
 
     name: str = "abstract"
+
+    @property
+    def provides_isolation(self) -> bool:
+        """Whether this backend supplies the agent's execution boundary.
+
+        The process backend runs the CLI directly, so a runtime's own sandbox
+        remains the only command boundary. Container backends isolate the
+        complete CLI already; asking a nested Linux sandbox to create another
+        user namespace is both redundant and incompatible with the outer
+        container's dropped capabilities.
+        """
+        return False
+
+    def sandbox_metadata(self) -> dict[str, str]:
+        """Return trusted, owner-visible metadata for this execution backend."""
+        return {"sandbox_backend": self.name}
 
     @abstractmethod
     def spawn(self, spec: SandboxSpec) -> SandboxProcess:
@@ -363,6 +425,7 @@ class _ContainerTerminalProcess(TerminalProcess):
         self._state_lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._killed = False
+        self._suspended = False
 
     def chunks(self) -> Iterator[bytes]:
         """Yield the raw combined PTY stream from Docker."""
@@ -424,6 +487,40 @@ class _ContainerTerminalProcess(TerminalProcess):
         if result.returncode != 0:
             raise SandboxError("terminal cannot be resized: " + result.stderr.strip()[:200])
 
+    def _set_suspended(self, suspended: bool) -> None:
+        """Pause or resume the named container with input serialized around it."""
+        action = "pause" if suspended else "unpause"
+        with self._state_lock, self._write_lock:
+            if self._killed or self._process.poll() is not None:
+                return
+            if self._suspended is suspended:
+                return
+            try:
+                result = subprocess.run(
+                    [self._docker_binary, action, self._container_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise SandboxError(f"terminal cannot be {action}d") from exc
+            stderr = result.stderr.strip()
+            already_stopped = any(
+                message in stderr.lower() for message in ("is not running", "no such container")
+            )
+            if result.returncode != 0 and not already_stopped:
+                raise SandboxError(f"terminal cannot be {action}d: " + result.stderr.strip()[:200])
+            self._suspended = suspended
+
+    def suspend(self) -> None:
+        """Freeze the complete container process tree without closing its PTY."""
+        self._set_suspended(True)
+
+    def resume(self) -> None:
+        """Resume a container previously frozen for workspace coordination."""
+        self._set_suspended(False)
+
     def kill(self) -> None:
         """Kill the named container and confirm both sides are gone.
 
@@ -475,25 +572,34 @@ class _ContainerTerminalProcess(TerminalProcess):
                     except subprocess.TimeoutExpired:
                         pass
 
-            # ``docker kill`` can race container creation or a natural exit.
-            # Once the client is gone, force-remove either confirms deletion or
-            # confirms that the server-generated name no longer exists.
-            try:
-                removed = subprocess.run(
-                    [self._docker_binary, "rm", "--force", self._container_name],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
+            # ``docker kill`` can race container creation, natural exit, or
+            # ``docker run --rm`` removing the container asynchronously. Retry
+            # only that known transitional response; every other failure still
+            # retains the session so a later kill can confirm cleanup.
+            for attempt in range(20):
+                try:
+                    removed = subprocess.run(
+                        [self._docker_binary, "rm", "--force", self._container_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    raise SandboxError("terminal container cleanup could not be confirmed") from exc
+                stderr = removed.stderr.lower()
+                missing = "no such container" in stderr
+                if removed.returncode == 0 or missing:
+                    break
+                removal_in_progress = (
+                    "removal of container" in stderr and "is already in progress" in stderr
                 )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise SandboxError("terminal container cleanup could not be confirmed") from exc
-            missing = "no such container" in removed.stderr.lower()
-            if removed.returncode != 0 and not missing:
-                raise SandboxError(
-                    "terminal container cleanup could not be confirmed: "
-                    + removed.stderr.strip()[:200]
-                )
+                if not removal_in_progress or attempt == 19:
+                    raise SandboxError(
+                        "terminal container cleanup could not be confirmed: "
+                        + removed.stderr.strip()[:200]
+                    )
+                time.sleep(0.05)
             if not client_stopped or self._process.poll() is None:
                 raise SandboxError("terminal Docker client could not be stopped")
             self._close_input()
@@ -558,6 +664,21 @@ class ContainerBackend(SandboxBackend):
         # starts. The ephemeral value prevents accidental broad cleanup if a
         # backend is constructed outside that broker-owned lifecycle.
         self._terminal_owner_id = "unscoped-" + secrets.token_hex(12)
+
+    @property
+    def provides_isolation(self) -> bool:
+        """The disposable container, not the agent CLI, is the boundary."""
+        return True
+
+    def sandbox_metadata(self) -> dict[str, str]:
+        """Describe the concrete container image and optional VM runtime."""
+        metadata = {
+            "sandbox_backend": self.name,
+            "sandbox_image": self.image,
+        }
+        if self.runtime:
+            metadata["sandbox_runtime"] = self.runtime
+        return metadata
 
     @property
     def is_vm_isolated(self) -> bool:
@@ -747,25 +868,130 @@ class ContainerBackend(SandboxBackend):
         if self.egress is None:
             self._check_one_network(self.network)
             return
+        probed: set[EgressTier] = set()
         for phase in PHASES:
             tier = self.egress.tier_for(phase)
             try:
                 network = self.egress.network_for(phase)
             except EgressPolicyError:
                 # A phase whose tier names no network cannot run. That is only
-                # fatal for a phase this runner actually spawns — the setup
-                # phase does not exist yet, and refusing to start over a
-                # capability nothing uses would be a startup failure with no
-                # cause an operator could act on. It still fails loudly at
-                # spawn if a phase is ever added without configuring it.
+                # fatal for a phase this runner actually spawns: a job with no
+                # setup script never enters the setup phase, and refusing to
+                # start over a capability this deployment does not use would be
+                # a startup failure with no cause an operator could act on. It
+                # still fails loudly at spawn, with this same error.
                 if phase == "agent":
                     raise
                 continue
-            # Trusted and custom tiers are allowlist-fronted by construction;
-            # asserting `internal` on them would be wrong. Full is already
-            # gated behind the acknowledgement in build_policy_from_env.
-            if tier is EgressTier.PLATFORM_ONLY:
+            # Trusted runs on a network with no route of its own, exactly like
+            # the closed tier: the *proxy* has the second leg, not the network.
+            # This used to exempt it as "allowlist-fronted by construction",
+            # which was an assumption about a network nobody checked — pointing
+            # AGENT_EGRESS_NETWORK_TRUSTED at the default bridge passed
+            # preflight in silence and gave the setup phase the whole internet.
+            #
+            # Custom stays exempt, and deliberately: it exists for a deployment
+            # whose own gateway filters transparently, which needs a routable
+            # network. Demanding `internal` there would force the operator to
+            # set AGENT_SANDBOX_ALLOW_OPEN_NETWORK, which silences this check
+            # for *every* tier including the closed one. Full is exempt because
+            # it is already gated behind that same acknowledgement.
+            if tier in (EgressTier.PLATFORM_ONLY, EgressTier.TRUSTED):
                 self._check_one_network(network)
+            # Probed only for the tier whose proxy we render the config for. A
+            # custom proxy refuses in whatever way its operator chose — a drop
+            # rather than a 403, say — and reading that as "not enforcing"
+            # would refuse to start a deployment that is working correctly.
+            if tier is EgressTier.TRUSTED and tier not in probed:
+                probed.add(tier)
+                self._check_proxy_denies_unlisted(phase=phase, network=network)
+
+    def _check_proxy_denies_unlisted(self, *, phase: str, network: str) -> None:
+        """Refuse to start if the tier's proxy is not actually enforcing.
+
+        A proxy that answers but allows everything is the worst outcome
+        available here: the tier reads as "allowlisted" in every log and
+        config, the network is internal exactly as designed, and the sandbox
+        still reaches the whole internet. Nothing downstream would notice,
+        which is the same shape as the Kata runtime silently degrading to a
+        shared kernel — so it is checked the same way, by observing the
+        behaviour rather than trusting the configuration.
+
+        The probe asks for a host that cannot be allowlisted and cannot exist
+        (RFC 2606 ``.invalid``), so it never leaves the host even when it
+        passes, and it distinguishes the three outcomes that matter: refused by
+        the proxy, unable to reach the proxy at all, or served.
+
+        **Both paths are probed, and the CONNECT one is why.** A cleartext
+        request alone proves very little here: this deployment's own config
+        denies plain HTTP outright, so a proxy that refused cleartext while
+        tunnelling CONNECT to anywhere would answer 403 and pass — with every
+        HTTPS destination in the world still reachable, which is the whole of
+        what a package manager (or an exfiltration attempt) actually uses.
+        ``%{http_connect}`` reports the proxy's answer to the CONNECT itself,
+        as distinct from whatever happens inside the tunnel.
+        """
+        env = self.egress.sandbox_env(phase) if self.egress else {}
+        argv = [self.docker_binary, "run", "--rm", "--network", network]
+        # Under the runtime jobs will actually use. The bind probe learned this
+        # the hard way: probing under the daemon's default while the shipped
+        # backend is kata validates a configuration nobody runs.
+        if self.runtime:
+            argv += ["--runtime", self.runtime]
+        for key, value in sorted(env.items()):
+            argv += ["--env", f"{key}={value}"]
+        argv += [
+            "--entrypoint",
+            "/bin/sh",
+            self.image,
+            "-c",
+            # curl reads the proxy out of the environment above, which is the
+            # exact mechanism a setup script will use — a `--proxy` flag here
+            # would test a path no real job takes. Both stderrs are left alone
+            # on purpose: "Failed to connect to ... port 3128" is the
+            # diagnostic the unreachable branch below reports.
+            f"plain=$(curl -sS -o /dev/null -w '%{{http_code}}' --max-time 10 "
+            f"http://{CANARY_HOST}/ || true); "
+            f"tunnel=$(curl -sS -o /dev/null -w '%{{http_connect}}' --max-time 10 "
+            f"https://{CANARY_HOST}/ || true); "
+            'echo "$plain $tunnel"',
+        ]
+        try:
+            # Matches the bind probe's budget: on a host that has not pulled
+            # the sandbox image yet, this is the call that pulls it.
+            probe = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SandboxError(
+                f"the egress proxy for the {phase} phase could not be probed: {exc}"
+            ) from exc
+        answered = probe.stdout.strip().splitlines()[-1].split() if probe.stdout.strip() else []
+        plain, tunnel = [*answered, "", ""][:2]
+        # `0` is what %{http_connect} reports when no CONNECT was ever answered.
+        no_answer = {"", "0", "000"}
+        if plain == "403" and tunnel == "403":
+            return
+        if plain in no_answer and tunnel in no_answer:
+            # Fatal, even though an unreachable proxy leaves the sandbox *more*
+            # closed rather than less: it means this deployment's setup tier is
+            # broken, and one startup failure is how an operator learns that
+            # instead of one confusing job failure per user. The way out is
+            # named, because otherwise it holds up jobs that never install
+            # anything.
+            raise SandboxError(
+                f"the {phase} phase's egress proxy is unreachable from network {network!r}. "
+                "Every dependency install would fail with a connection error. Check that "
+                "the proxy service is running and on that network "
+                f"(docker: {probe.stderr.strip()[:200]}). If this deployment does not need "
+                "dependency installation, set AGENT_EGRESS_SETUP_TIER=platform_only."
+            )
+        refused = "CONNECT" if tunnel == "403" else "cleartext"
+        raise SandboxError(
+            f"the {phase} phase's egress proxy answered {plain!r} (cleartext) and "
+            f"{tunnel!r} (CONNECT) for {CANARY_HOST}, which is on no allowlist and does "
+            f"not exist — so it refuses {refused} and lets the other through. The sandbox "
+            "can reach the internet while the configuration says otherwise. Check the "
+            "proxy's generated configuration."
+        )
 
     def _check_one_network(self, network: str) -> None:
         """Refuse to start unless the sandbox network denies egress by default.
@@ -827,42 +1053,88 @@ class ContainerBackend(SandboxBackend):
         broken model rather than a network that was never going to work.
 
         Probed rather than inferred: one container on the phase's real network,
-        asking whether the host resolves. A heuristic on the URL would be wrong
-        for every deployment that does route out.
+        making a real request. A heuristic on the URL would be wrong for every
+        deployment that does route out.
+
+        The request matters, not just the name. This used to resolve DNS and
+        stop there, which passes for anything with a DNS record — including a
+        relay container that answers to the name and cannot reach the gateway
+        behind it. That is precisely the shape a cross-machine deployment has,
+        so the one topology needing the check hardest was the one it could not
+        see. Any HTTP response counts, 404 and 401 included: the question is
+        whether packets get there, not what the gateway thinks of them.
         """
         from urllib.parse import urlparse
 
-        host = (urlparse(base_url).hostname or "").strip()
+        parsed = urlparse(base_url)
+        host = (parsed.hostname or "").strip()
         if not host:
             return
         network = self.network_for_phase("agent")
+        probe_url = f"{base_url.rstrip('/').removesuffix('/v1')}/health"
+        argv = [self.docker_binary, "run", "--rm", "--network", network]
+        # Probe under the runtime jobs will actually use. Otherwise a Kata
+        # deployment could pass a runc-based probe while every real sandbox
+        # still fails at spawn.
+        if self.runtime:
+            argv += ["--runtime", self.runtime]
+        argv += [
+            "--entrypoint",
+            "/bin/sh",
+            self.image,
+            "-c",
+            _GATEWAY_PROBE_SH,
+            "sh",
+            probe_url,
+            host,
+        ]
         probe = subprocess.run(
-            [
-                self.docker_binary,
-                "run",
-                "--rm",
-                "--network",
-                network,
-                "--entrypoint",
-                "/bin/sh",
-                self.image,
-                "-c",
-                f"getent hosts {shlex.quote(host)} >/dev/null 2>&1",
-            ],
+            argv,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=90,
             check=False,
         )
-        if probe.returncode != 0:
-            raise SandboxError(
-                f"the sandbox network {network!r} cannot resolve {host!r}, the gateway "
-                "the agent is told to call. Every job would fail at its first model "
-                "call. A closed `platform_only` network only works when the gateway is "
-                "on it (the compose `backend` service); for a remote gateway use a "
-                "network that routes to it (AGENT_EGRESS_AGENT_TIER=custom with "
-                "AGENT_EGRESS_NETWORK_CUSTOM)."
+        verdict = (probe.stdout or "").strip().splitlines()
+        outcome = verdict[-1] if verdict else ""
+        if outcome == "ok":
+            return
+        if outcome == "dns-only":
+            # A custom sandbox image with neither curl nor python3. Resolving
+            # is all that can be asked of it; say so rather than let the log
+            # imply the stronger check ran.
+            logger.warning(
+                "agent_sandbox_gateway_probe_degraded",
+                extra={
+                    "event": "agent_sandbox_gateway_probe_degraded",
+                    "detail": (
+                        f"{self.image!r} has neither curl nor python3, so the gateway "
+                        f"check for {probe_url!r} confirmed DNS only; a relay that "
+                        "resolves but cannot forward would still pass"
+                    ),
+                },
             )
+            return
+        detail = {
+            "unresolved": (
+                f"cannot resolve {host!r}. A closed `platform_only` network only works "
+                "when the gateway is on it (the compose `backend` service); for a "
+                "gateway on another machine, put a relay for it on this network or give "
+                "the agent phase a network that routes there (AGENT_EGRESS_AGENT_TIER="
+                "custom with AGENT_EGRESS_NETWORK_CUSTOM)."
+            ),
+        }.get(
+            outcome,
+            (
+                f"resolves {host!r} but no HTTP response came back from {probe_url!r}. "
+                "Something answers to the name and cannot reach the gateway behind it — "
+                "a relay whose upstream is down, or a port nothing is listening on."
+            ),
+        )
+        raise SandboxError(
+            f"the sandbox network {network!r} {detail} Every job would fail at its "
+            "first model call."
+        )
 
     def _check_bind_mountable(self, workdir_root: str) -> None:
         """Fail startup if the daemon cannot bind-mount the job workdir root."""
@@ -955,7 +1227,14 @@ class ContainerBackend(SandboxBackend):
         ]
         if self.runtime:
             argv += ["--runtime", self.runtime]
-        for key, value in sorted(spec.env.items()):
+        env = dict(spec.env)
+        if self.egress is not None:
+            # Policy last. A job's own environment must not be able to unset
+            # the proxy its phase is required to use — and the setup phase in
+            # particular arrives here with an empty env, so this is where the
+            # proxy reaches it at all.
+            env.update(self.egress.sandbox_env(spec.phase))
+        for key, value in sorted(env.items()):
             argv += ["--env", f"{key}={value}"]
         argv += self.extra_args
         argv.append(self.image)

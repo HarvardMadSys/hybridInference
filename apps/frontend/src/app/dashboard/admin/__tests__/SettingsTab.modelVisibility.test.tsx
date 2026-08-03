@@ -10,14 +10,15 @@ vi.mock('@/lib/api/admin', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/admin')>('@/lib/api/admin');
   return {
     ...actual,
-    // SettingsTab also mounts AlertSnoozeSection and
-    // UsageInsightsSettingsSection, which fetch on mount. Unmocked they reach
+    // SettingsTab also mounts AlertSnoozeSection, UsageInsightsSettingsSection
+    // and AgentRunnerHostSection, which fetch on mount. Unmocked they reach
     // the real gateway (see vitest.setup.ts).
     // SettingsTab issues these reads on mount regardless of which tab
     // the test exercises; unmocked they reach the real gateway.
     listModelConcurrency: vi.fn(async () => ({ models: [] })),
     listRoutewiseSettings: vi.fn(async () => ({ settings: [] })),
     listRouteWeights: vi.fn(async () => []),
+    getAgentRunnerHosts: vi.fn(async () => ({ hosts: [], active_host: null })),
     getAlertSnooze: vi.fn(async () => ({
       snoozed: false,
       snooze_until: null,

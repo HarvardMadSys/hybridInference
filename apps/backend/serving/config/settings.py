@@ -68,6 +68,16 @@ class Settings(BaseSettings):
     # entry so probing varied passwords cannot bypass the limit.
     login_rate_limit_per_15min: int = 5
     login_rate_limit_per_hour_per_ip: int = 20
+    # Auto-block a source IP at the API-key auth layer after repeated auth
+    # failures. Once an IP (IPv6 bucketed to /64) reaches
+    # auth_failure_block_threshold failures within auth_failure_block_window_sec,
+    # it is refused for auth_failure_block_duration_sec. In-memory and
+    # per-process, like the login/signup limiters above. Defaults: 200 failures
+    # in a day → blocked for a day.
+    auth_failure_block_enabled: bool = True
+    auth_failure_block_threshold: int = 200
+    auth_failure_block_window_sec: int = 86400
+    auth_failure_block_duration_sec: int = 86400
 
     # Cloudflare Turnstile (signup captcha)
     turnstile_site_key: str = ""
@@ -145,6 +155,14 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices(
             "ROUTING_CONFIG_PATH", "ROUTING_CONFIG", "routing_config_path"
         ),
+    )
+    # The deployment's MCP server registry (serving.agent_jobs.mcp_registry).
+    # Empty, and a path that does not exist, both mean "no MCP servers" — the
+    # neutral upstream ships none, and an agent job without tools is a
+    # supported shape rather than a broken one.
+    mcp_config_path: str = Field(
+        default="",
+        validation_alias=AliasChoices("MCP_CONFIG_PATH", "MCP_CONFIG", "mcp_config_path"),
     )
 
     # Distribution manifest (serving.config.distribution). Empty path = pure

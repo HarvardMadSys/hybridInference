@@ -18,6 +18,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.agent_jobs import terminal_coordination
 from serving.agent_jobs.tokens import mint_worker_token
 from serving.servers.deps import get_agent_job_store
 from serving.servers.routers import agent_jobs as agent_jobs_router
@@ -37,8 +38,12 @@ class FakeAgentJobStore:
         self.artifacts: dict[tuple[str, str], dict[str, Any]] = {}
         self.messages: list[dict[str, Any]] = []
         self.archived_threads: dict[str, datetime] = {}
+        self.pinned_threads: dict[str, datetime] = {}
         self.live_fence: tuple[int, int] | None = None
+        self.terminal_readiness: dict[int, bool] = {}
         self.released: list[tuple[str, int]] = []
+        self.runner_hosts: dict[str, dict[str, Any]] = {}
+        self.active_host: str | None = None
         self._next_event_id = 1
         self._next_job = 1
 
@@ -54,6 +59,7 @@ class FakeAgentJobStore:
             "turn_no": 1,
             "state": "queued",
             "cancel_requested": False,
+            "terminal_resume_pending": False,
             "current_attempt_id": None,
             "published_pr_url": None,
             "published_commit_sha": None,
@@ -127,12 +133,14 @@ class FakeAgentJobStore:
                 else "waiting"
             ),
             "cancel_requested": False,
+            "terminal_resume_pending": False,
             "current_attempt_id": None,
             "published_pr_url": None,
             "published_commit_sha": None,
             "detail": None,
             "created_at": None,
             "updated_at": None,
+            "pinned_at": self.pinned_threads.get(parent["thread_id"]),
         }
         self.jobs[job_id] = job
         self.messages.append(
@@ -178,6 +186,7 @@ class FakeAgentJobStore:
                     else "cancelled"
                 ),
                 "cancel_requested": False,
+                "terminal_resume_pending": False,
                 "current_attempt_id": None,
                 "published_pr_url": None,
                 "fork_source_job_id": turn["id"],
@@ -235,7 +244,11 @@ class FakeAgentJobStore:
             return None
         thread_id = job["thread_id"]
         jobs = sorted(
-            (item for item in self.jobs.values() if item["thread_id"] == thread_id),
+            (
+                {**item, "pinned_at": self.pinned_threads.get(thread_id)}
+                for item in self.jobs.values()
+                if item["thread_id"] == thread_id
+            ),
             key=lambda item: item["turn_no"],
         )
         return {
@@ -270,7 +283,7 @@ class FakeAgentJobStore:
             artifact["content"]
             if artifact
             and parent
-            and parent["state"] in {"succeeded", "publishing"}
+            and parent["state"] in {"succeeded", "publishing", "cancelled"}
             and not parent.get("published_commit_sha")
             else None
         )
@@ -280,13 +293,16 @@ class FakeAgentJobStore:
             if (
                 source is not None
                 and source_artifact
-                and source["state"] in {"succeeded", "publishing"}
+                and source["state"] in {"succeeded", "publishing", "cancelled"}
             ):
                 patch = source_artifact["content"]
         return {"messages": messages, "patch": patch}
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
-        return self.jobs.get(job_id)
+        job = self.jobs.get(job_id)
+        if job is None:
+            return None
+        return {**job, "pinned_at": self.pinned_threads.get(job["thread_id"])}
 
     async def list_jobs(
         self,
@@ -296,13 +312,23 @@ class FakeAgentJobStore:
         archived: bool = False,
         repo: str | None = None,
     ) -> list[dict[str, Any]]:
-        return [
-            job
+        jobs = [
+            {**job, "pinned_at": self.pinned_threads.get(job["thread_id"])}
             for job in self.jobs.values()
             if job["user_id"] == user_id
             and (job["thread_id"] in self.archived_threads) is archived
             and (repo is None or job["repo"] == repo)
-        ][:limit]
+        ]
+        minimum = datetime.min.replace(tzinfo=timezone.utc)
+        jobs.sort(
+            key=lambda job: (
+                job["pinned_at"] is not None,
+                job["pinned_at"] or minimum,
+                job.get("created_at") or minimum,
+            ),
+            reverse=True,
+        )
+        return jobs[:limit]
 
     async def list_projects(self, *, user_id: str, archived: bool = False) -> list[dict[str, Any]]:
         projects: dict[str, dict[str, Any]] = {}
@@ -318,13 +344,22 @@ class FakeAgentJobStore:
                     "task_count": 0,
                     "active_count": 0,
                     "last_activity_at": None,
+                    "pinned_count": 0,
+                    "pinned_at": None,
                     "_threads": set(),
+                    "_pinned_threads": set(),
                 },
             )
             project["_threads"].add(job["thread_id"])
             project["task_count"] = len(project["_threads"])
             if job["state"] in {"queued", "waiting", "running", "publishing"}:
                 project["active_count"] += 1
+            pinned_at = self.pinned_threads.get(job["thread_id"])
+            if pinned_at is not None:
+                project["_pinned_threads"].add(job["thread_id"])
+                project["pinned_count"] = len(project["_pinned_threads"])
+                if project["pinned_at"] is None or pinned_at > project["pinned_at"]:
+                    project["pinned_at"] = pinned_at
             created = job.get("created_at")
             if created is not None and (
                 project["last_activity_at"] is None or created > project["last_activity_at"]
@@ -332,10 +367,14 @@ class FakeAgentJobStore:
                 project["last_activity_at"] = created
         for project in projects.values():
             project.pop("_threads")
+            project.pop("_pinned_threads")
+        minimum = datetime.min.replace(tzinfo=timezone.utc)
         return sorted(
             projects.values(),
             key=lambda project: (
-                project["last_activity_at"] or datetime.min.replace(tzinfo=timezone.utc)
+                project["pinned_at"] is not None,
+                project["pinned_at"] or minimum,
+                project["last_activity_at"] or minimum,
             ),
             reverse=True,
         )
@@ -354,6 +393,20 @@ class FakeAgentJobStore:
             archived_at = None
         return {"thread_id": thread_id, "archived_at": archived_at}
 
+    async def set_thread_pinned(
+        self, *, job_id: str, user_id: str, pinned: bool
+    ) -> dict[str, Any] | None:
+        job = self.jobs.get(job_id)
+        if job is None or job["user_id"] != user_id:
+            return None
+        thread_id = job["thread_id"]
+        if pinned:
+            pinned_at = self.pinned_threads.setdefault(thread_id, datetime.now(timezone.utc))
+        else:
+            self.pinned_threads.pop(thread_id, None)
+            pinned_at = None
+        return {"thread_id": thread_id, "pinned_at": pinned_at}
+
     async def request_cancel(self, *, job_id: str, user_id: str | None = None) -> str | None:
         job = self.jobs.get(job_id)
         if job is None or (user_id is not None and job["user_id"] != user_id):
@@ -361,6 +414,7 @@ class FakeAgentJobStore:
         job["cancel_requested"] = True
         if job["state"] in {"queued", "waiting"}:
             job["state"] = "cancelled"
+            job["terminal_resume_pending"] = True
         return job["state"]
 
     async def list_events_after(
@@ -370,6 +424,30 @@ class FakeAgentJobStore:
             event for event in self.events if event["job_id"] == job_id and event["id"] > after_id
         ][:limit]
 
+    async def terminal_workspace_ready(self, *, attempt_id: int) -> bool:
+        return self.terminal_readiness.get(attempt_id, False)
+
+    async def fence_terminal_workspace(self, *, attempt_id: int, lease_generation: int) -> bool:
+        if not self._fenced(attempt_id, lease_generation):
+            return False
+        self.terminal_readiness[attempt_id] = False
+        return True
+
+    async def list_terminal_resumes_pending(self, *, limit: int = 100) -> list[str]:
+        return [
+            job["id"]
+            for job in self.jobs.values()
+            if job["terminal_resume_pending"]
+            and job["state"] in {"succeeded", "failed", "cancelled"}
+        ][:limit]
+
+    async def mark_terminal_resume_complete(self, *, job_id: str) -> bool:
+        job = self.jobs[job_id]
+        if not job["terminal_resume_pending"]:
+            return False
+        job["terminal_resume_pending"] = False
+        return True
+
     async def get_artifact(self, *, job_id: str, kind: str) -> dict[str, Any] | None:
         return self.artifacts.get((job_id, kind))
 
@@ -377,7 +455,53 @@ class FakeAgentJobStore:
     def _fenced(self, attempt_id: int, lease_generation: int) -> bool:
         return self.live_fence == (attempt_id, lease_generation)
 
-    async def claim_job(self, *, worker_id: str, lease_ttl_seconds: float) -> dict[str, Any] | None:
+    async def touch_runner_host(self, *, host: str | None, worker_id: str) -> None:
+        if not host:
+            return
+        now = datetime.now(timezone.utc)
+        entry = self.runner_hosts.setdefault(
+            host,
+            {
+                "host": host,
+                "last_worker_id": worker_id,
+                "first_seen_at": now,
+                "last_seen_at": now,
+            },
+        )
+        entry["last_seen_at"] = now
+        entry["last_worker_id"] = worker_id
+
+    async def active_runner_host(self) -> str | None:
+        return self.active_host
+
+    async def runner_pool(self) -> tuple[list[dict[str, Any]], str | None]:
+        rows = sorted(
+            (
+                {**entry, "is_active": entry["host"] == self.active_host}
+                for entry in self.runner_hosts.values()
+            ),
+            key=lambda e: e["last_seen_at"],
+            reverse=True,
+        )
+        return rows, self.active_host
+
+    async def set_active_runner_host(self, *, host: str | None) -> bool:
+        if host is not None and host not in self.runner_hosts:
+            return False
+        self.active_host = host
+        return True
+
+    async def forget_runner_host(self, *, host: str) -> str:
+        if host == self.active_host:
+            return "active"
+        return "deleted" if self.runner_hosts.pop(host, None) is not None else "unknown"
+
+    async def claim_job(
+        self, *, worker_id: str, lease_ttl_seconds: float, host: str | None = None
+    ) -> dict[str, Any] | None:
+        await self.touch_runner_host(host=host, worker_id=worker_id)
+        if self.active_host is not None and host != self.active_host:
+            return None
         queued = [job for job in self.jobs.values() if job["state"] == "queued"]
         if not queued:
             return None
@@ -385,6 +509,7 @@ class FakeAgentJobStore:
         job["state"] = "running"
         job["current_attempt_id"] = 100
         self.live_fence = (100, 1)
+        self.terminal_readiness[100] = False
         return {**job, "attempt_id": 100, "attempt_no": 1, "lease_generation": 1}
 
     async def heartbeat(
@@ -422,6 +547,11 @@ class FakeAgentJobStore:
         }
         self._next_event_id += 1
         self.events.append(event)
+        phase = (payload or {}).get("phase") if event_type == "lifecycle" else None
+        if phase == "workspace_ready":
+            self.terminal_readiness[attempt_id] = True
+        elif phase in {"workspace_preparing", "workspace_finalizing"}:
+            self.terminal_readiness[attempt_id] = False
         if event_type == "message" and isinstance((payload or {}).get("text"), str):
             self.messages.append(
                 {
@@ -467,6 +597,8 @@ class FakeAgentJobStore:
         if job["state"] not in from_states:
             return False
         job["state"] = to_state
+        if to_state in {"succeeded", "failed", "cancelled"}:
+            job["terminal_resume_pending"] = False
         job["detail"] = detail
         # Mirrors the store's COALESCE: a worker may fill in a base the job
         # lacked, never overwrite one the owner pinned.
@@ -742,6 +874,80 @@ async def test_archive_and_restore_filter_the_entire_thread_without_cancelling(
     assert (await client.get("/v1/agent/jobs?archived=true")).json() == {"jobs": []}
     active_jobs = (await client.get("/v1/agent/jobs")).json()["jobs"]
     assert {job["id"] for job in active_jobs} == {parent_id, child_id}
+
+
+async def test_pin_and_unpin_are_thread_scoped_idempotent_and_reorder_lists(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """Any turn pins the conversation and its project without touching run state."""
+    parent_id = await _create_job(client)
+    follow_up = await client.post(
+        f"/v1/agent/jobs/{parent_id}/follow-ups",
+        json={"prompt": "also update the docs"},
+    )
+    child_id = follow_up.json()["id"]
+    thread_id = follow_up.json()["thread_id"]
+    newer = await store.create_job(
+        user_id=_OWNER,
+        repo="owner/newer",
+        task_prompt="newer task",
+        runtime="claude-code",
+        model="glm-5.1",
+    )
+    newer_id = newer["id"]
+    store.jobs[parent_id]["created_at"] = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    store.jobs[child_id]["created_at"] = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    store.jobs[newer_id]["created_at"] = datetime(2026, 7, 3, tzinfo=timezone.utc)
+    store.jobs[parent_id]["state"] = "running"
+
+    pinned = await client.post(f"/v1/agent/jobs/{child_id}/pin")
+
+    assert pinned.status_code == 200
+    assert pinned.json()["thread_id"] == thread_id
+    assert pinned.json()["pinned"] is True
+    assert pinned.json()["pinned_at"] is not None
+    pinned_again = await client.post(f"/v1/agent/jobs/{parent_id}/pin")
+    assert pinned_again.json() == pinned.json()
+    assert store.jobs[parent_id]["state"] == "running"
+    assert store.jobs[parent_id]["cancel_requested"] is False
+
+    jobs = (await client.get("/v1/agent/jobs")).json()["jobs"]
+    assert [job["id"] for job in jobs[:2]] == [child_id, parent_id]
+    assert jobs[0]["pinned_at"] == jobs[1]["pinned_at"] == pinned.json()["pinned_at"]
+    assert jobs[2]["id"] == newer_id
+    projects = (await client.get("/v1/agent/projects")).json()["projects"]
+    assert [project["repo"] for project in projects] == ["owner/name", "owner/newer"]
+    assert projects[0]["pinned_count"] == 1
+    assert projects[0]["pinned_at"] == pinned.json()["pinned_at"]
+
+    unpinned = await client.delete(f"/v1/agent/jobs/{parent_id}/pin")
+
+    assert unpinned.json() == {
+        "thread_id": thread_id,
+        "pinned": False,
+        "pinned_at": None,
+    }
+    jobs = (await client.get("/v1/agent/jobs")).json()["jobs"]
+    assert jobs[0]["id"] == newer_id
+    assert all(job["pinned_at"] is None for job in jobs)
+    projects = (await client.get("/v1/agent/projects")).json()["projects"]
+    assert [project["repo"] for project in projects] == ["owner/newer", "owner/name"]
+
+
+async def test_follow_up_response_inherits_the_thread_pin(
+    client: AsyncClient,
+):
+    """A new turn reports the conversation state without waiting for a list refresh."""
+    parent_id = await _create_job(client)
+    pinned = await client.post(f"/v1/agent/jobs/{parent_id}/pin")
+
+    follow_up = await client.post(
+        f"/v1/agent/jobs/{parent_id}/follow-ups",
+        json={"prompt": "also update the docs"},
+    )
+
+    assert follow_up.status_code == 201
+    assert follow_up.json()["pinned_at"] == pinned.json()["pinned_at"]
 
 
 async def test_follow_up_is_a_durable_waiting_turn_with_parent_context(
@@ -1178,6 +1384,10 @@ async def test_other_users_jobs_are_404_not_403(client: AsyncClient, store: Fake
         assert archive.status_code == 404
         missing = await method("/v1/agent/jobs/ajob_missing/archive")
         assert missing.status_code == 404
+        pin = await method(f"/v1/agent/jobs/{foreign['id']}/pin")
+        assert pin.status_code == 404
+        missing_pin = await method("/v1/agent/jobs/ajob_missing/pin")
+        assert missing_pin.status_code == 404
 
 
 async def test_workspace_files_merge_pinned_base_and_changed_snapshot(
@@ -1398,6 +1608,18 @@ class _TerminalSessionBroker:
         self.calls.append(("list", workspace_id))
         return {"terminals": [_terminal_session_descriptor()]}
 
+    async def suspend_terminals(self, workspace_id: str, *, lease_generation: int):
+        self.calls.append(("suspend_all", workspace_id, lease_generation))
+        return {"ok": True}
+
+    async def resume_terminals(self, workspace_id: str, *, lease_generation: int):
+        self.calls.append(("resume_all", workspace_id, lease_generation))
+        return {"ok": True}
+
+    async def resume_settled_terminals(self, workspace_id: str):
+        self.calls.append(("resume_settled", workspace_id))
+        return {"ok": True}
+
     async def stream_terminal(self, workspace_id: str, terminal_id: str, *, after: int):
         self.calls.append(("stream", workspace_id, terminal_id, after))
         return self.stream
@@ -1462,7 +1684,7 @@ async def test_interactive_terminal_routes_proxy_owner_session_lifecycle(
 async def test_terminal_controls_use_the_attached_session_capability(
     store: FakeAgentJobStore, monkeypatch
 ):
-    """Typing and resize stay local instead of enumerating GitHub per keypress."""
+    """Attached PTY controls skip entitlement and never replay the event log."""
     broker = _TerminalSessionBroker()
     monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
 
@@ -1474,11 +1696,23 @@ async def test_terminal_controls_use_the_attached_session_capability(
         "_require_workspace_entitlement",
         unexpected_entitlement_recheck,
     )
+
+    async def unexpected_event_query(**_kwargs):
+        raise AssertionError("terminal input must use the attempt readiness field")
+
+    monkeypatch.setattr(store, "list_events_after", unexpected_event_query)
     app = _build_app(store)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as local_client:
         job_id = await _create_job(local_client)
-        store.jobs[job_id]["state"] = "succeeded"
+        claimed = await store.claim_job(worker_id="worker-1", lease_ttl_seconds=60)
+        assert claimed is not None
+        await store.append_event(
+            attempt_id=claimed["attempt_id"],
+            lease_generation=claimed["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
         wrote = await local_client.post(
             f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
             json={"data": "eA=="},
@@ -1505,6 +1739,11 @@ async def test_interactive_terminal_stream_is_relayed_byte_for_byte(
     """Output and exit SSE frames cross the gateway without re-encoding."""
     broker = _TerminalSessionBroker()
     monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+
+    async def unexpected_event_query(**_kwargs):
+        raise AssertionError("attached terminal streams must not query lifecycle events")
+
+    monkeypatch.setattr(store, "list_events_after", unexpected_event_query)
     app = _build_app(store)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as local_client:
@@ -1524,24 +1763,67 @@ async def test_interactive_terminal_stream_is_relayed_byte_for_byte(
     assert broker.stream.closed is True
 
 
-async def test_terminal_creation_input_and_resize_require_a_settled_job(
+async def test_full_terminal_lifecycle_is_available_while_agent_runs(
     store: FakeAgentJobStore, monkeypatch
 ):
-    """A user cannot race an agent by opening or mutating a PTY while it runs."""
+    """PTY creation waits for checkout, then stays available during the run."""
     broker = _TerminalSessionBroker()
     monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
     app = _build_app(store)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as local_client:
         job_id = await _create_job(local_client)
-        store.jobs[job_id]["state"] = "running"
+        queued_create = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+        queued_list = await local_client.get(f"/v1/agent/jobs/{job_id}/terminals")
+
+        claimed = await store.claim_job(worker_id="worker-1", lease_ttl_seconds=60)
+        assert claimed is not None
+        early_create = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+        early_list = await local_client.get(f"/v1/agent/jobs/{job_id}/terminals")
+
+        event_id = await store.append_event(
+            attempt_id=claimed["attempt_id"],
+            lease_generation=claimed["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
+        assert event_id is not None
         create = await local_client.post(
             f"/v1/agent/jobs/{job_id}/terminals",
             json={"rows": 24, "cols": 80},
         )
-        write = await local_client.post(
+        write_before_retry = await local_client.post(
             f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
             json={"data": "bHMK"},
+        )
+        store.jobs[job_id]["state"] = "queued"
+        write_while_requeued = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "cHdkCg=="},
+        )
+        store.jobs[job_id]["state"] = "running"
+        store.jobs[job_id]["current_attempt_id"] = 101
+        store.live_fence = (101, 2)
+        write_while_preparing = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "cHdkCg=="},
+        )
+        retry_event_id = await store.append_event(
+            attempt_id=101,
+            lease_generation=2,
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
+        assert retry_event_id is not None
+        write_after_retry = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "cHdkCg=="},
         )
         resize = await local_client.post(
             f"/v1/agent/jobs/{job_id}/terminals/term_1/resize",
@@ -1551,17 +1833,278 @@ async def test_terminal_creation_input_and_resize_require_a_settled_job(
         killed_once = await local_client.delete(f"/v1/agent/jobs/{job_id}/terminals/term_1")
         killed_twice = await local_client.delete(f"/v1/agent/jobs/{job_id}/terminals/term_1")
 
-    for response in (create, write, resize):
+    for response in (queued_create, queued_list, early_create, early_list):
         assert response.status_code == 409
-        assert response.json()["detail"]["error"]["type"] == "terminal_not_ready"
+        assert response.json()["detail"]["error"]["type"] == "workspace_not_ready"
+    for response in (write_while_requeued, write_while_preparing):
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"]["type"] == "workspace_not_ready"
+    for response in (
+        create,
+        write_before_retry,
+        write_after_retry,
+        resize,
+        listed,
+        killed_once,
+        killed_twice,
+    ):
+        assert response.status_code == 200
+    assert create.json()["state"] == "running"
+    assert write_before_retry.json()["state"] == "running"
+    assert write_after_retry.json()["state"] == "running"
+    assert resize.json()["rows"] == 30
+    assert resize.json()["cols"] == 100
     assert listed.status_code == 200
-    assert killed_once.status_code == 200
-    assert killed_twice.status_code == 200
+    assert listed.json() == {"terminals": [_terminal_session_descriptor()]}
+    assert killed_once.json()["state"] == "closed"
+    assert killed_twice.json()["state"] == "closed"
     assert broker.calls == [
+        ("create", job_id, 24, 80),
+        ("input", job_id, "term_1", "bHMK"),
+        ("input", job_id, "term_1", "cHdkCg=="),
+        ("resize", job_id, "term_1", 30, 100),
         ("list", job_id),
         ("delete", job_id, "term_1"),
         ("delete", job_id, "term_1"),
     ]
+
+
+async def test_worker_suspends_terminals_around_protected_workspace_phases(
+    store: FakeAgentJobStore, monkeypatch
+):
+    """Preparation and capture pause PTYs; execution and settled jobs resume them."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        claim = await local_client.post(
+            "/v1/agent/worker/claim",
+            json={"worker_id": "worker-1"},
+        )
+        auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+
+        preparing = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/suspend",
+            json={"phase": "workspace_preparing"},
+            headers=auth,
+        )
+        resumed = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/resume",
+            headers=auth,
+        )
+        input_during_run = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "eA=="},
+        )
+        finalizing = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/suspend",
+            json={"phase": "workspace_finalizing"},
+            headers=auth,
+        )
+        input_during_capture = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "eA=="},
+        )
+        finished = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/finish",
+            json={"state": "succeeded"},
+            headers=auth,
+        )
+        input_after_finish = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals/term_1/input",
+            json={"data": "eA=="},
+        )
+
+    assert preparing.status_code == 200
+    assert resumed.status_code == 200
+    assert input_during_run.status_code == 200
+    assert finalizing.status_code == 200
+    assert input_during_capture.status_code == 409
+    assert finished.status_code == 200
+    assert input_after_finish.status_code == 200
+    assert broker.calls == [
+        ("suspend_all", job_id, 1),
+        ("resume_all", job_id, 1),
+        ("input", job_id, "term_1", "eA=="),
+        ("suspend_all", job_id, 1),
+        ("resume_all", job_id, 1),
+        ("input", job_id, "term_1", "eA=="),
+    ]
+
+
+async def test_settled_terminal_access_replays_durable_resume_after_restart(
+    store: FakeAgentJobStore,
+    monkeypatch,
+):
+    """The first owner access repairs a persisted resume missed before restart."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    monkeypatch.setattr(terminal_coordination, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        store.jobs[job_id]["state"] = "cancelled"
+        store.jobs[job_id]["terminal_resume_pending"] = True
+        response = await local_client.get(f"/v1/agent/jobs/{job_id}/terminals")
+
+    assert response.status_code == 200
+    assert broker.calls == [
+        ("resume_settled", job_id),
+        ("list", job_id),
+    ]
+    assert store.jobs[job_id]["terminal_resume_pending"] is False
+
+
+async def test_worker_re_suspends_terminals_if_ready_event_loses_lease(
+    store: FakeAgentJobStore,
+    monkeypatch,
+):
+    """A lease expiring during broker resume cannot expose background processes."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        claim = await local_client.post(
+            "/v1/agent/worker/claim",
+            json={"worker_id": "worker-1"},
+        )
+        auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+        await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/suspend",
+            json={"phase": "workspace_preparing"},
+            headers=auth,
+        )
+
+        async def lose_lease_before_ready(**_kwargs):
+            store.live_fence = None
+            return None
+
+        monkeypatch.setattr(store, "append_event", lose_lease_before_ready)
+        response = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/resume",
+            headers=auth,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"]["type"] == "lease_lost"
+    assert broker.calls == [
+        ("suspend_all", job_id, 1),
+        ("resume_all", job_id, 1),
+        ("suspend_all", job_id, 1),
+    ]
+
+
+async def test_worker_re_suspends_terminals_if_finish_loses_lease(
+    store: FakeAgentJobStore,
+    monkeypatch,
+):
+    """A failed terminal transition compensates after broker resume."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        claim = await local_client.post(
+            "/v1/agent/worker/claim",
+            json={"worker_id": "worker-1"},
+        )
+        auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+        await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/terminals/suspend",
+            json={"phase": "workspace_finalizing"},
+            headers=auth,
+        )
+
+        async def lose_lease_before_finish(**_kwargs):
+            store.live_fence = None
+            return False
+
+        monkeypatch.setattr(store, "transition", lose_lease_before_finish)
+        response = await local_client.post(
+            f"/v1/agent/worker/jobs/{job_id}/finish",
+            json={"state": "succeeded"},
+            headers=auth,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"]["type"] == "lease_lost"
+    assert broker.calls == [
+        ("suspend_all", job_id, 1),
+        ("resume_all", job_id, 1),
+        ("suspend_all", job_id, 1),
+    ]
+
+
+async def test_terminal_readiness_ignores_ready_event_from_superseded_attempt(
+    store: FakeAgentJobStore, monkeypatch
+):
+    """A retry must finish its own workspace preparation before terminals open."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(agent_jobs_router, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        claimed = await store.claim_job(worker_id="worker-1", lease_ttl_seconds=60)
+        assert claimed is not None
+        event_id = await store.append_event(
+            attempt_id=claimed["attempt_id"],
+            lease_generation=claimed["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
+        assert event_id is not None
+        store.events.extend(
+            {
+                "id": event_id + offset,
+                "job_id": job_id,
+                "attempt_id": claimed["attempt_id"],
+                "seq": event_id + offset,
+                "event_type": "message",
+                "payload": {"text": "old attempt noise"},
+                "created_at": None,
+            }
+            for offset in range(1, agent_jobs_router._EVENT_PAGE_SIZE)
+        )
+        store._next_event_id = agent_jobs_router._EVENT_PAGE_SIZE + 1
+
+        store.jobs[job_id]["state"] = "queued"
+        while_requeued = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+
+        store.jobs[job_id]["state"] = "running"
+        store.jobs[job_id]["current_attempt_id"] = 101
+        store.live_fence = (101, 2)
+        before_retry_checkout = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+
+        retry_event_id = await store.append_event(
+            attempt_id=101,
+            lease_generation=2,
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
+        assert retry_event_id is not None
+        after_retry_checkout = await local_client.post(
+            f"/v1/agent/jobs/{job_id}/terminals",
+            json={"rows": 24, "cols": 80},
+        )
+
+    for response in (while_requeued, before_retry_checkout):
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"]["type"] == "workspace_not_ready"
+    assert after_retry_checkout.status_code == 200
+    assert broker.calls == [("create", job_id, 24, 80)]
 
 
 async def test_terminal_routes_recheck_entitlement_before_contacting_broker(
@@ -1721,6 +2264,26 @@ async def test_cancel_queued_job(client: AsyncClient):
     assert response.status_code == 200
     assert response.json()["state"] == "cancelled"
     assert response.json()["cancel_requested"] is True
+
+
+async def test_cancel_requeued_job_authoritatively_resumes_terminals(
+    store: FakeAgentJobStore,
+    monkeypatch,
+):
+    """Cancellation must not strand sessions paused by an expired attempt."""
+    broker = _TerminalSessionBroker()
+    monkeypatch.setattr(terminal_coordination, "workspace_broker_from_env", lambda: broker)
+    app = _build_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        job_id = await _create_job(local_client)
+        store.jobs[job_id]["current_attempt_id"] = 100
+        response = await local_client.post(f"/v1/agent/jobs/{job_id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "cancelled"
+    assert broker.calls == [("resume_settled", job_id)]
+    assert store.jobs[job_id]["terminal_resume_pending"] is False
 
 
 async def test_worker_flow_claim_event_artifact_finish(
@@ -2717,3 +3280,223 @@ async def test_branches_are_only_listed_for_an_entitled_repo(store: FakeAgentJob
     assert mine.status_code == 200
     assert mine.json()["default"] == "main"
     assert theirs.status_code == 403
+
+
+# ── MCP server selection ──────────────────────────────────────────────
+
+
+def _mcp_registry():
+    """A registry with one default server and one opt-in server."""
+    from serving.agent_jobs.mcp_registry import McpRegistry, McpServer
+
+    return McpRegistry(
+        servers={
+            "github": McpServer(
+                name="github",
+                url="https://mcp.example.com/mcp",
+                headers={"Authorization": "Bearer ghs_secret"},
+                tools=frozenset({"get_issue"}),
+                default=True,
+            ),
+            "deepwiki": McpServer(name="deepwiki", url="https://wiki.example.com/mcp"),
+        }
+    )
+
+
+async def test_the_composer_is_told_which_servers_and_which_runtimes(
+    client: AsyncClient, monkeypatch
+):
+    """A picker built from anything but the create endpoint's rules is decoration."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    config = (await client.get("/v1/agent/config")).json()
+
+    assert [entry["name"] for entry in config["mcp_servers"]] == ["deepwiki", "github"]
+    assert config["mcp_runtimes"] == ["claude-code"]
+    # The composer learns what a server exposes, never how to reach it.
+    assert "ghs_secret" not in json.dumps(config)
+    assert "mcp.example.com" not in json.dumps(config)
+
+
+async def test_omitting_servers_takes_the_deployment_defaults(client: AsyncClient, monkeypatch):
+    """A dogfood deployment gets its issue tracker without asking each time."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={"repo": "owner/name", "task_prompt": "fix it", "model": "glm-5.1"},
+    )
+    assert created.status_code == 201
+    assert created.json()["mcp_servers"] == ["github"]
+
+
+async def test_an_explicit_empty_list_means_no_servers(client: AsyncClient, monkeypatch):
+    """Choosing none is a real choice and must not be read as "unset"."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={
+            "repo": "owner/name",
+            "task_prompt": "fix it",
+            "model": "glm-5.1",
+            "mcp_servers": [],
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["mcp_servers"] == []
+
+
+async def test_an_unknown_server_is_refused_at_creation(client: AsyncClient, monkeypatch):
+    """Better than discovering mid-run that the task's one tool is missing."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={
+            "repo": "owner/name",
+            "task_prompt": "fix it",
+            "model": "glm-5.1",
+            "mcp_servers": ["sentry"],
+        },
+    )
+    assert created.status_code == 400
+    assert "sentry" in created.text
+
+
+async def test_a_runtime_that_cannot_load_mcp_refuses_the_job(client: AsyncClient, monkeypatch):
+    """Silently dropping the tools would produce confidently wrong work."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={
+            "repo": "owner/name",
+            "task_prompt": "fix it",
+            "model": "glm-5.1",
+            "runtime": "codex",
+            "mcp_servers": ["github"],
+        },
+    )
+    assert created.status_code == 400
+    assert "codex" in created.text
+
+
+async def test_the_claim_hands_the_runner_the_job_s_servers(
+    client: AsyncClient, store: FakeAgentJobStore, monkeypatch
+):
+    """The runner passes names to the adapter; it never learns the addresses."""
+    monkeypatch.setattr(agent_jobs_router, "get_registry", _mcp_registry)
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={
+            "repo": "owner/name",
+            "task_prompt": "fix it",
+            "model": "glm-5.1",
+            "mcp_servers": ["github", "deepwiki"],
+        },
+    )
+    assert created.status_code == 201
+
+    app = _build_app(store, dispatcher=True)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as dispatcher:
+        claimed = await dispatcher.post(
+            "/v1/agent/worker/claim", json={"worker_id": "w-1", "lease_ttl_seconds": 60}
+        )
+    assert claimed.status_code == 200
+    body = claimed.json()
+    assert body["mcp_servers"] == ["deepwiki", "github"]
+    assert "mcp.example.com" not in json.dumps(body)
+# ── Runner host pool ───────────────────────────────────────────────────
+#
+# Runners pull, so the claim is the only place the platform can say "not this
+# machine". These cover that gate from the wire in, because everything the
+# admin switch promises reduces to what /worker/claim answers.
+
+
+async def _queue_one(store: FakeAgentJobStore) -> str:
+    job = await store.create_job(
+        user_id="u1",
+        repo="owner/name",
+        task_prompt="fix it",
+        runtime="claude-code",
+        model="glm-5.1",
+    )
+    return job["id"]
+
+
+async def test_claim_is_unrestricted_until_a_host_is_pinned(client, store):
+    """The compatible default: an unpinned pool behaves as it always has."""
+    job_id = await _queue_one(store)
+
+    claim = await client.post(
+        "/v1/agent/worker/claim", json={"worker_id": "w1", "host": "runner-a"}
+    )
+
+    assert claim.status_code == 200
+    assert claim.json()["job_id"] == job_id
+
+
+async def test_a_host_joins_the_pool_even_while_it_is_being_turned_away(client, store):
+    """The chicken-and-egg case: you cannot switch to a host you cannot see.
+
+    A new machine polls, is refused because another host is pinned, and must
+    still appear in the pool — otherwise it could only become visible once it
+    was already active, and no operator could ever pick it.
+    """
+    await store.touch_runner_host(host="runner-a", worker_id="w0")
+    await store.set_active_runner_host(host="runner-a")
+    await _queue_one(store)
+
+    refused = await client.post(
+        "/v1/agent/worker/claim", json={"worker_id": "w2", "host": "runner-b"}
+    )
+
+    assert refused.status_code == 200
+    assert refused.json() is None
+    assert "runner-b" in store.runner_hosts
+
+
+async def test_pinning_moves_new_work_to_the_named_host(client, store):
+    # Both machines join the pool by polling an empty queue, which is how a
+    # newly added host becomes selectable in the first place.
+    await client.post("/v1/agent/worker/claim", json={"worker_id": "w1", "host": "runner-a"})
+    await client.post("/v1/agent/worker/claim", json={"worker_id": "w2", "host": "runner-b"})
+    await store.set_active_runner_host(host="runner-b")
+    job_id = await _queue_one(store)
+
+    wrong_host = await client.post(
+        "/v1/agent/worker/claim", json={"worker_id": "w1", "host": "runner-a"}
+    )
+    right_host = await client.post(
+        "/v1/agent/worker/claim", json={"worker_id": "w2", "host": "runner-b"}
+    )
+
+    assert wrong_host.json() is None
+    assert right_host.json()["job_id"] == job_id
+
+
+async def test_a_runner_reporting_no_host_is_refused_while_one_is_pinned(client, store):
+    """Fail closed. A runner left on the old machine must not keep claiming.
+
+    Runners that predate host reporting send no host at all; treating that as
+    "allowed" would leave the machine an operator just switched away from still
+    taking jobs, which makes the switch a lie.
+    """
+    await client.post("/v1/agent/worker/claim", json={"worker_id": "w2", "host": "runner-b"})
+    await store.set_active_runner_host(host="runner-b")
+    await _queue_one(store)
+
+    legacy = await client.post("/v1/agent/worker/claim", json={"worker_id": "w-old"})
+
+    assert legacy.status_code == 200
+    assert legacy.json() is None
+
+
+async def test_claim_rejects_a_host_that_is_not_a_hostname(client, store):
+    """The field is a primary key an admin reads off a page and clicks."""
+    await _queue_one(store)
+
+    response = await client.post(
+        "/v1/agent/worker/claim",
+        json={"worker_id": "w1", "host": "runner-a; DROP TABLE agent_jobs"},
+    )
+
+    assert response.status_code == 422
+    assert store.runner_hosts == {}

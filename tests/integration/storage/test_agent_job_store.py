@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -26,6 +27,9 @@ _TABLES_IN_FK_ORDER = (
     "agent_attempts",
     "agent_jobs",
     "agent_threads",
+    # No FK, but every claim writes here now: a host left active by one test
+    # would gate the claims of the next one.
+    "agent_runner_hosts",
 )
 
 
@@ -63,6 +67,9 @@ async def store():
     async with pool.acquire() as conn:
         for table in _TABLES_IN_FK_ORDER:
             await conn.execute(f"DELETE FROM {table}")
+        # Reset rather than delete: the policy is a singleton row, and a test
+        # that left a host pinned would otherwise gate every later claim.
+        await conn.execute("UPDATE agent_runner_policy SET active_host = NULL")
 
     try:
         yield job_store
@@ -70,6 +77,7 @@ async def store():
         async with pool.acquire() as conn:
             for table in _TABLES_IN_FK_ORDER:
                 await conn.execute(f"DELETE FROM {table}")
+            await conn.execute("UPDATE agent_runner_policy SET active_host = NULL")
         await pool.close()
 
 
@@ -150,24 +158,28 @@ async def test_archived_threads_leave_the_active_project_tree(store: AgentJobSto
 
 
 async def test_initialize_idempotently_migrates_legacy_threads(store: AgentJobStore):
-    """An existing agent_threads table gains archived_at on startup."""
+    """An existing agent_threads table gains thread-state columns on startup."""
     async with store._pool.acquire() as conn:
         await conn.execute("ALTER TABLE agent_threads DROP COLUMN archived_at")
+        await conn.execute("ALTER TABLE agent_threads DROP COLUMN pinned_at")
 
     await store.initialize()
     await store.initialize()
 
     async with store._pool.acquire() as conn:
-        data_type = await conn.fetchval(
+        columns = await conn.fetch(
             """
-            SELECT data_type
+            SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_schema = 'public'
               AND table_name = 'agent_threads'
-              AND column_name = 'archived_at'
+              AND column_name IN ('archived_at', 'pinned_at')
             """
         )
-    assert data_type == "timestamp with time zone"
+    assert {row["column_name"]: row["data_type"] for row in columns} == {
+        "archived_at": "timestamp with time zone",
+        "pinned_at": "timestamp with time zone",
+    }
 
 
 async def test_archive_and_restore_filter_owned_threads_without_cancelling(
@@ -228,6 +240,73 @@ async def test_archive_and_restore_filter_owned_threads_without_cancelling(
         parent["id"],
         child["id"],
     }
+
+
+async def test_pin_and_unpin_owned_threads_are_idempotent_and_reorder_lists(
+    store: AgentJobStore,
+):
+    """A pin covers every turn and its project, while foreign jobs remain private."""
+    parent = await _create_job(store)
+    child = await store.create_follow_up(
+        parent_job_id=parent["id"], user_id="user-1", prompt="also update the docs"
+    )
+    assert child is not None
+    newer = await _create_job(store, repo="example-org/newer-repo")
+    foreign = await _create_job(store, user_id="user-2", repo="example-org/foreign")
+    async with store._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE agent_jobs SET created_at = $2 WHERE id = $1",
+            parent["id"],
+            datetime(2026, 7, 1, tzinfo=timezone.utc),
+        )
+        await conn.execute(
+            "UPDATE agent_jobs SET created_at = $2 WHERE id = $1",
+            child["id"],
+            datetime(2026, 7, 2, tzinfo=timezone.utc),
+        )
+        await conn.execute(
+            "UPDATE agent_jobs SET created_at = $2 WHERE id = $1",
+            newer["id"],
+            datetime(2026, 7, 3, tzinfo=timezone.utc),
+        )
+
+    pinned = await store.set_thread_pinned(job_id=child["id"], user_id="user-1", pinned=True)
+
+    assert pinned is not None
+    assert pinned["thread_id"] == parent["thread_id"]
+    assert pinned["pinned_at"] is not None
+    assert (
+        await store.set_thread_pinned(job_id=parent["id"], user_id="user-1", pinned=True) == pinned
+    )
+    jobs = await store.list_jobs(user_id="user-1")
+    assert [job["id"] for job in jobs] == [child["id"], parent["id"], newer["id"]]
+    assert jobs[0]["pinned_at"] == jobs[1]["pinned_at"] == pinned["pinned_at"]
+    projects = await store.list_projects(user_id="user-1")
+    assert [project["repo"] for project in projects] == [
+        "example-org/example-repo",
+        "example-org/newer-repo",
+    ]
+    assert projects[0]["pinned_count"] == 1
+    assert projects[0]["pinned_at"] == pinned["pinned_at"]
+    assert (
+        await store.set_thread_pinned(job_id=foreign["id"], user_id="user-1", pinned=True) is None
+    )
+    assert (
+        await store.set_thread_pinned(job_id="ajob_missing", user_id="user-1", pinned=True) is None
+    )
+
+    unpinned = await store.set_thread_pinned(job_id=parent["id"], user_id="user-1", pinned=False)
+
+    assert unpinned == {"thread_id": parent["thread_id"], "pinned_at": None}
+    assert [job["id"] for job in await store.list_jobs(user_id="user-1")] == [
+        newer["id"],
+        child["id"],
+        parent["id"],
+    ]
+    assert [project["repo"] for project in await store.list_projects(user_id="user-1")] == [
+        "example-org/newer-repo",
+        "example-org/example-repo",
+    ]
 
 
 async def test_follow_up_waits_then_inherits_thread_messages_and_patch(store: AgentJobStore):
@@ -411,6 +490,85 @@ async def test_fork_thread_copies_history_and_carries_the_unpublished_patch(
 
     # The publisher sees the source turn, never the copy.
     assert (await store.claim_for_publish())["job_id"] == source["id"]
+    assert await store.claim_for_publish() is None
+
+
+async def test_cancelled_parent_patch_resumes_in_its_waiting_follow_up(
+    store: AgentJobStore,
+):
+    """A stopped run releases its queued conversation turn with partial work."""
+    parent = await _create_job(store)
+    child = await store.create_follow_up(
+        parent_job_id=parent["id"], user_id="user-1", prompt="continue after the stop"
+    )
+    assert child is not None
+    assert child["state"] == "waiting"
+
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    patch = "diff --git a/partial b/partial\n"
+    await store.append_event(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        event_type="message",
+        payload={"text": "I started the fix before you stopped me"},
+    )
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content=patch,
+    )
+    assert await store.transition(
+        job_id=parent["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="cancelled",
+    )
+
+    assert (await store.get_job(child["id"]))["state"] == "queued"
+    assert await store.follow_up_context(job_id=child["id"]) == {
+        "messages": [
+            {"role": "user", "content": "fix the flaky test"},
+            {"role": "assistant", "content": "I started the fix before you stopped me"},
+        ],
+        "patch": patch,
+    }
+    resumed = await store.claim_job(worker_id="w2", lease_ttl_seconds=60)
+    assert resumed["id"] == child["id"]
+    assert await store.claim_for_publish() is None
+
+
+async def test_forked_cancelled_source_patch_resumes_in_the_fork(
+    store: AgentJobStore,
+):
+    """A fork of a stopped turn retains its source's recoverable partial patch."""
+    source = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    patch = "diff --git a/partial b/partial\n"
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content=patch,
+    )
+    assert await store.transition(
+        job_id=source["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="cancelled",
+    )
+
+    fork = await store.fork_thread(source_job_id=source["id"], user_id="user-1")
+    assert fork is not None
+    assert fork["state"] == "cancelled"
+    child = await store.create_follow_up(
+        parent_job_id=fork["id"], user_id="user-1", prompt="continue in the fork"
+    )
+    assert child is not None
+    assert child["state"] == "queued"
+    assert (await store.follow_up_context(job_id=child["id"]))["patch"] == patch
     assert await store.claim_for_publish() is None
 
 
@@ -635,6 +793,40 @@ async def test_event_seq_and_global_cursor(store: AgentJobStore):
     assert [event["id"] for event in tail] == [ids[2]]
 
 
+async def test_terminal_readiness_is_fenced_attempt_state(store: AgentJobStore):
+    """Hot-path terminal checks do not replay events and stale workers cannot toggle them."""
+    await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is False
+    assert (
+        await store.append_event(
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
+        is not None
+    )
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is True
+    assert (
+        await store.fence_terminal_workspace(
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"] + 1,
+        )
+        is False
+    )
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is True
+    assert (
+        await store.fence_terminal_workspace(
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+        )
+        is True
+    )
+    assert await store.terminal_workspace_ready(attempt_id=claim["attempt_id"]) is False
+
+
 async def test_zombie_worker_is_fenced_out_after_reap(store: AgentJobStore):
     """After a reap, every write path of the old attempt is rejected."""
     job = await _create_job(store)
@@ -705,6 +897,40 @@ async def test_reap_fails_job_after_max_attempts(store: AgentJobStore):
     fetched = await store.get_job(job["id"])
     assert fetched["state"] == "failed"
     assert "exhausted" in fetched["detail"]
+    assert await store.list_terminal_resumes_pending() == [job["id"]]
+    assert await store.mark_terminal_resume_complete(job_id=job["id"]) is True
+    assert await store.list_terminal_resumes_pending() == []
+
+
+async def test_a_publish_claim_carries_the_branch_the_job_was_started_from(store: AgentJobStore):
+    """The publisher targets its PR at the job's own base, so it must see it.
+
+    ``base_ref`` is not a column — the column holds the resolved ``base_sha``,
+    because a branch moves — so the branch the owner picked rides along in
+    ``metadata``. Leaving ``metadata`` out of this claim is what made every
+    draft PR target the deployment default no matter what the job was pinned
+    from.
+    """
+    job = await _create_job(store, metadata={"_agent_base_ref": "release/x"})
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content="diff --git a/x b/x\n",
+    )
+    await store.transition(
+        job_id=job["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
+
+    taken = await store.claim_for_publish()
+
+    assert taken is not None
+    assert taken["metadata"] == {"_agent_base_ref": "release/x"}
 
 
 async def test_publish_is_one_shot(store: AgentJobStore):
@@ -781,6 +1007,8 @@ async def test_cancel_queued_and_running(store: AgentJobStore):
     queued = await _create_job(store)
     assert await store.request_cancel(job_id=queued["id"]) == "cancelled"
     assert (await store.get_job(queued["id"]))["state"] == "cancelled"
+    assert await store.list_terminal_resumes_pending() == [queued["id"]]
+    assert await store.mark_terminal_resume_complete(job_id=queued["id"]) is True
 
     # Owner scoping: the wrong user cannot cancel.
     running = await _create_job(store)
@@ -1247,6 +1475,7 @@ async def test_a_cancelled_job_released_from_a_claim_ends_cancelled(store: Agent
 
     fetched = await store.get_job(job["id"])
     assert fetched["state"] == "cancelled", "a cancelled job must not be requeued"
+    assert await store.list_terminal_resumes_pending() == [job["id"]]
 
 
 async def test_an_uncancelled_job_still_returns_to_the_queue(store: AgentJobStore):
@@ -1262,3 +1491,194 @@ async def test_an_uncancelled_job_still_returns_to_the_queue(store: AgentJobStor
 
     assert (await store.get_job(job["id"]))["state"] == "queued"
     assert await store.claim_job(worker_id="w2", lease_ttl_seconds=60) is not None
+
+
+# ── Runner host pool ───────────────────────────────────────────────────
+
+
+async def test_a_polling_host_joins_the_pool(store: AgentJobStore):
+    await store.touch_runner_host(host="runner-a", worker_id="runner-1")
+
+    hosts = await store.list_runner_hosts()
+
+    assert [h["host"] for h in hosts] == ["runner-a"]
+    assert hosts[0]["is_active"] is False
+    assert hosts[0]["last_worker_id"] == "runner-1"
+
+
+async def test_claims_are_unrestricted_until_a_host_is_pinned(store: AgentJobStore):
+    await _create_job(store)
+
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60, host="runner-a")
+
+    assert claim is not None
+
+
+async def test_a_pinned_host_is_the_only_one_that_claims(store: AgentJobStore):
+    await _create_job(store)
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+    assert await store.set_active_runner_host(host="runner-b")
+
+    assert await store.claim_job(worker_id="w1", lease_ttl_seconds=60, host="runner-a") is None
+    # ...and a runner predating host reporting is refused with them.
+    assert await store.claim_job(worker_id="w-old", lease_ttl_seconds=60) is None
+    assert await store.claim_job(worker_id="w2", lease_ttl_seconds=60, host="runner-b") is not None
+
+
+async def test_a_refused_host_still_enters_the_pool(store: AgentJobStore):
+    """You cannot switch to a host you cannot see."""
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.set_active_runner_host(host="runner-a")
+    await _create_job(store)
+
+    assert await store.claim_job(worker_id="w2", lease_ttl_seconds=60, host="runner-b") is None
+
+    assert "runner-b" in {h["host"] for h in await store.list_runner_hosts()}
+
+
+async def test_pinning_an_unknown_host_leaves_the_current_pin_alone(store: AgentJobStore):
+    """Regression: clearing first meant a typo silently unpinned the deployment.
+
+    The failed switch reported itself correctly and then handed every machine
+    the queue back — the one outcome worse than refusing the change.
+    """
+    await store.touch_runner_host(host="runner-b", worker_id="w1")
+    await store.set_active_runner_host(host="runner-b")
+
+    assert await store.set_active_runner_host(host="runner-b-typo") is False
+
+    hosts = {h["host"]: h["is_active"] for h in await store.list_runner_hosts()}
+    assert hosts == {"runner-b": True}
+
+
+async def test_only_one_host_can_be_active(store: AgentJobStore):
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+
+    await store.set_active_runner_host(host="runner-a")
+    await store.set_active_runner_host(host="runner-b")
+
+    active = [h["host"] for h in await store.list_runner_hosts() if h["is_active"]]
+    assert active == ["runner-b"]
+
+
+async def test_unpinning_restores_open_claiming(store: AgentJobStore):
+    await _create_job(store)
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+    await store.set_active_runner_host(host="runner-b")
+
+    assert await store.set_active_runner_host(host=None) is True
+
+    assert await store.claim_job(worker_id="w1", lease_ttl_seconds=60, host="runner-a") is not None
+
+
+async def test_forgetting_a_host_removes_it_until_it_polls_again(store: AgentJobStore):
+    await store.touch_runner_host(host="old-box", worker_id="w1")
+
+    assert await store.forget_runner_host(host="old-box") == "deleted"
+    assert await store.list_runner_hosts() == []
+    assert await store.forget_runner_host(host="old-box") == "unknown"
+
+    await store.touch_runner_host(host="old-box", worker_id="w1")
+    assert [h["host"] for h in await store.list_runner_hosts()] == ["old-box"]
+
+
+async def test_a_switch_in_flight_makes_a_claim_wait_rather_than_race_it(store: AgentJobStore):
+    """Regression: the claim used to read the policy on its own connection.
+
+    Old host reads "still me", the admin switches, the old host then dequeues —
+    and the machine the operator just moved away from takes one more job while
+    the page says the switch succeeded. The check now runs inside the claiming
+    transaction and takes the policy row shared, so a switch that has not
+    committed blocks the claim instead of being overtaken by it.
+    """
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+    await store.set_active_runner_host(host="runner-a")
+    await _create_job(store)
+
+    async with store._pool.acquire() as conn, conn.transaction():
+        # An admin switch that has taken the row but not yet committed.
+        await conn.execute("UPDATE agent_runner_policy SET active_host = 'runner-b' WHERE id")
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                store.claim_job(worker_id="w1", lease_ttl_seconds=60, host="runner-a"),
+                timeout=1.0,
+            )
+
+    # Once it commits, the old host is out and the new one takes the job.
+    assert await store.claim_job(worker_id="w1", lease_ttl_seconds=60, host="runner-a") is None
+    assert await store.claim_job(worker_id="w2", lease_ttl_seconds=60, host="runner-b") is not None
+
+
+async def test_the_policy_row_is_a_singleton(store: AgentJobStore):
+    """One fact in one place — the property the claim's lock depends on."""
+    from asyncpg.exceptions import CheckViolationError
+
+    async with store._pool.acquire() as conn:
+        with pytest.raises(CheckViolationError):
+            await conn.execute(
+                "INSERT INTO agent_runner_policy (id, active_host) VALUES (FALSE, 'x')"
+            )
+        assert await conn.fetchval("SELECT count(*) FROM agent_runner_policy") == 1
+
+
+async def test_removing_a_host_cannot_outrun_a_switch_onto_it(store: AgentJobStore):
+    """Regression: the refusal used to be a read the switch could outrun.
+
+    The endpoint saw the host idle, an admin pinned it, and the delete then
+    removed the row the gate was pointing at — silently unpinning the
+    deployment and handing every machine the queue back.
+    """
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+    await store.set_active_runner_host(host="runner-a")
+
+    async with store._pool.acquire() as conn, conn.transaction():
+        # A switch onto runner-b that has taken the policy row, uncommitted.
+        await conn.execute("UPDATE agent_runner_policy SET active_host = 'runner-b' WHERE id")
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(store.forget_runner_host(host="runner-b"), timeout=1.0)
+
+    # Once it commits, runner-b is the active host and removal is refused.
+    assert await store.forget_runner_host(host="runner-b") == "active"
+    assert "runner-b" in {h["host"] for h in await store.list_runner_hosts()}
+
+
+async def test_pinning_a_host_cannot_outrun_its_removal(store: AgentJobStore):
+    """The mirror case: pinning must not land on a row that is being deleted.
+
+    A bare existence check lets the removal commit first, leaving the queue
+    pinned to a machine that is gone — every job queues forever.
+    """
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+
+    async with store._pool.acquire() as conn, conn.transaction():
+        await conn.execute("DELETE FROM agent_runner_hosts WHERE host = 'runner-b'")
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(store.set_active_runner_host(host="runner-b"), timeout=1.0)
+
+    assert await store.set_active_runner_host(host="runner-b") is False
+    assert await store.active_runner_host() is None
+
+
+async def test_forget_reports_which_of_the_three_things_happened(store: AgentJobStore):
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.touch_runner_host(host="old-box", worker_id="w3")
+    await store.set_active_runner_host(host="runner-a")
+
+    assert await store.forget_runner_host(host="runner-a") == "active"
+    assert await store.forget_runner_host(host="old-box") == "deleted"
+    assert await store.forget_runner_host(host="old-box") == "unknown"
+
+
+async def test_the_pool_and_the_pinned_host_come_from_one_read(store: AgentJobStore):
+    """The list and the header cannot name different hosts."""
+    await store.touch_runner_host(host="runner-a", worker_id="w1")
+    await store.touch_runner_host(host="runner-b", worker_id="w2")
+    await store.set_active_runner_host(host="runner-b")
+
+    hosts, active = await store.runner_pool()
+
+    assert active == "runner-b"
+    assert [h["host"] for h in hosts if h["is_active"]] == ["runner-b"]

@@ -47,9 +47,10 @@ from serving.agent_jobs.entitlement import (
     require_entitled_repo,
 )
 from serving.agent_jobs.github_app import AppNotInstalled, GitHubAppError
+from serving.agent_jobs.mcp_registry import McpRegistryError, get_registry
 from serving.agent_jobs.model_auth import looks_like_agent_token
 from serving.agent_jobs.patch_gate import branch_name_for
-from serving.agent_jobs.runtimes import registered_runtimes
+from serving.agent_jobs.runtimes import registered_runtimes, runtimes_supporting_mcp
 from serving.agent_jobs.source_control import (
     OAuthStateError,
     SourceControlError,
@@ -57,6 +58,7 @@ from serving.agent_jobs.source_control import (
     github_authorization_url,
     issue_oauth_state,
 )
+from serving.agent_jobs.terminal_coordination import resume_settled_terminal
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
     SCOPE_MODEL,
@@ -66,6 +68,7 @@ from serving.agent_jobs.tokens import (
 )
 from serving.agent_jobs.visible_models import agent_model_resolvable, agent_visible_models
 from serving.agent_jobs.workspace_broker_client import (
+    WorkspaceBrokerClient,
     WorkspaceBrokerError,
     workspace_broker_from_env,
 )
@@ -80,6 +83,7 @@ from serving.agent_jobs.workspace_browser import (
     snapshot_file_response,
 )
 from serving.schemas_agent_jobs import (
+    BASE_REF_METADATA_KEY,
     DEFAULT_JOB_BUDGET_USD,
     EVENT_TYPE_PATTERN,
     AgentConfigResponse,
@@ -103,11 +107,13 @@ from serving.schemas_agent_jobs import (
     AgentTerminalSessionResponse,
     AgentThreadArchiveResponse,
     AgentThreadMessageResponse,
+    AgentThreadPinResponse,
     AgentThreadResponse,
     AgentWorkspaceResponse,
     AgentWorkspaceWriteRequest,
     GitHubConnectionResponse,
     GitHubConnectRequest,
+    McpServerSummary,
     OAuthConnectRequest,
     RepoBranchesResponse,
     SourceControlAccount,
@@ -124,6 +130,7 @@ from serving.schemas_agent_jobs import (
     WorkerFinishRequest,
     WorkerHeartbeatRequest,
     WorkerHeartbeatResponse,
+    WorkerTerminalSuspendRequest,
 )
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import (
@@ -137,7 +144,7 @@ from serving.servers.deps import (
     get_router,
     verify_admin_access,
 )
-from serving.storage.agent_job_store import RUNNING, TERMINAL_STATES
+from serving.storage.agent_job_store import PUBLISHING, RUNNING, TERMINAL_STATES
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -172,7 +179,6 @@ _TERMINAL_ID_PATTERN = r"^term_[A-Za-z0-9_-]{1,80}$"
 # for less. Without this the runner would be handed push rights it must not
 # have, on a host that runs untrusted repository code.
 _CLONE_SCOPE = {"contents": "read"}
-_BASE_REF_METADATA_KEY = "_agent_base_ref"
 
 
 def _looks_like_browser_jwt(authorization: str | None) -> bool:
@@ -304,7 +310,7 @@ def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> A
     usage = usage or {}
     setup_tier, agent_tier = _egress_tiers()
     metadata = dict(job.get("metadata") or {})
-    base_ref = metadata.pop(_BASE_REF_METADATA_KEY, None)
+    base_ref = metadata.pop(BASE_REF_METADATA_KEY, None)
     if not isinstance(base_ref, str):
         base_ref = None
     return AgentJobResponse(
@@ -328,8 +334,10 @@ def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> A
         budget_usd=job.get("budget_usd"),
         forked_from_job_id=job.get("fork_source_job_id"),
         metadata=metadata or None,
+        mcp_servers=list(job.get("mcp_servers") or []),
         created_at=_iso(job["created_at"]),
         updated_at=_iso(job["updated_at"]),
+        pinned_at=_iso(job.get("pinned_at")),
         spent_usd=usage.get("spent_usd"),
         tokens_in=usage.get("tokens_in"),
         tokens_out=usage.get("tokens_out"),
@@ -402,6 +410,10 @@ async def get_agent_config(
             router_exec, visibility_resolver=model_visibility_resolver, user_ctx=user
         ),
         default_budget_usd=DEFAULT_JOB_BUDGET_USD,
+        # Public fields only — McpServerSummary has nowhere to put a URL or a
+        # credential, which is how it stays that way.
+        mcp_servers=[McpServerSummary(**entry) for entry in get_registry().public()],
+        mcp_runtimes=runtimes_supporting_mcp(),
         setup_egress_tier=setup_tier,
         agent_egress_tier=agent_tier,
         # Both halves, and read from what is actually wired rather than from
@@ -868,6 +880,38 @@ async def _require_resolvable_model(
     )
 
 
+def _resolve_mcp_servers(requested: list[str] | None, *, runtime: str) -> list[str]:
+    """Settle which MCP servers a new job runs with, or refuse to create it.
+
+    Both failures are refusals rather than silent drops, and for the same
+    reason: a job is submitted because someone wants a task done, and a task
+    written around a tool the agent turns out not to have does not fail — it
+    quietly produces the wrong work, having spent the budget.
+    """
+    try:
+        servers = get_registry().resolve(requested)
+    except McpRegistryError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"type": "invalid_request", "message": str(exc)}},
+        ) from exc
+    if servers and runtime not in runtimes_supporting_mcp():
+        supported = ", ".join(runtimes_supporting_mcp()) or "none"
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "type": "invalid_request",
+                    "message": (
+                        f"the {runtime!r} runtime cannot be given MCP servers on this "
+                        f"deployment. Runtimes that can: {supported}."
+                    ),
+                }
+            },
+        )
+    return servers
+
+
 @router.post("/jobs", response_model=AgentJobResponse, status_code=201)
 async def create_agent_job(
     body: AgentJobCreate,
@@ -923,9 +967,10 @@ async def create_agent_job(
     metadata = dict(body.metadata or {})
     # Reserved display fact: caller metadata must not be able to claim the
     # job was pinned from a different branch than the one the API resolved.
-    metadata.pop(_BASE_REF_METADATA_KEY, None)
+    metadata.pop(BASE_REF_METADATA_KEY, None)
     if body.base_ref:
-        metadata[_BASE_REF_METADATA_KEY] = body.base_ref
+        metadata[BASE_REF_METADATA_KEY] = body.base_ref
+    mcp_servers = _resolve_mcp_servers(body.mcp_servers, runtime=body.runtime)
     job = await job_store.create_job(
         user_id=user["user_id"],
         repo=body.repo,
@@ -936,6 +981,7 @@ async def create_agent_job(
         setup_script=body.setup_script,
         budget_usd=body.budget_usd,
         metadata=metadata or None,
+        mcp_servers=mcp_servers,
     )
     logger.info(
         "agent_job_created",
@@ -981,6 +1027,8 @@ async def list_agent_projects(
                 task_count=project["task_count"],
                 active_count=project["active_count"],
                 last_activity_at=_iso(project["last_activity_at"]),
+                pinned_count=project.get("pinned_count", 0),
+                pinned_at=_iso(project.get("pinned_at")),
             )
             for project in projects
         ]
@@ -1014,6 +1062,8 @@ async def cancel_agent_job(
     job_store = _require_store(store)
     await _owned_job(job_store, job_id, user)
     state = await job_store.request_cancel(job_id=job_id, user_id=user["user_id"])
+    if state in TERMINAL_STATES and await resume_settled_terminal(job_id):
+        await job_store.mark_terminal_resume_complete(job_id=job_id)
     job = await job_store.get_job(job_id)
     return AgentJobCancelResponse(
         id=job_id,
@@ -1068,6 +1118,52 @@ async def restore_agent_thread(
     return await _set_agent_thread_archived(job_id=job_id, archived=False, user=user, store=store)
 
 
+async def _set_agent_thread_pinned(
+    *,
+    job_id: str,
+    pinned: bool,
+    user: dict[str, Any],
+    store: AgentJobStore | None,
+) -> AgentThreadPinResponse:
+    """Set pin state without exposing whether another user's job exists."""
+    job_store = _require_store(store)
+    result = await job_store.set_thread_pinned(
+        job_id=job_id,
+        user_id=user["user_id"],
+        pinned=pinned,
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"type": "not_found", "message": f"No such agent job: {job_id}"}},
+        )
+    return AgentThreadPinResponse(
+        thread_id=result["thread_id"],
+        pinned=pinned,
+        pinned_at=_iso(result["pinned_at"]),
+    )
+
+
+@router.post("/jobs/{job_id}/pin", response_model=AgentThreadPinResponse)
+async def pin_agent_thread(
+    job_id: str,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> AgentThreadPinResponse:
+    """Pin the entire task thread containing an owned job."""
+    return await _set_agent_thread_pinned(job_id=job_id, pinned=True, user=user, store=store)
+
+
+@router.delete("/jobs/{job_id}/pin", response_model=AgentThreadPinResponse)
+async def unpin_agent_thread(
+    job_id: str,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> AgentThreadPinResponse:
+    """Unpin the entire task thread containing an owned job."""
+    return await _set_agent_thread_pinned(job_id=job_id, pinned=False, user=user, store=store)
+
+
 @router.post("/jobs/{job_id}/follow-ups", response_model=AgentJobResponse, status_code=201)
 async def create_agent_follow_up(
     job_id: str,
@@ -1103,6 +1199,12 @@ async def create_agent_follow_up(
             status_code=403,
             detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
         ) from exc
+    # A thread's MCP servers are inherited by every turn, so switching harness
+    # mid-thread can land tools on a runtime that cannot load them. Refuse,
+    # rather than run a turn whose tools silently vanish — the follow-up prompt
+    # was very likely written expecting them.
+    if body.runtime and parent.get("mcp_servers"):
+        _resolve_mcp_servers(list(parent["mcp_servers"]), runtime=body.runtime)
     job = await job_store.create_follow_up(
         parent_job_id=job_id,
         user_id=user["user_id"],
@@ -1332,7 +1434,7 @@ async def _terminal_owner_workspace(
     user: dict[str, Any],
     store: AgentJobStore | None,
     app_credentials: Any | None,
-    require_settled: bool,
+    require_ready: bool = False,
     recheck_entitlement: bool = True,
 ) -> tuple[dict[str, Any], Any]:
     """Authorize one terminal operation and return its private broker.
@@ -1340,22 +1442,27 @@ async def _terminal_owner_workspace(
     Creating or attaching to a terminal rechecks repository entitlement. Once
     attached, the opaque terminal id acts as a short-lived capability scoped
     to the already-authenticated job owner. Input and resize must not enumerate
-    GitHub installations for every keystroke; they still recheck ownership,
-    settled state and the broker-side workspace/session binding. Delete skips
-    entitlement as well so a revoked owner can always clean up a live process.
+    GitHub installations for every keystroke; they still recheck ownership and
+    the broker-side workspace/session binding. Delete skips entitlement as well
+    so a revoked owner can always clean up a live process.
     """
     job_store = _require_store(store)
     job = await _owned_job(job_store, job_id, user)
-    if require_settled and job["state"] not in TERMINAL_STATES:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": {
-                    "type": "terminal_not_ready",
-                    "message": "Interactive terminals are available after the agent run finishes.",
-                }
-            },
+    if require_ready and job["state"] not in {*TERMINAL_STATES, PUBLISHING}:
+        eligible = job["state"] == RUNNING and job["current_attempt_id"] is not None
+        ready = eligible and await job_store.terminal_workspace_ready(
+            attempt_id=job["current_attempt_id"]
         )
+        if not ready:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": {
+                        "type": "workspace_not_ready",
+                        "message": "The terminal workspace is still being prepared.",
+                    }
+                },
+            )
     if recheck_entitlement:
         await _require_workspace_entitlement(
             job=job,
@@ -1374,6 +1481,19 @@ async def _terminal_owner_workspace(
                 }
             },
         )
+    if job.get("terminal_resume_pending"):
+        if not await resume_settled_terminal(_workspace_id(job)):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "workspace_unavailable",
+                        "message": "The settled terminal workspace is still resuming.",
+                    }
+                },
+            )
+        await job_store.mark_terminal_resume_complete(job_id=job_id)
+        job["terminal_resume_pending"] = False
     return job, broker
 
 
@@ -1629,13 +1749,13 @@ async def create_agent_job_terminal(
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> AgentTerminalSessionResponse:
-    """Open an interactive PTY after the agent has released its workspace."""
+    """Open an interactive PTY in the agent's workspace."""
     job, broker = await _terminal_owner_workspace(
         job_id=job_id,
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=True,
+        require_ready=True,
     )
     try:
         return AgentTerminalSessionResponse(
@@ -1667,7 +1787,7 @@ async def list_agent_job_terminals(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=False,
+        require_ready=True,
     )
     try:
         return AgentTerminalSessionListResponse(**(await broker.list_terminals(_workspace_id(job))))
@@ -1691,7 +1811,6 @@ async def stream_agent_job_terminal(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=False,
     )
     try:
         upstream = await broker.stream_terminal(_workspace_id(job), terminal_id, after=after)
@@ -1732,7 +1851,7 @@ async def write_agent_job_terminal_input(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=True,
+        require_ready=True,
         recheck_entitlement=False,
     )
     try:
@@ -1761,7 +1880,6 @@ async def resize_agent_job_terminal(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=True,
         recheck_entitlement=False,
     )
     try:
@@ -1793,7 +1911,6 @@ async def delete_agent_job_terminal(
         user=user,
         store=store,
         app_credentials=app_credentials,
-        require_settled=False,
         recheck_entitlement=False,
     )
     try:
@@ -2003,6 +2120,32 @@ def _match_job(claims: dict[str, Any], job_id: str) -> None:
         raise _lease_lost()
 
 
+async def _restore_terminal_suspension(
+    broker: WorkspaceBrokerClient | None,
+    *,
+    job_id: str,
+    lease_generation: int,
+) -> None:
+    """Best-effort compensation after a worker fails to finalize a resume."""
+    if broker is None:
+        return
+    try:
+        await broker.suspend_terminals(
+            job_id,
+            lease_generation=lease_generation,
+        )
+    except WorkspaceBrokerError:
+        logger.warning(
+            "agent_terminal_resume_compensation_failed",
+            exc_info=True,
+            extra={
+                "event": "agent_terminal_resume_compensation_failed",
+                "job_id": job_id,
+                "lease_generation": lease_generation,
+            },
+        )
+
+
 @router.post("/worker/claim", response_model=WorkerClaimResponse | None)
 async def worker_claim(
     body: WorkerClaimRequest,
@@ -2012,7 +2155,12 @@ async def worker_claim(
 ) -> WorkerClaimResponse | None:
     """Claim the next queued job and mint this attempt's capability token.
 
-    Returns ``null`` (HTTP 200) when the queue is empty.
+    Returns ``null`` (HTTP 200) when the queue is empty, and equally when an
+    operator has pinned agent jobs to a different host than the one this runner
+    reports. The two are deliberately the same answer on the wire: a runner
+    that has been switched away from should idle exactly as it does when there
+    is no work, not treat it as an error worth retrying differently. Which host
+    is active is an admin question, answered on the admin surface.
 
     **Dispatcher-only.** ``claim_job`` takes the oldest queued job across all
     tenants, and the response carries that job's repo, prompt, and metadata
@@ -2030,7 +2178,9 @@ async def worker_claim(
     """
     job_store = _require_store(store)
     claim = await job_store.claim_job(
-        worker_id=body.worker_id, lease_ttl_seconds=body.lease_ttl_seconds
+        worker_id=body.worker_id,
+        lease_ttl_seconds=body.lease_ttl_seconds,
+        host=body.host,
     )
     if claim is None:
         return None
@@ -2149,6 +2299,7 @@ async def worker_claim(
         clone_token=clone_token,
         context_messages=context["messages"],
         context_patch=context["patch"],
+        mcp_servers=list(claim.get("mcp_servers") or []),
         metadata=claim["metadata"],
     )
 
@@ -2198,6 +2349,107 @@ async def worker_append_event(
     return WorkerEventResponse(event_id=event_id)
 
 
+@router.post("/worker/jobs/{job_id}/terminals/suspend", response_model=WorkerAckResponse)
+async def worker_suspend_terminals(
+    job_id: str,
+    body: WorkerTerminalSuspendRequest,
+    authorization: str | None = Header(None),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> WorkerAckResponse:
+    """Fence terminal writes, then freeze retained PTYs for a protected phase."""
+    job_store = _require_store(store)
+    claims = _worker_claims(authorization)
+    _match_job(claims, job_id)
+    event_id = await job_store.append_event(
+        attempt_id=claims["attempt_id"],
+        lease_generation=claims["lease_generation"],
+        event_type="lifecycle",
+        payload={"phase": body.phase},
+    )
+    if event_id is None:
+        raise _lease_lost()
+    broker = workspace_broker_from_env()
+    if broker is not None:
+        try:
+            await broker.suspend_terminals(
+                job_id,
+                lease_generation=claims["lease_generation"],
+            )
+        except WorkspaceBrokerError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "workspace_unavailable",
+                        "message": exc.message,
+                    }
+                },
+            ) from exc
+    return WorkerAckResponse(ok=True)
+
+
+@router.post("/worker/jobs/{job_id}/terminals/resume", response_model=WorkerAckResponse)
+async def worker_resume_terminals(
+    job_id: str,
+    authorization: str | None = Header(None),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> WorkerAckResponse:
+    """Resume retained PTYs, then atomically publish workspace readiness."""
+    job_store = _require_store(store)
+    claims = _worker_claims(authorization)
+    _match_job(claims, job_id)
+    fenced = await job_store.fence_terminal_workspace(
+        attempt_id=claims["attempt_id"],
+        lease_generation=claims["lease_generation"],
+    )
+    if not fenced:
+        raise _lease_lost()
+    broker = workspace_broker_from_env()
+    if broker is not None:
+        try:
+            await broker.resume_terminals(
+                job_id,
+                lease_generation=claims["lease_generation"],
+            )
+        except WorkspaceBrokerError as exc:
+            await _restore_terminal_suspension(
+                broker,
+                job_id=job_id,
+                lease_generation=claims["lease_generation"],
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "workspace_unavailable",
+                        "message": exc.message,
+                    }
+                },
+            ) from exc
+    try:
+        event_id = await job_store.append_event(
+            attempt_id=claims["attempt_id"],
+            lease_generation=claims["lease_generation"],
+            event_type="lifecycle",
+            payload={"phase": "workspace_ready"},
+        )
+    except Exception:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
+        raise
+    if event_id is None:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
+        raise _lease_lost()
+    return WorkerAckResponse(ok=True)
+
+
 @router.post(
     "/worker/jobs/{job_id}/artifacts", response_model=WorkerArtifactResponse, status_code=201
 )
@@ -2243,15 +2495,56 @@ async def worker_finish(
                 }
             },
         )
-    ok = await job_store.transition(
-        job_id=job_id,
+    fenced = await job_store.fence_terminal_workspace(
         attempt_id=claims["attempt_id"],
         lease_generation=claims["lease_generation"],
-        from_states=(RUNNING,),
-        to_state=body.state,
-        detail=body.detail,
-        base_sha=body.base_sha,
     )
+    if not fenced:
+        raise _lease_lost()
+    broker = workspace_broker_from_env()
+    if broker is not None:
+        try:
+            await broker.resume_terminals(
+                job_id,
+                lease_generation=claims["lease_generation"],
+            )
+        except WorkspaceBrokerError as exc:
+            await _restore_terminal_suspension(
+                broker,
+                job_id=job_id,
+                lease_generation=claims["lease_generation"],
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "workspace_unavailable",
+                        "message": exc.message,
+                    }
+                },
+            ) from exc
+    try:
+        ok = await job_store.transition(
+            job_id=job_id,
+            attempt_id=claims["attempt_id"],
+            lease_generation=claims["lease_generation"],
+            from_states=(RUNNING,),
+            to_state=body.state,
+            detail=body.detail,
+            base_sha=body.base_sha,
+        )
+    except Exception:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
+        raise
     if not ok:
+        await _restore_terminal_suspension(
+            broker,
+            job_id=job_id,
+            lease_generation=claims["lease_generation"],
+        )
         raise _lease_lost()
     return WorkerAckResponse(ok=True, state=body.state)

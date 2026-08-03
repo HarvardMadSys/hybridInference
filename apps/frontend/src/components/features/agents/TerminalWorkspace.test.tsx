@@ -187,6 +187,23 @@ describe('TerminalWorkspace', () => {
     expect(screen.getAllByRole('application')).toHaveLength(1);
   });
 
+  it('removes the last terminal when cleanup finishes after delete reports an error', async () => {
+    const only = terminal('term-only');
+    vi.mocked(listAgentTerminals).mockResolvedValueOnce([only]).mockResolvedValueOnce([]);
+    vi.mocked(deleteAgentTerminal).mockRejectedValue(
+      new Error('terminal cleanup could not be confirmed; retry kill'),
+    );
+
+    render(<TerminalWorkspace jobId="job-1" active />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Kill Terminal 1' }));
+
+    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledTimes(2));
+    expect(deleteAgentTerminal).toHaveBeenCalledWith('job-1', only.id);
+    expect(screen.queryByRole('application')).not.toBeInTheDocument();
+    expect(screen.getByText('No open terminals')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('finishes its initial terminal load under React Strict Mode', async () => {
     vi.mocked(listAgentTerminals).mockResolvedValue([]);
 
@@ -197,6 +214,22 @@ describe('TerminalWorkspace', () => {
     );
 
     expect(await screen.findByRole('button', { name: 'New terminal' })).toBeEnabled();
+    expect(screen.queryByText('Loading terminals…')).not.toBeInTheDocument();
+  });
+
+  it('waits for workspace readiness, then loads automatically', async () => {
+    vi.mocked(listAgentTerminals).mockResolvedValue([]);
+
+    const view = render(<TerminalWorkspace jobId="job-1" active ready={false} />);
+
+    expect(screen.getByText('Loading terminals…')).toBeInTheDocument();
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    expect(listAgentTerminals).not.toHaveBeenCalled();
+
+    view.rerender(<TerminalWorkspace jobId="job-1" active ready />);
+
+    expect(await screen.findByRole('button', { name: 'New terminal' })).toBeEnabled();
+    expect(listAgentTerminals).toHaveBeenCalledWith('job-1');
     expect(screen.queryByText('Loading terminals…')).not.toBeInTheDocument();
   });
 
@@ -339,31 +372,38 @@ describe('TerminalWorkspace', () => {
     expect(xterm.dispose).toHaveBeenCalled();
   });
 
-  it('keeps running jobs read-only and explains why', async () => {
-    const first = terminal('term-1');
+  it('disables input when the terminal process is not running', async () => {
+    const first = { ...terminal('term-1'), state: 'closed' as const };
     vi.mocked(listAgentTerminals).mockResolvedValue([first]);
 
-    const view = render(
-      <TerminalWorkspace
-        jobId="job-1"
-        active
-        disabled
-        disabledReason="Wait for the agent to finish."
-      />,
-    );
-
-    expect(listAgentTerminals).not.toHaveBeenCalled();
-    expect(screen.getByRole('note')).toHaveTextContent('Wait for the agent to finish.');
-    expect(screen.queryByRole('application')).not.toBeInTheDocument();
-
-    view.rerender(<TerminalWorkspace jobId="job-1" active />);
+    render(<TerminalWorkspace jobId="job-1" active />);
     await screen.findByRole('region', { name: 'Terminal 1 pane' });
     expect(listAgentTerminals).toHaveBeenCalledWith('job-1');
     await waitFor(() => expect(xtermHarness.instances).toHaveLength(1));
-    expect(xtermHarness.instances[0].options.disableStdin).toBe(false);
+    expect(xtermHarness.instances[0].options.disableStdin).toBe(true);
     xtermHarness.instances[0].emitData('pwd\r');
+    expect(writeAgentTerminalInput).not.toHaveBeenCalled();
+  });
+
+  it('pauses an existing terminal during retry preparation and resumes it automatically', async () => {
+    const first = terminal('term-1');
+    vi.mocked(listAgentTerminals).mockResolvedValue([first]);
+
+    const view = render(<TerminalWorkspace jobId="job-1" active ready />);
+    await screen.findByRole('application', { name: 'Terminal 1 terminal' });
+    await waitFor(() => expect(xtermHarness.instances).toHaveLength(1));
+    const xterm = xtermHarness.instances[0];
+
+    view.rerender(<TerminalWorkspace jobId="job-1" active ready={false} />);
+    expect(xterm.options.disableStdin).toBe(true);
+    xterm.emitData('blocked');
+    expect(writeAgentTerminalInput).not.toHaveBeenCalled();
+
+    view.rerender(<TerminalWorkspace jobId="job-1" active ready />);
+    expect(xterm.options.disableStdin).toBe(false);
+    xterm.emitData('resumed');
     await waitFor(() =>
-      expect(writeAgentTerminalInput).toHaveBeenCalledWith('job-1', first.id, 'pwd\r'),
+      expect(writeAgentTerminalInput).toHaveBeenCalledWith('job-1', first.id, 'resumed'),
     );
   });
 
