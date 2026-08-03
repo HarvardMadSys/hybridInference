@@ -287,8 +287,9 @@ is the only kind of revoke that does not need a durable outbox behind it.
 - **Acceptance:** unit tests with a locally-generated RS256 keypair: valid/expired/wrong-aud/unknown-kid.
 
 ### E8. Session BFF endpoints (M)
-- Deps: E7. `POST /v1/session/login` (body: identity JWT → sets HttpOnly SameSite=Lax cookie signed with `AGENT_SESSION_SECRET`, 7d), `POST /v1/session/logout`, `GET /v1/session/me`. Cookie auth accepted everywhere bearer identity JWT is (web uses cookies; workers keep bearer control tokens).
-- **Acceptance:** cookie round-trip tests; `me` returns user; logout clears.
+- Deps: E7. `POST /v1/session/callback` (see F3 — the code exchange happens here, not in the browser), `POST /v1/session/logout`, `GET /v1/session/me`. HttpOnly SameSite=Lax cookie signed with `AGENT_SESSION_SECRET`. Cookie auth accepted everywhere the bearer identity JWT is (web uses cookies; workers keep bearer control tokens).
+- **Session lifetime is not seven days.** A 7-day cookie means a user suspended or downgraded on the gateway keeps this service's privileges for a week, because nothing re-asks. Instead: a short session (hours), refreshed against the gateway rather than extended locally. Any privileged action — and every grant mint (E9) — revalidates that the gateway user is still active and still has the role the session claims. The session is a cache of an authorization decision, and it has to expire like one.
+- **Acceptance:** cookie round-trip tests; `me` returns user; logout clears; a session whose gateway user has since been suspended is refused at the next privileged call rather than at expiry.
 
 ### E9. Grant client — sandbox credentials via gateway (M)
 - Deps: E6, C5, C6. Where the old code minted `scope=model` tokens in-process, call `POST {GATEWAY_BASE_URL}/internal/agent-grants` with `GATEWAY_GRANT_DISPATCH_TOKEN` per attempt (allowed_models + budget from entitlement, ttl = lease horizon); inject returned token into the sandbox env exactly where the old token went. On attempt supersede/terminal state, call revoke. Remove `SCOPE_MODEL` minting from E3's module.
@@ -314,8 +315,10 @@ is the only kind of revoke that does not need a durable outbox behind it.
 - **Acceptance:** component test suite passes; `rg sessionStorage web/` → no hits.
 
 ### F3. Move pages (M)
-- Deps: F2. Move `app/agents/{page,layout}.tsx` + `[jobId]/`, `archived/`, `connected/`, `integrations/` to `web/src/app/` **as the root app** (`/` = task list; keep sub-route names). Login redirect: unauthenticated → gateway `/authorize?...` (C4) with PKCE, callback page exchanges code (C3) then `POST /v1/session/login` (E8).
-- **Acceptance:** e2e-ish test with mocked BFF: unauth → redirect URL correct (challenge present); auth → task list renders.
+- Deps: F2. Move `app/agents/{page,layout}.tsx` + `[jobId]/`, `archived/`, `connected/`, `integrations/` to `web/src/app/` **as the root app** (`/` = task list; keep sub-route names).
+- **The whole login exchange runs server-side.** Unauthenticated → the BFF generates the PKCE verifier, keeps it in a short-lived HttpOnly cookie, and redirects to the gateway's `/authorize` (C4). The gateway redirects back to a BFF **route handler**, not a page: it exchanges the code (C3), sets the session cookie, and redirects into the app.
+- An earlier revision had a client page do the exchange. That puts the identity JWT and the PKCE verifier in browser-reachable JavaScript, which is precisely what a backend-for-frontend exists to avoid — the token is bounded and audience-scoped, so the exposure is small, but it is also unnecessary, and "we call it a BFF" should mean the browser never holds a bearer credential.
+- **Acceptance:** unauthenticated request → redirect to the gateway with a challenge present and the verifier only in an HttpOnly cookie; the callback handler is a server route; `rg` finds no identity token or verifier in client-side code; authenticated → task list renders.
 
 ### F4. Admin hosts UI (M)
 - Deps: F3, E6 (admin routes). New `/admin/hosts` page: list hosts (status, slots, last heartbeat), actions wired to E6/G6 endpoints. Guard: `role=admin` from session. Plain table UI — match existing admin styling, no new design system.
@@ -344,7 +347,8 @@ is the only kind of revoke that does not need a durable outbox behind it.
 
 ### G5. Per-host broker routing (M)
 - Deps: G4, D6. Every control-plane call through `workspace_broker_client` resolves `broker_url` from the attempt's host row instead of global `AGENT_WORKSPACE_BROKER_URL` (keep the env as single-host fallback when `host_id` is null, so E11 setups keep working).
-- **Acceptance:** unit test: two fake hosts, terminal/files requests hit the right base URL.
+- **The host does not get to name an arbitrary URL.** A self-reported address that the control plane then fetches is a request-forgery primitive: enrollment is authenticated, so this is not open to the internet, but an enrolled host should not be able to point the control plane at the database, the metadata service, or the gateway's admin API. Validate on enrollment and on every heartbeat that changes it: `https` only, host must resolve outside loopback and link-local, port from a small allowlist, and the whole URL re-checked at use rather than trusted because it was accepted once. Prefer deriving the address from the enrollment record over accepting it from the payload at all.
+- **Acceptance:** unit test: two fake hosts, terminal/files requests hit the right base URL; a host attempting to register `http://`, `127.0.0.1`, `169.254.169.254`, or an off-allowlist port is refused at enrollment and at heartbeat.
 
 ### G6. Drain / remove / revoke (M)
 - Deps: G4. Admin endpoints: `POST /admin/hosts/{id}/drain` (no new claims; existing attempts finish), `POST /admin/hosts/{id}/remove` (allowed only when `slots_used=0` unless `force=true` → revoke credential, mark disabled; forced removal relies on lease expiry to requeue in-flight attempts). Wire into F4 UI.
