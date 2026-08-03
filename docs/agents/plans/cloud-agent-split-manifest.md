@@ -62,7 +62,6 @@ a paragraph, the paragraph belongs in the task.
 | `apps/backend/serving/agent_jobs/patch_gate.py` | D4 — ⚠️ referenced by `ops/release/public_export.py:36`; see the cross-cutting table |
 | `apps/backend/serving/agent_jobs/workspace_broker.py` | D5 |
 | `apps/backend/serving/agent_jobs/workspace_browser.py` | D5 |
-| `apps/backend/serving/agent_jobs/terminal_coordination.py` | D5 |
 | `apps/backend/serving/agent_jobs/runner.py` | D6 |
 | `apps/backend/serving/agent_jobs/workspace_broker_client.py` | D6 |
 | `tests/unit/test_agent_sandbox.py` | D2 |
@@ -91,6 +90,7 @@ a paragraph, the paragraph belongs in the task.
 | `apps/backend/serving/agent_jobs/source_control.py` | E5 | `SourceControlCipher` reads `API_KEY_SECRET` at line 40; re-keyed in E5 |
 | `apps/backend/serving/agent_jobs/publisher.py` | E5 | |
 | `apps/backend/serving/agent_jobs/publish_worker.py` | E5 | |
+| `apps/backend/serving/agent_jobs/terminal_coordination.py` | E6 | Gateway-owned settled-terminal recovery; consumed by the API router and bootstrap wiring, and calls the host through `workspace_broker_client` |
 | `apps/backend/serving/servers/routers/agent_jobs.py` | E6 | 2,257 lines. Gateway-side reads to re-point: `mcp_registry` import (line 50), `get_log_store` cost/usage (lines 203, 283–287, 1043) |
 | `apps/backend/serving/servers/routers/admin/agent_runner_hosts.py` | E6 | from #1158; retires at F4 |
 | `apps/backend/serving/agent_jobs/__init__.py` | E6 | package docstring only |
@@ -157,6 +157,7 @@ Added by the pre-freeze merges:
 |---|---|
 | `apps/backend/serving/servers/app.py:21,106` | `agent_jobs` router import + `include_router` |
 | `apps/backend/serving/servers/bootstrap.py` (~783+) | `AgentJobStore` init, attempt reaper task, publish loop, GitHub/GitLab credential wiring |
+| `tests/servers/test_bootstrap.py` | Agent-specific bootstrap cases are removed at H4; E6 ports only the settled-terminal reconciliation case into the new app-shell tests, while unrelated gateway coverage stays |
 | `apps/backend/serving/servers/deps.py:73,110,175-179` | `AgentJobStore` import, service slot, `get_agent_job_store` provider |
 | `apps/backend/serving/servers/auth.py:15` | import of `agent_jobs.model_auth` → repoint at the gateway-owned grants module |
 

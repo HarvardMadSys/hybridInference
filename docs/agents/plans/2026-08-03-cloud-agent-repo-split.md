@@ -340,8 +340,9 @@ for no reason:
 ### D4. Patch gate (S)
 - Deps: D1. Move `patch_gate.py` + `test_agent_patch_gate.py`.
 
-### D5. Workspace broker + browser + terminal coordination (M)
-- Deps: D3. Move `workspace_broker.py`, `workspace_browser.py`, `terminal_coordination.py`; tests `test_agent_workspace_broker.py` (+ terminal-related tests that live inside it).
+### D5. Workspace broker + browser (M)
+- Deps: D3. Move `workspace_broker.py`, `workspace_browser.py`; tests `test_agent_workspace_broker.py`.
+- `terminal_coordination.py` is not host code despite its original manifest classification: its docstring identifies gateway-owned recovery, its consumers are the API router and bootstrap wiring, and it calls the host through `workspace_broker_client`. It moves with E6 instead.
 
 ### D6. Runner + broker client (L)
 - Deps: D2–D5. Move `runner.py`, `workspace_broker_client.py`; tests `test_agent_runner.py`, `test_agent_runner_worktree.py`, `test_agent_workspace_broker_client.py`. The runner's gateway-facing URLs/token env names stay AS-IS for now (E9 re-points them).
@@ -385,11 +386,12 @@ for no reason:
 - **Acceptance:** a connect → store → read-back round trip under the new key; the module has no reference to `API_KEY_SECRET`; startup fails loudly when the new variable is unset.
 
 ### E6. API router moved AS-IS + app shell (L)
-- Deps: E1–E5, **C7, C9**. Move `servers/routers/agent_jobs.py` (2,257 lines) → `backend/cloud_agent/api/routes.py` **without splitting it**; move `servers/routers/admin/agent_runner_hosts.py` → `api/admin_hosts.py`. Create `backend/cloud_agent/app.py` (FastAPI, lifespan starts store + reaper + publish loop — port the ~40 lines of wiring from old `bootstrap.py:783+`) and `deps.py` (temporary local auth stub returning a fixed test user; replaced by E7). Keep every route path identical (`/v1/agent/...`, admin paths). Apply only the budget-removal exception: job create/follow-up/config/response paths neither accept nor emit `budget_usd`; retain spend/token/model-call usage, fetched through C7 rather than a task cap.
+- Deps: E1–E5, **C7, C9**. Move `servers/routers/agent_jobs.py` (2,257 lines) → `backend/cloud_agent/api/routes.py` **without splitting it**; move `servers/routers/admin/agent_runner_hosts.py` → `api/admin_hosts.py`; move `agent_jobs/terminal_coordination.py` with them as control-plane recovery, not host execution code. Create `backend/cloud_agent/app.py` (FastAPI, lifespan starts store + reaper + publish loop — port the ~40 lines of wiring from old `bootstrap.py:783+`) and `deps.py` (temporary local auth stub returning a fixed test user; replaced by E7). Keep every route path identical (`/v1/agent/...`, admin paths). Apply only the budget-removal exception: job create/follow-up/config/response paths neither accept nor emit `budget_usd`; retain spend/token/model-call usage, fetched through C7 rather than a task cap.
+- Do not move all of `tests/servers/test_bootstrap.py`; most of it remains gateway bootstrap coverage. Port its `test_settled_terminal_resume_retries_until_broker_confirms` case into the new app-shell tests here, while the route-level terminal cases continue to move with `test_agent_jobs_api.py` in E10.
 - **Two imports in this file do not exist on the other side, and both fail quietly.**
   - `from serving.agent_jobs.mcp_registry import McpRegistryError, get_registry` (line 50) — the registry and its credentials stay on the gateway. Re-point both call sites (the config response and the requested-server validation) at C9's `GET /internal/mcp-registry`. Left as-is the module does not import; deleted, MCP job creation stops working.
   - `log_store=Depends(get_log_store)` with `getattr(log_store, "get_agent_job_cost", None)` / `get_agent_job_usage` (lines 203, 283–287, 1043) — the billing ledger stays on the gateway. Because those reads are `getattr` with a `None` fallback, an absent log store does **not** raise: job detail simply reports no spend, no tokens and no model calls, and looks like a job that cost nothing. Re-point them at C7.
-- **Acceptance:** app boots against migrated DB; `GET /healthz` added; route table diff vs old repo shows identical agent paths; OpenAPI has no `budget_usd`; `rg 'mcp_registry|get_log_store' backend/` has no hits; a job that made model calls reports non-zero usage in its detail response (the assertion that catches the silent-zero failure).
+- **Acceptance:** app boots against migrated DB; `GET /healthz` added; route table diff vs old repo shows identical agent paths; OpenAPI has no `budget_usd`; `rg 'mcp_registry|get_log_store' backend/` has no hits; a job that made model calls reports non-zero usage in its detail response (the assertion that catches the silent-zero failure); settled-terminal reconciliation retries after a broker failure and marks completion only after the broker confirms.
 
 ### E7. Identity adapter (M)
 - Deps: E6, C1–C3. Replace the E6 auth stub: verify `Authorization: Bearer <identity JWT>` against `GATEWAY_JWKS_URL` (cache keys, honor `kid`), require `aud=cloud-agent`; upsert a local `users` row; inject as the "current user" dependency with the same shape routes already expect.
