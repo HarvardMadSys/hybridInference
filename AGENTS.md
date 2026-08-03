@@ -165,6 +165,42 @@ Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
 - Frontend is Next.js in `apps/frontend/` — its quality gates are separate
   from the Python `make` targets.
 
+### 6.6 The cloud agent is moving out — freeze in effect
+
+The cloud agent is being extracted into
+[freeinference-cloud-agent](https://github.com/HarvardMadSys/freeinference-cloud-agent).
+The freeze commit is `764a6f97`; the migration copies files from there, so a
+change to a frozen path after that commit is a change the new repository will
+not have.
+
+**Frozen — do not add features or refactor here:**
+
+```text
+apps/backend/serving/agent_jobs/
+apps/backend/serving/servers/routers/agent_jobs.py
+apps/backend/serving/servers/routers/admin/agent_runner_hosts.py
+apps/backend/serving/schemas_agent_jobs.py
+apps/backend/serving/storage/agent_job_store.py
+apps/frontend/src/app/agents/ and src/components/features/agents/
+apps/frontend/src/lib/api/agents.ts
+deploy/docker/*agent* and ops/deploy/agent_*
+```
+
+New cloud agent work goes to the new repository. Bug fixes urgent enough to
+need shipping here should be flagged in the migration PR so they are re-applied
+after the move.
+
+**Not frozen, and staying here:** `agent_jobs/model_auth.py`, the MCP proxy
+(`agent_jobs/mcp_proxy.py`, `mcp_registry.py`, `servers/routers/agent_mcp.py`),
+and `api_logs.agent_job_id` with its cost queries. These are gateway capability
+surfaces, not agent code, and Phase C of the plan actively changes them.
+
+Repo-wide sweeps — renames, import re-orgs, config extraction — must **exclude**
+the frozen paths until the migration completes, or the file manifest chases a
+moving target.
+
+Plan and manifest: [docs/agents/plans/2026-08-03-cloud-agent-repo-split.md](docs/agents/plans/2026-08-03-cloud-agent-repo-split.md).
+
 ## 7. Common tasks
 
 Pointer table. Each row links to the canonical doc or skill — this guide does
