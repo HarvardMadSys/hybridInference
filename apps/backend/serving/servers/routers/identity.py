@@ -11,7 +11,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Response, status
 
-from serving.utils.identity_keys import IdentityKeyUnavailable, public_jwks
+from serving.utils.identity_keys import (
+    IdentityKeyMisconfigured,
+    IdentityKeyUnavailable,
+    public_jwks,
+)
 
 router = APIRouter(prefix="/v1/identity", tags=["identity"])
 
@@ -33,7 +37,8 @@ async def jwks(response: Response) -> dict:
         A JWKS document with a single RSA verification key.
 
     Raises:
-        HTTPException: 404 if this deployment has no identity key configured.
+        HTTPException: 404 if this deployment has no identity key configured;
+            500 if one is configured but unusable.
     """
     try:
         document = public_jwks()
@@ -47,6 +52,19 @@ async def jwks(response: Response) -> dict:
                 "error": {
                     "type": "identity_not_configured",
                     "message": "Cross-service identity is not configured on this deployment.",
+                }
+            },
+        ) from exc
+    except IdentityKeyMisconfigured as exc:
+        # The other half of that distinction. A key is configured and cannot be
+        # used, which is an operator error — answering 404 here would let a
+        # production deploy with a mangled PEM pass for a feature nobody enabled.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": {
+                    "type": "identity_key_misconfigured",
+                    "message": str(exc),
                 }
             },
         ) from exc
