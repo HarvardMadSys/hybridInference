@@ -53,6 +53,7 @@ from serving.config.settings import settings
 from serving.utils.identity_keys import (
     ALGORITHM,
     IdentityKeyUnavailable,
+    public_jwks,
     signing_key,
     signing_kid,
 )
@@ -128,20 +129,29 @@ def allowed_redirects() -> tuple[str, ...]:
 def assert_issuance_configured() -> None:
     """Check that every part of issuance is configured, not just some.
 
-    Called **before** an authorization code is created. A deployment with a
-    redirect allowlist but no usable signing key would otherwise hand out a code
-    that ``/token`` consumes and then fails to redeem — and since the failed
+    Called **before** a code is created and before one is consumed. A deployment
+    with a redirect allowlist but no usable key would otherwise hand out a code
+    that ``/token`` consumes and then fails to redeem — and since a failed
     exchange burns the code, the caller retries into the same wall with no
     indication of why. Partial configuration must refuse at the first step.
+
+    The key check is :func:`~serving.utils.identity_keys.public_jwks`, not
+    ``signing_kid``: a token is only worth minting if a consumer can verify it,
+    and verification needs the whole *published* set. A broken retiring key
+    leaves the signing key perfectly usable, so the narrower check would mint
+    tokens happily while ``/jwks`` answered 500 — every consumer failing to
+    fetch anything to verify them against, and nothing in the issuance path
+    saying so.
 
     Raises:
         IdentityNotConfigured: If the issuer or redirect allowlist is missing.
         IdentityKeyUnavailable: If no signing key is configured.
-        IdentityKeyMisconfigured: If the signing key is configured but unusable.
+        IdentityKeyMisconfigured: If any configured key — signing or retiring —
+            cannot be used.
     """
     issuer()
     allowed_redirects()
-    signing_kid()
+    public_jwks()
 
 
 def issuance_enabled() -> bool:

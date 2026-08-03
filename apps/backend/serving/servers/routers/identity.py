@@ -59,7 +59,8 @@ async def jwks(response: Response) -> dict:
         response: The outgoing response, for cache headers.
 
     Returns:
-        A JWKS document with a single RSA verification key.
+        A JWKS document: the current signing key, followed by any retiring keys
+        still published for verification.
 
     Raises:
         HTTPException: 404 if this deployment has no identity key configured;
@@ -210,13 +211,28 @@ async def exchange_authorization_code(
 
     Raises:
         HTTPException: 400 if the code is unusable, 403 if the account may no
-            longer sign in, 404 if identity is not configured here.
+            longer sign in, 404 if identity is not configured here, 500 if it is
+            configured but unusable.
     """
     store = _require_store(store)
 
-    # Claimed before anything else is checked, and deliberately so. A failed
-    # exchange must not leave the code usable for a second attempt — that is
-    # what turns an intercepted code into a working one. The legitimate client
+    # Checked before the code is touched. Burning it is the price of getting the
+    # exchange wrong; it must not also be the price of *this* deployment being
+    # misconfigured. A code consumed here could not have been redeemed anyway,
+    # and destroying it would deny the retry that works once someone fixes the
+    # configuration.
+    try:
+        assert_issuance_configured()
+    except (IdentityNotConfigured, IdentityKeyUnavailable) as exc:
+        raise _error(status.HTTP_404_NOT_FOUND, "identity_not_configured", str(exc)) from exc
+    except IdentityKeyMisconfigured as exc:
+        raise _error(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "identity_key_misconfigured", str(exc)
+        ) from exc
+
+    # Claimed before the caller's own inputs are checked, and deliberately so. A
+    # failed exchange must not leave the code usable for a second attempt — that
+    # is what turns an intercepted code into a working one. The legitimate client
     # simply restarts the flow.
     claim = await store.consume_identity_auth_code(hash_code(body.code))
     invalid = _error(
@@ -254,10 +270,10 @@ async def exchange_authorization_code(
     except (IdentityNotConfigured, IdentityKeyUnavailable) as exc:
         raise _error(status.HTTP_404_NOT_FOUND, "identity_not_configured", str(exc)) from exc
     except IdentityKeyMisconfigured as exc:
-        # A configured-but-unusable key is an operator error, and must not be
-        # reported as "identity is not offered here" — same distinction the JWKS
-        # endpoint makes. The code has already been consumed at this point; the
-        # caller has to restart, which is correct, since nothing it did was wrong.
+        # Reachable only if the configuration changed between the precheck above
+        # and this line — a rotation landing mid-request. Kept so that becomes a
+        # typed error rather than a bare 500 with a traceback, and so the
+        # unset/broken distinction survives all the way out.
         raise _error(
             status.HTTP_500_INTERNAL_SERVER_ERROR, "identity_key_misconfigured", str(exc)
         ) from exc

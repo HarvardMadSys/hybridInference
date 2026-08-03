@@ -20,7 +20,7 @@ from serving.servers.deps import get_current_user, get_operational_store
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import identity
 from serving.utils import identity_keys, identity_tokens
-from serving.utils.identity_keys import ENV_PRIVATE_KEY
+from serving.utils.identity_keys import ENV_PRIVATE_KEY, ENV_RETIRING_PUBLIC_KEYS
 from serving.utils.identity_tokens import (
     CLOUD_AGENT_CLIENT_ID,
     ENV_ALLOWED_REDIRECTS,
@@ -57,6 +57,7 @@ def _clean(monkeypatch):
     identity_keys.reset_cache()
     monkeypatch.delenv(ENV_ISSUER, raising=False)
     monkeypatch.delenv(ENV_ALLOWED_REDIRECTS, raising=False)
+    monkeypatch.delenv(ENV_RETIRING_PUBLIC_KEYS, raising=False)
     monkeypatch.setattr(settings, "base_url", "", raising=False)
     yield
     identity_keys.reset_cache()
@@ -326,6 +327,7 @@ def test_code_endpoint_404s_when_identity_is_not_configured(client: TestClient) 
         ("key", 404, "identity_not_configured"),
         ("issuer", 404, "identity_not_configured"),
         ("broken_key", 500, "identity_key_misconfigured"),
+        ("broken_retiring_key", 500, "identity_key_misconfigured"),
     ],
 )
 def test_code_endpoint_refuses_partial_issuance_configuration(
@@ -343,6 +345,11 @@ def test_code_endpoint_refuses_partial_issuance_configuration(
     behaviour minted a code happily; /token then consumed it and failed. Since a
     failed exchange burns the code, the caller retried into the same wall with
     nothing pointing at the real cause.
+
+    ``broken_retiring_key`` is the case a ``signing_kid`` precheck misses: the
+    signing key is fine, so a token would be minted and signed — but /jwks
+    answers 500, leaving the consumer nothing to verify it against. Issuance has
+    to require the whole published set, not just the half it signs with.
     """
     monkeypatch.setenv(ENV_ALLOWED_REDIRECTS, REDIRECT)
     if missing == "key":
@@ -351,6 +358,10 @@ def test_code_endpoint_refuses_partial_issuance_configuration(
     elif missing == "issuer":
         monkeypatch.setenv(ENV_PRIVATE_KEY, rsa_pem)
         monkeypatch.delenv(ENV_ISSUER, raising=False)
+    elif missing == "broken_retiring_key":
+        monkeypatch.setenv(ENV_ISSUER, ISSUER)
+        monkeypatch.setenv(ENV_PRIVATE_KEY, rsa_pem)
+        monkeypatch.setenv(ENV_RETIRING_PUBLIC_KEYS, "-----BEGIN PUBLIC KEY-----\nnot base64\n")
     else:
         monkeypatch.setenv(ENV_ISSUER, ISSUER)
         monkeypatch.setenv(ENV_PRIVATE_KEY, "definitely not a key")
@@ -403,6 +414,28 @@ def test_a_failed_exchange_burns_the_code(client: TestClient, configured) -> Non
     code = _request_code(client).json()["code"]
     assert _exchange(client, code, code_verifier="b" * 64).status_code == 400
     assert _exchange(client, code).status_code == 400
+
+
+def test_our_own_misconfiguration_does_not_burn_the_code(
+    client: TestClient, monkeypatch, configured
+) -> None:
+    """The other side of burn-on-failure: it is the *caller's* cost, not ours.
+
+    A code gets one attempt because the caller might be an attacker holding a
+    stolen one. A deployment that breaks between issuance and exchange is not
+    that, and consuming the code there would destroy the retry that succeeds the
+    moment an operator fixes the configuration — for a mistake the caller had no
+    part in.
+    """
+    code = _request_code(client).json()["code"]
+
+    monkeypatch.setenv(ENV_RETIRING_PUBLIC_KEYS, "-----BEGIN PUBLIC KEY-----\nnot base64\n")
+    broken = _exchange(client, code)
+    assert broken.status_code == 500
+    assert broken.json()["error"]["type"] == "identity_key_misconfigured"
+
+    monkeypatch.delenv(ENV_RETIRING_PUBLIC_KEYS)
+    assert _exchange(client, code).status_code == 200
 
 
 @pytest.mark.parametrize(
