@@ -70,10 +70,21 @@ def test_blank_key_is_unavailable(monkeypatch) -> None:
         identity_keys.public_jwks()
 
 
-def test_malformed_pem_raises_our_error_not_a_crypto_error(monkeypatch) -> None:
-    monkeypatch.setenv(
-        ENV_PRIVATE_KEY, "-----BEGIN PRIVATE KEY-----\nnope\n-----END PRIVATE KEY-----"
-    )
+def test_non_pem_text_raises_our_error_not_a_crypto_error(monkeypatch) -> None:
+    monkeypatch.setenv(ENV_PRIVATE_KEY, "definitely not a key")
+    with pytest.raises(IdentityKeyUnavailable):
+        identity_keys.public_jwks()
+
+
+def test_corrupt_pem_body_raises_our_error_not_a_crypto_error(monkeypatch, rsa_pem: str) -> None:
+    """A PEM-shaped value with a damaged body — truncation, bad copy-paste.
+
+    The armour lines come from a generated key rather than being written out
+    here: a literal PEM header in the source is indistinguishable from a real
+    leaked key to the release export scanner, and it should stay that way.
+    """
+    lines = rsa_pem.strip().splitlines()
+    monkeypatch.setenv(ENV_PRIVATE_KEY, "\n".join([lines[0], "!!! not base64 !!!", lines[-1]]))
     with pytest.raises(IdentityKeyUnavailable):
         identity_keys.public_jwks()
 
