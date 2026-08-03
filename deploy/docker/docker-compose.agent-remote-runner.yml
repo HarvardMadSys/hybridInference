@@ -1,0 +1,154 @@
+# Agent runners on a machine that is not the gateway's.
+#
+# Standalone, not an overlay on docker-compose.yml, and that is the point.
+# `docker-compose.agent-runner.yml` declares `depends_on: backend`, so pointing
+# it at a machine with no gateway does not fail — it *starts one*, along with
+# whatever else the base file brings, on a box that was only ever meant to run
+# jobs. This file contains exactly what a remote runner host needs: the
+# runners, their workspace broker, one tunnel to the real gateway, and the two
+# networks.
+#
+#   sandbox ─┐
+#            ├─→ agent-gateway-tunnel ──ssh──→ gateway host, 127.0.0.1:8080
+#   runner  ─┘
+#
+# Both sides address the tunnel by the same name, because they have to: the
+# runner claims over AGENT_GATEWAY_URL and the sandbox is handed that same
+# value for its model calls. The alias resolves on both networks.
+#
+# Start it with ops/deploy/agent_remote_runner.sh, which checks the pieces that
+# fail confusingly when missing.
+
+services:
+  agent-gateway-tunnel:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.agent-gateway-tunnel
+    restart: unless-stopped
+    environment:
+      # user@host of the gateway machine — the only address anything here can
+      # reach through this container.
+      TUNNEL_SSH_DESTINATION: ${AGENT_TUNNEL_SSH_DESTINATION:?user@gateway-host for the tunnel}
+      TUNNEL_SSH_PORT: ${AGENT_TUNNEL_SSH_PORT:-22}
+      # Where the gateway listens *on that machine*. Loopback by default, which
+      # is the setup this design keeps intact: the gateway need not be exposed
+      # to the network at all.
+      TUNNEL_REMOTE_HOST: ${AGENT_TUNNEL_REMOTE_HOST:-127.0.0.1}
+      TUNNEL_REMOTE_PORT: ${AGENT_TUNNEL_REMOTE_PORT:-8080}
+      TUNNEL_LISTEN_PORT: ${AGENT_TUNNEL_LISTEN_PORT:-8080}
+    volumes:
+      # Read-only, and its own key: this one may open a single forwarded port
+      # and nothing else. Restrict it on the gateway host's authorized_keys
+      # with command="" plus permitopen — a shell on the gateway is not part of
+      # what a runner host needs.
+      - ${AGENT_TUNNEL_SSH_KEY:?path to the tunnel's ssh private key}:/etc/agent-tunnel/id:ro
+      - ${AGENT_TUNNEL_SSH_KNOWN_HOSTS:?path to a known_hosts for the gateway host}:/etc/agent-tunnel/known_hosts:ro
+    networks:
+      hybridinference:
+      # On the closed network too — that is the whole trick. The sandbox can
+      # reach this container and nothing else, exactly as it reaches a local
+      # gateway and nothing else.
+      agent-egress:
+        aliases:
+          - ${AGENT_GATEWAY_HOSTNAME:-agent-gateway}
+
+  agent-workspace-broker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.agent-runner
+    restart: unless-stopped
+    environment:
+      AGENT_WORKSPACE_BROKER_TOKEN: ${AGENT_DISPATCHER_TOKEN:?dispatcher credential is required}
+      AGENT_WORKDIR_ROOT: ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
+      AGENT_SANDBOX_BACKEND: ${AGENT_SANDBOX_BACKEND:-kata}
+      AGENT_SANDBOX_IMAGE: ${AGENT_SANDBOX_IMAGE:?name the sandbox image this deployment runs}
+      AGENT_EGRESS_NETWORK_PLATFORM_ONLY: ${AGENT_EGRESS_NETWORK_PLATFORM_ONLY:-agent-egress}
+      AGENT_EGRESS_SETUP_TIER: ${AGENT_EGRESS_SETUP_TIER:-platform_only}
+      AGENT_EGRESS_AGENT_TIER: ${AGENT_EGRESS_AGENT_TIER:-platform_only}
+      AGENT_EGRESS_NETWORK_TRUSTED: ${AGENT_EGRESS_NETWORK_TRUSTED:-}
+      AGENT_EGRESS_NETWORK_CUSTOM: ${AGENT_EGRESS_NETWORK_CUSTOM:-}
+      AGENT_EGRESS_NETWORK_FULL: ${AGENT_EGRESS_NETWORK_FULL:-}
+      AGENT_EGRESS_ALLOWLIST: ${AGENT_EGRESS_ALLOWLIST:-}
+    command:
+      - python
+      - -m
+      - serving.agent_jobs.workspace_broker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}:${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
+    networks:
+      - hybridinference
+
+  agent-runner:
+    deploy:
+      replicas: ${AGENT_RUNNER_REPLICAS:-3}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.agent-runner
+    restart: unless-stopped
+    environment:
+      # The tunnel, by the name both this container and the sandboxes resolve.
+      # Overriding it with the gateway's real address is a mistake worth naming:
+      # the runner would reach it and the sandbox — on the closed network —
+      # would not, so jobs would be claimed and then die at their first model
+      # call.
+      AGENT_GATEWAY_URL: http://${AGENT_GATEWAY_HOSTNAME:-agent-gateway}:${AGENT_TUNNEL_LISTEN_PORT:-8080}
+      AGENT_DISPATCHER_TOKEN: ${AGENT_DISPATCHER_TOKEN:?dispatcher credential is required}
+      AGENT_WORKSPACE_BROKER_URL: http://agent-workspace-broker:8092
+      AGENT_WORKSPACE_BROKER_TOKEN: ${AGENT_DISPATCHER_TOKEN:?dispatcher credential is required}
+
+      AGENT_SANDBOX_BACKEND: ${AGENT_SANDBOX_BACKEND:-kata}
+      AGENT_SANDBOX_IMAGE: ${AGENT_SANDBOX_IMAGE:?name the sandbox image this deployment runs}
+
+      AGENT_GIT_AUTHOR_NAME: ${AGENT_GIT_AUTHOR_NAME:-}
+      AGENT_GIT_AUTHOR_EMAIL: ${AGENT_GIT_AUTHOR_EMAIL:-}
+
+      AGENT_WORKDIR_ROOT: ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
+      AGENT_WORKSPACE_TTL_S: ${AGENT_WORKSPACE_TTL_S:-604800}
+
+      AGENT_EGRESS_NETWORK_PLATFORM_ONLY: ${AGENT_EGRESS_NETWORK_PLATFORM_ONLY:-agent-egress}
+      AGENT_EGRESS_SETUP_TIER: ${AGENT_EGRESS_SETUP_TIER:-platform_only}
+      AGENT_EGRESS_AGENT_TIER: ${AGENT_EGRESS_AGENT_TIER:-platform_only}
+      AGENT_EGRESS_NETWORK_TRUSTED: ${AGENT_EGRESS_NETWORK_TRUSTED:-}
+      AGENT_EGRESS_NETWORK_CUSTOM: ${AGENT_EGRESS_NETWORK_CUSTOM:-}
+      AGENT_EGRESS_NETWORK_FULL: ${AGENT_EGRESS_NETWORK_FULL:-}
+      AGENT_EGRESS_ALLOWLIST: ${AGENT_EGRESS_ALLOWLIST:-}
+
+      AGENT_SNAPSHOT_ROOT: ${AGENT_SNAPSHOT_ROOT:-/var/lib/hybridinference/agent-snapshots}
+      AGENT_SNAPSHOT_TTL_S: ${AGENT_SNAPSHOT_TTL_S:-604800}
+
+      AGENT_LEASE_TTL: ${AGENT_LEASE_TTL:-120}
+      AGENT_TIMEOUT_S: ${AGENT_TIMEOUT_S:-3600}
+      # Which machine this is, for the admin host switch. Filled in by
+      # agent_remote_runner.sh from the host's own name — the whole reason a
+      # second machine is worth adding is being able to select it.
+      AGENT_RUNNER_HOST: ${AGENT_RUNNER_HOST:-}
+    command:
+      - python
+      - -m
+      - serving.agent_jobs.runner
+      - --loop
+      - --workdir-root
+      - ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}:${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
+      - ${AGENT_SNAPSHOT_ROOT:-/var/lib/hybridinference/agent-snapshots}:${AGENT_SNAPSHOT_ROOT:-/var/lib/hybridinference/agent-snapshots}
+    networks:
+      - hybridinference
+    depends_on:
+      # Not a correctness barrier — the runner's own preflight is, and it fails
+      # loudly if the tunnel is not up. This only spares an operator the first
+      # crash-loop while the forward is still being established.
+      - agent-gateway-tunnel
+
+networks:
+  hybridinference:
+    # Local to this host. Nothing here talks to the gateway's compose network;
+    # the tunnel is the only path off the machine.
+    driver: bridge
+  agent-egress:
+    name: ${AGENT_EGRESS_NETWORK_PLATFORM_ONLY:-agent-egress}
+    # No route to the outside world, exactly as on the gateway's own host. What
+    # a sandbox can reach on it is the tunnel, and the tunnel goes one place.
+    internal: true
