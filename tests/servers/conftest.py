@@ -210,6 +210,14 @@ def _reset_login_rate_limit():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_auth_failure_block():
+    from serving.utils.auth_failure_blocklist import reset_auth_failure_block_state
+
+    reset_auth_failure_block_state()
+    yield
+
+
 # ============================================================================
 # Mock fixtures (for non-auth tests)
 # ============================================================================

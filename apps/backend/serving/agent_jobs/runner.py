@@ -249,6 +249,17 @@ class ControlPlane:
             {"kind": kind, "content": content},
         )
 
+    def suspend_terminals(self, phase: str) -> None:
+        """Freeze owner PTYs before workspace preparation or artifact capture."""
+        self._post(
+            f"/v1/agent/worker/jobs/{self.job_id}/terminals/suspend",
+            {"phase": phase},
+        )
+
+    def resume_terminals(self) -> None:
+        """Resume retained PTYs and publish readiness for this attempt."""
+        self._post(f"/v1/agent/worker/jobs/{self.job_id}/terminals/resume")
+
     def finish(self, state: str, detail: str | None = None, base_sha: str | None = None) -> None:
         """Drive the fenced terminal transition.
 
@@ -306,17 +317,29 @@ class Heartbeater:
 
 
 def claim(
-    *, base_url: str, dispatcher_token: str, worker_id: str, lease_ttl: float
+    *,
+    base_url: str,
+    dispatcher_token: str,
+    worker_id: str,
+    lease_ttl: float,
+    host: str | None = None,
 ) -> ClaimedJob | None:
     """Claim the next queued job with the dispatcher credential.
 
     The dispatcher credential is used here and nowhere else — it does not
     travel into the agent's environment.
+
+    ``host`` names the machine this runner sits on, which is how it joins the
+    pool an operator picks from. Replicas on one machine share it; it is not
+    ``worker_id``, which is deliberately unique per replica.
     """
+    payload: dict[str, Any] = {"worker_id": worker_id, "lease_ttl_seconds": lease_ttl}
+    if host:
+        payload["host"] = host
     try:
         response = httpx.post(
             f"{base_url.rstrip('/')}/v1/agent/worker/claim",
-            json={"worker_id": worker_id, "lease_ttl_seconds": lease_ttl},
+            json=payload,
             headers={"Authorization": f"Bearer {dispatcher_token}"},
             timeout=30.0,
         )
@@ -738,9 +761,13 @@ def run_agent(
         # states — stays out here with the runner, so an agent that leaks its
         # credential can spend the job's capped budget and nothing more.
         credential=job.sandbox_token,
+        # Runtime-specific permission flags must follow the actual execution
+        # boundary. In particular, Codex cannot nest bubblewrap inside the
+        # capability-dropped container backend.
+        provides_isolation=backend.provides_isolation,
         # The runner is the only source of this value. Repository contents
-        # never become runtime MCP configuration, and an adapter without a
-        # gateway-mediated path still rejects a non-empty set.
+        # never become runtime MCP configuration, and adapters without a
+        # gateway-mediated path reject a non-empty set.
         mcp_config=mcp_config,
     )
 
@@ -849,6 +876,7 @@ def run_once(
     generic_command: str | None = None,
     backend: SandboxBackend | None = None,
     workspace_root: str | None = None,
+    host: str | None = None,
 ) -> int:
     """Claim one job, run it, and report the outcome. Returns a process exit code.
 
@@ -872,6 +900,7 @@ def run_once(
         dispatcher_token=dispatcher_token,
         worker_id=worker_id,
         lease_ttl=lease_ttl,
+        host=host,
     )
     if job is None:
         print("no queued agent job; nothing to do")
@@ -890,11 +919,26 @@ def run_once(
     control = ControlPlane(base_url, job.worker_token)
     control.job_id = job.job_id
     heart = Heartbeater(control, ttl=lease_ttl, interval=HEARTBEAT_INTERVAL_S)
+    terminals_suspended = False
+
+    def finish_attempt(
+        state: str,
+        detail: str | None = None,
+        *,
+        base_sha: str | None = None,
+    ) -> None:
+        """Finish through the gateway, which also resumes retained terminals."""
+        nonlocal terminals_suspended
+        if base_sha is None:
+            control.finish(state, detail)
+        else:
+            control.finish(state, detail, base_sha=base_sha)
+        terminals_suspended = False
 
     try:
         runtime = get_runtime(job.runtime, generic_command=generic_command)
     except KeyError as exc:
-        control.finish("failed", str(exc))
+        finish_attempt("failed", str(exc))
         control.close()
         return 2
 
@@ -907,16 +951,26 @@ def run_once(
         control.append_event(
             NormalizedEvent("error", {"text": f"runtime binary {runtime.binary!r} missing"})
         )
-        control.finish("failed", f"runtime binary {runtime.binary!r} is not installed")
+        finish_attempt("failed", f"runtime binary {runtime.binary!r} is not installed")
         control.close()
         return 2
 
     heart.start()
     try:
+        # A replacement attempt may inherit live user shells from the expired
+        # owner. Freeze their complete process trees before checkout or setup;
+        # stdin fencing alone cannot stop a watcher or background process.
+        terminals_suspended = True
+        control.suspend_terminals("workspace_preparing")
         control.append_event(
             NormalizedEvent(
                 "lifecycle",
-                {"phase": "started", "runtime": job.runtime, "attempt_no": job.attempt_no},
+                {
+                    "phase": "started",
+                    "runtime": job.runtime,
+                    "attempt_no": job.attempt_no,
+                    **backend.sandbox_metadata(),
+                },
             )
         )
 
@@ -954,7 +1008,7 @@ def run_once(
             backend.adopt_workdir(workdir)
         except WorktreeError as exc:
             control.append_event(NormalizedEvent("error", {"text": str(exc)}))
-            control.finish("failed", str(exc))
+            finish_attempt("failed", str(exc))
             return 2
         control.append_event(
             NormalizedEvent("lifecycle", {"phase": "checked_out", "base_sha": base_sha})
@@ -969,7 +1023,7 @@ def run_once(
                 apply_context_patch(workdir, job.context_patch)
             except WorktreeError as exc:
                 control.append_event(NormalizedEvent("error", {"text": str(exc)}))
-                control.finish("failed", str(exc), base_sha=base_sha)
+                finish_attempt("failed", str(exc), base_sha=base_sha)
                 return 2
             control.append_event(
                 NormalizedEvent(
@@ -1004,12 +1058,17 @@ def run_once(
                 # and letting the agent start anyway produces a confusing
                 # failure much later, in the model's voice rather than the
                 # installer's.
-                control.finish(
+                finish_attempt(
                     "failed",
                     f"setup failed ({setup.exit_code}): {setup.detail}",
                     base_sha=base_sha,
                 )
                 return 1
+
+        # Everything before this point is trusted workspace preparation.
+        # Retained terminals resume only for the agent execution window.
+        control.resume_terminals()
+        terminals_suspended = False
 
         exit_code, tail, tool_errors = run_agent(
             runtime,
@@ -1027,10 +1086,11 @@ def run_once(
             mcp_config=RuntimeMCPConfig(server_ids=tuple(job.mcp_servers)),
         )
 
-        if exit_code == 130:
-            control.finish("cancelled", "cancelled by owner", base_sha=base_sha)
-            return 0
-
+        # Freeze both interactive input and already-running terminal process
+        # trees before taking the patch and workspace snapshot. The finish
+        # endpoint resumes them immediately before the terminal state change.
+        terminals_suspended = True
+        control.suspend_terminals("workspace_finalizing")
         patch = build_patch(workdir, backend, base_sha=job.base_sha or base_sha)
         if patch.strip():
             control.save_artifact("patch", patch)
@@ -1042,8 +1102,16 @@ def run_once(
 
         save_workspace_snapshot(control, workdir=workdir, patch=patch)
 
+        if exit_code == 130:
+            finish_attempt("cancelled", "cancelled by owner", base_sha=base_sha)
+            return 0
+
         if exit_code != 0:
-            control.finish("failed", f"agent exited {exit_code}: {tail[-500:]}", base_sha=base_sha)
+            finish_attempt(
+                "failed",
+                f"agent exited {exit_code}: {tail[-500:]}",
+                base_sha=base_sha,
+            )
             return 1
 
         # The publisher runs outside the sandbox and drives publish/*; the
@@ -1056,17 +1124,17 @@ def run_once(
             # as a clean run — the owner would see "succeeded" on a job that
             # did nothing and never learn why.
             if tool_errors:
-                control.finish(
+                finish_attempt(
                     "failed",
                     f"agent produced no changes after {len(tool_errors)} failed "
                     f"tool call(s): {tool_errors[0]}",
                     base_sha=base_sha,
                 )
                 return 1
-            control.finish("succeeded", "agent completed (no changes)", base_sha=base_sha)
+            finish_attempt("succeeded", "agent completed (no changes)", base_sha=base_sha)
             return 0
 
-        control.finish("succeeded", "agent completed", base_sha=base_sha)
+        finish_attempt("succeeded", "agent completed", base_sha=base_sha)
         return 0
     except WorktreeError as exc:
         # Patch generation raises this on a Git failure, timeout or byte cap.
@@ -1076,12 +1144,18 @@ def run_once(
         print(f"patch generation failed: {exc}", file=sys.stderr)
         with contextlib.suppress(Exception):
             control.append_event(NormalizedEvent("error", {"text": str(exc)}))
-            control.finish("failed", str(exc), base_sha=base_sha)
+            finish_attempt("failed", str(exc), base_sha=base_sha)
         return 2
     except LeaseLost as exc:
         print(f"lease lost, stopping: {exc}", file=sys.stderr)
         return 3
     finally:
+        # A surprising runner-side exception must not strand retained user
+        # terminals in a suspended state. A stale attempt cannot resume them:
+        # the worker endpoint fences this call against its live lease.
+        if terminals_suspended:
+            with contextlib.suppress(Exception):
+                control.resume_terminals()
         if workspace_root is not None:
             with contextlib.suppress(OSError):
                 os.utime(workdir, None)
@@ -1101,6 +1175,7 @@ def run_forever(
     idle_sleep_s: float = 5.0,
     backend: SandboxBackend | None = None,
     workspace_ttl_s: float = DEFAULT_WORKSPACE_TTL_S,
+    host: str | None = None,
 ) -> int:
     """Claim and run jobs until interrupted — the long-lived runner.
 
@@ -1126,7 +1201,11 @@ def run_forever(
     checker = getattr(backend, "check_gateway_reachable", None)
     if checker is not None:
         checker(base_url)
-    print(f"agent runner {worker_id} started (sandbox backend: {backend.name})", flush=True)
+    where = f" on host {host}" if host else " (no host reported)"
+    print(
+        f"agent runner {worker_id} started{where} (sandbox backend: {backend.name})",
+        flush=True,
+    )
 
     while True:
         try:
@@ -1140,6 +1219,7 @@ def run_forever(
                 generic_command=generic_command,
                 backend=backend,
                 workspace_root=str(root),
+                host=host,
             )
         except KeyboardInterrupt:
             return 0
@@ -1201,6 +1281,22 @@ def default_worker_id() -> str:
     return f"{base}-{host}" if host and not base.endswith(host) else base
 
 
+def default_runner_host() -> str | None:
+    """Name the *machine* this runner sits on, for the host pool.
+
+    Explicit configuration only. ``socket.gethostname()`` is what
+    :func:`default_worker_id` uses and is exactly wrong here: inside a
+    container it returns the container id, so every replica would enter the
+    pool as its own "host" and every restart would add another one — an
+    operator picking a machine would be choosing between rows of hex.
+
+    Unset means this runner joins no pool and stays invisible to the switch.
+    That is also the compatible default: with no host pinned, an unreporting
+    runner claims exactly as it always has.
+    """
+    return (os.environ.get("AGENT_RUNNER_HOST") or "").strip() or None
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the runner CLI parser.
 
@@ -1216,6 +1312,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("AGENT_GATEWAY_URL") or os.environ.get("FREEINFERENCE_BASE_URL", ""),
     )
     parser.add_argument("--worker-id", default=default_worker_id())
+    parser.add_argument(
+        "--host",
+        default=default_runner_host(),
+        help=(
+            "Machine this runner sits on (AGENT_RUNNER_HOST). Shared by every "
+            "replica here; joins the pool an admin can switch between."
+        ),
+    )
     parser.add_argument("--workdir", default=".")
     # Read from the environment the way --base-url and --workdir-root already
     # do. The compose overlay sets AGENT_LEASE_TTL and AGENT_TIMEOUT_S, and
@@ -1270,6 +1374,7 @@ def main(argv: list[str] | None = None) -> int:
             agent_timeout_s=args.agent_timeout,
             generic_command=args.generic_command,
             workspace_ttl_s=args.workspace_ttl,
+            host=args.host,
         )
 
     return run_once(
@@ -1280,6 +1385,7 @@ def main(argv: list[str] | None = None) -> int:
         lease_ttl=args.lease_ttl,
         agent_timeout_s=args.agent_timeout,
         generic_command=args.generic_command,
+        host=args.host,
     )
 
 

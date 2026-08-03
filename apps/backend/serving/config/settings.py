@@ -68,6 +68,16 @@ class Settings(BaseSettings):
     # entry so probing varied passwords cannot bypass the limit.
     login_rate_limit_per_15min: int = 5
     login_rate_limit_per_hour_per_ip: int = 20
+    # Auto-block a source IP at the API-key auth layer after repeated auth
+    # failures. Once an IP (IPv6 bucketed to /64) reaches
+    # auth_failure_block_threshold failures within auth_failure_block_window_sec,
+    # it is refused for auth_failure_block_duration_sec. In-memory and
+    # per-process, like the login/signup limiters above. Defaults: 200 failures
+    # in a day → blocked for a day.
+    auth_failure_block_enabled: bool = True
+    auth_failure_block_threshold: int = 200
+    auth_failure_block_window_sec: int = 86400
+    auth_failure_block_duration_sec: int = 86400
 
     # Cloudflare Turnstile (signup captcha)
     turnstile_site_key: str = ""

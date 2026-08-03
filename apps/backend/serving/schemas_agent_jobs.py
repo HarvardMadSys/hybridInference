@@ -32,6 +32,14 @@ MAX_JOB_BUDGET_USD = 500.0
 # while still letting runtime adapters introduce new kinds.
 EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 
+# Where a job's `base_ref` lives once it is persisted. The column stores the
+# resolved `base_sha` — a branch moves — so the branch the owner actually
+# picked is kept alongside it in `metadata` under a reserved key, which the API
+# strips back out on the way to the client. Reserved means the creation path
+# drops any caller-supplied copy: it is a fact the server resolved, and the
+# publisher targets the PR at it, so a caller must not be able to forge one.
+BASE_REF_METADATA_KEY = "_agent_base_ref"
+
 
 class AgentJobCreate(BaseModel):
     """Request body for creating an agent job."""
@@ -52,8 +60,9 @@ class AgentJobCreate(BaseModel):
         None,
         max_length=8000,
         description=(
-            "Shell run before the agent, under the setup egress tier. Its result is "
-            "cached per repository and script, so a retry does not reinstall."
+            "Shell run before the agent, under the setup egress tier. What it adds "
+            "to the worktree is cached per repository, script, and sandbox image, "
+            "so a retry does not reinstall."
         ),
     )
     base_ref: str | None = Field(
@@ -61,7 +70,9 @@ class AgentJobCreate(BaseModel):
         max_length=255,
         description=(
             "Branch to work from. Resolved to a commit at creation and stored as "
-            "base_sha — a branch moves, and the publisher applies onto a pinned commit."
+            "base_sha — a branch moves, and the publisher applies onto a pinned commit. "
+            "The draft PR targets this branch; jobs that name none target the "
+            "deployment default."
         ),
     )
     base_sha: str | None = Field(
@@ -122,6 +133,7 @@ class AgentJobResponse(BaseModel):
     mcp_servers: list[str] = Field(default_factory=list)
     created_at: str | None = None
     updated_at: str | None = None
+    pinned_at: str | None = None
     # Read from the billing ledger, never from anything the agent reports about
     # itself — the same rule the budget check already follows.
     spent_usd: float | None = None
@@ -155,6 +167,8 @@ class AgentProject(BaseModel):
     # Non-terminal jobs, so a collapsed project can still show live work.
     active_count: int
     last_activity_at: str | None = None
+    pinned_count: int = 0
+    pinned_at: str | None = None
 
 
 class AgentProjectListResponse(BaseModel):
@@ -195,6 +209,14 @@ class AgentThreadArchiveResponse(BaseModel):
     thread_id: str
     archived: bool
     archived_at: str | None = None
+
+
+class AgentThreadPinResponse(BaseModel):
+    """Pin state for the thread containing a requested job."""
+
+    thread_id: str
+    pinned: bool
+    pinned_at: str | None = None
 
 
 class AgentFollowUpRequest(BaseModel):
@@ -393,6 +415,19 @@ class WorkerClaimRequest(BaseModel):
         le=MAX_LEASE_TTL_SECONDS,
         description="How long the lease is valid without a heartbeat.",
     )
+    # Bounded and charset-checked because it is a primary key an admin reads
+    # off a page and clicks: an unconstrained field here lets a runner write
+    # whatever it likes into the machine list.
+    host: str | None = Field(
+        None,
+        max_length=253,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        description=(
+            "Machine this runner sits on, shared by its replicas. Joins the "
+            "pool an operator can pin agent jobs to. Omitted by runners that "
+            "predate host reporting."
+        ),
+    )
 
 
 class WorkerClaimResponse(BaseModel):
@@ -472,6 +507,12 @@ class WorkerEventResponse(BaseModel):
     event_id: int
 
 
+class WorkerTerminalSuspendRequest(BaseModel):
+    """Protected workspace phase that requires every owner PTY to pause."""
+
+    phase: Literal["workspace_preparing", "workspace_finalizing"]
+
+
 class WorkerArtifactRequest(BaseModel):
     """An artifact produced by a worker (e.g. the git patch)."""
 
@@ -494,8 +535,9 @@ class WorkerFinishRequest(BaseModel):
         None,
         max_length=8000,
         description=(
-            "Shell run before the agent, under the setup egress tier. Its result is "
-            "cached per repository and script, so a retry does not reinstall."
+            "Shell run before the agent, under the setup egress tier. What it adds "
+            "to the worktree is cached per repository, script, and sandbox image, "
+            "so a retry does not reinstall."
         ),
     )
     base_ref: str | None = Field(
@@ -503,7 +545,9 @@ class WorkerFinishRequest(BaseModel):
         max_length=255,
         description=(
             "Branch to work from. Resolved to a commit at creation and stored as "
-            "base_sha — a branch moves, and the publisher applies onto a pinned commit."
+            "base_sha — a branch moves, and the publisher applies onto a pinned commit. "
+            "The draft PR targets this branch; jobs that name none target the "
+            "deployment default."
         ),
     )
     base_sha: str | None = Field(
@@ -602,6 +646,7 @@ class GitHubConnectionResponse(BaseModel):
 
     connections: list[dict[str, Any]] = Field(default_factory=list)
     repos: list[str] = Field(default_factory=list)
+    install_url: str | None = None
 
 
 class SourceControlAccount(BaseModel):
@@ -627,6 +672,7 @@ class SourceControlProviderResponse(BaseModel):
     configured: bool
     connected: bool
     connect_url: str | None = None
+    manage_url: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     accounts: list[SourceControlAccount] = Field(default_factory=list)
     repositories: list[SourceControlRepository] = Field(default_factory=list)

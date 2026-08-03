@@ -62,14 +62,21 @@ In the composer:
 4. Run the task
 
 The task page streams the agent's activity as it happens — its reasoning, each
-tool call with its result, and the diff as it takes shape. A task can be
-cancelled while the agent is working; cancellation does not recall a result
-that is already being published. When the task finishes, the draft pull
-request is linked directly from the task page.
+tool call with its result, and the diff as it takes shape. **Stop** (or
+**Escape** while focus is outside a text field) interrupts a working agent.
+Any intermediate changes are saved but not published; send a follow-up in the
+same task after it stops to restore those changes and continue in a new
+isolated pass with the existing conversation as context.
+Cancellation does not recall a result that is already being published. When
+the task finishes, the draft pull request is linked directly from the task
+page.
 
 A task also takes **follow-up messages**: send one from the task page and it
 runs as a new isolated pass in the same thread, inheriting the repository and
-— unless you switch them — the agent and model of the turn before.
+the agent of the turn before. Its **model** is chosen per turn: the control
+beside the follow-up box starts on the model the last turn ran and switches
+the next one onto any other listed model — so a thread can open on a fast
+model and move to a larger one where the work turns out to be hard.
 
 The conversation itself carries three actions. Every message has **Copy**.
 **Fork from here** on any earlier answer duplicates the conversation up to
@@ -84,9 +91,9 @@ with the original task.
 ## Choosing an agent and model
 
 The **agent** is the tool that does the work — Claude Code, Codex, OpenCode,
-and pi are available today. Claude Code and Codex stream fully structured
-activity (reasoning, tool calls, diffs); OpenCode and pi run with a plainer
-raw log view. The **model** is what drives the agent: the composer lists the
+Kilo Code, and pi are available today. Claude Code and Codex stream fully
+structured activity (reasoning, tool calls, diffs); OpenCode, Kilo Code, and
+pi run with a plainer raw log view. The **model** is what drives the agent: the composer lists the
 models enabled for agent tasks, which during the beta can be a subset of the
 full [model catalog](models.md). Both are picked per task, and any listed
 model can drive any agent.

@@ -269,22 +269,116 @@ def test_agent_runtimes_are_pinned_not_floating():
         assert re.fullmatch(r"\d+\.\d+\.\d+", value), f"{name}={value} is not an exact version"
 
 
-def test_both_phases_are_closed_in_the_shipped_configuration(compose: dict):
-    """The overlay ships no setup network, so neither phase may claim `trusted`.
+def test_the_agent_phase_is_closed_in_the_shipped_configuration(compose: dict):
+    """The turn driven by untrusted model output reaches the gateway and nothing else.
 
-    The design's external-beta default is setup=trusted, but there is no setup
-    phase yet and no allowlist-fronted network to run it on. Shipping `trusted`
-    as the compose default would name a tier this deployment cannot honour —
-    the config would read as "dependencies can be installed" while the network
-    behind it reaches only the gateway.
+    This is the differentiator, not an implementation detail: the setup phase
+    may be raised to an allowlist, but the phase that executes what a model
+    decided to do stays on a network with no route. A default that opened it
+    would be the one change here nobody would notice from the outside.
     """
     env = compose["services"]["agent-runner"]["environment"]
     # And the spawn network tracks the same variable the network block names.
     assert _expand(env["AGENT_EGRESS_NETWORK_PLATFORM_ONLY"]) == _expand(
         compose["networks"]["agent-egress"]["name"]
     )
-    for var in ("AGENT_EGRESS_SETUP_TIER", "AGENT_EGRESS_AGENT_TIER"):
-        assert "platform_only" in env[var], f"{var} must be closed until a tier exists for it"
+    assert "platform_only" in env["AGENT_EGRESS_AGENT_TIER"]
+
+
+def test_the_setup_tier_the_overlay_selects_is_one_it_actually_ships(compose: dict):
+    """Naming `trusted` obliges this file to ship the thing that honours it.
+
+    The failure this prevents is a config that reads as "dependencies can be
+    installed" over a network that reaches only the gateway — every setup
+    script then dies at DNS, and nothing in the compose file looks wrong. The
+    tier needs three things present together, so they are asserted together.
+    """
+    env = compose["services"]["agent-runner"]["environment"]
+    if "trusted" not in _expand(env["AGENT_EGRESS_SETUP_TIER"]):
+        pytest.skip("this overlay does not select the trusted tier")
+
+    trusted = _expand(env["AGENT_EGRESS_NETWORK_TRUSTED"])
+    assert trusted, "the trusted tier is selected but names no network"
+    declared = {
+        _expand(network.get("name", name)): network for name, network in compose["networks"].items()
+    }
+    assert trusted in declared, f"{trusted} is selected but this file does not create it"
+
+    # Internal like the closed tier. The difference between the two is the
+    # proxy on it, not a route — a routable network here would hand the setup
+    # phase the whole internet while still being called "trusted".
+    assert declared[trusted]["internal"] is True
+
+    proxy = compose["services"]["agent-egress-proxy"]
+    assert trusted in [_expand(n) for n in proxy["networks"]], (
+        "the proxy is not on the network whose traffic it is supposed to police"
+    )
+    # And the runner must actually tell the sandbox to use it.
+    url = _expand(env["AGENT_EGRESS_PROXY_URL_TRUSTED"])
+    assert url.startswith("http://"), "the trusted tier is selected with no proxy URL"
+
+
+def test_the_proxy_url_names_the_port_the_generated_config_listens_on(compose: dict):
+    """Two places hold one number, so they are checked against each other.
+
+    A mismatch is invisible in review and total at run time: Squid listens on
+    one port, every sandbox dials another, and the first symptom is that no
+    dependency install has ever worked.
+    """
+    from serving.agent_jobs.egress_proxy import DEFAULT_PROXY_PORT
+
+    env = compose["services"]["agent-runner"]["environment"]
+    assert _expand(env["AGENT_EGRESS_PROXY_URL_TRUSTED"]).endswith(f":{DEFAULT_PROXY_PORT}")
+
+
+def test_the_proxy_cannot_reach_the_rest_of_the_stack(compose: dict):
+    """A Squid reachable by an untrusted sandbox must not also see the database.
+
+    The proxy is the one component here that takes input from inside the
+    sandbox and holds a route to the internet. Putting it on `hybridinference`
+    for convenience would mean a Squid compromise reaches Postgres.
+    """
+    proxy = compose["services"]["agent-egress-proxy"]
+    assert "hybridinference" not in proxy["networks"]
+    assert not proxy.get("volumes") or all(
+        "docker.sock" not in volume for volume in proxy["volumes"]
+    )
+
+    uplink = [n for n in proxy["networks"] if "uplink" in n]
+    assert uplink, "the proxy has no routable leg, so it can police nothing"
+    declared = compose["networks"][uplink[0]]
+    assert not declared.get("internal"), "the proxy's uplink must actually route out"
+    on_uplink = [
+        name
+        for name, service in compose["services"].items()
+        if uplink[0] in (service.get("networks") or [])
+    ]
+    assert on_uplink == ["agent-egress-proxy"], (
+        f"the routable network must hold only the proxy, but also holds {on_uplink}"
+    )
+
+
+def test_the_proxy_config_is_generated_by_the_validating_renderer(compose: dict):
+    """The allowlist reaches Squid's config only through code that checks it.
+
+    A domain carrying a newline appends directives to the file that decides
+    what an untrusted sandbox may reach. The renderer refuses those; a
+    hand-written config, or a shell loop in an entrypoint, would not.
+    """
+    config_service = compose["services"]["agent-egress-proxy-config"]
+    assert "serving.agent_jobs.egress_proxy" in config_service["command"]
+    assert "AGENT_EGRESS_ALLOWLIST" in config_service["environment"]
+
+    # It renders a file and must not be able to do anything else.
+    assert config_service["network_mode"] == "none"
+
+    proxy = compose["services"]["agent-egress-proxy"]
+    assert proxy["depends_on"]["agent-egress-proxy-config"]["condition"] == (
+        "service_completed_successfully"
+    ), "the proxy may start before its config exists, i.e. with no config at all"
+    assert any(volume.endswith(":ro") for volume in proxy["volumes"]), (
+        "the proxy can rewrite the allowlist it is enforcing"
+    )
 
 
 def test_both_substrates_pin_the_same_agent_cli_versions():
@@ -308,17 +402,23 @@ def test_both_substrates_pin_the_same_agent_cli_versions():
     workflow = path.read_text()
     image = _DOCKERFILE.read_text()
 
-    for name in ("CLAUDE_CODE_VERSION", "CODEX_VERSION", "PI_VERSION", "OPENCODE_VERSION"):
+    for name in (
+        "CLAUDE_CODE_VERSION",
+        "CODEX_VERSION",
+        "PI_VERSION",
+        "OPENCODE_VERSION",
+        "KILO_VERSION",
+    ):
         pinned = re.search(rf"^ARG {name}=(\S+)$", image, re.MULTILINE)
         assert pinned, f"{name} must be pinned in the sandbox image"
         assert f'{name}: "{pinned.group(1)}"' in workflow, (
             f"{name} differs between the sandbox image and the Actions workflow"
         )
 
-    # pi and OpenCode are reached through wrappers, so a substrate that
+    # pi, OpenCode, and Kilo are reached through wrappers, so a substrate that
     # installs the CLI but not the wrapper produces jobs that die at spawn
-    # with "binary missing" — both substrates must ship both.
-    for wrapper in ("pi-freeinference", "opencode-freeinference"):
+    # with "binary missing" — both substrates must ship all of them.
+    for wrapper in ("pi-freeinference", "opencode-freeinference", "kilo-freeinference"):
         assert wrapper in image, f"the sandbox image does not install {wrapper}"
         assert wrapper in workflow, f"the Actions runner does not install {wrapper}"
 
@@ -643,6 +743,120 @@ def test_opencode_wrapper_refuses_to_run_half_configured(tmp_path):
     assert "OPENAI_API_KEY" in result.stderr
 
 
+_KILO_WRAPPER = Path(__file__).resolve().parents[2] / "deploy/docker/kilo-freeinference"
+
+
+def test_kilo_wrapper_writes_config_sets_offline_flags_and_execs(tmp_path):
+    """The wrapper produces Kilo's config and kills its phone-home paths.
+
+    A stub ``kilo`` on PATH records argv and the environment it received.
+    Kilo is an OpenCode fork that renamed the kill switches to ``KILO_*`` and
+    added its own phone-home paths (PostHog telemetry, session ingest and
+    share links to app.kilo.ai); without KILO_DISABLE_MODELS_FETCH the CLI
+    hard-fails fetching models.dev, which in the deny-all sandbox is every
+    single run.
+    """
+    import json as _json
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    record = tmp_path / "seen.json"
+    stub = stub_dir / "kilo"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "seen = {'argv': sys.argv[1:], 'env': {k: v for k, v in os.environ.items()"
+        " if k.startswith('KILO_') or k == 'DO_NOT_TRACK'}}\n"
+        f"open({str(record)!r}, 'w').write(json.dumps(seen))\n"
+    )
+    stub.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    prompt = 'fix; the $(bug) "carefully"'
+    result = _subprocess.run(
+        [
+            _sys.executable,
+            str(_KILO_WRAPPER),
+            "run",
+            "--format",
+            "json",
+            "--auto",
+            "-m",
+            "freeinference/glm-5.1",
+            prompt,
+        ],
+        env={
+            "PATH": f"{stub_dir}:{_os.environ['PATH']}",
+            "HOME": str(home),
+            "OPENAI_BASE_URL": "http://backend:8080/v1",
+            "OPENAI_API_KEY": "ajt.attempt.key",
+            "KILO_GATEWAY_MODEL": "glm-5.1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    seen = _json.loads(record.read_text())
+    assert seen["argv"] == [
+        "run",
+        "--format",
+        "json",
+        "--auto",
+        "-m",
+        "freeinference/glm-5.1",
+        prompt,
+    ]
+    # The OpenCode switches, under the fork's renamed prefix.
+    assert seen["env"]["KILO_DISABLE_MODELS_FETCH"] == "1"
+    assert seen["env"]["KILO_DISABLE_DEFAULT_PLUGINS"] == "1"
+    assert seen["env"]["KILO_DISABLE_AUTOUPDATE"] == "1"
+    assert seen["env"]["KILO_DISABLE_PROJECT_CONFIG"] == "1"
+    # The fork's own phone-home paths, each with its supported switch.
+    assert seen["env"]["KILO_DISABLE_SESSION_INGEST"] == "1"
+    assert seen["env"]["KILO_DISABLE_SHARE"] == "1"
+    assert seen["env"]["KILO_DISABLE_PRESENCE"] == "1"
+    assert seen["env"]["KILO_DISABLE_LSP_DOWNLOAD"] == "1"
+    assert seen["env"]["KILO_TELEMETRY_LEVEL"] == "off"
+    assert seen["env"]["DO_NOT_TRACK"] == "1"
+
+    config = _json.loads(Path(seen["env"]["KILO_CONFIG"]).read_text())
+    provider = config["provider"]["freeinference"]
+    assert provider["npm"] == "@ai-sdk/openai-compatible"
+    assert provider["options"]["baseURL"] == "http://backend:8080/v1"
+    assert provider["options"]["apiKey"] == "ajt.attempt.key"
+    assert provider["models"] == {"glm-5.1": {"name": "glm-5.1"}}
+    # The config lives in HOME, never in the job worktree.
+    assert seen["env"]["KILO_CONFIG"].startswith(str(home))
+
+
+def test_kilo_wrapper_refuses_to_run_half_configured(tmp_path):
+    """Missing environment is a named refusal, not a run that dials out."""
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+
+    result = _subprocess.run(
+        [_sys.executable, str(_KILO_WRAPPER), "run", "hi"],
+        env={
+            "PATH": _os.environ["PATH"],
+            "HOME": str(tmp_path),
+            "OPENAI_BASE_URL": "http://backend:8080/v1",
+            # OPENAI_API_KEY and KILO_GATEWAY_MODEL deliberately absent.
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 64
+    assert "OPENAI_API_KEY" in result.stderr
+
+
 def test_concurrency_is_declared_not_typed_at_deploy_time(compose: dict):
     """One runner takes one job at a time, so replicas *is* the concurrency.
 
@@ -681,3 +895,97 @@ def test_runner_derives_a_distinct_worker_id_per_container(monkeypatch):
 
     monkeypatch.setenv("AGENT_WORKER_ID", "staging")
     assert default_worker_id() == "staging-abc123"
+
+
+# ── Remote runner host (no gateway on this machine) ────────────────────
+
+_REMOTE_COMPOSE = (
+    Path(__file__).resolve().parents[2] / "deploy/docker/docker-compose.agent-remote-runner.yml"
+)
+_TUNNEL_ENTRYPOINT = Path(__file__).resolve().parents[2] / "deploy/docker/agent-gateway-tunnel.sh"
+
+
+@pytest.fixture(scope="module")
+def remote_compose() -> dict:
+    """Parse the standalone remote-runner compose file."""
+    return yaml.safe_load(_REMOTE_COMPOSE.read_text())
+
+
+def test_remote_compose_starts_no_gateway(remote_compose: dict):
+    """The whole reason this file exists separately from the overlay.
+
+    `docker-compose.agent-runner.yml` layers on the main stack and its runner
+    declares `depends_on: backend`, so aiming it at a machine with no gateway
+    starts one there — on a box meant only to run jobs.
+    """
+    assert set(remote_compose["services"]) == {
+        "agent-gateway-tunnel",
+        "agent-workspace-broker",
+        "agent-runner",
+    }
+    for name, service in remote_compose["services"].items():
+        assert "backend" not in (service.get("depends_on") or []), name
+
+
+def test_remote_sandbox_network_is_still_closed(remote_compose: dict):
+    """A remote host must not buy reachability by opening the sandbox up."""
+    assert remote_compose["networks"]["agent-egress"]["internal"] is True
+
+
+def test_the_tunnel_is_the_only_thing_on_both_networks(remote_compose: dict):
+    """Everything else is either closed in with the sandbox or outside it."""
+    on_egress = {
+        name
+        for name, service in remote_compose["services"].items()
+        if "agent-egress" in (service.get("networks") or {})
+    }
+    assert on_egress == {"agent-gateway-tunnel"}
+
+
+def test_runner_and_sandbox_are_pointed_at_the_same_name(remote_compose: dict):
+    """They share one AGENT_GATEWAY_URL, so one name has to serve both.
+
+    The runner claims over it and the sandbox is handed the same value; a URL
+    that only the runner can resolve means jobs are claimed and then die at
+    their first model call.
+    """
+    alias = remote_compose["services"]["agent-gateway-tunnel"]["networks"]["agent-egress"][
+        "aliases"
+    ]
+    assert alias == ["${AGENT_GATEWAY_HOSTNAME:-agent-gateway}"]
+    url = remote_compose["services"]["agent-runner"]["environment"]["AGENT_GATEWAY_URL"]
+    assert "${AGENT_GATEWAY_HOSTNAME:-agent-gateway}" in url
+
+
+def test_the_tunnel_credential_is_mounted_read_only(remote_compose: dict):
+    volumes = remote_compose["services"]["agent-gateway-tunnel"]["volumes"]
+    assert all(volume.endswith(":ro") for volume in volumes), volumes
+
+
+def test_the_tunnel_refuses_to_skip_host_verification():
+    """Encrypting the hop is pointless if anything may answer for the gateway.
+
+    The credentials this tunnel exists to protect — the dispatcher token, every
+    job capability — would go straight to an impostor.
+    """
+    script = _TUNNEL_ENTRYPOINT.read_text()
+    assert "StrictHostKeyChecking=yes" in script
+    assert "StrictHostKeyChecking=no" not in script
+    assert "UserKnownHostsFile" in script
+    # And it must refuse to start without one, rather than quietly trusting
+    # whatever answers the first time.
+    assert re.search(r'\[ -s "\$KNOWN_HOSTS" \] \|\| die', script)
+
+
+def test_the_tunnel_dies_rather_than_listening_on_nothing():
+    """Without this, ssh stays up having bound no port and every sandbox gets
+    connection-refused against a container that looks healthy."""
+    assert "ExitOnForwardFailure=yes" in _TUNNEL_ENTRYPOINT.read_text()
+
+
+def test_the_tunnel_forwards_one_fixed_destination():
+    """A relay, not a proxy: nothing the caller sends chooses where it goes."""
+    script = _TUNNEL_ENTRYPOINT.read_text()
+    assert "-L " in script
+    for proxy_flag in ("-D ", "DynamicForward", "ProxyCommand"):
+        assert proxy_flag not in script, proxy_flag

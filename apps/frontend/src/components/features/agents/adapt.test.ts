@@ -166,10 +166,36 @@ describe('toDisplayJob', () => {
     expect(toDisplayJob(JOB).branch).toBe('agent/ajob_1');
   });
 
+  it('maps the conversation pin time', () => {
+    expect(toDisplayJob({ ...JOB, pinned_at: '2026-07-29T12:00:00Z' }).pinnedAt).toBe(
+      '2026-07-29T12:00:00Z',
+    );
+  });
+
   it('uses server-authoritative base and output branch fields', () => {
     const job = toDisplayJob({ ...JOB, base_ref: 'dev', output_branch: 'agent/thread_7' });
     expect(job.baseRef).toBe('dev');
     expect(job.branch).toBe('agent/thread_7');
+  });
+
+  it('shows trusted sandbox metadata for the current attempt', () => {
+    const events = [
+      event(1, 'lifecycle', { phase: 'started', sandbox_backend: 'process' }, 10),
+      event(
+        2,
+        'lifecycle',
+        {
+          phase: 'started',
+          sandbox_backend: 'container',
+          sandbox_runtime: 'io.containerd.kata.v2',
+          sandbox_image: 'registry.example/agent:1',
+        },
+        11,
+      ),
+    ];
+    const job = toDisplayJob({ ...JOB, current_attempt_id: 11 }, { events });
+
+    expect(job.sandbox).toBe('container (io.containerd.kata.v2) · registry.example/agent:1');
   });
 
   it('marks a superseded attempt rather than showing it live', () => {
@@ -183,6 +209,17 @@ describe('toDisplayJob', () => {
     expect(job.attempts[0].status).toBe('superseded');
     expect(job.attempts[0].note).toContain('lease expired');
     expect(job.attempts[1].status).toBe('live');
+  });
+
+  it('identifies the server-authoritative current attempt for readiness checks', () => {
+    const events = [
+      event(1, 'lifecycle', { phase: 'workspace_ready' }, 10),
+      event(2, 'attempt_superseded', { reason: 'lease_expired' }, 10),
+      event(3, 'lifecycle', { phase: 'started' }, 11),
+    ];
+    const job = toDisplayJob({ ...JOB, current_attempt_id: 11 }, { events });
+
+    expect(job.currentAttemptNo).toBe(2);
   });
 
   it('counts every stored event and retains unmatched tool results', () => {
@@ -537,6 +574,14 @@ describe('lifecycle noise', () => {
     expect(text).toBe('thinking tokens');
     expect(lifecyclePhaseLabel('checked_out')).toEqual({
       text: 'Repository ready',
+      milestone: true,
+    });
+    expect(lifecyclePhaseLabel('workspace_ready')).toEqual({
+      text: 'Workspace ready',
+      milestone: true,
+    });
+    expect(lifecyclePhaseLabel('workspace_finalizing')).toEqual({
+      text: 'Saving workspace changes',
       milestone: true,
     });
   });

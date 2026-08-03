@@ -91,6 +91,20 @@ function terminal(id: string, shell = 'zsh'): AgentTerminalApi {
   };
 }
 
+function rect(left: number, right: number): DOMRect {
+  return {
+    bottom: 20,
+    height: 20,
+    left,
+    right,
+    top: 0,
+    width: right - left,
+    x: left,
+    y: 0,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
 describe('TerminalWorkspace', () => {
   beforeEach(() => {
     xtermHarness.instances.length = 0;
@@ -107,7 +121,11 @@ describe('TerminalWorkspace', () => {
       });
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   it('creates, switches, splits, and kills real terminal sessions', async () => {
     const first = terminal('term-1');
@@ -134,12 +152,24 @@ describe('TerminalWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New terminal' }));
     await waitFor(() => expect(createAgentTerminal).toHaveBeenCalledTimes(2));
     expect(screen.getByRole('application', { name: 'Terminal 2 terminal' })).toBeInTheDocument();
-    const selector = screen.getByRole('combobox', { name: 'Select terminal in pane 1' });
-    expect(within(selector).getAllByRole('option')).toHaveLength(2);
-    fireEvent.change(selector, { target: { value: first.id } });
+    const tablist = screen.getByRole('tablist', { name: 'Terminals in pane 1' });
+    expect(within(tablist).getAllByRole('tab')).toHaveLength(2);
+    expect(within(tablist).getByRole('tab', { name: 'Terminal 1 · zsh' })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+    expect(within(tablist).getByRole('tab', { name: 'Terminal 2 · bash' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    fireEvent.click(within(tablist).getByRole('tab', { name: 'Terminal 1 · zsh' }));
     expect(
       await screen.findByRole('application', { name: 'Terminal 1 terminal' }),
     ).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Terminal 1 · zsh' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
 
     fireEvent.click(screen.getByRole('button', { name: 'Split terminal' }));
     await waitFor(() => expect(createAgentTerminal).toHaveBeenCalledTimes(3));
@@ -157,6 +187,23 @@ describe('TerminalWorkspace', () => {
     expect(screen.getAllByRole('application')).toHaveLength(1);
   });
 
+  it('removes the last terminal when cleanup finishes after delete reports an error', async () => {
+    const only = terminal('term-only');
+    vi.mocked(listAgentTerminals).mockResolvedValueOnce([only]).mockResolvedValueOnce([]);
+    vi.mocked(deleteAgentTerminal).mockRejectedValue(
+      new Error('terminal cleanup could not be confirmed; retry kill'),
+    );
+
+    render(<TerminalWorkspace jobId="job-1" active />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Kill Terminal 1' }));
+
+    await waitFor(() => expect(listAgentTerminals).toHaveBeenCalledTimes(2));
+    expect(deleteAgentTerminal).toHaveBeenCalledWith('job-1', only.id);
+    expect(screen.queryByRole('application')).not.toBeInTheDocument();
+    expect(screen.getByText('No open terminals')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('finishes its initial terminal load under React Strict Mode', async () => {
     vi.mocked(listAgentTerminals).mockResolvedValue([]);
 
@@ -168,6 +215,130 @@ describe('TerminalWorkspace', () => {
 
     expect(await screen.findByRole('button', { name: 'New terminal' })).toBeEnabled();
     expect(screen.queryByText('Loading terminals…')).not.toBeInTheDocument();
+  });
+
+  it('waits for workspace readiness, then loads automatically', async () => {
+    vi.mocked(listAgentTerminals).mockResolvedValue([]);
+
+    const view = render(<TerminalWorkspace jobId="job-1" active ready={false} />);
+
+    expect(screen.getByText('Loading terminals…')).toBeInTheDocument();
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    expect(listAgentTerminals).not.toHaveBeenCalled();
+
+    view.rerender(<TerminalWorkspace jobId="job-1" active ready />);
+
+    expect(await screen.findByRole('button', { name: 'New terminal' })).toBeEnabled();
+    expect(listAgentTerminals).toHaveBeenCalledWith('job-1');
+    expect(screen.queryByText('Loading terminals…')).not.toBeInTheDocument();
+  });
+
+  it('keeps the selected tab visible when a split narrows the first pane', async () => {
+    const first = terminal('term-1');
+    const second = terminal('term-2', 'bash');
+    const third = terminal('term-3');
+    const fourth = terminal('term-4', 'bash');
+    vi.mocked(listAgentTerminals).mockResolvedValue([first, second, third]);
+    vi.mocked(createAgentTerminal).mockResolvedValue(fourth);
+    let split = false;
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      if (this.getAttribute('role') === 'tablist') {
+        return rect(0, split ? 100 : 300);
+      }
+      if (this.textContent?.includes('Terminal 3')) return rect(220, 300);
+      return rect(0, 80);
+    });
+
+    render(<TerminalWorkspace jobId="job-1" active />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Terminal 3 · zsh' }));
+
+    expect(
+      await screen.findByRole('application', { name: 'Terminal 3 terminal' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('tablist', { name: 'Terminals in pane 1' }).scrollLeft).toBe(0);
+
+    split = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Split terminal' }));
+
+    const firstPane = await screen.findByRole('region', { name: 'Terminal 3 pane' });
+    const tablist = within(firstPane).getByRole('tablist', { name: 'Terminals in pane 1' });
+    await waitFor(() => expect(tablist.scrollLeft).toBe(200));
+  });
+
+  it('keeps the selected tab visible when the tab strip resizes', async () => {
+    const first = terminal('term-1');
+    const second = terminal('term-2', 'bash');
+    const third = terminal('term-3');
+    vi.mocked(listAgentTerminals).mockResolvedValue([first, second, third]);
+    let paneWidth = 300;
+    let resizeTabList: (() => void) | undefined;
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(target: Element) {
+          if (target.getAttribute('role') === 'tablist') {
+            resizeTabList = () => this.callback([], this as unknown as ResizeObserver);
+          }
+        }
+        disconnect() {}
+        unobserve() {}
+      },
+    );
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      if (this.getAttribute('role') === 'tablist') return rect(0, paneWidth);
+      if (this.textContent?.includes('Terminal 3')) return rect(220, 300);
+      return rect(0, 80);
+    });
+
+    render(<TerminalWorkspace jobId="job-1" active />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Terminal 3 · zsh' }));
+
+    const tablist = screen.getByRole('tablist', { name: 'Terminals in pane 1' });
+    expect(tablist.scrollLeft).toBe(0);
+    await waitFor(() => expect(resizeTabList).toBeTypeOf('function'));
+
+    paneWidth = 100;
+    resizeTabList?.();
+
+    expect(tablist.scrollLeft).toBe(200);
+  });
+
+  it('swaps panes when selecting a terminal already visible in the other pane', async () => {
+    const first = terminal('term-1');
+    const second = terminal('term-2', 'bash');
+    vi.mocked(listAgentTerminals).mockResolvedValue([first]);
+    vi.mocked(createAgentTerminal).mockResolvedValue(second);
+
+    render(<TerminalWorkspace jobId="job-1" active />);
+    await screen.findByRole('application', { name: 'Terminal 1 terminal' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Split terminal' }));
+    await screen.findByRole('application', { name: 'Terminal 2 terminal' });
+
+    const firstPane = screen.getByRole('region', { name: 'Terminal 1 pane' });
+    fireEvent.click(within(firstPane).getByRole('tab', { name: 'Terminal 2 · bash' }));
+
+    await waitFor(() => {
+      const firstPaneTabs = screen.getByRole('tablist', { name: 'Terminals in pane 1' });
+      const secondPaneTabs = screen.getByRole('tablist', { name: 'Terminals in pane 2' });
+      expect(within(firstPaneTabs).getByRole('tab', { name: 'Terminal 2 · bash' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      expect(within(secondPaneTabs).getByRole('tab', { name: 'Terminal 1 · zsh' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+    });
+    expect(screen.getAllByRole('application', { name: 'Terminal 1 terminal' })).toHaveLength(1);
+    expect(screen.getAllByRole('application', { name: 'Terminal 2 terminal' })).toHaveLength(1);
   });
 
   it('writes streamed bytes, sends xterm input, fits and resizes, then cleans up', async () => {
@@ -201,31 +372,38 @@ describe('TerminalWorkspace', () => {
     expect(xterm.dispose).toHaveBeenCalled();
   });
 
-  it('keeps running jobs read-only and explains why', async () => {
-    const first = terminal('term-1');
+  it('disables input when the terminal process is not running', async () => {
+    const first = { ...terminal('term-1'), state: 'closed' as const };
     vi.mocked(listAgentTerminals).mockResolvedValue([first]);
 
-    const view = render(
-      <TerminalWorkspace
-        jobId="job-1"
-        active
-        disabled
-        disabledReason="Wait for the agent to finish."
-      />,
-    );
-
-    expect(listAgentTerminals).not.toHaveBeenCalled();
-    expect(screen.getByRole('note')).toHaveTextContent('Wait for the agent to finish.');
-    expect(screen.queryByRole('application')).not.toBeInTheDocument();
-
-    view.rerender(<TerminalWorkspace jobId="job-1" active />);
+    render(<TerminalWorkspace jobId="job-1" active />);
     await screen.findByRole('region', { name: 'Terminal 1 pane' });
     expect(listAgentTerminals).toHaveBeenCalledWith('job-1');
     await waitFor(() => expect(xtermHarness.instances).toHaveLength(1));
-    expect(xtermHarness.instances[0].options.disableStdin).toBe(false);
+    expect(xtermHarness.instances[0].options.disableStdin).toBe(true);
     xtermHarness.instances[0].emitData('pwd\r');
+    expect(writeAgentTerminalInput).not.toHaveBeenCalled();
+  });
+
+  it('pauses an existing terminal during retry preparation and resumes it automatically', async () => {
+    const first = terminal('term-1');
+    vi.mocked(listAgentTerminals).mockResolvedValue([first]);
+
+    const view = render(<TerminalWorkspace jobId="job-1" active ready />);
+    await screen.findByRole('application', { name: 'Terminal 1 terminal' });
+    await waitFor(() => expect(xtermHarness.instances).toHaveLength(1));
+    const xterm = xtermHarness.instances[0];
+
+    view.rerender(<TerminalWorkspace jobId="job-1" active ready={false} />);
+    expect(xterm.options.disableStdin).toBe(true);
+    xterm.emitData('blocked');
+    expect(writeAgentTerminalInput).not.toHaveBeenCalled();
+
+    view.rerender(<TerminalWorkspace jobId="job-1" active ready />);
+    expect(xterm.options.disableStdin).toBe(false);
+    xterm.emitData('resumed');
     await waitFor(() =>
-      expect(writeAgentTerminalInput).toHaveBeenCalledWith('job-1', first.id, 'pwd\r'),
+      expect(writeAgentTerminalInput).toHaveBeenCalledWith('job-1', first.id, 'resumed'),
     );
   });
 
@@ -307,14 +485,15 @@ describe('TerminalWorkspace', () => {
 
     const view = render(<TerminalWorkspace jobId="job-a" active />);
     fireEvent.click(await screen.findByRole('button', { name: 'Kill Terminal 1' }));
-    expect(screen.getByRole('combobox', { name: 'Select terminal in pane 1' })).toBeDisabled();
+    expect(screen.getByRole('tab', { name: 'Terminal 1 · zsh' })).toBeDisabled();
     view.rerender(<TerminalWorkspace jobId="job-b" active />);
-    const selector = await screen.findByRole('combobox', { name: 'Select terminal in pane 1' });
-    expect(selector).toHaveValue(newTerminal.id);
+    const selectedTab = await screen.findByRole('tab', { name: 'Terminal 1 · zsh' });
+    expect(selectedTab).toHaveAttribute('aria-selected', 'true');
+    expect(selectedTab).toBeEnabled();
 
     resolveKill();
     await waitFor(() => expect(deleteAgentTerminal).toHaveBeenCalledWith('job-a', oldTerminal.id));
-    expect(selector).toHaveValue(newTerminal.id);
+    expect(selectedTab).toHaveAttribute('aria-selected', 'true');
   });
 
   it('batches input while preserving byte order across an in-flight write', async () => {

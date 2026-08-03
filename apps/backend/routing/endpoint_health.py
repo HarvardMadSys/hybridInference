@@ -7,8 +7,11 @@ import os
 import threading
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
+from routing.usage_limit import detect_usage_limit
+from serving.exceptions import operator_safe_error
 from serving.observability.alerts import AlertSeverity, alert_on_transition, escape_slack_text
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -33,6 +36,11 @@ _OFFENDERS_IN_ALERT = 10
 
 def _reason_str(s: str) -> str:
     return s if s and len(s) < 64 else "error"
+
+
+def _iso_utc(epoch: float) -> str:
+    """Render an epoch-seconds instant as an ISO-8601 UTC string."""
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
 
 
 def _http_status_of(exc: BaseException) -> int | None:
@@ -160,6 +168,19 @@ class _CircuitBreaker:
         )
         self.consecutive_failures = 0
         self.last_opened: float | None = None
+        # Wall-clock epoch until which repeat circuit-open alerts are muted for a
+        # subscription usage-limit outage (0.0 = not muted). Committed only once a
+        # page is delivered (_send_circuit_alert) and cleared on recovery.
+        self._alert_suppressed_until: float = 0.0
+        # Recovery generation of the usage-limit page currently being delivered
+        # (None when none). A re-trip of the *same* generation is a duplicate and
+        # is suppressed while the page sends; once recovery bumps the generation
+        # this guard is stale, so a new outage's page is not blocked by it.
+        self._alert_in_flight_generation: int | None = None
+        # Bumped on every recovery. A page that finishes delivering after the
+        # endpoint recovered carries a stale generation and must not restore its
+        # now-obsolete mute — see _send_circuit_alert.
+        self._recovery_generation: int = 0
         self._offenders: Counter[str] = Counter()
         self._lock = threading.Lock()
 
@@ -180,6 +201,11 @@ class _CircuitBreaker:
         with self._lock:
             self.consecutive_failures = 0
             self._offenders.clear()
+            # Recovery re-arms alerting: clear the mute and bump the generation so
+            # a page still in flight for the ended outage can't restore a stale
+            # deadline, and a later usage-limit outage is free to page again.
+            self._alert_suppressed_until = 0.0
+            self._recovery_generation += 1
             if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
                 duration_ms = (
                     (time.perf_counter() - self.last_opened) * 1000.0
@@ -246,6 +272,41 @@ class _CircuitBreaker:
             if prev_state not in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
                 return
 
+            # A subscription usage-limit outage re-trips on every half-open probe
+            # until the provider's window resets. Fire one alert per outage and
+            # stay quiet until the parsed reset time, instead of re-paging every
+            # few minutes for hours. The deadline is committed only once the page
+            # is delivered (see _send_circuit_alert) and cleared on recovery, so a
+            # dropped page never mutes an outage that was never announced.
+            now_dt = datetime.now(timezone.utc)
+            usage_limit = detect_usage_limit(detail, now=now_dt)
+            # While the endpoint is inside a known usage-limit outage — a page for
+            # the current generation is mid-delivery, or its mute deadline has not
+            # passed — stay silent no matter how *this* failure presents. A
+            # half-open re-trip often surfaces differently from the original 429
+            # (e.g. KeyPoolExhausted once the key's 429-backoff exceeds the circuit
+            # cooldown, or a timeout); those must not resurrect the storm. The
+            # in-flight guard is scoped to the generation, so a recovery (which
+            # bumps it) does not let a stale in-flight page mute the *next* outage;
+            # recovery also clears the deadline, re-arming the endpoint.
+            in_flight_current = self._alert_in_flight_generation == self._recovery_generation
+            if in_flight_current or now_dt.timestamp() < self._alert_suppressed_until:
+                logger.info(
+                    "circuit_open_alert_suppressed",
+                    extra={
+                        "event": "circuit_open_alert_suppressed",
+                        "provider": self.provider,
+                        "reason": reason or "unknown",
+                        "quota_reset_at": (
+                            _iso_utc(self._alert_suppressed_until)
+                            if self._alert_suppressed_until
+                            else None
+                        ),
+                        "window": usage_limit.window if usage_limit is not None else "active",
+                    },
+                )
+                return
+
             context: dict[str, Any] = {
                 "provider": self.provider,
                 "consecutive_failures": self.consecutive_failures,
@@ -254,6 +315,10 @@ class _CircuitBreaker:
             }
             if detail:
                 context["upstream_error"] = detail
+            reset_epoch: float | None = None
+            if usage_limit is not None:
+                reset_epoch = usage_limit.reset_at.timestamp()
+                context["quota_reset_at"] = usage_limit.reset_at.isoformat()
             offenders = self._format_offenders()
             if offenders:
                 context["offending_users"] = offenders
@@ -269,23 +334,61 @@ class _CircuitBreaker:
                     "offending_users": dict(self._offenders) or None,
                 },
             )
+            generation = self._recovery_generation
+            if reset_epoch is not None:
+                self._alert_in_flight_generation = generation
             try:
                 task = asyncio.ensure_future(
-                    alert_on_transition(
-                        key=f"circuit_open:{self.provider}",
-                        breached=True,
-                        severity=AlertSeverity.ERROR,
-                        title="Provider circuit opened",
-                        context=lambda: context,
-                        cooldown_sec=300,
-                        kind="state",
-                    )
+                    self._send_circuit_alert(context, reset_epoch, generation)
                 )
             except RuntimeError:
-                pass
+                # No running loop (sync caller / test): nothing was scheduled, so
+                # release the in-flight guard we optimistically set (unless a newer
+                # generation already claimed it).
+                if self._alert_in_flight_generation == generation:
+                    self._alert_in_flight_generation = None
             else:
                 _ALERT_TASKS.add(task)
                 task.add_done_callback(_ALERT_TASKS.discard)
+
+    async def _send_circuit_alert(
+        self, context: dict[str, Any], reset_epoch: float | None, generation: int
+    ) -> bool:
+        """Deliver a circuit-open page; commit usage-limit suppression on success.
+
+        For a usage-limit trip (``reset_epoch`` set) the suppression deadline is
+        recorded only after the page is actually delivered, so a dropped page —
+        relay/webhook failure, a global snooze, or the alert cooldown — leaves the
+        outage un-muted and it re-pages on the next failing probe. The deadline is
+        also withheld when the endpoint recovered while the page was in flight
+        (``generation`` no longer current), so a stale mute can't silence a later
+        outage. The in-flight guard is released in ``finally`` so a raising send
+        never wedges the breaker muted.
+        """
+        delivered = False
+        try:
+            # Route the breach through the transition tracker so the incident
+            # opens (and later closes via on_success's breached=False) on the
+            # control plane; its return is whether a page was actually sent.
+            delivered = await alert_on_transition(
+                key=f"circuit_open:{self.provider}",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=lambda: context,
+                cooldown_sec=300,
+                kind="state",
+            )
+        finally:
+            if reset_epoch is not None:
+                with self._lock:
+                    # Only clear the guard if this page still owns it; after a
+                    # recovery a newer generation's page may have claimed it.
+                    if self._alert_in_flight_generation == generation:
+                        self._alert_in_flight_generation = None
+                    if delivered and generation == self._recovery_generation:
+                        self._alert_suppressed_until = reset_epoch
+        return delivered
 
     def _format_offenders(self, *, top: int = _OFFENDERS_IN_ALERT) -> str | None:
         """Render failure-streak offenders for an alert, busiest first."""
@@ -353,6 +456,12 @@ class EndpointHealthRegistry:
                 },
             )
             return
+        # Some callers (e.g. the RouteWise hedging paths) pass only ``exc``; the
+        # router path passes an explicit ``detail``. Derive an operator-safe detail
+        # from the exception when absent so usage-limit detection and the alert
+        # text work uniformly regardless of call site.
+        if detail is None and exc is not None:
+            detail = operator_safe_error(exc)
         with self._lock:
             self.ensure(endpoint_id)
             self._health[endpoint_id].record(False)

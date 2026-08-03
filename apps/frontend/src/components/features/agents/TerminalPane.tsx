@@ -59,8 +59,7 @@ interface TerminalPaneProps {
   terminal: AgentTerminalApi;
   sessions: AgentTerminalApi[];
   paneIndex: number;
-  disabled: boolean;
-  disabledReason?: string;
+  ready: boolean;
   canCreate: boolean;
   canSplit: boolean;
   busy: boolean;
@@ -75,8 +74,7 @@ export function TerminalPane({
   terminal,
   sessions,
   paneIndex,
-  disabled,
-  disabledReason,
+  ready,
   canCreate,
   canSplit,
   busy,
@@ -87,14 +85,44 @@ export function TerminalPane({
 }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
-  const disabledRef = useRef(disabled);
+  const inputEnabledRef = useRef(ready && terminal.state === 'running');
+  const tabListRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+  const inputEnabled = ready && terminal.state === 'running';
+  inputEnabledRef.current = inputEnabled;
 
   useEffect(() => {
-    disabledRef.current = disabled;
     if (terminalRef.current) {
-      terminalRef.current.options.disableStdin = disabled || terminal.state !== 'running';
+      terminalRef.current.options.disableStdin = !inputEnabled;
+      if (inputEnabled) terminalRef.current.focus();
     }
-  }, [disabled, terminal.state]);
+  }, [inputEnabled]);
+
+  useEffect(() => {
+    const tabList = tabListRef.current;
+    if (!tabList) return;
+
+    const keepSelectedTabVisible = () => {
+      const tab = tabRefs.current.get(terminal.id);
+      if (!tab) return;
+
+      const listRect = tabList.getBoundingClientRect();
+      const tabRect = tab.getBoundingClientRect();
+      if (tabRect.left < listRect.left) {
+        tabList.scrollLeft += tabRect.left - listRect.left;
+      } else if (tabRect.right > listRect.right) {
+        tabList.scrollLeft += tabRect.right - listRect.right;
+      }
+    };
+
+    keepSelectedTabVisible();
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? undefined
+        : new ResizeObserver(keepSelectedTabVisible);
+    observer?.observe(tabList);
+    return () => observer?.disconnect();
+  }, [sessions.length, terminal.id]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -118,7 +146,7 @@ export function TerminalPane({
           convertEol: false,
           cursorBlink: true,
           cursorStyle: 'block',
-          disableStdin: disabledRef.current || terminal.state !== 'running',
+          disableStdin: !inputEnabledRef.current,
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
           fontSize: 13,
           lineHeight: 1.25,
@@ -172,9 +200,13 @@ export function TerminalPane({
 
         const flushInput = async () => {
           if (disposed || flushingInput) return;
+          if (!inputEnabledRef.current) {
+            pendingInput = '';
+            return;
+          }
           flushingInput = true;
           try {
-            while (!disposed && pendingInput) {
+            while (!disposed && inputEnabledRef.current && pendingInput) {
               const batch = pendingInput;
               pendingInput = '';
               await writeAgentTerminalInput(jobId, terminal.id, batch);
@@ -198,7 +230,7 @@ export function TerminalPane({
         };
 
         dataDisposable = xterm.onData((data) => {
-          if (disabledRef.current || terminal.state !== 'running') return;
+          if (!inputEnabledRef.current) return;
           pendingInput += data;
           if (!inputTimer && !flushingInput) {
             inputTimer = setTimeout(() => {
@@ -277,36 +309,39 @@ export function TerminalPane({
             />
           </svg>
         </span>
-        <span className="relative min-w-0 max-w-48 flex-1">
-          <select
-            aria-label={`Select terminal in pane ${paneIndex + 1}`}
-            value={terminal.id}
-            onChange={(event) => onSelect(event.target.value)}
-            disabled={busy}
-            className="w-full cursor-pointer appearance-none truncate rounded-md bg-transparent py-1 pl-1 pr-6 text-[13px] font-medium text-gray-800 outline-none hover:bg-gray-50 focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-50"
-            title={`${selectedLabel} · ${terminal.shell}`}
-          >
-            {sessions.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {terminalLabel(candidate, sessions)} · {candidate.shell}
-              </option>
-            ))}
-          </select>
-          <svg
-            aria-hidden="true"
-            className="pointer-events-none absolute right-1.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500"
-            fill="none"
-            viewBox="0 0 16 16"
-          >
-            <path
-              d="m4.5 6 3.5 3.5L11.5 6"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="1.5"
-            />
-          </svg>
-        </span>
+        <div
+          ref={tabListRef}
+          role="tablist"
+          aria-label={`Terminals in pane ${paneIndex + 1}`}
+          className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {sessions.map((candidate) => {
+            const label = `${terminalLabel(candidate, sessions)} · ${candidate.shell}`;
+            const selected = candidate.id === terminal.id;
+            return (
+              <button
+                key={candidate.id}
+                ref={(node) => {
+                  if (node) tabRefs.current.set(candidate.id, node);
+                  else tabRefs.current.delete(candidate.id);
+                }}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                title={label}
+                disabled={busy}
+                onClick={() => onSelect(candidate.id)}
+                className={`shrink-0 rounded-md px-2 py-1 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-50 ${
+                  selected
+                    ? 'bg-gray-100 text-gray-900'
+                    : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <button
             type="button"
@@ -340,14 +375,6 @@ export function TerminalPane({
           </button>
         </div>
       </header>
-      {disabled && disabledReason ? (
-        <p
-          role="note"
-          className="shrink-0 border-b border-amber-100 bg-amber-50 px-3 py-2 text-[11px] text-amber-800"
-        >
-          {disabledReason}
-        </p>
-      ) : null}
       <div
         ref={hostRef}
         role="application"

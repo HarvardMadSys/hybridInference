@@ -87,6 +87,20 @@ class FakeControl:
     def save_artifact(self, kind: str, content: str) -> None:
         self.artifacts[kind] = content
 
+    def suspend_terminals(self, phase: str) -> None:
+        self.append_event(
+            type("Event", (), {"event_type": "lifecycle", "payload": {"phase": phase}})()
+        )
+
+    def resume_terminals(self) -> None:
+        self.append_event(
+            type(
+                "Event",
+                (),
+                {"event_type": "lifecycle", "payload": {"phase": "workspace_ready"}},
+            )()
+        )
+
     def finish(self, state: str, detail: str | None = None) -> None:
         self.finished = (state, detail)
 
@@ -143,29 +157,44 @@ def test_agent_output_streams_back_as_events(tmp_path):
     ]
 
 
-def test_runner_supplies_an_explicit_empty_mcp_boundary(tmp_path):
-    """MCP configuration comes from the trusted runner, never the checkout."""
-    captured = None
+def test_runner_supplies_trusted_runtime_boundaries(tmp_path):
+    """MCP and sandbox policy come from the trusted runner, never the checkout."""
+    captured = []
+
+    class _ExternallySandboxedProcessBackend(ProcessBackend):
+        @property
+        def provides_isolation(self) -> bool:
+            return True
 
     class _CapturingRuntime(GenericRuntime):
-        def prepare(self, *, mcp_config, **kwargs):
-            nonlocal captured
-            captured = mcp_config
-            return super().prepare(mcp_config=mcp_config, **kwargs)
+        def prepare(self, *, mcp_config, provides_isolation, **kwargs):
+            captured.append((mcp_config, provides_isolation))
+            return super().prepare(
+                mcp_config=mcp_config,
+                provides_isolation=provides_isolation,
+                **kwargs,
+            )
 
     runtime = _CapturingRuntime(f"{sys.executable} -c " + repr("print('ok')"))
-    run_agent(
-        runtime,
-        job=_JOB,
-        workdir=str(tmp_path),
-        gateway_base_url="http://gw",
-        control=FakeControl(),
-        heart=FakeHeart(),
-        timeout_s=30,
-        backend=ProcessBackend(acknowledged_unsafe=True),
-    )
+    for backend in (
+        ProcessBackend(acknowledged_unsafe=True),
+        _ExternallySandboxedProcessBackend(acknowledged_unsafe=True),
+    ):
+        run_agent(
+            runtime,
+            job=_JOB,
+            workdir=str(tmp_path),
+            gateway_base_url="http://gw",
+            control=FakeControl(),
+            heart=FakeHeart(),
+            timeout_s=30,
+            backend=backend,
+        )
 
-    assert captured == RuntimeMCPConfig()
+    assert captured == [
+        (RuntimeMCPConfig(), False),
+        (RuntimeMCPConfig(), True),
+    ]
 
 
 def test_losing_the_lease_aborts_instead_of_racing(tmp_path):
@@ -367,6 +396,100 @@ def test_live_runner_reuses_one_durable_workspace_per_job(monkeypatch, tmp_path)
     assert code == 0
     assert workdirs == [expected]
     assert applied == [], "the saved patch is already present in a reused live worktree"
+    assert (
+        "lifecycle",
+        {
+            "phase": "started",
+            "runtime": job.runtime,
+            "attempt_no": job.attempt_no,
+            "sandbox_backend": "counting",
+        },
+    ) in control.events
+
+
+def test_workspace_ready_follows_context_restore_and_setup(monkeypatch, tmp_path):
+    """Terminal readiness is emitted only after trusted workspace preparation."""
+
+    timeline: list[str] = []
+
+    class Control(FakeControl):
+        def append_event(self, event) -> None:
+            if event.event_type == "lifecycle":
+                timeline.append(event.payload["phase"])
+            super().append_event(event)
+
+        def finish(self, state, detail=None, **_kwargs):
+            self.finished = (state, detail)
+
+    class Backend(_CountingBackend):
+        def adopt_workdir(self, _path: str) -> None:
+            pass
+
+    job = ClaimedJob(
+        **{
+            **_JOB.__dict__,
+            "thread_id": "athr_follow_up",
+            "parent_job_id": "ajob_parent",
+            "context_patch": "diff --git a/a b/a\n",
+            "setup_script": "uv sync",
+        }
+    )
+    control = Control()
+    monkeypatch.setattr(runner_mod, "claim", lambda **_kwargs: job)
+    monkeypatch.setattr(runner_mod, "ControlPlane", lambda *_args, **_kwargs: control)
+    monkeypatch.setattr(runner_mod, "Heartbeater", lambda *_args, **_kwargs: FakeHeart())
+    runtime = type("Runtime", (), {"binary": "fake"})()
+    monkeypatch.setattr(runner_mod, "get_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(runner_mod, "existing_checkout_sha", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner_mod, "prepare_worktree", lambda **_kwargs: "abcdef1")
+    monkeypatch.setattr(runner_mod, "checkout_output_branch", lambda *_args, **_kwargs: "agent/x")
+    monkeypatch.setattr(
+        runner_mod,
+        "apply_context_patch",
+        lambda *_args, **_kwargs: timeline.append("context_patch_applied"),
+    )
+    monkeypatch.setattr(runner_mod, "build_cache_from_env", lambda: object())
+    setup = type(
+        "Setup",
+        (),
+        {"restored_from_cache": False, "ran": True, "exit_code": 0, "detail": ""},
+    )()
+    monkeypatch.setattr(
+        runner_mod,
+        "run_setup",
+        lambda **_kwargs: timeline.append("setup_finished") or setup,
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "run_agent",
+        lambda *_args, **_kwargs: timeline.append("agent_started") or (0, "", []),
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "build_patch",
+        lambda *_args, **_kwargs: timeline.append("patch_captured") or "",
+    )
+    monkeypatch.setattr(runner_mod, "save_workspace_snapshot", lambda *_args, **_kwargs: True)
+
+    code = runner_mod.run_once(
+        base_url="http://gw",
+        dispatcher_token="d",
+        worker_id="w",
+        workdir=str(tmp_path / "unused"),
+        workspace_root=str(tmp_path / "workspaces"),
+        backend=Backend(),
+    )
+
+    assert code == 0
+    assert timeline.index("workspace_preparing") < timeline.index("checked_out")
+    assert timeline.index("checked_out") < timeline.index("context_patch_applied")
+    assert timeline.index("context_patch_applied") < timeline.index("context_restored")
+    assert timeline.index("context_restored") < timeline.index("setup_finished")
+    assert timeline.index("setup_finished") < timeline.index("setup")
+    assert timeline.index("setup") < timeline.index("workspace_ready")
+    assert timeline.index("workspace_ready") < timeline.index("agent_started")
+    assert timeline.index("agent_started") < timeline.index("workspace_finalizing")
+    assert timeline.index("workspace_finalizing") < timeline.index("patch_captured")
 
 
 def test_empty_queue_is_a_clean_no_op(monkeypatch, tmp_path):
@@ -433,6 +556,7 @@ class _CountingBackend:
     """Records how often a supplied backend is preflighted."""
 
     name = "counting"
+    provides_isolation = False
 
     def __init__(self) -> None:
         self.preflights = 0
@@ -445,6 +569,9 @@ class _CountingBackend:
 
     def base_env(self) -> dict[str, str]:
         return {}
+
+    def sandbox_metadata(self) -> dict[str, str]:
+        return {"sandbox_backend": self.name}
 
 
 def test_a_supplied_backend_is_not_preflighted_per_claim(monkeypatch, tmp_path):
@@ -516,3 +643,68 @@ def test_only_the_claim_call_reports_an_unreachable_gateway(monkeypatch):
     # The same error raised anywhere else stays a plain transport error, so the
     # loop's handler reports a job rather than an empty claim.
     assert not issubclass(httpx.ConnectError, ClaimUnreachable)
+
+
+# ── Host reporting ─────────────────────────────────────────────────────
+
+
+def test_a_runner_reports_no_host_unless_one_is_configured(monkeypatch):
+    """Unset must mean "no host", never a guess.
+
+    ``socket.gethostname()`` is the container id in every containerised
+    deployment, so guessing would fill the operator's machine list with rows of
+    hex — one per replica, another set after every restart.
+    """
+    monkeypatch.delenv("AGENT_RUNNER_HOST", raising=False)
+    assert runner_mod.default_runner_host() is None
+
+    monkeypatch.setenv("AGENT_RUNNER_HOST", "  ")
+    assert runner_mod.default_runner_host() is None
+
+    monkeypatch.setenv("AGENT_RUNNER_HOST", " runner-b ")
+    assert runner_mod.default_runner_host() == "runner-b"
+
+
+def test_replicas_on_one_machine_share_a_host_but_not_a_worker_id(monkeypatch):
+    """The pool is machines; ``lease_owner`` is still per-replica."""
+    monkeypatch.setenv("AGENT_RUNNER_HOST", "runner-b")
+    monkeypatch.setenv("AGENT_WORKER_ID", "runner")
+
+    assert runner_mod.default_runner_host() == "runner-b"
+    assert runner_mod.default_worker_id() != "runner-b"
+
+
+def test_claim_sends_the_host_only_when_there_is_one(monkeypatch):
+    """An unreporting runner must post exactly the payload it always did."""
+    sent: list[dict] = []
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return None
+
+    def _post(_url, *, json, headers, timeout):
+        sent.append(json)
+        return _Response()
+
+    monkeypatch.setattr(runner_mod.httpx, "post", _post)
+
+    runner_mod.claim(base_url="http://gw", dispatcher_token="t", worker_id="w1", lease_ttl=60)
+    runner_mod.claim(
+        base_url="http://gw", dispatcher_token="t", worker_id="w1", lease_ttl=60, host="runner-b"
+    )
+
+    assert "host" not in sent[0]
+    assert sent[1]["host"] == "runner-b"
+
+
+def test_the_host_flag_defaults_from_the_environment(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNNER_HOST", "runner-a")
+
+    args = runner_mod.build_parser().parse_args([])
+
+    assert args.host == "runner-a"

@@ -78,6 +78,13 @@ main() {
     sandbox_image="$(grep -E '^AGENT_SANDBOX_IMAGE=..+' .env | tail -1 | cut -d= -f2- || true)"
     export AGENT_SANDBOX_IMAGE="${sandbox_image:-hybridinference-agent-sandbox:latest}"
     log "Agent runner enabled (AGENT_DISPATCHER_TOKEN is set); sandbox image ${AGENT_SANDBOX_IMAGE}."
+    # Name this machine for the admin host switch. Resolved out here because
+    # the runner container's own hostname is a container id, so it cannot
+    # answer "which machine am I" for itself.
+    if ! grep -qE '^AGENT_RUNNER_HOST=..+' .env; then
+      export AGENT_RUNNER_HOST="${AGENT_RUNNER_HOST:-$(hostname -s 2>/dev/null || hostname)}"
+      log "Runner host pool entry: ${AGENT_RUNNER_HOST} (set AGENT_RUNNER_HOST in .env to rename)."
+    fi
   fi
 
   # Refuse only when the working tree diverges from HEAD for tracked files,
@@ -132,6 +139,23 @@ main() {
   if [[ "$AGENT_RUNNER" == "1" ]]; then
     log "Building the agent sandbox image (${AGENT_SANDBOX_IMAGE})."
     docker build -f deploy/docker/Dockerfile.agent-sandbox -t "$AGENT_SANDBOX_IMAGE" .
+
+    # Gate the isolation boundary before the stack comes up. Delegated to the
+    # runner script rather than repeated here so there is one definition of
+    # "this host is fit to run sandboxes" — it reads AGENT_SANDBOX_BACKEND the
+    # way compose does, requires the Kata shim when that backend is `kata`, and
+    # proves VM isolation by starting one container from the image just built
+    # and checking it does not report the host's kernel.
+    #
+    # After the image build because the proof needs the image; before
+    # `make build` because a host that cannot isolate should not get runners.
+    log "Preflighting the sandbox isolation boundary."
+    if ! ops/deploy/agent_runner.sh preflight; then
+      log "Refusing to deploy the agent runner: this host cannot provide the"
+      log "isolation its configuration claims. Fix the host, or set"
+      log "AGENT_SANDBOX_BACKEND=container in .env to accept a shared kernel."
+      exit 1
+    fi
   fi
 
   log "Rebuilding and restarting Docker Compose services."

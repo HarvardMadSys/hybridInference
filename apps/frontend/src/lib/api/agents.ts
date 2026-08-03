@@ -49,6 +49,7 @@ export interface AgentJobApi {
   mcp_servers?: string[];
   created_at: string | null;
   updated_at: string | null;
+  pinned_at?: string | null;
   // Read server-side from the billing ledger, never from the agent's own
   // report. Null means "no ledger configured", which is not the same as zero.
   spent_usd: number | null;
@@ -186,6 +187,7 @@ export interface AgentIntegrationProviderApi {
   configured: boolean;
   connected: boolean;
   connect_url: string | null;
+  manage_url?: string | null;
   capabilities: string[];
   accounts: AgentIntegrationAccountApi[];
   repositories: AgentIntegrationRepositoryApi[];
@@ -204,6 +206,7 @@ export async function getAgentIntegrations(): Promise<AgentIntegrationsApi> {
 export interface GitHubConnectionApi {
   connections: Array<{ installation_id: number; account_login: string | null }>;
   repos: string[];
+  install_url: string | null;
 }
 
 /**
@@ -299,6 +302,8 @@ export interface AgentProjectApi {
   /** Non-terminal jobs, so a collapsed project can still show live work. */
   active_count: number;
   last_activity_at: string | null;
+  pinned_count?: number;
+  pinned_at?: string | null;
 }
 
 /**
@@ -342,6 +347,28 @@ export async function restoreAgentJob(jobId: string): Promise<AgentThreadArchive
       method: 'DELETE',
     },
   );
+  return jsonOrThrow(resp);
+}
+
+export interface AgentThreadPinApi {
+  thread_id: string;
+  pinned: boolean;
+  pinned_at: string | null;
+}
+
+/** Keep the entire conversation containing this job at the top of task history. */
+export async function pinAgentJob(jobId: string): Promise<AgentThreadPinApi> {
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/jobs/${encodeURIComponent(jobId)}/pin`, {
+    method: 'POST',
+  });
+  return jsonOrThrow(resp);
+}
+
+/** Return a pinned conversation to normal activity ordering. */
+export async function unpinAgentJob(jobId: string): Promise<AgentThreadPinApi> {
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/jobs/${encodeURIComponent(jobId)}/pin`, {
+    method: 'DELETE',
+  });
   return jsonOrThrow(resp);
 }
 

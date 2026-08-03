@@ -6,13 +6,16 @@ composed command rather than trusted to a container runtime being installed.
 
 from __future__ import annotations
 
+import logging
 import signal
 import subprocess
 from types import SimpleNamespace
 
 import pytest
 
+from serving.agent_jobs import sandbox as sandbox_mod
 from serving.agent_jobs.egress import EgressPolicyError
+from serving.agent_jobs.egress_proxy import CANARY_HOST
 from serving.agent_jobs.sandbox import (
     KATA_RUNTIME,
     ContainerBackend,
@@ -36,6 +39,29 @@ def test_process_backend_refuses_to_run_unisolated_by_default():
 def test_process_backend_runs_when_acknowledged():
     """An operator who accepts the risk (ephemeral VM) may proceed."""
     ProcessBackend(acknowledged_unsafe=True).preflight()
+
+
+def test_backends_report_the_boundary_they_actually_supply():
+    """Runtime policy and UI metadata derive from backend capability."""
+    process = ProcessBackend(acknowledged_unsafe=True)
+    container = ContainerBackend(image="registry.example/agent:1")
+    kata = ContainerBackend(image="registry.example/agent:1", runtime=KATA_RUNTIME)
+
+    assert process.provides_isolation is False
+    assert process.sandbox_metadata() == {"sandbox_backend": "process"}
+
+    assert container.provides_isolation is True
+    assert container.sandbox_metadata() == {
+        "sandbox_backend": "container",
+        "sandbox_image": "registry.example/agent:1",
+    }
+
+    assert kata.provides_isolation is True
+    assert kata.sandbox_metadata() == {
+        "sandbox_backend": "container",
+        "sandbox_image": "registry.example/agent:1",
+        "sandbox_runtime": KATA_RUNTIME,
+    }
 
 
 def test_process_backend_executes_and_streams():
@@ -97,6 +123,31 @@ def test_container_terminal_keeps_isolation_and_adds_a_named_tty():
     assert command[command.index("img:1") + 1 :] == ["claude", "-p", "hi"]
 
 
+def test_container_terminal_attaches_docker_client_to_a_real_tty(tmp_path):
+    """Docker rejects ``--tty`` unless its own stdin is a terminal."""
+    fake_docker = tmp_path / "fake-docker"
+    fake_docker.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "container" ]; then exit 0; fi\n'
+        'if [ ! -t 0 ]; then printf "the input device is not a TTY\\n" >&2; exit 1; fi\n'
+        'printf "tty-ready\\n"\n'
+        'printf "size:%s\\n" "$(stty size)"\n'
+        "IFS= read -r value\n"
+        'printf "received:%s\\n" "$value"\n'
+    )
+    fake_docker.chmod(0o700)
+    backend = ContainerBackend(image="img:1", docker_binary=str(fake_docker))
+
+    terminal = backend.spawn_terminal(_SPEC, rows=31, cols=101)
+    terminal.write(b"ping\n")
+    output = b"".join(terminal.chunks())
+
+    assert terminal.wait() == 0
+    assert b"tty-ready" in output
+    assert b"size:31 101" in output
+    assert b"received:ping" in output
+
+
 @pytest.mark.parametrize(
     "failure", [OSError("docker unavailable"), subprocess.TimeoutExpired([], 15)]
 )
@@ -116,11 +167,69 @@ def test_container_terminal_resize_wraps_process_failures(monkeypatch, failure):
 
     monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fail)
     terminal = _ContainerTerminalProcess(
-        _AttachedClient(), docker_binary="docker", container_name="hyi-terminal-test"
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
     )
 
     with pytest.raises(SandboxError, match="cannot be resized"):
         terminal.resize(30, 100)
+
+
+def test_container_terminal_suspend_accepts_an_already_exited_client(monkeypatch):
+    """A shell exit racing suspension is already safely quiesced."""
+
+    class _AttachedClient:
+        pid = 1234
+        stdout = None
+
+        @staticmethod
+        def poll():
+            return 0
+
+    monkeypatch.setattr(
+        "serving.agent_jobs.sandbox.subprocess.run",
+        lambda *_args, **_kwargs: pytest.fail("docker should not be called"),
+    )
+    terminal = _ContainerTerminalProcess(
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
+    )
+
+    terminal.suspend()
+    terminal.resume()
+
+
+def test_container_terminal_suspend_accepts_container_exit_race(monkeypatch):
+    """Docker reporting a just-exited container is also safely quiesced."""
+
+    class _AttachedClient:
+        pid = 1234
+        stdout = None
+
+        @staticmethod
+        def poll():
+            return None
+
+    monkeypatch.setattr(
+        "serving.agent_jobs.sandbox.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="Error response from daemon: Container x is not running",
+        ),
+    )
+    terminal = _ContainerTerminalProcess(
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
+    )
+
+    terminal.suspend()
 
 
 def test_container_terminal_kill_always_kills_client_and_force_removes(monkeypatch):
@@ -155,7 +264,10 @@ def test_container_terminal_kill_always_kills_client_and_force_removes(monkeypat
         lambda pid, sig: killed_groups.append((pid, sig)),
     )
     terminal = _ContainerTerminalProcess(
-        _AttachedClient(), docker_binary="docker", container_name="hyi-terminal-test"
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
     )
 
     terminal.kill()
@@ -166,6 +278,62 @@ def test_container_terminal_kill_always_kills_client_and_force_removes(monkeypat
         ["docker", "rm", "--force", "hyi-terminal-test"],
     ]
     assert killed_groups == [(4321, signal.SIGKILL)]
+
+
+def test_container_terminal_kill_waits_for_auto_remove(monkeypatch):
+    """Docker ``--rm`` cleanup in progress must not become a false 503."""
+    calls: list[list[str]] = []
+    remove_attempts = 0
+
+    class _AttachedClient:
+        pid = 4321
+        stdout = None
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = -signal.SIGKILL
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -signal.SIGKILL
+
+    def fake_run(argv, **kwargs):
+        nonlocal remove_attempts
+        calls.append(argv)
+        if argv[1] == "rm":
+            remove_attempts += 1
+            if remove_attempts == 1:
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="",
+                    stderr="removal of container hyi-terminal-test is already in progress",
+                )
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="Error response from daemon: No such container: hyi-terminal-test",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("serving.agent_jobs.sandbox.os.killpg", lambda *_args: None)
+    terminal = _ContainerTerminalProcess(
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
+    )
+
+    terminal.kill()
+
+    assert calls == [
+        ["docker", "kill", "hyi-terminal-test"],
+        ["docker", "rm", "--force", "hyi-terminal-test"],
+        ["docker", "rm", "--force", "hyi-terminal-test"],
+    ]
 
 
 def test_container_terminal_kill_failure_can_be_retried(monkeypatch):
@@ -200,7 +368,10 @@ def test_container_terminal_kill_failure_can_be_retried(monkeypatch):
     monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fake_run)
     monkeypatch.setattr("serving.agent_jobs.sandbox.os.killpg", lambda *_args: None)
     terminal = _ContainerTerminalProcess(
-        _AttachedClient(), docker_binary="docker", container_name="hyi-terminal-test"
+        _AttachedClient(),
+        docker_binary="docker",
+        container_name="hyi-terminal-test",
+        input_fd=None,
     )
 
     with pytest.raises(SandboxError, match="cleanup could not be confirmed"):
@@ -542,6 +713,188 @@ def test_open_egress_requires_an_explicit_acknowledgement():
     backend._check_networks_are_closed()  # acknowledged: does not raise
 
 
+def _egress_env(**extra: str) -> dict[str, str]:
+    """A container backend with a configured, proxied setup tier."""
+    return {
+        "AGENT_SANDBOX_BACKEND": "container",
+        "AGENT_SANDBOX_IMAGE": "img:1",
+        "AGENT_EGRESS_NETWORK_PLATFORM_ONLY": "agent-egress",
+        "AGENT_EGRESS_NETWORK_TRUSTED": "agent-egress-trusted",
+        "AGENT_EGRESS_PROXY_URL_TRUSTED": "http://agent-egress-proxy:3128",
+        **extra,
+    }
+
+
+def _fake_docker(
+    monkeypatch,
+    *,
+    internal: dict[str, str],
+    canary: str = "403 403",
+    gateway: str = "ok",
+):
+    """Stand in for the daemon: network internality, and what the canary got.
+
+    ``canary`` is the probe's ``"<cleartext> <connect>"`` line.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1:3] == ["network", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout=internal.get(argv[3], "true"), stderr="")
+        if argv[1] == "run":
+            if any(value.endswith("/health") for value in argv if isinstance(value, str)):
+                return SimpleNamespace(returncode=0, stdout=gateway, stderr="")
+            return SimpleNamespace(returncode=0, stdout=canary, stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("serving.agent_jobs.sandbox.subprocess.run", fake_run)
+    return calls
+
+
+def test_a_proxied_network_that_routes_out_is_refused_too(monkeypatch):
+    """The trusted tier is a closed network plus a proxy, not an open network.
+
+    Preflight used to exempt trusted and custom as "allowlist-fronted by
+    construction" — an assumption about a network nobody checked. Pointing
+    AGENT_EGRESS_NETWORK_TRUSTED at the default bridge then passed in silence
+    and handed the setup phase the whole internet, with every log and config
+    still reading `trusted`.
+    """
+    backend = build_backend_from_env(_egress_env())
+    _fake_docker(monkeypatch, internal={"agent-egress-trusted": "false"})
+
+    with pytest.raises(SandboxError, match="not `internal`"):
+        backend._check_networks_are_closed()
+
+
+def test_a_proxy_that_serves_the_canary_is_a_startup_failure(monkeypatch):
+    """A proxy that answers but allows everything is the worst available outcome.
+
+    The tier reads as allowlisted in every log and config, the network is
+    internal exactly as designed, and the sandbox still reaches the internet.
+    Nothing downstream would notice — the same shape as a Kata runtime
+    degrading to a shared kernel, and checked the same way: by observing the
+    behaviour instead of trusting the configuration.
+    """
+    backend = build_backend_from_env(_egress_env())
+    _fake_docker(monkeypatch, internal={}, canary="200 200")
+
+    with pytest.raises(SandboxError, match="reach the internet"):
+        backend._check_networks_are_closed()
+
+
+def test_a_proxy_that_denies_cleartext_but_tunnels_anywhere_is_caught(monkeypatch):
+    """The cleartext answer alone proves almost nothing, so it is not trusted alone.
+
+    Our own rendered config denies plain HTTP outright, so a proxy that
+    refused cleartext while allowing CONNECT to any host would answer 403 to
+    a one-request probe and pass — with every HTTPS destination in the world
+    still reachable, which is all a package manager, or an exfiltration
+    attempt, actually uses.
+    """
+    backend = build_backend_from_env(_egress_env())
+    _fake_docker(monkeypatch, internal={}, canary="403 200")
+
+    with pytest.raises(SandboxError, match="refuses cleartext and lets the other through"):
+        backend._check_networks_are_closed()
+
+
+def test_an_unreachable_proxy_is_reported_as_unreachable(monkeypatch):
+    """Distinguished from "not enforcing", because the fixes are opposite.
+
+    curl reports both as a failure; conflating them would send an operator to
+    check the allowlist when the proxy is simply not running. `0` is what
+    `%{http_connect}` reports when no CONNECT was ever answered.
+    """
+    backend = build_backend_from_env(_egress_env())
+    _fake_docker(monkeypatch, internal={}, canary="000 0")
+
+    with pytest.raises(SandboxError, match="unreachable"):
+        backend._check_networks_are_closed()
+
+
+def test_a_denying_proxy_passes_and_is_probed_the_way_a_job_would_use_it(monkeypatch):
+    """The probe must exercise the mechanism a setup script actually uses.
+
+    Passing `--proxy` on the command line would prove the proxy denies while
+    saying nothing about whether the environment reaches the sandbox — which
+    is the part that carries the policy.
+    """
+    backend = build_backend_from_env(_egress_env())
+    calls = _fake_docker(monkeypatch, internal={}, canary="403 403")
+
+    backend._check_networks_are_closed()
+
+    probe = next(argv for argv in calls if argv[1] == "run")
+    assert probe[probe.index("--network") + 1] == "agent-egress-trusted"
+    assert "https_proxy=http://agent-egress-proxy:3128" in probe
+    # Both paths, because refusing one and tunnelling the other is a real
+    # proxy misconfiguration and only the CONNECT one carries real traffic.
+    assert f"http://{CANARY_HOST}/" in probe[-1]
+    assert f"https://{CANARY_HOST}/" in probe[-1]
+    # And the closed phase is never probed: it has no proxy to enforce anything.
+    assert sum(1 for argv in calls if argv[1] == "run") == 1
+
+
+def test_every_probe_runs_under_the_runtime_jobs_will_use(monkeypatch):
+    """A probe under the daemon's default validates a deployment nobody runs.
+
+    The bind check learned this when it passed on a host with no Kata shim and
+    every job then died at spawn. The egress probes are the same shape — DNS
+    and networking are exactly what differs between a shared-kernel container
+    and a VM-isolated one — so they carry the flag too.
+    """
+    backend = build_backend_from_env(_egress_env(AGENT_SANDBOX_BACKEND="kata"))
+    calls = _fake_docker(monkeypatch, internal={})
+
+    backend._check_networks_are_closed()
+    backend.check_gateway_reachable("http://backend:8080")
+
+    runs = [argv for argv in calls if argv[1] == "run"]
+    assert len(runs) == 2
+    for argv in runs:
+        assert argv[argv.index("--runtime") + 1] == KATA_RUNTIME
+
+
+def test_a_custom_tier_keeps_the_operators_own_topology(monkeypatch):
+    """`custom` exists to replace our judgement, so neither check applies to it.
+
+    Both exemptions are deliberate and worth pinning, because tightening them
+    looks like an improvement. Demanding `internal` would force a transparently
+    filtered deployment to set AGENT_SANDBOX_ALLOW_OPEN_NETWORK, which silences
+    the check for the *closed* tier too; and probing for our own proxy's 403
+    would read an operator's drop-on-deny as "not enforcing" and refuse to
+    start a deployment that works.
+    """
+    backend = build_backend_from_env(
+        {
+            "AGENT_SANDBOX_BACKEND": "container",
+            "AGENT_SANDBOX_IMAGE": "img:1",
+            "AGENT_EGRESS_SETUP_TIER": "custom",
+            "AGENT_EGRESS_AGENT_TIER": "custom",
+            "AGENT_EGRESS_NETWORK_CUSTOM": "operator-net",
+            "AGENT_EGRESS_PROXY_URL_CUSTOM": "http://operator-proxy:8080",
+        }
+    )
+    calls = _fake_docker(monkeypatch, internal={"operator-net": "false"}, canary="000")
+
+    backend._check_networks_are_closed()  # does not raise
+
+    assert not [argv for argv in calls if argv[1] == "run"], "a custom proxy must not be probed"
+
+
+def test_the_setup_phase_is_handed_the_proxy_and_the_agent_phase_is_not():
+    """The whole point of two phases, at the one place it becomes real."""
+    backend = build_backend_from_env(_egress_env())
+
+    setup = backend.build_command(SandboxSpec(argv=["sh"], workdir="/w", phase="setup"))
+    agent = backend.build_command(SandboxSpec(argv=["sh"], workdir="/w", phase="agent"))
+
+    assert "https_proxy=http://agent-egress-proxy:3128" in setup
+    assert not any(value.startswith("https_proxy=") for value in agent)
+
+
 def test_the_phase_decides_which_network_the_container_joins():
     """setup and agent must not silently share one network.
 
@@ -555,6 +908,7 @@ def test_the_phase_decides_which_network_the_container_joins():
             "AGENT_SANDBOX_IMAGE": "img:1",
             "AGENT_EGRESS_NETWORK_PLATFORM_ONLY": "agent-egress",
             "AGENT_EGRESS_NETWORK_TRUSTED": "agent-setup",
+            "AGENT_EGRESS_PROXY_URL_TRUSTED": "http://proxy:3128",
         }
     )
 
@@ -605,3 +959,90 @@ def test_the_bind_probe_uses_the_runtime_jobs_will_use():
     argv = captured["argv"]
     assert "--runtime" in argv
     assert argv[argv.index("--runtime") + 1] == KATA_RUNTIME
+
+
+# ── Gateway reachability preflight ─────────────────────────────────────
+#
+# The check runs one container on the agent phase's own network and reads a
+# single verdict off its stdout. These pin what each verdict means, because
+# the failure it exists to prevent — every job dying at its first model call,
+# reported as a broken model — is one an operator cannot diagnose from the
+# symptom.
+
+
+def _probe_returns(monkeypatch, verdict: str) -> list[list[str]]:
+    """Stub the probe container, capturing the argv it would have run."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout=f"{verdict}\n", stderr="")
+
+    monkeypatch.setattr(sandbox_mod.subprocess, "run", fake_run)
+    return calls
+
+
+def test_a_reachable_gateway_passes(monkeypatch):
+    calls = _probe_returns(monkeypatch, "ok")
+    backend = ContainerBackend(image="img:1", network="agent-egress")
+
+    backend.check_gateway_reachable("http://agent-gateway:8080")
+
+    argv = calls[0]
+    assert argv[:2] == ["docker", "run"]
+    assert "--network" in argv and "agent-egress" in argv
+    # The probe URL is passed as an argument, never interpolated into the
+    # script: it comes from configuration and ends up inside a shell.
+    assert "http://agent-gateway:8080/health" in argv
+
+
+def test_a_name_that_does_not_resolve_names_the_remote_gateway_case(monkeypatch):
+    _probe_returns(monkeypatch, "unresolved")
+    backend = ContainerBackend(image="img:1", network="agent-egress")
+
+    with pytest.raises(SandboxError) as excinfo:
+        backend.check_gateway_reachable("http://backend:8080")
+
+    message = str(excinfo.value)
+    assert "cannot resolve" in message
+    assert "relay" in message
+
+
+def test_a_relay_that_resolves_but_cannot_forward_is_caught(monkeypatch):
+    """The regression this check was rewritten for.
+
+    DNS alone passes for anything with a record — including a tunnel container
+    that answers to the gateway's name and cannot reach the gateway behind it.
+    That is exactly the shape of a cross-machine deployment, so the one
+    topology that needed the check hardest was the one it could not see.
+    """
+    _probe_returns(monkeypatch, "unreachable")
+    backend = ContainerBackend(image="img:1", network="agent-egress")
+
+    with pytest.raises(SandboxError) as excinfo:
+        backend.check_gateway_reachable("http://agent-gateway:8080")
+
+    message = str(excinfo.value)
+    assert "no HTTP response" in message
+    assert "cannot reach the gateway behind it" in message
+
+
+def test_an_image_without_curl_or_python_degrades_loudly(monkeypatch, caplog):
+    """A deployment-owned image may have neither. Resolving is all that can be
+    asked of it — but the log must not imply the stronger check ran."""
+    _probe_returns(monkeypatch, "dns-only")
+    backend = ContainerBackend(image="custom:1", network="agent-egress")
+
+    with caplog.at_level(logging.WARNING):
+        backend.check_gateway_reachable("http://agent-gateway:8080")
+
+    assert "agent_sandbox_gateway_probe_degraded" in caplog.text
+
+
+def test_a_base_url_with_no_host_is_not_probed(monkeypatch):
+    calls = _probe_returns(monkeypatch, "ok")
+    backend = ContainerBackend(image="img:1", network="agent-egress")
+
+    backend.check_gateway_reachable("not-a-url")
+
+    assert calls == []
