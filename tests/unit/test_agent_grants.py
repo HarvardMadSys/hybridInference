@@ -26,7 +26,7 @@ from serving.servers.deps import (
 )
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import agent_grants
-from serving.servers.routers.agent_grants import ENV_DISPATCH_TOKEN
+from serving.servers.routers.internal_auth import ENV_DISPATCH_TOKEN
 
 DISPATCH = "dispatch-secret-value"
 AUTH = {"Authorization": f"Bearer {DISPATCH}"}

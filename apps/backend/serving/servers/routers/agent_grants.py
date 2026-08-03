@@ -11,11 +11,9 @@ and the gateway's existing per-user quota continues to govern *how much*.
 
 from __future__ import annotations
 
-import hmac
-import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 
 from serving import grants
@@ -28,71 +26,22 @@ from serving.servers.deps import (
     get_operational_store,
     get_router,
 )
+from serving.servers.routers.internal_auth import (
+    error as _error,
+    require_dispatch_token,
+    require_store as _require_store,
+)
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/internal/agent-grants", tags=["internal"])
 
-ENV_DISPATCH_TOKEN = "GATEWAY_GRANT_DISPATCH_TOKEN"
-
 #: A status outside "active" is refused rather than defaulted.
 _ACTIVE_STATUS = "active"
 
 #: A renewal buys the same bounded step a mint does.
 MAX_RENEW_TTL_S = grants.DEFAULT_GRANT_TTL_S
-
-
-def require_dispatch_token(authorization: str | None = Header(None)) -> None:
-    """Authorize an internal caller by the shared dispatch token.
-
-    A deployment that has not set the token offers no internal endpoints at
-    all — 404 rather than 401, because "this gateway does not federate
-    capability" and "you got the password wrong" are different facts and an
-    unconfigured deployment should not look like a guarded one.
-
-    Raises:
-        HTTPException: 404 when unconfigured, 401 when the token is absent or
-            wrong.
-    """
-    expected = (os.environ.get(ENV_DISPATCH_TOKEN) or "").strip()
-    if not expected:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={
-                "error": {
-                    "type": "internal_api_not_configured",
-                    "message": "This deployment does not expose internal capability endpoints.",
-                }
-            },
-        )
-    presented = ""
-    if authorization and authorization.startswith("Bearer "):
-        presented = authorization[7:]
-    # Constant-time: this compares a shared secret, and a timing oracle on it
-    # is worth more to an attacker than on a per-user credential.
-    if not presented or not hmac.compare_digest(presented, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": {"type": "unauthorized", "message": "Invalid dispatch token."}},
-        )
-
-
-def _error(status_code: int, error_type: str, message: str) -> HTTPException:
-    return HTTPException(
-        status_code=status_code,
-        detail={"error": {"type": error_type, "message": message}},
-    )
-
-
-def _require_store(store: Any) -> Any:
-    if store is None:
-        raise _error(
-            status.HTTP_404_NOT_FOUND,
-            "internal_api_not_configured",
-            "This deployment has no user database, so it cannot mint grants.",
-        )
-    return store
 
 
 class MintGrantRequest(BaseModel):
