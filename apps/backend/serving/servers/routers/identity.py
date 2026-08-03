@@ -243,6 +243,14 @@ async def exchange_authorization_code(
         )
     except (IdentityNotConfigured, IdentityKeyUnavailable) as exc:
         raise _error(status.HTTP_404_NOT_FOUND, "identity_not_configured", str(exc)) from exc
+    except IdentityKeyMisconfigured as exc:
+        # A configured-but-unusable key is an operator error, and must not be
+        # reported as "identity is not offered here" — same distinction the JWKS
+        # endpoint makes. The code has already been consumed at this point; the
+        # caller has to restart, which is correct, since nothing it did was wrong.
+        raise _error(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "identity_key_misconfigured", str(exc)
+        ) from exc
 
     return {
         "access_token": token,

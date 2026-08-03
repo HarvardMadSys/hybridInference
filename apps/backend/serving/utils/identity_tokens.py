@@ -24,6 +24,17 @@ The code is random and stored **hashed**, so a read of the table does not yield
 usable codes. It is claimed with a single atomic statement rather than
 read-then-mark, because "was it used?" and "mark it used" as two statements is a
 race that lets one code be exchanged twice.
+
+**One judgement call, recorded as one.** The code is consumed before the PKCE
+verifier is checked, so a failed exchange burns it. That is the common
+implementation choice and it makes an intercepted code good for at most one
+attempt — but it is a trade, not a theorem. Someone who can read a code without
+being able to use it (from a referrer header, browser history, or a proxy log)
+can deny the legitimate exchange by racing it. The alternative — verify first,
+then claim — removes that at the cost of letting a stolen code be probed
+repeatedly inside its lifetime. Both are defensible; the DoS is bounded by a
+60-second window and a retry, which is why it reads as the lesser cost here. If
+that reasoning stops holding, this is the line to change.
 """
 
 from __future__ import annotations
