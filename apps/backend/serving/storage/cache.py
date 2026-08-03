@@ -615,6 +615,10 @@ class CachedOperationalStore(OperationalStore):
     # has already withdrawn, which is the one wrong answer this table exists to
     # prevent.
 
+    async def get_quota_context_for_user(self, user_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.get_quota_context_for_user(user_id)
+
     async def upsert_agent_grant(
         self,
         *,

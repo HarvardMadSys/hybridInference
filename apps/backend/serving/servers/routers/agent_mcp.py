@@ -37,6 +37,7 @@ import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from serving import grants
 from serving.agent_jobs.mcp_proxy import (
     MAX_BUFFERED_RESPONSE_BYTES,
     SseFilter,
@@ -47,9 +48,10 @@ from serving.agent_jobs.mcp_registry import McpServer, get_registry
 from serving.agent_jobs.model_auth import (
     AgentModelAuthError,
     authenticate_agent_tool_call,
+    authenticate_grant_tool_call,
     looks_like_agent_token,
 )
-from serving.servers.deps import get_agent_job_store
+from serving.servers.deps import get_agent_job_store, get_operational_store
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -108,12 +110,24 @@ def _bearer(authorization: str | None) -> str:
 
 
 async def _authorize(
-    server_name: str, authorization: str | None, store: AgentJobStore | None
+    server_name: str,
+    authorization: str | None,
+    store: AgentJobStore | None,
+    op_store: Any | None = None,
 ) -> tuple[McpServer, str]:
     """Resolve the token and the named server, or raise the right HTTP error."""
     token = _bearer(authorization)
     try:
-        identity = await authenticate_agent_tool_call(token, job_store=store)
+        if grants.looks_like_grant_token(token):
+            # Same fence, no quota: a tool call invokes no inference provider,
+            # so it spends nothing there is a limit on.
+            granted = await authenticate_grant_tool_call(token, op_store=op_store)
+            identity = {
+                "job_id": granted["agent_job_id"],
+                "mcp_servers": granted["agent_allowed_mcp"],
+            }
+        else:
+            identity = await authenticate_agent_tool_call(token, job_store=store)
     except AgentModelAuthError as exc:
         raise HTTPException(
             status_code=exc.status_code,
@@ -301,9 +315,10 @@ async def mcp_post(
     request: Request,
     authorization: str | None = Header(None),
     store: AgentJobStore | None = Depends(get_agent_job_store),
+    op_store: Any = Depends(get_operational_store),
 ) -> Any:
     """Relay one MCP request, refusing tools the allowlist does not cover."""
-    server, job_id = await _authorize(server_name, authorization, store)
+    server, job_id = await _authorize(server_name, authorization, store, op_store)
     body = await request.body()
 
     plan = plan_request(body, server)
@@ -332,9 +347,10 @@ async def mcp_get(
     request: Request,
     authorization: str | None = Header(None),
     store: AgentJobStore | None = Depends(get_agent_job_store),
+    op_store: Any = Depends(get_operational_store),
 ) -> Any:
     """Open the server-to-client stream for an established session."""
-    server, job_id = await _authorize(server_name, authorization, store)
+    server, job_id = await _authorize(server_name, authorization, store, op_store)
     return await _proxy(request, server=server, job_id=job_id, method="GET")
 
 
@@ -344,9 +360,10 @@ async def mcp_delete(
     request: Request,
     authorization: str | None = Header(None),
     store: AgentJobStore | None = Depends(get_agent_job_store),
+    op_store: Any = Depends(get_operational_store),
 ) -> Any:
     """Terminate an MCP session."""
-    server, job_id = await _authorize(server_name, authorization, store)
+    server, job_id = await _authorize(server_name, authorization, store, op_store)
     return await _proxy(request, server=server, job_id=job_id, method="DELETE")
 
 

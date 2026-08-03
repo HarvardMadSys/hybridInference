@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 
 from serving.agent_jobs.mcp_registry import McpRegistry, McpServer
 from serving.agent_jobs.tokens import SCOPE_MODEL, mint_worker_token
-from serving.servers.deps import get_agent_job_store
+from serving.servers.deps import get_agent_job_store, get_operational_store
 from serving.servers.routers import agent_mcp as agent_mcp_router
 
 pytestmark = pytest.mark.asyncio
@@ -122,6 +122,10 @@ async def client(monkeypatch, store, upstream):
     app = FastAPI()
     app.include_router(agent_mcp_router.router)
     app.dependency_overrides[get_agent_job_store] = lambda: store
+    # The proxy also accepts inference grants, which resolve through the
+    # operational store. These legacy cases present ajt tokens and never
+    # reach it, but the dependency still has to resolve.
+    app.dependency_overrides[get_operational_store] = lambda: None
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:
         yield async_client
@@ -190,6 +194,10 @@ async def test_a_registry_header_replaces_the_sandbox_header_rather_than_joining
     app = FastAPI()
     app.include_router(agent_mcp_router.router)
     app.dependency_overrides[get_agent_job_store] = lambda: store
+    # The proxy also accepts inference grants, which resolve through the
+    # operational store. These legacy cases present ajt tokens and never
+    # reach it, but the dependency still has to resolve.
+    app.dependency_overrides[get_operational_store] = lambda: None
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as api:
         await api.post(
             "/v1/agent/mcp/github",
@@ -268,6 +276,10 @@ async def test_the_catalogue_is_filtered_on_the_way_back(monkeypatch, store, ups
     app = FastAPI()
     app.include_router(agent_mcp_router.router)
     app.dependency_overrides[get_agent_job_store] = lambda: store
+    # The proxy also accepts inference grants, which resolve through the
+    # operational store. These legacy cases present ajt tokens and never
+    # reach it, but the dependency still has to resolve.
+    app.dependency_overrides[get_operational_store] = lambda: None
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as api:
         response = await api.post("/v1/agent/mcp/github", json=_rpc("tools/list"), headers=_auth())
     assert [tool["name"] for tool in response.json()["result"]["tools"]] == ["get_issue"]

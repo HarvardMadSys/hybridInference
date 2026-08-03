@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from serving import grants, quota
 from serving.agent_jobs.tokens import InvalidAgentToken, parse_worker_token
 from serving.utils.logging import get_logger
 
@@ -58,9 +59,223 @@ class AgentModelAuthError(Exception):
         self.status_code = status_code
 
 
+class AgentQuotaExceeded(AgentModelAuthError):
+    """The account behind a grant has spent its daily quota.
+
+    Distinct from the base error because the HTTP layer must answer with the
+    *same* body and ``X-RateLimit-*`` headers the direct path returns — a
+    client should not be able to tell which door it came through — and that
+    needs the numbers, not a rendered message.
+    """
+
+    def __init__(self, *, quota_usd: float, spent_usd: float) -> None:
+        super().__init__("Daily cost quota exceeded", status_code=429)
+        self.quota_usd = quota_usd
+        self.spent_usd = spent_usd
+
+
 def looks_like_agent_token(api_key: str | None) -> bool:
-    """Return whether a credential should be resolved as a worker token."""
-    return bool(api_key) and api_key.startswith(AGENT_TOKEN_PREFIX)
+    """Return whether a credential should be resolved as an agent credential.
+
+    Covers both kinds during the transition: the legacy per-attempt worker
+    token (``ajt.``) and the inference grant that replaces it (``agr.``). The
+    HTTP layer routes on this one predicate, so both must answer here or a
+    grant would fall through to the API-key path and be rejected as garbage.
+    """
+    if not api_key:
+        return False
+    return api_key.startswith(AGENT_TOKEN_PREFIX) or grants.looks_like_grant_token(api_key)
+
+
+async def _resolve_grant(
+    api_key: str,
+    *,
+    op_store: Any | None,
+) -> dict[str, Any]:
+    """Load and validate the grant behind an ``agr`` token.
+
+    Shared by the model and tool paths: signature, row, liveness and subject
+    are the same questions for both. What differs is what each does next —
+    only the model path meters.
+
+    Raises:
+        AgentModelAuthError: For any unusable token, grant, or subject.
+    """
+    if op_store is None:
+        raise AgentModelAuthError("Inference grants require a configured database.")
+
+    try:
+        grant_id = grants.parse_grant_token(api_key)
+    except grants.InvalidGrantToken as exc:
+        raise AgentModelAuthError(f"Invalid inference grant: {exc}") from exc
+
+    try:
+        row = await op_store.get_agent_grant(grant_id)
+    except Exception as exc:
+        # A store read that errors must refuse the call rather than let it
+        # proceed unmetered. This is the one place where a permissive default
+        # is unbounded spend.
+        logger.warning(
+            "agent_grant_lookup_failed",
+            exc_info=True,
+            extra={"event": "agent_grant_lookup_failed", "grant_id": grant_id},
+        )
+        raise AgentModelAuthError(
+            "Inference grants cannot be verified right now.", status_code=503
+        ) from exc
+
+    # Unknown, revoked and expired get one answer: a sandbox learns nothing
+    # about a job's state from a rejection.
+    if row is None or not grants.is_live(row):
+        raise AgentModelAuthError("This inference grant is no longer valid.")
+    return row
+
+
+async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
+    """Return ``(limit, spent)`` for the account behind a grant.
+
+    The limit lives on the user's API key and the spend on the user, so this
+    is two reads that the direct path gets in one — a grant carries no key to
+    join through.
+
+    Raises:
+        AgentModelAuthError: If the account has no active key, if it somehow
+            has more than one, or if either read fails. Every branch refuses;
+            none defaults to "no ceiling".
+    """
+    try:
+        keys = await op_store.get_quota_context_for_user(user_id)
+    except Exception as exc:
+        logger.warning(
+            "agent_grant_quota_lookup_failed",
+            exc_info=True,
+            extra={"event": "agent_grant_quota_lookup_failed", "user_id": user_id},
+        )
+        raise AgentModelAuthError(
+            "Spending limits cannot be verified right now.", status_code=503
+        ) from exc
+
+    if not keys:
+        # No key means no configured limit, and absence of a limit must never
+        # be read as absence of a ceiling.
+        raise AgentModelAuthError(
+            "This account has no active API key, so its spending limit cannot be applied.",
+            status_code=403,
+        )
+    if len(keys) > 1:
+        # UNIQUE (user_id) WHERE status='active' forbids this. Reaching it
+        # means the index is gone; picking a winner would settle a spending
+        # question by papering over a schema failure.
+        logger.error(
+            "agent_grant_duplicate_active_keys",
+            extra={
+                "event": "agent_grant_duplicate_active_keys",
+                "user_id": user_id,
+                "count": len(keys),
+            },
+        )
+        raise AgentModelAuthError(
+            "This account's spending limit is ambiguous and cannot be applied.",
+            status_code=403,
+        )
+
+    try:
+        spent = await op_store.get_user_cost_today(user_id)
+    except Exception as exc:
+        logger.warning(
+            "agent_grant_spend_lookup_failed",
+            exc_info=True,
+            extra={"event": "agent_grant_spend_lookup_failed", "user_id": user_id},
+        )
+        raise AgentModelAuthError(
+            "Spending cannot be measured right now.", status_code=503
+        ) from exc
+
+    return quota.resolve_quota(keys[0].get("quota_daily_cost_usd")), float(spent or 0.0)
+
+
+async def authenticate_grant_model_call(
+    api_key: str,
+    *,
+    op_store: Any | None,
+) -> dict[str, Any]:
+    """Resolve an inference grant into a user context for a model request.
+
+    This is where the per-task budget went. A grant says *what* may be called;
+    the account's daily quota — the same one the direct path enforces — says
+    how much. Before grants existed, an agent token returned from
+    ``verify_api_key`` above the quota gate and reached inference having been
+    authenticated and never metered; that bypass closes here.
+
+    Raises:
+        AgentModelAuthError: For an unusable grant or an exhausted quota.
+    """
+    row = await _resolve_grant(api_key, op_store=op_store)
+
+    user = await _active_subject(op_store, row["user_id"])
+    quota_usd, spent_usd = await _quota_context(op_store, row["user_id"])
+    try:
+        quota.check(quota_usd=quota_usd, spent_usd=spent_usd)
+    except quota.QuotaExceeded as exc:
+        raise AgentQuotaExceeded(quota_usd=exc.quota_usd, spent_usd=exc.spent_usd) from exc
+
+    return {
+        "user_id": row["user_id"],
+        # The owner's role: a grant's models were already clamped to it at mint
+        # time, so this only has to agree with that decision.
+        "role": user.get("role") or "free",
+        "authenticated": True,
+        "is_admin": False,
+        # Attribution, unchanged: api_logs.agent_job_id is what the owner's
+        # cost report reads, and it keeps working across the token change.
+        "agent_job_id": row["external_job_id"],
+        "agent_grant_id": row["grant_id"],
+        "agent_allowed_models": row.get("allowed_models") or [],
+    }
+
+
+async def authenticate_grant_tool_call(
+    api_key: str,
+    *,
+    op_store: Any | None,
+) -> dict[str, Any]:
+    """Resolve an inference grant for an MCP proxy call.
+
+    The same signature, row, liveness and subject checks as a model call, and
+    deliberately no quota: a tool call invokes no inference provider, so it
+    spends nothing there is a limit on.
+
+    Raises:
+        AgentModelAuthError: For an unusable grant or subject.
+    """
+    row = await _resolve_grant(api_key, op_store=op_store)
+    await _active_subject(op_store, row["user_id"])
+    return {
+        "user_id": row["user_id"],
+        "agent_job_id": row["external_job_id"],
+        "agent_grant_id": row["grant_id"],
+        "agent_allowed_mcp": row.get("allowed_mcp") or [],
+    }
+
+
+async def _active_subject(op_store: Any, user_id: str) -> dict[str, Any]:
+    """Load the grant's owner, refusing anyone who may no longer sign in.
+
+    Checked on every call, not only at mint: a grant lives minutes, and a
+    suspension inside that window has to take effect immediately.
+
+    Raises:
+        AgentModelAuthError: If the account is unknown or not active.
+    """
+    try:
+        user = await op_store.get_user_by_id(user_id)
+    except Exception as exc:
+        raise AgentModelAuthError(
+            "This account cannot be verified right now.", status_code=503
+        ) from exc
+    if user is None or user.get("status") != "active":
+        raise AgentModelAuthError("This account may not call models.", status_code=403)
+    return user
 
 
 async def authenticate_agent_model_call(

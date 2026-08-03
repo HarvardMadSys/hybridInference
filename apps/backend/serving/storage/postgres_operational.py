@@ -1994,6 +1994,24 @@ class PostgresOperationalStore(OperationalStore):
 
     # -- inference grants ----------------------------------------------------
 
+    async def get_quota_context_for_user(self, user_id: str) -> list[Row]:
+        """Return the quota-bearing rows for a user's active API keys."""
+        async with self._pool.acquire() as conn:
+            # LIMIT 2, not 1: the caller must be able to *detect* a duplicate
+            # rather than silently take the first of an impossible set.
+            rows = await conn.fetch(
+                "SELECT k.id, k.user_id, k.quota_daily_cost_usd, u.role "
+                "FROM api_keys k "
+                "LEFT JOIN users u ON u.id = k.user_id "
+                "WHERE k.user_id = $1 "
+                "  AND k.status = 'active' "
+                "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
+                "  AND u.id IS NOT NULL AND u.status = 'active' "
+                "LIMIT 2",
+                user_id,
+            )
+        return [dict(row) for row in rows]
+
     async def upsert_agent_grant(
         self,
         *,
