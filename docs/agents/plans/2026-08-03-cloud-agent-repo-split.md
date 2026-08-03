@@ -125,12 +125,14 @@
 
 ### C2. One-time authorization code endpoint (M)
 - Repo: old. Deps: C1.
-- `POST /v1/identity/code` — auth: existing user bearer JWT. Body: `client_id` (must equal `cloud-agent`), `redirect_uri` (must exactly match one of env `IDENTITY_ALLOWED_REDIRECTS`, comma-separated), `code_challenge` (S256), `state` (opaque, ≤512B). Returns `{code}` — random 256-bit, stored server-side (new small table `identity_codes`: code_hash, user_id, challenge, redirect_uri, expires_at 60s, used_at) — single-use.
+- `POST /v1/identity/code` — auth: existing user bearer JWT. Body: `client_id` (must equal `cloud-agent`), `redirect_uri` (must **exactly** match one of env `IDENTITY_ALLOWED_REDIRECTS`, comma-separated), `code_challenge` (S256), `code_challenge_method` (must be `S256`). Returns `{code, expires_in}` — random 256-bit, stored **hashed** server-side (new table `identity_auth_codes`: code_hash pk, user_id, client_id, redirect_uri, code_challenge, expires_at 60s, used_at) — single-use, claimed with one atomic statement.
+- **`state` is not in this API.** It is the client's CSRF value: the frontend holds it across the redirect and echoes it back. Accepting it server-side and ignoring it would be worse than not accepting it.
+- Refuse unless issuance is configured *in full* — issuer, redirects, and a usable signing key — before a code exists. Partial configuration otherwise mints a code that `/token` consumes and cannot redeem.
 - **Acceptance:** tests: happy path, wrong client_id 400, unlisted redirect 400, expired/replayed code rejected at C3.
 
 ### C3. Token exchange endpoint (M)
 - Repo: old. Deps: C2, DR6, DR7.
-- `POST /v1/identity/token` — unauthenticated; body `{code, code_verifier, client_id, redirect_uri}`. Verifies S256(verifier)==challenge, single-use, expiry, redirect match. Returns RS256 JWT: `iss=<GATEWAY_BASE_URL>`, `aud=cloud-agent`, `sub=<user_id>`, `email`, `role`, `plan`, `exp=now+10min`, `kid` header. No refresh token (the agent BFF holds its own session).
+- `POST /v1/identity/token` — unauthenticated; body `{code, code_verifier, client_id, redirect_uri}`. Verifies S256(verifier)==challenge, single-use, expiry, redirect match. Returns RS256 JWT: `iss` (from `IDENTITY_ISSUER`, falling back to `base_url`), `aud=cloud-agent`, `sub=<user_id>`, `email`, `role`, `exp=now+10min`, `kid` header. **No `plan` claim** — this gateway has no plan concept; `users.role` is it. No refresh token (the agent BFF holds its own session).
 - **Acceptance:** tests incl. JWKS round-trip verification; code replay → 400; verifier mismatch → 400.
 
 ### C4. Frontend authorize page (M)
@@ -155,8 +157,22 @@ So the request carries **requested** caps, and every one is clamped:
 | `user_id` | Caller names it; gateway **looks it up** and refuses unless the account exists and is active |
 | `allowed_models` | Clamped to what that user's role may reach — never widened by the request |
 | `allowed_mcp` | Clamped to the deployment's registry ∩ what the role may reach |
-| `budget_usd` | `min(requested, ceiling(role))`, and further reduced by what the job has already spent |
+| `budget_usd` | `min(requested, per_job_ceiling(role), user's remaining period allowance)` — see the note below |
 | `ttl_seconds` | `min(requested, MAX_GRANT_TTL)` |
+
+**`budget_usd` is the job's total cap, not its remaining balance.** Do not
+subtract what the job has already spent at mint time. C6 enforces the budget by
+comparing the job's *cumulative* ledger spend against `budget_usd`; storing a
+remaining figure there would subtract the same spend twice, and a renewed or
+re-minted grant would shrink the cap each time until the job died mid-run
+looking like it had exhausted a budget it never had. One meaning per field: this
+one is the ceiling on lifetime spend for `external_job_id`.
+
+**A per-job ceiling is not a spending limit on its own.** A caller that can mint
+grants can mint one per job id, each at the role ceiling, and spend without
+bound. So the clamp also carries the user's remaining allowance for the current
+period — the gateway already tracks this in `user_daily_cost`. Per-job ceiling
+bounds one job; the period allowance bounds the user.
 
 - The role → ceiling mapping is gateway config. **Murphy sets the numbers**; the
   mechanism does not depend on them. Absent config, fail closed — no ceiling means
@@ -273,7 +289,8 @@ is the only kind of revoke that does not need a durable outbox behind it.
 - **Note:** model-scope tokens disappear from this module at E9 (grants replace them); until then keep both scopes so moved tests pass.
 
 ### E4. Entitlement + visible models (M)
-- Deps: E2, DR7. Move `entitlement.py` (reads `plan`/`role` from the identity claims instead of gateway user rows — smallest possible edit, flag every changed line in the PR). Replace `visible_models.py`'s gateway-internal calls with `GET {GATEWAY_BASE_URL}/v1/models` filtered by the grant's `allowed_models`; keep its public function signatures. Move `test_agent_entitlement.py`, `test_agent_visible_models.py` (adapt mocks to HTTP).
+- Deps: E2, DR7. Move `entitlement.py` (reads `role` from the identity claims instead of gateway user rows — there is no `plan` claim; smallest possible edit, flag every changed line in the PR). Replace `visible_models.py`'s gateway-internal calls with `GET {GATEWAY_BASE_URL}/v1/models`, filtered by what the **current identity's role** may reach; keep its public function signatures. Move `test_agent_entitlement.py`, `test_agent_visible_models.py` (adapt mocks to HTTP).
+- **Filter by role, not by a grant.** The model picker and create-time validation run before a job is claimed, so no grant exists yet to read `allowed_models` from — filtering on one would empty the composer. The order is the other way round: this task computes the allowlist from the role, and E9 passes it as the *requested* models when the attempt starts. The gateway clamps that against the same role, so the two agree by construction rather than by coordination.
 
 ### E5. Source control + publishing (L)
 - Deps: E1, DR2. Move `github_app.py`, `source_control.py`, `publisher.py`, `publish_worker.py`; tests `test_agent_github_app.py`, `test_agent_source_control.py`, `test_agent_publish_worker.py`, `tests/integration/test_agent_publisher.py` (dbtest marker as-is).
@@ -283,7 +300,7 @@ is the only kind of revoke that does not need a durable outbox behind it.
 - **Acceptance:** app boots against migrated DB; `GET /healthz` added; route table diff vs old repo shows identical agent paths.
 
 ### E7. Identity adapter (M)
-- Deps: E6, C1–C3. Replace the E6 auth stub: verify `Authorization: Bearer <identity JWT>` against `GATEWAY_JWKS_URL` (cache keys, honor `kid`), require `aud=cloud-agent`; upsert local `users(id, external_user_id unique, email, role, plan)` row; inject as the "current user" dependency with the same shape routes already expect.
+- Deps: E6, C1–C3. Replace the E6 auth stub: verify `Authorization: Bearer <identity JWT>` against `GATEWAY_JWKS_URL` (cache keys, honor `kid`), require `aud=cloud-agent`; upsert local `users(id, external_user_id unique, email, role)` row — no `plan` column, since the identity token carries none; inject as the "current user" dependency with the same shape routes already expect. Note `id` is this service's own key and `external_user_id` is the gateway's `sub`; H1 depends on that distinction being real.
 - **Acceptance:** unit tests with a locally-generated RS256 keypair: valid/expired/wrong-aud/unknown-kid.
 
 ### E8. Session BFF endpoints (M)
@@ -292,8 +309,29 @@ is the only kind of revoke that does not need a durable outbox behind it.
 - **Acceptance:** cookie round-trip tests; `me` returns user; logout clears; a session whose gateway user has since been suspended is refused at the next privileged call rather than at expiry.
 
 ### E9. Grant client — sandbox credentials via gateway (M)
-- Deps: E6, C5, C6. Where the old code minted `scope=model` tokens in-process, call `POST {GATEWAY_BASE_URL}/internal/agent-grants` with `GATEWAY_GRANT_DISPATCH_TOKEN` per attempt (allowed_models + budget from entitlement, ttl = lease horizon); inject returned token into the sandbox env exactly where the old token went. On attempt supersede/terminal state, call revoke. Remove `SCOPE_MODEL` minting from E3's module.
-- **Acceptance:** unit tests with a mocked gateway; revoke fired on supersede (reaper test).
+- Deps: E6, C5, C6. Where the old code minted `scope=model` tokens in-process, call `POST {GATEWAY_BASE_URL}/internal/agent-grants` with `GATEWAY_GRANT_DISPATCH_TOKEN` per attempt (requested models/MCP/budget from entitlement — the gateway clamps them); inject the returned token into the sandbox env exactly where the old token went. Remove `SCOPE_MODEL` minting from E3's module.
+- **Renewal is part of this task, not an optimisation.** C5 deliberately issues
+  short-lived grants so that an abandoned attempt stops spending without anyone
+  having to successfully revoke it. The consequence is that *something has to
+  renew*, and a job outliving one grant TTL is the normal case, not the edge
+  case — implementing mint-once here means every long task dies mid-run holding a
+  dead token, and the symptom is an auth error from the model call rather than
+  anything naming the grant.
+  - Renew on the same beat the attempt already uses to extend its lease: the
+    lease heartbeat is the existing liveness signal, and tying the two together
+    means a runner that stops proving it is alive stops being able to spend.
+  - Renew with lead time — well before expiry, not at it — plus jitter, so a
+    host running many attempts does not send them all in the same instant.
+  - Retry a failed renewal within the remaining lifetime; a transient gateway
+    error must not kill a running job. Give up when the fence says the attempt
+    was superseded.
+  - **Stop renewing on supersede or terminal state**, and call revoke as an
+    acceleration. Revoke failing is acceptable; renewal continuing is not.
+- **Acceptance:** unit tests with a mocked gateway: a long attempt renews and
+  keeps working past one TTL; renewal stops on supersede; a superseded attempt's
+  token is unusable within one TTL of the last renewal **even when every revoke
+  call fails** — that is the property the short TTL buys, and it is the one worth
+  a test; renewal jitter is non-zero; revoke fired on supersede (reaper test).
 
 ### E10. Parity test port (L)
 - Deps: E6–E9. Port `tests/servers/test_agent_jobs_api.py`, `tests/servers/test_admin_agent_runner_hosts.py`, `tests/integration/servers/test_agent_jobs_lifecycle.py` (dbtest). Auth fixtures switch to identity-JWT/test-keypair. **Do not weaken assertions** — any test that can't pass unmodified indicates a parity break: stop and report, don't adapt the test.
@@ -347,7 +385,25 @@ is the only kind of revoke that does not need a durable outbox behind it.
 
 ### G5. Per-host broker routing (M)
 - Deps: G4, D6. Every control-plane call through `workspace_broker_client` resolves `broker_url` from the attempt's host row instead of global `AGENT_WORKSPACE_BROKER_URL` (keep the env as single-host fallback when `host_id` is null, so E11 setups keep working).
-- **The host does not get to name an arbitrary URL.** A self-reported address that the control plane then fetches is a request-forgery primitive: enrollment is authenticated, so this is not open to the internet, but an enrolled host should not be able to point the control plane at the database, the metadata service, or the gateway's admin API. Validate on enrollment and on every heartbeat that changes it: `https` only, host must resolve outside loopback and link-local, port from a small allowlist, and the whole URL re-checked at use rather than trusted because it was accepted once. Prefer deriving the address from the enrollment record over accepting it from the payload at all.
+- **The control plane derives the broker address; the host does not report it.**
+  A self-reported URL that the control plane then fetches is a request-forgery
+  primitive. Enrollment is authenticated, so this is not open to the internet, but
+  an enrolled host should not be able to aim the control plane at the database,
+  the cloud metadata service, or the gateway's admin API — and a blocklist of
+  addresses is the wrong shape of defence, because the list is never finished.
+  Build the address from the enrollment record: the operator states where a host
+  can be reached when enrolling it, and `broker_url` is derived from that, not
+  accepted from a payload. Better still, keep the connection host-initiated (#1170
+  already establishes that the host dials out, not in) so there is no address to
+  fetch at all.
+- If a deployment genuinely must accept an address from the host, the
+  requirements are: `https` only; the resolved address must be **global unicast**
+  — an allowlist, not a blocklist, which is what excludes loopback, link-local,
+  RFC1918, IPv6 ULA, multicast, unspecified, and whatever else exists next year;
+  port from a small allowlist; redirects disabled; and the resolution **pinned**
+  so the connection goes to the address that was validated, since a name that
+  passes validation and resolves differently a moment later is DNS rebinding.
+  mTLS on top, so reaching the address is not the same as being trusted at it.
 - **Acceptance:** unit test: two fake hosts, terminal/files requests hit the right base URL; a host attempting to register `http://`, `127.0.0.1`, `169.254.169.254`, or an off-allowlist port is refused at enrollment and at heartbeat.
 
 ### G6. Drain / remove / revoke (M)
@@ -379,9 +435,25 @@ So the credential is **re-wrapped**, not moved:
 2. Plaintext exists in memory for one statement and is **never written to disk**,
    not even to a temp file — a migration artifact containing live GitLab tokens is
    a worse problem than the one being solved.
-3. `user_id` is translated to the new service's `external_user_id` (the identity
-   `sub`, which is the same gateway user id — assert the mapping is total and
-   fail if any row has no corresponding user, rather than importing an orphan).
+3. The user reference is **resolved, not renamed**. The old row's `user_id` *is*
+   the gateway user id, which in the new schema is `users.external_user_id` — not
+   the new `users.id`. So the import looks the row up and rewrites the reference:
+
+   ```text
+   local = SELECT id FROM users WHERE external_user_id = <old_connection.user_id>
+   imported_connection.user_id = local.id
+   ```
+
+   An earlier revision said to translate `user_id` into `external_user_id`, which
+   conflates the two columns and would leave the foreign key pointing at an id
+   that means something else. Assert the lookup is total and fail on any row with
+   no matching user rather than importing an orphan. Because the lookup needs the
+   user to exist, run this **after** those users have signed in once, or seed them
+   from the gateway in the same step.
+
+   (If a future revision decides `users.id` should simply *be* the JWT `sub`,
+   then `external_user_id` has no reason to exist and should go — but that is a
+   schema decision for E7, not something to leave ambiguous here.)
 4. Import is idempotent, with a row-count and per-row decrypt-check report: every
    imported row is decrypted once under the new key before the migration is
    called done.
@@ -404,7 +476,7 @@ So the credential is **re-wrapped**, not moved:
 
 ### H4. Old-repo removal PR (L)
 - Repo: old. Deps: H3. Delete `agent_jobs/` (EXCEPT `model_auth.py` grant path — relocate the surviving `agr` verification + `agent_grants` DDL into gateway-owned modules, e.g. `serving/grants.py`; delete legacy `ajt` model-token acceptance), `servers/routers/agent_jobs.py`, `admin/agent_runner_hosts.py`, `schemas_agent_jobs.py`, `storage/agent_job_store.py`, frontend `agents/` trees + `lib/api/agents.ts`, agent deploy files, the 25 agent test files. `bootstrap.py` loses store/reaper/publish wiring; `auth.py` import updated to the new grants module. `/agents` route → redirect to new domain.
-- **Acceptance:** gateway boots with zero agent env vars and creates no agent tables (fresh-DB test asserts table absence, `agent_grants` + `identity_codes` excepted); full `make test` green; grep gate `rg 'agent_jobs' apps/` → no hits.
+- **Acceptance:** gateway boots with zero agent env vars and creates no agent tables (fresh-DB test asserts table absence, `agent_grants` + `identity_auth_codes` excepted); full `make test` green; grep gate `rg 'agent_jobs' apps/` → no hits.
 
 ### H5. Post-cutover close-out (S)
 - Old repo CLAUDE.md agent sections → pointer to new repo. `docs/developer/agent-sandbox-operations.md` moves to new repo `docs/operations.md`. New repo README gets architecture diagram + "powered by FreeInference" contract description. File the open-source-readiness issue (license headers, public CI, secret-history audit — trivial since history is clean by construction).
