@@ -16,6 +16,7 @@ from serving.agent_jobs.egress import (
     EgressTier,
     build_policy_from_env,
     check_allowlist,
+    normalize_domains,
 )
 
 
@@ -104,3 +105,147 @@ def test_the_pre_tier_setting_still_names_the_closed_network():
     """An existing deployment keeps working without being reconfigured."""
     policy = build_policy_from_env({"AGENT_SANDBOX_NETWORK": "agent-egress"})
     assert policy.network_for("agent") == "agent-egress"
+
+
+# ── the proxy that makes a tier above `platform_only` mean anything ────
+
+
+def _trusted_setup(**extra: str):
+    """A policy whose setup phase is trusted and fully configured."""
+    return build_policy_from_env(
+        {
+            "AGENT_EGRESS_NETWORK_PLATFORM_ONLY": "agent-egress",
+            "AGENT_EGRESS_NETWORK_TRUSTED": "agent-egress-trusted",
+            "AGENT_EGRESS_PROXY_URL_TRUSTED": "http://agent-egress-proxy:3128",
+            **extra,
+        }
+    )
+
+
+def test_only_the_proxied_phase_is_handed_a_proxy():
+    """The closed phase gets no proxy variables at all.
+
+    Setting them anyway would be harmless in a working deployment and
+    misleading in a broken one: an agent turn that could name a proxy would
+    look like it had somewhere to go.
+    """
+    policy = _trusted_setup()
+
+    assert policy.sandbox_env("agent") == {}
+    assert policy.sandbox_env("setup")["https_proxy"] == "http://agent-egress-proxy:3128"
+
+
+def test_both_spellings_of_the_proxy_variables_are_set():
+    """curl reads the lowercase pair; other toolchains read only the uppercase.
+
+    Setting one case installs a proxy for some of a repository's tooling and
+    not the rest, which presents as an install that half worked.
+    """
+    env = _trusted_setup().sandbox_env("setup")
+
+    assert env["http_proxy"] == env["HTTP_PROXY"]
+    assert env["https_proxy"] == env["HTTPS_PROXY"]
+
+
+def test_the_gateway_is_reached_directly_rather_than_through_the_proxy():
+    """Our own service is on the sandbox's network already.
+
+    Routing it through the proxy would need an allowlist entry for ourselves,
+    and would put every model call through a hop that exists to police the
+    internet.
+    """
+    env = _trusted_setup(AGENT_GATEWAY_URL="http://backend:8080").sandbox_env("setup")
+
+    assert env["NO_PROXY"].split(",")[0] == "backend"
+    assert env["no_proxy"] == env["NO_PROXY"]
+    assert "localhost" in env["NO_PROXY"]
+
+
+def test_a_trusted_tier_with_no_proxy_is_refused_at_the_point_of_use():
+    """That tier *is* an allowlist proxy; without one it reaches nothing.
+
+    Raised when the phase runs rather than when the policy is built, for the
+    same reason `network_for` does: a deployment that never runs a setup script
+    must not be refused a startup over a capability it does not use.
+    """
+    policy = build_policy_from_env(
+        {
+            "AGENT_EGRESS_NETWORK_PLATFORM_ONLY": "agent-egress",
+            "AGENT_EGRESS_NETWORK_TRUSTED": "agent-egress-trusted",
+        }
+    )
+
+    assert policy.sandbox_env("agent") == {}  # the closed phase still works
+    with pytest.raises(EgressPolicyError, match="AGENT_EGRESS_PROXY_URL_TRUSTED"):
+        policy.sandbox_env("setup")
+
+
+def test_a_job_cannot_unset_the_proxy_its_phase_runs_under():
+    """Policy is applied after the job's own environment, never before."""
+    from serving.agent_jobs.sandbox import ContainerBackend, SandboxSpec
+
+    backend = ContainerBackend(image="img:1", egress=_trusted_setup())
+    command = backend.build_command(
+        SandboxSpec(
+            argv=["sh"],
+            workdir="/w",
+            phase="setup",
+            env={"https_proxy": "http://attacker.example:8080"},
+        )
+    )
+
+    assert "https_proxy=http://agent-egress-proxy:3128" in command
+    assert "https_proxy=http://attacker.example:8080" not in command
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["ftp://proxy:3128", "proxy:3128", "http://", "http://proxy:3128/path", "http://p:3128?x=1"],
+)
+def test_a_proxy_url_that_is_not_one_is_refused(url: str):
+    """A client would ignore the extra part in silence and dial the host anyway."""
+    with pytest.raises(EgressPolicyError, match="AGENT_EGRESS_PROXY_URL_TRUSTED"):
+        build_policy_from_env({"AGENT_EGRESS_PROXY_URL_TRUSTED": url})
+
+
+def test_a_custom_tier_may_be_fronted_transparently():
+    """`custom` exists to replace our judgement with the operator's.
+
+    A deployment whose network gateway filters transparently needs no proxy
+    variables, so the requirement that applies to `trusted` must not apply
+    here — otherwise the escape hatch only fits our own shape.
+    """
+    policy = build_policy_from_env(
+        {
+            "AGENT_EGRESS_AGENT_TIER": "custom",
+            "AGENT_EGRESS_SETUP_TIER": "custom",
+            "AGENT_EGRESS_NETWORK_CUSTOM": "operator-net",
+        }
+    )
+
+    assert policy.sandbox_env("agent") == {}
+
+
+def test_the_trusted_list_is_ours_plus_theirs_but_a_custom_list_is_only_theirs():
+    """Adding a mirror must not silently drop PyPI; choosing `custom` must."""
+    policy = _trusted_setup(AGENT_EGRESS_ALLOWLIST="mirror.internal.example")
+
+    trusted = policy.domains_for(EgressTier.TRUSTED)
+    assert "pypi.org" in trusted and "mirror.internal.example" in trusted
+    assert policy.domains_for(EgressTier.CUSTOM) == ("mirror.internal.example",)
+    assert policy.domains_for(EgressTier.PLATFORM_ONLY) == ()
+
+
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [
+        ("*.example.com", (".example.com",)),
+        (".example.com", (".example.com",)),
+        ("Example.COM", ("example.com",)),
+        ("a.com, a.com , b.com", ("a.com", "b.com")),
+        ("", ()),
+    ],
+)
+def test_an_allowlist_is_normalized_the_way_an_operator_writes_it(written, expected):
+    """Both wildcard spellings mean the same thing and reach the proxy as one."""
+    assert normalize_domains(written) == expected

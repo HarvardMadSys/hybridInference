@@ -41,6 +41,59 @@ services:
       - hybridinference
       - agent-egress
 
+  # Renders the proxy's configuration from this deployment's allowlist, into a
+  # volume the proxy reads at start. A one-shot service rather than a step in
+  # the proxy's own entrypoint: the renderer validates the allowlist (a domain
+  # carrying a newline would otherwise append directives to a config file that
+  # decides what an untrusted sandbox may reach), and that validation lives in
+  # our Python — which the proxy image deliberately does not contain.
+  #
+  # It also means a bad allowlist stops the deploy here, with the reason on
+  # stdout, instead of starting a proxy whose behaviour nobody chose.
+  agent-egress-proxy-config:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.agent-runner
+      secrets:
+        - github_token
+    restart: "no"
+    # It writes a file. It has no business resolving anything.
+    network_mode: none
+    environment:
+      # Added to the built-in registry list, not a replacement for it. The port
+      # is deliberately not configurable: it appears here and in the proxy URL
+      # the runner hands the sandbox, and two places to change one number is
+      # how they end up disagreeing.
+      AGENT_EGRESS_ALLOWLIST: ${AGENT_EGRESS_ALLOWLIST:-}
+    command:
+      - python
+      - -m
+      - serving.agent_jobs.egress_proxy
+      - --out
+      - /etc/squid/generated/squid.conf
+    volumes:
+      - agent-egress-proxy-conf:/etc/squid/generated
+
+  # The Trusted tier, expressed as the one container on the setup network with
+  # a second leg. Two networks and nothing else: the setup network it polices,
+  # and an uplink with no other service on it. It is deliberately NOT on
+  # `hybridinference` — a proxy reachable by an untrusted sandbox must not also
+  # be able to reach the database.
+  agent-egress-proxy:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.agent-egress-proxy
+    restart: unless-stopped
+    depends_on:
+      agent-egress-proxy-config:
+        condition: service_completed_successfully
+    volumes:
+      # Read-only: the config is rendered once, by something else.
+      - agent-egress-proxy-conf:/etc/squid/generated:ro
+    networks:
+      - agent-egress-trusted
+      - agent-egress-uplink
+
   agent-workspace-broker:
     build:
       context: ../..
@@ -54,11 +107,13 @@ services:
       AGENT_SANDBOX_BACKEND: ${AGENT_SANDBOX_BACKEND:-kata}
       AGENT_SANDBOX_IMAGE: ${AGENT_SANDBOX_IMAGE:?name the sandbox image this deployment runs}
       AGENT_EGRESS_NETWORK_PLATFORM_ONLY: ${AGENT_EGRESS_NETWORK_PLATFORM_ONLY:-agent-egress}
-      AGENT_EGRESS_SETUP_TIER: ${AGENT_EGRESS_SETUP_TIER:-platform_only}
+      AGENT_EGRESS_SETUP_TIER: ${AGENT_EGRESS_SETUP_TIER:-trusted}
       AGENT_EGRESS_AGENT_TIER: ${AGENT_EGRESS_AGENT_TIER:-platform_only}
-      AGENT_EGRESS_NETWORK_TRUSTED: ${AGENT_EGRESS_NETWORK_TRUSTED:-}
+      AGENT_EGRESS_NETWORK_TRUSTED: ${AGENT_EGRESS_NETWORK_TRUSTED:-agent-egress-trusted}
       AGENT_EGRESS_NETWORK_CUSTOM: ${AGENT_EGRESS_NETWORK_CUSTOM:-}
       AGENT_EGRESS_NETWORK_FULL: ${AGENT_EGRESS_NETWORK_FULL:-}
+      AGENT_EGRESS_PROXY_URL_TRUSTED: ${AGENT_EGRESS_PROXY_URL_TRUSTED:-http://agent-egress-proxy:3128}
+      AGENT_EGRESS_PROXY_URL_CUSTOM: ${AGENT_EGRESS_PROXY_URL_CUSTOM:-}
       AGENT_EGRESS_ALLOWLIST: ${AGENT_EGRESS_ALLOWLIST:-}
     command:
       - python
@@ -70,7 +125,13 @@ services:
     networks:
       - hybridinference
     depends_on:
+      # The broker runs the same preflight as the runner, off the same egress
+      # configuration — including the proxy probe for a phase it never spawns
+      # itself. That is deliberate (two processes reading one config must not
+      # disagree about whether it is valid), and it makes the proxy a startup
+      # dependency here too.
       - backend
+      - agent-egress-proxy
 
   agent-runner:
     # How many jobs this deployment runs at once — one per replica. Compose
@@ -109,29 +170,39 @@ services:
       AGENT_WORKDIR_ROOT: ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
       AGENT_WORKSPACE_TTL_S: ${AGENT_WORKSPACE_TTL_S:-604800}
 
-      # Egress policy. `agent-egress` is an internal network with no route to
-      # the internet: a sandbox on it reaches the gateway (models + event
-      # reporting) and nothing else. This is the *closed* tier and must stay
-      # the network the gateway is on — a setup tier with an allowlist proxy is
-      # AGENT_EGRESS_NETWORK_TRUSTED, which this overlay does not ship.
-      # Egress is a per-phase tier, not one network. `platform_only` reaches
-      # the gateway and nothing else; `trusted` additionally reaches whatever
-      # the setup network is fronted by, for installing dependencies. The agent
-      # turn — the one driven by untrusted model output — gets the closed one.
+      # Egress policy — a per-phase tier, not one network.
+      #
+      # `agent-egress` is internal and has no route to the internet: a sandbox
+      # on it reaches the gateway (models + event reporting) and nothing else.
+      # That is the closed tier, and it must stay the network the gateway is on.
+      #
+      # `agent-egress-trusted` is ALSO internal. The difference is not a route —
+      # it is that `agent-egress-proxy` sits on it with a second leg, and the
+      # sandbox is handed http_proxy/https_proxy pointing at it. So the setup
+      # phase installs dependencies from an allowlisted registry, and the agent
+      # turn afterwards — the one driven by untrusted model output — still
+      # cannot reach anything at all.
+      #
       # One variable decides all three: the network compose creates, the one
       # the gateway joins, and the one the runner spawns onto. AGENT_SANDBOX_NETWORK
       # is deliberately not set here — the tier variable shadows it, so offering
       # both invited an override that silently did nothing.
       AGENT_EGRESS_NETWORK_PLATFORM_ONLY: ${AGENT_EGRESS_NETWORK_PLATFORM_ONLY:-agent-egress}
-      AGENT_EGRESS_SETUP_TIER: ${AGENT_EGRESS_SETUP_TIER:-platform_only}
+      AGENT_EGRESS_SETUP_TIER: ${AGENT_EGRESS_SETUP_TIER:-trusted}
       AGENT_EGRESS_AGENT_TIER: ${AGENT_EGRESS_AGENT_TIER:-platform_only}
       # The other tiers' networks must be passed through too, or selecting a
       # tier here sets the name and not the network — the runner then refuses
       # at preflight with "names no network", which is correct but baffling
       # when the operator did set the variable in their .env.
-      AGENT_EGRESS_NETWORK_TRUSTED: ${AGENT_EGRESS_NETWORK_TRUSTED:-}
+      AGENT_EGRESS_NETWORK_TRUSTED: ${AGENT_EGRESS_NETWORK_TRUSTED:-agent-egress-trusted}
       AGENT_EGRESS_NETWORK_CUSTOM: ${AGENT_EGRESS_NETWORK_CUSTOM:-}
       AGENT_EGRESS_NETWORK_FULL: ${AGENT_EGRESS_NETWORK_FULL:-}
+      # Where a proxied tier sends the sandbox. Raising the *agent* phase to
+      # `trusted` additionally needs the gateway on that network — preflight
+      # refuses at startup if it is not, rather than failing every job at its
+      # first model call.
+      AGENT_EGRESS_PROXY_URL_TRUSTED: ${AGENT_EGRESS_PROXY_URL_TRUSTED:-http://agent-egress-proxy:3128}
+      AGENT_EGRESS_PROXY_URL_CUSTOM: ${AGENT_EGRESS_PROXY_URL_CUSTOM:-}
       AGENT_EGRESS_ALLOWLIST: ${AGENT_EGRESS_ALLOWLIST:-}
 
       # Setup snapshots. Keyed on repository + setup script, so a retry or a
@@ -175,7 +246,19 @@ services:
     networks:
       - hybridinference
     depends_on:
+      # The proxy is a startup dependency, not just a runtime one: preflight
+      # probes it and refuses to claim jobs if it is not enforcing. Without
+      # this the runner loses that race on a cold start and crash-loops (it
+      # recovers, but the logs read like a broken proxy rather than a slow one).
       - backend
+      - agent-egress-proxy
+
+volumes:
+  # Small, and written by exactly one service. A named volume rather than a
+  # host path because a bind mount of a file that does not exist yet gets
+  # created as a *directory*, and Squid would then fail with an error about
+  # its config being unreadable rather than about the renderer never running.
+  agent-egress-proxy-conf:
 
 networks:
   agent-egress:
@@ -189,3 +272,25 @@ networks:
     # tier from the design doc expressed as infrastructure rather than policy
     # an agent could talk its way around.
     internal: true
+
+  agent-egress-trusted:
+    name: ${AGENT_EGRESS_NETWORK_TRUSTED:-agent-egress-trusted}
+    # Also internal, and that is the whole design. The Trusted tier is not "a
+    # network that routes out" — it is this closed network plus one container
+    # on it that has a second leg and an allowlist. A sandbox that ignored the
+    # proxy variables would find nothing to route through, so the allowlist is
+    # not something the agent can opt out of.
+    #
+    # The gateway is deliberately NOT attached here. Only the setup phase runs
+    # on this network by default, and setup does not call models: the runner
+    # streams events from outside the sandbox. Attaching the gateway anyway
+    # would put a service holding provider credentials on a network reachable
+    # by the proxy for no reason anything needs.
+    internal: true
+
+  agent-egress-uplink:
+    name: ${AGENT_EGRESS_NETWORK_UPLINK:-agent-egress-uplink}
+    # The one routable network here, with exactly one container on it: the
+    # proxy. It exists so the proxy can reach a registry *without* joining
+    # `hybridinference`, where it would be able to reach the database and the
+    # rest of the stack. The blast radius of a Squid compromise is this network.

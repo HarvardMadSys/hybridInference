@@ -269,22 +269,116 @@ def test_agent_runtimes_are_pinned_not_floating():
         assert re.fullmatch(r"\d+\.\d+\.\d+", value), f"{name}={value} is not an exact version"
 
 
-def test_both_phases_are_closed_in_the_shipped_configuration(compose: dict):
-    """The overlay ships no setup network, so neither phase may claim `trusted`.
+def test_the_agent_phase_is_closed_in_the_shipped_configuration(compose: dict):
+    """The turn driven by untrusted model output reaches the gateway and nothing else.
 
-    The design's external-beta default is setup=trusted, but there is no setup
-    phase yet and no allowlist-fronted network to run it on. Shipping `trusted`
-    as the compose default would name a tier this deployment cannot honour —
-    the config would read as "dependencies can be installed" while the network
-    behind it reaches only the gateway.
+    This is the differentiator, not an implementation detail: the setup phase
+    may be raised to an allowlist, but the phase that executes what a model
+    decided to do stays on a network with no route. A default that opened it
+    would be the one change here nobody would notice from the outside.
     """
     env = compose["services"]["agent-runner"]["environment"]
     # And the spawn network tracks the same variable the network block names.
     assert _expand(env["AGENT_EGRESS_NETWORK_PLATFORM_ONLY"]) == _expand(
         compose["networks"]["agent-egress"]["name"]
     )
-    for var in ("AGENT_EGRESS_SETUP_TIER", "AGENT_EGRESS_AGENT_TIER"):
-        assert "platform_only" in env[var], f"{var} must be closed until a tier exists for it"
+    assert "platform_only" in env["AGENT_EGRESS_AGENT_TIER"]
+
+
+def test_the_setup_tier_the_overlay_selects_is_one_it_actually_ships(compose: dict):
+    """Naming `trusted` obliges this file to ship the thing that honours it.
+
+    The failure this prevents is a config that reads as "dependencies can be
+    installed" over a network that reaches only the gateway — every setup
+    script then dies at DNS, and nothing in the compose file looks wrong. The
+    tier needs three things present together, so they are asserted together.
+    """
+    env = compose["services"]["agent-runner"]["environment"]
+    if "trusted" not in _expand(env["AGENT_EGRESS_SETUP_TIER"]):
+        pytest.skip("this overlay does not select the trusted tier")
+
+    trusted = _expand(env["AGENT_EGRESS_NETWORK_TRUSTED"])
+    assert trusted, "the trusted tier is selected but names no network"
+    declared = {
+        _expand(network.get("name", name)): network for name, network in compose["networks"].items()
+    }
+    assert trusted in declared, f"{trusted} is selected but this file does not create it"
+
+    # Internal like the closed tier. The difference between the two is the
+    # proxy on it, not a route — a routable network here would hand the setup
+    # phase the whole internet while still being called "trusted".
+    assert declared[trusted]["internal"] is True
+
+    proxy = compose["services"]["agent-egress-proxy"]
+    assert trusted in [_expand(n) for n in proxy["networks"]], (
+        "the proxy is not on the network whose traffic it is supposed to police"
+    )
+    # And the runner must actually tell the sandbox to use it.
+    url = _expand(env["AGENT_EGRESS_PROXY_URL_TRUSTED"])
+    assert url.startswith("http://"), "the trusted tier is selected with no proxy URL"
+
+
+def test_the_proxy_url_names_the_port_the_generated_config_listens_on(compose: dict):
+    """Two places hold one number, so they are checked against each other.
+
+    A mismatch is invisible in review and total at run time: Squid listens on
+    one port, every sandbox dials another, and the first symptom is that no
+    dependency install has ever worked.
+    """
+    from serving.agent_jobs.egress_proxy import DEFAULT_PROXY_PORT
+
+    env = compose["services"]["agent-runner"]["environment"]
+    assert _expand(env["AGENT_EGRESS_PROXY_URL_TRUSTED"]).endswith(f":{DEFAULT_PROXY_PORT}")
+
+
+def test_the_proxy_cannot_reach_the_rest_of_the_stack(compose: dict):
+    """A Squid reachable by an untrusted sandbox must not also see the database.
+
+    The proxy is the one component here that takes input from inside the
+    sandbox and holds a route to the internet. Putting it on `hybridinference`
+    for convenience would mean a Squid compromise reaches Postgres.
+    """
+    proxy = compose["services"]["agent-egress-proxy"]
+    assert "hybridinference" not in proxy["networks"]
+    assert not proxy.get("volumes") or all(
+        "docker.sock" not in volume for volume in proxy["volumes"]
+    )
+
+    uplink = [n for n in proxy["networks"] if "uplink" in n]
+    assert uplink, "the proxy has no routable leg, so it can police nothing"
+    declared = compose["networks"][uplink[0]]
+    assert not declared.get("internal"), "the proxy's uplink must actually route out"
+    on_uplink = [
+        name
+        for name, service in compose["services"].items()
+        if uplink[0] in (service.get("networks") or [])
+    ]
+    assert on_uplink == ["agent-egress-proxy"], (
+        f"the routable network must hold only the proxy, but also holds {on_uplink}"
+    )
+
+
+def test_the_proxy_config_is_generated_by_the_validating_renderer(compose: dict):
+    """The allowlist reaches Squid's config only through code that checks it.
+
+    A domain carrying a newline appends directives to the file that decides
+    what an untrusted sandbox may reach. The renderer refuses those; a
+    hand-written config, or a shell loop in an entrypoint, would not.
+    """
+    config_service = compose["services"]["agent-egress-proxy-config"]
+    assert "serving.agent_jobs.egress_proxy" in config_service["command"]
+    assert "AGENT_EGRESS_ALLOWLIST" in config_service["environment"]
+
+    # It renders a file and must not be able to do anything else.
+    assert config_service["network_mode"] == "none"
+
+    proxy = compose["services"]["agent-egress-proxy"]
+    assert proxy["depends_on"]["agent-egress-proxy-config"]["condition"] == (
+        "service_completed_successfully"
+    ), "the proxy may start before its config exists, i.e. with no config at all"
+    assert any(volume.endswith(":ro") for volume in proxy["volumes"]), (
+        "the proxy can rewrite the allowlist it is enforcing"
+    )
 
 
 def test_both_substrates_pin_the_same_agent_cli_versions():
