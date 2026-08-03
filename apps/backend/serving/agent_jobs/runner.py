@@ -1081,11 +1081,6 @@ def run_once(
         # endpoint resumes them immediately before the terminal state change.
         terminals_suspended = True
         control.suspend_terminals("workspace_finalizing")
-
-        if exit_code == 130:
-            finish_attempt("cancelled", "cancelled by owner", base_sha=base_sha)
-            return 0
-
         patch = build_patch(workdir, backend, base_sha=job.base_sha or base_sha)
         if patch.strip():
             control.save_artifact("patch", patch)
@@ -1096,6 +1091,10 @@ def run_once(
             control.append_event(NormalizedEvent("diff", {"bytes": 0, "stored": False}))
 
         save_workspace_snapshot(control, workdir=workdir, patch=patch)
+
+        if exit_code == 130:
+            finish_attempt("cancelled", "cancelled by owner", base_sha=base_sha)
+            return 0
 
         if exit_code != 0:
             finish_attempt(

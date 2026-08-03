@@ -230,6 +230,45 @@ describe('JobDetail', () => {
     expect(reload).toHaveBeenCalledOnce();
   });
 
+  it('stops an active run with Escape without intercepting the composer or repeating', async () => {
+    vi.mocked(cancelAgentJob).mockResolvedValue({
+      id: 'ajob_1',
+      state: 'running',
+      cancel_requested: true,
+    });
+    render(<JobDetail job={makeJob()} />);
+
+    const composer = screen.getByLabelText('Add a follow-up');
+    composer.focus();
+    fireEvent.keyDown(composer, { key: 'Escape' });
+    expect(cancelAgentJob).not.toHaveBeenCalled();
+
+    composer.blur();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyDown(window, { key: 'Escape', repeat: true });
+
+    await waitFor(() => expect(cancelAgentJob).toHaveBeenCalledWith('ajob_1'));
+    expect(cancelAgentJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('resets the Escape stop guard when navigation supplies a different active job', async () => {
+    vi.mocked(cancelAgentJob).mockResolvedValue({
+      id: 'ajob_1',
+      state: 'running',
+      cancel_requested: true,
+    });
+    const view = render(<JobDetail job={makeJob()} />);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(cancelAgentJob).toHaveBeenCalledWith('ajob_1'));
+
+    view.rerender(<JobDetail job={makeJob({ id: 'ajob_2' })} />);
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    await waitFor(() => expect(cancelAgentJob).toHaveBeenCalledWith('ajob_2'));
+    expect(cancelAgentJob).toHaveBeenCalledTimes(2);
+  });
+
   it('queues a follow-up even while the current run is active', async () => {
     vi.mocked(followUpAgentJob).mockResolvedValue({ id: 'ajob_child' } as never);
     render(<JobDetail job={makeJob()} />);
@@ -309,6 +348,13 @@ describe('JobDetail', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Raw events/ }));
     expect(screen.getByText('{"event_type":"message"}')).toBeInTheDocument();
+  });
+
+  it('wraps unbroken failure details inside the outcome card', () => {
+    const stateNote = `agent exited 1: ${'x'.repeat(300)}`;
+    render(<JobDetail job={makeJob({ state: 'failed', stateNote })} />);
+
+    expect(screen.getByText(stateNote)).toHaveClass('[overflow-wrap:anywhere]');
   });
 
   it('keeps the task as the default view behind an icon-only, accessible workspace toggle', () => {
@@ -754,6 +800,13 @@ describe('JobDetail', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Copy message' })[0]);
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('Earlier question'));
+  });
+
+  it('explains that a stopped run can continue from saved intermediate work', () => {
+    render(<JobDetail job={makeJob({ state: 'cancelled' })} />);
+
+    expect(screen.getByText(/send a follow-up to continue/i)).toBeInTheDocument();
+    expect(screen.getByText(/restores any saved changes/i)).toBeInTheDocument();
   });
 
   it('forks the conversation from an earlier assistant message', async () => {

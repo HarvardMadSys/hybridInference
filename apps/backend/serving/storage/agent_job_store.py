@@ -1018,7 +1018,7 @@ class AgentJobStore:
         }
 
     async def follow_up_context(self, *, job_id: str) -> dict[str, Any]:
-        """Return prior turns and the successful parent patch for a claimed run."""
+        """Return prior turns and the resumable parent patch for a claimed run."""
         async with self._pool.acquire() as conn:
             job = await conn.fetchrow(
                 "SELECT thread_id, parent_job_id, turn_no FROM agent_jobs WHERE id = $1",
@@ -1043,7 +1043,7 @@ class AgentJobStore:
                 FROM agent_job_artifacts a
                 JOIN agent_jobs p ON p.id = a.job_id
                 WHERE a.job_id = $1 AND a.kind = 'patch'
-                  AND p.state IN ('succeeded', 'publishing')
+                  AND p.state IN ('succeeded', 'publishing', 'cancelled')
                   AND p.published_commit_sha IS NULL
                 ORDER BY a.created_at DESC
                 LIMIT 1
@@ -1066,7 +1066,7 @@ class AgentJobStore:
                     JOIN agent_job_artifacts a ON a.job_id = src.id AND a.kind = 'patch'
                     WHERE parent.id = $1
                       AND parent.published_commit_sha IS NULL
-                      AND src.state IN ('succeeded', 'publishing')
+                      AND src.state IN ('succeeded', 'publishing', 'cancelled')
                     ORDER BY a.created_at DESC
                     LIMIT 1
                     """,
@@ -1331,19 +1331,29 @@ class AgentJobStore:
         async with self._pool.acquire() as conn:
             return await conn.fetchval("SELECT active_host FROM agent_runner_policy WHERE id")
 
-    async def list_runner_hosts(self) -> list[dict[str, Any]]:
-        """Return every host seen polling, most recent poll first."""
-        async with self._pool.acquire() as conn:
+    async def runner_pool(self) -> tuple[list[dict[str, Any]], str | None]:
+        """The pool and the pinned host, read together.
+
+        One transaction because the two are shown side by side: read
+        separately, a switch landing between them renders a page whose list and
+        whose header name different hosts, which reads as a bug in the thing
+        the operator is using to fix a bug.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            active = await conn.fetchval("SELECT active_host FROM agent_runner_policy WHERE id")
             rows = await conn.fetch(
                 """
-                SELECT host, last_worker_id, first_seen_at, last_seen_at,
-                       (SELECT active_host FROM agent_runner_policy WHERE id)
-                           IS NOT DISTINCT FROM host AS is_active
+                SELECT host, last_worker_id, first_seen_at, last_seen_at
                 FROM agent_runner_hosts
                 ORDER BY last_seen_at DESC
                 """
             )
-        return [dict(row) for row in rows]
+        return [{**dict(row), "is_active": row["host"] == active} for row in rows], active
+
+    async def list_runner_hosts(self) -> list[dict[str, Any]]:
+        """Return every host seen polling, most recent poll first."""
+        hosts, _ = await self.runner_pool()
+        return hosts
 
     async def set_active_runner_host(self, *, host: str | None) -> bool:
         """Pin agent jobs to one host, or unpin with ``None``.
@@ -1352,19 +1362,21 @@ class AgentJobStore:
         pinning to one would park the queue on a host that may not exist, which
         presents as "every job hangs" with nothing in the logs.
 
-        The write takes the policy row exclusively, so a claim already past its
-        own read of that row finishes first and a claim that has not reached it
-        waits and then sees this value. Either order is defensible; the one
-        this rules out is both.
+        Takes the policy row exclusively *first*, then the host row it is about
+        to point at. Every writer here uses that order, and the claim takes the
+        policy row shared, so the paths serialize with no cycle to deadlock on:
+        a claim past its own read finishes before this commits, one that has
+        not reached it waits and then sees this value, and a concurrent removal
+        of the host being pinned cannot slip in between the check and the write.
         """
         async with self._pool.acquire() as conn, conn.transaction():
-            # Checked before anything is written. Clearing first and reporting
-            # the miss afterwards leaves the deployment *unpinned* — a typo in
-            # the host name would quietly hand every machine the queue back,
-            # which is the opposite of what a refused switch should do.
+            await conn.execute("SELECT active_host FROM agent_runner_policy WHERE id FOR UPDATE")
+            # Checked before anything is written — and locked, not merely read:
+            # a bare existence check lets a concurrent removal commit before
+            # this does, leaving the queue pinned to a host that is gone.
             if host is not None:
                 known = await conn.fetchval(
-                    "SELECT 1 FROM agent_runner_hosts WHERE host = $1", host
+                    "SELECT 1 FROM agent_runner_hosts WHERE host = $1 FOR SHARE", host
                 )
                 if not known:
                     return False
@@ -1382,13 +1394,28 @@ class AgentJobStore:
             )
             return True
 
-    async def forget_runner_host(self, *, host: str) -> bool:
-        """Drop a host from the pool. A runner still polling re-adds itself."""
-        async with self._pool.acquire() as conn:
+    async def forget_runner_host(self, *, host: str) -> str:
+        """Drop a host from the pool. A runner still polling re-adds itself.
+
+        Returns ``"deleted"``, ``"active"`` (refused) or ``"unknown"``.
+
+        The active-host refusal lives here rather than in the caller because
+        checking there is a read the switch can outrun: the endpoint sees the
+        host idle, an admin pins it, and the delete then removes the row the
+        gate is pointing at — silently unpinning the deployment and handing
+        every machine the queue back. Same policy row, same order as the
+        switch, so the two serialize.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            active = await conn.fetchval(
+                "SELECT active_host FROM agent_runner_policy WHERE id FOR UPDATE"
+            )
+            if active == host:
+                return "active"
             deleted = await conn.fetchval(
                 "DELETE FROM agent_runner_hosts WHERE host = $1 RETURNING host", host
             )
-        return deleted is not None
+        return "deleted" if deleted is not None else "unknown"
 
     # ── Claim / lease ──────────────────────────────────────────────────
 
@@ -2028,7 +2055,7 @@ class AgentJobStore:
             row = await conn.fetchrow(
                 """
                 SELECT j.id, j.thread_id, j.parent_job_id, j.user_id, j.repo, j.base_sha,
-                       j.task_prompt, a.content AS patch,
+                       j.task_prompt, j.metadata, a.content AS patch,
                        thread_publish.published_pr_url AS parent_pr_url
                 FROM agent_jobs j
                 JOIN agent_job_artifacts a
@@ -2073,6 +2100,10 @@ class AgentJobStore:
             "repo": row["repo"],
             "base_sha": row["base_sha"],
             "task_prompt": row["task_prompt"],
+            # Carries the branch the owner started from. The publisher targets
+            # its PR at that branch, so without it every PR went to the
+            # deployment default no matter what the job was pinned from.
+            "metadata": _load_json(row["metadata"]),
             "patch": row["patch"],
         }
 

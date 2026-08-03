@@ -59,9 +59,6 @@ Be precise about these when reporting status:
   above); the 2-runtime × 3-model matrix has not been run, so cross-model
   behaviour differences are still unknown.
 - **The Actions workflow has never executed on GitHub.** See the blockers.
-- **Kata.** Still a shared-kernel container in every run so far; the
-  `--runtime` flag provably reaches the daemon but no job has run under an
-  actual Kata kernel.
 - **Production.** `/v1/agent/*` is live on staging; production has not been
   deployed from it — production returns 404 on those routes today.
 - **Staging's model surface is thin.** Of the 15 models `/v1/models` lists,
@@ -69,13 +66,24 @@ Be precise about these when reporting status:
   both land on `qwen3.6-35b`. Everything else answers `404 Model not found`, so
   a job that names one fails at its first turn. Pick a model that resolves
   before concluding anything about the chain.
-- **Kata.** Isolation was verified on a shared-kernel container. The Kata path
-  is wired correctly — the daemon accepts `--runtime io.containerd.kata.v2` and
-  proceeds to start the shim, failing only because this host has no shim
-  binary — but no job has run under an actual Kata kernel.
+- **Kata.** No job has run under an actual Kata kernel, so every run so far
+  shared the host's. Isolation was verified on a shared-kernel container.
 
-  The three cases give three distinct errors, which is what makes this
-  meaningful rather than hopeful:
+  What changed is that the host side is now provisionable rather than absent.
+  `ops/setup/setup_kata_runtime.sh` installs and links a pinned Kata release,
+  and `ops/deploy/agent_runner.sh preflight` refuses to start runners until one
+  real container comes back reporting a kernel that is *not* the host's. Both
+  are covered by unit tests, including the case where the runtime is accepted
+  and the sandbox still lands on the host kernel.
+
+  Neither has been run on the staging runner host. Installing into `/opt/kata`
+  is a root-level change to a live machine, so it is the next step rather than a
+  completed one — and until it happens, this bullet stays here. See
+  [Provisioning Kata on a runner host](#provisioning-kata-on-a-runner-host).
+
+  The daemon-side wiring was already ruled out as the problem. The three cases
+  give three distinct errors, which is what makes this meaningful rather than
+  hopeful:
 
   | `--runtime` | Result |
   |---|---|
@@ -274,6 +282,12 @@ AGENT_DISPATCHER_TOKEN=<openssl rand -hex 32>   # same value gates /worker/claim
 AGENT_SANDBOX_BACKEND=container                  # host has no Kata shim yet
 ```
 
+That second line is a **deliberate downgrade**, and the deploy now says so on
+every run: it puts every job on the host's own kernel. It was the price of
+getting a standing runner up before any host had Kata. Remove it once the host
+is provisioned — see below — and the deploy will verify the boundary instead of
+warning about its absence.
+
 Every subsequent deploy then builds the sandbox image and brings the runner up
 in the **same compose invocation** as the main stack. Same-invocation is a
 correctness requirement, not a convenience: the overlay attaches `backend` to
@@ -287,9 +301,49 @@ carries it across crashes and reboots:
 
 ```bash
 ops/deploy/agent_runner.sh up 4      # build images, start 4 runners
+ops/deploy/agent_runner.sh preflight # check the isolation boundary, start nothing
 ops/deploy/agent_runner.sh status    # replicas + recent log tail
 ops/deploy/agent_runner.sh down      # stop them; the main stack is untouched
 ```
+
+### Provisioning Kata on a runner host
+
+An ordinary container isolates processes; every sandbox still issues syscalls
+straight at the host kernel. Kata gives each job a lightweight VM with its own
+kernel, so a container escape has a hypervisor behind it. That is what makes the
+difference between "fine for repositories we trust" and "fine for a repository
+we have never read", because the sandbox runs whatever the repository's build
+and test scripts do.
+
+The runtime belongs to the **host**, not the runner image: the runner container
+holds only a Docker client and talks to the host's daemon, and it is that daemon
+that has to resolve `io.containerd.kata.v2`. Nothing in the container image can
+supply it. One command per host, needing root:
+
+```bash
+sudo ops/setup/setup_kata_runtime.sh
+```
+
+It is idempotent, checks the host can actually start VMs (`/dev/kvm`, CPU
+virtualization extensions) before downloading anything, verifies the release
+against a pinned SHA-256, and links the shim into `/usr/local/bin` so
+containerd finds it without a unit-file edit. The version is pinned in the
+script; upgrading is a two-line change there, and `--check` then fails on every
+host still carrying the old one.
+
+Requirements: an x86_64 Linux host, bare metal or with nested virtualization
+enabled. Kata cannot run without KVM.
+
+Afterwards, drop `AGENT_SANDBOX_BACKEND=container` from the host's `.env` and
+redeploy. Both `agent_runner.sh up` and `deploy_staging.sh` then gate on it:
+
+- with the default `kata` backend, the shim must be installed, **and** one real
+  container started from the sandbox image must report a kernel that is not the
+  host's. A runtime the daemon accepts while the sandbox still lands on the host
+  kernel fails this — that is the case every cheaper signal misses.
+- there is no automatic fallback to a shared kernel. Accepting one stays
+  possible and stays explicit: set `AGENT_SANDBOX_BACKEND=container`, and every
+  deploy restates what it costs.
 
 ### How many runners
 
@@ -332,12 +386,12 @@ runners share one queue with no leader and no sharding.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `AGENT_SANDBOX_BACKEND` | `kata` | `process` (no isolation) refuses to start unless `AGENT_SANDBOX_ALLOW_UNISOLATED=1` |
+| `AGENT_SANDBOX_BACKEND` | `kata` | `process` (no isolation) refuses to start unless `AGENT_SANDBOX_ALLOW_UNISOLATED=1`. On the default `kata`, deploy refuses until the host has the shim and one real container proves it gets its own kernel; `container` is an explicit, and loudly restated, shared-kernel downgrade |
 | `AGENT_SANDBOX_IMAGE` | required | Image built from `Dockerfile.agent-sandbox` or an equivalent deployment-owned image |
 | `AGENT_SANDBOX_NETWORK` | `agent-egress` | Declared `internal: true`, so a sandbox reaches the gateway and nothing else. Also the `platform_only` network unless `AGENT_EGRESS_NETWORK_PLATFORM_ONLY` overrides it |
 | `AGENT_EGRESS_SETUP_TIER` / `_AGENT_TIER` | `platform_only` | One of `platform_only` / `trusted` / `custom` / `full`, **per phase**. The design's external-beta shape is setup=`trusted`, agent=`platform_only`; the overlay ships both closed because there is no setup phase yet and no allowlist-fronted network to run one on |
 | `AGENT_EGRESS_NETWORK_*` | — | Network per tier. A tier with no network is an error when a phase selects it, never a fall back to a more open one |
-| `AGENT_SNAPSHOT_ROOT` | — | Where setup snapshots live. Unset disables caching, so every job reinstalls. Bind it at the same path inside and out, like the worktrees |
+| `AGENT_SNAPSHOT_ROOT` | — | Where setup snapshots live. A snapshot holds only what the setup script added to the worktree — never the checkout — and is keyed by repository, script, and sandbox image. Unset disables caching, so every job reinstalls. Bind it at the same path inside and out, like the worktrees |
 | `AGENT_SNAPSHOT_TTL_S` | `604800` | Seven days, as the design specifies. A stale entry means a wrong dependency tree |
 | `AGENT_EGRESS_ALLOWLIST` | — | Checked at startup: it may not contain an agent vendor's telemetry domain, which would let a "closed" sandbox report on the repository it was given |
 | `AGENT_WORKDIR_ROOT` | `/var/lib/hybridinference/agent-jobs` | **A host path, bind-mounted at the same path inside the runner.** Preflight test-mounts it and fails at startup if not — otherwise every job dies at spawn with an opaque exit 125 |
@@ -350,7 +404,7 @@ runners share one queue with no leader and no sharding.
 | `AGENT_GITLAB_OAUTH_REDIRECT_URI` | — | Exact registered callback, normally `<frontend>/agents/connected?provider=gitlab`. HTTPS is required except for localhost development |
 | `AGENT_SANDBOX_ALLOW_OPEN_NETWORK` | — | Accepts a non-`internal` sandbox network. Preflight refuses one otherwise, so a missing setting cannot quietly mean full egress |
 | `AGENT_GITHUB_TOKEN` | — | Gateway-side; unset means the publisher idles |
-| `AGENT_PUBLISH_BASE_BRANCH` | `dev` | What draft PRs target |
+| `AGENT_PUBLISH_BASE_BRANCH` | `dev` | What a draft PR targets when its job named no branch of its own. A job started from a branch targets *that* branch; this is only the fallback |
 
 The authenticated `/agents/integrations` page is the only supported place to
 start either OAuth flow. OAuth state is unpredictable, bound to the signed-in
@@ -504,6 +558,68 @@ defensible on a dedicated single-purpose host.
 The isolation boundary is between the runner and the sandbox it starts, not
 around the runner. Running the runner unprivileged does not buy isolation — it
 already holds the dispatcher credential and the Docker socket.
+
+### Dependency installation, and the proxy that allows it
+
+A job may carry a `setup_script`. It runs before the agent, under its own
+egress tier, and its result is cached per repository and script — so a retry
+does not reinstall.
+
+The tier is where the work is. `setup` defaults to `trusted` and `agent` stays
+`platform_only`, which in this deployment means three networks:
+
+| Network | Internal | Who is on it |
+|---|---|---|
+| `agent-egress` | yes | the sandbox during the agent turn, and the gateway |
+| `agent-egress-trusted` | yes | the sandbox during setup, and the proxy |
+| `agent-egress-uplink` | **no** | the proxy, alone |
+
+Both sandbox networks have no route of their own. The difference is that
+`agent-egress-proxy` sits on the trusted one with a second leg, and the sandbox
+is handed `http_proxy`/`https_proxy` pointing at it. The environment variables
+are a convenience for package managers, not the boundary: a setup script that
+ignored them finds a network that cannot route anywhere.
+
+The agent turn — the part driven by untrusted model output — still reaches the
+gateway and nothing else. That does not change when setup is opened.
+
+**Adding a domain.** `AGENT_EGRESS_ALLOWLIST` is *added to* the built-in
+registry list (PyPI, npm, crates, Go, RubyGems, Maven, github.com), never a
+replacement for it. `*.example.com` covers subdomains. An agent vendor's
+telemetry domain is refused outright — a sandbox that can phone home about a
+private repository is not closed, whatever the tier is called. The list is
+rendered into the proxy's config by `agent-egress-proxy-config`, a one-shot
+service that runs before the proxy and fails the deploy if the list is
+unusable. Editing that config by hand skips the validation that keeps a
+hostile value out of it.
+
+**Three preflight failures and what each means.** The runner refuses to claim
+jobs unless the setup tier is genuinely enforcing:
+
+- *"the sandbox network … is not `internal`"* — a tier variable points at a
+  routable network. The setup phase would have the whole internet while the
+  config still said `trusted`.
+- *"egress proxy is unreachable"* — the proxy is not running, or not on that
+  network. Check `docker compose logs agent-egress-proxy`; a config Squid
+  rejects shows up there as a parse error on the first line. This one stops the
+  runner claiming **any** job, including jobs that install nothing — deliberate,
+  because it means the deploy is broken, but if this host genuinely does not
+  need dependency installation, `AGENT_EGRESS_SETUP_TIER=platform_only` skips
+  the tier and its probe entirely.
+- *"egress proxy answered … it is not enforcing an allowlist"* — the proxy
+  served a host that does not exist and is on no list. Treat this as an open
+  proxy on the sandbox's network.
+
+**Where a denied request is visible.** Only in the proxy's log — an internal
+network refuses a connection silently, so before this there was nowhere to
+observe a blocked attempt from. `ops/deploy/agent_runner.sh status` tails it;
+a denial is the line with `verdict=TCP_DENIED/403`.
+
+**What this does not give you.** No secrets reach the sandbox (there is still
+no secrets store, by design), the sandbox runs unprivileged so `apt install`
+does not work — use `pip --user`, a virtualenv, `npm ci` — and a tool that
+ignores the proxy environment (bun, at the time of writing) cannot reach a
+registry at all.
 
 ## Runtime verification
 

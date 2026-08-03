@@ -17,6 +17,10 @@ const ANY_HOST = '__any__';
 // the page reports what it actually knows rather than guessing at liveness.
 const RECENT_POLL_SECONDS = 300;
 
+// Well under the staleness threshold, so a host that stops polling is reported
+// as stale within a poll or two of actually becoming so.
+const REFRESH_MS = 30_000;
+
 function formatAge(seconds: number): string {
   if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s ago`;
   const minutes = Math.floor(seconds / 60);
@@ -39,8 +43,8 @@ export function AgentRunnerHostSection({ onToast }: AgentRunnerHostSectionProps)
 
   const mounted = useRef(true);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (background = false) => {
+    if (!background) setLoading(true);
     setError(null);
     try {
       const next = await getAgentRunnerHosts();
@@ -49,17 +53,27 @@ export function AgentRunnerHostSection({ onToast }: AgentRunnerHostSectionProps)
       setActiveHost(next.active_host);
     } catch (e) {
       if (!mounted.current) return;
-      setError(getErrorMessage(e));
+      // A failed background poll leaves the last good pool on screen rather
+      // than replacing it with an error: the numbers going stale is a smaller
+      // lie than the page claiming there is nothing there.
+      if (!background) setError(getErrorMessage(e));
     } finally {
-      if (mounted.current) setLoading(false);
+      if (mounted.current && !background) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     mounted.current = true;
     void load();
+    // Everything on this card is time-relative — poll ages, and the warning
+    // that fires when the pinned host goes quiet. Fetched once, the ages
+    // freeze at whatever they were when the tab was opened and the warning
+    // can never appear for a machine that dies afterwards, which is exactly
+    // when an operator is looking at this page.
+    const timer = setInterval(() => void load(true), REFRESH_MS);
     return () => {
       mounted.current = false;
+      clearInterval(timer);
     };
   }, [load]);
 

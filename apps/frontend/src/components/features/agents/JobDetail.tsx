@@ -1,8 +1,10 @@
 'use client';
 
 import {
+  useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type FormEvent,
@@ -632,7 +634,14 @@ function OutcomeCard({ job, onOpenDiff }: { job: AgentJob; onOpenDiff: () => voi
                   ? 'Run failed'
                   : 'Run stopped'}
           </p>
-          {job.stateNote ? <p className="mt-0.5 text-xs text-gray-500">{job.stateNote}</p> : null}
+          {job.stateNote ? (
+            <p className="mt-0.5 text-xs text-gray-500 [overflow-wrap:anywhere]">{job.stateNote}</p>
+          ) : null}
+          {job.state === 'cancelled' ? (
+            <p className="mt-1 text-xs text-gray-500">
+              Send a follow-up to continue from any saved intermediate changes.
+            </p>
+          ) : null}
         </div>
         {job.diffFiles.length ? (
           <button
@@ -903,6 +912,7 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
   const [stopping, setStopping] = useState(false);
   const [forking, setForking] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const stopRequestedRef = useRef(false);
   const workspacePane = useResizablePane({
     storageKey: WORKSPACE_WIDTH_STORAGE_KEY,
     defaultWidth: WORKSPACE_DEFAULT_WIDTH,
@@ -980,23 +990,56 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
       job.currentAttemptNo !== undefined &&
       latestTerminalPhase === 'workspace_ready');
 
+  useEffect(() => {
+    stopRequestedRef.current = false;
+    setStopping(false);
+  }, [job.id]);
+
+  useEffect(() => {
+    if (!isActive) {
+      stopRequestedRef.current = false;
+      setStopping(false);
+    }
+  }, [isActive]);
+
   function openWorkspace(tab: WorkspaceTab) {
     setWorkspaceTab(tab);
     setWorkspaceOpen(true);
   }
 
-  async function stop() {
+  const stop = useCallback(async () => {
+    if (stopRequestedRef.current) return;
+    stopRequestedRef.current = true;
     setStopping(true);
     setActionError(null);
     try {
       await cancelAgentJob(job.id);
       onReload?.();
     } catch (cause: unknown) {
-      setActionError(cause instanceof Error ? cause.message : 'Could not stop this run');
-    } finally {
+      stopRequestedRef.current = false;
       setStopping(false);
+      setActionError(cause instanceof Error ? cause.message : 'Could not stop this run');
     }
-  }
+  }, [job.id, onReload]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (
+        event.key !== 'Escape' ||
+        event.repeat ||
+        event.defaultPrevented ||
+        target?.closest('input, textarea, select, [contenteditable="true"]')
+      ) {
+        return;
+      }
+      event.preventDefault();
+      void stop();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isActive, stop]);
 
   async function submitFollowUp(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1108,10 +1151,17 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
               type="button"
               onClick={() => void stop()}
               disabled={stopping}
+              aria-label="Stop"
+              title="Stop run (Esc)"
               className="inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-2.5 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-gray-800 disabled:opacity-60"
             >
               <span className="h-2.5 w-2.5 rounded-sm bg-white" />
               {stopping ? 'Stopping…' : 'Stop'}
+              {!stopping ? (
+                <kbd aria-hidden="true" className="rounded bg-white/15 px-1 text-[10px]">
+                  Esc
+                </kbd>
+              ) : null}
             </button>
           ) : null}
         </div>
@@ -1273,7 +1323,9 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                           of the conversation, so it can be answered by a model
                           the thread has not used. */}
                       <span className="shrink-0 text-[11px] text-gray-400">
-                        Inherits {job.runtime} ·
+                        {job.state === 'cancelled'
+                          ? `Restores any saved changes · ${job.runtime} ·`
+                          : `Inherits ${job.runtime} ·`}
                       </span>
                       <Picker
                         label="Model for this turn"
@@ -1289,7 +1341,9 @@ export function JobDetail({ job, onReload }: { job: AgentJob; onReload?: () => v
                     </>
                   ) : (
                     <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
-                      Inherits {job.runtime} · {job.model}
+                      {job.state === 'cancelled'
+                        ? `Restores any saved changes · ${job.runtime} · ${job.model}`
+                        : `Inherits ${job.runtime} · ${job.model}`}
                       {isActive ? ' · queued after this run' : ''}
                     </span>
                   )}

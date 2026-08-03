@@ -74,15 +74,16 @@ def _to_item(row: dict) -> AgentRunnerHost:
 async def _snapshot(store: AgentJobStore) -> ListAgentRunnerHostsResponse:
     """The pool as it stands — the response every endpoint here returns.
 
-    ``active_host`` is read from the policy rather than derived from the list.
-    They agree in every normal case; where they would not — a pinned host
-    deleted out from under the policy — the honest answer is the name the claim
-    gate is actually enforcing, not "unpinned" while the queue sits still.
+    Both halves come from one read. ``active_host`` is the policy's own value
+    rather than something derived from the list: where the two could disagree —
+    a pinned host deleted out from under the policy — the honest answer is the
+    name the claim gate is actually enforcing, not "unpinned" while the queue
+    sits still.
     """
-    hosts = [_to_item(row) for row in await store.list_runner_hosts()]
+    rows, active = await store.runner_pool()
     return ListAgentRunnerHostsResponse(
-        hosts=hosts,
-        active_host=await store.active_runner_host(),
+        hosts=[_to_item(row) for row in rows],
+        active_host=active,
     )
 
 
@@ -149,10 +150,13 @@ async def forget_agent_runner_host(
     Housekeeping only: a runner still polling on that machine re-adds itself
     within seconds. The active host cannot be dropped, because doing so would
     silently unpin — every other machine would start claiming, which is the
-    opposite of what removing a host from a list looks like it does.
+    opposite of what removing a host from a list looks like it does. That
+    refusal is decided inside the store's transaction, not by a check here: a
+    check here is a read a concurrent switch can outrun.
     """
     job_store = _require_store(store)
-    if host == await job_store.active_runner_host():
+    outcome = await job_store.forget_runner_host(host=host)
+    if outcome == "active":
         raise HTTPException(
             status_code=409,
             detail=(
@@ -160,7 +164,7 @@ async def forget_agent_runner_host(
                 "before removing it."
             ),
         )
-    if not await job_store.forget_runner_host(host=host):
+    if outcome == "unknown":
         raise HTTPException(status_code=404, detail=f"Unknown runner host: {host}")
 
     await log_admin_action(

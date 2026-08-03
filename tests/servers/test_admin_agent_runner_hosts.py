@@ -38,12 +38,13 @@ class FakeHostStore:
     async def active_runner_host(self) -> str | None:
         return self.active_host
 
-    async def list_runner_hosts(self) -> list[dict[str, Any]]:
-        return sorted(
+    async def runner_pool(self) -> tuple[list[dict[str, Any]], str | None]:
+        rows = sorted(
             ({**row, "is_active": row["host"] == self.active_host} for row in self.rows.values()),
             key=lambda row: row["last_seen_at"],
             reverse=True,
         )
+        return rows, self.active_host
 
     async def set_active_runner_host(self, *, host: str | None) -> bool:
         # Mirrors the store: an unknown host changes nothing at all.
@@ -52,8 +53,11 @@ class FakeHostStore:
         self.active_host = host
         return True
 
-    async def forget_runner_host(self, *, host: str) -> bool:
-        return self.rows.pop(host, None) is not None
+    async def forget_runner_host(self, *, host: str) -> str:
+        # The active-host refusal is the store's, not the caller's.
+        if host == self.active_host:
+            return "active"
+        return "deleted" if self.rows.pop(host, None) is not None else "unknown"
 
 
 @pytest.fixture
