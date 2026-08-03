@@ -61,13 +61,17 @@ describe('the ?next= round-trip', () => {
     expect(replaceMock).toHaveBeenCalledWith('/dashboard');
   });
 
-  it.each(['https://evil.test/phish', '//evil.test/phish', '/\\evil.test/phish'])(
-    'never follows an off-site next (%s)',
-    (next) => {
-      query = new URLSearchParams({ next });
-      render(<LoginPage />);
+  it.each([
+    'https://evil.test/phish',
+    '//evil.test/phish',
+    '/\\evil.test/phish',
+    // The URL parser strips \n before parsing, so this is //evil.test to the
+    // browser. Arrives decoded from ?next=/%0A/evil.test/phish.
+    '/\n/evil.test/phish',
+  ])('never follows an off-site next (%j)', (next) => {
+    query = new URLSearchParams({ next });
+    render(<LoginPage />);
 
-      expect(replaceMock).toHaveBeenCalledWith('/dashboard');
-    },
-  );
+    expect(replaceMock).toHaveBeenCalledWith('/dashboard');
+  });
 });
