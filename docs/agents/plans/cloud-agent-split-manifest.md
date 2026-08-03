@@ -1,9 +1,15 @@
 # Cloud Agent Split — File Manifest
 
-- **Status:** PRELIMINARY. Regenerate at freeze time (task A2/A3).
-- **Basis:** `origin/dev @ 3f955493` (2026-08-03)
-- **FREEZE_SHA:** _not yet declared_ — blocked on PRs #1147, #1148, #1167, #1168, #1170 (task A1)
+- **Status:** DECLARED. Regenerate only if the freeze is moved.
+- **FREEZE_SHA:** `764a6f97477504deb4542e1c28c3128ff9601c94` (`dev`, 2026-08-03)
 - **Companion:** [2026-08-03-cloud-agent-repo-split.md](2026-08-03-cloud-agent-repo-split.md)
+
+Task A1 is complete: #1147, #1148, #1167, #1168 and #1170 all merged, which is
+what the freeze was waiting for. Those five added 13 files to this manifest —
+notably an egress proxy, an MCP proxy, and the remote-runner relay.
+
+Migration tasks may now start. While the freeze holds, agent paths in this
+repository change only for Phase C contract work.
 
 Regenerate with:
 
@@ -37,6 +43,7 @@ Then diff against this file; every new path must be classified before Phase D st
 | `apps/backend/serving/agent_jobs/sandbox.py` | D2 |
 | `apps/backend/serving/agent_jobs/runtimes.py` | D2 |
 | `apps/backend/serving/agent_jobs/egress.py` | D2 |
+| `apps/backend/serving/agent_jobs/egress_proxy.py` | D2 — generates the Squid allowlist config on the runner host (`python -m ... --out /etc/squid/generated/squid.conf`); `sandbox.py` imports `CANARY_HOST` from it |
 | `apps/backend/serving/agent_jobs/setup.py` | D3 |
 | `apps/backend/serving/agent_jobs/workspace_paths.py` | D3 |
 | `apps/backend/serving/agent_jobs/workspace_snapshot.py` | D3 |
@@ -49,6 +56,7 @@ Then diff against this file; every new path must be classified before Phase D st
 | `tests/unit/test_agent_sandbox.py` | D2 |
 | `tests/unit/test_agent_runtimes.py` | D2 |
 | `tests/unit/test_agent_egress.py` | D2 |
+| `tests/unit/test_agent_egress_proxy.py` | D2 |
 | `tests/fixtures/agent_runtime_streams/claude_code_stream_contract.jsonl` | D2 |
 | `tests/unit/test_agent_setup.py` | D3 |
 | `tests/unit/test_agent_workspace_snapshot.py` | D3 |
@@ -96,6 +104,18 @@ Then diff against this file; every new path must be classified before Phase D st
 
 `.github/workflows/agent-job-runner.yml` · `deploy/docker/Dockerfile.agent-runner` · `deploy/docker/Dockerfile.agent-sandbox` · `deploy/docker/docker-compose.agent-runner.yml` · `ops/deploy/agent_runner.sh`
 
+Added by the pre-freeze merges:
+
+| Path | From | Note |
+|---|---|---|
+| `deploy/docker/Dockerfile.agent-egress-proxy` | #1147 | Squid image for the Trusted tier |
+| `deploy/docker/Dockerfile.agent-gateway-tunnel` | #1170 | The relay that lets a runner host with no local gateway reach one |
+| `deploy/docker/agent-gateway-tunnel.sh` | #1170 | |
+| `deploy/docker/docker-compose.agent-remote-runner.yml` | #1170 | The multi-host compose — phase G builds on this, not on a new transport |
+| `ops/deploy/agent_remote_runner.sh` | #1170 | |
+| `ops/setup/setup_kata_runtime.sh` | #1168 | Kata provisioning; referenced from the deploy gate |
+| `tests/unit/ops/test_agent_runner_preflight.py` | #1168 | |
+
 ## move:docs (H5)
 
 `docs/developer/agent-sandbox-operations.md` → new repo `docs/operations.md`
@@ -111,6 +131,11 @@ Then diff against this file; every new path must be classified before Phase D st
 | `apps/backend/serving/servers/routers/completions.py:598-601` | Propagates `agent_job_id` from the capability token into log metadata. |
 | `apps/backend/serving/servers/routers/anthropic_messages.py:1075-1076` | Same, Anthropic surface. |
 | `apps/backend/serving/servers/routers/embeddings.py:172` | Same, embeddings surface. |
+| `apps/backend/serving/servers/routers/agent_mcp.py` | The MCP proxy endpoint (#1148). See the note below — this is a gateway capability surface, not control-plane code. |
+| `apps/backend/serving/agent_jobs/mcp_proxy.py` | Its allowlist/filtering logic. |
+| `apps/backend/serving/agent_jobs/mcp_registry.py` | The deployment's MCP server registry — overlay config shaped like `models.yaml`, holding upstream credentials. |
+| `apps/backend/serving/config/settings.py:159-161` | Points at that registry file. |
+| `tests/servers/test_agent_mcp_api.py`, `tests/unit/test_agent_mcp.py` | Their tests. |
 
 ## stay:edit-at-H4 — wiring stripped after cutover
 
@@ -139,4 +164,24 @@ Then diff against this file; every new path must be classified before Phase D st
 
 2. **`api_logs` INSERT is hand-duplicated** across `postgres_log.py` and `database.py`. Nothing in this split adds a column, but if Phase C ever needs one (e.g. `grant_id`), it must touch `log_schema.py` + BOTH INSERTs + the LogStore ABC + export.
 
-3. **Attempt/lease fencing moves repos, budget enforcement does not.** After the split the gateway can no longer consult `AgentJobStore` to fence a model token; that is why C5 introduces a gateway-owned `agent_grants` table with explicit revoke. Any design change to grants must preserve: revoke-on-supersede (E9) and fail-closed-on-missing-budget (`model_auth.py`).
+3. **MCP is a second consumer of the capability token, and it changes Phase C.**
+   `agent_mcp.py` calls `authenticate_agent_tool_call(token, job_store=store)` —
+   the same fence as model calls, deliberately without the budget check, since a
+   tool call buys no inference. It stays in the gateway for the same reasons
+   model routing does: the gateway holds the upstream MCP credentials, the
+   registry is deployment overlay config, and the sandbox reaches it with the
+   token it already has over the one network route it already has. Moving it
+   would hand those credentials to the control plane and give the sandbox a
+   second destination — the property `platform_only` exists to prevent.
+
+   Consequences for the plan:
+   - **C5** grants must carry an MCP server/tool allowlist alongside
+     `allowed_models`; the grant is one capability, not a model-only one.
+   - **C6** must add the `agr` path to **both** `authenticate_agent_model` and
+     `authenticate_agent_tool_call`, applying the budget check only to the
+     former.
+   - **H4** keeps `mcp_proxy.py`, `mcp_registry.py` and `agent_mcp.py` when it
+     deletes the rest of `agent_jobs/`; they move to the gateway-owned grants
+     module along with the surviving half of `model_auth.py`.
+
+4. **Attempt/lease fencing moves repos, budget enforcement does not.** After the split the gateway can no longer consult `AgentJobStore` to fence a model token; that is why C5 introduces a gateway-owned `agent_grants` table with explicit revoke. Any design change to grants must preserve: revoke-on-supersede (E9) and fail-closed-on-missing-budget (`model_auth.py`).

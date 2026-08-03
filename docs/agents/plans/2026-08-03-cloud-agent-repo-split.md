@@ -6,7 +6,8 @@
 - **Decision source:** Murphy ↔ Juncheng Slack DM, 2026-07-31 — decouple cloud agent into its own service + repo, share login only, separate agent admin dashboard, dynamic host pool, open-source the result. Glen finishes in ~2 months.
 - **Source repo:** `HarvardMadSys/hybridInference` (private; history is NOT a publication artifact)
 - **Target repo:** `HarvardMadSys/freeinference-cloud-agent` (created 2026-07-31, currently empty, will be open-sourced)
-- **Inventory basis:** `origin/dev @ 3f955493` (2026-08-03). Regenerate at freeze time (task A3).
+- **FREEZE_SHA:** `764a6f97477504deb4542e1c28c3128ff9601c94` (`dev`, 2026-08-03) — declared, A1/A2 complete
+- **Inventory basis:** the freeze commit. File-level authority is [cloud-agent-split-manifest.md](cloud-agent-split-manifest.md).
 
 ---
 
@@ -21,6 +22,7 @@
 > - `apps/backend/serving/servers/bootstrap.py` (~line 783+) conditionally wires `AgentJobStore`, the attempt reaper, and the publish loop.
 > - 9 Postgres tables created at startup by `apps/backend/serving/storage/agent_job_store.py`: `agent_threads`, `agent_jobs`, `agent_attempts`, `agent_job_events`, `agent_thread_messages`, `agent_job_artifacts`, `agent_repo_grants`, `agent_oauth_states`, `agent_gitlab_connections`.
 > - Workspace broker is addressed by a single global `AGENT_WORKSPACE_BROKER_URL` (`workspace_broker_client.py:195`).
+> - `servers/routers/agent_mcp.py` proxies MCP for the sandbox and authenticates with `model_auth.authenticate_agent_tool_call` — the **same** capability token and `AgentJobStore` fence as model calls, minus the budget check. It stays in the gateway; the grant work in Phase C must cover it.
 > - Gateway JWTs have no `iss`/`aud`; the frontend keeps the access token in `sessionStorage` (no cookie session).
 > - `#1158` (merged) added admin host switching: `apps/backend/serving/servers/routers/admin/agent_runner_hosts.py`. `#1170` (SSH relay so a runner host without a local gateway can reach the gateway; relay-not-proxy design) is the transport substrate for multi-host — do not reinvent it.
 >
@@ -33,7 +35,7 @@
 > 6. Old repo branches: `<user>/<scope>/<name>` off `dev`, PR → `dev`. New repo: same convention once B1 lands.
 > 7. Do not commit secrets. The new repo will be public later; treat every commit as public.
 
-**How to use this plan:** one task = one agent session = (usually) one PR. Paste Section 0 + the task block. Fill `<FREEZE_SHA>` after A2. Tasks list explicit dependencies; anything not listed as a dependency can run in parallel. Effort: S ≤ half day, M ≈ 1 day, L ≈ 2–3 days.
+**How to use this plan:** one task = one agent session = (usually) one PR. Paste Section 0 + the task block. `<FREEZE_SHA>` is `764a6f97477504deb4542e1c28c3128ff9601c94`. Tasks list explicit dependencies; anything not listed as a dependency can run in parallel. Effort: S ≤ half day, M ≈ 1 day, L ≈ 2–3 days.
 
 ---
 
@@ -53,11 +55,11 @@
 
 ## Phase A — Pre-freeze stabilization (old repo)
 
-### A1. Land or close the 5 open agent PRs — **human task (Murphy)**
-`#1147` egress allowlist proxy, `#1148` MCP via gateway, `#1167` runner-host lock order, `#1168` Kata provisioning, `#1170` remote runner SSH relay. Everything merged here migrates for free; everything still open at freeze must be re-ported by hand later. Target: all five resolved within the week.
+### A1. Land or close the 5 open agent PRs — ✅ **done 2026-08-03**
+`#1147` egress allowlist proxy, `#1148` MCP via gateway, `#1167` runner-host lock order, `#1168` Kata provisioning, `#1170` remote runner SSH relay — **all merged**. They added 13 files to the manifest, including the egress proxy, the MCP proxy, and the remote-runner relay that Phase G builds on.
 
-### A2. Declare the freeze (S) — human + one commit
-- Record `FREEZE_SHA = git rev-parse origin/dev` after A1.
+### A2. Declare the freeze — ✅ **done 2026-08-03**
+- `FREEZE_SHA = 764a6f97477504deb4542e1c28c3128ff9601c94`.
 - Add a short section to the old repo `CLAUDE.md`: agent paths (`apps/backend/serving/agent_jobs/`, `servers/routers/agent_jobs.py`, `servers/routers/admin/agent_runner_hosts.py`, `storage/agent_job_store.py`, `schemas_agent_jobs.py`, `apps/frontend/src/{app,components/features}/agents/`, `apps/frontend/src/lib/api/agents.ts`, agent deploy files) are **frozen except Phase C contract work**; new agent features go to the new repo.
 - **Acceptance:** CLAUDE.md note merged to `dev`; `FREEZE_SHA` written into this plan and into B3's MIGRATION.md.
 
@@ -138,14 +140,16 @@
 ### C5. `agent_grants` table + mint/revoke endpoints (L)
 - Repo: old. Deps: none technically, but design-review with Murphy before merge (this is the money boundary).
 - New table (created in `agent_job_store` startup DDL for now — it stays gateway-side at H4, move DDL to gateway-owned module then): `agent_grants(grant_id ulid pk, user_id, external_job_id, external_attempt_id, allowed_models jsonb, budget_usd numeric not null, expires_at, revoked_at, created_at)`.
-- `POST /internal/agent-grants` — auth: `Authorization: Bearer <GATEWAY_GRANT_DISPATCH_TOKEN>` (new env, constant-time compare). Body: user_id, external_job_id, external_attempt_id, allowed_models, budget_usd, ttl_seconds. Returns `{grant_id, token}`. Token format: reuse `tokens.py` HMAC style, new prefix `agr`, new signing context, still derived from gateway `API_KEY_SECRET` (gateway mints AND verifies; secret never leaves).
+- `POST /internal/agent-grants` — auth: `Authorization: Bearer <GATEWAY_GRANT_DISPATCH_TOKEN>` (new env, constant-time compare). Body: user_id, external_job_id, external_attempt_id, allowed_models, **allowed_mcp** (server → tool allowlist), budget_usd, ttl_seconds. Returns `{grant_id, token}`. Token format: reuse `tokens.py` HMAC style, new prefix `agr`, new signing context, still derived from gateway `API_KEY_SECRET` (gateway mints AND verifies; secret never leaves).
+- `allowed_mcp` is not optional polish: `agent_mcp.py` authenticates tool calls with the same token, so a grant that only describes models would either lock the sandbox out of MCP or leave tool access ungoverned.
 - `POST /internal/agent-grants/{grant_id}/revoke` — same auth; sets `revoked_at`.
 - **Acceptance:** unit tests for mint/verify/revoke/expiry; dispatch-token auth (401 on miss); no route reachable without the env set.
 
 ### C6. Grant verification path in model_auth (L)
 - Repo: old. Deps: C5.
 - `model_auth.authenticate_agent_model` accepts BOTH token kinds during transition: legacy `ajt` (unchanged behavior) and new `agr` → verify signature, load grant row, reject revoked/expired/model-not-allowed, then reuse the existing ledger budget check with the grant's `external_job_id` written to `api_logs.agent_job_id` (existing dashboards keep working). Fail-closed on missing budget, as today.
-- **Acceptance:** all existing `test_agent_model_auth.py` tests still pass (legacy path untouched); new tests for the `agr` path incl. revoke-then-call → 401, budget exhaustion → 429.
+- `model_auth.authenticate_agent_tool_call` gets the same `agr` path **without** the budget check — a tool call buys no inference, which is why that function does not apply it today. Skipping this function would break MCP the moment grants replace `ajt`.
+- **Acceptance:** all existing `test_agent_model_auth.py` and `test_agent_mcp.py` tests still pass (legacy path untouched); new tests for the `agr` path on both functions, incl. revoke-then-call → 401, budget exhaustion → 429 on the model path only, and a tool outside `allowed_mcp` refused.
 
 ### C7. Grant usage endpoint (S)
 - Repo: old. Deps: C5.
@@ -167,8 +171,9 @@
 - Deps: B1. Create `host/cloud_agent_host/__init__.py`, wire pytest paths, add `host` to CI matrix.
 
 ### D2. Sandbox + runtimes + egress (M)
-- Deps: D1. Move `sandbox.py`, `runtimes.py`, `egress.py`; tests `test_agent_sandbox.py`, `test_agent_runtimes.py`, `test_agent_egress.py`; fixture `tests/fixtures/agent_runtime_streams/claude_code_stream_contract.jsonl`.
-- **Acceptance:** those 3 test files pass in new-repo CI.
+- Deps: D1. Move `sandbox.py`, `runtimes.py`, `egress.py`, `egress_proxy.py`; tests `test_agent_sandbox.py`, `test_agent_runtimes.py`, `test_agent_egress.py`, `test_agent_egress_proxy.py`; fixture `tests/fixtures/agent_runtime_streams/claude_code_stream_contract.jsonl`.
+- `egress_proxy.py` generates the Squid allowlist config on the runner host and `sandbox.py` imports `CANARY_HOST` from it, so they must move together or the import breaks.
+- **Acceptance:** those 4 test files pass in new-repo CI.
 
 ### D3. Workspace setup + paths + snapshot (M)
 - Deps: D1. Move `setup.py` (rename module to `workspace_setup.py` ONLY if the name collides with packaging; record in MIGRATION.md if so — this is the one sanctioned rename), `workspace_paths.py`, `workspace_snapshot.py`; tests `test_agent_setup.py`, `test_agent_workspace_snapshot.py`.
@@ -183,7 +188,8 @@
 - Deps: D2–D5. Move `runner.py`, `workspace_broker_client.py`; tests `test_agent_runner.py`, `test_agent_runner_worktree.py`, `test_agent_workspace_broker_client.py`. The runner's gateway-facing URLs/token env names stay AS-IS for now (E9 re-points them).
 
 ### D7. Host deploy files (M)
-- Deps: D6. Move `deploy/docker/Dockerfile.agent-runner`, `Dockerfile.agent-sandbox`, `docker-compose.agent-runner.yml`, `ops/deploy/agent_runner.sh`, `.github/workflows/agent-job-runner.yml` → new repo `deploy/host/` + `.github/workflows/`; update build contexts/paths; include the Kata provisioning bits from #1168 and the SSH relay unit from #1170 as merged.
+- Deps: D6. Move `deploy/docker/Dockerfile.agent-runner`, `Dockerfile.agent-sandbox`, `Dockerfile.agent-egress-proxy`, `Dockerfile.agent-gateway-tunnel`, `agent-gateway-tunnel.sh`, `docker-compose.agent-runner.yml`, `docker-compose.agent-remote-runner.yml`, `ops/deploy/agent_runner.sh`, `ops/deploy/agent_remote_runner.sh`, `ops/setup/setup_kata_runtime.sh`, `.github/workflows/agent-job-runner.yml`, `tests/unit/ops/test_agent_runner_preflight.py` → new repo `deploy/host/` + `.github/workflows/` + `tests/`; update build contexts/paths.
+- The remote-runner compose and tunnel are #1170 as merged — Phase G extends this, it does not replace it.
 - **Acceptance:** `docker build` of both images succeeds in CI (or a documented dry-run if CI runners can't).
 
 ---
@@ -322,7 +328,7 @@
 
 TASK D2 — Move sandbox/runtimes/egress into the host package.
 Repo: HarvardMadSys/freeinference-cloud-agent, branch off dev.
-Source of truth: HarvardMadSys/hybridInference @ <FREEZE_SHA>.
+Source of truth: HarvardMadSys/hybridInference @ 764a6f97477504deb4542e1c28c3128ff9601c94.
 
 Steps:
 1. git show <FREEZE_SHA>:apps/backend/serving/agent_jobs/sandbox.py   > host/cloud_agent_host/sandbox.py   (same for runtimes.py, egress.py)
