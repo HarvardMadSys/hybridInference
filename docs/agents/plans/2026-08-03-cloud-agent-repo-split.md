@@ -13,17 +13,17 @@
 
 ## 0. Context block — prepend to EVERY task prompt
 
-> **System overview.** HybridInference is a FastAPI LLM gateway (`apps/backend/serving/`) with a Next.js frontend (`apps/frontend/`). The Cloud Agent feature (issue #1041) lets users run coding agents (Claude Code, Codex, Kilo, …) in sandboxed containers against their GitHub/GitLab repos, with results published as PRs. It is currently embedded in the gateway monorepo. We are extracting it into `HarvardMadSys/freeinference-cloud-agent` as an independent service that depends on HybridInference only through two HTTP contracts: **identity** (login/SSO) and **inference grants** (model-call tokens + budget).
+> **System overview.** HybridInference is a FastAPI LLM gateway (`apps/backend/serving/`) with a Next.js frontend (`apps/frontend/`). The Cloud Agent feature (issue #1041) lets users run coding agents (Claude Code, Codex, Kilo, …) in sandboxed containers against their GitHub/GitLab repos, with results published as PRs. It is currently embedded in the gateway monorepo. We are extracting it into `HarvardMadSys/freeinference-cloud-agent` as an independent service that depends on HybridInference only through two HTTP contracts: **identity** (login/SSO) and **inference grants** (short-lived model/MCP capability tokens).
 >
 > **Current coupling points (verified 2026-08-03):**
 > - `apps/backend/serving/servers/auth.py:15` imports `serving.agent_jobs.model_auth` (gateway → agent reverse dependency).
 > - `apps/backend/serving/agent_jobs/tokens.py` derives worker/model token keys from the gateway's `API_KEY_SECRET` (line ~45).
-> - `apps/backend/serving/agent_jobs/model_auth.py` enforces per-job budget from the billing ledger (`api_logs`, keyed by `agent_job_id`), fail-closed, and checks attempt fencing via `AgentJobStore`.
+> - `apps/backend/serving/agent_jobs/model_auth.py` currently enforces a per-job spend cap from the billing ledger and checks attempt fencing via `AgentJobStore`. The split deliberately does **not** migrate that per-job cap: inference requests authenticated by a grant use the gateway's existing per-user quota, while `api_logs.agent_job_id` remains for cost/usage attribution.
 > - `apps/backend/serving/servers/bootstrap.py` (~line 783+) conditionally wires `AgentJobStore`, the attempt reaper, and the publish loop.
 > - **11** Postgres tables created at startup by `apps/backend/serving/storage/agent_job_store.py`: `agent_threads`, `agent_jobs`, `agent_attempts`, `agent_job_events`, `agent_thread_messages`, `agent_job_artifacts`, `agent_repo_grants`, `agent_oauth_states`, `agent_gitlab_connections`, `agent_runner_hosts`, `agent_runner_policy`.
 > - `apps/backend/serving/agent_jobs/source_control.py` encrypts GitLab tokens with a Fernet key derived from the gateway's `API_KEY_SECRET`. That ciphertext is **not portable** to a service that (correctly) never sees that secret — see H1.
 > - Workspace broker is addressed by a single global `AGENT_WORKSPACE_BROKER_URL` (`workspace_broker_client.py:195`).
-> - `servers/routers/agent_mcp.py` proxies MCP for the sandbox and authenticates with `model_auth.authenticate_agent_tool_call` — the **same** capability token and `AgentJobStore` fence as model calls, minus the budget check. It stays in the gateway; the grant work in Phase C must cover it.
+> - `servers/routers/agent_mcp.py` proxies MCP for the sandbox and authenticates with `model_auth.authenticate_agent_tool_call` — the **same** capability token and `AgentJobStore` fence as model calls. It stays in the gateway; the grant work in Phase C must cover it.
 > - Gateway JWTs have no `iss`/`aud`; the frontend keeps the access token in `sessionStorage` (no cookie session).
 > - `#1158` (merged) added admin host switching: `apps/backend/serving/servers/routers/admin/agent_runner_hosts.py`. `#1170` (SSH relay so a runner host without a local gateway can reach the gateway; relay-not-proxy design) is the transport substrate for multi-host — do not reinvent it.
 >
@@ -48,9 +48,9 @@
 | DR2 | GitHub App: reuse org App `4436561` or create a new one | Reuse; add new callback/setup URLs for agent domains. Rotate the key that leaked into Slack while at it | B4, E5 |
 | DR3 | New Postgres: same instance new database (`cloud_agent`) vs new instance | Same staging instance, new database; prod decides at H3 | B4, E1 |
 | DR4 | Domains | `agents.freeinference.org` / `agents.staging.freeinference.org`; API on same host under `/api` | B4, F5 |
-| DR5 | Old job history | Leave in old DB; old UI read-only until H4. **Export a read-only archive before H4 rather than letting it become unreachable** — cheap, and the alternative is telling users their history is gone. Only `agent_repo_grants` + `agent_gitlab_connections` migrate, and the GitLab rows need re-wrapping (H1) | H1 |
+| DR5 | Old job history | Leave in old DB unchanged; old UI read-only until H4. **Export a read-only archive before H4 rather than letting it become unreachable** — cheap, and the alternative is telling users their history is gone. Job/thread/attempt rows, including legacy `budget_usd`, do not migrate. Only `agent_repo_grants` + `agent_gitlab_connections` migrate, and the GitLab rows need re-wrapping (H1) | H1 |
 | DR6 | Identity token signing alg | RS256 (PyJWT + `cryptography`, JWKS-friendly) | C1 |
-| DR7 | Plan/entitlement source of truth | ✅ Resolved by implementation: this gateway has no `plan` concept — `users.role` (`free`/`pro`/`internal`/`admin`) is it, so the identity JWT carries `role` alone. The gateway derives grant ceilings from it (C5); the control plane enforces its own operational limits on top | C3, E4 |
+| DR7 | Plan/entitlement source of truth | ✅ Resolved by implementation: this gateway has no `plan` concept — the identity JWT carries `users.role` (`free`/`pro`/`internal`/`admin`) alone. The gateway uses it to narrow model/MCP scope; user-level quota remains the gateway's existing source of truth. The control plane enforces its own non-monetary operational limits on top | C3, E4 |
 
 ---
 
@@ -116,7 +116,7 @@
 
 ## Phase C — Contracts in HybridInference (old repo; only permitted agent-area change during freeze)
 
-> Design note for C4–C6: today, sandbox model tokens are fenced via `AgentJobStore` lookups. After the split the gateway has no job store, so the fence is replaced by a gateway-owned `agent_grants` table + an explicit revoke call from the control plane. Budget enforcement (ledger-based, fail-closed) already exists in `model_auth.py` — reuse it, keyed by the grant's job id.
+> Design note for C4–C6: today, sandbox model tokens are fenced via `AgentJobStore` lookups. After the split the gateway has no job store, so the fence is replaced by a gateway-owned `agent_grants` table + an explicit revoke call from the control plane. Grants are pure capabilities: user/job/attempt identity, model/MCP scope, TTL and revocation. They carry no per-job monetary cap. Model calls continue through the gateway's existing per-user quota and cost-accounting path; `api_logs.agent_job_id` remains only for per-job attribution and usage reporting.
 
 ### C1. Identity keys + JWKS endpoint (S)
 - Repo: old. Deps: none (may start before freeze).
@@ -141,42 +141,23 @@
 - **Acceptance:** component test for param validation + redirect construction; manual staging check listed in PR description.
 
 ### C5. `agent_grants` table + mint/renew/revoke endpoints (L)
-- Repo: old. Deps: none technically, but **design-review with Murphy before merge** — this is the money boundary.
+- Repo: old. Deps: none technically, but **design-review with Murphy before merge** — this is a cross-service capability boundary.
 
-**The gateway decides, the control plane asks.** An earlier revision of this task
-had the control plane submit `user_id`, `allowed_models` and `budget_usd`, with
-the gateway only signing them. That hands the spending limit to the service being
-constrained: a leaked dispatch token, or a compromised control plane, mints
-itself any budget for any user. The gateway must derive the ceiling from state
-only it owns.
+**The gateway decides, the control plane asks.** The control plane requests a
+user and the model/MCP scope needed by one attempt. The gateway verifies that
+user and narrows the requested scope against state only it owns. The grant does
+not introduce a second budget system: all inference spend remains subject to the
+gateway's existing per-user quota.
 
-So the request carries **requested** caps, and every one is clamped:
+The request carries a requested scope and lifetime, which the gateway clamps:
 
 | Field | Who decides |
 |---|---|
 | `user_id` | Caller names it; gateway **looks it up** and refuses unless the account exists and is active |
 | `allowed_models` | Clamped to what that user's role may reach — never widened by the request |
 | `allowed_mcp` | Clamped to the deployment's registry ∩ what the role may reach |
-| `budget_usd` | `min(requested, per_job_ceiling(role), user's remaining period allowance)` — see the note below |
 | `ttl_seconds` | `min(requested, MAX_GRANT_TTL)` |
 
-**`budget_usd` is the job's total cap, not its remaining balance.** Do not
-subtract what the job has already spent at mint time. C6 enforces the budget by
-comparing the job's *cumulative* ledger spend against `budget_usd`; storing a
-remaining figure there would subtract the same spend twice, and a renewed or
-re-minted grant would shrink the cap each time until the job died mid-run
-looking like it had exhausted a budget it never had. One meaning per field: this
-one is the ceiling on lifetime spend for `external_job_id`.
-
-**A per-job ceiling is not a spending limit on its own.** A caller that can mint
-grants can mint one per job id, each at the role ceiling, and spend without
-bound. So the clamp also carries the user's remaining allowance for the current
-period — the gateway already tracks this in `user_daily_cost`. Per-job ceiling
-bounds one job; the period allowance bounds the user.
-
-- The role → ceiling mapping is gateway config. **Murphy sets the numbers**; the
-  mechanism does not depend on them. Absent config, fail closed — no ceiling means
-  no grant, not an unlimited one.
 - `allowed_mcp` is not optional polish: `agent_mcp.py` authenticates tool calls
   with the same token, so a grant describing only models would either lock the
   sandbox out of MCP or leave tool access ungoverned.
@@ -188,22 +169,20 @@ bounds one job; the period allowance bounds the user.
 agent_grants(
   grant_id ulid pk, user_id, external_job_id, external_attempt_id,
   allowed_models jsonb, allowed_mcp jsonb,
-  budget_usd numeric not null, expires_at, revoked_at, created_at,
+  expires_at, revoked_at, created_at,
   unique (external_job_id, external_attempt_id)
 )
 ```
 
 The unique constraint makes minting idempotent: a control plane that retries
-after a timeout gets the same grant back rather than a second one with a second
-budget.
+after a timeout gets the same grant back rather than a second capability.
 
 **Endpoints** — auth `Authorization: Bearer <GATEWAY_GRANT_DISPATCH_TOKEN>`
 (per-environment, constant-time compare):
 
 - `POST /internal/agent-grants` — mint, clamped as above. Returns
-  `{grant_id, token, budget_usd, allowed_models, allowed_mcp, expires_at}`:
-  the **effective** values, so the caller can see it was clamped rather than
-  discovering it at spend time. Token: `tokens.py` HMAC style, prefix `agr`, its
+  `{grant_id, token, allowed_models, allowed_mcp, expires_at}`: the **effective**
+  scope and lifetime. Token: `tokens.py` HMAC style, prefix `agr`, its
   own signing context, key from `API_KEY_SECRET` (gateway mints *and* verifies;
   the secret never leaves).
 - `POST /internal/agent-grants/{id}/renew` — extends `expires_at` by another
@@ -212,42 +191,51 @@ budget.
 
 **Short TTL with renewal, not long TTL with revocation.** Revocation over the
 network can fail, and a failed revoke on a long-lived grant leaves an abandoned
-attempt spending. With a bounded TTL the grant dies on its own if the control
-plane stops renewing — for any reason, including the control plane being gone.
-Revoke stays, as an *acceleration* of something that would happen anyway, which
-is the only kind of revoke that does not need a durable outbox behind it.
+attempt able to call models or MCP. With a bounded TTL the grant dies on its own
+if the control plane stops renewing — for any reason, including the control
+plane being gone. Revoke stays, as an *acceleration* of something that would
+happen anyway, which is the only kind of revoke that does not need a durable
+outbox behind it.
 
 - **Acceptance:** unit tests for mint/renew/revoke/expiry; that a request asking
-  for more budget, more models, or a longer TTL than the role allows receives the
-  clamped values and not an error; that an unknown or suspended `user_id` is
-  refused; that re-minting the same `(job, attempt)` returns the first grant
+  for more models/MCP access or a longer TTL than the role allows receives the
+  clamped scope/lifetime and not an error; that an unknown or suspended `user_id`
+  is refused; that re-minting the same `(job, attempt)` returns the first grant
   rather than a second; dispatch-token auth (401 on miss); no route reachable
-  without the env set.
+  without the env set; grant rows, tokens and responses contain no `budget_usd`.
 
 ### C6. Grant verification path in model_auth (L)
 - Repo: old. Deps: C5.
-- `model_auth.authenticate_agent_model` accepts BOTH token kinds during transition: legacy `ajt` (unchanged behavior) and new `agr` → verify signature, load grant row, reject revoked/expired/model-not-allowed, then reuse the existing ledger budget check with the grant's `external_job_id` written to `api_logs.agent_job_id` (existing dashboards keep working). Fail-closed on missing budget, as today.
-- `model_auth.authenticate_agent_tool_call` gets the same `agr` path **without** the budget check — a tool call buys no inference, which is why that function does not apply it today. Skipping this function would break MCP the moment grants replace `ajt`.
-- **Acceptance:** all existing `test_agent_model_auth.py` and `test_agent_mcp.py` tests still pass (legacy path untouched); new tests for the `agr` path on both functions, incl. revoke-then-call → 401, budget exhaustion → 429 on the model path only, and a tool outside `allowed_mcp` refused.
+- `model_auth.authenticate_agent_model` accepts BOTH token kinds during transition: legacy `ajt` (unchanged behavior) and new `agr` → verify signature, load grant row, reject revoked/expired/model-not-allowed, and resolve the grant's gateway `user_id`. The resulting inference request must pass through the **same existing per-user quota gate** as that user's ordinary API calls; the `agr` path must not bypass it or implement a separate per-job limit. Write `external_job_id` to `api_logs.agent_job_id` so existing cost/usage attribution keeps working.
+- `model_auth.authenticate_agent_tool_call` gets the same `agr` signature, row, revoke/expiry and MCP-scope checks. Tool calls do not invoke an inference provider, so they do not consume model quota. Skipping this function would break MCP the moment grants replace `ajt`.
+- **Acceptance:** all existing `test_agent_model_auth.py` and `test_agent_mcp.py` tests still pass (legacy path untouched); new tests for the `agr` path on both functions, including revoke-then-call → 401, model call by a user with exhausted gateway quota → the existing quota rejection, a tool outside `allowed_mcp` refused, and successful model calls logged with both the owning `user_id` and `api_logs.agent_job_id`. No `agr` test or implementation reads a per-job budget.
 
 ### C7. Grant usage endpoint (S)
 - Repo: old. Deps: C5.
-- `GET /internal/agent-grants/{grant_id}/usage` (dispatch-token auth) → `{spent_usd, request_count}` summed from the ledger for that grant's job id. Used by the control plane UI later.
+- `GET /internal/agent-grants/{grant_id}/usage` (dispatch-token auth) → `{spent_usd, request_count}` summed from the ledger for that grant's job id. This is informational attribution for the control plane UI, not a per-job enforcement limit.
 - **Acceptance:** unit test with seeded ledger rows.
 
 ### C8. contracts/ mirrors (S)
 - Repo: new. Deps: C3, C5, C7.
 - Write `contracts/identity.openapi.yaml` and `contracts/inference-grants.openapi.yaml` describing exactly what C1–C7 shipped (hand-written, small). These are the reference for E7/E9 and for Juncheng's review.
-- **Acceptance:** YAMLs lint (`openapi-spec-validator` in CI).
+- **Acceptance:** YAMLs lint (`openapi-spec-validator` in CI); the inference-grant contract contains no `budget_usd` and describes usage as informational.
 
 ---
 
 ## Phase D — Move the execution core (new repo `host/`)
 
 > Pattern for every D/E move task: copy the listed files from `<FREEZE_SHA>` (`git show <FREEZE_SHA>:<path>`), place at destination, rewrite `from serving.agent_jobs.X` → `from cloud_agent_host.X` (or `cloud_agent.X` per destination), copy the listed tests, adjust test imports, run them. **Diff vs source must be imports/paths only** — reviewer checks with `git diff --stat` against pristine copies.
+>
+> **Deliberate migration exception:** the new repo does not carry the old per-job
+> monetary budget feature. D/E/F tasks must omit `budget_usd` from new data
+> models, APIs and UI and remove comments/tests whose safety claim depends on
+> that cap. This exception does not authorize any other refactor. Usage and cost
+> reporting remain; the gateway's existing per-user quota is the only monetary
+> enforcement boundary.
 
 ### D1. Host package skeleton (S)
-- Deps: B1. Create `host/cloud_agent_host/__init__.py`, wire pytest paths, add `host` to CI matrix.
+- Deps: B1. Create `host/cloud_agent_host/__init__.py`, wire pytest paths, add `host` to CI matrix. Record the migration invariant in the new repo's contributor guidance: do not introduce `budget_usd` or another task-level monetary cap; inference uses the owning gateway user's existing quota.
+- **Acceptance:** host package imports in CI; the invariant is documented before source files begin moving.
 
 ### D2. Sandbox + runtimes + egress (M)
 - Deps: D1. Move `sandbox.py`, `runtimes.py`, `egress.py`, `egress_proxy.py`; tests `test_agent_sandbox.py`, `test_agent_runtimes.py`, `test_agent_egress.py`, `test_agent_egress_proxy.py`; fixture `tests/fixtures/agent_runtime_streams/claude_code_stream_contract.jsonl`.
@@ -265,6 +253,7 @@ is the only kind of revoke that does not need a durable outbox behind it.
 
 ### D6. Runner + broker client (L)
 - Deps: D2–D5. Move `runner.py`, `workspace_broker_client.py`; tests `test_agent_runner.py`, `test_agent_runner_worktree.py`, `test_agent_workspace_broker_client.py`. The runner's gateway-facing URLs/token env names stay AS-IS for now (E9 re-points them).
+- Budget-removal exception to move-as-is: rewrite the runner comments that claim a leaked sandbox credential is bounded by a per-job spend cap. The actual boundary after E9 is the grant's scope/TTL plus the owning user's gateway quota; do not add a budget field to host-side job types.
 
 ### D7. Host deploy files (M)
 - Deps: D6. Move `deploy/docker/Dockerfile.agent-runner`, `Dockerfile.agent-sandbox`, `Dockerfile.agent-egress-proxy`, `Dockerfile.agent-gateway-tunnel`, `agent-gateway-tunnel.sh`, `docker-compose.agent-runner.yml`, `docker-compose.agent-remote-runner.yml`, `ops/deploy/agent_runner.sh`, `ops/deploy/agent_remote_runner.sh`, `ops/setup/setup_kata_runtime.sh`, `.github/workflows/agent-job-runner.yml`, `tests/unit/ops/test_agent_runner_preflight.py` → new repo `deploy/host/` + `.github/workflows/` + `tests/`; update build contexts/paths.
@@ -276,13 +265,14 @@ is the only kind of revoke that does not need a durable outbox behind it.
 ## Phase E — Move the control plane (new repo `backend/`)
 
 ### E1. Store + Alembic baseline (L)
-- Deps: B1, DR3. Move `storage/agent_job_store.py` → `backend/cloud_agent/storage/store.py` unchanged, EXCEPT: delete startup `CREATE TABLE` execution and generate `migrations/0001_baseline.py` producing the IDENTICAL DDL for **all 11 tables** (copy the SQL verbatim; do not "normalize" types). `agent_grants` (C5) is NOT copied — it belongs to the gateway.
+- Deps: B1, DR3. Move `storage/agent_job_store.py` → `backend/cloud_agent/storage/store.py`, delete startup `CREATE TABLE` execution and generate `migrations/0001_baseline.py` for **all 11 tables**. Apart from one deliberate exception, copy the SQL verbatim and do not "normalize" types: omit `agent_jobs.budget_usd` and remove its store columns/parameters/INSERT values because the new service has no per-job monetary budget. `agent_grants` (C5) is NOT copied — it belongs to the gateway.
 - The 11: `agent_threads`, `agent_jobs`, `agent_attempts`, `agent_job_events`, `agent_thread_messages`, `agent_job_artifacts`, `agent_repo_grants`, `agent_oauth_states`, `agent_gitlab_connections`, **`agent_runner_hosts`**, **`agent_runner_policy`**. Do not take this list on trust — regenerate it from the freeze commit (`git show 764a6f97:… | grep 'CREATE TABLE'`) before writing the migration. An earlier revision of this plan said nine, having been read from a stale checkout; the last two arrived with #1158 and E6 moves the admin router that depends on them.
 - Move `tests/integration/storage/test_agent_job_store.py` (marker `dbtest`).
-- **Acceptance:** `alembic upgrade head` on a fresh Postgres → store integration tests pass with `-m dbtest`.
+- **Acceptance:** `alembic upgrade head` on a fresh Postgres → store integration tests pass with `-m dbtest`; `information_schema.columns` shows no `agent_jobs.budget_usd`. This creates a new database only: no migration runs against, rewrites or drops anything in the old HybridInference database.
 
 ### E2. Schemas (S)
-- Deps: B1. Move `schemas_agent_jobs.py` → `backend/cloud_agent/schemas.py`. **`test_agent_name_from_prompt.py` stays** — it tests `serving/storage/utils.py`, which is log analytics, not agent code (see the manifest's `stay:unrelated`).
+- Deps: B1. Move `schemas_agent_jobs.py` → `backend/cloud_agent/schemas.py`, omitting `DEFAULT_JOB_BUDGET_USD`, `MAX_JOB_BUDGET_USD`, request/response `budget_usd`, follow-up overrides and `default_budget_usd`. Keep informational usage fields (`spent_usd`, tokens and model-call count). **`test_agent_name_from_prompt.py` stays** — it tests `serving/storage/utils.py`, which is log analytics, not agent code (see the manifest's `stay:unrelated`).
+- **Acceptance:** generated schema/OpenAPI contains no `budget_usd` or `default_budget_usd`; usage fields remain.
 
 ### E3. Control tokens with new secret (S)
 - Deps: B1. Move `tokens.py` → `backend/cloud_agent/tokens.py`; replace the `API_KEY_SECRET` derivation with env `AGENT_CONTROL_TOKEN_SECRET`; keep format/scopes identical. Move `test_agent_job_tokens.py`.
@@ -296,8 +286,8 @@ is the only kind of revoke that does not need a durable outbox behind it.
 - Deps: E1, DR2. Move `github_app.py`, `source_control.py`, `publisher.py`, `publish_worker.py`; tests `test_agent_github_app.py`, `test_agent_source_control.py`, `test_agent_publish_worker.py`, `tests/integration/test_agent_publisher.py` (dbtest marker as-is).
 
 ### E6. API router moved AS-IS + app shell (L)
-- Deps: E1–E5. Move `servers/routers/agent_jobs.py` (2,257 lines) → `backend/cloud_agent/api/routes.py` **without splitting it**; move `servers/routers/admin/agent_runner_hosts.py` → `api/admin_hosts.py`. Create `backend/cloud_agent/app.py` (FastAPI, lifespan starts store + reaper + publish loop — port the ~40 lines of wiring from old `bootstrap.py:783+`) and `deps.py` (temporary local auth stub returning a fixed test user; replaced by E7). Keep every route path identical (`/v1/agent/...`, admin paths).
-- **Acceptance:** app boots against migrated DB; `GET /healthz` added; route table diff vs old repo shows identical agent paths.
+- Deps: E1–E5. Move `servers/routers/agent_jobs.py` (2,257 lines) → `backend/cloud_agent/api/routes.py` **without splitting it**; move `servers/routers/admin/agent_runner_hosts.py` → `api/admin_hosts.py`. Create `backend/cloud_agent/app.py` (FastAPI, lifespan starts store + reaper + publish loop — port the ~40 lines of wiring from old `bootstrap.py:783+`) and `deps.py` (temporary local auth stub returning a fixed test user; replaced by E7). Keep every route path identical (`/v1/agent/...`, admin paths). Apply only the budget-removal exception: job create/follow-up/config/response paths neither accept nor emit `budget_usd`; retain spend/token/model-call usage, fetched through C7 rather than a task cap.
+- **Acceptance:** app boots against migrated DB; `GET /healthz` added; route table diff vs old repo shows identical agent paths; OpenAPI has no `budget_usd`, while job detail can still report attributed usage.
 
 ### E7. Identity adapter (M)
 - Deps: E6, C1–C3. Replace the E6 auth stub: verify `Authorization: Bearer <identity JWT>` against `GATEWAY_JWKS_URL` (cache keys, honor `kid`), require `aud=cloud-agent`; upsert local `users(id, external_user_id unique, email, role)` row — no `plan` column, since the identity token carries none; inject as the "current user" dependency with the same shape routes already expect. Note `id` is this service's own key and `external_user_id` is the gateway's `sub`; H1 depends on that distinction being real.
@@ -309,17 +299,18 @@ is the only kind of revoke that does not need a durable outbox behind it.
 - **Acceptance:** cookie round-trip tests; `me` returns user; logout clears; a session whose gateway user has since been suspended is refused at the next privileged call rather than at expiry.
 
 ### E9. Grant client — sandbox credentials via gateway (M)
-- Deps: E6, C5, C6. Where the old code minted `scope=model` tokens in-process, call `POST {GATEWAY_BASE_URL}/internal/agent-grants` with `GATEWAY_GRANT_DISPATCH_TOKEN` per attempt (requested models/MCP/budget from entitlement — the gateway clamps them); inject the returned token into the sandbox env exactly where the old token went. Remove `SCOPE_MODEL` minting from E3's module.
+- Deps: E6, C5, C6. Where the old code minted `scope=model` tokens in-process, call `POST {GATEWAY_BASE_URL}/internal/agent-grants` with `GATEWAY_GRANT_DISPATCH_TOKEN` per attempt (requested model/MCP scope from entitlement; the gateway narrows it); inject the returned token into the sandbox env exactly where the old token went. Remove `SCOPE_MODEL` minting from E3's module. Do not send, store or expect `budget_usd`.
 - **Renewal is part of this task, not an optimisation.** C5 deliberately issues
-  short-lived grants so that an abandoned attempt stops spending without anyone
-  having to successfully revoke it. The consequence is that *something has to
-  renew*, and a job outliving one grant TTL is the normal case, not the edge
-  case — implementing mint-once here means every long task dies mid-run holding a
-  dead token, and the symptom is an auth error from the model call rather than
-  anything naming the grant.
+  short-lived grants so that an abandoned attempt loses model/MCP access without
+  anyone having to successfully revoke it. The consequence is that *something
+  has to renew*, and a job outliving one grant TTL is the normal case, not the
+  edge case — implementing mint-once here means every long task dies mid-run
+  holding a dead token, and the symptom is an auth error from the model call
+  rather than anything naming the grant.
   - Renew on the same beat the attempt already uses to extend its lease: the
     lease heartbeat is the existing liveness signal, and tying the two together
-    means a runner that stops proving it is alive stops being able to spend.
+    means a runner that stops proving it is alive stops reaching gateway
+    capabilities.
   - Renew with lead time — well before expiry, not at it — plus jitter, so a
     host running many attempts does not send them all in the same instant.
   - Retry a failed renewal within the remaining lifetime; a transient gateway
@@ -334,12 +325,12 @@ is the only kind of revoke that does not need a durable outbox behind it.
   a test; renewal jitter is non-zero; revoke fired on supersede (reaper test).
 
 ### E10. Parity test port (L)
-- Deps: E6–E9. Port `tests/servers/test_agent_jobs_api.py`, `tests/servers/test_admin_agent_runner_hosts.py`, `tests/integration/servers/test_agent_jobs_lifecycle.py` (dbtest). Auth fixtures switch to identity-JWT/test-keypair. **Do not weaken assertions** — any test that can't pass unmodified indicates a parity break: stop and report, don't adapt the test.
-- **Acceptance:** full new-repo suite green; count of ported vs skipped tests reported in PR (target: 0 skipped).
+- Deps: E6–E9. Port `tests/servers/test_agent_jobs_api.py`, `tests/servers/test_admin_agent_runner_hosts.py`, `tests/integration/servers/test_agent_jobs_lifecycle.py` (dbtest). Auth fixtures switch to identity-JWT/test-keypair. **Do not weaken assertions**, with one explicit exception: remove/replace assertions that exercise legacy per-job monetary budgets. Replace them with contract tests that create, follow-up, list and inspect jobs without `budget_usd`, verify OpenAPI/JSON omit the field, and verify usage attribution still reports spend/tokens/model calls. Any other test that cannot pass unmodified indicates a parity break: stop and report, do not adapt it.
+- **Acceptance:** full new-repo suite green; count of ported vs skipped tests reported in PR (target: 0 skipped); `rg 'budget_usd|default_budget_usd' backend/ tests/` has no hits; an exhausted gateway user quota prevents an `agr` model call through C6.
 
 ### E11. Single-host end-to-end smoke (M) — **human-assisted**
 - Deps: D7, E10. `deploy/control-plane/docker-compose.yml` (API + Postgres) + host compose from D7 on one machine; run one real job end-to-end (clone → run → patch → publish to a scratch repo) against staging gateway grants.
-- **Acceptance:** runbook `docs/smoke.md` written from what was actually executed; job reaches `succeeded` with a PR opened on the scratch repo.
+- **Acceptance:** runbook `docs/smoke.md` written from what was actually executed; job reaches `succeeded` with a PR opened on the scratch repo; its inference appears under the owning user's normal gateway quota and `api_logs.agent_job_id` attribution, with no task-budget configuration in the new service.
 
 ---
 
@@ -349,8 +340,8 @@ is the only kind of revoke that does not need a durable outbox behind it.
 - Deps: B2. Same Next.js major version as old repo; copy lint/test configs; `web-ci` activates.
 
 ### F2. Move API client + components (L)
-- Deps: F1. Move `apps/frontend/src/lib/api/agents.ts` → `web/src/lib/api/agents.ts` (base URL from env; cookie credentials `include`; DELETE the sessionStorage token plumbing — session comes from E8 cookies). Move all of `components/features/agents/` (30 files incl. tests) as-is.
-- **Acceptance:** component test suite passes; `rg sessionStorage web/` → no hits.
+- Deps: F1. Move `apps/frontend/src/lib/api/agents.ts` → `web/src/lib/api/agents.ts` (base URL from env; cookie credentials `include`; DELETE the sessionStorage token plumbing — session comes from E8 cookies). Move all of `components/features/agents/` (30 files incl. tests). Apply the budget-removal exception: delete API/types/adapters/mocks and UI for `budget_usd`, `default_budget_usd` and `budgetUsd`; keep the Usage section's actual spend, token and model-call values.
+- **Acceptance:** component test suite passes; `rg 'sessionStorage|budget_usd|default_budget_usd|budgetUsd' web/` → no hits; job detail still renders attributed usage without a Budget row.
 
 ### F3. Move pages (M)
 - Deps: F2. Move `app/agents/{page,layout}.tsx` + `[jobId]/`, `archived/`, `connected/`, `integrations/` to `web/src/app/` **as the root app** (`/` = task list; keep sub-route names).
@@ -419,6 +410,7 @@ is the only kind of revoke that does not need a durable outbox behind it.
 
 ### H1. Connection-data migration, with a re-wrap step (M)
 - Repo: **old** for the export half (it is the only side that can decrypt), new for the import half. Deps: E1, E5, DR5.
+- This migration is intentionally limited to `agent_repo_grants` and `agent_gitlab_connections`. Do not import job/thread/attempt rows or legacy `budget_usd`. Export the old job history as the read-only archive required by DR5, but run no `UPDATE`, `ALTER` or `DROP` against the old database.
 
 **Why this is not a copy.** `source_control.py` encrypts GitLab tokens with a
 Fernet key derived from the gateway's `API_KEY_SECRET`. The split forbids the new
@@ -465,7 +457,9 @@ So the credential is **re-wrapped**, not moved:
   default because it costs one script and the reconnect costs every user a detour.
 - **Acceptance:** rehearsal on staging copies; re-run is a no-op; every migrated
   row decrypts under the new key; no plaintext in any file the script produces
-  (grep the artifact for the token prefix as part of the run).
+  (grep the artifact for the token prefix as part of the run); the read-only job
+  archive opens successfully and source row counts/checksums confirm the old job
+  history was not modified.
 
 ### H2. Staging cutover (M) — **human-led, runbook produced**
 - Deps: E11, F5, G-phase, H1. Ordered runbook: announce → disable new-job creation on old stack (feature flag/env) → drain old runner → run H1 → point staging runner host at new control plane (re-enroll via G2) → smoke (E11 checklist) → old `/agents` UI shows a banner linking to the new domain. No proxy, no dual-write; old in-flight terminal sessions are closed deliberately (they are broker-memory state and non-migratable).
@@ -476,7 +470,8 @@ So the credential is **re-wrapped**, not moved:
 
 ### H4. Old-repo removal PR (L)
 - Repo: old. Deps: H3. Delete `agent_jobs/` (EXCEPT `model_auth.py` grant path — relocate the surviving `agr` verification + `agent_grants` DDL into gateway-owned modules, e.g. `serving/grants.py`; delete legacy `ajt` model-token acceptance), `servers/routers/agent_jobs.py`, `admin/agent_runner_hosts.py`, `schemas_agent_jobs.py`, `storage/agent_job_store.py`, frontend `agents/` trees + `lib/api/agents.ts`, agent deploy files, the 25 agent test files. `bootstrap.py` loses store/reaper/publish wiring; `auth.py` import updated to the new grants module. `/agents` route → redirect to new domain.
-- **Acceptance:** gateway boots with zero agent env vars and creates no agent tables (fresh-DB test asserts table absence, `agent_grants` + `identity_auth_codes` excepted); full `make test` green; grep gate `rg 'agent_jobs' apps/` → no hits.
+- The surviving `agr` path is capability verification plus existing per-user quota enforcement and `api_logs.agent_job_id` attribution only; no per-job budget code or `budget_usd` moves into the gateway-owned module. Removing application code must not mutate or drop the old agent tables: the read-only history/archive remains as recorded in DR5.
+- **Acceptance:** gateway boots with zero agent env vars and creates no agent tables (fresh-DB test asserts table absence, `agent_grants` + `identity_auth_codes` excepted); `agent_grants` has no `budget_usd`; full `make test` green; grep gate `rg 'agent_jobs' apps/` → no hits; a migration rehearsal confirms the existing old database is unchanged.
 
 ### H5. Post-cutover close-out (S)
 - Old repo CLAUDE.md agent sections → pointer to new repo. `docs/developer/agent-sandbox-operations.md` moves to new repo `docs/operations.md`. New repo README gets architecture diagram + "powered by FreeInference" contract description. File the open-source-readiness issue (license headers, public CI, secret-history audit — trivial since history is clean by construction).

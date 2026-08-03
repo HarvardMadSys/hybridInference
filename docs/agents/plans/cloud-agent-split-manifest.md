@@ -51,7 +51,7 @@ Then diff against this file; every new path must be classified before Phase D st
 | `apps/backend/serving/agent_jobs/workspace_broker.py` | D5 |
 | `apps/backend/serving/agent_jobs/workspace_browser.py` | D5 |
 | `apps/backend/serving/agent_jobs/terminal_coordination.py` | D5 |
-| `apps/backend/serving/agent_jobs/runner.py` | D6 |
+| `apps/backend/serving/agent_jobs/runner.py` | D6 — move logic; rephrase comments that rely on the removed per-job monetary cap |
 | `apps/backend/serving/agent_jobs/workspace_broker_client.py` | D6 |
 | `tests/unit/test_agent_sandbox.py` | D2 |
 | `tests/unit/test_agent_runtimes.py` | D2 |
@@ -71,15 +71,15 @@ Then diff against this file; every new path must be classified before Phase D st
 
 | Path | Task | Note |
 |---|---|---|
-| `apps/backend/serving/storage/agent_job_store.py` | E1 | 1,955 lines, **11 tables** → Alembic baseline. Includes `agent_runner_hosts` and `agent_runner_policy` (#1158) — an earlier revision said nine, read from a stale checkout. |
-| `apps/backend/serving/schemas_agent_jobs.py` | E2 | |
+| `apps/backend/serving/storage/agent_job_store.py` | E1 | 1,955 lines, **11 tables** → Alembic baseline. Includes `agent_runner_hosts` and `agent_runner_policy` (#1158) — an earlier revision said nine, read from a stale checkout. Deliberate exception: omit `agent_jobs.budget_usd` and its store plumbing; do not alter the old DB. |
+| `apps/backend/serving/schemas_agent_jobs.py` | E2 | omit task-budget constants and request/response/config fields; keep informational usage fields |
 | `apps/backend/serving/agent_jobs/tokens.py` | E3 | re-key to `AGENT_CONTROL_TOKEN_SECRET` |
 | `apps/backend/serving/agent_jobs/entitlement.py` | E4 | reads plan/role from identity claims |
 | `apps/backend/serving/agent_jobs/github_app.py` | E5 | |
 | `apps/backend/serving/agent_jobs/source_control.py` | E5 | |
 | `apps/backend/serving/agent_jobs/publisher.py` | E5 | |
 | `apps/backend/serving/agent_jobs/publish_worker.py` | E5 | |
-| `apps/backend/serving/servers/routers/agent_jobs.py` | E6 | 2,257 lines — **move whole, do not split** |
+| `apps/backend/serving/servers/routers/agent_jobs.py` | E6 | 2,257 lines — **move whole, do not split**, except remove `budget_usd` handling and preserve usage via C7 |
 | `apps/backend/serving/servers/routers/admin/agent_runner_hosts.py` | E6 | from #1158 |
 | `apps/backend/serving/agent_jobs/__init__.py` | E6 | package docstring only |
 | `tests/unit/test_agent_job_tokens.py` | E3 | |
@@ -90,7 +90,7 @@ Then diff against this file; every new path must be classified before Phase D st
 | `tests/unit/test_agent_publish_worker.py` | E5 | |
 | `tests/integration/test_agent_publisher.py` | E5 | `dbtest` |
 | `tests/integration/storage/test_agent_job_store.py` | E1 | `dbtest` |
-| `tests/servers/test_agent_jobs_api.py` | E10 | |
+| `tests/servers/test_agent_jobs_api.py` | E10 | replace legacy task-budget cases with no-budget contract + usage-attribution cases |
 | `tests/servers/test_admin_agent_runner_hosts.py` | E10 | |
 | `tests/integration/servers/test_agent_jobs_lifecycle.py` | E10 | `dbtest` |
 
@@ -98,7 +98,7 @@ Then diff against this file; every new path must be classified before Phase D st
 
 ## move:web — frontend (Phase F)
 
-`apps/frontend/src/lib/api/agents.ts` (F2) · all 30 files under `apps/frontend/src/components/features/agents/` (F2) · `apps/frontend/src/app/agents/` — `page.tsx`, `layout.tsx`, `layout.test.tsx`, `[jobId]/page.tsx`, `archived/page.tsx`, `connected/page.tsx`, `connected/page.test.tsx`, `integrations/page.tsx` (F3)
+`apps/frontend/src/lib/api/agents.ts` (F2; omit `budget_usd`/`default_budget_usd`) · all 30 files under `apps/frontend/src/components/features/agents/` (F2; remove `budgetUsd` types/mocks/UI, keep actual usage display) · `apps/frontend/src/app/agents/` — `page.tsx`, `layout.tsx`, `layout.test.tsx`, `[jobId]/page.tsx`, `archived/page.tsx`, `connected/page.tsx`, `connected/page.test.tsx`, `integrations/page.tsx` (F3)
 
 ## move:deploy — host deployment (D7)
 
@@ -126,7 +126,7 @@ Added by the pre-freeze merges:
 |---|---|
 | `apps/backend/serving/agent_jobs/model_auth.py` | Grant verification seam. C6 adds the `agr` path; H4 drops legacy `ajt` and relocates the survivor to a gateway-owned module (e.g. `serving/grants.py`). |
 | `apps/backend/serving/storage/log_schema.py:88,143,245` | `api_logs.agent_job_id` column + partial index. Billing attribution — never moves. |
-| `apps/backend/serving/storage/postgres_log.py:310,324` | `get_agent_job_cost` / `get_agent_job_usage` — the budget enforcement C6 reuses and the data source for C7's usage endpoint. |
+| `apps/backend/serving/storage/postgres_log.py:310,324` | `get_agent_job_cost` / `get_agent_job_usage` — data source for C7's informational usage endpoint and per-job cost attribution. User-level quota enforcement remains on the gateway's existing quota path. |
 | `apps/backend/serving/storage/database.py:835,897` | `agent_job_id` in the api_logs INSERT (hand-duplicated with postgres_log.py — see the api_logs schema split-brain rule). |
 | `apps/backend/serving/servers/routers/completions.py:598-601` | Propagates `agent_job_id` from the capability token into log metadata. |
 | `apps/backend/serving/servers/routers/anthropic_messages.py:1075-1076` | Same, Anthropic surface. |
@@ -166,8 +166,9 @@ Added by the pre-freeze merges:
 
 3. **MCP is a second consumer of the capability token, and it changes Phase C.**
    `agent_mcp.py` calls `authenticate_agent_tool_call(token, job_store=store)` —
-   the same fence as model calls, deliberately without the budget check, since a
-   tool call buys no inference. It stays in the gateway for the same reasons
+   the same grant and attempt fence as model calls. Tool calls do not invoke an
+   inference provider, while model calls continue through the gateway's existing
+   per-user quota enforcement. It stays in the gateway for the same reasons
    model routing does: the gateway holds the upstream MCP credentials, the
    registry is deployment overlay config, and the sandbox reaches it with the
    token it already has over the one network route it already has. Moving it
@@ -178,8 +179,9 @@ Added by the pre-freeze merges:
    - **C5** grants must carry an MCP server/tool allowlist alongside
      `allowed_models`; the grant is one capability, not a model-only one.
    - **C6** must add the `agr` path to **both** `authenticate_agent_model` and
-     `authenticate_agent_tool_call`, applying the budget check only to the
-     former.
+     `authenticate_agent_tool_call`. Both enforce grant scope and attempt
+     fencing; inference requests must additionally continue through the
+     gateway's existing per-user quota path.
    - **H4** keeps `mcp_proxy.py`, `mcp_registry.py` and `agent_mcp.py` when it
      deletes the rest of `agent_jobs/`; they move to the gateway-owned grants
      module along with the surviving half of `model_auth.py`.
@@ -192,4 +194,4 @@ Added by the pre-freeze merges:
    data. A migration that copies the bytes appears to succeed and fails later as
    "reconnect your GitLab".
 
-5. **Attempt/lease fencing moves repos, budget enforcement does not.** After the split the gateway can no longer consult `AgentJobStore` to fence a model token; that is why C5 introduces a gateway-owned `agent_grants` table with explicit revoke. Any design change to grants must preserve: revoke-on-supersede (E9) and fail-closed-on-missing-budget (`model_auth.py`).
+5. **Attempt/lease fencing moves repos; user-level quota enforcement stays in the gateway.** After the split the gateway can no longer consult `AgentJobStore` to fence a model token; that is why C5 introduces a gateway-owned `agent_grants` table with explicit revoke. Preserve revoke-on-supersede (E9), ensure `agr` inference requests do not bypass the gateway's existing per-user quota checks, and keep `api_logs.agent_job_id` for attribution. The new repo does not migrate `budget_usd`; old job history remains read-only and unchanged.
