@@ -42,7 +42,7 @@ from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-ConfigKind = Literal["models", "routing", "alerts"]
+ConfigKind = Literal["models", "routing", "alerts", "mcp"]
 
 # The bottom of the precedence, and what a checkout with no distribution and no
 # environment gets. It used to name config/*.yaml, where these files lived until
@@ -57,6 +57,11 @@ _LEGACY_DEFAULTS: dict[str, str] = {
     "models": "config/examples/models.openrouter.yaml",
     "routing": "config/examples/routing.minimal.yaml",
     "alerts": "config/alerts.yaml",
+    # Same reasoning as alerts: there is no example worth defaulting to, and
+    # the loader's answer to a missing file is "no MCP servers", which is the
+    # right neutral behaviour. config/examples/mcp.example.yaml exists to be
+    # copied, deliberately not to be loaded.
+    "mcp": "config/mcp.yaml",
 }
 
 
@@ -98,6 +103,7 @@ class DistributionPaths(_ManifestModel):
     models: str = ""
     routing: str = ""
     alerts: str = ""
+    mcp: str = ""
 
 
 class DistributionDeployment(_ManifestModel):

@@ -145,6 +145,52 @@ async def authenticate_agent_model_call(
     }
 
 
+async def authenticate_agent_tool_call(
+    api_key: str,
+    *,
+    job_store: AgentJobStore | None,
+) -> dict[str, Any]:
+    """Resolve a worker token for an MCP proxy call.
+
+    The same fence as :func:`authenticate_agent_model_call`, and therefore the
+    same automatic revocation: a cancelled, superseded or finished job stops
+    reaching MCP servers at the same instant it stops buying inference.
+
+    It deliberately does **not** apply the budget check. The budget caps model
+    spend, measured from ``api_logs``; a tool call buys no inference and
+    contributes nothing to that ledger, so refusing one with a 429 would report
+    an overspend the call did not cause — to an agent whose only sensible
+    response is to retry. A job that has exhausted its budget already cannot
+    take another turn, which is the control that actually stops it.
+
+    Returns the identity plus ``mcp_servers``: the servers this specific job was
+    created with. The proxy checks membership against that list rather than
+    against the deployment registry, so a token cannot reach a server its job
+    never asked for by naming it in the URL.
+    """
+    if job_store is None:
+        raise AgentModelAuthError("Agent job tokens require a configured database.")
+
+    try:
+        claims = parse_worker_token(api_key)
+    except InvalidAgentToken as exc:
+        raise AgentModelAuthError(f"Invalid agent job token: {exc}") from exc
+
+    identity = await job_store.resolve_model_credential(
+        job_id=claims["job_id"],
+        attempt_id=claims["attempt_id"],
+        lease_generation=claims["lease_generation"],
+    )
+    if identity is None:
+        raise AgentModelAuthError("This agent job token is no longer valid.")
+
+    return {
+        "user_id": identity["user_id"],
+        "job_id": identity["job_id"],
+        "mcp_servers": list(identity.get("mcp_servers") or []),
+    }
+
+
 async def _job_spend(log_store: Any, job_id: str) -> float:
     """Return a job's spend so far, tolerating a store without the query."""
     getter = getattr(log_store, "get_agent_job_cost", None)

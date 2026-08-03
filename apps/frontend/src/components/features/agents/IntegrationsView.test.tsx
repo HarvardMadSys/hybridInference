@@ -63,7 +63,7 @@ describe('IntegrationsView', () => {
       'href',
       'https://gitlab.com/oauth/authorize?state=signed',
     );
-    expect(screen.getByText('Custom MCP servers')).toBeInTheDocument();
+    expect(screen.getByText('Your own MCP servers')).toBeInTheDocument();
   });
 
   it('marks providers that need operator configuration', async () => {

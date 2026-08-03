@@ -138,6 +138,7 @@ For the full diagram (network layer, observability, storage), see
 | `distributions/<name>/config/models.yaml` | Model registry — a deployment's; per-model `router:` / `router_params:` (incl. RouteWise tuning). `config/examples/` has one to start from |
 | `distributions/<name>/config/routing.yaml` | Local/remote split, health checks — a deployment's; the gateway starts without one |
 | `distributions/<name>/config/alerts.yaml` | Alert rules — a deployment's, not the project's |
+| `distributions/<name>/config/mcp.yaml` | MCP servers offered to agent jobs. Absent = none. `config/examples/mcp.example.yaml` has one to copy |
 
 YAML supports env var interpolation: `${VAR}` and `${VAR:-default}`.
 
