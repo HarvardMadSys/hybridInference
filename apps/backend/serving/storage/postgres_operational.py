@@ -386,6 +386,25 @@ class PostgresOperationalStore(OperationalStore):
             "ON password_reset_tokens(expires_at)"
         )
 
+        # --- identity_auth_codes ---
+        # Cross-service SSO codes. Keyed by the hash, never the code itself.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS identity_auth_codes (
+                code_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                client_id TEXT NOT NULL,
+                redirect_uri TEXT NOT NULL,
+                code_challenge TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL,
+                used_at TIMESTAMPTZ
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_identity_auth_codes_expires "
+            "ON identity_auth_codes(expires_at)"
+        )
+
         # --- admin_audit_log ---
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS admin_audit_log (
@@ -1898,6 +1917,49 @@ class PostgresOperationalStore(OperationalStore):
         """Delete all reset tokens for a user."""
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM password_reset_tokens WHERE user_id = $1", user_id)
+
+    # -- identity authorization codes ----------------------------------------
+
+    async def create_identity_auth_code(
+        self,
+        *,
+        code_hash: str,
+        user_id: str,
+        client_id: str,
+        redirect_uri: str,
+        code_challenge: str,
+        expires_at: datetime,
+    ) -> None:
+        """Insert a one-time cross-service authorization code."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO identity_auth_codes "
+                "(code_hash, user_id, client_id, redirect_uri, code_challenge, expires_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                code_hash,
+                user_id,
+                client_id,
+                redirect_uri,
+                code_challenge,
+                expires_at,
+            )
+            # Codes live 60 seconds and are written once per sign-in, so the
+            # table would grow forever for no reason. Sweeping here keeps it
+            # bounded without a scheduled job to own and monitor.
+            await conn.execute(
+                "DELETE FROM identity_auth_codes WHERE expires_at < NOW() - INTERVAL '1 hour'"
+            )
+
+    async def consume_identity_auth_code(self, code_hash: str) -> Row | None:
+        """Atomically claim an unused, unexpired authorization code."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE identity_auth_codes SET used_at = NOW() "
+                "WHERE code_hash = $1 AND used_at IS NULL AND expires_at > NOW() "
+                "RETURNING user_id, client_id, redirect_uri, code_challenge",
+                code_hash,
+            )
+        return dict(row) if row else None
 
     # -- admin audit log -----------------------------------------------------
 

@@ -551,6 +551,37 @@ class OperationalStore(ABC):
     async def delete_user_reset_tokens(self, user_id: str) -> None:
         """Delete all reset tokens for a user."""
 
+    # -- identity authorization codes ----------------------------------------
+
+    @abstractmethod
+    async def create_identity_auth_code(
+        self,
+        *,
+        code_hash: str,
+        user_id: str,
+        client_id: str,
+        redirect_uri: str,
+        code_challenge: str,
+        expires_at: datetime,
+    ) -> None:
+        """Insert a one-time cross-service authorization code.
+
+        The code is stored hashed: a read of this table must not yield codes
+        that can be exchanged.
+        """
+
+    @abstractmethod
+    async def consume_identity_auth_code(self, code_hash: str) -> Row | None:
+        """Atomically claim an unused, unexpired authorization code.
+
+        Returns ``client_id, redirect_uri, code_challenge, user_id`` on a
+        successful claim, or ``None`` when the code is unknown, expired, or
+        already used — the caller cannot tell those apart, and should not.
+
+        Must be a single statement. Reading the row and then marking it used is
+        a race in which two concurrent exchanges both observe an unused code.
+        """
+
     # -- admin audit log -----------------------------------------------------
 
     @abstractmethod
