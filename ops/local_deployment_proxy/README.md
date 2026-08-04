@@ -308,7 +308,7 @@ The H200 profile serves `deepseek-ai/DeepSeek-V4-Flash-0731` on GPUs 2,3 (TP=2; 
 
 ## Container ownership
 
-Every lifecycle operation here addresses its backend by container *name*: a `docker rm -f <name>` before each start, another when the idle timer expires, and an adoption check that asks only "is something running under this name and answering on `backend_port`?". A name is not proof of ownership, so each container is stamped with two labels at `docker run` and they are consulted before anything is destroyed or adopted:
+Every lifecycle operation here used to address its backend by container *name*: a `docker rm -f <name>` before each start, another when the idle timer expires, and an adoption check that asked only "is something running under this name and answering on `backend_port`?". A name is not proof of ownership, so each container is stamped with two labels at `docker run` and they are consulted before anything is destroyed or adopted:
 
 | Label | Value | Meaning |
 |---|---|---|
@@ -336,6 +336,18 @@ sudo docker run -d --name deepseek-v4-flash-sglang \
 ```
 
 The protection lasts only as long as the container runs: `docker stop` hands the name back, and the next proxy start reclaims it. When the benchmark is done, `sudo docker rm -f deepseek-v4-flash-sglang` and let the proxy launch its own.
+
+### When the rules are applied, and to what
+
+A label read is worth only as much as the gap between reading it and acting on it, and on the cold-start path that gap is not microseconds. The first version of this guard checked ownership once at the top of the start path and then ran its `docker rm -f <name>` minutes later — after GPU selection and after an `_ensure_model_dir` that can be a several-hundred-GiB `snapshot_download`. Two units brought up together by a reboot therefore *both* saw "no container", and the slower one destroyed the container the faster one had meanwhile created, without ever looking at its labels again.
+
+So:
+
+- The ownership decision is re-taken **immediately before** the removal it authorises, one `docker inspect` earlier rather than a download earlier. The check at the top of the start path remains, but only as an early refusal that saves a download which was going to be thrown away.
+- `docker rm -f` is given the container **id** that decision was taken about, never the name. Ids are unique and never reused, so if the container just judged removable has been replaced even inside that one-call window, the removal misses ("no such container") instead of landing on whatever now holds the name. The idle path removes by id for the same reason: its timer can fire on a backend that died minutes ago and has since been reclaimed by a sibling.
+- The remaining gap — between that inspect and the launch after it — is closed by docker itself. Container names are unique, so `docker run --name` fails outright when the name is taken; that refusal is the only atomic claim on a name available. It is detected by message (every daemon-side rejection shares exit status 125, and `sudo` can rewrite that besides) and read as contention, which sends the ownership decision round again: refuse if the winner is alive, reclaim if it has since exited. Bounded at one retry — a name taken twice over is a standing collision, not a race worth re-running a weight download against, and it is reported as `Gave up starting container …`.
+
+Any other `docker run` failure is reported as itself, at `error` with the daemon's message: a missing GPU driver, an unavailable device, a published port already bound. Only a name conflict counts as contention.
 
 ### Upgrading from an unlabelled deployment
 
