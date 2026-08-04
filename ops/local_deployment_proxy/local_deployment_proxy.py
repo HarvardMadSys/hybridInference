@@ -185,6 +185,12 @@ HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
 OWNER_LABEL = "com.freeinference.proxy.owner"
 PROFILE_LABEL = "com.freeinference.proxy.profile"
 PROXY_OWNER = os.environ.get("PROXY_OWNER", "").strip() or f"port-{LISTEN_PORT}"
+# Liveness and ownership are read with ONE `docker inspect`, formatted as a JSON
+# object so both come back from a single daemon round trip. Two inspects would
+# double the daemon calls on the warmup path (where the contention check runs on
+# every streaming request until the backend is ready) and leave a window in which
+# the container can stop between the two answers.
+_INSPECT_STATE_FORMAT = '{"running":{{json .State.Running}},"labels":{{json .Config.Labels}}}'
 # Config keys deliberately left *out* of the profile hash: they never reach either
 # `docker run` command line, so a container launched before such an edit is not
 # stale after it. This matters because a hash mismatch destroys a healthy backend
@@ -528,7 +534,14 @@ class BackendManager:
                 f"[{self.model_name}] Backend did not become healthy within {HEALTH_TIMEOUT}s"
             )
 
-    def _resolve_gpu(self) -> str:
+    def _resolve_gpu(self, replacing_gpu: str | None = None) -> str:
+        """Return the ``--gpus`` device list this backend should launch on.
+
+        ``replacing_gpu`` is the device list currently held by a still-running
+        container of this name that the caller is about to replace (see
+        ``_start_container``). It is used only where the choice would otherwise be
+        auto-selected, and only when it still fits the requested shape.
+        """
         # An explicit gpu_index pins the model to that device (lets several
         # models share one GPU); only auto-pick when it is unset.
         pinned = self.config.get("gpu_index")
@@ -560,6 +573,27 @@ class BackendManager:
                     )
                     self._current_gpu = mgr._current_gpu
                     return self._current_gpu
+        tp = int(self.config.get("tensor_parallel_size", 1))
+        pp = int(self.config.get("pipeline_parallel_size", 1))
+        # A model sharded by both tensor and pipeline parallelism needs one GPU
+        # per (tp rank x pp stage).
+        n_gpus = tp * pp
+        # Replacing our own still-running container: stay on the device it already
+        # holds instead of auto-picking, which would read that device as busy (by
+        # the container being replaced) and move the backend somewhere else. Ranked
+        # below the colocate group on purpose: a group anchor that has already
+        # resolved a device is the placement the whole group must share, so
+        # following it is right even when this backend's old container sat
+        # elsewhere. Skipped when the device count no longer matches — a
+        # tp/pp change needs a different number of GPUs, so re-select.
+        if replacing_gpu and len(replacing_gpu.split(",")) == n_gpus:
+            log.info(
+                "[%s] Reusing GPU %s from the container being replaced.",
+                self.model_name,
+                replacing_gpu,
+            )
+            self._current_gpu = replacing_gpu
+            return self._current_gpu
         # Exclude GPUs already claimed by other backends that are starting or
         # running. Auto-selected backends carry no gpu_index in their config, so
         # rely on the runtime GPU each one actually resolved to.
@@ -571,11 +605,6 @@ class BackendManager:
                 continue
             if mgr.state in ("starting", "ready") and mgr._current_gpu is not None:
                 used_gpus.update(str(mgr._current_gpu).split(","))
-        tp = int(self.config.get("tensor_parallel_size", 1))
-        pp = int(self.config.get("pipeline_parallel_size", 1))
-        # A model sharded by both tensor and pipeline parallelism needs one GPU
-        # per (tp rank x pp stage).
-        n_gpus = tp * pp
         log.info(
             "[%s] Auto-selecting %d GPU(s) (tp=%d, pp=%d, excluding %s)",
             self.model_name,
@@ -637,10 +666,31 @@ class BackendManager:
         # The edge this guard exists for — a foreign backend eight minutes into a
         # fourteen-minute load, failing the health probe — is running, and is
         # still refused.
-        owner = self._container_owner()
-        if owner is not None and self._container_running():
+        running, labels = self._inspect_container()
+        owner = self._container_owner(labels)
+        if owner is not None and running:
             raise self._foreign_container_error(owner, "replace")
-        gpu = self._resolve_gpu()
+        # A *running* container of this name that is ours is about to be replaced
+        # — a changed profile hash, or one that never became healthy. Its device
+        # request is the only reliable record of where this backend lives, and it
+        # has to be read before the `docker rm -f` below: `_resolve_gpu`'s
+        # auto-selection asks nvidia-smi for the least-used device, and nvidia-smi
+        # reports the current one as busy *because this very container is still on
+        # it*. Auto-selection would therefore relocate the replacement — off its
+        # colocation partner, or onto a device an idle-stopped model is pinned to,
+        # to OOM when that model wakes. Both real auto-selecting profiles
+        # (models.json, models.rtx6000.json) omit `gpu_index` and share a
+        # `colocate_group`, so this is the ordinary case, not an exotic one.
+        #
+        # Reading the GPU rather than removing the container first is deliberate:
+        # `docker rm -f` sits immediately before `docker run` so the backend is
+        # down for one docker call, not for however long `_ensure_model_dir` takes
+        # to fetch a few hundred GiB — and destroying first would not even
+        # guarantee the same device, since nvidia-smi accounting lags process
+        # teardown. Relaunching onto the device just released is exactly what the
+        # pinned-`gpu_index` path already does on every profile change.
+        replacing_gpu = self._running_container_gpu() if running else None
+        gpu = self._resolve_gpu(replacing_gpu=replacing_gpu)
         self._ensure_model_dir()
         subprocess.run(
             ["sudo", "docker", "rm", "-f", self.container],
@@ -958,6 +1008,41 @@ class BackendManager:
             self._current_gpu = None
         log.info("[%s] Container %s stopped.", self.model_name, self.container)
 
+    def _inspect_container(self) -> tuple[bool, dict[str, str]]:
+        """Return ``(running, labels)`` for the container of this name.
+
+        One ``docker inspect`` answers both questions because every decision here
+        needs both: a foreign container only matters while it is alive, and a live
+        container's owner decides whether we may touch it. Asking twice also left
+        a window in which the container could stop between the two answers.
+
+        Fails towards ``(False, {})`` — absent container, unreadable daemon,
+        unparseable output. An empty label map reads as "mine" (see
+        ``_container_owner``), which is both the pre-labelling behaviour and the
+        safe direction: a docker hiccup cannot invent a collision that wedges a
+        model.
+        """
+        result = subprocess.run(
+            ["sudo", "docker", "inspect", "-f", _INSPECT_STATE_FORMAT, self.container],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # Missing container (non-zero exit) or unparseable output: not running,
+        # no labels.
+        if result.returncode != 0:
+            return False, {}
+        try:
+            payload = _json.loads(result.stdout.strip() or "null")
+        except ValueError:
+            return False, {}
+        if not isinstance(payload, dict):
+            return False, {}
+        labels = payload.get("labels")
+        if not isinstance(labels, dict):
+            labels = {}
+        return payload.get("running") is True, {str(k): str(v) for k, v in labels.items()}
+
     def _container_running(self) -> bool:
         """Return True while the backend container is still up.
 
@@ -966,45 +1051,7 @@ class BackendManager:
         until ``HEALTH_TIMEOUT`` elapses, making the client request appear to
         hang forever.
         """
-        result = subprocess.run(
-            ["sudo", "docker", "inspect", "-f", "{{.State.Running}}", self.container],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        # Missing container (non-zero exit) or any non-"true" status means it is
-        # no longer running.
-        return result.returncode == 0 and result.stdout.strip() == "true"
-
-    def _container_labels(self) -> dict[str, str]:
-        """Return the ownership labels on the container of this name.
-
-        Empty when the container does not exist, carries no labels, or docker
-        prints something unparseable — every caller treats an unlabelled
-        container as its own (see ``_container_owner``).
-        """
-        result = subprocess.run(
-            [
-                "sudo",
-                "docker",
-                "inspect",
-                "-f",
-                "{{json .Config.Labels}}",
-                self.container,
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            return {}
-        try:
-            labels = _json.loads(result.stdout.strip() or "null")
-        except ValueError:
-            return {}
-        if not isinstance(labels, dict):
-            return {}
-        return {str(k): str(v) for k, v in labels.items()}
+        return self._inspect_container()[0]
 
     def _container_owner(self, labels: dict[str, str] | None = None) -> str | None:
         """Return the owner of the container of this name, or None if it is ours.
@@ -1020,7 +1067,7 @@ class BackendManager:
         next cold start, which labels it.
         """
         if labels is None:
-            labels = self._container_labels()
+            labels = self._inspect_container()[1]
         owner = labels.get(OWNER_LABEL)
         if owner is None or owner == PROXY_OWNER:
             return None
@@ -1061,12 +1108,24 @@ class BackendManager:
 
         Never raises. An unreadable ``docker inspect`` answers "no contention", so
         a transient docker hiccup cannot turn every streaming request into a 502.
+        It does log the reason at debug level: the return value cannot distinguish
+        "nobody else owns this" from "the daemon is down" or "this user cannot
+        reach the socket", and an operator chasing a proxy that never starts a
+        backend needs to see which it was.
         """
         try:
-            owner = self._container_owner()
-            if owner is None or not self._container_running():
-                return None
-        except Exception:  # docker unreachable: not evidence of a collision
+            running, labels = self._inspect_container()
+        except Exception as exc:  # docker unreachable: not evidence of a collision
+            log.debug(
+                "[%s] Ownership inspect of %s failed (%s: %s); assuming no contention.",
+                self.model_name,
+                self.container,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+        owner = self._container_owner(labels)
+        if owner is None or not running:
             return None
         return self._foreign_container_error(owner, "adopt")
 
@@ -1085,9 +1144,9 @@ class BackendManager:
         without this guard the caller would fall through to ``_start_container``
         and ``docker rm -f`` it.
         """
-        if not self._container_running():
+        running, labels = self._inspect_container()
+        if not running:
             return False
-        labels = self._container_labels()
         owner = self._container_owner(labels)
         if owner is not None:
             raise self._foreign_container_error(owner, "adopt")
@@ -1129,7 +1188,9 @@ class BackendManager:
 
         Read back from the container's ``--gpus device=N`` request so an
         adopted backend keeps the right device for colocation/GPU-exclusion
-        bookkeeping.
+        bookkeeping — and so a container being *replaced* hands its device to the
+        replacement instead of letting auto-selection move the backend elsewhere
+        (see ``_start_container``).
         """
         result = subprocess.run(
             [

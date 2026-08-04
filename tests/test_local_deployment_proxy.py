@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import sys
 import threading
 from contextlib import contextmanager
@@ -543,13 +544,13 @@ def test_ensure_running_adopts_healthy_running_container(monkeypatch: Any, tmp_p
     proxy = _load_proxy(monkeypatch, tmp_path)
     backend = proxy._backends[MODEL_NAME]
 
-    monkeypatch.setattr(backend, "_container_running", lambda: True)
     monkeypatch.setattr(backend, "_backend_healthy", lambda: True)
     monkeypatch.setattr(backend, "_running_container_gpu", lambda: "3")
     monkeypatch.setattr(backend, "_wait_healthy", lambda: None)
-    # Unlabelled: a container started before ownership labels existed. Reading it
-    # as this proxy's own is what keeps this path working across the upgrade.
-    monkeypatch.setattr(backend, "_container_labels", dict)
+    # Running, and unlabelled: a container started before ownership labels
+    # existed. Reading it as this proxy's own is what keeps this path working
+    # across the upgrade.
+    monkeypatch.setattr(backend, "_inspect_container", lambda: (True, {}))
     start = Mock()
     monkeypatch.setattr(backend, "_start_container", start)
 
@@ -595,10 +596,11 @@ class _FakeDocker:
         if not self.exists:
             return SimpleNamespace(returncode=1, stdout="", stderr="No such object")
         fmt = command[command.index("-f") + 1]
-        if ".Config.Labels" in fmt:
-            body = "null" if self.labels is None else json.dumps(self.labels)
-        elif ".State.Running" in fmt:
-            body = "true" if self.running else "false"
+        if ".State.Running" in fmt or ".Config.Labels" in fmt:
+            # The proxy reads liveness and ownership with one inspect, so the
+            # answer is the JSON object its format string builds. Rendered here
+            # the way docker would: an unlabelled container reports null, not {}.
+            body = json.dumps({"running": self.running, "labels": self.labels})
         else:
             body = self.gpu
         return SimpleNamespace(returncode=0, stdout=body + "\n", stderr="")
@@ -614,6 +616,20 @@ class _FakeDocker:
             and c[c.index("docker") + 1] in {"run", "rm", "stop", "kill"}
         ]
 
+    @property
+    def state_inspects(self) -> list[list[str]]:
+        """Inspects that read liveness and/or ownership labels.
+
+        Counted in tests: both facts must come back from *one* daemon round trip.
+        Excludes the device-request inspect, which asks a different question.
+        """
+        return [
+            c
+            for c in self.commands
+            if "inspect" in c
+            and any(".State.Running" in tok or ".Config.Labels" in tok for tok in c)
+        ]
+
 
 def _labelled_backend(
     proxy: Any,
@@ -626,21 +642,24 @@ def _labelled_backend(
     Reuses the directory when called repeatedly with the same ``name``, so two
     backends built from configs differing in one key really do differ in one key —
     a distinct ``model_dir`` would change the profile hash by itself.
+
+    Pass ``key=None`` to drop a default key from the config rather than override
+    it — ``gpu_index=None`` gives the auto-selecting shape the real profiles ship
+    (``models.json`` and ``models.rtx6000.json`` omit it), not a config carrying
+    an empty string.
     """
     model_dir = tmp_path / name
     model_dir.mkdir(exist_ok=True)
     (model_dir / "config.json").write_text('{"model_type": "llama"}')
-    return proxy.BackendManager(
-        MODEL_NAME,
-        {
-            "container": "contended-sglang",
-            "gpu_index": "0",
-            "backend_port": 18099,
-            "model_dir": str(model_dir),
-            "served_name": MODEL_NAME,
-            **extra,
-        },
-    )
+    config = {
+        "container": "contended-sglang",
+        "gpu_index": "0",
+        "backend_port": 18099,
+        "model_dir": str(model_dir),
+        "served_name": MODEL_NAME,
+        **extra,
+    }
+    return proxy.BackendManager(MODEL_NAME, {k: v for k, v in config.items() if v is not None})
 
 
 def _labels_from_run(command: list[str]) -> dict[str, str]:
@@ -855,6 +874,144 @@ def test_own_container_from_a_changed_profile_is_replaced_not_refused(
     assert verbs == ["rm", "run"]
 
 
+def test_replacing_own_stale_container_keeps_the_gpu_it_holds(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """An auto-selecting replacement must not migrate to a different device.
+
+    The replacement is resolved while the container it replaces is *still
+    running*: ``_start_container`` reads the GPU before the ``docker rm -f``, so
+    the backend is down for one docker call rather than for a whole
+    ``_ensure_model_dir`` download. That ordering is what makes auto-selection
+    wrong here — it asks nvidia-smi for the least-used device and nvidia-smi
+    reports the current one as busy, because the container being replaced is
+    holding it. So a one-key ``mem_fraction`` edit silently moved the backend to
+    another GPU: off the partner it shares a ``colocate_group`` with, or onto a
+    device an idle-stopped model is pinned to, which then OOMs when that model
+    wakes.
+
+    Both real auto-selecting profiles omit ``gpu_index`` and share a
+    ``colocate_group`` (``models.json``, ``models.rtx6000.json``), so this is the
+    ordinary case on those nodes, not an exotic one.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(
+        proxy, tmp_path, name="autoselect", gpu_index=None, colocate_group="primary"
+    )
+    fake = _FakeDocker(
+        labels={
+            proxy.OWNER_LABEL: proxy.PROXY_OWNER,
+            proxy.PROFILE_LABEL: "0000staleprofile",
+        },
+        running=True,
+        gpu="1",
+    )
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    def fail_pick(exclude: set[str] | None = None) -> str:
+        raise AssertionError("must not auto-select while holding a device of its own")
+
+    monkeypatch.setattr(proxy, "_pick_free_gpu", fail_pick)
+
+    # Healthy but stale, so it is replaced rather than adopted.
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: True)
+    assert backend._adopt_running_container() is False
+
+    backend._start_container()
+
+    verbs = [c[c.index("docker") + 1] for c in fake.mutations]
+    assert verbs == ["rm", "run"]
+    launched = fake.mutations[1]
+    assert launched[launched.index("--gpus") + 1] == "device=1"
+    # And recorded, so a colocate partner starting later follows it onto GPU 1.
+    assert backend._current_gpu == "1"
+
+
+def test_colocation_partner_outranks_the_replaced_containers_gpu(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Keeping the old device must not outrank the group it belongs to.
+
+    Ranking guard for the rule above, not a second bug: a ``colocate_group``
+    member that has already resolved a device *is* the placement the whole group
+    shares, so a backend whose own previous container sat elsewhere has to follow
+    the partner rather than pull the group apart — the very outcome the GPU reuse
+    exists to prevent.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    partner = proxy.BackendManager(
+        "partner-model",
+        {"container": "partner", "model_dir": "/tmp/partner", "colocate_group": "primary"},
+    )
+    with partner._lock:
+        partner._state = "ready"
+    partner._current_gpu = "0"
+    stale = _labelled_backend(
+        proxy, tmp_path, name="autoselect", gpu_index=None, colocate_group="primary"
+    )
+    proxy._backends = {"partner-model": partner, MODEL_NAME: stale}
+    fake = _FakeDocker(
+        labels={
+            proxy.OWNER_LABEL: proxy.PROXY_OWNER,
+            proxy.PROFILE_LABEL: "0000staleprofile",
+        },
+        running=True,
+        gpu="1",
+    )
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    stale._start_container()
+
+    verbs = [c[c.index("docker") + 1] for c in fake.mutations]
+    assert verbs == ["rm", "run"]
+    launched = fake.mutations[1]
+    assert launched[launched.index("--gpus") + 1] == "device=0"
+    assert stale._current_gpu == "0"
+
+
+def test_adoption_reads_liveness_and_ownership_in_one_inspect(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Both facts come from one ``docker inspect``, and the count is the point.
+
+    Two inspects cost two daemon round trips on the cold-start path — where a
+    storm of retries arrives while a multi-minute load runs — and left a window in
+    which the container could stop between "is it running?" and "whose is it?",
+    long enough to read a live foreign container as an exited one.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    stamped = _labels_from_run(["docker", "run", *backend._ownership_label_args()])
+    fake = _FakeDocker(labels=stamped, running=True, gpu="2")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: True)
+
+    assert backend._adopt_running_container() is True
+    assert backend._current_gpu == "2"
+
+    assert len(fake.state_inspects) == 1
+
+
+def test_contention_check_costs_one_inspect_per_streaming_request(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The warmup path's contention check must ask docker once, not twice.
+
+    It runs on every streaming request until the backend is ready, so a cold-start
+    storm multiplies it. The *uncontended* case only ever cost one call — ``owner
+    is None`` short-circuits the liveness check — so the count to pin is the
+    contended one, which used to inspect for labels and then again for state.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(labels={proxy.OWNER_LABEL: "port-8003"}, running=True)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    assert backend.contention_error() is not None
+
+    assert len(fake.state_inspects) == 1
+
+
 def test_retuning_the_startup_estimate_keeps_the_container_adopted(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
@@ -947,14 +1104,20 @@ def test_contended_container_surfaces_as_502_naming_both_owners(
 
 
 def test_warmup_stream_survives_an_unreadable_docker_inspect(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: Any, tmp_path: Path, caplog: Any
 ) -> None:
-    """A docker hiccup must not 502 every streaming request.
+    """A docker hiccup must not 502 every streaming request — but must be visible.
 
     The contention check runs on the hot warmup path, so it has to fail towards
     "no collision": an unreadable ``docker inspect`` is not evidence that someone
     else owns the container, and treating it as such would take a model offline
     for the duration of a transient daemon problem.
+
+    Failing that way is indistinguishable from "nobody else owns this" in the
+    return value, though, and the causes are not transient hiccups only: a proxy
+    whose user cannot reach the docker socket answers "no contention" for every
+    request it will ever serve. Log the reason so an operator chasing a backend
+    that never starts sees which it was.
     """
     proxy = _load_proxy(monkeypatch, tmp_path)
     backend = proxy._backends[MODEL_NAME]
@@ -964,7 +1127,12 @@ def test_warmup_stream_survives_an_unreadable_docker_inspect(
 
     monkeypatch.setattr(proxy.subprocess, "run", boom)
 
-    assert backend.contention_error() is None
+    with caplog.at_level(logging.DEBUG, logger=proxy.log.name):
+        assert backend.contention_error() is None
+
+    logged = [r.getMessage() for r in caplog.records]
+    assert any("cannot connect to the Docker daemon" in m for m in logged), logged
+    assert any("OSError" in m for m in logged), logged
 
 
 def test_dead_ready_backend_self_heals_and_retries(monkeypatch: Any, tmp_path: Path) -> None:
