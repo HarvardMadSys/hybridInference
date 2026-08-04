@@ -178,20 +178,24 @@ def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
     return cleaned if len(cleaned) <= limit else cleaned[: limit - 1] + "…"
 
 
-def _fire_and_forget(coro: Any) -> None:
+def _fire_and_forget(coro: Any) -> bool:
     """Schedule an alert delivery without holding up the failing request.
 
     Keeps a strong reference for the task's lifetime (asyncio holds only weak
     ones) and closes the coroutine when there is no loop to run it on, so a sync
     caller — a unit test, or teardown — does not leak a never-awaited coroutine.
+
+    Returns whether the delivery was actually scheduled, so a caller that set up
+    state for the send (the breaker's in-flight guard) can roll it back.
     """
     try:
         task = asyncio.ensure_future(coro)
     except RuntimeError:
         coro.close()
-        return
+        return False
     _ALERT_TASKS.add(task)
     task.add_done_callback(_ALERT_TASKS.discard)
+    return True
 
 
 def _offender_str() -> str | None:
@@ -225,9 +229,10 @@ class _ProviderHealth:
         # timeout). Sticky across recovery: purely a diagnostic breadcrumb,
         # ``consecutive_auth_rejections`` is what says whether it is still true.
         self.last_error_status: int | None = None
-        # Length of the current run of gateway-credential rejections. Non-zero
-        # means every request to this endpoint is being refused for a reason no
-        # user can affect, which is what /health/deep reports as degraded.
+        # Number of gateway-credential rejections since the last *accepted*
+        # request. Non-zero means every request to this endpoint is being
+        # refused for a reason no user can affect, which is what /health/deep
+        # reports as degraded. Only a success clears it (see ``note_failure``).
         self.consecutive_auth_rejections = 0
         self._lock = threading.Lock()
 
@@ -248,25 +253,33 @@ class _ProviderHealth:
                 return True
             return False
 
-    def note_failure(self, *, status: int | None, auth_misconfig: bool) -> tuple[int, bool]:
-        """Record the failing status; report the auth-rejection run and its end.
+    def note_failure(self, *, status: int | None, auth_misconfig: bool) -> int:
+        """Record the failing status; return the credential-rejection run length.
 
-        Returns ``(run_length, run_ended)``: the current length of the
-        credential-rejection run, and whether *this* failure is what ended a
-        non-empty one, which the caller needs to resolve the incident exactly
-        once rather than on every subsequent failure.
+        A failure never ends the run — only ``record(True)`` does, because only an
+        accepted request is evidence that the credential works. No failure is:
+
+        - One with no HTTP status never reached the upstream's auth layer at all,
+          and that is the *expected* steady state of a real all-keys-rejected
+          outage rather than an edge case: 401 is a key-specific status for
+          ``KeyPool``, so the rejections mute every key and subsequent requests
+          raise ``KeyPoolExhausted`` from ``acquire()`` before anything is sent.
+          Connection resets and timeouts have the same shape.
+        - One carrying some *other* status is no proof either: nothing here can
+          tell an upstream that authenticated the request and then failed from a
+          proxy or load balancer that answered before auth was ever evaluated.
+
+        Treating either as recovery would announce "Recovered" in the middle of
+        the outage — and for a muted key pool, precisely during its worst part. So
+        this mirrors ``circuit_open``, whose only healthy edge is
+        ``_CircuitBreaker.on_success``.
         """
         with self._lock:
             if status is not None:
                 self.last_error_status = status
             if auth_misconfig:
                 self.consecutive_auth_rejections += 1
-                return self.consecutive_auth_rejections, False
-            # Any other kind of failure ends the auth run: whatever is wrong
-            # now, the credential was accepted far enough to fail otherwise.
-            ended = self.consecutive_auth_rejections > 0
-            self.consecutive_auth_rejections = 0
-            return 0, ended
+            return self.consecutive_auth_rejections
 
     @property
     def availability(self) -> float:
@@ -478,19 +491,14 @@ class _CircuitBreaker:
             generation = self._recovery_generation
             if reset_epoch is not None:
                 self._alert_in_flight_generation = generation
-            try:
-                task = asyncio.ensure_future(
-                    self._send_circuit_alert(context, reset_epoch, generation)
-                )
-            except RuntimeError:
-                # No running loop (sync caller / test): nothing was scheduled, so
-                # release the in-flight guard we optimistically set (unless a newer
-                # generation already claimed it).
-                if self._alert_in_flight_generation == generation:
-                    self._alert_in_flight_generation = None
-            else:
-                _ALERT_TASKS.add(task)
-                task.add_done_callback(_ALERT_TASKS.discard)
+            # Scheduling goes through the shared helper so that when there is no
+            # running loop (sync caller / test) the unscheduled coroutine is closed
+            # rather than surfacing later as a never-awaited RuntimeWarning.
+            scheduled = _fire_and_forget(self._send_circuit_alert(context, reset_epoch, generation))
+            # Nothing was scheduled, so release the in-flight guard we
+            # optimistically set — unless a newer generation already claimed it.
+            if not scheduled and self._alert_in_flight_generation == generation:
+                self._alert_in_flight_generation = None
 
     async def _send_circuit_alert(
         self, context: dict[str, Any], reset_epoch: float | None, generation: int
@@ -624,11 +632,7 @@ class EndpointHealthRegistry:
             self.ensure(endpoint_id)
             health = self._health[endpoint_id]
             health.record(False)
-            auth_rejections, auth_run_ended = health.note_failure(
-                status=status, auth_misconfig=auth_misconfig
-            )
-            if auth_run_ended:
-                self._auth_alert_at.pop(endpoint_id, None)
+            auth_rejections = health.note_failure(status=status, auth_misconfig=auth_misconfig)
             availability = health.availability
             self._circuits[endpoint_id].on_failure(
                 availability=availability,
@@ -636,6 +640,9 @@ class EndpointHealthRegistry:
                 detail=safe_detail,
                 offender=_offender_str(),
             )
+        # No ``else`` branch: a failure of any other kind leaves both the rejection
+        # run and any open incident alone (see ``note_failure``) — whatever is
+        # failing now is the breaker's ``circuit_open`` incident to report.
         if auth_misconfig:
             # Reported outside the registry lock: alert scheduling must not hold
             # the lock every other endpoint's health accounting needs.
@@ -645,14 +652,6 @@ class EndpointHealthRegistry:
                 detail=safe_detail,
                 consecutive=auth_rejections,
             )
-        elif auth_run_ended:
-            # A different failure ended the run: the credential was accepted far
-            # enough to fail for another reason, so the *credential* incident is
-            # over even though the endpoint is not well. What is wrong now is the
-            # breaker's ``circuit_open`` incident to report, and leaving this one
-            # open would contradict the ``consecutive_auth_rejections`` reset that
-            # /health/deep reads.
-            self._resolve_auth_misconfig(endpoint_id)
 
     def _report_auth_misconfig(
         self,
@@ -724,9 +723,10 @@ class EndpointHealthRegistry:
 
         This is the state incident's only healthy edge, so it is what stops the
         page from staying open forever: the endpoint just did the thing the page
-        said no caller could make it do. Called on the transition out of a
-        rejection run — an accepted request, or a failure of any other kind —
-        never on every success, so the resolution is emitted once per outage.
+        said no caller could make it do. Called only on the *first* accepted
+        request after a rejection run, not on every success, so the resolution is
+        emitted once per outage — and never on a failure, since no failure proves
+        the credential was accepted (see ``_ProviderHealth.note_failure``).
 
         With no running loop (sync teardown) nothing else will close this
         incident: state alerts report one healthy edge and are never swept,

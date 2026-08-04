@@ -13,22 +13,28 @@ one INFO line per request as the sole artifact.
 """
 
 import asyncio
+import inspect
 import json
 import logging
+import threading
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from routing import endpoint_health
 from routing.endpoint_health import (
     _AUTH_ALERT_SCHEDULE_INTERVAL_SEC,
     EndpointHealthRegistry,
+    _CircuitBreaker,
     _CircuitState,
     _is_auth_misconfig,
     _is_client_error,
     _is_gateway_owned_endpoint,
 )
 from routing.routers import AllCircuitsOpenError, FixedRouter
+from serving.adapters.key_pool import KeyPoolExhausted
 from serving.observability.alerts import (
     _STATE_TRANSITIONS,
     AlertSeverity,
@@ -61,6 +67,14 @@ def _clean_alert_state(monkeypatch):
     yield
     reset_transition_state()
     reset_dedupe_state()
+    # ``_ALERT_TASKS`` is process-global too, and every test here schedules into
+    # it. A task still pending when this test's event loop is discarded would
+    # otherwise stay in the set holding a dead loop, and the next test that reads
+    # the set — ``test_circuit_breaker_usage_limit._drain_alert_tasks`` gathers it
+    # — dies on "All futures must share the same event loop".
+    for task in list(endpoint_health._ALERT_TASKS):
+        task.cancel()
+    endpoint_health._ALERT_TASKS.clear()
 
 
 def _auth_alert_key(endpoint_id: str) -> str:
@@ -268,14 +282,14 @@ async def test_a_success_clears_the_auth_rejection_run(monkeypatch):
         # ``last_error_status`` is a sticky diagnostic breadcrumb, not liveness.
         assert registry.snapshot()[_LOCAL_ENDPOINT]["last_error_status"] == 401
 
-        # A different kind of failure also ends the run: the credential got far
-        # enough to fail for another reason.
+        # A failure of any other kind is not recovery — it is no evidence the
+        # credential was accepted — so the run survives it.
         registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
         registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(502))
         await asyncio.sleep(0)
 
     status = registry.snapshot()[_LOCAL_ENDPOINT]
-    assert status["consecutive_auth_rejections"] == 0
+    assert status["consecutive_auth_rejections"] == 1
     assert status["last_error_status"] == 502
 
 
@@ -438,13 +452,58 @@ async def test_an_accepted_request_closes_the_auth_incident(monkeypatch, caplog)
     assert [r for r in caplog.records if r.getMessage() == "upstream_auth_recovered"]
 
 
-async def test_a_different_failure_also_closes_the_auth_incident(monkeypatch):
-    """A non-auth failure ends the run, so it must end the incident too.
+@pytest.mark.parametrize(
+    ("label", "exc"),
+    (
+        # The steady state of a real all-keys-401 outage: 401 is a key-specific
+        # status for ``KeyPool``, so the rejections mute every key and the next
+        # request raises from ``acquire()`` before any upstream is contacted.
+        ("key_pool_exhausted", KeyPoolExhausted("All 2 keys for provider 'x' are muted")),
+        ("connection_reset", ConnectionResetError("Connection reset by peer")),
+        ("timeout", asyncio.TimeoutError()),
+    ),
+)
+async def test_a_statusless_failure_keeps_the_auth_incident_open(monkeypatch, label, exc):
+    """A failure that never reached the upstream is not proof of recovery.
 
-    ``note_failure`` resets ``consecutive_auth_rejections`` — the credential got
-    far enough to fail for another reason — and /health/deep stops reporting the
-    auth degradation. Leaving the page's incident open would contradict that; what
-    is wrong now is the breaker's ``circuit_open`` incident to report.
+    Regression: any non-auth failure used to end the rejection run and resolve the
+    incident. For a pooled endpoint that closed the page during the *worst* part
+    of the outage — every key muted by the 401s means ``KeyPool.acquire`` raises
+    ``KeyPoolExhausted``, which carries no HTTP status, on every subsequent
+    request. Connection resets and timeouts have the same shape.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+    key = _auth_alert_key(_LOCAL_ENDPOINT)
+
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
+        await _drain_alerts()
+        assert _STATE_TRANSITIONS.is_firing(key) is True
+
+        for _ in range(3):
+            registry.record_failure(_LOCAL_ENDPOINT, reason=label, exc=exc)
+        await _drain_alerts()
+
+        assert not _auth_resolutions(mock_alert, _LOCAL_ENDPOINT), label
+        assert _STATE_TRANSITIONS.is_firing(key) is True, label
+
+    status = registry.snapshot()[_LOCAL_ENDPOINT]
+    # The run is intact, so /health/deep keeps reporting the endpoint degraded.
+    assert status["consecutive_auth_rejections"] == 1
+    # No status to record, so the breadcrumb still names the real cause.
+    assert status["last_error_status"] == 401
+
+
+async def test_a_statused_non_auth_failure_keeps_the_auth_incident_open(monkeypatch):
+    """A different HTTP status is no proof the credential was accepted either.
+
+    Nothing here can distinguish an upstream that authenticated the request and
+    then failed from a proxy or load balancer that answered before auth was ever
+    evaluated, so a 5xx does not close the credential incident. What is wrong now
+    is the breaker's ``circuit_open`` incident to report.
     """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
@@ -460,13 +519,77 @@ async def test_a_different_failure_also_closes_the_auth_incident(monkeypatch):
         registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(502))
         await _drain_alerts()
 
+        assert not _auth_resolutions(mock_alert, _LOCAL_ENDPOINT)
+        assert _STATE_TRANSITIONS.is_firing(key) is True
+
+    status = registry.snapshot()[_LOCAL_ENDPOINT]
+    assert status["consecutive_auth_rejections"] == 1
+    assert status["last_error_status"] == 502
+
+
+async def test_a_statusless_failure_never_opens_an_auth_incident(monkeypatch, caplog):
+    """The inverse hazard: pool exhaustion on its own is not a credential fault.
+
+    It carries no status, so it must not be classified as an auth rejection, page,
+    or degrade /health/deep — the breaker's own availability and circuit signals
+    cover it.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+
+    with (
+        patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert,
+        caplog.at_level(logging.WARNING, logger="routing.routers"),
+    ):
+        for _ in range(3):
+            registry.record_failure(
+                _LOCAL_ENDPOINT,
+                reason="key_pool_exhausted",
+                exc=KeyPoolExhausted("All 2 keys for provider 'x' are muted"),
+            )
+        await _drain_alerts()
+
+    assert not _auth_alerts(mock_alert, _LOCAL_ENDPOINT)
+    assert _STATE_TRANSITIONS.is_firing(_auth_alert_key(_LOCAL_ENDPOINT)) is False
+    assert not [r for r in caplog.records if r.getMessage() == "upstream_auth_misconfig"]
+    status = registry.snapshot()[_LOCAL_ENDPOINT]
+    assert status["consecutive_auth_rejections"] == 0
+    assert status["last_error_status"] is None
+
+
+async def test_a_success_still_closes_an_incident_that_outlived_other_failures(monkeypatch):
+    """Keeping the run through statusless failures must not wedge it open.
+
+    An operator fixing the key is observable as one accepted request, and that
+    still closes the incident even after a stretch of pool exhaustion.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+    key = _auth_alert_key(_LOCAL_ENDPOINT)
+
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
+        for _ in range(3):
+            registry.record_failure(
+                _LOCAL_ENDPOINT,
+                reason="key_pool_exhausted",
+                exc=KeyPoolExhausted("All 2 keys for provider 'x' are muted"),
+            )
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(502))
+        await _drain_alerts()
+        assert _STATE_TRANSITIONS.is_firing(key) is True
+
+        registry.record_success(_LOCAL_ENDPOINT)
+        await _drain_alerts()
+
         assert len(_auth_resolutions(mock_alert, _LOCAL_ENDPOINT)) == 1
         assert _STATE_TRANSITIONS.is_firing(key) is False
 
-        # And a second non-auth failure does not re-announce recovery.
-        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(502))
-        await _drain_alerts()
-        assert len(_auth_resolutions(mock_alert, _LOCAL_ENDPOINT)) == 1
+    assert registry.snapshot()[_LOCAL_ENDPOINT]["consecutive_auth_rejections"] == 0
 
 
 async def test_one_endpoints_recovery_does_not_close_anothers_incident(monkeypatch):
@@ -660,4 +783,90 @@ def test_auth_escalation_without_a_running_loop_does_not_raise(monkeypatch):
     with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
         registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
 
+    assert registry.snapshot()[_LOCAL_ENDPOINT]["consecutive_auth_rejections"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Alert scheduling, shared by the auth page and the breaker's own circuit_open
+# ---------------------------------------------------------------------------
+
+
+def _run_without_a_loop(call) -> None:
+    """Run ``call`` on a worker thread, where asyncio has no current event loop.
+
+    ``asyncio.ensure_future`` raises ``RuntimeError`` there on every supported
+    Python. The main thread is not a reliable stand-in: whether it still carries a
+    current loop depends on what ran before, so a main-thread version of these
+    tests could schedule the coroutine instead of exercising the branch.
+    """
+    failure: list[BaseException] = []
+
+    def target() -> None:
+        try:
+            call()
+        except BaseException as exc:
+            failure.append(exc)
+
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "the alert path must not block the caller"
+    if failure:
+        raise failure[0]
+
+
+def test_circuit_open_scheduling_closes_its_coroutine_without_a_loop(monkeypatch):
+    """The circuit-open page must not leak a never-awaited coroutine.
+
+    ``on_failure`` builds ``_send_circuit_alert(...)`` before handing it to the
+    scheduler, so when there is no loop to run it on the coroutine has to be
+    closed explicitly — otherwise it surfaces as a ``RuntimeWarning: coroutine ...
+    was never awaited`` in sync callers and tests. This is the same hazard
+    ``_fire_and_forget`` was added for, so the path goes through that helper.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "1")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    coroutines: list[Any] = []
+    original = _CircuitBreaker._send_circuit_alert
+
+    def _capture(self, *args, **kwargs):
+        coro = original(self, *args, **kwargs)
+        coroutines.append(coro)
+        return coro
+
+    monkeypatch.setattr(_CircuitBreaker, "_send_circuit_alert", _capture)
+    breaker = _CircuitBreaker(_LOCAL_ENDPOINT)
+
+    _run_without_a_loop(lambda: breaker.on_failure(availability=0.0, reason="stream_exception"))
+
+    assert breaker.state == _CircuitState.OPEN
+    assert len(coroutines) == 1, "the circuit-open page must still be attempted"
+    assert inspect.getcoroutinestate(coroutines[0]) == inspect.CORO_CLOSED
+
+
+def test_auth_page_scheduling_closes_its_coroutine_without_a_loop(monkeypatch):
+    """Same contract on the auth page, the helper's other caller."""
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    coroutines: list[Any] = []
+    original = endpoint_health.alert_on_transition
+
+    def _capture(**kwargs):
+        coro = original(**kwargs)
+        coroutines.append(coro)
+        return coro
+
+    monkeypatch.setattr(endpoint_health, "alert_on_transition", _capture)
+    registry = EndpointHealthRegistry()
+
+    _run_without_a_loop(
+        lambda: registry.record_failure(
+            _LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401)
+        )
+    )
+
+    assert len(coroutines) == 1
+    assert inspect.getcoroutinestate(coroutines[0]) == inspect.CORO_CLOSED
     assert registry.snapshot()[_LOCAL_ENDPOINT]["consecutive_auth_rejections"] == 1

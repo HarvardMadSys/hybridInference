@@ -55,7 +55,10 @@ def _endpoint_is_degraded(endpoint_status: dict[str, Any]) -> bool:
     one: an upstream refusing the gateway's credential fails 100% of requests
     from the first one, and reporting only the aggregates let exactly that
     outage serve HTTP 200 "healthy" for an hour — availability had not decayed
-    yet and the breaker had not tripped.
+    yet and the breaker had not tripped. Only an accepted request clears that
+    run, so the endpoint keeps reporting degraded until it actually serves one:
+    no other failure is evidence the credential works, least of all the pool
+    exhaustion the rejections themselves cause.
 
     Known coverage limit — this verdict is only as wide as the traffic that
     reaches ``EndpointHealthRegistry``, which today means the router-driven
