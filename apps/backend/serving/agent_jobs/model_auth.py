@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from serving import grants, quota
 from serving.agent_jobs.tokens import InvalidAgentToken, parse_worker_token
+from serving.model_access import get_disabled_models_from_preferences
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -226,6 +227,14 @@ async def authenticate_grant_model_call(
         "role": user.get("role") or "free",
         "authenticated": True,
         "is_admin": False,
+        # The same two the direct path puts here. A grant is the owner calling
+        # through a sandbox, so anything the owner set for themselves has to
+        # apply: without these, disabling a model in the dashboard or capping
+        # an account's concurrency stopped applying the moment the call arrived
+        # from an agent — a per-user control with a hole in it, and one nobody
+        # would think to test for.
+        "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
+        "max_concurrent_requests": user.get("max_concurrent_requests"),
         # Attribution, unchanged: api_logs.agent_job_id is what the owner's
         # cost report reads, and it keeps working across the token change.
         "agent_job_id": row["external_job_id"],

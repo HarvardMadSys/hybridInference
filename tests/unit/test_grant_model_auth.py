@@ -109,6 +109,35 @@ def test_both_credential_kinds_route_to_the_agent_path(token: str) -> None:
     assert looks_like_agent_token(None) is False
 
 
+async def test_the_grant_context_carries_the_owners_own_controls(store, token: str) -> None:
+    """**A reader is only as good as the writer that fills its field.**
+
+    The inference path denies a disabled model by reading `disabled_models`
+    from the user context, and applies a concurrency cap by reading
+    `max_concurrent_requests`. The grant path set neither, so both per-user
+    controls silently stopped applying the moment a call arrived from an agent
+    — and no test noticed, because the gate's own tests inject a context rather
+    than obtaining one from here.
+
+    That is the same shape as the bug this file exists for: a field with a
+    writer and no reader. This one is a reader with no writer.
+    """
+    store.users["user_1"]["preferences"] = {"disabled_models": ["glm-5.1"]}
+    store.users["user_1"]["max_concurrent_requests"] = 3
+
+    ctx = await authenticate_grant_model_call(token, op_store=store)
+
+    assert ctx["disabled_models"] == ["glm-5.1"]
+    assert ctx["max_concurrent_requests"] == 3
+
+
+async def test_an_owner_with_no_preferences_gets_an_empty_denylist(store, token: str) -> None:
+    """The common case must not raise or produce None."""
+    ctx = await authenticate_grant_model_call(token, op_store=store)
+
+    assert ctx["disabled_models"] == []
+
+
 # ---------------------------------------------------------------------------
 # The bypass this task exists to close
 # ---------------------------------------------------------------------------

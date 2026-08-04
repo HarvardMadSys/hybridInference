@@ -34,7 +34,7 @@ from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.config.settings import has_role
 from serving.exceptions import operator_safe_error, scrub_error_for_user
-from serving.model_access import is_model_disabled_for_user
+from serving.model_access import is_model_disabled_for_user, is_model_outside_grant_scope
 from serving.observability.rejection_log import log_rejection
 from serving.observability.tracked_tasks import tracked_task
 from serving.servers.auth import (
@@ -226,7 +226,13 @@ async def _resolve(
     if not has_role(user_role, required):
         req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model_id}' not found")
-    if is_model_disabled_for_user(canonical, user_ctx):
+    # Same answer for "the owner disabled it" and "your grant does not name
+    # it". Checked on the canonical id, which the alias resolution above has
+    # already produced — a grant stores canonical ids, so scoping on the
+    # requested spelling would let an alias walk straight past it.
+    if is_model_disabled_for_user(canonical, user_ctx) or is_model_outside_grant_scope(
+        canonical, user_ctx
+    ):
         req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model_id}' not found")
     if not route.adapters:
