@@ -44,6 +44,12 @@ myst_enable_extensions = [
     "tasklist",  # Task lists
 ]
 
+# Generate implicit anchors for h1-h3 headings so GitHub-style in-page links
+# (`[text](#some-heading)`) resolve. Without this the Markdown renders fine on
+# GitHub but Sphinx reports `myst.xref_missing`, which the Cloudflare Pages
+# build turns into a failure (it runs `sphinx-build -W`).
+myst_heading_anchors = 3
+
 # Napoleon settings for Google-style docstrings
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
