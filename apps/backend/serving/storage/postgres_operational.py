@@ -51,7 +51,7 @@ def _decode_grant(row: Any) -> Row:
     the list" — a question a string answers wrongly rather than loudly.
     """
     decoded = dict(row)
-    for field in ("allowed_models", "allowed_mcp"):
+    for field in ("allowed_models",):
         value = decoded.get(field)
         if isinstance(value, str):
             try:
@@ -2020,7 +2020,6 @@ class PostgresOperationalStore(OperationalStore):
         external_job_id: str,
         external_attempt_id: str,
         allowed_models: list[str],
-        allowed_mcp: list[str],
         expires_at: datetime,
     ) -> Row:
         """Create a grant, or return the existing one for this attempt."""
@@ -2032,23 +2031,22 @@ class PostgresOperationalStore(OperationalStore):
             row = await conn.fetchrow(
                 "INSERT INTO agent_grants "
                 "(grant_id, user_id, external_job_id, external_attempt_id, "
-                " allowed_models, allowed_mcp, expires_at) "
-                "VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7) "
+                " allowed_models, expires_at) "
+                "VALUES ($1, $2, $3, $4, $5::jsonb, $6) "
                 "ON CONFLICT (external_job_id, external_attempt_id) DO NOTHING "
                 "RETURNING grant_id, user_id, external_job_id, external_attempt_id, "
-                "          allowed_models, allowed_mcp, created_at, expires_at, revoked_at",
+                "          allowed_models, created_at, expires_at, revoked_at",
                 grant_id,
                 user_id,
                 external_job_id,
                 external_attempt_id,
                 json.dumps(list(allowed_models)),
-                json.dumps(list(allowed_mcp)),
                 expires_at,
             )
             if row is None:
                 row = await conn.fetchrow(
                     "SELECT grant_id, user_id, external_job_id, external_attempt_id, "
-                    "       allowed_models, allowed_mcp, created_at, expires_at, revoked_at "
+                    "       allowed_models, created_at, expires_at, revoked_at "
                     "FROM agent_grants WHERE external_job_id = $1 AND external_attempt_id = $2",
                     external_job_id,
                     external_attempt_id,
@@ -2069,7 +2067,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT grant_id, user_id, external_job_id, external_attempt_id, "
-                "       allowed_models, allowed_mcp, created_at, expires_at, revoked_at "
+                "       allowed_models, created_at, expires_at, revoked_at "
                 "FROM agent_grants WHERE grant_id = $1",
                 grant_id,
             )
@@ -2084,7 +2082,7 @@ class PostgresOperationalStore(OperationalStore):
                 "UPDATE agent_grants SET expires_at = $2 "
                 "WHERE grant_id = $1 AND revoked_at IS NULL AND expires_at > NOW() "
                 "RETURNING grant_id, user_id, external_job_id, external_attempt_id, "
-                "          allowed_models, allowed_mcp, created_at, expires_at, revoked_at",
+                "          allowed_models, created_at, expires_at, revoked_at",
                 grant_id,
                 expires_at,
             )
