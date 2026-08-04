@@ -29,6 +29,7 @@ from serving.observability.rejection_log import (
     log_rejection,
     queue_rejection_log,
     rejection_logging_enabled,
+    release_cached_body,
 )
 from serving.servers.deps import (
     auth_database_detail,
@@ -205,6 +206,11 @@ async def _authenticate_by_api_key(
                 "ip_blocked_enrichment_failed",
                 extra={"event": "ip_blocked_enrichment_failed", "remote_ip": ip_info.client_ip},
             )
+        # Release the body before queueing. The task below retains the request,
+        # so a cached body would outlive the response and make the prompt cap
+        # above meaningless — it would free one of two references to the same
+        # megabyte. Safe here precisely because the handler never runs.
+        release_cached_body(request)
         # Via queue_rejection_log, not log_rejection directly: the write is
         # fire-and-forget, so without a bound on how many captured prompts sit
         # queued behind it, a flood would grow worker memory by up to a megabyte

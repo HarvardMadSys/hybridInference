@@ -350,6 +350,38 @@ async def test_blocked_ip_on_a_typed_body_route_bounds_an_oversized_prompt(
 
 
 @pytest.mark.asyncio
+async def test_blocked_ip_queued_log_retains_no_body_bytes(monkeypatch, blocked_localhost):
+    """The queued task must not keep the request's cached body alive.
+
+    Capping the prompt is not enough on its own: the task retains the *request*,
+    and ``capture_rejected_prompt`` caused Starlette to cache the raw bytes on
+    it. Dropping only the prompt would free one of two references to the same
+    megabyte, leaving the queue unbounded in practice.
+    """
+    app, log_calls, _op = _build_blocked_app(monkeypatch, lightweight_user=None, logging_on=True)
+    await blocked_localhost("127.0.0.1")
+
+    body = {"model": "gpt-4", "messages": [{"role": "user", "content": "z" * 3000}]}
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer hyi-valid"},
+            json=body,
+        )
+        await asyncio.sleep(0)
+
+    assert resp.status_code == 429
+    # The prompt still made it through — releasing the body must not cost the row
+    # the thing this whole change exists to record.
+    assert log_calls[0]["prompt"] == body["messages"]
+    # But the request handed to the queued task carries no body bytes.
+    queued_request = log_calls[0]["request"]
+    assert not getattr(queued_request, "_body", b"")
+    assert getattr(queued_request, "_json", None) is None
+
+
+@pytest.mark.asyncio
 async def test_blocked_ip_settings_read_is_bounded_too(monkeypatch, blocked_localhost):
     """A spent budget skips even the toggle read, not just the lookups.
 

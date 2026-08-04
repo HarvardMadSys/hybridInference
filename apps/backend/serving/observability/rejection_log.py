@@ -18,6 +18,7 @@ server. Both are optional: skipping them costs detail in the row, never the row.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -309,6 +310,33 @@ async def capture_rejected_prompt(
         return extract_prompt_from_body(json.loads(raw))
     except Exception:
         return ""
+
+
+def release_cached_body(request: Request) -> None:
+    """Drop Starlette's cached body from a request that is being rejected.
+
+    A gate rejection means the handler never runs, so nothing downstream reads
+    the body again — that invariant is what licenses touching these attributes,
+    and it holds only on a rejection path.
+
+    Necessary because the fire-and-forget log task retains the *request*, and
+    with it whatever the body left cached: ``_body`` from
+    :func:`capture_rejected_prompt` calling ``request.body()``, and ``_json``
+    from FastAPI pre-parsing a typed body. Without this, dropping a queued
+    prompt frees only one of two references to the same megabyte, and the queue
+    stays unbounded however carefully the prompt itself is capped.
+
+    Assigns rather than deletes, so a later ``body()`` yields empty instead of
+    attempting a re-read from a receive channel that is already finished. Any
+    prompt already extracted survives: it is a separate reference to the parsed
+    sub-object, and it is what :data:`REJECTED_PROMPT_MAX_PENDING_LOGS` bounds.
+    """
+    # Private attributes, deliberately: they are the only handle on the cached
+    # body, and the invariant above is what makes writing them safe.
+    with contextlib.suppress(Exception):
+        request._body = b""
+    with contextlib.suppress(Exception):
+        request._json = None
 
 
 def queue_rejection_log(**kwargs: Any) -> Coroutine[Any, Any, None]:
