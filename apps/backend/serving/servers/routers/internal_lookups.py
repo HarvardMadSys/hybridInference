@@ -35,6 +35,7 @@ from fastapi import APIRouter, Depends, Query, status
 
 from serving.agent_jobs.mcp_registry import get_registry
 from serving.agent_jobs.visible_models import agent_visible_models
+from serving.model_access import get_disabled_models_from_preferences
 from serving.servers.deps import (
     get_model_visibility_resolver,
     get_operational_store,
@@ -120,7 +121,14 @@ async def model_catalog(
     models = await agent_visible_models(
         router_exec,
         visibility_resolver=visibility_resolver,
-        user_ctx={"role": user.get("role") or "free", "user_id": user["id"]},
+        user_ctx={
+            "role": user.get("role") or "free",
+            "user_id": user["id"],
+            # Without this the resolver's denylist check reads an absent
+            # key and passes, so a model the owner disabled is offered by
+            # the composer — and the grant minted from that choice carries it.
+            "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
+        },
     )
     return {"user_id": user["id"], "role": user.get("role") or "free", "models": models}
 

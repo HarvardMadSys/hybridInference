@@ -169,6 +169,30 @@ def test_the_catalog_is_not_the_anonymous_one(client: TestClient, store: FakeSto
     assert len(free["models"]) < len(pro["models"])
 
 
+def test_the_catalog_hides_a_model_the_owner_disabled(client, store, monkeypatch) -> None:
+    """The catalog is what the composer offers, so a model the owner turned off
+    must not appear in it — and this endpoint resolves visibility the same way
+    the mint does, with the same omission.
+
+    Two consequences if it is missing: the picker offers a model the user
+    disabled, and the grant minted from that choice carries it.
+    """
+    seen: dict = {}
+
+    async def _visible(_router, **kwargs):
+        seen.update(kwargs)
+        denied = set((kwargs.get("user_ctx") or {}).get("disabled_models") or [])
+        return [m for m in ["glm-5.1", "kimi-k2"] if m not in denied]
+
+    monkeypatch.setattr(internal_lookups, "agent_visible_models", _visible)
+    store.users["user_1"]["preferences"] = {"disabled_models": ["glm-5.1"]}
+
+    body = client.get("/internal/model-catalog", params={"user_id": "user_1"}, headers=AUTH).json()
+
+    assert seen["user_ctx"]["disabled_models"] == ["glm-5.1"]
+    assert body["models"] == ["kimi-k2"]
+
+
 @pytest.mark.parametrize("status_value", ["suspended", "deleted"])
 def test_the_catalog_refuses_an_inactive_account(client, store, status_value: str) -> None:
     store.users["user_1"]["status"] = status_value
