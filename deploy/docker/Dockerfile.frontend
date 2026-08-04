@@ -12,6 +12,10 @@ WORKDIR /app
 # neutral fallback for each. A deployment passes its values as build args --
 # see deploy/docker/docker-compose.yml and distributions/*/deploy/frontend.env.
 ARG NEXT_PUBLIC_API_BASE=
+# Where /agents now lives. Empty means this deployment names no cloud
+# agent and the redirect is simply not emitted — a 404, which is the
+# truthful answer when there is nowhere to send anyone.
+ARG NEXT_PUBLIC_CLOUD_AGENT_URL=
 ARG NEXT_PUBLIC_DEPLOY_TARGET=production
 ARG NEXT_PUBLIC_BUILD_SHA=
 ARG NEXT_PUBLIC_BUILD_TIMESTAMP=
@@ -39,6 +43,7 @@ ARG NEXT_PUBLIC_TEAM_JSON=
 ARG NEXT_PUBLIC_SPONSORS_JSON=
 ARG NEXT_PUBLIC_TEAM_IMAGE_HOST=
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
+ENV NEXT_PUBLIC_CLOUD_AGENT_URL=$NEXT_PUBLIC_CLOUD_AGENT_URL
 ENV NEXT_PUBLIC_DEPLOY_TARGET=$NEXT_PUBLIC_DEPLOY_TARGET
 ENV NEXT_PUBLIC_BUILD_SHA=$NEXT_PUBLIC_BUILD_SHA
 ENV NEXT_PUBLIC_BUILD_TIMESTAMP=$NEXT_PUBLIC_BUILD_TIMESTAMP

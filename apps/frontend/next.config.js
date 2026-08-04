@@ -30,7 +30,10 @@ const nextConfig = {
     if (!target) return [];
     return [
       { source: '/agents', destination: target, permanent: false },
-      { source: '/agents/:path*', destination: target, permanent: false },
+      // `:path*` on both sides, or every deep link lands on the new
+      // service's root — a PR comment pointing at one job would open
+      // somebody's task list instead, which reads as the link being stale.
+      { source: '/agents/:path*', destination: `${target}/:path*`, permanent: false },
     ];
   },
   async rewrites() {
