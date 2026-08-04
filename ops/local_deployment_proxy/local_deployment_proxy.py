@@ -635,7 +635,9 @@ class BackendManager:
                 else []
             ),
             *self._docker_env_args(),
-            str(self.config.get("sglang_image", "lmsysorg/sglang:latest")),
+            # `or`, not a dict default: a key present but explicitly "" or null would
+            # otherwise become the literal image reference "" / "None" and fail the run.
+            str(self.config.get("sglang_image") or "lmsysorg/sglang:latest"),
             "python3",
             "-m",
             "sglang.launch_server",

@@ -1060,6 +1060,21 @@ def test_sglang_cache_dir_and_image_pin(monkeypatch: Any, tmp_path: Path) -> Non
     assert "/var/tmp/sglang-cache/ds:/root/.cache" in pinned
 
 
+def test_sglang_blank_image_falls_back_to_default_tag(monkeypatch: Any, tmp_path: Path) -> None:
+    # A key that is present but blank/null must fall back to the default tag. A dict
+    # default only covers an absent key, so "" and None would otherwise reach docker
+    # as the literal image references "" and "None".
+    proxy = _load_proxy(monkeypatch, tmp_path)
+
+    for blank in ("", None):
+        cmd = proxy.BackendManager(
+            MODEL_NAME, {**_dspark_base(), "sglang_image": blank}
+        )._sglang_run_cmd("2,3")
+        assert "lmsysorg/sglang:latest" in cmd
+        assert "None" not in cmd
+        assert "" not in cmd
+
+
 def test_sglang_skip_server_warmup_opt_in(monkeypatch: Any, tmp_path: Path) -> None:
     proxy = _load_proxy(monkeypatch, tmp_path)
     base = _dspark_base()

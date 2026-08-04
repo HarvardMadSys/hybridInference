@@ -62,12 +62,28 @@ SSH_HOST='spark2|jason@internal.freeinference.org' \
   ./ops/h200_idle_proxy/h200_idle_service.sh start
 ```
 
+`status` and `stop` need the **same** `LISTEN_PORT` as `start`. The run directory
+holding the PID files is per-port, so a bare `stop` on h200b looks in the 8003
+directory, reports the proxy as not running, and leaves its container holding the
+GPUs:
+
 ```bash
+# h200a
 ./ops/h200_idle_proxy/h200_idle_service.sh status
 ./ops/h200_idle_proxy/h200_idle_service.sh stop
+
+# h200b
+LISTEN_PORT=8004 ./ops/h200_idle_proxy/h200_idle_service.sh status
+LISTEN_PORT=8004 ./ops/h200_idle_proxy/h200_idle_service.sh stop
 ```
 
+Pass `SSH_HOST` and `REMOTE_PORT` as well for `status` to report on the tunnels.
+
 Logs: `/tmp/h200_idle_proxy_<uid>_<port>/proxy.log` (per-user run dir, mode 700).
+
+None of this applies under systemd, which is how both nodes actually run — there the
+port lives in the unit, so `systemctl status|restart h200_idle_proxy` works unqualified
+on either node.
 
 ### systemd (recommended)
 
