@@ -92,11 +92,12 @@ reaches both ends at once. A box that runs only this proxy and its tunnel has no
 sudo LOCAL_API_KEY='…' ./local_deployment_proxy/install.sh
 ```
 
-Omitting `LOCAL_API_KEY` on a later run **removes** that drop-in, dropping the
-proxy back to the default hardcoded in `local_deployment_proxy.py`; pass the key on
-every run you want it kept. Either way the installer restarts the unit, since
-systemd does not re-read a drop-in on its own and `enable --now` does nothing to an
-already-running one.
+A later run that does not pass `LOCAL_API_KEY` **keeps** the drop-in it finds, so
+re-installing to add a tunnel host or move a port does not take the key off a box
+that has no `.env` to fall back on. To remove the key, ask for it explicitly —
+`sudo LOCAL_API_KEY= ./local_deployment_proxy/install.sh` — or run `uninstall.sh`.
+Either way the installer restarts the unit, since systemd does not re-read a
+drop-in on its own and `enable --now` does nothing to an already-running one.
 
 Equivalent manual steps, if you'd rather not use the script. The proxy unit
 carries a `__REPO_ROOT__` placeholder, so render it (the tunnel unit has no

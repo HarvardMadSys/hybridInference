@@ -20,6 +20,8 @@
 # the proxy falls back to the default hardcoded in local_deployment_proxy.py and
 # 401s every request once that key is rotated:
 #   sudo LOCAL_API_KEY='…' ./ops/h200_idle_proxy/install.sh
+# A later run that does not pass it keeps the key already installed; to take the
+# key away, pass it empty (LOCAL_API_KEY=) or run uninstall.sh.
 #
 # Remove with uninstall.sh.
 
@@ -102,8 +104,12 @@ fi
 # Both H200 nodes authenticate against the same LOCAL_API_KEY the gateway signs
 # with. The unit reads ${REPO_ROOT}/.env, which covers a box that also hosts the
 # gateway; on a box that runs only this proxy the key arrives here instead.
-# Omitting LOCAL_API_KEY removes a key an earlier run left.
-write_local_api_key_dropin "$SYSTEMD_DST" "$PROXY_UNIT" "${LOCAL_API_KEY:-}"
+#
+# The unquoted ${VAR+"$VAR"} passes a third argument only when LOCAL_API_KEY is
+# set (even when set to nothing), and none at all when it is unset — an empty key
+# means "remove the drop-in", and a port-only re-run such as the LISTEN_PORT=8004
+# one in the usage notes above must not take the key off the node.
+write_local_api_key_dropin "$SYSTEMD_DST" "$PROXY_UNIT" ${LOCAL_API_KEY+"$LOCAL_API_KEY"}
 
 systemctl daemon-reload
 

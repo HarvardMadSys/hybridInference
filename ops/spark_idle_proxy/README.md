@@ -58,10 +58,12 @@ The unit reads the repo's `.env` for `LOCAL_API_KEY`, so on a box that also host
 the gateway a rotation there reaches both ends at once and no `LOCAL_API_KEY=` is
 needed on the command line. The Spark normally carries no `.env` — it is reached
 over an SSH tunnel from the gateway host — so pass the key to the installer, which
-writes it to a mode-0600 drop-in. Omitting it on a later run **removes** that
-drop-in, which drops the proxy back to the hardcoded default; pass the key on every
-run you want it kept. Either way the installer restarts the unit, so the value
-takes effect immediately.
+writes it to a mode-0600 drop-in. A later run that does not pass it **keeps** that
+drop-in, so a plain re-install does not drop the Spark back to the hardcoded
+default. To remove the key, ask for it explicitly —
+`sudo LOCAL_API_KEY= ./ops/spark_idle_proxy/install_service.sh` — or use
+`--uninstall`. Either way the installer restarts the unit, so the value takes
+effect immediately.
 
 ## Usage with OpenAI-compatible clients
 

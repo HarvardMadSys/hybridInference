@@ -19,23 +19,51 @@
 # /etc/systemd/system.
 #
 # This file only defines functions; it starts and stops nothing. Callers restart
-# the unit themselves, since systemd does not re-read a drop-in on its own.
+# the unit themselves, since systemd does not re-read a drop-in on its own — which
+# is also why an installer re-run must not quietly delete the key: the restart
+# would put the deletion straight into the live process.
 
 # Write (or remove) the LOCAL_API_KEY drop-in for one proxy unit.
 #
 #   write_local_api_key_dropin <systemd_dir> <unit_name> [key]
 #
-# An empty or absent key removes a drop-in left by an earlier run, so a
-# rotated-away key cannot outlive the rotation that replaced it. Returns
-# non-zero on a key systemd could not carry verbatim.
+# Three states, and the third argument's *presence* is what separates the last
+# two — which is why the key is an argument here instead of being read from the
+# environment inside:
+#
+#   • a non-empty key  → write the drop-in
+#   • an empty key     → remove the drop-in (an explicit "clear this")
+#   • no key argument  → leave whatever is installed alone
+#
+# The last one matters because a proxy installer is re-run for reasons that have
+# nothing to do with the key: a new tunnel host, a different port, a fresh
+# checkout. A caller that collapsed "unset" into "empty" would delete the key on
+# every such run, and on exactly the boxes this drop-in exists for — the ones with
+# no repo .env — that drops the proxy back to the default hardcoded in its source
+# while the gateway keeps signing with the rotated one: a 100% 401 rate on that
+# route. Clearing a key is therefore something a caller has to ask for
+# (LOCAL_API_KEY= on the command line), and the uninstallers remove the drop-in
+# outright.
+#
+# Returns non-zero on a key systemd could not carry verbatim.
 write_local_api_key_dropin() {
-  local systemd_dir="$1" unit="$2" key="${3:-}"
+  local systemd_dir="$1" unit="$2"
   local dropin_dir="${systemd_dir}/${unit}.d"
   local dropin="${dropin_dir}/local-api-key.conf"
 
+  if [[ "$#" -lt 3 ]]; then
+    if [[ -f "$dropin" ]]; then
+      echo "Keeping the existing ${unit} LOCAL_API_KEY drop-in (no key passed)."
+      echo "  Pass LOCAL_API_KEY='…' to replace it, or LOCAL_API_KEY= to remove it."
+    fi
+    return 0
+  fi
+
+  local key="$3"
+
   if [[ -z "$key" ]]; then
     if [[ -f "$dropin" ]]; then
-      echo "Removing stale ${unit} LOCAL_API_KEY drop-in …"
+      echo "Removing ${unit} LOCAL_API_KEY drop-in (LOCAL_API_KEY is empty) …"
       rm -f "$dropin"
     fi
     return 0

@@ -9,8 +9,10 @@
 # carries no repo .env, so the unit's EnvironmentFile= finds nothing there. Pass
 # the key the gateway signs its requests with, or the proxy falls back to the
 # default hardcoded in spark_idle_proxy.py and 401s every request once that key is
-# rotated. Omitting it removes a key an earlier run left:
+# rotated:
 #   sudo LOCAL_API_KEY='…' ./ops/spark_idle_proxy/install_service.sh
+# A later run that does not pass it keeps the key already installed; to take the
+# key away, pass it empty (LOCAL_API_KEY=) or use --uninstall.
 
 set -euo pipefail
 
@@ -53,7 +55,12 @@ printf '%s\n' "${content//__REPO_ROOT__/$REPO_DIR}" >"$tmp"
 install -m 0644 "$tmp" "$SERVICE_DST"
 rm -f "$tmp"
 
-write_local_api_key_dropin "$SYSTEMD_DST" "$SERVICE_UNIT" "${LOCAL_API_KEY:-}"
+# The unquoted ${VAR+"$VAR"} passes a third argument only when LOCAL_API_KEY is
+# set (even when set to nothing), and none at all when it is unset. An empty key
+# means "remove the drop-in", so collapsing the two would make the key-less
+# invocation in the usage notes above delete the Spark's key and — via the restart
+# below — 401 every request it then serves.
+write_local_api_key_dropin "$SYSTEMD_DST" "$SERVICE_UNIT" ${LOCAL_API_KEY+"$LOCAL_API_KEY"}
 
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"

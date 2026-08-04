@@ -96,6 +96,13 @@ sudo ./ops/h200_idle_proxy/uninstall.sh
 
 Default tunnels: `spark2` and `jason@internal.freeinference.org`.
 
+The unit reads the repo's `.env` for `LOCAL_API_KEY` (see [Gateway
+configuration](#gateway-configuration)). Neither H200 node normally has one, so
+pass the key on the first install — `sudo LOCAL_API_KEY='…'
+./ops/h200_idle_proxy/install.sh` — and it lands in a mode-0600 drop-in. The
+port-only re-runs above keep whatever key is already installed; to remove it, pass
+`LOCAL_API_KEY=` explicitly or run `uninstall.sh`.
+
 ## Gateway configuration
 
 On **both** staging and production, set the following in `.env` — the first is

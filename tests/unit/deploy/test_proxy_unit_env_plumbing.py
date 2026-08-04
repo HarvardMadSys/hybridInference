@@ -300,6 +300,57 @@ def test_installer_delivers_the_key_and_bounces_the_proxy(unit: str, installer: 
     )
 
 
+def _installer_key_call(installer: Path) -> str:
+    """The single line where an installer hands LOCAL_API_KEY to the helper."""
+    calls = [
+        line.strip()
+        for line in installer.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("write_local_api_key_dropin ")
+    ]
+    assert len(calls) == 1, f"{installer.name}: expected one call, found {calls}"
+    return calls[0]
+
+
+@pytest.mark.parametrize(("unit", "installer"), PROXY_UNITS.items(), ids=list(PROXY_UNITS))
+@pytest.mark.parametrize(
+    ("env", "expected_argc", "why"),
+    [
+        ({}, "2", "LOCAL_API_KEY unset must reach the helper as *no* key argument"),
+        ({"LOCAL_API_KEY": ""}, "3", "an explicit empty key must still ask for a clear"),
+        ({"LOCAL_API_KEY": "k"}, "3", "a real key must be passed through"),
+    ],
+    ids=["unset", "empty", "set"],
+)
+def test_installer_does_not_turn_a_key_less_re_run_into_a_clear(
+    unit: str, installer: Path, env: dict[str, str], expected_argc: str, why: str
+) -> None:
+    """``"${LOCAL_API_KEY:-}"`` would delete the key on every ordinary re-run.
+
+    The helper reads an empty third argument as "remove the drop-in", so an
+    installer that expands an unset LOCAL_API_KEY to an empty string erases the
+    key whenever it is re-run for something else entirely -- a tunnel host, a
+    port -- and then restarts the proxy onto its hardcoded default. Run the real
+    call line against a shim, because the difference is invisible to a reader:
+    ``${VAR+"$VAR"}`` and ``"${VAR:-}"`` differ only in whether an argument
+    exists at all.
+    """
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -euo pipefail\n"
+            'SYSTEMD_DST="/nonexistent"; PROXY_UNIT="u.service"; SERVICE_UNIT="u.service"\n'
+            'write_local_api_key_dropin() { printf "%s" "$#"; }\n' + _installer_key_call(installer),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": "/usr/bin:/bin", **env},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected_argc, f"{installer.name} ({unit}): {why}"
+
+
 @pytest.mark.parametrize(
     "uninstaller",
     [
@@ -334,16 +385,20 @@ def test_uninstaller_removes_the_key_dropin(uninstaller: Path) -> None:
 UNIT = "local_deployment_proxy.service"
 
 
-def _write_dropin(systemd_dir: Path, key: str) -> subprocess.CompletedProcess[str]:
+def _write_dropin(systemd_dir: Path, key: str | None) -> subprocess.CompletedProcess[str]:
+    """Run the helper for real. ``key=None`` omits the argument entirely.
+
+    The distinction is the contract: an empty key clears the drop-in, an absent
+    one leaves it alone.
+    """
+    args = [str(systemd_dir), UNIT] if key is None else [str(systemd_dir), UNIT, key]
     return subprocess.run(
         [
             "bash",
             "-c",
-            f'set -euo pipefail; source "{KEY_HELPER}"; write_local_api_key_dropin "$1" "$2" "$3"',
+            f'set -euo pipefail; source "{KEY_HELPER}"; write_local_api_key_dropin "$@"',
             "bash",
-            str(systemd_dir),
-            UNIT,
-            key,
+            *args,
         ],
         capture_output=True,
         text=True,
@@ -399,13 +454,45 @@ def test_key_dropin_refuses_a_key_systemd_would_mangle(tmp_path: Path, key: str,
     assert not _dropin(tmp_path).exists(), "a refused key must leave nothing behind"
 
 
-def test_empty_key_clears_a_dropin_an_earlier_run_left(tmp_path: Path) -> None:
-    """Otherwise a rotated-away key outlives the rotation that replaced it."""
+def test_an_explicitly_empty_key_clears_a_dropin_an_earlier_run_left(tmp_path: Path) -> None:
+    """Taking a key away has to be possible, and this is how it is asked for."""
     assert _write_dropin(tmp_path, "old-key").returncode == 0
     assert _dropin(tmp_path).exists()
 
     result = _write_dropin(tmp_path, "")
     assert result.returncode == 0, result.stderr
+    assert not _dropin(tmp_path).exists()
+
+
+def test_an_absent_key_leaves_an_installed_one_alone(tmp_path: Path) -> None:
+    """The installers are re-run for reasons that have nothing to do with the key.
+
+    A new tunnel host, a moved port, a fresh checkout: none of those runs carries
+    LOCAL_API_KEY, and on the boxes this drop-in exists for -- the ones with no
+    repo .env for the unit to read -- deleting it reverts the proxy to the default
+    hardcoded in its source while the gateway keeps signing with the rotated key.
+    The installers restart the unit right afterwards, so that lands in the live
+    process: a 100% 401 rate on that route, and for deepseek-v4-flash a quiet
+    move to a paid provider. Absence is therefore not a request to clear.
+    """
+    assert _write_dropin(tmp_path, "live-key").returncode == 0
+    before = _dropin(tmp_path).read_text()
+
+    result = _write_dropin(tmp_path, None)
+    assert result.returncode == 0, result.stderr
+    assert _dropin(tmp_path).exists(), (
+        "a key-less re-run deleted the drop-in; on a box with no .env that is the "
+        "silent 401 these units exist to prevent"
+    )
+    assert _dropin(tmp_path).read_text() == before
+    assert "Keeping" in result.stdout, "the operator has to be told the key was kept"
+
+
+def test_an_absent_key_is_quiet_when_there_is_nothing_installed(tmp_path: Path) -> None:
+    """The common case -- a box whose .env supplies the key -- says nothing."""
+    result = _write_dropin(tmp_path, None)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "", result.stdout
     assert not _dropin(tmp_path).exists()
 
 

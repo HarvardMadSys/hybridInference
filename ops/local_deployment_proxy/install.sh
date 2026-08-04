@@ -28,9 +28,12 @@
 # with, or the proxy falls back to the default hardcoded in
 # local_deployment_proxy.py and 401s every request once that key is rotated:
 #   sudo LOCAL_API_KEY='…' ./local_deployment_proxy/install.sh
+# A later run that does not pass it keeps the key already installed; to take the
+# key away, pass it empty (sudo LOCAL_API_KEY= ./local_deployment_proxy/install.sh)
+# or run uninstall.sh.
 #
-# Re-running is safe (idempotent): it re-renders the units, reloads systemd, and
-# re-enables the services.
+# Re-running is safe (idempotent): it re-renders the units, reloads systemd,
+# re-enables the services, and leaves any installed LOCAL_API_KEY as it is.
 
 set -euo pipefail
 
@@ -111,11 +114,17 @@ fi
 # The block above configures the *tunnel* unit. The proxy process needs one env
 # var of its own: LOCAL_API_KEY, which it checks every inbound request against and
 # otherwise defaults to a value hardcoded in local_deployment_proxy.py — so a
-# rotated key turns into a silent 100% 401 rate. Omitting LOCAL_API_KEY removes a
-# key an earlier run left, so a rotated-away key cannot outlive its rotation. See
+# rotated key turns into a silent 100% 401 rate. See
 # ops/lib/systemd_local_api_key.sh for why this is a drop-in and why it
 # deliberately loses to the unit's EnvironmentFile=.
-write_local_api_key_dropin "$SYSTEMD_DST" "$PROXY_UNIT" "${LOCAL_API_KEY:-}"
+#
+# The unquoted ${VAR+"$VAR"} passes a third argument only when LOCAL_API_KEY is
+# actually set — even if it is set to nothing — and no third argument at all when
+# it is unset. "${LOCAL_API_KEY:-}" would hand over an empty string either way,
+# and an empty key means "remove the drop-in", so every key-less re-run of this
+# installer (a new tunnel host, a different port) would delete the key and the
+# restart below would take it away from the running proxy too.
+write_local_api_key_dropin "$SYSTEMD_DST" "$PROXY_UNIT" ${LOCAL_API_KEY+"$LOCAL_API_KEY"}
 
 systemctl daemon-reload
 
