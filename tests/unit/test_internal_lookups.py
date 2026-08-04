@@ -107,6 +107,10 @@ class _FakeRouter:
         # which is still reachable through `glm-latest`, and so still shows up
         # as a canonical id that this key is now pointing away from.
         "glm-5.1-conflicted": _FakeRoute("kimi-k2"),
+        # Two models claimed `contested`; the loader warned and the last one
+        # won, so the route table resolves it to kimi-k2. The catalog must
+        # report *that*, not a second opinion.
+        "contested": _FakeRoute("kimi-k2"),
     }
 
 
@@ -316,3 +320,26 @@ def test_every_alias_target_is_a_model_the_catalog_lists(client: TestClient) -> 
     body = client.get("/internal/model-catalog", params={"user_id": "user_1"}, headers=AUTH).json()
 
     assert set(body["aliases"].values()) <= set(body["models"])
+
+
+def test_the_table_agrees_with_the_route_table_it_describes(client: TestClient) -> None:
+    """**The catalog must not become a second opinion.**
+
+    An ambiguous alias is warned about, not refused, so the route table keeps
+    resolving it last-write-wins. If the catalog reported anything else, the
+    control plane would mint a grant for one model while the very next request
+    routed to another — and both sides would look correct in isolation.
+
+    Written as an invariant over every entry rather than one example, so a
+    future filter that changes a target has to answer for it here.
+    """
+    body = client.get("/internal/model-catalog", params={"user_id": "user_1"}, headers=AUTH).json()
+    routes = _FakeRouter.routes
+
+    for alias, canonical in body["aliases"].items():
+        assert canonical == routes[alias].canonical_model_id, (
+            f"catalog resolves {alias!r} to {canonical!r}, the router to "
+            f"{routes[alias].canonical_model_id!r}"
+        )
+
+    assert body["aliases"]["contested"] == "kimi-k2"
