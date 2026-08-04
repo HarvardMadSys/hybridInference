@@ -19,6 +19,7 @@ from serving import grants
 from serving.agent_jobs.mcp_registry import McpRegistry, McpRegistryError, McpServer
 from serving.config.settings import get_settings
 from serving.servers.deps import (
+    get_log_store,
     get_model_visibility_resolver,
     get_operational_store,
     get_router,
@@ -480,3 +481,102 @@ def test_the_registry_still_raises_on_unknown_names() -> None:
     )
     with pytest.raises(McpRegistryError):
         registry.resolve(["deepwiki", "ghost"])
+
+
+# ---------------------------------------------------------------------------
+# Usage — informational, never a limit
+# ---------------------------------------------------------------------------
+
+
+class FakeLedger:
+    """The two ledger reads the usage endpoint makes."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, dict[str, float]] = {}
+
+    async def get_agent_job_cost(self, job_id: str) -> float:
+        return self.rows.get(job_id, {}).get("cost", 0.0)
+
+    async def get_agent_job_usage(self, job_id: str) -> dict[str, float]:
+        row = self.rows.get(job_id, {})
+        return {
+            "tokens_in": row.get("tokens_in", 0),
+            "tokens_out": row.get("tokens_out", 0),
+            "calls": row.get("calls", 0),
+        }
+
+
+@pytest.fixture
+def ledger() -> FakeLedger:
+    fake = FakeLedger()
+    fake.rows["job_1"] = {"cost": 1.25, "tokens_in": 900, "tokens_out": 300, "calls": 7}
+    return fake
+
+
+@pytest.fixture
+def client_with_ledger(store: FakeStore, ledger: FakeLedger) -> TestClient:
+    app = FastAPI()
+    app.include_router(agent_grants.router)
+    install_error_handlers(app)
+    app.dependency_overrides[get_operational_store] = lambda: store
+    app.dependency_overrides[get_log_store] = lambda: ledger
+    app.dependency_overrides[get_router] = lambda: object()
+    app.dependency_overrides[get_model_visibility_resolver] = lambda: None
+    return TestClient(app)
+
+
+def test_usage_reports_the_grant_job_s_ledger_totals(client_with_ledger) -> None:
+    grant_id = _mint(client_with_ledger).json()["grant_id"]
+    body = client_with_ledger.get(f"/internal/agent-grants/{grant_id}/usage", headers=AUTH).json()
+    assert body["spent_usd"] == 1.25
+    assert body["request_count"] == 7
+    assert body["tokens_in"] == 900
+    assert body["external_job_id"] == "job_1"
+
+
+def test_usage_is_not_a_limit(client_with_ledger, ledger) -> None:
+    """Spend far past any plausible cap still reports, and still mints.
+
+    Nothing consults this endpoint to decide whether a call may proceed. If a
+    future change made usage gate anything, this is the test that notices.
+    """
+    ledger.rows["job_1"]["cost"] = 10_000.0
+    assert (
+        client_with_ledger.get(
+            f"/internal/agent-grants/{_mint(client_with_ledger).json()['grant_id']}/usage",
+            headers=AUTH,
+        ).json()["spent_usd"]
+        == 10_000.0
+    )
+    assert _mint(client_with_ledger, external_attempt_id="9").status_code == 200
+
+
+def test_usage_carries_no_budget_or_remaining_field(client_with_ledger) -> None:
+    """A `remaining` field would imply a ceiling this endpoint does not have."""
+    grant_id = _mint(client_with_ledger).json()["grant_id"]
+    body = client_with_ledger.get(f"/internal/agent-grants/{grant_id}/usage", headers=AUTH).json()
+    assert not [k for k in body if "budget" in k.lower() or "remaining" in k.lower()]
+
+
+def test_usage_for_an_unknown_grant_is_a_404(client_with_ledger) -> None:
+    assert (
+        client_with_ledger.get("/internal/agent-grants/agr_nope/usage", headers=AUTH).status_code
+        == 404
+    )
+
+
+def test_usage_without_a_ledger_says_so_rather_than_reporting_zero(store: FakeStore) -> None:
+    """Zero reads as "spent nothing", which is not what "cannot tell" means."""
+    app = FastAPI()
+    app.include_router(agent_grants.router)
+    install_error_handlers(app)
+    app.dependency_overrides[get_operational_store] = lambda: store
+    app.dependency_overrides[get_log_store] = lambda: None
+    app.dependency_overrides[get_router] = lambda: object()
+    app.dependency_overrides[get_model_visibility_resolver] = lambda: None
+    http = TestClient(app)
+
+    grant_id = _mint(http).json()["grant_id"]
+    response = http.get(f"/internal/agent-grants/{grant_id}/usage", headers=AUTH)
+    assert response.status_code == 503
+    assert response.json()["error"]["type"] == "ledger_unavailable"

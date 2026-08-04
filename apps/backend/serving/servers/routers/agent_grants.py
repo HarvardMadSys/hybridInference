@@ -23,6 +23,7 @@ from serving.agent_jobs.mcp_registry import McpRegistryError, get_registry
 from serving.agent_jobs.visible_models import agent_visible_models
 from serving.model_access import get_disabled_models_from_preferences
 from serving.servers.deps import (
+    get_log_store,
     get_model_visibility_resolver,
     get_operational_store,
     get_router,
@@ -276,6 +277,62 @@ async def renew_grant(
             "That grant is revoked or expired and cannot be renewed.",
         )
     return _grant_response(row)
+
+
+@router.get("/{grant_id}/usage")
+async def grant_usage(
+    grant_id: str,
+    _: None = Depends(require_dispatch_token),
+    store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
+) -> dict[str, Any]:
+    """Report what the grant's job has spent so far.
+
+    **Informational attribution, not a limit.** Nothing consults this to decide
+    whether a call may proceed — that is the account's daily quota, enforced in
+    ``model_auth``. This exists so the control plane's UI can show an owner
+    what a job cost, and reading it as a ceiling would reintroduce the per-job
+    budget the design removed.
+
+    Numbers come from the billing ledger, keyed by the grant's
+    ``external_job_id``, so they reflect what the gateway actually billed
+    rather than anything an agent reports about itself.
+
+    Args:
+        grant_id: The grant whose job to report on.
+        _: Dispatch-token authorization.
+        store: Operational store.
+        log_store: Billing ledger.
+
+    Returns:
+        Spend, call count, and token totals for the grant's job.
+
+    Raises:
+        HTTPException: 404 for an unknown grant, 503 without a ledger.
+    """
+    store = _require_store(store)
+    row = await store.get_agent_grant(grant_id)
+    if row is None:
+        raise _error(status.HTTP_404_NOT_FOUND, "unknown_grant", "No such grant.")
+    if log_store is None:
+        # An empty report would read as "this job spent nothing", which is a
+        # different and much more reassuring claim than "we cannot tell".
+        raise _error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "ledger_unavailable",
+            "Usage cannot be reported right now.",
+        )
+
+    job_id = row["external_job_id"]
+    usage = await log_store.get_agent_job_usage(job_id)
+    return {
+        "grant_id": grant_id,
+        "external_job_id": job_id,
+        "spent_usd": float(await log_store.get_agent_job_cost(job_id)),
+        "request_count": int(usage.get("calls", 0)),
+        "tokens_in": int(usage.get("tokens_in", 0)),
+        "tokens_out": int(usage.get("tokens_out", 0)),
+    }
 
 
 @router.post("/{grant_id}/revoke")
