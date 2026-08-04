@@ -27,6 +27,7 @@ from serving.observability.rejection_log import (
     bounded_enrichment,
     capture_rejected_prompt,
     log_rejection,
+    queue_rejection_log,
     rejection_logging_enabled,
 )
 from serving.servers.deps import (
@@ -204,8 +205,12 @@ async def _authenticate_by_api_key(
                 "ip_blocked_enrichment_failed",
                 extra={"event": "ip_blocked_enrichment_failed", "remote_ip": ip_info.client_ip},
             )
+        # Via queue_rejection_log, not log_rejection directly: the write is
+        # fire-and-forget, so without a bound on how many captured prompts sit
+        # queued behind it, a flood would grow worker memory by up to a megabyte
+        # per rejection while rows drain.
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
-            log_rejection(
+            queue_rejection_log(
                 request=request,
                 status_code=429,
                 error_code="ip_blocked",

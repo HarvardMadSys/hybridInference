@@ -56,6 +56,20 @@ def _build_app(monkeypatch, *, op_store_user: dict[str, Any] | None) -> tuple[Fa
     return app, log_calls
 
 
+def _recording_queue(sink: list[dict]):
+    """A ``queue_rejection_log`` stand-in: sync, records kwargs, returns a coro."""
+
+    def fake_queue_rejection_log(**kwargs):
+        sink.append(kwargs)
+
+        async def _noop() -> None:
+            return None
+
+        return _noop()
+
+    return fake_queue_rejection_log
+
+
 def _build_blocked_app(
     monkeypatch,
     *,
@@ -66,15 +80,16 @@ def _build_blocked_app(
 
     POST (not GET) because the point of these tests is the request *body*:
     ``ip_blocked`` is refused in a dependency, before any handler has parsed it.
-    Returns the app, the captured log_rejection calls, and the op_store mock so
+    Returns the app, the captured rejection-log calls, and the op_store mock so
     a test can assert whether the identity lookup was attempted at all.
+
+    Patches ``queue_rejection_log`` — the seam the blocked path actually uses,
+    since the prompt-retention bound has to be applied before the task exists.
+    It is sync and returns the coroutine to schedule, so the fake matches.
     """
     log_calls: list[dict] = []
 
-    async def fake_log_rejection(**kwargs):
-        log_calls.append(kwargs)
-
-    monkeypatch.setattr("serving.servers.auth.log_rejection", fake_log_rejection)
+    monkeypatch.setattr("serving.servers.auth.queue_rejection_log", _recording_queue(log_calls))
 
     op = MagicMock()
     op.get_auth_context_lightweight = AsyncMock(return_value=lightweight_user)
@@ -287,11 +302,7 @@ async def test_blocked_ip_on_a_typed_body_route_bounds_an_oversized_prompt(
     from serving.observability.rejection_log import REJECTED_PROMPT_MAX_BODY_BYTES
 
     log_calls: list[dict] = []
-
-    async def fake_log_rejection(**kwargs):
-        log_calls.append(kwargs)
-
-    monkeypatch.setattr("serving.servers.auth.log_rejection", fake_log_rejection)
+    monkeypatch.setattr("serving.servers.auth.queue_rejection_log", _recording_queue(log_calls))
 
     op = MagicMock()
     op.get_auth_context_lightweight = AsyncMock(return_value=None)

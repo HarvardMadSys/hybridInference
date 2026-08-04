@@ -63,6 +63,21 @@ REJECTED_ENRICHMENT_TIMEOUT_SEC = 0.25
 #: work separately.
 REJECTED_ENRICHMENT_MAX_CONCURRENT = 8
 
+#: How many prompt-bearing rejection logs may be awaiting a write at once.
+#: :data:`REJECTED_ENRICHMENT_MAX_CONCURRENT` bounds the work of *capturing* a
+#: prompt, but not how long the result is then held: the log write is
+#: fire-and-forget, and it can wait on the settings store or the database pool.
+#: Without this, ingress arriving faster than rows are written would retain a
+#: prompt per queued task — up to :data:`REJECTED_PROMPT_MAX_BODY_BYTES` each.
+#: Past the cap the row is still written, just without its prompt: a rejection
+#: that is logged but thin beats worker memory growing with the flood.
+REJECTED_PROMPT_MAX_PENDING_LOGS = 8
+
+#: Count of prompt-bearing rejection logs queued but not yet written. A plain int
+#: rather than a semaphore because it is reserved *synchronously* — see
+#: :func:`queue_rejection_log` for why that ordering is the whole point.
+_pending_prompt_logs = 0
+
 #: Never queued on: :func:`bounded_enrichment` checks
 #: :meth:`asyncio.Semaphore.locked` and gives up, because waiting for a slot
 #: would rebuild the very backlog the cap exists to prevent. Because it is never
@@ -294,6 +309,45 @@ async def capture_rejected_prompt(
         return extract_prompt_from_body(json.loads(raw))
     except Exception:
         return ""
+
+
+def queue_rejection_log(**kwargs: Any) -> Coroutine[Any, Any, None]:
+    """Return the coroutine to fire-and-forget, bounding prompts held in memory.
+
+    Synchronous by design, and that is the substance of it rather than a detail:
+    a coroutine retains its arguments from the moment it is *created*, not from
+    when it first runs. A bound checked inside the task body would therefore read
+    zero while thousands of queued tasks each already held a prompt. The decision
+    to keep or drop has to be made here, before the task exists.
+
+    Over :data:`REJECTED_PROMPT_MAX_PENDING_LOGS` outstanding prompt-bearing
+    logs, the prompt is dropped and the row is written without it. Callers must
+    schedule the returned coroutine immediately — it releases the reservation
+    when the write finishes, so one that is never awaited leaks it.
+    """
+    global _pending_prompt_logs
+
+    if kwargs.get("prompt") and _pending_prompt_logs >= REJECTED_PROMPT_MAX_PENDING_LOGS:
+        kwargs["prompt"] = ""
+    if not kwargs.get("prompt"):
+        return log_rejection(**kwargs)
+
+    _pending_prompt_logs += 1
+    return _log_rejection_releasing_slot(**kwargs)
+
+
+async def _log_rejection_releasing_slot(**kwargs: Any) -> None:
+    """Write the row, then free the prompt reservation whatever happened."""
+    global _pending_prompt_logs
+    try:
+        await log_rejection(**kwargs)
+    finally:
+        _pending_prompt_logs = max(0, _pending_prompt_logs - 1)
+
+
+def pending_prompt_log_count() -> int:
+    """Return outstanding prompt-bearing rejection logs. For tests/diagnostics."""
+    return _pending_prompt_logs
 
 
 async def log_rejection(

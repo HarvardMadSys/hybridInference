@@ -468,6 +468,95 @@ async def test_capture_releases_its_slot_after_a_failed_read():
 
 
 @pytest.mark.asyncio
+async def test_queue_rejection_log_drops_the_prompt_past_the_pending_cap(
+    fake_log_store, runtime_on, monkeypatch
+):
+    """Over the cap the row is still written, without its prompt.
+
+    A thin row beats worker memory growing with the flood. The reservation is
+    taken synchronously, before the task exists, because a coroutine retains its
+    arguments from creation — a check inside the task body would read zero while
+    every queued prompt was already held.
+    """
+    import serving.observability.rejection_log as mod
+
+    monkeypatch.setattr(mod, "REJECTED_PROMPT_MAX_PENDING_LOGS", 2)
+    monkeypatch.setattr(mod, "_pending_prompt_logs", 0)
+
+    messages = [{"role": "user", "content": "hi"}]
+    kwargs = {
+        "log_store": fake_log_store,
+        "runtime_settings": runtime_on,
+        "request": _fake_request(),
+        "status_code": 429,
+        "error_code": "ip_blocked",
+        "reason": "auth_failures_exceeded",
+        "user": None,
+        "prompt": messages,
+    }
+
+    # Create (not yet await) two coroutines: both reserve, filling the cap.
+    first = mod.queue_rejection_log(**kwargs)
+    second = mod.queue_rejection_log(**kwargs)
+    assert mod.pending_prompt_log_count() == 2
+
+    # The third is created while the cap is full, so it carries no prompt.
+    third = mod.queue_rejection_log(**kwargs)
+    assert mod.pending_prompt_log_count() == 2
+
+    await asyncio.gather(first, second, third)
+    prompts = [c.kwargs["prompt"] for c in fake_log_store.log_request.await_args_list]
+    assert prompts == [messages, messages, ""]
+    # Reservations freed once the writes drained.
+    assert mod.pending_prompt_log_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_queue_rejection_log_frees_its_reservation_when_the_write_fails(
+    fake_log_store, runtime_on, monkeypatch
+):
+    """A failed write must not permanently consume a prompt reservation."""
+    import serving.observability.rejection_log as mod
+
+    monkeypatch.setattr(mod, "_pending_prompt_logs", 0)
+    fake_log_store.log_request = AsyncMock(side_effect=RuntimeError("db down"))
+
+    await mod.queue_rejection_log(
+        log_store=fake_log_store,
+        runtime_settings=runtime_on,
+        request=_fake_request(),
+        status_code=429,
+        error_code="ip_blocked",
+        reason="x",
+        user=None,
+        prompt=[{"role": "user", "content": "hi"}],
+    )
+    assert mod.pending_prompt_log_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_queue_rejection_log_reserves_nothing_without_a_prompt(
+    fake_log_store, runtime_on, monkeypatch
+):
+    """A promptless rejection holds no memory, so it takes no reservation."""
+    import serving.observability.rejection_log as mod
+
+    monkeypatch.setattr(mod, "_pending_prompt_logs", 0)
+    await mod.queue_rejection_log(
+        log_store=fake_log_store,
+        runtime_settings=runtime_on,
+        request=_fake_request(),
+        status_code=429,
+        error_code="ip_blocked",
+        reason="x",
+        user=None,
+        prompt="",
+    )
+    assert mod.pending_prompt_log_count() == 0
+    fake_log_store.log_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_bounded_enrichment_runs_work_and_returns_its_value():
     async def work():
         return {"user_id": "u1"}
