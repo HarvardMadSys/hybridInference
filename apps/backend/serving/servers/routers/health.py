@@ -56,6 +56,18 @@ def _endpoint_is_degraded(endpoint_status: dict[str, Any]) -> bool:
     from the first one, and reporting only the aggregates let exactly that
     outage serve HTTP 200 "healthy" for an hour — availability had not decayed
     yet and the breaker had not tripped.
+
+    Known coverage limit — this verdict is only as wide as the traffic that
+    reaches ``EndpointHealthRegistry``, which today means the router-driven
+    surfaces (``/v1/...``). The Anthropic-native surface
+    (``/anthropic/v1/messages``) picks ``route.adapters[0]`` and calls the adapter
+    directly, so it records neither success nor failure and never consults
+    ``allow_request``: a model whose traffic is entirely Anthropic-native can be
+    fully broken while every endpoint here still reads healthy, and once /v1
+    traffic does open the circuit that surface keeps hitting the dead endpoint.
+    Pre-existing (this function only reports what the registry knows); wiring it
+    up is a routing change, not a reporting one, and recording only its failures
+    would skew availability rather than fix it.
     """
     availability = endpoint_status.get("availability")
     if endpoint_status.get("circuit_state") == "open":

@@ -41,7 +41,7 @@ from serving.servers.deps import (
 from serving.servers.routers.completions_stream import StreamSession, ToolCallAccumulator
 from serving.servers.routers.routing_info import (
     RoutingInfo,
-    _provider_for_error,
+    _publish_error_provider,
     _status_code_from_exception,
     build_initial_routing_info,
     merge_adapter_routing,
@@ -1156,24 +1156,13 @@ async def chat_completions(
         # see that function for the per-library mapping.
         exc_status_code = _status_code_from_exception(exc)
 
-        # Background DB log on the error path. Prefer the real upstream provider
-        # preserved on ``exc._routing``; the req_ctx push scope has already been
-        # reset by the time we get here, so reading it would misattribute genuine
-        # upstream failures to the "router" sentinel and hide them from the
-        # provider-performance aggregations.
-        provider_for_error = _provider_for_error(exc_routing)
-
-        # Publish that attribution durably into req_ctx, which the DB log above
-        # reads from a dict but RequestLogMiddleware and the in-process alert
-        # rules can only read from the context. ``req_ctx.push`` around the
-        # adapter call is already unwound here, so without this the request-log
-        # record carries no provider and an upstream failure is indistinguishable
-        # from one the gateway raised itself — which is how a relayed upstream 401
-        # was filed as a routine auth challenge and dropped below INFO. Skipped
-        # for the "router" sentinel: no upstream was ever selected, so claiming
-        # one would misattribute a pre-routing failure.
-        if provider_for_error and provider_for_error != "router":
-            req_ctx.update({"provider": provider_for_error})
+        # Attribution for the error path, used twice: the background DB log below
+        # takes it as a value, while RequestLogMiddleware and the in-process alert
+        # rules read it from req_ctx, which this also republishes because the
+        # ``req_ctx.push`` scope around the adapter call is already unwound here.
+        # See ``_publish_error_provider`` for why the "router" sentinel is not
+        # published and what breaks when the label is missing.
+        provider_for_error = _publish_error_provider(exc_routing)
 
         if log_store and not suppress_synthetic_logging:
             metadata_for_error = metadata

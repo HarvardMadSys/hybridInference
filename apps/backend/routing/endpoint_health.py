@@ -12,7 +12,6 @@ from typing import Any
 
 from routing.usage_limit import detect_usage_limit
 from serving.exceptions import operator_safe_error
-from serving.observability import alerts as _alerts
 from serving.observability.alerts import AlertSeverity, alert_on_transition, escape_slack_text
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -56,12 +55,26 @@ _GATEWAY_OWNED_AUTH_STATUSES = frozenset({403})
 # persistent misconfiguration re-pages on the same cadence.
 _AUTH_ALERT_COOLDOWN_SEC = 300
 
+# Title of the upstream-auth page. Shared by the firing and resolving edges so
+# the recovery card reads as the same incident ("Recovered: <title>").
+_AUTH_ALERT_TITLE = "Upstream rejected gateway credential"
+
 # Minimum spacing between *scheduling* upstream-auth pages for one endpoint. The
 # condition fails 100% of requests, so without this every request would spawn an
 # alert task and pay ``alert_slack``'s snooze lookup only to be dropped by the
 # cooldown above. Deliberately far shorter than that cooldown so a page dropped
 # by an unreachable sink is retried in seconds rather than after five minutes.
 _AUTH_ALERT_SCHEDULE_INTERVAL_SEC = 5.0
+
+
+def _auth_alert_key(endpoint_id: str) -> str:
+    """Return the transition/dedupe key for one endpoint's upstream-auth incident.
+
+    One key per endpoint: a wrong key on one local proxy must not mute or resolve
+    another endpoint's rejection. Shared by the firing and resolving edges, since
+    the tracker matches them by key.
+    """
+    return f"upstream_auth:{endpoint_id}"
 
 
 def _reason_str(s: str) -> str:
@@ -104,11 +117,22 @@ def _is_gateway_owned_endpoint(endpoint_id: str) -> bool:
     ``:local`` when the base_url carries no port) for every endpoint whose host
     is in its ``_LOCAL_HOSTS`` set, so the suffix is the existing marker for
     "the operator owns both ends of this connection".
+
+    Matched exactly rather than by prefix, because the same function mints
+    ``:{name}-api`` for a *remote* host, where ``name`` is the first label left
+    after stripping ``api.``/``llm.``. A remote provider hosted at
+    ``api.local.<tld>`` (or ``local.<tld>``) therefore yields ``:local-api``,
+    which a ``startswith("local-")`` test would report as gateway-owned — and
+    that would escalate the remote provider's per-request content-policy and
+    region 403s into the shared breaker, the exact cascade the 403 scoping below
+    exists to prevent.
     """
     _, separator, suffix = endpoint_id.rpartition(":")
     if not separator:
         return False
-    return suffix == "local" or suffix.startswith("local-")
+    if suffix == "local":
+        return True
+    return suffix.startswith("local-") and suffix.removeprefix("local-").isdigit()
 
 
 def _is_auth_misconfig(status: int | None, endpoint_id: str) -> bool:
@@ -207,27 +231,42 @@ class _ProviderHealth:
         self.consecutive_auth_rejections = 0
         self._lock = threading.Lock()
 
-    def record(self, success: bool) -> None:
+    def record(self, success: bool) -> bool:
+        """Record an outcome; return whether it ended a credential-rejection run.
+
+        That return is the upstream-auth incident's one healthy edge: the caller
+        turns it into the ``resolved`` transition that closes the page, exactly
+        as ``_CircuitBreaker.on_success`` closes ``circuit_open``.
+        """
         inc_s = 1.0 if success else 0.0
         with self._lock:
             self.ewma_success = (1 - self.alpha) * self.ewma_success + self.alpha * inc_s
             self.ewma_total = (1 - self.alpha) * self.ewma_total + self.alpha
-            if success:
+            if success and self.consecutive_auth_rejections:
                 # A single accepted request proves the credential works again.
                 self.consecutive_auth_rejections = 0
+                return True
+            return False
 
-    def note_failure(self, *, status: int | None, auth_misconfig: bool) -> int:
-        """Record the failing status and return the auth-rejection run length."""
+    def note_failure(self, *, status: int | None, auth_misconfig: bool) -> tuple[int, bool]:
+        """Record the failing status; report the auth-rejection run and its end.
+
+        Returns ``(run_length, run_ended)``: the current length of the
+        credential-rejection run, and whether *this* failure is what ended a
+        non-empty one, which the caller needs to resolve the incident exactly
+        once rather than on every subsequent failure.
+        """
         with self._lock:
             if status is not None:
                 self.last_error_status = status
             if auth_misconfig:
                 self.consecutive_auth_rejections += 1
-            else:
-                # Any other kind of failure ends the auth run: whatever is wrong
-                # now, the credential was accepted far enough to fail otherwise.
-                self.consecutive_auth_rejections = 0
-            return self.consecutive_auth_rejections
+                return self.consecutive_auth_rejections, False
+            # Any other kind of failure ends the auth run: whatever is wrong
+            # now, the credential was accepted far enough to fail otherwise.
+            ended = self.consecutive_auth_rejections > 0
+            self.consecutive_auth_rejections = 0
+            return 0, ended
 
     @property
     def availability(self) -> float:
@@ -539,8 +578,16 @@ class EndpointHealthRegistry:
         """Record a successful endpoint request."""
         with self._lock:
             self.ensure(endpoint_id)
-            self._health[endpoint_id].record(True)
+            auth_run_ended = self._health[endpoint_id].record(True)
+            if auth_run_ended:
+                # Re-arm scheduling: a later outage must page on its first
+                # rejection instead of serving out a window this one opened.
+                self._auth_alert_at.pop(endpoint_id, None)
             self._circuits[endpoint_id].on_success()
+        if auth_run_ended:
+            # Outside the lock, like the failure path: alert delivery must not
+            # hold the lock every other endpoint's health accounting needs.
+            self._resolve_auth_misconfig(endpoint_id)
 
     def record_failure(
         self,
@@ -577,7 +624,11 @@ class EndpointHealthRegistry:
             self.ensure(endpoint_id)
             health = self._health[endpoint_id]
             health.record(False)
-            auth_rejections = health.note_failure(status=status, auth_misconfig=auth_misconfig)
+            auth_rejections, auth_run_ended = health.note_failure(
+                status=status, auth_misconfig=auth_misconfig
+            )
+            if auth_run_ended:
+                self._auth_alert_at.pop(endpoint_id, None)
             availability = health.availability
             self._circuits[endpoint_id].on_failure(
                 availability=availability,
@@ -594,6 +645,14 @@ class EndpointHealthRegistry:
                 detail=safe_detail,
                 consecutive=auth_rejections,
             )
+        elif auth_run_ended:
+            # A different failure ended the run: the credential was accepted far
+            # enough to fail for another reason, so the *credential* incident is
+            # over even though the endpoint is not well. What is wrong now is the
+            # breaker's ``circuit_open`` incident to report, and leaving this one
+            # open would contradict the ``consecutive_auth_rejections`` reset that
+            # /health/deep reads.
+            self._resolve_auth_misconfig(endpoint_id)
 
     def _report_auth_misconfig(
         self,
@@ -609,13 +668,13 @@ class EndpointHealthRegistry:
         trip, because there is no partial version of this failure: every request
         to the endpoint is refused until an operator rotates or fixes the key.
 
-        Uses ``alert_slack`` rather than the state-tracking
-        ``alert_on_transition`` the breaker uses: nothing polls credential
-        validity, so there is no healthy edge to close a state incident with, and
-        an incident left open holds principal quota. A cooldown-deduped page
-        re-fires while the condition lasts and simply stops when it does not. The
-        breaker's own ``circuit_open`` state incident (which this failure now
-        counts toward) still supplies the open/close lifecycle.
+        Routed through ``alert_on_transition`` as a *state* alert, exactly like
+        the breaker's own ``circuit_open``: this is a condition the process
+        already tracks, with one healthy edge (the first accepted request — see
+        ``_resolve_auth_misconfig``) and no meaningful staleness, since silence is
+        not evidence the credential works. A fire-only ``alert_slack`` would open
+        an incident nothing could ever close, holding principal quota until it is
+        exhausted and real outages start being suppressed.
 
         The log line is emitted for every rejection — it is the audit trail, and
         it replaces an equally frequent INFO line — while the page is throttled.
@@ -649,12 +708,47 @@ class EndpointHealthRegistry:
         if detail:
             context["upstream_error"] = detail
         _fire_and_forget(
-            _alerts.alert_slack(
-                AlertSeverity.ERROR,
-                "Upstream rejected gateway credential",
-                context,
-                dedupe_key=f"upstream_auth:{endpoint_id}",
+            alert_on_transition(
+                key=_auth_alert_key(endpoint_id),
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title=_AUTH_ALERT_TITLE,
+                context=lambda: context,
                 cooldown_sec=_AUTH_ALERT_COOLDOWN_SEC,
+                kind="state",
+            )
+        )
+
+    def _resolve_auth_misconfig(self, endpoint_id: str) -> None:
+        """Close the upstream-auth incident now that the credential works again.
+
+        This is the state incident's only healthy edge, so it is what stops the
+        page from staying open forever: the endpoint just did the thing the page
+        said no caller could make it do. Called on the transition out of a
+        rejection run — an accepted request, or a failure of any other kind —
+        never on every success, so the resolution is emitted once per outage.
+
+        With no running loop (sync teardown) nothing else will close this
+        incident: state alerts report one healthy edge and are never swept,
+        because silence is not recovery. Same limitation, and the same reason for
+        it, as ``_CircuitBreaker.on_success``.
+        """
+        logger.info(
+            "upstream_auth_recovered",
+            extra={
+                "event": "upstream_auth_recovered",
+                "endpoint_id": endpoint_id,
+            },
+        )
+        _fire_and_forget(
+            alert_on_transition(
+                key=_auth_alert_key(endpoint_id),
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title=_AUTH_ALERT_TITLE,
+                context=dict,
+                cooldown_sec=_AUTH_ALERT_COOLDOWN_SEC,
+                kind="state",
             )
         )
 

@@ -10,6 +10,7 @@ from serving.servers.routers.routing_info import (
     Pricing,
     RoutingInfo,
     _provider_for_error,
+    _publish_error_provider,
     _status_code_from_exception,
     build_initial_routing_info,
     merge_adapter_routing,
@@ -381,3 +382,61 @@ def test_provider_for_error_falls_back_to_live_request_context():
         assert _provider_for_error(None) == "deepseek"
     # Outside the push scope the context is reset, so we fall back to "router".
     assert _provider_for_error(None) == "router"
+
+
+@pytest.fixture
+def clean_request_context():
+    """Isolate the contextvar writes ``_publish_error_provider`` makes.
+
+    ``req_ctx.update`` sets the context var for the rest of the process, so a
+    leaked ``provider`` would silently satisfy a later test's assertions.
+    """
+    req_ctx.set({})
+    yield
+    req_ctx.set({})
+
+
+def test_publish_error_provider_writes_upstream_attribution_into_the_context(
+    clean_request_context,
+):
+    """The producer of the label two consumers key off.
+
+    Regression for a production outage: a local proxy answered 401 to every
+    request for an hour, the completions error path re-raised it, and both
+    ``RequestLogMiddleware`` and ``FailedRequestRateRule`` saw a bare 401 with no
+    provider — indistinguishable from the gateway's own auth challenge, which
+    both treat as routine. The ``req_ctx.push`` scope around the adapter call is
+    unwound by the time the handler catches the exception, so this republish is
+    the only thing that puts the upstream's identity back in the context. Both
+    consumer-side fixes are no-ops without it.
+    """
+    ctx_before = dict(req_ctx.get() or {})
+    assert "provider" not in ctx_before
+
+    assert _publish_error_provider({"provider": "diffusiongemma"}) == "diffusiongemma"
+    assert req_ctx.get()["provider"] == "diffusiongemma"
+
+
+def test_publish_error_provider_does_not_publish_the_router_sentinel(clean_request_context):
+    """A pre-routing failure has no upstream, so it must leave ``provider`` unset.
+
+    Publishing ``"router"`` would defeat the distinction both consumers draw:
+    they read "has a provider" as "an upstream refused us", so a gateway-issued
+    401 would start being logged at WARNING and counted as a service failure.
+    """
+    assert _publish_error_provider(None) == "router"
+    assert "provider" not in (req_ctx.get() or {})
+
+    assert _publish_error_provider({"provider": "router"}) == "router"
+    assert "provider" not in (req_ctx.get() or {})
+
+    # An empty label resolves to the sentinel and is likewise not published.
+    assert _publish_error_provider({"provider": ""}) == "router"
+    assert "provider" not in (req_ctx.get() or {})
+
+
+def test_publish_error_provider_leaves_a_live_context_provider_in_place(clean_request_context):
+    """The defensive context fallback republishes the same value, not the sentinel."""
+    with req_ctx.push(provider="deepseek"):
+        assert _publish_error_provider(None) == "deepseek"
+        assert req_ctx.get()["provider"] == "deepseek"

@@ -287,3 +287,29 @@ def _provider_for_error(exc_routing: Any) -> str:
             return provider
     ctx = req_ctx.get()
     return ctx.get("provider", "router") if ctx else "router"
+
+
+def _publish_error_provider(exc_routing: Any) -> str:
+    """Resolve the error-path provider label and publish it into the context.
+
+    Returns whatever ``_provider_for_error`` resolved, and additionally writes it
+    back into ``req_ctx`` when a real upstream was selected. The DB error log
+    reads the label from a dict it is handed, but ``RequestLogMiddleware`` and the
+    in-process alert rules can only read the request context — and the
+    ``req_ctx.push`` scope wrapping the adapter call is already unwound by the
+    time an exception reaches the error handler. Without this the request-log
+    record carries no provider at all, so an upstream failure is
+    indistinguishable from one the gateway raised itself: that is how a relayed
+    upstream 401 was filed as a routine auth challenge and logged below the
+    default threshold for an hour, and why the failed-request-rate rule could not
+    tell the two apart either.
+
+    The ``"router"`` sentinel is deliberately not published: it means no upstream
+    was ever selected (a pre-routing failure), so labelling the record with it
+    would misattribute the failure *and* defeat the distinction both consumers
+    draw — they treat "has a provider" as "an upstream refused us".
+    """
+    provider = _provider_for_error(exc_routing)
+    if provider and provider != "router":
+        req_ctx.update({"provider": provider})
+    return provider

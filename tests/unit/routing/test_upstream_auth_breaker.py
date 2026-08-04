@@ -13,6 +13,7 @@ one INFO line per request as the sole artifact.
 """
 
 import asyncio
+import json
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -28,7 +29,12 @@ from routing.endpoint_health import (
     _is_gateway_owned_endpoint,
 )
 from routing.routers import AllCircuitsOpenError, FixedRouter
-from serving.observability.alerts import AlertSeverity, reset_transition_state
+from serving.observability.alerts import (
+    _STATE_TRANSITIONS,
+    AlertSeverity,
+    reset_transition_state,
+)
+from serving.utils.logging import JsonFormatter
 
 # The endpoint id from the real outage: ``registry._make_provider_id`` stamps
 # ``:local-<port>`` for any base_url whose host is in its ``_LOCAL_HOSTS`` set.
@@ -57,13 +63,34 @@ def _clean_alert_state(monkeypatch):
     reset_dedupe_state()
 
 
+def _auth_alert_key(endpoint_id: str) -> str:
+    return f"upstream_auth:{endpoint_id}"
+
+
 def _auth_alerts(mock_alert, endpoint_id: str) -> list:
-    """Return only the upstream-auth pages, ignoring any circuit-open page."""
+    """Return only the upstream-auth pages, ignoring resolutions and other keys."""
     return [
         call
         for call in mock_alert.await_args_list
-        if call.kwargs.get("dedupe_key") == f"upstream_auth:{endpoint_id}"
+        if call.kwargs.get("dedupe_key") == _auth_alert_key(endpoint_id)
+        and call.kwargs.get("status", "firing") == "firing"
     ]
+
+
+def _auth_resolutions(mock_alert, endpoint_id: str) -> list:
+    """Return only the resolutions that close the upstream-auth incident."""
+    return [
+        call
+        for call in mock_alert.await_args_list
+        if call.kwargs.get("dedupe_key") == _auth_alert_key(endpoint_id)
+        and call.kwargs.get("status") == "resolved"
+    ]
+
+
+async def _drain_alerts() -> None:
+    """Let the fire-and-forget alert tasks run to completion."""
+    for _ in range(3):
+        await asyncio.sleep(0)
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +106,26 @@ def test_gateway_owned_endpoint_detection():
     # A bare provider label (the endpoint_id fallback) is not a local marker.
     assert _is_gateway_owned_endpoint("local") is False
     assert _is_gateway_owned_endpoint("") is False
+
+
+def test_a_remote_provider_named_local_is_not_gateway_owned():
+    """``:local-api`` is a *remote* id and must not be read as the local marker.
+
+    ``_make_provider_id`` mints ``:{name}-api`` for remote hosts, where ``name``
+    is the first label after stripping ``api.``/``llm.`` — so a provider hosted
+    at ``api.local.<tld>`` or ``local.<tld>`` produces ``:local-api``. Treating
+    that as gateway-owned would escalate the provider's per-request
+    content-policy and region 403s into the shared breaker: one user's refused
+    prompt would open the circuit for everyone, the cascade the 403 scoping
+    exists to prevent.
+    """
+    assert _is_gateway_owned_endpoint("mistral-small:local-api") is False
+    assert _is_auth_misconfig(403, "mistral-small:local-api") is False
+    assert _is_client_error(_StatusError(403), "mistral-small:local-api") is True
+    # The real marker is a port, and only a port.
+    assert _is_gateway_owned_endpoint("m:local-8002") is True
+    assert _is_gateway_owned_endpoint("m:local-") is False
+    assert _is_gateway_owned_endpoint("m:localhost") is False
 
 
 def test_auth_statuses_are_never_client_errors():
@@ -278,6 +325,169 @@ async def test_first_401_logs_a_warning_and_pages(monkeypatch, caplog):
     assert record.consecutive_auth_rejections == 1
     assert record.upstream_error == "HTTP 401 from upstream: invalid api key"
     assert not [r for r in caplog.records if r.getMessage() == "client_error_skip_breaker"]
+
+
+async def test_the_warning_survives_json_serialization(monkeypatch, caplog):
+    """The detail must reach production logs, not just the LogRecord.
+
+    Both formatters emit only keys in ``_STRUCTURED_LOG_KEYS``, so a field set via
+    ``extra=`` is silently dropped from JSON output unless it is whitelisted
+    there. ``consecutive_auth_rejections`` is the field that says whether the
+    rejection is a one-off or the run /health/deep degrades on, so asserting it
+    only on the record would pass with the whitelist entry missing.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+
+    with (
+        patch("serving.observability.alerts.alert_slack", new=AsyncMock()),
+        caplog.at_level(logging.WARNING, logger="routing.routers"),
+    ):
+        for _ in range(2):
+            registry.record_failure(
+                _LOCAL_ENDPOINT,
+                reason="stream_exception",
+                detail="HTTP 401 from upstream: invalid api key",
+                exc=_StatusError(401),
+            )
+        await _drain_alerts()
+
+    records = [r for r in caplog.records if r.getMessage() == "upstream_auth_misconfig"]
+    assert len(records) == 2
+
+    payload = json.loads(JsonFormatter().format(records[-1]))
+    assert payload["level"] == "WARNING"
+    assert payload["event"] == "upstream_auth_misconfig"
+    assert payload["endpoint_id"] == _LOCAL_ENDPOINT
+    assert payload["status"] == 401
+    assert payload["consecutive_auth_rejections"] == 2
+    assert payload["upstream_error"] == "HTTP 401 from upstream: invalid api key"
+
+
+# ---------------------------------------------------------------------------
+# Incident lifecycle: the page must be able to close
+# ---------------------------------------------------------------------------
+
+
+async def test_the_page_opens_a_closable_incident(monkeypatch):
+    """The page goes through the state tracker, not straight to the sink.
+
+    A fire-only ``alert_slack`` would register nothing with ``_STATE_TRANSITIONS``,
+    so no resolution edge could ever reach the fingerprint and — state alerts are
+    never swept — the incident would stay open forever, holding principal quota
+    until it is exhausted and real outages start being suppressed.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+    key = _auth_alert_key(_LOCAL_ENDPOINT)
+
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
+        await _drain_alerts()
+
+        assert len(_auth_alerts(mock_alert, _LOCAL_ENDPOINT)) == 1
+        assert not _auth_resolutions(mock_alert, _LOCAL_ENDPOINT)
+        assert _STATE_TRANSITIONS.is_firing(key) is True
+
+
+async def test_an_accepted_request_closes_the_auth_incident(monkeypatch, caplog):
+    """The healthy edge the breaker already uses for ``circuit_open``.
+
+    ``_ProviderHealth.record(True)`` resets the rejection run on the first
+    accepted request — the endpoint just did the thing the page said no caller
+    could make it do — so that is where the incident closes.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+    key = _auth_alert_key(_LOCAL_ENDPOINT)
+
+    with (
+        patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert,
+        caplog.at_level(logging.INFO, logger="routing.routers"),
+    ):
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
+        await _drain_alerts()
+
+        registry.record_success(_LOCAL_ENDPOINT)
+        await _drain_alerts()
+
+        resolutions = _auth_resolutions(mock_alert, _LOCAL_ENDPOINT)
+        assert len(resolutions) == 1
+        assert resolutions[0].args[1] == "Recovered: Upstream rejected gateway credential"
+        # Delivered, so the tracker must have let the incident go.
+        assert _STATE_TRANSITIONS.is_firing(key) is False
+
+        # Exactly once per outage: further successes are not transitions.
+        registry.record_success(_LOCAL_ENDPOINT)
+        await _drain_alerts()
+        assert len(_auth_resolutions(mock_alert, _LOCAL_ENDPOINT)) == 1
+
+        # Recovery re-arms the schedule throttle, so a fresh outage pages on its
+        # first rejection instead of serving out a window the last one opened.
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
+        await _drain_alerts()
+        assert len(_auth_alerts(mock_alert, _LOCAL_ENDPOINT)) == 2
+        assert _STATE_TRANSITIONS.is_firing(key) is True
+
+    assert [r for r in caplog.records if r.getMessage() == "upstream_auth_recovered"]
+
+
+async def test_a_different_failure_also_closes_the_auth_incident(monkeypatch):
+    """A non-auth failure ends the run, so it must end the incident too.
+
+    ``note_failure`` resets ``consecutive_auth_rejections`` — the credential got
+    far enough to fail for another reason — and /health/deep stops reporting the
+    auth degradation. Leaving the page's incident open would contradict that; what
+    is wrong now is the breaker's ``circuit_open`` incident to report.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+    key = _auth_alert_key(_LOCAL_ENDPOINT)
+
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
+        await _drain_alerts()
+        assert _STATE_TRANSITIONS.is_firing(key) is True
+
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(502))
+        await _drain_alerts()
+
+        assert len(_auth_resolutions(mock_alert, _LOCAL_ENDPOINT)) == 1
+        assert _STATE_TRANSITIONS.is_firing(key) is False
+
+        # And a second non-auth failure does not re-announce recovery.
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(502))
+        await _drain_alerts()
+        assert len(_auth_resolutions(mock_alert, _LOCAL_ENDPOINT)) == 1
+
+
+async def test_one_endpoints_recovery_does_not_close_anothers_incident(monkeypatch):
+    """The incident key is per endpoint, and so is its resolution."""
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
+        registry.record_failure(_REMOTE_ENDPOINT, reason="chat_exception", exc=_StatusError(401))
+        await _drain_alerts()
+
+        registry.record_success(_REMOTE_ENDPOINT)
+        await _drain_alerts()
+
+    assert len(_auth_resolutions(mock_alert, _REMOTE_ENDPOINT)) == 1
+    assert not _auth_resolutions(mock_alert, _LOCAL_ENDPOINT)
+    assert _STATE_TRANSITIONS.is_firing(_auth_alert_key(_LOCAL_ENDPOINT)) is True
+    assert _STATE_TRANSITIONS.is_firing(_auth_alert_key(_REMOTE_ENDPOINT)) is False
 
 
 async def test_auth_page_is_throttled_but_every_rejection_is_logged(monkeypatch, caplog):

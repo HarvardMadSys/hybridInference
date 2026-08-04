@@ -24,6 +24,7 @@ from routing.model_router_registry import ModelRouterRegistry
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
+from serving.servers.middleware.request_log import RequestLogMiddleware
 from serving.servers.routers import compat, completions, health, models
 from serving.stream import done_sentinel, make_final_usage_chunk
 
@@ -297,6 +298,85 @@ async def test_non_streaming_basic(
     assert body["choices"][0]["message"]["content"] == "Test response"
     observation = active_router.record_observation.call_args.args[0]
     assert observation.request_id.startswith("req_")
+
+
+@pytest.mark.asyncio
+async def test_upstream_401_reaches_the_request_log_attributed_and_at_info(
+    monkeypatch, mock_db_logger, mock_log_store, caplog
+):
+    """A relayed upstream 401 must not be filed as a routine auth challenge.
+
+    Regression for a production outage: a local proxy answered 401 to 100% of
+    requests for an hour and the only artifact was a DEBUG line, because
+    ``RequestLogMiddleware`` sees a status code and could not tell the gateway's
+    own auth challenge from an upstream refusing the gateway's credential. Two
+    halves fix it — the handler republishes the upstream attribution into
+    ``req_ctx`` once the ``req_ctx.push`` scope around the adapter call has
+    unwound, and the middleware demotes only *unattributed* 401s — and the second
+    is a no-op without the first. So this drives the real route instead of
+    restating either half on a hand-written one.
+    """
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    class _Unauthorized(Exception):
+        """An upstream credential rejection, as aiohttp surfaces it."""
+
+        status = 401
+
+    class RejectingAdapter(BaseAdapter):
+        async def chat_completion(self, messages: list[dict[str, Any]], **params):
+            raise _Unauthorized("HTTP 401: invalid api key")
+
+        async def stream_chat_completion(
+            self, messages: list[dict[str, Any]], **params
+        ) -> AsyncGenerator[str, None]:
+            raise _Unauthorized("HTTP 401: invalid api key")
+            if False:  # pragma: no cover
+                yield ""
+
+    cfg = ModelConfig(
+        id="diffusiongemma",
+        name="diffusiongemma",
+        provider="diffusiongemma-local",
+        base_url="http://localhost:8002/v1",
+        context_length=8192,
+        max_output_length=4096,
+        supported_params=["temperature", "max_tokens"],
+    )
+    router = RouteExecutor()
+    router.register_route("diffusiongemma", [(RejectingAdapter(cfg), 1.0)])
+
+    app = FastAPI(title="Upstream 401 App")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=mock_db_logger,
+        log_store=mock_log_store,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+    app.add_middleware(RequestLogMiddleware)
+
+    transport = ASGITransport(app=app)
+    with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "diffusiongemma",
+                    "messages": [{"role": "user", "content": "Hi"}],
+                },
+            )
+
+    assert resp.status_code == status.HTTP_401_UNAUTHORIZED
+
+    records = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert len(records) == 1, "expected exactly one request log line"
+    record = records[0]
+    assert record.status_code == 401
+    # The handler published the failing upstream, so the middleware can tell this
+    # from a gateway-issued challenge and keeps it at INFO instead of DEBUG.
+    assert record.provider == "diffusiongemma-local"
+    assert record.levelno == logging.INFO
 
 
 @pytest.mark.asyncio
