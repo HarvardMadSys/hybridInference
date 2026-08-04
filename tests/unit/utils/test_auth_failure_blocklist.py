@@ -188,7 +188,11 @@ async def test_authenticate_rejects_a_blocked_ip_with_429(monkeypatch, clock):
 
     request = _make_request(ip)
     with pytest.raises(HTTPException) as excinfo:
-        # op_store is a bare sentinel: the block check raises before it is used.
+        # op_store is a bare sentinel: nothing touches it. The block decision
+        # needs no lookup, and the rejection-log enrichment that *would* resolve
+        # the caller's identity is inert here — this scope carries no app, so
+        # there is no log store to write the enriched row to. Enrichment with
+        # the log on is covered in tests/servers/test_auth_rejection_log.py.
         await auth_mod._authenticate_by_api_key(request, None, None, object())
 
     assert excinfo.value.status_code == 429

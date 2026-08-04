@@ -23,7 +23,11 @@ from serving.agent_jobs.model_auth import (
 from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
 from serving.model_access import get_disabled_models_from_preferences
-from serving.observability.rejection_log import log_rejection
+from serving.observability.rejection_log import (
+    capture_rejected_prompt,
+    log_rejection,
+    rejection_logging_enabled,
+)
 from serving.servers.deps import (
     auth_database_detail,
     get_agent_job_store,
@@ -107,6 +111,38 @@ def _extract_api_key(authorization: str | None, x_api_key: str | None) -> str | 
     return x_api_key or None
 
 
+async def _identify_rejected_caller(
+    authorization: str | None,
+    x_api_key: str | None,
+    op_store: Any,
+) -> dict[str, Any] | None:
+    """Resolve who a *rejected* request belongs to, for the rejection log only.
+
+    Read-only and side-effect free: no ``last_used_at`` write, no quota gate, no
+    email-verification check. The caller is being refused either way; this only
+    labels the log row so an operator can distinguish a real account caught in
+    an IP block from an anonymous scanner.
+
+    Returns the ``{user_id, role}`` shape :func:`log_rejection` consumes, or
+    ``None`` when no key was presented, the key does not resolve to an active
+    user, or the lookup fails — which is exactly what a credential-less scanner
+    produces. Never raises.
+    """
+    api_key = _extract_api_key(authorization, x_api_key)
+    if not api_key or not op_store:
+        return None
+    try:
+        row = await op_store.get_auth_context_lightweight(hash_api_key(api_key))
+    except Exception as exc:
+        # Compact, not a traceback: under a flood this runs once per refused
+        # request, and a broken lookup is not worth amplifying into log volume.
+        logger.warning("Rejection-log identity lookup failed: %s", exc)
+        return None
+    if not row:
+        return None
+    return {"user_id": row.get("user_id"), "role": row.get("role") or "free"}
+
+
 async def _authenticate_by_api_key(
     request: Request,
     authorization: str | None,
@@ -122,19 +158,38 @@ async def _authenticate_by_api_key(
     Returns ``(user_row, key_hash)``. Raises ``HTTPException(401)`` for a
     missing/invalid key and ``HTTPException(403)`` for an unverified email.
     """
-    # Refuse sources already blocked for repeated auth failures, before any key
-    # extraction or DB lookup so a flood is shed cheaply. ``ip_info`` is computed
-    # once here and reused by the failure logs below.
+    # Refuse sources already blocked for repeated auth failures. The *decision*
+    # costs no key extraction and no DB lookup, so a flood is shed cheaply.
+    # ``ip_info`` is computed once here and reused by the failure logs below.
     ip_info = get_client_ip_info(request)
     blocked, retry_after = await is_ip_blocked(ip_info.client_ip)
     if blocked:
+        # Only once the refusal is settled — and only when the rejection log is
+        # actually on — spend anything on making the row useful in the admin
+        # dashboard. Without this, every ip_blocked row lands with a null prompt
+        # and a null user, which says nothing about what was blocked or whether
+        # a real account was caught in someone else's block. Both lookups are
+        # bounded (see ``capture_rejected_prompt``) and strictly diagnostic: any
+        # failure here leaves the 429 below exactly as it was.
+        blocked_prompt: list[dict[str, Any]] | str = ""
+        blocked_user: dict[str, Any] | None = None
+        try:
+            if await rejection_logging_enabled(request, status_code=429):
+                blocked_prompt = await capture_rejected_prompt(request)
+                blocked_user = await _identify_rejected_caller(authorization, x_api_key, op_store)
+        except Exception:
+            logger.exception(
+                "ip_blocked_enrichment_failed",
+                extra={"event": "ip_blocked_enrichment_failed", "remote_ip": ip_info.client_ip},
+            )
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 request=request,
                 status_code=429,
                 error_code="ip_blocked",
                 reason="auth_failures_exceeded",
-                user=None,
+                user=blocked_user,
+                prompt=blocked_prompt,
             )
         )
         raise HTTPException(

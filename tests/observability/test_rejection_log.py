@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from serving.observability.rejection_log import (
     INFERENCE_PATH_PREFIXES,
+    capture_rejected_prompt,
     extract_prompt_from_body,
     log_rejection,
 )
@@ -277,6 +280,106 @@ async def test_log_store_failure_is_swallowed(fake_log_store, runtime_on, caplog
     )
     # Spot-check: an error-level log was emitted.
     assert any("rejection_log_failed" in rec.message for rec in caplog.records)
+
+
+def _real_request(
+    body: bytes,
+    *,
+    headers: list[tuple[bytes, bytes]] | None = None,
+    chunks: list[dict] | None = None,
+):
+    """A real Starlette Request whose body arrives over the ASGI receive channel.
+
+    Used instead of a mock because what these tests exercise *is* the body
+    read: a mocked ``request.body()`` would not tell us whether the bounds hold.
+    """
+    from starlette.requests import Request
+
+    if headers is None:
+        headers = [(b"content-length", str(len(body)).encode())]
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": headers,
+        "client": ("203.0.113.9", 40000),
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("testserver", 80),
+    }
+    queue = list(chunks or [{"type": "http.request", "body": body, "more_body": False}])
+
+    async def receive():
+        if queue:
+            return queue.pop(0)
+        await asyncio.sleep(3600)  # stalls, like a client that never finishes
+
+    return Request(scope, receive)
+
+
+@pytest.mark.asyncio
+async def test_capture_reads_the_body_of_a_request_rejected_pre_handler():
+    """The prompt is recovered even though no handler ever parsed the body."""
+    body = json.dumps({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]}).encode()
+    got = await capture_rejected_prompt(_real_request(body))
+    assert got == [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.asyncio
+async def test_capture_prefers_an_already_parsed_body():
+    """A body a previous dependency cached is reused, not re-read."""
+    request = _real_request(b"")
+    request._json = {"messages": [{"role": "user", "content": "cached"}]}
+    assert await capture_rejected_prompt(request) == [{"role": "user", "content": "cached"}]
+
+
+@pytest.mark.asyncio
+async def test_capture_skips_a_body_with_no_declared_length():
+    """Chunked uploads are skipped: their length is unknown until they finish.
+
+    Reading one to completion would let a rejected client hold the read open for
+    as long as it likes — the slowloris foothold these bounds exist to close.
+    """
+    body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+    request = _real_request(body, headers=[(b"transfer-encoding", b"chunked")])
+    assert await capture_rejected_prompt(request) == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_skips_an_oversized_body():
+    """A body larger than the cap is skipped rather than buffered."""
+    body = json.dumps({"messages": [{"role": "user", "content": "x" * 5000}]}).encode()
+    got = await capture_rejected_prompt(_real_request(body), max_body_bytes=1024)
+    assert got == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_gives_up_on_a_stalled_body():
+    """A trickled body yields no prompt instead of pinning the task."""
+    request = _real_request(
+        b"",
+        headers=[(b"content-length", b"200")],
+        chunks=[{"type": "http.request", "body": b'{"messages":', "more_body": True}],
+    )
+    assert await capture_rejected_prompt(request, timeout_sec=0.01) == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_tolerates_a_non_json_body():
+    assert await capture_rejected_prompt(_real_request(b"not json at all")) == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_skips_an_empty_body():
+    request = _real_request(b"", headers=[(b"content-length", b"0")])
+    assert await capture_rejected_prompt(request) == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_skips_a_malformed_content_length():
+    body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+    request = _real_request(body, headers=[(b"content-length", b"not-a-number")])
+    assert await capture_rejected_prompt(request) == ""
 
 
 @pytest.mark.asyncio
