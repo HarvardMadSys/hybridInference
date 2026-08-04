@@ -898,6 +898,10 @@ class RoutableProvider(BaseModel):
     """A distinct provider label present in the live routing table."""
 
     provider: str = Field(..., description="Provider label, e.g. 'openrouter'")
+    display_name: str = Field(
+        ...,
+        description="Human-readable provider name; the label itself when none is configured",
+    )
     model_count: int = Field(..., description="Number of models with at least one route to it")
     endpoint_count: int = Field(..., description="Number of distinct endpoints for this provider")
     disabled: bool = Field(..., description="True if an admin has disabled this provider")
@@ -1592,6 +1596,10 @@ class ProviderStatsResponse(BaseModel):
     # tab doesn't render empty on load when a retention-only provider sorts
     # first.
     window_providers: list[str]
+    # Provider label -> human-readable name, for labels the gateway can name.
+    # Sparse: historical labels no longer in models.yaml are absent, and the
+    # UI shows the raw label for those.
+    provider_display_names: dict[str, str] = Field(default_factory=dict)
 
 
 class ProviderObservabilityWindow(BaseModel):
@@ -1642,6 +1650,7 @@ class ProviderObservabilityResponse(BaseModel):
     """Provider-scoped error and prompt-cache stats from api_logs."""
 
     provider: str
+    provider_display_name: str | None = None
     window: ProviderObservabilityWindow
     bucket_minutes: int
     totals: ProviderObservabilityTotals
@@ -1657,6 +1666,7 @@ class ProviderObservabilityResponse(BaseModel):
 
 class ProviderTokenUsageRow(BaseModel):  # type: ignore[no-any-unimported]
     provider: str
+    provider_display_name: str | None = None
     model_id: str
     input_tokens: int
     output_tokens: int

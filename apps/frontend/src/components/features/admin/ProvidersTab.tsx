@@ -458,7 +458,16 @@ function AvailabilitySection() {
                     p.disabled ? 'bg-gray-50' : ''
                   }`}
                 >
-                  <td className="px-4 py-2.5 font-medium text-gray-900">{p.provider}</td>
+                  <td className="px-4 py-2.5 font-medium text-gray-900">
+                    {p.display_name && p.display_name !== p.provider ? (
+                      <>
+                        {p.display_name}{' '}
+                        <span className="font-normal text-gray-400">{p.provider}</span>
+                      </>
+                    ) : (
+                      p.provider
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 tabular-nums text-gray-600">{p.model_count}</td>
                   <td className="px-4 py-2.5 tabular-nums text-gray-600">{p.endpoint_count}</td>
                   <td className="px-4 py-2.5">

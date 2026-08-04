@@ -1018,11 +1018,15 @@ async def initialize() -> AppServices:
             from serving.adapters.provider_registry import apply_provider_definitions_at_boot
             from serving.servers.routers.admin.provider_definitions import (
                 _config_managed_provider_names,
+                _configured_provider_specs,
+                config_route_provider_labels,
             )
 
+            config_specs = _configured_provider_specs()
             await apply_provider_definitions_at_boot(
                 operational_store,
-                reserved_providers=_config_managed_provider_names(),
+                reserved_providers=_config_managed_provider_names(config_specs),
+                config_label_providers=config_route_provider_labels(config_specs),
             )
         except Exception as exc:
             logger.warning(f"Failed to apply DB-backed provider definitions at boot: {exc}")

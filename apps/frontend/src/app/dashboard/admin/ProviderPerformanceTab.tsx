@@ -107,6 +107,13 @@ const X_AXIS_HEIGHT = 30;
 const THROUGHPUT_Y_MAX = 280;
 const SCATTER_DOT_RADIUS = 2;
 
+// Label one provider for display. Relabelled routes (models.yaml
+// `provider_display_name:`) show their name plus the raw label, because that
+// label is the key api_logs and every provider view group on.
+function providerOptionLabel(provider: string, displayName?: string | null): string {
+  return displayName && displayName !== provider ? `${displayName} · ${provider}` : provider;
+}
+
 // Recharts derives Scatter symbol size from the ZAxis range, but with no z
 // dataKey that path is unreliable across versions and ignored our range. Render
 // the marker ourselves so the radius is fixed and explicit.
@@ -514,6 +521,7 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
 function ProviderObservabilitySection({ data }: { data: ProviderObservabilityResponse | null }) {
   if (!data) return null;
 
+  const providerLabel = providerOptionLabel(data.provider, data.provider_display_name);
   const totals = data.totals;
   const errorRate = pctValue(totals.error_count, totals.request_count);
   const cacheHitRate = pctValue(totals.cache_hit_count, totals.cache_eligible_count);
@@ -531,6 +539,7 @@ function ProviderObservabilitySection({ data }: { data: ProviderObservabilityRes
       <section className="space-y-3">
         <div>
           <h2 className="text-[15px] font-semibold text-gray-900">Errors</h2>
+          <p className="text-[11px] text-gray-400">{providerLabel}</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border px-3 py-2 text-[13px]">
@@ -647,6 +656,7 @@ function ProviderObservabilitySection({ data }: { data: ProviderObservabilityRes
 
 export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number } = {}) {
   const [allProviders, setAllProviders] = useState<string[]>([]);
+  const [providerDisplayNames, setProviderDisplayNames] = useState<Record<string, string>>({});
   const [allPairs, setAllPairs] = useState<{ provider: string; model_id: string }[]>([]);
   const [provider, setProvider] = useState<string>('');
   const [model, setModel] = useState<string>('__all__');
@@ -704,6 +714,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         to: window_.to,
       });
       setAllProviders(resp.providers);
+      setProviderDisplayNames(resp.provider_display_names ?? {});
       setAllPairs(resp.pairs);
       const grouped: Record<string, ProviderStatsRow[]> = {};
       for (const row of resp.rows) {
@@ -753,6 +764,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         });
         if (cancelled) return;
         setAllProviders(resp.providers);
+        setProviderDisplayNames(resp.provider_display_names ?? {});
         setAllPairs(resp.pairs);
         // Prefer a provider that actually has data in the selected window so
         // the tab doesn't open empty; fall back to the full list otherwise.
@@ -828,7 +840,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
           >
             {allProviders.map((p) => (
               <option key={p} value={p}>
-                {p}
+                {providerOptionLabel(p, providerDisplayNames[p])}
               </option>
             ))}
           </select>
