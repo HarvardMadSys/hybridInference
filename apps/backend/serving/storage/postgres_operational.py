@@ -11,6 +11,7 @@ import json
 import os
 from typing import TYPE_CHECKING, Any, Literal
 
+from serving import grants
 from serving.config.settings import VALID_ROLES
 from serving.exceptions import DuplicateAPIKeyError
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
@@ -40,6 +41,27 @@ def _parse_command_tag_count(command_tag: str) -> int:
 def _parse_admin_emails(raw: str) -> list[str]:
     """Return normalized admin email addresses from a comma-separated env var."""
     return [email.strip().lower() for email in raw.split(",") if email.strip()]
+
+
+def _decode_grant(row: Any) -> Row:
+    """Convert a grant row to a dict, decoding its two JSONB scope columns.
+
+    Same reason as ``_coerce_user_row``: without a registered codec asyncpg
+    hands back JSONB as a string, and every caller here asks "is this model in
+    the list" — a question a string answers wrongly rather than loudly.
+    """
+    decoded = dict(row)
+    for field in ("allowed_models", "allowed_mcp"):
+        value = decoded.get(field)
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                parsed = []
+            decoded[field] = parsed if isinstance(parsed, list) else []
+        elif not isinstance(value, list):
+            decoded[field] = []
+    return decoded
 
 
 def _coerce_user_row(row: Any) -> Row | None:
@@ -385,6 +407,15 @@ class PostgresOperationalStore(OperationalStore):
             "CREATE INDEX IF NOT EXISTS idx_password_reset_expires "
             "ON password_reset_tokens(expires_at)"
         )
+
+        # --- agent_grants ---
+        # DDL lives in serving/grants.py, the module that owns this table.
+        # Deliberately not in agent_job_store: that file is frozen and leaves
+        # with the cloud agent, while minting capabilities for this gateway's
+        # models stays here.
+        await conn.execute(grants.CREATE_TABLE_SQL)
+        for statement in grants.CREATE_INDEX_SQL:
+            await conn.execute(statement)
 
         # --- identity_auth_codes ---
         # Cross-service SSO codes. Keyed by the hash, never the code itself.
@@ -1960,6 +1991,97 @@ class PostgresOperationalStore(OperationalStore):
                 code_hash,
             )
         return dict(row) if row else None
+
+    # -- inference grants ----------------------------------------------------
+
+    async def upsert_agent_grant(
+        self,
+        *,
+        grant_id: str,
+        user_id: str,
+        external_job_id: str,
+        external_attempt_id: str,
+        allowed_models: list[str],
+        allowed_mcp: list[str],
+        expires_at: datetime,
+    ) -> Row:
+        """Create a grant, or return the existing one for this attempt."""
+        async with self._pool.acquire() as conn:
+            # DO NOTHING rather than DO UPDATE: a retry must not be able to
+            # extend or re-scope a grant that already exists. The first mint
+            # for an attempt is the one that counts; renewal is its own,
+            # separately authorized call.
+            row = await conn.fetchrow(
+                "INSERT INTO agent_grants "
+                "(grant_id, user_id, external_job_id, external_attempt_id, "
+                " allowed_models, allowed_mcp, expires_at) "
+                "VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7) "
+                "ON CONFLICT (external_job_id, external_attempt_id) DO NOTHING "
+                "RETURNING grant_id, user_id, external_job_id, external_attempt_id, "
+                "          allowed_models, allowed_mcp, created_at, expires_at, revoked_at",
+                grant_id,
+                user_id,
+                external_job_id,
+                external_attempt_id,
+                json.dumps(list(allowed_models)),
+                json.dumps(list(allowed_mcp)),
+                expires_at,
+            )
+            if row is None:
+                row = await conn.fetchrow(
+                    "SELECT grant_id, user_id, external_job_id, external_attempt_id, "
+                    "       allowed_models, allowed_mcp, created_at, expires_at, revoked_at "
+                    "FROM agent_grants WHERE external_job_id = $1 AND external_attempt_id = $2",
+                    external_job_id,
+                    external_attempt_id,
+                )
+        if row is None:
+            # The insert conflicted, so a row for this attempt exists — unless
+            # the table lost its unique index, in which case DO NOTHING fired
+            # for some other reason. Say that, rather than failing later on a
+            # None nobody expected.
+            raise RuntimeError(
+                "agent_grants upsert matched no row for "
+                f"({external_job_id}, {external_attempt_id}); is the unique index present?"
+            )
+        return _decode_grant(row)
+
+    async def get_agent_grant(self, grant_id: str) -> Row | None:
+        """Fetch a grant row by id, live or not."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT grant_id, user_id, external_job_id, external_attempt_id, "
+                "       allowed_models, allowed_mcp, created_at, expires_at, revoked_at "
+                "FROM agent_grants WHERE grant_id = $1",
+                grant_id,
+            )
+        return _decode_grant(row) if row else None
+
+    async def renew_agent_grant(self, grant_id: str, *, expires_at: datetime) -> Row | None:
+        """Extend a live grant's expiry, returning the updated row."""
+        async with self._pool.acquire() as conn:
+            # Liveness is in the WHERE clause, not a prior read: a grant that
+            # is revoked or lapsed between check and write must not be renewed.
+            row = await conn.fetchrow(
+                "UPDATE agent_grants SET expires_at = $2 "
+                "WHERE grant_id = $1 AND revoked_at IS NULL AND expires_at > NOW() "
+                "RETURNING grant_id, user_id, external_job_id, external_attempt_id, "
+                "          allowed_models, allowed_mcp, created_at, expires_at, revoked_at",
+                grant_id,
+                expires_at,
+            )
+        return _decode_grant(row) if row else None
+
+    async def revoke_agent_grant(self, grant_id: str) -> bool:
+        """Mark a grant revoked. Returns whether this call did the revoking."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE agent_grants SET revoked_at = NOW() "
+                "WHERE grant_id = $1 AND revoked_at IS NULL "
+                "RETURNING grant_id",
+                grant_id,
+            )
+        return row is not None
 
     # -- admin audit log -----------------------------------------------------
 

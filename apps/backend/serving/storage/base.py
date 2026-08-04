@@ -582,6 +582,54 @@ class OperationalStore(ABC):
         a race in which two concurrent exchanges both observe an unused code.
         """
 
+    # -- inference grants ----------------------------------------------------
+
+    @abstractmethod
+    async def upsert_agent_grant(
+        self,
+        *,
+        grant_id: str,
+        user_id: str,
+        external_job_id: str,
+        external_attempt_id: str,
+        allowed_models: list[str],
+        allowed_mcp: list[str],
+        expires_at: datetime,
+    ) -> Row:
+        """Create a grant, or return the existing one for this attempt.
+
+        Idempotent by ``(external_job_id, external_attempt_id)``: a control
+        plane that retries after a timeout must get its grant back, not a
+        second capability that nothing is tracking. The returned row is
+        authoritative — on a retry it carries the **first** grant's id, scope
+        and expiry, which is what the caller must use.
+        """
+
+    @abstractmethod
+    async def get_agent_grant(self, grant_id: str) -> Row | None:
+        """Fetch a grant row by id, live or not.
+
+        Liveness is the caller's decision (``grants.is_live``): revoked and
+        expired grants still need to be readable to answer accurately.
+        """
+
+    @abstractmethod
+    async def renew_agent_grant(self, grant_id: str, *, expires_at: datetime) -> Row | None:
+        """Extend a live grant's expiry, returning the updated row.
+
+        Returns ``None`` when the grant is unknown, revoked, or already
+        expired — a lapsed grant is not resurrected, because the control plane
+        stopping and restarting is exactly the case the TTL exists to bound.
+        """
+
+    @abstractmethod
+    async def revoke_agent_grant(self, grant_id: str) -> bool:
+        """Mark a grant revoked. Returns whether this call did the revoking.
+
+        Idempotent: revoking an already-revoked grant is a success, since the
+        caller's intent already holds.
+        """
+
     # -- admin audit log -----------------------------------------------------
 
     @abstractmethod

@@ -18,6 +18,7 @@ from .middleware.request_log import RequestLogMiddleware
 from .middleware.timeout import TimeoutMiddleware
 from .routers import (
     admin,
+    agent_grants,
     agent_jobs,
     agent_mcp,
     anthropic_messages,
@@ -117,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(internal.router)
     app.include_router(playground.router)
     app.include_router(identity.router)
+    app.include_router(agent_grants.router)
 
     # Override HTTPException handler to emit Anthropic-format errors on
     # /v1/messages and /anthropic/... paths (must register after install_error_handlers).
