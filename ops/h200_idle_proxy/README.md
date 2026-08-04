@@ -124,7 +124,7 @@ See [`models.json`](models.json):
 | `model_dir` | `/netscratch/juncheng/models/DeepSeek-V4-Flash-0731` |
 | `hf_repo` | `deepseek-ai/DeepSeek-V4-Flash-0731` |
 | `max_model_len` | `1048576` (1M — the model's YARN architectural max, not VRAM-bound) |
-| `mem_fraction` | `0.85` — **not** 0.90; DSpark needs the extra headroom (see below) |
+| `mem_fraction` | `0.80` — **not** 0.90; DSpark + a 1M prefill need the headroom (see below) |
 | `moe_runner_backend` | `marlin` — **required** for FP4 experts on H200 (SM90) |
 | `mtp` / `speculative_algorithm` | `true` / `DSPARK` |
 | `sglang_image` | `lmsysorg/sglang:v0.5.16` — DSpark needs ≥ 0.5.16 |
@@ -142,15 +142,26 @@ See [`models.json`](models.json):
 > official checkpoint has no ignore list, so the experts bind to
 > `Mxfp4MarlinMoEMethod` and accept length is ~4.3.
 
-> **Why `mem_fraction` 0.85 and not 0.90?** DSpark costs roughly 10 GB/GPU beyond the
-> non-speculative configuration: ~5.5 GB of draft weights, plus a *second* set of verify
-> CUDA graphs (sglang captures a target verify graph and a draft verify graph, each about
-> 5 GB at the default `bs` ladder up to 256). At 0.90 that left ~4.7 GB free of 143.7 GB
-> once both graph sets were captured, and the server OOM-crashed within a minute of taking
-> real production traffic — the idle proxy then rebuilt the container, so clients saw the
-> "model is starting up" banner on a ~9-minute loop. 0.85 frees ~21 GB instead of ~14 GB,
-> which covers the draft model, both graph sets, and activation headroom. Raise it only
-> alongside a smaller CUDA-graph batch ladder.
+> **Why `mem_fraction` 0.80 and not 0.90?** Two separate failures pushed it down, both
+> measured on these boxes:
+>
+> 1. DSpark costs roughly 10 GB/GPU beyond the non-speculative configuration: ~5.5 GB of
+>    draft weights, plus a *second* set of verify CUDA graphs (sglang captures a target
+>    verify graph and a draft verify graph, each about 5 GB at the default `bs` ladder up
+>    to 256). At **0.90** that left 12.33 GB free after weights+KV, 7.20 GB after the
+>    target graph, and ~4.7 GB of 143.7 GB once the draft graph landed. The server
+>    OOM-crashed within ~48 s of taking real production traffic; the idle proxy rebuilt
+>    the container, so clients saw the "model is starting up" banner on a ~9-minute loop.
+> 2. At **0.85** (10.89 GB free) sustained normal-length traffic was stable for 30+
+>    minutes, but a single ~1M-token prefill still died: `CUDA out of memory. Tried to
+>    allocate 7.12 GiB. 7.08 GiB is free` — short by ~40 MB. The scheduler raised, sglang
+>    SIGQUIT'd itself and exited 0, so **one long-context request took down the whole
+>    node**.
+>
+> **0.80** leaves 17.91 GB free and serves the full 1M context (see below). The KV pool
+> drops from 4.54M tokens at 0.90 to 2.94M, which is still ~2.9x a single 1M request.
+> Raise it again only alongside a smaller CUDA-graph batch ladder, and re-test 1M before
+> trusting it — sustained-load stability does **not** imply long-context safety.
 
 > **Why `DSPARK` and not `EAGLE`?** 0731's speculative module is DSpark, not the
 > preview checkpoint's MTP: 3 blocks (`dspark_target_layer_ids: [40,41,42]`) with
@@ -181,6 +192,36 @@ regressed at saturation, DSpark wins at every concurrency tested. See
 > `sglang.bench_serving` reuses the same seeded random prompts across invocations, and
 > radix prefix caching then serves them from cache — which inflates "prefill" to ~130k
 > tok/s and roughly doubles apparent prefill at c=32. Flush between points.
+>
+> It also issues a **warm-up request using the same prompt as the measured run**, so at
+> small `--num-prompts` the measured request is a cache hit and `/flush_cache` before the
+> run does not help. At 1M it reported 330k tok/s and a 2.8 s TTFT while the server log
+> showed the measured request as `#new-token: 256, #cached-token: 999936`. Use
+> [`longctx_probe.py`](longctx_probe.py) for long-context numbers: it streams one request
+> per length with freshly randomised token ids, takes prefill from time-to-first-token and
+> decode from the gaps between later tokens, and prints `cached` so a contaminated
+> measurement is visible.
+
+### Long context
+
+Single-stream, `mem_fraction 0.80`, DSpark on, freshly randomised ids per request
+(`cached` 0 for every row), 128 generated tokens with `ignore_eos`:
+
+| Input | TTFT | Prefill tok/s | Decode tok/s | ITL | Tokens/SSE chunk |
+|---:|---:|---:|---:|---:|---:|
+| 4 K | 0.28 s | 14,681 | 332 | 3.01 ms | 3.6 |
+| 32 K | 2.02 s | 16,221 | 445 | 2.25 ms | 4.7 |
+| 128 K | 8.98 s | 14,594 | 391 | 2.56 ms | 4.3 |
+| 256 K | 20.6 s | 12,716 | 400 | 2.50 ms | 4.4 |
+| 512 K | 52.3 s | 10,032 | 277 | 3.62 ms | 3.2 |
+| 1 M | **138 s** | 7,245 | 252 | 3.98 ms | 3.1 |
+
+Prefill peaks near 32 K and falls to ~7.2k tok/s at 1M, so **a full 1M prompt costs ~2.3
+minutes before the first token** — worth knowing before pointing a client timeout at it.
+Decode degrades far more gently (445 → 252 tok/s). DSpark keeps paying off across the
+whole range: tokens per SSE chunk stays between 3.1 and 4.7, so acceptance does not
+collapse at long context. (`bench_serving` simply stops printing "Accept length" at
+≥256 K, which looks like DSpark switching off but isn't.)
 
 ## Requirements
 
