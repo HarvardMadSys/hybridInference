@@ -235,6 +235,42 @@ async def test_blocked_ip_skips_enrichment_when_rejection_logging_is_off(
 
 
 @pytest.mark.asyncio
+async def test_blocked_ip_identity_lookup_is_skipped_when_the_budget_is_spent(
+    monkeypatch, blocked_localhost
+):
+    """A spent enrichment budget keeps the block off the database entirely.
+
+    Unsuccessful auth lookups are not cached, so a blocked source spraying fresh
+    random tokens would otherwise reach the shared Postgres pool once per
+    request — restoring exactly the cost the IP block exists to eliminate.
+    """
+    import serving.observability.rejection_log as mod
+
+    app, log_calls, op = _build_blocked_app(
+        monkeypatch, lightweight_user={"user_id": "u1", "role": "pro"}, logging_on=True
+    )
+    await blocked_localhost("127.0.0.1")
+
+    exhausted = asyncio.Semaphore(1)
+    await exhausted.acquire()
+    monkeypatch.setattr(mod, "_enrichment_slots", exhausted)
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer hyi-valid"},
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        await asyncio.sleep(0)
+
+    assert resp.status_code == 429
+    assert log_calls[0]["user"] is None
+    assert log_calls[0]["prompt"] == ""
+    op.get_auth_context_lightweight.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_blocked_ip_identity_lookup_failure_still_returns_429(monkeypatch, blocked_localhost):
     """A broken identity lookup degrades the log row, never the response."""
     app, log_calls, op = _build_blocked_app(monkeypatch, lightweight_user=None, logging_on=True)

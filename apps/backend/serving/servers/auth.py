@@ -24,6 +24,7 @@ from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
 from serving.model_access import get_disabled_models_from_preferences
 from serving.observability.rejection_log import (
+    bounded_enrichment,
     capture_rejected_prompt,
     log_rejection,
     rejection_logging_enabled,
@@ -123,25 +124,34 @@ async def _identify_rejected_caller(
     labels the log row so an operator can distinguish a real account caught in
     an IP block from an anonymous scanner.
 
+    Runs under :func:`bounded_enrichment`, which matters more here than the name
+    suggests: ``CachedOperationalStore`` caches only *successful* auth lookups,
+    so a source spraying fresh random tokens misses the cache on every request
+    and reaches the shared Postgres pool. Unbounded, that would restore per
+    request exactly the database cost the IP block exists to eliminate, and could
+    starve real traffic of pool connections. Past the budget this returns
+    ``None`` instantly instead.
+
     Returns the ``{user_id, role}`` shape :func:`log_rejection` consumes, or
     ``None`` when no key was presented, the key does not resolve to an active
-    user, or the lookup fails — which is exactly what a credential-less scanner
-    produces. Never raises.
+    user, or the lookup is skipped/times out/fails — which is also exactly what
+    a credential-less scanner produces. Never raises.
     """
     api_key = _extract_api_key(authorization, x_api_key)
     if not api_key or not op_store:
         return None
     try:
-        row = await op_store.get_auth_context_lightweight(hash_api_key(api_key))
-    except Exception as exc:
-        # Compact, not a traceback: under a flood this runs once per refused
-        # request, and a broken lookup is not worth amplifying into log volume.
-        logger.warning("Rejection-log identity lookup failed: %s", exc)
+        # Both cheap and local: an unset API_KEY_SECRET raises, and a store that
+        # doesn't offer the lookup would raise before any coroutine exists to
+        # hand to the budget.
+        work = op_store.get_auth_context_lightweight(hash_api_key(api_key))
+    except Exception:
         return None
+    row = await bounded_enrichment(work)
     # A row with no user_id is not an identity. Returning one would write a
     # ``{"user_id": None, "role": "free"}`` row that reads as a resolved free
     # account rather than the unresolved caller it actually is.
-    if not row or not row.get("user_id"):
+    if not isinstance(row, dict) or not row.get("user_id"):
         return None
     return {"user_id": row["user_id"], "role": row.get("role") or "free"}
 

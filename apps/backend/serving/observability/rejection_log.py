@@ -26,6 +26,8 @@ from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
     from fastapi import Request
 
     from serving.config.runtime_settings import RuntimeSettings
@@ -39,26 +41,34 @@ logger = get_logger(__name__)
 #: row would hand a rejected source a cheap memory-amplification lever.
 REJECTED_PROMPT_MAX_BODY_BYTES = 1_048_576
 
-#: Wall-clock cap on that read. A rejected caller has no claim on the server's
-#: time, so a stalled or trickled upload yields no prompt rather than pinning a
-#: task for as long as the client cares to hold the connection open. Deliberately
-#: short: a well-behaved client's body is already in the server's buffer by the
-#: time a dependency runs, so this only ever elapses for a client that is *not*
-#: sending, and that client should be shed rather than waited on.
-REJECTED_PROMPT_BODY_TIMEOUT_SEC = 0.25
+#: Wall-clock cap on any single enrichment lookup (body read, identity
+#: resolution). A rejected caller has no claim on the server's time, so slow work
+#: yields nothing rather than pinning a task for as long as the client — or a
+#: loaded database — cares to take. Deliberately short: a well-behaved client's
+#: body is already in the server's buffer by the time a dependency runs, and a
+#: keyed index lookup is sub-millisecond, so this only elapses when something is
+#: wrong, and then shedding beats waiting.
+REJECTED_ENRICHMENT_TIMEOUT_SEC = 0.25
 
-#: How many rejected requests may be reading a body at once, process-wide.
-#: The timeout alone bounds one request; this bounds the whole flood. Past the
-#: cap, enrichment is skipped instantly and the rejection is shed as cheaply as
-#: it was before any of this existed — so a source that declares a small
-#: ``Content-Length`` and then stalls can occupy at most this many tasks for at
-#: most :data:`REJECTED_PROMPT_BODY_TIMEOUT_SEC`, no matter how many
-#: connections it opens.
-REJECTED_PROMPT_MAX_CONCURRENT_READS = 8
+#: How much enrichment may be in flight at once, process-wide, across *all*
+#: rejection paths. The timeout bounds one request; this bounds the whole flood.
+#:
+#: This is the number that keeps the blocklist worth having. The reason blocking
+#: an abusive IP is cheap is that a blocked request costs no body read and no
+#: database query, however many connections the source opens — so enrichment
+#: must never restore a per-request cost. Past this cap, enrichment is skipped
+#: instantly and the rejection is shed exactly as cheaply as before any of this
+#: existed. Deliberately one shared budget rather than one per lookup: what must
+#: stay bounded is the total footprint of enriching rejections, not each kind of
+#: work separately.
+REJECTED_ENRICHMENT_MAX_CONCURRENT = 8
 
-#: Never awaited: callers check :meth:`asyncio.Semaphore.locked` first and give
-#: up rather than queue, which is what keeps a flood from forming a backlog here.
-_body_read_slots = asyncio.Semaphore(REJECTED_PROMPT_MAX_CONCURRENT_READS)
+#: Never queued on: :func:`bounded_enrichment` checks
+#: :meth:`asyncio.Semaphore.locked` and gives up, because waiting for a slot
+#: would rebuild the very backlog the cap exists to prevent. Because it is never
+#: awaited while held-and-contended, no waiter is ever queued, so this binds to
+#: no event loop and is safe as module state across loops.
+_enrichment_slots = asyncio.Semaphore(REJECTED_ENRICHMENT_MAX_CONCURRENT)
 
 INFERENCE_PATH_PREFIXES: tuple[str, ...] = (
     "/v1/chat/completions",
@@ -117,6 +127,36 @@ def _resolve_services(
     return log_store, runtime_settings
 
 
+async def bounded_enrichment(
+    work: Coroutine[Any, Any, Any],
+    *,
+    default: Any = None,
+    timeout_sec: float = REJECTED_ENRICHMENT_TIMEOUT_SEC,
+) -> Any:
+    """Await *work* under the rejection-path enrichment budget, or give up.
+
+    Every lookup done purely to enrich a rejection row must go through here.
+    Returns *default* — never raises — when no slot is free, when *work* exceeds
+    *timeout_sec*, or when it fails. A rejected request is being refused either
+    way, so nothing it costs the server is worth paying twice.
+
+    Gives up rather than queues: a flood must not be able to build a backlog of
+    pending enrichment, which is the failure mode a bounded-but-waiting design
+    still has. See :data:`REJECTED_ENRICHMENT_MAX_CONCURRENT`.
+    """
+    # Race-free without a lock: no await separates the check from the acquire,
+    # and the loop is single-threaded. Closing the coroutine we decline to run
+    # keeps it from surfacing as a "never awaited" warning.
+    if _enrichment_slots.locked():
+        work.close()
+        return default
+    async with _enrichment_slots:
+        try:
+            return await asyncio.wait_for(work, timeout_sec)
+        except Exception:
+            return default
+
+
 def _is_synthetic_probe(request: Request) -> bool:
     return request.headers.get("x-probe", "").lower() == "synthetic"
 
@@ -171,7 +211,7 @@ async def capture_rejected_prompt(
     request: Request,
     *,
     max_body_bytes: int = REJECTED_PROMPT_MAX_BODY_BYTES,
-    timeout_sec: float = REJECTED_PROMPT_BODY_TIMEOUT_SEC,
+    timeout_sec: float = REJECTED_ENRICHMENT_TIMEOUT_SEC,
 ) -> list[dict[str, Any]] | str:
     """Best-effort prompt for a request rejected before its handler ran.
 
@@ -182,12 +222,11 @@ async def capture_rejected_prompt(
     Awaiting the body of a request the server is refusing is attacker-controlled
     input on a shed-load path, so the read is bounded three ways: a declared
     ``Content-Length`` no larger than *max_body_bytes*, *timeout_sec* of wall
-    clock, and :data:`REJECTED_PROMPT_MAX_CONCURRENT_READS` such reads
-    process-wide. A body whose length is not declared up front — chunked
-    transfer, or ``Transfer-Encoding`` present at all — is skipped without
-    reading anything. Together those keep the worst case a rejected flood can
-    buy to a fixed handful of tasks for a fraction of a second, rather than one
-    held task per connection.
+    clock, and the shared :func:`bounded_enrichment` budget. A body whose length
+    is not declared up front — chunked transfer, or ``Transfer-Encoding`` present
+    at all — is skipped without reading anything. Together those keep the worst
+    case a rejected flood can buy to a fixed handful of tasks for a fraction of a
+    second, rather than one held task per connection.
 
     Returns ``""`` when no prompt can be recovered, for any reason.
 
@@ -216,19 +255,14 @@ async def capture_rejected_prompt(
     if length <= 0 or length > max_body_bytes:
         return ""
 
-    # Give up rather than queue. Waiting for a slot would rebuild exactly the
-    # backlog the cap exists to prevent. Checking before acquiring is race-free
-    # here: no await separates the two, and the loop is single-threaded.
-    if _body_read_slots.locked():
+    raw = await bounded_enrichment(request.body(), default=None, timeout_sec=timeout_sec)
+    if raw is None:
+        # No slot, timeout, or disconnect — all mean "no prompt".
         return ""
-    async with _body_read_slots:
-        try:
-            raw = await asyncio.wait_for(request.body(), timeout_sec)
-            return extract_prompt_from_body(json.loads(raw))
-        except Exception:
-            # Timeout, disconnect, non-JSON body — all mean "no prompt", never
-            # an error the caller has to handle.
-            return ""
+    try:
+        return extract_prompt_from_body(json.loads(raw))
+    except Exception:
+        return ""
 
 
 async def log_rejection(

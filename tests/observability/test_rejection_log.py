@@ -10,6 +10,7 @@ import pytest
 
 from serving.observability.rejection_log import (
     INFERENCE_PATH_PREFIXES,
+    bounded_enrichment,
     capture_rejected_prompt,
     extract_prompt_from_body,
     log_rejection,
@@ -378,7 +379,7 @@ async def test_capture_gives_up_instead_of_queueing_when_all_slots_are_busy():
     exhausted = asyncio.Semaphore(1)
     await exhausted.acquire()  # value now 0 -> locked()
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(mod, "_body_read_slots", exhausted)
+    monkeypatch.setattr(mod, "_enrichment_slots", exhausted)
     try:
         assert await capture_rejected_prompt(_real_request(body)) == ""
     finally:
@@ -400,11 +401,69 @@ async def test_capture_releases_its_slot_after_a_failed_read():
         chunks=[{"type": "http.request", "body": b'{"messages":', "more_body": True}],
     )
     assert await capture_rejected_prompt(stalled, timeout_sec=0.01) == ""
-    assert not mod._body_read_slots.locked()
+    assert not mod._enrichment_slots.locked()
     body = json.dumps({"messages": [{"role": "user", "content": "after"}]}).encode()
     assert await capture_rejected_prompt(_real_request(body)) == [
         {"role": "user", "content": "after"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_bounded_enrichment_runs_work_and_returns_its_value():
+    async def work():
+        return {"user_id": "u1"}
+
+    assert await bounded_enrichment(work()) == {"user_id": "u1"}
+
+
+@pytest.mark.asyncio
+async def test_bounded_enrichment_declines_without_running_when_budget_is_spent():
+    """No slot means the work never runs — the whole point of the budget.
+
+    A blocked source spraying random tokens must not reach the database once the
+    budget is spent, since unsuccessful auth lookups are not cached and would
+    otherwise hit the shared pool on every single request.
+    """
+    import serving.observability.rejection_log as mod
+
+    ran = False
+
+    async def work():
+        nonlocal ran
+        ran = True
+        return "should not happen"
+
+    exhausted = asyncio.Semaphore(1)
+    await exhausted.acquire()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(mod, "_enrichment_slots", exhausted)
+    try:
+        assert await bounded_enrichment(work(), default="gave-up") == "gave-up"
+    finally:
+        monkeypatch.undo()
+    assert ran is False
+
+
+@pytest.mark.asyncio
+async def test_bounded_enrichment_times_out_slow_work():
+    """A slow lookup yields the default rather than delaying the rejection."""
+
+    async def slow():
+        await asyncio.sleep(5)
+        return "too late"
+
+    assert await bounded_enrichment(slow(), default=None, timeout_sec=0.01) is None
+
+
+@pytest.mark.asyncio
+async def test_bounded_enrichment_swallows_failures_and_frees_the_slot():
+    import serving.observability.rejection_log as mod
+
+    async def boom():
+        raise RuntimeError("db down")
+
+    assert await bounded_enrichment(boom(), default="fallback") == "fallback"
+    assert not mod._enrichment_slots.locked()
 
 
 @pytest.mark.asyncio
