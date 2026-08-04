@@ -47,7 +47,15 @@ from serving.servers.routers.internal_auth import (
     require_store as _require_store,
 )
 
-router = APIRouter(prefix="/internal", tags=["internal"])
+#: Guarded at the router, not route by route — see the note in
+#: :mod:`serving.servers.routers.agent_grants`. Both lookups need the token and
+#: any third one will too; declaring it once means the next route added is
+#: guarded by existing rather than by somebody remembering.
+router = APIRouter(
+    prefix="/internal",
+    tags=["internal"],
+    dependencies=[Depends(require_dispatch_token)],
+)
 
 
 def _aliases_for(router_exec: Any, visible: list[str]) -> dict[str, str]:
@@ -105,7 +113,6 @@ def _aliases_for(router_exec: Any, visible: list[str]) -> dict[str, str]:
 @router.get("/model-catalog")
 async def model_catalog(
     user_id: str = Query(max_length=128),
-    _: None = Depends(require_dispatch_token),
     store=Depends(get_operational_store),
     router_exec=Depends(get_router),
     visibility_resolver: Any = Depends(get_model_visibility_resolver),
@@ -118,7 +125,6 @@ async def model_catalog(
 
     Args:
         user_id: Whose role to resolve the catalog for.
-        _: Dispatch-token authorization.
         store: Operational store, for the user's role.
         router_exec: Model registry.
         visibility_resolver: Runtime visibility overrides, so this answer and
@@ -165,7 +171,6 @@ async def model_catalog(
 @router.get("/users/{user_id}/status")
 async def user_status(
     user_id: str,
-    _: None = Depends(require_dispatch_token),
     store=Depends(get_operational_store),
 ) -> dict[str, Any]:
     """Report whether a user exists, may sign in, and with what role.
@@ -181,7 +186,6 @@ async def user_status(
 
     Args:
         user_id: The account to report on.
-        _: Dispatch-token authorization.
         store: Operational store.
 
     Returns:

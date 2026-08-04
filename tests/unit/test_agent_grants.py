@@ -228,6 +228,22 @@ def test_a_bad_dispatch_token_is_refused(client, headers: dict[str, str]) -> Non
     assert response.status_code == 401
 
 
+def test_no_route_here_answers_without_the_token(client) -> None:
+    """Every route, not just the one this file happened to test first.
+
+    Mint was the only path checked, so `/renew`, `/usage` and `/revoke` could
+    each have lost their guard silently. That mattered more once the whole
+    prefix became reachable from the public origin: these are enumerated from
+    the router, so a route added later is covered without anyone remembering.
+    """
+    _, http = client
+    for route in agent_grants.router.routes:
+        path = route.path.replace("{grant_id}", "agr_x")
+        for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
+            response = http.request(method, path, json={})
+            assert response.status_code == 401, f"{method} {path} answered without a token"
+
+
 # ---------------------------------------------------------------------------
 # Minting
 # ---------------------------------------------------------------------------

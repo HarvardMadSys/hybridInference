@@ -41,7 +41,18 @@ from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/internal/agent-grants", tags=["internal"])
+#: The dispatch token guards the router, not each route in turn.
+#:
+#: Every route here needs it, and a per-route dependency is a thing to forget:
+#: the one that forgets is unguarded, and nothing about the file looks wrong.
+#: Declared once, a new route is guarded by existing rather than by being
+#: remembered — which is what lets the reverse proxy forward this whole prefix
+#: instead of enumerating paths and silently 404ing the next one added.
+router = APIRouter(
+    prefix="/internal/agent-grants",
+    tags=["internal"],
+    dependencies=[Depends(require_dispatch_token)],
+)
 
 #: A status outside "active" is refused rather than defaulted.
 _ACTIVE_STATUS = "active"
@@ -103,7 +114,6 @@ async def _active_user(store: Any, user_id: str) -> dict[str, Any]:
 @router.post("")
 async def mint_grant(
     body: MintGrantRequest,
-    _: None = Depends(require_dispatch_token),
     store=Depends(get_operational_store),
     router_exec=Depends(get_router),
     visibility_resolver: Any = Depends(get_model_visibility_resolver),
@@ -112,7 +122,6 @@ async def mint_grant(
 
     Args:
         body: The requested subject, scope and lifetime.
-        _: Dispatch-token authorization.
         store: Operational store.
         router_exec: Model registry, for the role clamp.
         visibility_resolver: Runtime visibility overrides, so the clamp agrees
@@ -181,7 +190,6 @@ async def mint_grant(
 @router.post("/{grant_id}/renew")
 async def renew_grant(
     grant_id: str,
-    _: None = Depends(require_dispatch_token),
     store=Depends(get_operational_store),
 ) -> dict[str, Any]:
     """Extend a live grant by another bounded step.
@@ -193,7 +201,6 @@ async def renew_grant(
 
     Args:
         grant_id: The grant to extend.
-        _: Dispatch-token authorization.
         store: Operational store.
 
     Returns:
@@ -225,7 +232,6 @@ async def renew_grant(
 @router.get("/{grant_id}/usage")
 async def grant_usage(
     grant_id: str,
-    _: None = Depends(require_dispatch_token),
     store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
 ) -> dict[str, Any]:
@@ -243,7 +249,6 @@ async def grant_usage(
 
     Args:
         grant_id: The grant whose job to report on.
-        _: Dispatch-token authorization.
         store: Operational store.
         log_store: Billing ledger.
 
@@ -281,14 +286,12 @@ async def grant_usage(
 @router.post("/{grant_id}/revoke")
 async def revoke_grant(
     grant_id: str,
-    _: None = Depends(require_dispatch_token),
     store=Depends(get_operational_store),
 ) -> dict[str, Any]:
     """Withdraw a grant now, rather than waiting for its TTL.
 
     Args:
         grant_id: The grant to revoke.
-        _: Dispatch-token authorization.
         store: Operational store.
 
     Returns:
