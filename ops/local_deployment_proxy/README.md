@@ -233,7 +233,7 @@ To add a new model, append an entry to `models.json` and restart the proxy.
 | `IDLE_TIMEOUT` | `1440` | Seconds of inactivity before stopping a container (24 min) |
 | `HEALTH_TIMEOUT` | `600` | Max seconds to wait for a container to become healthy |
 | `HEALTH_INTERVAL` | `10` | Seconds between health-check polls |
-| `MODELS_CONFIG` | auto-detected | Path to the models config JSON. When unset, selected by GPU hardware (see [Hardware profiles](#hardware-profiles)); set explicitly to override. **Not settable under systemd** — see below |
+| `MODELS_CONFIG` | auto-detected | Path to the models config JSON. When unset, selected by GPU hardware (see [Hardware profiles](#hardware-profiles)); set explicitly to override. **Not settable from the environment under systemd** — see below |
 | `LOCAL_API_KEY` | `freeinference_api` | API key for request auth; accepts an `Authorization: Bearer` or `X-API-Key` header. A blank value falls back to the default rather than disabling auth — there is no way to turn auth off |
 
 ### `MODELS_CONFIG` under systemd
@@ -246,20 +246,37 @@ outranks every `Environment=` line whatever the order, so the unit drops the
 variable with `UnsetEnvironment=MODELS_CONFIG`, which systemd applies last of all.
 Hardware auto-detection is therefore always in charge under systemd, and no
 ordinary route — `.env`, a drop-in `Environment=`, `systemctl set-environment` —
-can override it. To pin a config there, reset the unset list first:
+can override it.
+
+To pin a config there, set it in the **child process** with a `/usr/bin/env`
+prefix on `ExecStart`, the way `h200_idle_proxy.service` pins
+`ops/h200_idle_proxy/models.json`. That is the one place that outranks
+`EnvironmentFile=` and `UnsetEnvironment=` both, because it runs after systemd has
+finished compiling the environment. The bare `ExecStart=` is what lets a drop-in
+replace the command instead of appending a second one; take the rest of the line
+from `systemctl cat local_deployment_proxy.service`:
 
 ```ini
 # /etc/systemd/system/local_deployment_proxy.service.d/models-config.conf
 [Service]
-UnsetEnvironment=
-Environment=MODELS_CONFIG=/path/to/models.json
+ExecStart=
+ExecStart=/usr/bin/env MODELS_CONFIG=/path/to/models.json /srv/hybridInference/.venv/bin/python3 /srv/hybridInference/ops/local_deployment_proxy/local_deployment_proxy.py
 ```
 
-On the H200 boxes that config belongs to `h200_idle_proxy.service` instead, which
-pins `ops/h200_idle_proxy/models.json` on its `ExecStart` line — `/usr/bin/env`
-sets it in the child process, which outranks `EnvironmentFile=` and
-`UnsetEnvironment=` both. Running the proxy by hand is unaffected: `MODELS_CONFIG`
-works normally there.
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart local_deployment_proxy
+```
+
+Resetting the unset list and setting the variable with an `Environment=` line
+instead does **not** work, and fails precisely when it is needed:
+`UnsetEnvironment=` only stops the final deletion, so a `.env` that does define
+`MODELS_CONFIG` goes back to outranking that `Environment=` line and the proxy
+loads the gateway's YAML after all.
+
+Keep this in its own `.conf`, separate from the `local-api-key.conf` the installer
+writes into the same `.d` directory, and re-check it if the unit's own `ExecStart`
+ever changes, since the drop-in restates it. Running the proxy by hand is
+unaffected: `MODELS_CONFIG` works normally there.
 
 ## GPU auto-selection
 

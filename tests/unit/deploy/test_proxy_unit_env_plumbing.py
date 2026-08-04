@@ -142,6 +142,58 @@ def test_proxy_unit_keeps_the_gateways_models_config_out(unit: str) -> None:
     )
 
 
+# Everywhere an operator is handed a way to pin MODELS_CONFIG on a unit that reads
+# the gateway .env: the three units' own comments, and the two proxy READMEs.
+MODELS_CONFIG_DOCS = [
+    SYSTEMD / "local_deployment_proxy.service",
+    SYSTEMD / "spark_idle_proxy.service",
+    SYSTEMD / "h200_idle_proxy.service",
+    REPO / "ops" / "local_deployment_proxy" / "README.md",
+    REPO / "ops" / "spark_idle_proxy" / "README.md",
+]
+
+# ``Environment=MODELS_CONFIG=…`` in any form -- a directive, a fenced ini block, a
+# comment. The lookbehind spares the ``UnsetEnvironment=MODELS_CONFIG`` the units
+# really do use, of which it is otherwise a substring.
+_ENVIRONMENT_PINS_MODELS_CONFIG = re.compile(r'(?<!Unset)Environment="?MODELS_CONFIG=')
+
+
+@pytest.mark.parametrize(
+    "doc", MODELS_CONFIG_DOCS, ids=[f"{p.parent.name}/{p.name}" for p in MODELS_CONFIG_DOCS]
+)
+def test_documented_models_config_override_is_one_that_actually_wins(doc: Path) -> None:
+    """The escape hatch has to work in the one case it exists for.
+
+    The obvious recipe -- a drop-in that resets ``UnsetEnvironment=`` and then
+    writes ``Environment=MODELS_CONFIG=…`` -- is wrong, and wrong exactly when a
+    .env does define MODELS_CONFIG, which is the collision it is offered for.
+    Clearing the unset list only cancels the final deletion; the environment file
+    then goes back to outranking ``Environment=`` and the proxy loads the gateway's
+    YAML after all. An operator who follows it sees a proxy with no backends and a
+    drop-in that reads as though it had decided the value.
+
+    What survives is the child-process form the H200 unit already uses:
+    ``/usr/bin/env MODELS_CONFIG=… <interpreter> <script>`` on ``ExecStart``, set
+    after systemd has compiled the environment. So no file here may show
+    ``Environment=MODELS_CONFIG=``, and each must still carry the form that works.
+    """
+    text = doc.read_text(encoding="utf-8")
+    offenders = [
+        line.strip() for line in text.splitlines() if _ENVIRONMENT_PINS_MODELS_CONFIG.search(line)
+    ]
+    assert not offenders, (
+        f"{doc.name} sets MODELS_CONFIG with Environment=: {offenders}. The .env this "
+        "unit reads outranks Environment= whatever the order, and resetting "
+        "UnsetEnvironment= does not change that -- it only stops the deletion. Pin it "
+        "with a /usr/bin/env prefix on ExecStart instead."
+    )
+    assert "/usr/bin/env MODELS_CONFIG=" in text, (
+        f"{doc.name} no longer shows how to pin MODELS_CONFIG in the child process. "
+        "Without that recipe the next operator reaches for Environment=, which loses "
+        "to the .env silently."
+    )
+
+
 def test_models_config_is_still_a_gateway_alias() -> None:
     """The premise for all of the above: drop the alias and the units can stop.
 

@@ -141,7 +141,7 @@ Models are defined in `spark_idle_proxy/models.json`:
 | `IDLE_TIMEOUT` | `1440` | Seconds of inactivity before stopping a container (24 min) |
 | `HEALTH_TIMEOUT` | `900` | Max seconds to wait for a container to become healthy |
 | `HEALTH_INTERVAL` | `10` | Seconds between health-check polls |
-| `MODELS_CONFIG` | `models.json` | Path to the models config JSON. **Not settable under systemd** — see below |
+| `MODELS_CONFIG` | `models.json` | Path to the models config JSON. **Not settable from the environment under systemd** — see below |
 | `LOCAL_API_KEY` | `freeinference_api` | API key for request auth. A blank value falls back to the default rather than disabling auth — there is no way to turn auth off |
 | `HF_TOKEN` | (none) | Passed into vLLM containers for gated HF downloads |
 
@@ -155,17 +155,37 @@ legacy alias of `MODELS_CONFIG_PATH` naming a YAML registry, which this proxy wo
 `UnsetEnvironment=MODELS_CONFIG`, which systemd applies last of all. Under systemd
 the proxy therefore always uses `models.json` next to the script, and no ordinary
 route — `.env`, a drop-in `Environment=`, `systemctl set-environment` — can
-override it. To serve a different config there, reset the unset list first:
+override it.
+
+To serve a different config there, set it in the **child process** with a
+`/usr/bin/env` prefix on `ExecStart`, the way `h200_idle_proxy.service` pins
+`ops/h200_idle_proxy/models.json`. That is the one place that outranks
+`EnvironmentFile=` and `UnsetEnvironment=` both, because it runs after systemd has
+finished compiling the environment. The bare `ExecStart=` is what lets a drop-in
+replace the command instead of appending a second one; take the rest of the line
+from `systemctl cat spark_idle_proxy.service`:
 
 ```ini
 # /etc/systemd/system/spark_idle_proxy.service.d/models-config.conf
 [Service]
-UnsetEnvironment=
-Environment=MODELS_CONFIG=/path/to/models.json
+ExecStart=
+ExecStart=/usr/bin/env MODELS_CONFIG=/path/to/models.json /srv/hybridInference/.venv/bin/python3 /srv/hybridInference/ops/spark_idle_proxy/spark_idle_proxy.py
 ```
 
-Running the proxy by hand or via `spark_idle_service.sh` is unaffected:
-`MODELS_CONFIG` works normally there.
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart spark_idle_proxy
+```
+
+Resetting the unset list and setting the variable with an `Environment=` line
+instead does **not** work, and fails precisely when it is needed:
+`UnsetEnvironment=` only stops the final deletion, so a `.env` that does define
+`MODELS_CONFIG` goes back to outranking that `Environment=` line and the proxy
+loads the gateway's YAML after all.
+
+Keep this in its own `.conf`, separate from the `local-api-key.conf` the installer
+writes, and re-check it if the unit's own `ExecStart` ever changes, since the
+drop-in restates it. Running the proxy by hand or via `spark_idle_service.sh` is
+unaffected: `MODELS_CONFIG` works normally there.
 
 ## Requirements
 

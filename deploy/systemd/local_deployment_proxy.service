@@ -51,12 +51,23 @@ Environment=HEALTH_INTERVAL=10
 # models.rtx6000.json, else models.json), and pinning models.json here would
 # quietly downgrade the RTX PRO 6000 boxes — narrower context window, no
 # hf_repo to fetch from — and point an H200 box at a checkpoint that is not on
-# its disks. To serve a specific config, add a drop-in that resets the list:
+# its disks. On the H200 boxes that config belongs to h200_idle_proxy.service,
+# which pins ops/h200_idle_proxy/models.json explicitly.
+#
+# To serve a specific config here anyway, set it in the child process the way
+# that unit does. A drop-in that resets UnsetEnvironment= and then sets the
+# variable with an Environment= line does NOT work: clearing the unset list only
+# stops the final deletion, and the .env assignment then outranks that
+# Environment= line again — exactly the case the override is wanted for. What
+# works:
+#   # /etc/systemd/system/local_deployment_proxy.service.d/models-config.conf
 #   [Service]
-#   UnsetEnvironment=
-#   Environment=MODELS_CONFIG=/path/to/models.json
-# On the H200 boxes that config belongs to h200_idle_proxy.service, which pins
-# ops/h200_idle_proxy/models.json explicitly.
+#   ExecStart=
+#   ExecStart=/usr/bin/env MODELS_CONFIG=/path/to/models.json __REPO_ROOT__/.venv/bin/python3 __REPO_ROOT__/ops/local_deployment_proxy/local_deployment_proxy.py
+# The empty ExecStart= is what lets a drop-in replace the command instead of
+# appending a second one (systemd.unit(5)); the line after it is one line. Then
+# `systemctl daemon-reload && systemctl restart local_deployment_proxy`. Keep it
+# in its own .conf, separate from the installer's local-api-key.conf.
 UnsetEnvironment=MODELS_CONFIG
 
 StandardOutput=journal
