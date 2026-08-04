@@ -128,7 +128,11 @@ services:
       - "127.0.0.1:${CODEX_ONCALL_PORT:-8091}:8091"
     depends_on:
       backend:
-        condition: service_healthy
+        # Ordering only, for the same reason as the frontend below: a
+        # service_healthy gate here fails `compose up` outright when the backend
+        # is merely degraded, which fails the whole deploy. The on-call agent
+        # tolerates a backend that is not ready yet and retries.
+        condition: service_started
     cap_drop:
       - ALL
     security_opt:
@@ -189,7 +193,14 @@ services:
       - "${FRONTEND_HOST:-0.0.0.0}:${FRONTEND_PORT:-3001}:3001"
     depends_on:
       backend:
-        condition: service_healthy
+        # Ordering only, deliberately not service_healthy. The console is a
+        # separate app that Nginx routes to independently of the API, so gating
+        # it on backend health converts a *degraded* backend into a total site
+        # outage: the backend reports unhealthy whenever its database logging is
+        # down, compose then refuses to start the frontend, and every path the
+        # tunnel serves through it 502s — including the API paths that were
+        # answering fine. That is a real outage this project has had.
+        condition: service_started
     networks:
       - hybridinference
 

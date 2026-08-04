@@ -74,6 +74,15 @@ class DatabaseLogger:
         )
         await self._create_tables()
 
+    async def ensure_schema(self) -> None:
+        """Re-run schema creation/migration against the existing pool.
+
+        Used to finish a migration that :class:`SchemaLockUnavailable` deferred:
+        the pool is already up, only the DDL still needs to land. Idempotent, so
+        retrying re-checks the catalog and issues only what is still missing.
+        """
+        await self._create_tables()
+
     async def _create_tables(self) -> None:
         """Create tables and indexes if they do not exist."""
         if self.pool is None:
