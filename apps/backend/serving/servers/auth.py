@@ -12,9 +12,12 @@ from typing import Any
 from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
+from serving import grants, quota
 from serving.agent_jobs.model_auth import (
     AgentModelAuthError,
+    AgentQuotaExceeded,
     authenticate_agent_model_call,
+    authenticate_grant_model_call,
     looks_like_agent_token,
 )
 from serving.config.settings import get_settings
@@ -368,11 +371,24 @@ async def verify_api_key(
                 },
             )
         try:
+            if grants.looks_like_grant_token(presented_key):
+                # The grant path meters against the account's daily quota,
+                # which the legacy branch below this return never reached.
+                return await authenticate_grant_model_call(presented_key, op_store=op_store)
             return await authenticate_agent_model_call(
                 presented_key,
                 job_store=agent_job_store,
                 log_store=log_store,
             )
+        except AgentQuotaExceeded as exc:
+            # Same body and headers as the direct path's 429, from the same
+            # builder: a caller must not be able to tell which door it used.
+            body, headers = quota.exceeded_payload(
+                quota_usd=exc.quota_usd,
+                spent_usd=exc.spent_usd,
+                contact_email=_quota_contact(),
+            )
+            raise HTTPException(status_code=429, detail=body, headers=headers) from exc
         except AgentModelAuthError as exc:
             raise HTTPException(
                 status_code=exc.status_code,

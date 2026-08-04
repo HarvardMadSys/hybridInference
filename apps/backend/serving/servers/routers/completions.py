@@ -20,7 +20,7 @@ from routing.routers import AllCircuitsOpenError
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
-from serving.model_access import is_model_disabled_for_user
+from serving.model_access import is_model_disabled_for_user, is_model_outside_grant_scope
 from serving.openai_chat_serializer import resolve_mode, sanitize_response
 from serving.schemas import (
     ChatCompletionRequest,
@@ -666,8 +666,13 @@ async def chat_completions(
             )
         req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model}' not found")
-    if is_model_disabled_for_user(
-        route.adapters[0][0].config.id if route.adapters else model, user_ctx
+    # Two different reasons, one answer. The owner disabled this model, or a
+    # grant-authenticated caller was not given it — either way the caller is
+    # told it does not exist, so a sandbox cannot enumerate what is outside its
+    # scope by reading the difference between 403 and 404.
+    canonical_for_access = route.adapters[0][0].config.id if route.adapters else model
+    if is_model_disabled_for_user(canonical_for_access, user_ctx) or is_model_outside_grant_scope(
+        canonical_for_access, user_ctx
     ):
         if log_store and not suppress_synthetic_logging:
             completions_logger.schedule_log(

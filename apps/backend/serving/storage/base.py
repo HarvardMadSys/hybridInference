@@ -585,6 +585,25 @@ class OperationalStore(ABC):
     # -- inference grants ----------------------------------------------------
 
     @abstractmethod
+    async def get_quota_context_for_user(self, user_id: str) -> list[Row]:
+        """Return the quota-bearing rows for a user's active API keys.
+
+        A grant carries no API key, so the limit it must be metered against
+        cannot be looked up the usual way (by key hash). This finds it by user
+        instead, applying the same filters ``get_auth_context_by_key_hash``
+        does: active key, unexpired, active user.
+
+        Returns a **list**, not a row, deliberately. The schema guarantees at
+        most one — ``idx_api_keys_user_unique`` is ``UNIQUE (user_id) WHERE
+        status = 'active'`` — so a second row means that index is gone. The
+        caller refuses and alarms rather than picking a winner, because
+        choosing one would paper over a schema failure with a spending
+        decision. An empty list means "no key", which is also a refusal: a
+        user with no key has no configured limit, and absence of a limit must
+        never be read as absence of a ceiling.
+        """
+
+    @abstractmethod
     async def upsert_agent_grant(
         self,
         *,
