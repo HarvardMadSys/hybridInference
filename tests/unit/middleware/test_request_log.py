@@ -9,6 +9,7 @@ from fastapi import FastAPI, Response
 from httpx import ASGITransport, AsyncClient
 
 from serving.servers.middleware.request_log import RequestLogMiddleware
+from serving.utils import context as req_ctx
 
 _LOGGER_NAME = "serving.servers.middleware.request_log"
 
@@ -68,6 +69,20 @@ def app_with_middleware():
 
     @app.get("/user/me")
     def unauthorized():
+        return Response(status_code=401)
+
+    # ``async def`` on purpose: it mirrors the real completions handler and keeps
+    # the contextvar in the request's own context. A sync endpoint runs in a
+    # threadpool with a *copied* context, so nothing it writes to req_ctx would
+    # reach this middleware.
+    @app.get("/v1/chat/completions-upstream-401")
+    async def upstream_unauthorized():
+        # What the completions error path does once it has resolved the failing
+        # upstream: publish the attribution durably into req_ctx (the
+        # ``req_ctx.push`` scope around the adapter call is already unwound), so
+        # the middleware can tell a relayed upstream 401 from one the gateway
+        # issued itself.
+        req_ctx.update({"provider": "diffusiongemma"})
         return Response(status_code=401)
 
     return app
@@ -201,3 +216,36 @@ class TestRequestLogMiddleware:
         records = [r for r in caplog.records if r.getMessage() == "http_request"]
         assert records, "Expected a DEBUG http_request log for 401 auth challenge"
         assert all(r.levelno == logging.DEBUG for r in records)
+
+    @pytest.mark.asyncio
+    async def test_upstream_attributed_401_logs_at_info(self, app_with_middleware, caplog):
+        """A relayed upstream 401 is an outage, not token-refresh churn.
+
+        Regression for the hour-long ``diffusiongemma`` outage: a local proxy
+        rejected the gateway's own key on every request, and the propagated 401
+        was filed in the auth-challenge bucket and logged at DEBUG — below the
+        default INFO threshold, so the request log showed nothing at all.
+        """
+        with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
+            await _get(app_with_middleware, "/v1/chat/completions-upstream-401")
+
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
+        assert records, "Expected an INFO http_request log for an upstream 401"
+        record = records[-1]
+        assert record.levelno == logging.INFO
+        assert record.status_code == 401
+        # The provider label is what makes the outage attributable in the log.
+        assert record.provider == "diffusiongemma"
+
+    @pytest.mark.asyncio
+    async def test_gateway_401_without_provider_stays_demoted(self, app_with_middleware, caplog):
+        """The demotion still applies to the gateway's own challenges only."""
+        with caplog.at_level(logging.DEBUG, logger="serving.servers.middleware.request_log"):
+            await _get(app_with_middleware, "/user/me")
+
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
+        assert records
+        record = records[-1]
+        assert record.levelno == logging.DEBUG
+        assert record.status_code == 401
+        assert record.provider is None

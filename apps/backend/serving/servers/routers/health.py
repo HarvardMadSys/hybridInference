@@ -47,6 +47,24 @@ def _route_is_published(route: Any) -> bool:
     return bool(getattr(route, "published", True))
 
 
+def _endpoint_is_degraded(endpoint_status: dict[str, Any]) -> bool:
+    """Return whether one endpoint's health snapshot should degrade /health/deep.
+
+    An open circuit or sagging availability are the aggregate signals. The
+    auth-rejection run is reported separately and deliberately at a threshold of
+    one: an upstream refusing the gateway's credential fails 100% of requests
+    from the first one, and reporting only the aggregates let exactly that
+    outage serve HTTP 200 "healthy" for an hour — availability had not decayed
+    yet and the breaker had not tripped.
+    """
+    availability = endpoint_status.get("availability")
+    if endpoint_status.get("circuit_state") == "open":
+        return True
+    if availability is not None and availability < 0.9:
+        return True
+    return bool(endpoint_status.get("consecutive_auth_rejections"))
+
+
 async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
     """Actively test database connection via store health checks.
 
@@ -327,9 +345,7 @@ async def deep_health(
         overall = "unhealthy"
     elif db_connected:
         for _p, s in provider_status.items():
-            if s.get("circuit_state") == "open" or (
-                s.get("availability") is not None and s.get("availability") < 0.9
-            ):
+            if _endpoint_is_degraded(s):
                 overall = "degraded"
                 break
 

@@ -369,7 +369,9 @@ async def test_failed_attempt_order_contract(
 @pytest.mark.parametrize("operation", ("chat", "stream"))
 @pytest.mark.parametrize(
     ("status_code", "counts_as_failure"),
-    ((400, False), (408, True), (429, True), (502, True)),
+    # 401 counts for every router: it rejects the gateway's own credential, so
+    # no request the caller could have sent would have succeeded.
+    ((400, False), (401, True), (408, True), (429, True), (502, True)),
 )
 async def test_public_request_health_classification_contract(
     router_factory: _RouterFactory,

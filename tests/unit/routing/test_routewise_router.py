@@ -1721,6 +1721,8 @@ async def test_routewise_owned_execution_sets_context_and_ensures_before_error(o
     assert router.get_provider_status()[endpoint_id] == {
         "availability": 1.0,
         "circuit_state": "closed",
+        "last_error_status": None,
+        "consecutive_auth_rejections": 0,
     }
 
 

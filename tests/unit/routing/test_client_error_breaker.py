@@ -6,6 +6,12 @@ the circuit for every user of the model. A 4xx means the upstream is healthy and
 correctly rejected the request, so availability/the breaker must be left alone.
 Genuine faults (5xx, timeout/connection errors with no status, and the
 overload-signalling 408/429) must still count.
+
+The exemption's premise — "the upstream correctly rejected the *user's* request"
+— does not hold for auth statuses: the caller never supplies the upstream
+credential, so 401/407 (and 403 on a gateway-owned endpoint) can only mean this
+deployment's configured key is wrong. Those are covered in
+``test_upstream_auth_breaker.py`` and must NOT be exempt.
 """
 
 import asyncio
@@ -56,8 +62,9 @@ def test_client_errors_are_breaker_exempt(monkeypatch):
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
 
-    # Request/config errors: healthy upstream rejecting a bad request.
-    for code in (400, 401, 403, 404, 413, 422):
+    # Request/config errors: healthy upstream rejecting a bad request. 401/407
+    # are excluded — they reject the gateway's credential, not the request.
+    for code in (400, 402, 404, 413, 422):
         assert _is_client_error(_StatusError(code)) is True, code
         registry = EndpointHealthRegistry()
         endpoint_id = f"client-error-{code}"

@@ -1163,6 +1163,18 @@ async def chat_completions(
         # provider-performance aggregations.
         provider_for_error = _provider_for_error(exc_routing)
 
+        # Publish that attribution durably into req_ctx, which the DB log above
+        # reads from a dict but RequestLogMiddleware and the in-process alert
+        # rules can only read from the context. ``req_ctx.push`` around the
+        # adapter call is already unwound here, so without this the request-log
+        # record carries no provider and an upstream failure is indistinguishable
+        # from one the gateway raised itself — which is how a relayed upstream 401
+        # was filed as a routine auth challenge and dropped below INFO. Skipped
+        # for the "router" sentinel: no upstream was ever selected, so claiming
+        # one would misattribute a pre-routing failure.
+        if provider_for_error and provider_for_error != "router":
+            req_ctx.update({"provider": provider_for_error})
+
         if log_store and not suppress_synthetic_logging:
             metadata_for_error = metadata
             if isinstance(exc_routing, dict):

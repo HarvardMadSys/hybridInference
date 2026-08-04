@@ -13,6 +13,7 @@ from serving.observability.alert_config import AlertConfig
 from serving.observability.alert_rules import AlertEngine
 from serving.observability.alerts import reset_transition_state
 from serving.observability.log_handler import AlertingLogHandler
+from serving.utils.context import MODEL_NOT_FOUND
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +48,7 @@ async def test_engine_starts_and_stops_cleanly():
 
 def _fake_record(
     status_code: int,
-    provider: str = "openai",
+    provider: str | None = "openai",
     model: str = "gpt-4",
     duration_ms: int = 100,
     path: str | None = None,
@@ -140,7 +141,7 @@ async def test_failed_request_rate_fires_on_threshold(monkeypatch):
             await engine.stop()
 
 
-async def test_failed_request_rate_ignores_401(monkeypatch):
+async def test_failed_request_rate_ignores_gateway_401(monkeypatch):
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     from serving.observability.alerts import reset_dedupe_state
 
@@ -169,12 +170,15 @@ async def test_failed_request_rate_ignores_401(monkeypatch):
     ) as mock_alert:
         await engine.start()
         try:
-            # 19 OK + 3 401s = 13.6% would fire on the old >=400 predicate;
-            # 401 is now ignored so no alert.
+            # 19 OK + 3 401s = 13.6% would fire on the old >=400 predicate.
+            # A gateway-issued auth challenge (SPA token refresh, admin probe)
+            # carries no upstream attribution, so it stays ignored.
             for _ in range(19):
                 handler.queue.put_nowait(_fake_record(200, path="/v1/messages"))
             for _ in range(3):
-                handler.queue.put_nowait(_fake_record(401, path="/admin/recent-requests"))
+                handler.queue.put_nowait(
+                    _fake_record(401, provider=None, path="/admin/recent-requests")
+                )
             for _ in range(20):
                 await asyncio.sleep(0.01)
             assert mock_alert.await_count == 0
@@ -275,6 +279,76 @@ async def test_failed_request_rate_counts_upstream_404(monkeypatch):
             assert "404" in ctx["top_status_codes"]
         finally:
             await engine.stop()
+
+
+async def test_failed_request_rate_counts_upstream_401(monkeypatch):
+    """A provider-attributed 401 is a credential outage, not token-refresh churn.
+
+    Regression for the hour-long outage where a local inference proxy rejected
+    the gateway's configured key on 100% of requests: 401 was blanket-excluded
+    here, so the failure-rate rule never saw the only signal that reached it.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    cfg.rules.failed_request_rate.window_sec = 60
+    cfg.rules.failed_request_rate.threshold_pct = 5.0
+    cfg.rules.failed_request_rate.min_samples = 10
+    cfg.rules.failed_request_rate.cooldown_sec = 1
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
+    cfg.rules.auth_failure_spike.enabled = False
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            # 19 OK + 3 provider-attributed 401s = 13.6% > 5% threshold.
+            for _ in range(19):
+                handler.queue.put_nowait(_fake_record(200, path="/v1/chat/completions"))
+            for _ in range(3):
+                handler.queue.put_nowait(
+                    _fake_record(401, provider="diffusiongemma", path="/v1/chat/completions")
+                )
+            await _drain_until(handler, mock_alert)
+            assert mock_alert.await_count >= 1
+            ctx = mock_alert.await_args.args[2]
+            assert "401" in ctx["top_status_codes"]
+            assert "diffusiongemma" in ctx["top_providers"]
+        finally:
+            await engine.stop()
+
+
+def test_is_failed_request_401_attribution_both_ways():
+    """The 401 split is by upstream attribution, mirroring the 404 split."""
+    from serving.observability.alert_rules import _is_failed_request
+
+    assert _is_failed_request({"status": 401, "provider": None}) is False
+    assert _is_failed_request({"status": 401}) is False
+    assert _is_failed_request({"status": 401, "provider": ""}) is False
+    assert _is_failed_request({"status": 401, "provider": "diffusiongemma"}) is True
+
+    # Unchanged neighbours: 429 stays blanket-excluded even with attribution,
+    # and the 404 model-not-found marker still wins over attribution.
+    assert _is_failed_request({"status": 429, "provider": "zai"}) is False
+    assert (
+        _is_failed_request({"status": 404, "provider": "zai", "client_error_kind": MODEL_NOT_FOUND})
+        is False
+    )
+    assert _is_failed_request({"status": 404, "provider": "zai"}) is True
 
 
 async def test_fivexx_rate_fires_on_threshold(monkeypatch):
