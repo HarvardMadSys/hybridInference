@@ -15,7 +15,6 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from serving.agent_jobs.mcp_registry import McpRegistry, McpServer
 from serving.servers.deps import (
     get_model_visibility_resolver,
     get_operational_store,
@@ -27,9 +26,6 @@ from serving.servers.routers.internal_auth import ENV_DISPATCH_TOKEN
 
 DISPATCH = "dispatch-secret-value"
 AUTH = {"Authorization": f"Bearer {DISPATCH}"}
-
-UPSTREAM_URL = "https://github.example/mcp"
-UPSTREAM_CREDENTIAL = "upstream-bearer-credential"
 
 
 class FakeStore:
@@ -55,23 +51,6 @@ def store() -> FakeStore:
 @pytest.fixture(autouse=True)
 def _dispatch_token(monkeypatch) -> None:
     monkeypatch.setenv(ENV_DISPATCH_TOKEN, DISPATCH)
-
-
-@pytest.fixture(autouse=True)
-def _registry(monkeypatch) -> None:
-    registry = McpRegistry(
-        servers={
-            "github": McpServer(
-                name="github",
-                url=UPSTREAM_URL,
-                headers={"Authorization": f"Bearer {UPSTREAM_CREDENTIAL}"},
-                tools=frozenset({"search", "issues"}),
-                description="Repository search and issues",
-                default=True,
-            )
-        }
-    )
-    monkeypatch.setattr(internal_lookups, "get_registry", lambda: registry)
 
 
 @pytest.fixture(autouse=True)
@@ -133,7 +112,6 @@ def client(store: FakeStore) -> TestClient:
 @pytest.mark.parametrize(
     "path",
     [
-        "/internal/mcp-registry",
         "/internal/model-catalog?user_id=user_1",
         "/internal/users/x/status",
     ],
@@ -144,35 +122,36 @@ def test_every_lookup_requires_the_dispatch_token(client: TestClient, path: str)
 
 def test_lookups_are_absent_when_the_token_is_unconfigured(client, monkeypatch) -> None:
     monkeypatch.delenv(ENV_DISPATCH_TOKEN, raising=False)
+    assert client.get("/internal/model-catalog?user_id=user_1", headers=AUTH).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# MCP is not this gateway's to answer
+# ---------------------------------------------------------------------------
+#
+# Two cases lived here: the registry returns no url or header, and it returns
+# what a picker needs. Both described `GET /internal/mcp-registry`, which is
+# gone — the ownership amendment moved the MCP registry, its credentials and
+# its proxy to the cloud agent, which already holds the job and its requested
+# servers.
+#
+# The property the first one guarded did not go with it. "An upstream MCP
+# credential never leaves this side" is now stronger and simpler: there is no
+# endpoint that could carry one. That is what the case below asserts, and it
+# fails the moment somebody adds one back.
+
+
+def test_this_gateway_serves_no_mcp_lookup(client: TestClient) -> None:
+    """**The endpoint that must not come back.**
+
+    Restoring it would put the server list in two places and make "which
+    servers exist" a question with two answers — and it is the answer with the
+    upstream credentials attached that lives here.
+    """
     assert client.get("/internal/mcp-registry", headers=AUTH).status_code == 404
 
-
-# ---------------------------------------------------------------------------
-# MCP registry — the credential must not travel
-# ---------------------------------------------------------------------------
-
-
-def test_the_registry_never_returns_a_url_or_a_header(client: TestClient) -> None:
-    """The whole point: upstream credentials stay on this side of the split.
-
-    Asserted against the serialized body, not just the parsed fields, so a
-    credential smuggled into any nested structure still fails the test.
-    """
-    body = client.get("/internal/mcp-registry", headers=AUTH).json()
-    raw = json.dumps(body)
-    assert UPSTREAM_CREDENTIAL not in raw
-    assert UPSTREAM_URL not in raw
-    assert "headers" not in raw
-    (server,) = body["servers"]
-    assert set(server) == {"name", "description", "default", "tools", "unfiltered"}
-
-
-def test_the_registry_returns_what_a_picker_needs(client: TestClient) -> None:
-    (server,) = client.get("/internal/mcp-registry", headers=AUTH).json()["servers"]
-    assert server["name"] == "github"
-    assert server["description"] == "Repository search and issues"
-    assert server["default"] is True
-    assert server["tools"] == ["issues", "search"]
+    routes = {getattr(route, "path", "") for route in internal_lookups.router.routes}
+    assert not [path for path in routes if "mcp" in path.lower()]
 
 
 # ---------------------------------------------------------------------------

@@ -1,23 +1,24 @@
-"""The three questions the control plane can no longer answer by importing.
+"""The two questions the control plane can no longer answer by importing.
 
 Before the split, cloud agent code lived in this process and read the model
-registry, the MCP registry and the users table directly. Afterwards those
-imports are gone, and each one needs an endpoint *before* the task that moves
-its caller — or that task either fails to import or silently degrades, and a
-silent degrade here looks like a feature that stopped working for no reason.
+registry and the users table directly. Afterwards those imports are gone, and
+each one needs an endpoint *before* the task that moves its caller — or that
+task either fails to import or silently degrades, and a silent degrade here
+looks like a feature that stopped working for no reason.
 
 | Endpoint | Replaces | Blocks |
 |---|---|---|
-| ``GET /internal/mcp-registry`` | ``mcp_registry.get_registry()`` | E6 |
 | ``GET /internal/model-catalog`` | ``visible_models``' catalog read | E4 |
 | ``GET /internal/users/{id}/status`` | the gateway ``users`` row read | E7, E8 |
 
-**The registry endpoint returns names and display metadata only.** A server's
-``url`` and ``headers`` are exactly what the split keeps on this side: the
-headers carry the deployment's upstream credential. The control plane needs to
-know *which* servers exist so it can populate a picker and reject an unknown
-name; it never needs to reach them, because the sandbox reaches them through
-this gateway's proxy.
+**There was a third, and it is deliberately absent.** An earlier draft served
+``GET /internal/mcp-registry`` so the control plane could populate a picker
+from this deployment's MCP servers. The ownership amendment moved the MCP
+registry, its credentials and its proxy to the cloud agent — which already
+holds the job, its requested servers and the attempt fence — so the control
+plane reads its own registry and this gateway answers nothing about MCP. Adding
+the endpoint back would put the same list in two places and make "which servers
+exist" a question with two answers.
 
 **The catalog endpoint is not ``GET /v1/models``**, and that is not a
 preference. That route authenticates with ``optional_verify_api_key``, which
@@ -33,7 +34,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, status
 
-from serving.agent_jobs.mcp_registry import get_registry
 from serving.agent_jobs.visible_models import agent_visible_models
 from serving.model_access import get_disabled_models_from_preferences
 from serving.servers.deps import (
@@ -48,38 +48,6 @@ from serving.servers.routers.internal_auth import (
 )
 
 router = APIRouter(prefix="/internal", tags=["internal"])
-
-
-@router.get("/mcp-registry")
-async def mcp_registry(_: None = Depends(require_dispatch_token)) -> dict[str, Any]:
-    """List the MCP servers this deployment offers, without their credentials.
-
-    Args:
-        _: Dispatch-token authorization.
-
-    Returns:
-        Name, description, default flag, and whether the server's tools are
-        unfiltered — enough to populate a picker and validate a request.
-    """
-    registry = get_registry()
-    servers = []
-    for name in registry.names:
-        server = registry.get(name)
-        if server is None:  # pragma: no cover - names() is derived from servers
-            continue
-        # url and headers are deliberately absent. The headers hold this
-        # deployment's upstream credential, and the control plane has no use
-        # for the address: the sandbox reaches MCP through our proxy.
-        servers.append(
-            {
-                "name": server.name,
-                "description": server.description,
-                "default": server.default,
-                "tools": sorted(server.tools),
-                "unfiltered": server.unfiltered,
-            }
-        )
-    return {"servers": servers}
 
 
 def _aliases_for(router_exec: Any, visible: list[str]) -> dict[str, str]:
