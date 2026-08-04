@@ -68,6 +68,9 @@ class ConfigProviderSpec:
     model_ids: frozenset[str]
     # Route-level ``provider_display_name:``, when the config declares one.
     display_name: str = ""
+    # True when this slug comes from a route-level ``provider:`` label rather
+    # than from a provider the gateway knows how to build on its own.
+    from_route_label: bool = False
 
 
 def _validate_provider_slug(provider: str) -> str:
@@ -139,6 +142,23 @@ def _config_managed_provider_names(
     return set(PROVIDER_TARGETS) | set(SELECTABLE_PROVIDER_TARGETS) | set(specs)
 
 
+def config_route_provider_labels(
+    config_specs: dict[str, ConfigProviderSpec] | None = None,
+) -> set[str]:
+    """Return slugs claimed by a route-level ``provider:`` label in models.yaml.
+
+    These are reserved against custom-provider creation like any other
+    config-managed name, but they are not providers the gateway can build, so a
+    stored custom definition sharing the slug must not be dropped at boot.
+    """
+    specs = config_specs if config_specs is not None else _configured_provider_specs()
+    return {
+        provider
+        for provider, spec in specs.items()
+        if spec.from_route_label and provider not in PROVIDER_TARGETS
+    }
+
+
 def _registry_provider_names(
     config_specs: dict[str, ConfigProviderSpec] | None = None,
 ) -> set[str]:
@@ -170,6 +190,7 @@ def _merge_config_provider_spec(
     default_base_url: str,
     model_id: str | None,
     display_name: str = "",
+    from_route_label: bool = False,
 ) -> None:
     if not provider:
         return
@@ -183,6 +204,7 @@ def _merge_config_provider_spec(
             default_base_url=default_base_url,
             model_ids=model_ids,
             display_name=display_name,
+            from_route_label=from_route_label,
         )
         return
     merged_adapter_kind = current.adapter_kind
@@ -190,11 +212,15 @@ def _merge_config_provider_spec(
         merged_adapter_kind = adapter_kind
     merged_model_ids = current.model_ids | model_ids
     merged_display_name = current.display_name or display_name
+    # A slug the gateway can build on its own is never label-only, even if some
+    # other route also names it as a label.
+    merged_from_route_label = current.from_route_label and from_route_label
     if (
         (not current.default_base_url and default_base_url)
         or (merged_adapter_kind != current.adapter_kind)
         or (merged_model_ids != current.model_ids)
         or (merged_display_name != current.display_name)
+        or (merged_from_route_label != current.from_route_label)
     ):
         specs[provider] = ConfigProviderSpec(
             provider=provider,
@@ -202,6 +228,7 @@ def _merge_config_provider_spec(
             default_base_url=current.default_base_url or default_base_url,
             model_ids=merged_model_ids,
             display_name=merged_display_name,
+            from_route_label=merged_from_route_label,
         )
 
 
@@ -261,6 +288,7 @@ def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
                 default_base_url=_expand_config_string(route.get("base_url")),
                 model_id=model_id,
                 display_name=str(route.get("provider_display_name") or "").strip(),
+                from_route_label=bool(route_label) and route_label != adapter_kind,
             )
     return specs
 

@@ -493,3 +493,92 @@ async def test_built_in_label_is_used_when_config_names_nothing(monkeypatch):
     )
 
     assert item.display_name == "Chutes"
+
+
+@pytest.mark.asyncio
+async def test_boot_keeps_a_custom_provider_a_route_label_collides_with(caplog):
+    """Creating a custom provider whose slug matches a route label is already
+    rejected, so a collision means the label was added afterwards. The custom
+    definition owns a key pool and a route target that live routes depend on,
+    so it must survive — loudly, since both now report under one label."""
+    now = datetime.now(timezone.utc)
+
+    class Store:
+        async def list_provider_definitions(self):
+            return [
+                ProviderDefinitionRow(
+                    provider="local-a",
+                    display_name="Acme Local",
+                    adapter_kind="openai_compat",
+                    default_base_url="https://api.acme.test/v1",
+                    status="active",
+                    created_at=now,
+                    updated_at=now,
+                ),
+            ]
+
+    provider_registry.unregister_provider_definition("local-a")
+    try:
+        with caplog.at_level("ERROR"):
+            await provider_registry.apply_provider_definitions_at_boot(
+                Store(),
+                # The label is config-managed, so it also appears in reserved.
+                reserved_providers={"local-a", "vllm"},
+                config_label_providers={"local-a"},
+            )
+
+        assert provider_registry.get_provider_definition("local-a") is not None
+        assert "local-a" in caplog.text
+    finally:
+        provider_registry.unregister_provider_definition("local-a")
+
+
+def test_config_route_provider_labels_lists_only_label_slugs(tmp_path, monkeypatch):
+    models_config = tmp_path / "models.yaml"
+    models_config.write_text(
+        """
+models:
+  - id: qwen-local
+    provider: vllm
+    route:
+      - kind: vllm
+        provider: local-a
+        base_url: http://localhost:8002/v1
+      - kind: vllm
+        base_url: http://localhost:8003/v1
+  - id: minimax-fast
+    provider: minimax
+    route:
+      - kind: chutes
+        base_url: https://llm.chutes.ai/v1
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+
+    labels = provider_definitions.config_route_provider_labels()
+
+    # Only the relabelled slug — not the kinds, and not providers the gateway
+    # can build on its own.
+    assert labels == {"local-a"}
+
+
+def test_a_label_spelled_as_its_own_kind_is_not_label_only(tmp_path, monkeypatch):
+    """`provider: vllm` on a `kind: vllm` route is a no-op, so the slug stays a
+    real built-in and a stored row for it must still be skipped at boot."""
+    models_config = tmp_path / "models.yaml"
+    models_config.write_text(
+        """
+models:
+  - id: qwen-local
+    provider: vllm
+    route:
+      - kind: vllm
+        provider: vllm
+        base_url: http://localhost:8002/v1
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+
+    assert provider_definitions.config_route_provider_labels() == set()

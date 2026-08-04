@@ -175,6 +175,10 @@ Rules and caveats:
   config load at startup rather than silently mislabelling traffic.
 - `provider_display_name` works on its own too, if you want to rename a
   provider in the dashboard without splitting it.
+- A label reserves its slug against custom providers created in the Providers
+  tab. If a custom provider with that slug already exists, the custom provider
+  keeps its keys and route target and the clash is logged as an error at
+  startup — rename the label, since otherwise both report under one provider.
 - Renaming does not rewrite history. Rows already written under the old label
   keep it, so both labels appear until the old data ages out of
   `provider_hourly_stats` (30 days) — expect a gap in the new label's charts
