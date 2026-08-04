@@ -12,7 +12,7 @@ import json
 from typing import Any, ClassVar
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from serving.agent_jobs.mcp_registry import McpRegistry, McpServer
@@ -300,19 +300,69 @@ def test_an_alias_for_an_invisible_model_is_not_offered(client: TestClient) -> N
     assert "admin-only-model" not in body["models"]
 
 
-def test_an_alias_spelled_like_a_canonical_id_is_dropped(client: TestClient) -> None:
-    """**The one that would shadow a real model.**
-
-    A consumer resolves with `aliases.get(name, name)`. An entry keyed on some
-    model's canonical id would send every request for *that* model somewhere
-    else — and the request would look perfectly valid at both ends.
-    """
+def test_no_listed_model_is_also_an_alias(client: TestClient) -> None:
+    """The invariant a consumer resolving with `aliases.get(name, name)` needs."""
     body = client.get("/internal/model-catalog", params={"user_id": "user_1"}, headers=AUTH).json()
 
-    body_aliases = body["aliases"]
-    assert not (set(body_aliases) & set(body["models"])), (
-        "an alias is spelled like a model this catalog lists"
-    )
+    assert not (set(body["aliases"]) & set(body["models"]))
+
+
+def test_a_name_that_is_both_a_model_and_an_alias_refuses_the_catalog(
+    monkeypatch, client: TestClient
+) -> None:
+    """**The case that would have produced a job that dies at its first call.**
+
+    Some other model declared `kimi-k2` as its own alias and overwrote the
+    route, while the real kimi-k2 stayed reachable through `kimi-latest` — so
+    it is still a canonical id the catalog lists, and the same string now
+    routes to `glm-5.1`.
+
+    Dropping the alias entry left the consumer seeing `kimi-k2` in `models`,
+    treating it as canonical, and minting a grant for it — after which the very
+    next request routed to `glm-5.1` and was refused by that grant's own scope.
+    Created successfully, dead at the first model call.
+
+    There is no correct answer, so the endpoint gives none, and the control
+    plane's existing fail-closed handling does the rest.
+    """
+
+    class _Conflicted:
+        routes: ClassVar[dict[str, _FakeRoute]] = {
+            "glm-5.1": _FakeRoute("glm-5.1"),
+            "kimi-latest": _FakeRoute("kimi-k2"),
+            # Overwritten by another model's alias declaration.
+            "kimi-k2": _FakeRoute("glm-5.1"),
+        }
+
+    monkeypatch.setitem(client.app.dependency_overrides, get_router, lambda: _Conflicted())
+
+    response = client.get("/internal/model-catalog", params={"user_id": "user_1"}, headers=AUTH)
+
+    assert response.status_code == 503
+    assert response.json()["error"]["type"] == "ambiguous_model_catalog"
+
+
+def test_ordinary_routing_is_untouched_by_that_refusal() -> None:
+    """The refusal is scoped to this endpoint. The route table is not modified,
+    inspected destructively, or reordered — an ordinary request for the same
+    name resolves exactly as it did.
+    """
+
+    class _Conflicted:
+        routes: ClassVar[dict[str, _FakeRoute]] = {
+            "glm-5.1": _FakeRoute("glm-5.1"),
+            "kimi-latest": _FakeRoute("kimi-k2"),
+            "kimi-k2": _FakeRoute("glm-5.1"),
+        }
+
+    router = _Conflicted()
+    before = dict(router.routes)
+
+    with pytest.raises(HTTPException):
+        internal_lookups._aliases_for(router, ["glm-5.1", "kimi-k2"])
+
+    assert router.routes == before
+    assert router.routes["kimi-k2"].canonical_model_id == "glm-5.1"
 
 
 def test_every_alias_target_is_a_model_the_catalog_lists(client: TestClient) -> None:

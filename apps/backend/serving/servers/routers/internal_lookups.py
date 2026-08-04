@@ -95,25 +95,40 @@ def _aliases_for(router_exec: Any, visible: list[str]) -> dict[str, str]:
     * an alias whose canonical this user cannot see — it would resolve to a
       model the catalog does not list, and the caller would be refused a
       moment later with nothing to explain it;
-    * an alias spelled the same as some model's canonical id, which would
-      shadow that real model.
+    An alias spelled the same as a model this catalog lists is not dropped but
+    **refused**: see the comment at the raise. Ordinary inference is untouched
+    either way — it keeps routing exactly as the route table says.
 
     Case is left exactly as configured. Lowercasing here would accept spellings
     the inference path does not, which is a difference nobody would find until
     a job failed at its first call.
     """
     visible_set = set(visible)
-    canonicals = {
-        route.canonical_model_id
-        for route in router_exec.routes.values()
-        if getattr(route, "canonical_model_id", None)
-    }
     aliases: dict[str, str] = {}
     for name, route in router_exec.routes.items():
         canonical = getattr(route, "canonical_model_id", None)
         if not canonical or canonical == name:
             continue
-        if canonical not in visible_set or name in canonicals:
+        if name in visible_set:
+            # **Not expressible, so not answered.** This name is listed as a
+            # model *and* routes somewhere else — some other model declared it
+            # as an alias and overwrote its entry, while the original stayed
+            # reachable through an alias of its own.
+            #
+            # Dropping the entry (what this used to do) is the worst option:
+            # the consumer sees the name in `models`, treats it as canonical,
+            # mints a grant for it, and the very next request routes to the
+            # other model and is refused by that grant's own scope. The job is
+            # created successfully and dies at its first model call.
+            #
+            # There is no correct answer to give, so the endpoint says so.
+            raise _error(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "ambiguous_model_catalog",
+                f"Model name {name!r} is both a model and an alias for "
+                f"{canonical!r}; this catalog cannot be resolved unambiguously.",
+            )
+        if canonical not in visible_set:
             continue
         aliases[name] = canonical
     return aliases
