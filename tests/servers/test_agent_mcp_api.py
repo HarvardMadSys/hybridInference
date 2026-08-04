@@ -21,6 +21,7 @@ from serving.agent_jobs.tokens import SCOPE_MODEL, mint_worker_token
 from serving.servers.deps import get_agent_job_store, get_operational_store
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import agent_mcp as agent_mcp_router
+from serving.utils import context as req_ctx
 
 pytestmark = pytest.mark.asyncio
 
@@ -70,16 +71,23 @@ class FakeJobStore:
 class Upstream:
     """A stand-in MCP server that records what the gateway sent it."""
 
-    def __init__(self, *, body: bytes | None = None, content_type: str = "application/json"):
+    def __init__(
+        self,
+        *,
+        body: bytes | None = None,
+        content_type: str = "application/json",
+        status: int = 200,
+    ):
         self.requests: list[httpx.Request] = []
         self.body = body if body is not None else b'{"jsonrpc":"2.0","id":1,"result":{}}'
         self.content_type = content_type
+        self.status = status
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         """Record the request and answer with the canned body."""
         self.requests.append(request)
         return httpx.Response(
-            200,
+            self.status,
             content=self.body,
             headers={"content-type": self.content_type, "mcp-session-id": "sess-1"},
         )
@@ -333,6 +341,59 @@ async def test_an_inference_grant_is_refused_by_the_mcp_route(client):
 
     assert response.status_code == 403
     assert response.json()["error"]["type"] == "insufficient_scope"
+
+
+async def test_an_upstream_401_is_attributed_to_the_mcp_server(client, upstream):
+    """A refused *deployment* credential must not read as a refused job token.
+
+    ``_upstream_headers`` replaces whatever the sandbox sent with the registry's
+    credential, so a 401 from the MCP server means this deployment's key was
+    refused — every tool call of every running job is broken. This route relays
+    that status verbatim and also issues its own 401 (a token that is not a job
+    token, a dead attempt fence), so without attribution the request log and the
+    failed-request rule see one bare 401 and file both as routine client-auth
+    churn. Nothing else covers this path: the proxy dials with its own
+    ``httpx.AsyncClient`` and never reaches the routing layer, so neither the
+    upstream-auth breaker nor ``/health/deep`` sees the refusal either.
+    """
+    req_ctx.set({})
+    upstream.status = 401
+    upstream.body = b'{"error":"bad credentials"}'
+
+    response = await client.post("/v1/agent/mcp/github", json=_rpc("tools/list"), headers=_auth())
+
+    assert response.status_code == 401
+    assert req_ctx.get().get(req_ctx.PROVIDER) == "mcp:github"
+
+
+async def test_an_upstream_401_on_the_sse_branch_is_attributed_before_the_body_runs(
+    client, upstream
+):
+    """Streamable HTTP takes the other return, which must be attributed too.
+
+    The SSE branch hands back a ``StreamingResponse`` whose generator body runs
+    after the handler has returned, so attribution published from inside the
+    generator would land in a context that is no longer this request's.
+    """
+    req_ctx.set({})
+    upstream.status = 401
+    upstream.content_type = "text/event-stream"
+    upstream.body = b"event: message\ndata: {}\n\n"
+
+    response = await client.post("/v1/agent/mcp/github", json=_rpc("tools/list"), headers=_auth())
+
+    assert response.status_code == 401
+    assert req_ctx.get().get(req_ctx.PROVIDER) == "mcp:github"
+
+
+async def test_a_successful_relay_is_not_attributed(client, upstream):
+    """Attribution is an error-path signal; a 2xx must not carry the label."""
+    req_ctx.set({})
+
+    response = await client.post("/v1/agent/mcp/github", json=_rpc("tools/list"), headers=_auth())
+
+    assert response.status_code == 200
+    assert req_ctx.get().get(req_ctx.PROVIDER) is None
 
 
 async def test_the_deployed_agents_token_still_works(client, upstream):

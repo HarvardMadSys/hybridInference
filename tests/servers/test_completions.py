@@ -380,6 +380,92 @@ async def test_upstream_401_reaches_the_request_log_attributed_and_at_info(
 
 
 @pytest.mark.asyncio
+async def test_forced_streaming_upstream_401_reaches_the_request_log_attributed(
+    monkeypatch, mock_db_logger, mock_log_store, caplog
+):
+    """The buffered-stream variant of the same relay must be attributed too.
+
+    Under ``force_chat_completions_streaming`` a non-stream request is served by
+    streaming upstream and buffering the reply, so a pre-first-byte upstream error
+    becomes an in-band error frame and then, in the buffering wrapper, a *fresh*
+    ``HTTPException`` carrying no ``_routing``. The handler's own attribution
+    therefore resolved to the "router" sentinel and published nothing, leaving the
+    client-facing 401 exactly where this PR found it: bare and unattributed, logged
+    at DEBUG and excluded from the failed-request rate.
+
+    Drives the real route because the fix spans a context boundary that a unit test
+    on either side cannot see: the stream generator resolves the label in a reader
+    task whose context copy dies with it, so it hands the label over as an
+    attribute and the handler publishes it in the request's own context. Publishing
+    inside the generator instead type-checks, reads as a fix, and does nothing.
+    """
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    class _Unauthorized(Exception):
+        """An upstream credential rejection, as aiohttp surfaces it."""
+
+        status = 401
+
+    class RejectingStreamAdapter(BaseAdapter):
+        async def chat_completion(self, messages: list[dict[str, Any]], **params):
+            raise _Unauthorized("HTTP 401: invalid api key")
+
+        async def stream_chat_completion(
+            self, messages: list[dict[str, Any]], **params
+        ) -> AsyncGenerator[str, None]:
+            raise _Unauthorized("HTTP 401: invalid api key")
+            if False:  # pragma: no cover
+                yield ""
+
+    cfg = ModelConfig(
+        id="diffusiongemma",
+        name="diffusiongemma",
+        provider="diffusiongemma-local",
+        base_url="http://localhost:8002/v1",
+        context_length=8192,
+        max_output_length=4096,
+        supported_params=["temperature", "max_tokens"],
+    )
+    router = RouteExecutor()
+    router.register_route("diffusiongemma", [(RejectingStreamAdapter(cfg), 1.0)])
+
+    runtime_settings = MagicMock()
+    runtime_settings.get_bool = AsyncMock(return_value=True)
+
+    app = FastAPI(title="Forced Streaming Upstream 401 App")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=mock_db_logger,
+        log_store=mock_log_store,
+        runtime_settings=runtime_settings,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+    app.add_middleware(RequestLogMiddleware)
+
+    transport = ASGITransport(app=app)
+    with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "diffusiongemma",
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "stream": False,
+                },
+            )
+
+    assert resp.status_code == status.HTTP_401_UNAUTHORIZED
+
+    records = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert len(records) == 1, "expected one request log line at INFO or above"
+    record = records[0]
+    assert record.status_code == 401
+    assert record.provider == "diffusiongemma-local"
+    assert record.levelno == logging.INFO
+
+
+@pytest.mark.asyncio
 async def test_streaming_sse_format(completions_client: AsyncClient):
     async with completions_client.stream(
         "POST",

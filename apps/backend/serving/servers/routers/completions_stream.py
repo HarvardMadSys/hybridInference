@@ -299,8 +299,33 @@ class StreamSession:
         # finalizer takes a different code branch when this is unset.
         self._adapter_routing: dict[str, Any] | None = None
         self._provider_from_ctx: str | None = None
+        # Upstream label resolved on the failure path, exposed for the caller
+        # (see ``error_provider``). ``None`` until this stream fails.
+        self._error_provider: str | None = None
 
     # -- public surface ------------------------------------------------------
+
+    @property
+    def error_provider(self) -> str | None:
+        """Upstream this stream's failure was attributed to, if it failed.
+
+        Exists because a contextvar cannot carry it out. Every driver of this
+        generator runs it in a task of its own — the buffered
+        (``force_chat_completions_streaming``) caller through its own
+        ``asyncio.create_task`` reader, the SSE path through the task Starlette's
+        ``StreamingResponse`` starts for any ASGI server advertising spec_version
+        below 2.4 (uvicorn says 2.3) — and a task gets a *copy* of the context, so
+        anything this generator writes to ``req_ctx`` dies with it, unseen by the
+        handler, ``RequestLogMiddleware`` and the alert rules. An attribute on a
+        shared object crosses that boundary; ``ContextVar.set`` does not. The
+        buffered caller, which relays this failure's status to the client, reads
+        it and publishes in the request's own context.
+
+        ``None`` when the stream never failed, and the ``"router"`` sentinel when
+        it failed before any upstream was selected. Both are safe to hand straight
+        to ``req_ctx.publish_upstream_provider``, which drops them.
+        """
+        return self._error_provider
 
     @property
     def yielded_first_chunk(self) -> bool:
@@ -738,6 +763,13 @@ class StreamSession:
         provider_for_error = _provider_for_error(exc_routing)
         if provider_for_error == "router":
             provider_for_error = self._provider_from_ctx or self._routing.provider or "router"
+        # Expose the label as well as logging it as a value below: the buffered
+        # caller relays this failure's status to the client and needs the
+        # attribution in req_ctx, which it cannot get from here. See
+        # ``error_provider``. Deliberately not published from this generator —
+        # every current driver runs it in a task of its own, so a publish here
+        # would write to a context copy and read as a fix while doing nothing.
+        self._error_provider = provider_for_error
         exc_status_code = _extract_exception_status_code(exc)
 
         if self._log_store and not self._suppress_synthetic_logging:

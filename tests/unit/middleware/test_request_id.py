@@ -128,16 +128,42 @@ async def test_reset_keeps_keys_outside_the_request_scope() -> None:
     assert captured.get("affinity_key") == "kept-key"
 
 
+#: The per-request keys as of this change, spelled out here rather than read from
+#: ``req_ctx.REQUEST_SCOPED_KEYS``. Seeding *and* asserting from that tuple would
+#: make the clearing test below vacuous in the direction that matters: dropping a
+#: key from the tuple would remove it from both halves, so the test would keep
+#: passing while the key silently leaked into the next request. Pinning the
+#: membership separately means a removal has to be made here too — deliberately,
+#: with the leak in view.
+_PINNED_REQUEST_SCOPED_KEYS = frozenset(
+    {"client_user_agent", "user_id", "user_name", "client_error_kind", "provider"}
+)
+
+
+def test_request_scoped_key_set_is_pinned() -> None:
+    """``REQUEST_SCOPED_KEYS`` matches the set the clearing test guards.
+
+    Each key is there because some consumer reads "key present" as a fact about
+    the current request: ``user_id``/``user_name`` for circuit-breaker
+    attribution, ``client_error_kind`` for the 404 split, ``provider`` for the
+    401 split. Dropping one un-clears it and makes the next request inherit it,
+    so the set is not something to shrink as a side effect of another change.
+    """
+    assert set(req_ctx.REQUEST_SCOPED_KEYS) == _PINNED_REQUEST_SCOPED_KEYS
+
+
 @pytest.mark.asyncio
 async def test_every_request_scoped_key_is_cleared() -> None:
     """The reset covers the whole declared key set, not a hand-maintained subset.
 
-    Guards the invariant rather than one key: a future durable per-request key
-    added to ``REQUEST_SCOPED_KEYS`` is cleared automatically, and one dropped
-    from it fails here instead of silently leaking into the next request.
+    Checks the union of the pinned set and the live tuple: the pinned half keeps
+    a key that is dropped from ``REQUEST_SCOPED_KEYS`` under test (it fails here
+    rather than leaking), and the live half covers a future key added to the
+    tuple without anyone touching this file.
     """
-    req_ctx.update(dict.fromkeys(req_ctx.REQUEST_SCOPED_KEYS, "stale"))
+    keys = _PINNED_REQUEST_SCOPED_KEYS | set(req_ctx.REQUEST_SCOPED_KEYS)
+    req_ctx.update(dict.fromkeys(keys, "stale"))
     captured: dict = {}
     await _drive([], captured)
-    for key in req_ctx.REQUEST_SCOPED_KEYS:
+    for key in keys:
         assert captured.get(key) is None, f"{key} leaked from the previous request"

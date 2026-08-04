@@ -917,6 +917,19 @@ async def chat_completions(
             except StopAsyncIteration:
                 first_chunk = None
             except HTTPException:
+                # A pre-first-byte upstream error on this path is relayed to the
+                # client with the upstream's own status: the stream converts it to
+                # an in-band error frame and the buffering wrapper re-raises that
+                # frame's ``code`` as a fresh HTTPException carrying no
+                # ``_routing``. So the handler's own attribution below resolves to
+                # the "router" sentinel and publishes nothing, and a relayed 401
+                # arrives at RequestLogMiddleware and the failed-request rule as a
+                # bare, unattributed 401 — filed as routine client-auth churn, the
+                # exact silence this alerting exists to break. The label has to be
+                # republished *here*, in the request's own context: the stream
+                # generator runs inside the wrapper's reader task, so its own
+                # publish landed in a context copy that ends with the task.
+                req_ctx.publish_upstream_provider(session.error_provider)
                 raise
             if is_synthetic_probe:
                 provider_header = get_single_route_provider()
