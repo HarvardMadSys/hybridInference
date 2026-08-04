@@ -174,12 +174,35 @@ HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
 #             process can hold it on a host, and it is stable across restarts of
 #             the same unit (so restart-and-adopt keeps working). Override with
 #             PROXY_OWNER to claim a distinct identity for a hand-run container.
-#   profile — sha256 of the resolved per-model config. Same owner + different
-#             hash means "my own config changed on disk" → replace. A *different*
-#             owner means hands off, whatever the hash.
+#   profile — sha256 of the *launch-affecting* part of the resolved per-model
+#             config. Same owner + different hash means "my own config changed on
+#             disk" → replace. A *different* owner means hands off, whatever the
+#             hash.
+#
+# The owner check is gated on the container being *alive*: an exited container of
+# the same name holds no GPU and serves nothing, so refusing to touch it would
+# only wedge the name forever (nothing on any path removes a foreign container).
 OWNER_LABEL = "com.freeinference.proxy.owner"
 PROFILE_LABEL = "com.freeinference.proxy.profile"
 PROXY_OWNER = os.environ.get("PROXY_OWNER", "").strip() or f"port-{LISTEN_PORT}"
+# Config keys deliberately left *out* of the profile hash: they never reach either
+# `docker run` command line, so a container launched before such an edit is not
+# stale after it. This matters because a hash mismatch destroys a healthy backend
+# and pays a full weight reload -- ~14 minutes on DeepSeek-V4-Flash, during which
+# the model fails over to its paid remote route. `startup_estimate_seconds` only
+# words the warmup SSE banner (see `_warmup_thinking_sse`) and exists precisely to
+# be re-tuned against measured cold-start times, so it is the key most likely to
+# be edited on a live node; the `hf_*` keys are read once by `_ensure_model_dir`
+# at download time. Everything else stays in -- including `colocate_group`, which
+# steers GPU auto-selection and therefore the `--gpus` request.
+NON_LAUNCH_CONFIG_KEYS = frozenset(
+    {
+        "startup_estimate_seconds",
+        "hf_repo",
+        "hf_revision",
+        "hf_ignore_patterns",
+    }
+)
 # LOCAL_API_KEY is the key the gateway signs its requests to this proxy with. (A
 # comment here used to name FREEINFERENCE_API_KEY as a compatibility fallback; no
 # such fallback is read, and that variable is the gateway's *own* client key --
@@ -370,8 +393,22 @@ def _docker_gpu_arg(gpu: str) -> str:
     return f'"device={gpu}"' if "," in gpu else f"device={gpu}"
 
 
+def _launch_profile(config: dict[str, Any]) -> str:
+    """Fingerprint the launch-affecting part of a per-model config.
+
+    Stamped on the container at ``docker run`` and compared on adoption, so it
+    must answer exactly one question: *would this container have been launched
+    differently?* Hashing the whole config answers a different and more
+    pessimistic question — "has anything in the file changed?" — which turns a
+    purely cosmetic edit into a ``docker rm -f`` of a healthy, serving backend.
+    See ``NON_LAUNCH_CONFIG_KEYS`` for what is excluded and why.
+    """
+    launch = {k: v for k, v in config.items() if k not in NON_LAUNCH_CONFIG_KEYS}
+    return hashlib.sha256(_json.dumps(launch, sort_keys=True).encode()).hexdigest()[:16]
+
+
 class ForeignContainerError(RuntimeError):
-    """Raised when the container of this name belongs to another proxy.
+    """Raised when a *running* container of this name belongs to another proxy.
 
     Deliberately fails the request instead of taking the container over. The two
     alternatives are both worse: destroying it kills a backend another process is
@@ -402,9 +439,7 @@ class BackendManager:
         # Fingerprint of the config this manager was built from, stamped onto the
         # container so a later process can tell "the backend I asked for" from
         # "some other backend wearing the same name".
-        self._profile = hashlib.sha256(_json.dumps(config, sort_keys=True).encode()).hexdigest()[
-            :16
-        ]
+        self._profile = _launch_profile(config)
 
     @property
     def state(self) -> str:
@@ -588,10 +623,22 @@ class BackendManager:
 
     def _start_container(self) -> None:
         # Ownership first: everything below either destroys the container of this
-        # name or binds its host port, so a foreign container must stop us before
-        # we touch the GPU or the filesystem.
+        # name or binds its host port, so a *live* foreign container must stop us
+        # before we touch the GPU or the filesystem.
+        #
+        # Gated on liveness, and only checked when the label says foreign, because
+        # nothing anywhere removes a foreign container: `_stop_container` declines
+        # one too. An exited container of this name holds no GPU, serves no
+        # traffic, and cannot be harmed by a `docker rm -f` — refusing it would
+        # wedge the name permanently and 502 the model until an operator removed
+        # the corpse by hand. That is reachable: `bench_decode.sh` has the
+        # operator hand-start this exact container with `owner=manual`, and a
+        # `docker stop` (rather than `docker rm`) afterwards leaves one behind.
+        # The edge this guard exists for — a foreign backend eight minutes into a
+        # fourteen-minute load, failing the health probe — is running, and is
+        # still refused.
         owner = self._container_owner()
-        if owner is not None:
+        if owner is not None and self._container_running():
             raise self._foreign_container_error(owner, "replace")
         gpu = self._resolve_gpu()
         self._ensure_model_dir()
@@ -881,6 +928,11 @@ class BackendManager:
         # nothing about traffic another proxy is putting through a container of
         # the same name. Dropping local state without removing the container is
         # the safe outcome: the owner's own watcher will reclaim its GPUs.
+        #
+        # Unlike `_start_container` this is *not* gated on liveness, and does not
+        # need to be: this path only ever frees GPUs, an exited container holds
+        # none, and the start path now reclaims a foreign corpse of this name. So
+        # declining unconditionally here strands nothing.
         owner = self._container_owner()
         if owner is not None:
             log.warning(
@@ -985,12 +1037,38 @@ class BackendManager:
         """
         return ForeignContainerError(
             f"[{self.model_name}] Refusing to {action} container {self.container}: it is "
-            f"owned by {owner!r}, not by this proxy ({PROXY_OWNER!r}). Two proxies have "
-            f"resolved the same container name, most likely two units running "
+            f"owned by {owner!r} and running, not by this proxy ({PROXY_OWNER!r}). Two "
+            f"proxies have resolved the same container name, most likely two units running "
             f"ops/local_deployment_proxy/local_deployment_proxy.py with different "
             f"MODELS_CONFIG files on one host. Point one of them at a config whose "
-            f"'container' and 'backend_port' do not collide, or disable it."
+            f"'container' and 'backend_port' do not collide, or disable it. If that owner "
+            f"is instead a hand-started identity (a benchmark container) or this same unit "
+            f"before a LISTEN_PORT change, remove the container with "
+            f"'sudo docker rm -f {self.container}' or set PROXY_OWNER to {owner!r}."
         )
+
+    def contention_error(self) -> ForeignContainerError | None:
+        """Return the diagnosis if a live foreign container holds this name.
+
+        Exists for the streaming warmup path, which commits ``200`` plus a "the
+        model is starting up" banner *before* ``ensure_running`` runs, on a
+        background thread that can only log what it raises. A
+        ``ForeignContainerError`` there reaches the journal and nothing else, so a
+        contended proxy would answer every streaming request success-shaped
+        forever: the gateway sees 200s, never opens a circuit, and never fails
+        over — the exact silent failure the labels were added to end. Calling this
+        before the response line is written keeps the 502 available.
+
+        Never raises. An unreadable ``docker inspect`` answers "no contention", so
+        a transient docker hiccup cannot turn every streaming request into a 502.
+        """
+        try:
+            owner = self._container_owner()
+            if owner is None or not self._container_running():
+                return None
+        except Exception:  # docker unreachable: not evidence of a collision
+            return None
+        return self._foreign_container_error(owner, "adopt")
 
     def _adopt_running_container(self) -> bool:
         """Adopt an already-running, healthy container instead of reloading it.
@@ -1236,6 +1314,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     is_stream = _json.loads(body).get("stream", False)
 
             if is_chat and is_stream:
+                # Diagnose a contended container name *before* committing the 200
+                # and the warmup banner: once the response line is written the
+                # background start has no way to reach the client, and a
+                # success-shaped answer keeps the gateway from failing over.
+                contention = backend.contention_error()
+                if contention is not None:
+                    self.send_error(502, str(contention))
+                    return
                 self._handle_warmup_stream(backend)
                 return
             try:

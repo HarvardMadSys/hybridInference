@@ -18,6 +18,12 @@
 #   sudo docker run -d --name deepseek-v4-flash-sglang \
 #     --label com.freeinference.proxy.owner=manual  …
 #
+# That protection lasts only while the container runs. When the run is done,
+# remove it -- `sudo docker rm -f deepseek-v4-flash-sglang` -- and let the proxy
+# launch its own on the next request. A `docker stop` alone leaves the container
+# present but exited; the proxy reclaims that (it holds no GPU and serves
+# nothing), so do not expect to `docker start` it later and still own the name.
+#
 # See ops/local_deployment_proxy/README.md, "Container ownership".
 #
 # Usage:

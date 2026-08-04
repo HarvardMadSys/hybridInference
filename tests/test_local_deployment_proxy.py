@@ -147,6 +147,10 @@ class WarmupBackend:
     def touch(self) -> None:
         self.touched.set()
 
+    def contention_error(self) -> None:
+        """No sibling proxy holds this container name."""
+        return None
+
     def ensure_running(self) -> None:
         self.ensure_running_called.set()
 
@@ -611,10 +615,20 @@ class _FakeDocker:
         ]
 
 
-def _labelled_backend(proxy: Any, tmp_path: Path, name: str = "owned-model") -> Any:
-    """Build a backend over a model dir complete enough for ``_start_container``."""
+def _labelled_backend(
+    proxy: Any,
+    tmp_path: Path,
+    name: str = "owned-model",
+    **extra: Any,
+) -> Any:
+    """Build a backend over a model dir complete enough for ``_start_container``.
+
+    Reuses the directory when called repeatedly with the same ``name``, so two
+    backends built from configs differing in one key really do differ in one key —
+    a distinct ``model_dir`` would change the profile hash by itself.
+    """
     model_dir = tmp_path / name
-    model_dir.mkdir()
+    model_dir.mkdir(exist_ok=True)
     (model_dir / "config.json").write_text('{"model_type": "llama"}')
     return proxy.BackendManager(
         MODEL_NAME,
@@ -624,6 +638,7 @@ def _labelled_backend(proxy: Any, tmp_path: Path, name: str = "owned-model") -> 
             "backend_port": 18099,
             "model_dir": str(model_dir),
             "served_name": MODEL_NAME,
+            **extra,
         },
     )
 
@@ -638,16 +653,25 @@ def _labels_from_run(command: list[str]) -> dict[str, str]:
     return out
 
 
-def test_start_container_stamps_owner_and_profile_labels(monkeypatch: Any, tmp_path: Path) -> None:
+@pytest.mark.parametrize("engine", ["sglang", "vllm"])
+def test_start_container_stamps_owner_and_profile_labels(
+    monkeypatch: Any, tmp_path: Path, engine: str
+) -> None:
     """Every container this proxy launches must say who owns it.
 
     Without these two labels the name is the only ownership token there is, and a
     sibling proxy that resolves the same name cannot tell "my backend" from
     "someone else's" — which is what let it ``docker rm -f`` a container another
     process was loading.
+
+    Parametrized over both engines on purpose: the run commands are built
+    separately, and ``bge-m3`` ships with ``"engine": "vllm"``, so an unstamped
+    vLLM launch would be read as every proxy's own and keep the exact cross-kill
+    semantics the labels remove. Dropping the stamp from ``_vllm_run_cmd`` used to
+    leave the whole suite green.
     """
     proxy = _load_proxy(monkeypatch, tmp_path)
-    backend = _labelled_backend(proxy, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path, engine=engine)
     fake = _FakeDocker(exists=False)
     monkeypatch.setattr(proxy.subprocess, "run", fake.run)
 
@@ -655,6 +679,8 @@ def test_start_container_stamps_owner_and_profile_labels(monkeypatch: Any, tmp_p
 
     launched = [c for c in fake.mutations if c[c.index("docker") + 1] == "run"]
     assert len(launched) == 1
+    image = "vllm/vllm-openai:latest" if engine == "vllm" else "lmsysorg/sglang:latest"
+    assert image in launched[0]
     labels = _labels_from_run(launched[0])
     assert labels[proxy.OWNER_LABEL] == proxy.PROXY_OWNER == f"port-{proxy.LISTEN_PORT}"
     assert labels[proxy.PROFILE_LABEL] == backend._profile
@@ -667,10 +693,15 @@ def test_start_container_refuses_to_replace_another_proxys_container(
 
     This is the collision the two H200 units would produce if both ran on one
     box: whichever started last destroyed the other's backend by name.
+
+    ``running=True`` is load-bearing, not scenery: the refusal is gated on the
+    foreign container being alive, since an exited one holds nothing and must be
+    reclaimable — see
+    ``test_exited_foreign_container_is_reclaimed_not_refused_forever``.
     """
     proxy = _load_proxy(monkeypatch, tmp_path)
     backend = _labelled_backend(proxy, tmp_path)
-    fake = _FakeDocker(labels={proxy.OWNER_LABEL: "port-8003"})
+    fake = _FakeDocker(labels={proxy.OWNER_LABEL: "port-8003"}, running=True)
     monkeypatch.setattr(proxy.subprocess, "run", fake.run)
 
     with pytest.raises(RuntimeError, match=r"Refusing to replace container contended-sglang"):
@@ -679,6 +710,29 @@ def test_start_container_refuses_to_replace_another_proxys_container(
     # Nothing destroyed, nothing launched — and the message names both sides so
     # an operator can tell which unit to reconfigure.
     assert fake.mutations == []
+
+
+def test_exited_foreign_container_is_reclaimed_not_refused_forever(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A foreign *corpse* must not wedge the name. Nothing else would clear it.
+
+    ``bench_decode.sh`` has the operator hand-start this very container with
+    ``owner=manual``; a ``docker stop`` afterwards (rather than ``docker rm``)
+    leaves it present but exited. It holds no GPU and serves no traffic, yet no
+    path in this module removes a foreign container — ``_stop_container`` declines
+    one too — so refusing it would 502 the model on that node until an operator
+    removed the corpse by hand. Reclaim it instead.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(labels={proxy.OWNER_LABEL: "manual"}, exists=True, running=False)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    backend._start_container()
+
+    verbs = [c[c.index("docker") + 1] for c in fake.mutations]
+    assert verbs == ["rm", "run"]
 
 
 def test_foreign_container_still_loading_is_not_torn_down(monkeypatch: Any, tmp_path: Path) -> None:
@@ -801,13 +855,62 @@ def test_own_container_from_a_changed_profile_is_replaced_not_refused(
     assert verbs == ["rm", "run"]
 
 
-def test_contended_container_surfaces_as_502_naming_both_owners(
+def test_retuning_the_startup_estimate_keeps_the_container_adopted(
     monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A config key that never reaches ``docker run`` must not force a reload.
+
+    ``startup_estimate_seconds`` only words the warmup SSE banner, and exists to
+    be re-tuned against measured cold-start times — it is set to 840 on the live
+    H200 profile for exactly that reason. Hashing the whole config would make that
+    one-key edit plus the routine ``systemctl restart`` ``docker rm -f`` a healthy,
+    serving DeepSeek backend and pay a ~14-minute weight reload, during which the
+    model fails over to its paid remote route. Nothing about the container is
+    stale. Same for the ``hf_*`` keys, which only steer the download.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    running = _labelled_backend(proxy, tmp_path)
+
+    for cosmetic in (
+        {"startup_estimate_seconds": 840},
+        {"hf_repo": "deepseek-ai/DeepSeek-V4-Flash-0731"},
+        {"hf_revision": "main"},
+        {"hf_ignore_patterns": ["*.onnx"]},
+    ):
+        edited = _labelled_backend(proxy, tmp_path, **cosmetic)
+        assert edited._profile == running._profile, cosmetic
+
+    # A launch-affecting edit still invalidates it, or the label would be useless.
+    bumped = _labelled_backend(proxy, tmp_path, mem_fraction="0.70")
+    assert bumped._profile != running._profile
+
+    # End to end: the re-tuned config adopts the container the old one launched.
+    stamped = _labels_from_run(["docker", "run", *running._ownership_label_args()])
+    retuned = _labelled_backend(proxy, tmp_path, startup_estimate_seconds=900)
+    fake = _FakeDocker(labels=stamped, running=True, gpu="2")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    monkeypatch.setattr(retuned, "_backend_healthy", lambda: True)
+
+    assert retuned._adopt_running_container() is True
+    assert fake.mutations == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_contended_container_surfaces_as_502_naming_both_owners(
+    monkeypatch: Any, tmp_path: Path, stream: bool
 ) -> None:
     """A collision must be diagnosable from the response, not just the journal.
 
     The alternative is what happens today: the two proxies take turns destroying
     each other's container and the client sees an opaque startup timeout.
+
+    ``stream: true`` is the shape that matters most and the one that used to lose
+    the diagnosis entirely. A streaming chat request on a not-ready backend takes
+    the warmup branch, which commits ``200`` and the "starting up" banner *before*
+    ``ensure_running`` runs on a background thread — and ``ForeignContainerError``
+    is a ``RuntimeError``, so that thread only logged it. Every retry answered 200,
+    so the gateway saw success, never opened a circuit and never failed over: the
+    endpoint stalled indefinitely behind "please wait about 14 minutes".
 
     Also pins the message to ASCII. ``send_error`` puts it in the HTTP status
     line, which is encoded latin-1, so a single em dash in the text raises
@@ -820,18 +923,48 @@ def test_contended_container_surfaces_as_502_naming_both_owners(
     monkeypatch.setattr(proxy.subprocess, "run", fake.run)
     monkeypatch.setattr(backend, "_backend_healthy", lambda: False)
 
+    body_json: dict[str, Any] = {
+        "model": MODEL_NAME,
+        "messages": [{"role": "user", "content": "ping"}],
+    }
+    if stream:
+        body_json["stream"] = True
+
     with _serve(proxy.ProxyHandler) as proxy_port:
         status, _, body = _request(
             f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
             method="POST",
             headers={"Authorization": "Bearer manual-secret"},
-            body={"model": MODEL_NAME, "messages": [{"role": "user", "content": "ping"}]},
+            body=body_json,
         )
 
     assert status == 502
     assert b"port-8003" in body
     assert proxy.PROXY_OWNER.encode() in body
+    # Never the success-shaped warmup banner, which the gateway reads as healthy.
+    assert b'"id":"warmup"' not in body
     assert fake.mutations == []
+
+
+def test_warmup_stream_survives_an_unreadable_docker_inspect(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A docker hiccup must not 502 every streaming request.
+
+    The contention check runs on the hot warmup path, so it has to fail towards
+    "no collision": an unreadable ``docker inspect`` is not evidence that someone
+    else owns the container, and treating it as such would take a model offline
+    for the duration of a transient daemon problem.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+
+    def boom(*_: Any, **__: Any) -> None:
+        raise OSError("cannot connect to the Docker daemon")
+
+    monkeypatch.setattr(proxy.subprocess, "run", boom)
+
+    assert backend.contention_error() is None
 
 
 def test_dead_ready_backend_self_heals_and_retries(monkeypatch: Any, tmp_path: Path) -> None:

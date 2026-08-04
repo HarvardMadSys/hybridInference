@@ -311,13 +311,16 @@ Every lifecycle operation here addresses its backend by container *name*: a `doc
 | Label | Value | Meaning |
 |---|---|---|
 | `com.freeinference.proxy.owner` | `port-<LISTEN_PORT>`, or `$PROXY_OWNER` when set | Which proxy runs it. Only one process can hold a listen port on a host, and the value is stable across restarts of the same unit — so restart-and-adopt keeps working. |
-| `com.freeinference.proxy.profile` | first 16 hex of `sha256(json.dumps(model_config, sort_keys=True))` | Which config it was launched from. |
+| `com.freeinference.proxy.profile` | first 16 hex of `sha256` over the **launch-affecting** config keys | Which config it was launched from. |
 
 The rules:
 
 - **Owner matches, or no owner label** → this proxy's container. Adopt it when healthy, replace it when not, stop it when idle. An *absent* label means "started before labelling existed, therefore mine" — that keeps the change a no-op for containers already running at upgrade time (see [Upgrading](#upgrading-from-an-unlabelled-deployment)).
 - **Owner matches, profile differs** → the config on disk changed since launch (a `mem_fraction` bump, a new `sglang_image`). Replace the container; do not adopt a backend running the previous config.
-- **Owner differs** → hands off. The proxy neither adopts nor destroys it, and the request fails 502 with both owners named. Taking it over would be worse either way: `docker rm -f` kills a backend another process may be eleven minutes into loading or actively streaming from, and adopting it puts one container under two idle watchers that cannot see each other's activity, so whichever fires first stops it out from under the other's traffic.
+- **Owner differs, and that container is running** → hands off. The proxy neither adopts nor destroys it, and the request fails 502 with both owners named — for streaming chat requests too, which is the shape that matters: they are answered before the backend is up, so the diagnosis has to be produced before the `200` and the "starting up" banner are committed, or the gateway keeps seeing success and never fails over. Taking a live foreign container over would be worse either way: `docker rm -f` kills a backend another process may be eleven minutes into loading or actively streaming from, and adopting it puts one container under two idle watchers that cannot see each other's activity, so whichever fires first stops it out from under the other's traffic.
+- **Owner differs, and that container is exited** → reclaimed: `docker rm -f` then a fresh launch. An exited container holds no GPU and serves no traffic, and *nothing* in this proxy removes a foreign container (the idle path declines one too), so refusing it would wedge the name permanently and 502 the model on that node until an operator removed the corpse by hand.
+
+Which config keys force a replacement: all of them except `startup_estimate_seconds`, `hf_repo`, `hf_revision` and `hf_ignore_patterns`, which never reach a `docker run` command line — the first only words the warmup banner, the rest only steer the Hugging Face download. Re-tuning `startup_estimate_seconds` against a measured cold start is free, as it should be; editing anything else costs a reload on the next start.
 
 This only ever triggers when two processes resolve the *same* container name. Running this proxy pinned to `models.json` (Qwen + bge-m3 on GPUs 0,1) alongside `h200_idle_proxy` (DeepSeek on GPUs 2,3) on one 4-GPU box shares no container name or port and is unaffected.
 
@@ -328,13 +331,15 @@ sudo docker run -d --name deepseek-v4-flash-sglang \
   --label com.freeinference.proxy.owner=manual  …
 ```
 
+The protection lasts only as long as the container runs: `docker stop` hands the name back, and the next proxy start reclaims it. When the benchmark is done, `sudo docker rm -f deepseek-v4-flash-sglang` and let the proxy launch its own.
+
 ### Upgrading from an unlabelled deployment
 
 Nothing to do, and nothing to restart. Containers running now carry no labels, are therefore read as this proxy's own, and keep being adopted and idle-stopped exactly as before. Each gets labelled at its next cold start, and is protected from then on. There is no window in which a running backend is orphaned or unreclaimable.
 
 ### Changing `LISTEN_PORT` on a box with a labelled backend running
 
-The owner identity is derived from the listen port, so moving a node's port orphans the container it started: the proxy reads it as another owner's and refuses to adopt or remove it. Either remove it once by hand (`sudo docker rm -f <container>`), or keep the old identity across the move by pinning `PROXY_OWNER` to what it used to be. Nothing is silently wrong in the meantime — requests fail 502 naming both owners.
+The owner identity is derived from the listen port, so moving a node's port orphans the container it started: while that container keeps running the proxy reads it as another owner's and refuses to adopt or remove it. Either remove it once by hand (`sudo docker rm -f <container>`), or keep the old identity across the move by pinning `PROXY_OWNER` to what it used to be. Nothing is silently wrong in the meantime — requests fail 502 naming both owners, streaming ones included, and the 502 text carries both remediations.
 
 ## On-demand Hugging Face download
 
