@@ -17,6 +17,7 @@
         "mtp": true,
         "speculative_algorithm": "DSPARK",
         "tool_call_parser": "deepseekv4",
-        "reasoning_parser": "deepseek-v4"
+        "reasoning_parser": "deepseek-v4",
+        "startup_estimate_seconds": 840
     }
 }

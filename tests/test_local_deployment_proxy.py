@@ -1193,3 +1193,19 @@ def test_copy_stream_forwards_sse_chunks_as_they_arrive(monkeypatch: Any, tmp_pa
 
     assert len(wfile.writes) >= 2
     assert b"".join(wfile.writes) == b"".join(events)
+
+
+def test_warmup_banner_uses_per_model_startup_estimate(monkeypatch: Any, tmp_path: Path) -> None:
+    # A flat "about 120 seconds" understates a large MoE cold start by ~10x, which is
+    # what callers saw while DeepSeek-V4 was taking 9-14 minutes to reach ready.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+
+    default = proxy.BackendManager(MODEL_NAME, {"container": "c", "model_dir": "/tmp/m"})
+    assert "about 120 seconds" in proxy._warmup_thinking_sse(default)
+
+    slow = proxy.BackendManager(
+        MODEL_NAME, {"container": "c", "model_dir": "/tmp/m", "startup_estimate_seconds": 840}
+    )
+    banner = proxy._warmup_thinking_sse(slow)
+    assert "about 14 minutes" in banner
+    assert "120 seconds" not in banner

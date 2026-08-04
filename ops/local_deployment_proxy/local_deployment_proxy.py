@@ -952,12 +952,32 @@ def _get_backend(
     return backend
 
 
-WARMUP_THINKING_SSE = (
-    'data: {"id":"warmup","object":"chat.completion.chunk",'
-    '"choices":[{"index":0,"delta":{"role":"assistant",'
-    '"content":"⏳ The model is starting up — this takes about 120 seconds. '
-    'Please wait…"},"finish_reason":null}]}\n\n'
-)
+DEFAULT_STARTUP_ESTIMATE_SECONDS = 120
+
+
+def _warmup_thinking_sse(backend: BackendManager) -> str:
+    """Build the "still starting" SSE chunk, with a per-model time estimate.
+
+    A single hardcoded figure misleads badly on large MoE models: DeepSeek-V4-Flash
+    takes 9-14 minutes to reach ready from cold (weight load, CUDA-graph capture and
+    DeepGEMM JIT), so a flat "about 120 seconds" tells the caller to wait roughly a
+    tenth of the real time. Models can set ``startup_estimate_seconds`` to say how
+    long they actually take.
+    """
+    config = getattr(backend, "config", None) or {}
+    seconds = int(config.get("startup_estimate_seconds", DEFAULT_STARTUP_ESTIMATE_SECONDS))
+    # <= 120 so every model that never sets an estimate keeps the original wording.
+    estimate = (
+        f"about {seconds} seconds" if seconds <= 120 else f"about {round(seconds / 60)} minutes"
+    )
+    return (
+        'data: {"id":"warmup","object":"chat.completion.chunk",'
+        '"choices":[{"index":0,"delta":{"role":"assistant",'
+        f'"content":"⏳ The model is starting up — this takes {estimate}. '
+        'Please wait…"},"finish_reason":null}]}\n\n'
+    )
+
+
 WARMUP_THINKING_SSE_DONE = (
     'data: {"id":"warmup","object":"chat.completion.chunk",'
     '"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
@@ -1079,7 +1099,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
 
-        self._send_sse_chunk(WARMUP_THINKING_SSE)
+        self._send_sse_chunk(_warmup_thinking_sse(backend))
         self._send_sse_chunk(WARMUP_THINKING_SSE_DONE)
         self._send_sse_chunk("data: [DONE]\n\n")
         self.wfile.flush()
