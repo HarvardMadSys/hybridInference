@@ -43,6 +43,26 @@ LOCAL_API_KEY='your-secret-key' ./spark_idle_proxy/spark_idle_service.sh start
 
 Logs are written to `/tmp/spark_idle_proxy_8002.log`.
 
+## As a systemd service
+
+A daemon started by hand does not come back after a reboot. Install the unit
+instead:
+
+```bash
+sudo LOCAL_API_KEY='your-secret-key' ./ops/spark_idle_proxy/install_service.sh
+# remove (this also deletes the key drop-in):
+sudo ./ops/spark_idle_proxy/install_service.sh --uninstall
+```
+
+The unit reads the repo's `.env` for `LOCAL_API_KEY`, so on a box that also hosts
+the gateway a rotation there reaches both ends at once and no `LOCAL_API_KEY=` is
+needed on the command line. The Spark normally carries no `.env` — it is reached
+over an SSH tunnel from the gateway host — so pass the key to the installer, which
+writes it to a mode-0600 drop-in. Omitting it on a later run **removes** that
+drop-in, which drops the proxy back to the hardcoded default; pass the key on every
+run you want it kept. Either way the installer restarts the unit, so the value
+takes effect immediately.
+
 ## Usage with OpenAI-compatible clients
 
 ```python
@@ -121,9 +141,31 @@ Models are defined in `spark_idle_proxy/models.json`:
 | `IDLE_TIMEOUT` | `1440` | Seconds of inactivity before stopping a container (24 min) |
 | `HEALTH_TIMEOUT` | `900` | Max seconds to wait for a container to become healthy |
 | `HEALTH_INTERVAL` | `10` | Seconds between health-check polls |
-| `MODELS_CONFIG` | `models.json` | Path to the models config JSON |
-| `LOCAL_API_KEY` | `freeinference_api` | API key for request auth |
+| `MODELS_CONFIG` | `models.json` | Path to the models config JSON. **Not settable under systemd** — see below |
+| `LOCAL_API_KEY` | `freeinference_api` | API key for request auth. A blank value falls back to the default rather than disabling auth — there is no way to turn auth off |
 | `HF_TOKEN` | (none) | Passed into vLLM containers for gated HF downloads |
+
+### `MODELS_CONFIG` under systemd
+
+`deploy/systemd/spark_idle_proxy.service` reads the gateway's `.env` (that is where
+`LOCAL_API_KEY` comes from), and `MODELS_CONFIG` is also a *gateway* variable — a
+legacy alias of `MODELS_CONFIG_PATH` naming a YAML registry, which this proxy would
+`json.load()` and find no backends in. An `EnvironmentFile=` outranks every
+`Environment=` line whatever the order, so the unit drops the variable with
+`UnsetEnvironment=MODELS_CONFIG`, which systemd applies last of all. Under systemd
+the proxy therefore always uses `models.json` next to the script, and no ordinary
+route — `.env`, a drop-in `Environment=`, `systemctl set-environment` — can
+override it. To serve a different config there, reset the unset list first:
+
+```ini
+# /etc/systemd/system/spark_idle_proxy.service.d/models-config.conf
+[Service]
+UnsetEnvironment=
+Environment=MODELS_CONFIG=/path/to/models.json
+```
+
+Running the proxy by hand or via `spark_idle_service.sh` is unaffected:
+`MODELS_CONFIG` works normally there.
 
 ## Requirements
 

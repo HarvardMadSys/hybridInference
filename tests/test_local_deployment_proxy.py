@@ -1209,3 +1209,44 @@ def test_warmup_banner_uses_per_model_startup_estimate(monkeypatch: Any, tmp_pat
     banner = proxy._warmup_thinking_sse(slow)
     assert "about 14 minutes" in banner
     assert "120 seconds" not in banner
+
+
+# ── LOCAL_API_KEY fails closed ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_local_api_key_still_enforces_auth(
+    monkeypatch: Any, tmp_path: Path, blank: str
+) -> None:
+    """A placeholder ``LOCAL_API_KEY=`` line must not turn request auth off.
+
+    The systemd unit reads the gateway's whole ``.env``, where a bare ``KEY=``
+    placeholder is how every other credential in ``.env.example`` is written.
+    Read with a two-argument ``os.environ.get(name, default)`` that line is a
+    real assignment of ``""`` -- the default never applies -- and an empty key
+    used to mean "serve everyone": a root-run listener on 0.0.0.0 that starts and
+    stops GPU containers over the Docker socket, reachable through the reverse
+    tunnel, with auth off and nothing in the log saying so.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    monkeypatch.setenv("LOCAL_API_KEY", blank)
+    sys.modules.pop("ops.local_deployment_proxy.local_deployment_proxy", None)
+    proxy = importlib.import_module("ops.local_deployment_proxy.local_deployment_proxy")
+
+    assert proxy.LOCAL_API_KEY == "freeinference_api"
+
+    with _serve(proxy.ProxyHandler) as proxy_port:
+        unauthenticated, _, _ = _request(
+            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            method="POST",
+            body={"model": MODEL_NAME, "messages": [{"role": "user", "content": "hi"}]},
+        )
+        wrong_key, _, _ = _request(
+            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            method="POST",
+            body={"model": MODEL_NAME, "messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": "Bearer not-the-key"},
+        )
+
+    assert unauthenticated == 401
+    assert wrong_key == 401

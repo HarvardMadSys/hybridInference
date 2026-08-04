@@ -185,7 +185,10 @@ def main():
     )
     parser.add_argument(
         "--api-key",
-        default=os.environ.get("LOCAL_API_KEY", "freeinference_api"),
+        # `or`, not a get() default: a blank LOCAL_API_KEY must land on the same
+        # value the proxy itself falls back to, or the smoke test 401s and reads
+        # as a proxy fault.
+        default=os.environ.get("LOCAL_API_KEY", "").strip() or "freeinference_api",
         help="bearer key for /v1 endpoints (default: env LOCAL_API_KEY or 'freeinference_api')",
     )
     parser.add_argument(

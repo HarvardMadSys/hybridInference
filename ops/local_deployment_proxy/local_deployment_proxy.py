@@ -152,10 +152,21 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8001"))
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1440"))
 HEALTH_TIMEOUT = float(os.environ.get("HEALTH_TIMEOUT", "600"))
 HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
-# Accept LOCAL_API_KEY as the canonical local upstream key, with FREEINFERENCE_API_KEY
-# as a compatibility fallback.
-LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY", "freeinference_api")
-LOCAL_API_KEY = LOCAL_API_KEY.strip()
+# LOCAL_API_KEY is the key the gateway signs its requests to this proxy with. (A
+# comment here used to name FREEINFERENCE_API_KEY as a compatibility fallback; no
+# such fallback is read, and that variable is the gateway's *own* client key --
+# see ops/setup/setup_claude_code.sh -- so it never belonged in this lookup.)
+#
+# A *blank* value falls back to the default rather than through it: `or` is
+# deliberate where `os.environ.get(name, default)` would not do. This listener
+# binds 0.0.0.0 and starts and stops GPU containers via the Docker socket, and
+# its systemd unit reads the gateway's whole .env, where a placeholder
+# `LOCAL_API_KEY=` line is an ordinary thing to find. Read with a two-argument
+# get(), that line is a real assignment of "", and an empty key used to mean
+# "serve everyone" -- so a blank line in a config file would have turned request
+# auth off with nothing in the log to say so. There is no way to disable auth
+# now; point the key at a value both ends share.
+LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY", "").strip() or "freeinference_api"
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = _SCRIPT_DIR / "models.json"
@@ -988,9 +999,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
     """Forwards requests to the correct sglang backend based on model name."""
 
     def _check_api_key(self) -> bool:
-        if not LOCAL_API_KEY:
-            return True
-
+        # No "key is blank, so let everyone in" branch: LOCAL_API_KEY cannot be
+        # blank (see its definition above), and an escape hatch that opens the
+        # listener up on a *missing* config value is the wrong way round.
         auth = self.headers.get("Authorization", "")
         auth = auth[7:] if auth.startswith("Bearer ") else self.headers.get("X-API-Key", "")
 

@@ -3,10 +3,11 @@
 # its reverse tunnel(s) installed by install.sh from this GPU box.
 #
 # Reverses install.sh: stops and disables the proxy unit and every tunnel
-# instance, then removes the unit files and any port/bind drop-in override.
+# instance, then removes the unit files and every drop-in either of them left.
 #
 # Removes:
-#   • local_deployment_proxy.service        — the local listener
+#   • local_deployment_proxy.service         — the local listener
+#   • local_deployment_proxy.service.d/      — its LOCAL_API_KEY drop-in
 #   • local_deployment_tunnel@<host>.service — every autossh tunnel instance
 #   • local_deployment_tunnel@.service       — the tunnel template unit
 #   • local_deployment_tunnel@.service.d/    — the optional override drop-in
@@ -31,6 +32,10 @@ SYSTEMD_DST="/etc/systemd/system"
 PROXY_UNIT="local_deployment_proxy.service"
 TUNNEL_TMPL="local_deployment_tunnel@.service"
 DROPIN_DIR="${SYSTEMD_DST}/${TUNNEL_TMPL}.d"
+# install.sh writes the proxy's LOCAL_API_KEY here. It is a credential, so an
+# uninstall that left it behind would leave the key readable on a box the
+# operator believes is clean — and a later reinstall would silently inherit it.
+PROXY_DROPIN_DIR="${SYSTEMD_DST}/${PROXY_UNIT}.d"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "ERROR: must run as root (use sudo)." >&2
@@ -81,14 +86,16 @@ fi
 echo "Stopping and disabling ${PROXY_UNIT} …"
 systemctl disable --now "${PROXY_UNIT}" 2>/dev/null || true
 
-# ── Remove unit files + drop-in override ──────────────────────────────────────
+# ── Remove unit files + drop-ins ──────────────────────────────────────────────
 echo "Removing unit files from ${SYSTEMD_DST} …"
 rm -f "${SYSTEMD_DST}/${PROXY_UNIT}"
 rm -f "${SYSTEMD_DST}/${TUNNEL_TMPL}"
-if [[ -d "$DROPIN_DIR" ]]; then
-  echo "Removing override drop-in ${DROPIN_DIR} …"
-  rm -rf "$DROPIN_DIR"
-fi
+for dir in "$DROPIN_DIR" "$PROXY_DROPIN_DIR"; do
+  if [[ -d "$dir" ]]; then
+    echo "Removing drop-in ${dir} …"
+    rm -rf "$dir"
+  fi
+done
 
 systemctl daemon-reload
 systemctl reset-failed "${PROXY_UNIT}" 'local_deployment_tunnel@*' 2>/dev/null || true

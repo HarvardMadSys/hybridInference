@@ -19,7 +19,8 @@ IDLE_TIMEOUT   : Seconds of inactivity before stopping    (default 1440 = 24 min
 HEALTH_TIMEOUT : Max seconds to wait for backend startup  (default 900)
 HEALTH_INTERVAL: Seconds between health-check polls       (default 10)
 MODELS_CONFIG  : Path to a JSON config file               (see models.json)
-LOCAL_API_KEY  : Optional API key for inbound auth
+LOCAL_API_KEY  : API key for inbound auth      (default "freeinference_api";
+                 a blank value falls back to it -- auth cannot be turned off)
 HF_TOKEN       : Passed into vLLM containers for gated HF downloads
 """
 
@@ -53,7 +54,16 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8002"))
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1440"))
 HEALTH_TIMEOUT = float(os.environ.get("HEALTH_TIMEOUT", "900"))
 HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
-LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY", "freeinference_api").strip()
+# A *blank* value falls back to the default rather than through it: `or` is
+# deliberate where `os.environ.get(name, default)` would not do. This listener
+# binds 0.0.0.0 and starts and stops GPU containers via the Docker socket, and
+# its systemd unit reads the gateway's whole .env, where a placeholder
+# `LOCAL_API_KEY=` line is an ordinary thing to find. Read with a two-argument
+# get(), that line is a real assignment of "", and an empty key used to mean
+# "serve everyone" -- so a blank line in a config file would have turned request
+# auth off with nothing in the log to say so. There is no way to disable auth
+# now; point the key at a value both ends share.
+LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY", "").strip() or "freeinference_api"
 HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
 
 VLLM_CONTAINER_PORT = 8000
@@ -621,9 +631,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _check_api_key(self) -> bool:
-        if not LOCAL_API_KEY:
-            return True
-
+        # No "key is blank, so let everyone in" branch: LOCAL_API_KEY cannot be
+        # blank (see its definition above), and an escape hatch that opens the
+        # listener up on a *missing* config value is the wrong way round.
         auth = self.headers.get("Authorization", "")
         auth = auth[7:] if auth.startswith("Bearer ") else self.headers.get("X-API-Key", "")
 

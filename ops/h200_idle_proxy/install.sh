@@ -16,6 +16,11 @@
 #   sudo SSH_HOST='juncheng@spark2|jason@internal.freeinference.org' \
 #        REMOTE_PORT=8003 ./ops/h200_idle_proxy/install.sh
 #
+# On a box with no repo .env, pass the key the gateway signs its requests with, or
+# the proxy falls back to the default hardcoded in local_deployment_proxy.py and
+# 401s every request once that key is rotated:
+#   sudo LOCAL_API_KEY='…' ./ops/h200_idle_proxy/install.sh
+#
 # Remove with uninstall.sh.
 
 set -euo pipefail
@@ -31,6 +36,9 @@ SYSTEMD_SRC="${REPO_ROOT}/deploy/systemd"
 SYSTEMD_DST="/etc/systemd/system"
 PROXY_UNIT="h200_idle_proxy.service"
 TUNNEL_UNIT="h200_idle_tunnel@.service"
+
+# shellcheck source=../lib/systemd_local_api_key.sh
+source "${REPO_ROOT}/ops/lib/systemd_local_api_key.sh"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "ERROR: must run as root (use sudo)." >&2
@@ -91,10 +99,19 @@ Environment=LISTEN_PORT=${LISTEN_PORT}
 EOF
 fi
 
+# Both H200 nodes authenticate against the same LOCAL_API_KEY the gateway signs
+# with. The unit reads ${REPO_ROOT}/.env, which covers a box that also hosts the
+# gateway; on a box that runs only this proxy the key arrives here instead.
+# Omitting LOCAL_API_KEY removes a key an earlier run left.
+write_local_api_key_dropin "$SYSTEMD_DST" "$PROXY_UNIT" "${LOCAL_API_KEY:-}"
+
 systemctl daemon-reload
 
+# restart, not `enable --now`: start is a no-op on an already-active unit, so a
+# re-run would leave the new key on disk and the old one live in the process.
 echo "Enabling ${PROXY_UNIT} …"
-systemctl enable --now "${PROXY_UNIT}"
+systemctl enable "${PROXY_UNIT}"
+systemctl restart "${PROXY_UNIT}"
 
 IFS='|' read -ra HOSTS <<< "$SSH_HOST"
 for host in "${HOSTS[@]}"; do

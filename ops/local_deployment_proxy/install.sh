@@ -47,6 +47,9 @@ SYSTEMD_DST="/etc/systemd/system"
 PROXY_UNIT="local_deployment_proxy.service"
 TUNNEL_UNIT="local_deployment_tunnel@.service"
 
+# shellcheck source=../lib/systemd_local_api_key.sh
+source "${REPO_ROOT}/ops/lib/systemd_local_api_key.sh"
+
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "ERROR: must run as root (use sudo)." >&2
   exit 1
@@ -106,46 +109,25 @@ EOF
 fi
 
 # The block above configures the *tunnel* unit. The proxy process needs one env
-# var of its own: LOCAL_API_KEY, which it checks every inbound request against
-# and otherwise defaults to a value hardcoded in local_deployment_proxy.py — so a
-# rotated key turns into a silent 100% 401 rate. The unit already reads
-# ${REPO_ROOT}/.env, which covers a box that also hosts the gateway; a box that
-# runs only this proxy has no .env, and this is where the key reaches it.
-#
-# Written as Environment=, which systemd deliberately ranks *below* an
-# EnvironmentFile= (systemd.exec(5): "settings from these files override settings
-# made with Environment="). So .env stays the single source of truth wherever it
-# exists, and this acts as the fallback for the boxes without one — a rotation
-# in .env never has to be chased into /etc/systemd/system.
-PROXY_DROPIN="${SYSTEMD_DST}/${PROXY_UNIT}.d"
-API_KEY_DROPIN="${PROXY_DROPIN}/local-api-key.conf"
-if [[ -n "${LOCAL_API_KEY:-}" ]]; then
-  # systemd unquotes the value per systemd.syntax(7); a literal double quote or
-  # backslash would survive into the key, so refuse rather than mis-set it.
-  if [[ "$LOCAL_API_KEY" == *[\"\\]* ]]; then
-    echo "ERROR: LOCAL_API_KEY contains a double quote or backslash, which systemd" >&2
-    echo "       would not pass through verbatim. Use a key without them." >&2
-    exit 1
-  fi
-  echo "Writing proxy LOCAL_API_KEY drop-in …"
-  mkdir -p "$PROXY_DROPIN"
-  cat > "$API_KEY_DROPIN" <<EOF
-[Service]
-Environment="LOCAL_API_KEY=${LOCAL_API_KEY}"
-EOF
-  chmod 0600 "$API_KEY_DROPIN"
-elif [[ -f "$API_KEY_DROPIN" ]]; then
-  # Declarative: omitting LOCAL_API_KEY removes a key left by an earlier run,
-  # so a stale one cannot outlive the rotation it was replaced by.
-  echo "Removing stale proxy LOCAL_API_KEY drop-in …"
-  rm -f "$API_KEY_DROPIN"
-fi
+# var of its own: LOCAL_API_KEY, which it checks every inbound request against and
+# otherwise defaults to a value hardcoded in local_deployment_proxy.py — so a
+# rotated key turns into a silent 100% 401 rate. Omitting LOCAL_API_KEY removes a
+# key an earlier run left, so a rotated-away key cannot outlive its rotation. See
+# ops/lib/systemd_local_api_key.sh for why this is a drop-in and why it
+# deliberately loses to the unit's EnvironmentFile=.
+write_local_api_key_dropin "$SYSTEMD_DST" "$PROXY_UNIT" "${LOCAL_API_KEY:-}"
 
 systemctl daemon-reload
 
 # ── Enable + start ────────────────────────────────────────────────────────────
+# restart, not `enable --now`: start is a no-op on an already-active unit, so on a
+# re-run — the rotation path in the usage notes above — the new key would land in
+# /etc/systemd/system while the running proxy kept authenticating with the old
+# one. The unit files are re-rendered on every run too, so a bounce is wanted
+# regardless of whether the key moved.
 echo "Enabling ${PROXY_UNIT} …"
-systemctl enable --now "${PROXY_UNIT}"
+systemctl enable "${PROXY_UNIT}"
+systemctl restart "${PROXY_UNIT}"
 
 IFS='|' read -ra HOSTS <<< "$SSH_HOST"
 for host in "${HOSTS[@]}"; do

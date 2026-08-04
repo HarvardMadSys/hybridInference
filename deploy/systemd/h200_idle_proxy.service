@@ -9,16 +9,46 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=__REPO_ROOT__/ops/h200_idle_proxy
-ExecStart=__REPO_ROOT__/.venv/bin/python3 __REPO_ROOT__/ops/local_deployment_proxy/local_deployment_proxy.py
+
+# MODELS_CONFIG is set here, on the command line, rather than with an
+# Environment= line, because this unit reads the gateway .env below and
+# MODELS_CONFIG is also a *gateway* variable (a legacy alias of
+# MODELS_CONFIG_PATH — see the AliasChoices in
+# apps/backend/serving/config/settings.py). An EnvironmentFile= outranks every
+# Environment= line whatever the order (systemd.exec(5): "Settings from these
+# files override settings made with Environment="), so a gateway .env naming a
+# YAML registry would replace the pin below and this proxy would json.load()
+# that YAML and come up with no backends.
+#
+# The sibling units answer that with UnsetEnvironment=MODELS_CONFIG, but this
+# one has to *keep* a value: the H200 profile the proxy would auto-detect for
+# itself (ops/local_deployment_proxy/models.h200.json) is a different
+# deployment of the same model — PP=3 across GPUs 0,2,3 — and this node serves
+# the TP=2-on-2,3 config next to this unit. `/usr/bin/env VAR=…` sets the
+# variable in the child after systemd has compiled its environment, so it
+# outranks EnvironmentFile= and UnsetEnvironment= both.
+ExecStart=/usr/bin/env MODELS_CONFIG=__REPO_ROOT__/ops/h200_idle_proxy/models.json __REPO_ROOT__/.venv/bin/python3 __REPO_ROOT__/ops/local_deployment_proxy/local_deployment_proxy.py
 
 Restart=on-failure
 RestartSec=10s
+
+# Both H200 nodes authenticate inbound gateway requests against LOCAL_API_KEY,
+# and the gateway signs them with the LOCAL_API_KEY from this same .env (see the
+# api_keys entries in distributions/freeinference/config/models.yaml). Reading
+# one file keeps the two ends in step through a rotation; without it this unit
+# could only ever use the default hardcoded in local_deployment_proxy.py, so the
+# first rotation would 401 every request — and because deepseek-v4-flash carries
+# a remote fallback, the H200s would drop out of rotation silently and the
+# traffic would move to a paid provider.
+#
+# The leading '-' keeps the unit startable on a box with no .env; there
+# ops/h200_idle_proxy/install.sh supplies the key as a drop-in instead.
+EnvironmentFile=-__REPO_ROOT__/.env
 
 Environment=LISTEN_PORT=8003
 Environment=IDLE_TIMEOUT=1440
 Environment=HEALTH_TIMEOUT=900
 Environment=HEALTH_INTERVAL=10
-Environment=MODELS_CONFIG=__REPO_ROOT__/ops/h200_idle_proxy/models.json
 
 StandardOutput=journal
 StandardError=journal
