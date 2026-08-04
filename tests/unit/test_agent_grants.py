@@ -16,7 +16,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from serving import grants
-from serving.agent_jobs.mcp_registry import McpRegistry, McpRegistryError, McpServer
 from serving.config.settings import get_settings
 from serving.servers.deps import (
     get_model_visibility_resolver,
@@ -31,7 +30,6 @@ DISPATCH = "dispatch-secret-value"
 AUTH = {"Authorization": f"Bearer {DISPATCH}"}
 
 # What this fake deployment's registry knows about, so "unknown" is meaningful.
-KNOWN_MCP = ("deepwiki", "github")
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +111,6 @@ class FakeStore:
         external_job_id: str,
         external_attempt_id: str,
         allowed_models: list[str],
-        allowed_mcp: list[str],
         expires_at: datetime,
     ) -> dict[str, Any]:
         key = (external_job_id, external_attempt_id)
@@ -125,7 +122,6 @@ class FakeStore:
             "external_job_id": external_job_id,
             "external_attempt_id": external_attempt_id,
             "allowed_models": list(allowed_models),
-            "allowed_mcp": list(allowed_mcp),
             "created_at": datetime.now(UTC),
             "expires_at": expires_at,
             "revoked_at": None,
@@ -159,22 +155,6 @@ def store() -> FakeStore:
     fake = FakeStore()
     fake.users["user_1"] = {"id": "user_1", "role": "pro", "status": "active"}
     return fake
-
-
-@pytest.fixture(autouse=True)
-def _registry(monkeypatch) -> None:
-    """Two known servers; `deepwiki` is the deployment default."""
-    registry = McpRegistry(
-        servers={
-            name: McpServer(
-                name=name,
-                url=f"https://{name}.example/mcp",
-                default=(name == "deepwiki"),
-            )
-            for name in KNOWN_MCP
-        }
-    )
-    monkeypatch.setattr(agent_grants, "get_registry", lambda: registry)
 
 
 @pytest.fixture(autouse=True)
@@ -258,7 +238,6 @@ def test_mint_returns_the_effective_scope_and_a_token(client) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["allowed_models"] == ["glm-5.1", "qwen3.6-35b", "kimi-k2"]
-    assert body["allowed_mcp"] == ["deepwiki"]  # registry default
     assert grants.parse_grant_token(body["token"]) == body["grant_id"]
 
 
@@ -276,22 +255,27 @@ def test_a_longer_ttl_than_the_ceiling_is_clamped_not_refused(client) -> None:
     assert granted <= timedelta(seconds=grants.MAX_GRANT_TTL_S + 5)
 
 
-def test_an_unknown_mcp_server_refuses_the_mint(client) -> None:
-    """The assertion that catches an intersect-instead-of-validate regression.
+def test_a_mint_request_cannot_ask_for_mcp_at_all(client) -> None:
+    """**The boundary, as the wire sees it.**
 
-    Silently dropping the name would return a grant that looks fine and run an
-    agent without the tool its task was written around.
+    Two cases lived here — an unknown server refused the mint, a known subset
+    was granted verbatim — and both were about a decision this gateway no
+    longer makes. MCP moved to the cloud agent with its registry, credentials
+    and proxy; the job and its requested servers are there, so validating a
+    server list here meant deciding with a copy of somebody else's state.
+
+    Those properties did not vanish: the cloud agent validates a job's
+    requested servers against its own registry, and its relay refuses a server
+    the job did not ask for. This asserts the *gateway* has stopped answering
+    the question — a request carrying `allowed_mcp` is accepted (pydantic
+    ignores the unknown field) and the grant that comes back says nothing about
+    MCP, so nothing downstream can mistake silence for permission.
     """
     _, http = client
-    response = _mint(http, allowed_mcp=["deepwiki", "not-configured"])
-    assert response.status_code == 400
-    assert response.json()["error"]["type"] == "unknown_mcp_server"
-    assert "not-configured" in response.json()["error"]["message"]
+    body = _mint(http, allowed_mcp=["deepwiki", "not-configured"]).json()
 
-
-def test_a_known_mcp_subset_is_granted_verbatim(client) -> None:
-    _, http = client
-    assert _mint(http, allowed_mcp=["github"]).json()["allowed_mcp"] == ["github"]
+    assert "allowed_mcp" not in body
+    assert not [key for key in body if "mcp" in key.lower()]
 
 
 @pytest.mark.parametrize("status_value", ["suspended", "deleted", "pending_approval"])
@@ -473,10 +457,41 @@ def test_revoking_an_unknown_grant_is_a_404(client) -> None:
     assert http.post("/internal/agent-grants/agr_nope/revoke", headers=AUTH).status_code == 404
 
 
-def test_the_registry_still_raises_on_unknown_names() -> None:
-    """Pins the upstream behaviour this endpoint depends on."""
-    registry = McpRegistry(
-        servers={"deepwiki": McpServer(name="deepwiki", url="https://x.example/mcp")}
-    )
-    with pytest.raises(McpRegistryError):
-        registry.resolve(["deepwiki", "ghost"])
+# ── The column that stays in the database ──────────────────────────────
+#
+# `allowed_mcp` is gone from the DDL and from every statement, and the physical
+# column is deliberately **not** dropped. A rolling deploy runs both versions at
+# once: the old one still selects and inserts that column, so dropping it would
+# break the instances that have not restarted yet, and would make a rollback
+# impossible. `DROP COLUMN` is a separate, human-approved migration for after
+# the rollback window closes; see MIGRATION notes.
+#
+# These two say why the orphan is harmless, in the two ways it could stop being.
+
+
+def test_a_fresh_database_gets_no_mcp_column() -> None:
+    """The canonical DDL is what a new deployment gets."""
+    assert "allowed_mcp" not in grants.CREATE_TABLE_SQL
+
+
+def test_every_grant_statement_names_its_columns() -> None:
+    """**Why an existing `allowed_mcp` column costs nothing.**
+
+    An explicit column list on the way in means the orphan takes its
+    `DEFAULT '[]'`, and an explicit list on the way out means it is never read.
+    A `SELECT *` would return it and put it back into a grant response — the
+    field would reappear on the wire from a table nobody edited, which is
+    exactly the sort of resurrection nobody goes looking for.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2] / "apps/backend/serving/storage/postgres_operational.py"
+    ).read_text()
+    grant_sql = [
+        line
+        for line in source.splitlines()
+        if "agent_grants" in line or "grant_id, user_id, external_job_id" in line
+    ]
+    assert grant_sql, "no grant SQL found; this check would pass vacuously"
+    assert not [line for line in grant_sql if "SELECT *" in line or "select *" in line]
