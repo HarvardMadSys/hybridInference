@@ -38,23 +38,18 @@ class RequestIdMiddleware:
             req_id = secrets.token_hex(12)
 
         scope.setdefault("state", {})["request_id"] = req_id
-        # Always set these keys (values may be None) so a request that doesn't
-        # populate them overwrites — never inherits — a prior request's value
-        # when the same task handles sequential scopes. ``user_id`` /
-        # ``user_name`` are reset here so a route that invokes the router
-        # without authenticating (e.g. the admin playground) can't have a
-        # circuit-breaker alert misattributed to an earlier completions caller.
-        # ``client_error_kind`` is reset for the same reason: a stale
-        # model-not-found tag from a prior request must not cling to a later
-        # upstream 404 and wrongly exclude it from the failed-request alert.
-        req_ctx.update(
-            {
-                "request_id": req_id,
-                "client_user_agent": user_agent or None,
-                "user_id": None,
-                "user_name": None,
-                req_ctx.CLIENT_ERROR_KIND: None,
-            }
+        # Clear every per-request key before the request runs, so a request that
+        # doesn't populate one cannot inherit a prior request's value when the
+        # same task handles sequential scopes. The set lives in
+        # ``req_ctx.REQUEST_SCOPED_KEYS`` rather than being spelled out here:
+        # each key exists because some consumer reads "key present" as a fact
+        # about the current request (``user_id``/``user_name`` for
+        # circuit-breaker attribution, ``client_error_kind`` for the 404 split,
+        # ``provider`` for the 401 split), so the reset has to grow with that set
+        # and one list is easier to keep complete than a literal in a middleware.
+        req_ctx.reset_request_scope(
+            request_id=req_id,
+            client_user_agent=user_agent or None,
         )
 
         req_id_bytes = req_id.encode("latin-1")

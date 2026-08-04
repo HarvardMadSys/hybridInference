@@ -286,7 +286,8 @@ def _provider_for_error(exc_routing: Any) -> str:
         if provider:
             return provider
     ctx = req_ctx.get()
-    return ctx.get("provider", "router") if ctx else "router"
+    sentinel = req_ctx.ROUTER_PROVIDER_SENTINEL
+    return ctx.get(req_ctx.PROVIDER, sentinel) if ctx else sentinel
 
 
 def _publish_error_provider(exc_routing: Any) -> str:
@@ -307,9 +308,10 @@ def _publish_error_provider(exc_routing: Any) -> str:
     The ``"router"`` sentinel is deliberately not published: it means no upstream
     was ever selected (a pre-routing failure), so labelling the record with it
     would misattribute the failure *and* defeat the distinction both consumers
-    draw — they treat "has a provider" as "an upstream refused us".
+    draw — they treat "has a provider" as "an upstream refused us". That rule is
+    shared with the other relay paths via ``req_ctx.publish_upstream_provider``;
+    this wrapper only adds the routing-specific label resolution.
     """
     provider = _provider_for_error(exc_routing)
-    if provider and provider != "router":
-        req_ctx.update({"provider": provider})
+    req_ctx.publish_upstream_provider(provider)
     return provider

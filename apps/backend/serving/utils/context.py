@@ -19,6 +19,32 @@ CLIENT_ERROR_KIND = "client_error_kind"
 # ourselves, not an upstream provider 404).
 MODEL_NOT_FOUND = "model_not_found"
 
+# req_ctx key naming the upstream that served (or refused) this request.
+PROVIDER = "provider"
+#: Provider label meaning "no upstream was ever selected" — a pre-routing failure.
+#: Never published as attribution: the consumers of ``PROVIDER`` read a present
+#: label as "an upstream answered us", so the sentinel would misattribute the
+#: failure *and* defeat that distinction.
+ROUTER_PROVIDER_SENTINEL = "router"
+
+#: Keys holding state about *one* request, which therefore have to be cleared when
+#: the next request is seeded (see :func:`reset_request_scope`).
+#:
+#: The contextvar is not re-created per request: whenever an ASGI server or test
+#: transport drives sequential scopes from a single task, request N+1 starts out
+#: seeing every durable write request N made. Consumers that read "key present" as
+#: a fact about the current request — RequestLogMiddleware, the failed-request and
+#: circuit-breaker alert rules — are wrong by exactly one request when a key is
+#: missing from this tuple. Anything written durably via :func:`update` (rather
+#: than the self-unwinding :func:`push`) belongs here.
+REQUEST_SCOPED_KEYS = (
+    "client_user_agent",
+    "user_id",
+    "user_name",
+    CLIENT_ERROR_KIND,
+    PROVIDER,
+)
+
 
 def get() -> dict[str, Any]:
     """Return the current request-scoped context dict (empty if unset)."""
@@ -51,6 +77,50 @@ def push(**values: Any) -> Iterator[None]:
         _ctx.reset(token)
 
 
+def reset_request_scope(**seed: Any) -> None:
+    """Drop every per-request key, then merge ``seed`` into the context.
+
+    Called once per request by ``RequestIdMiddleware`` (the outermost middleware,
+    so it runs before anything can populate the context), so that a request which
+    does not populate a key cannot inherit the value left behind by a previous
+    request handled in the same task.
+
+    Keys in :data:`REQUEST_SCOPED_KEYS` are *removed* rather than set to ``None``,
+    which matters because some readers pass a non-``None`` default —
+    ``ctx.get(PROVIDER, ROUTER_PROVIDER_SENTINEL)`` in the error-path attribution
+    and ``ctx.get("provider", "unknown")`` in the HTTP retry log. A present-but-
+    ``None`` value silences those defaults and would relabel a pre-routing
+    failure from ``"router"`` to ``None``. Anything ``seed`` supplies is written
+    back afterwards, so a key the middleware always sets stays present.
+    """
+    current_value = _ctx.get()
+    current = current_value if current_value is not None else {}
+    values = {k: v for k, v in current.items() if k not in REQUEST_SCOPED_KEYS}
+    values.update(seed)
+    _ctx.set(values)
+
+
+def publish_upstream_provider(provider: str | None) -> None:
+    """Attribute the current request's failure to the upstream that produced it.
+
+    Call this from any path that relays an upstream error to the client. The
+    label lands on the request-log record and is what lets
+    ``RequestLogMiddleware`` and ``FailedRequestRateRule`` tell a relayed
+    upstream failure from one the gateway raised itself. That distinction is
+    load-bearing for 401 in particular: a gateway-issued 401 is routine
+    token-refresh churn, while an upstream 401 means the gateway's *own*
+    configured credential was refused — an all-users outage. Without
+    attribution the two are the same bare 401, which is how a local endpoint
+    rejecting the gateway's key for an hour stayed below the log threshold and
+    never reached the failure-rate rule.
+
+    No-ops for a missing label or the :data:`ROUTER_PROVIDER_SENTINEL`, neither
+    of which identifies an upstream that actually answered.
+    """
+    if provider and provider != ROUTER_PROVIDER_SENTINEL:
+        update({PROVIDER: provider})
+
+
 def mark_model_not_found() -> None:
     """Tag the current request as a gateway model-not-found (client-driven 404).
 
@@ -66,9 +136,14 @@ def mark_model_not_found() -> None:
 __all__ = [
     "CLIENT_ERROR_KIND",
     "MODEL_NOT_FOUND",
+    "PROVIDER",
+    "REQUEST_SCOPED_KEYS",
+    "ROUTER_PROVIDER_SENTINEL",
     "get",
     "mark_model_not_found",
+    "publish_upstream_provider",
     "push",
+    "reset_request_scope",
     "set",
     "update",
 ]

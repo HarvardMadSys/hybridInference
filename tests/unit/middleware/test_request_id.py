@@ -77,3 +77,67 @@ async def test_client_error_kind_reset_between_requests() -> None:
     captured: dict = {}
     await _drive([], captured)
     assert captured.get(req_ctx.CLIENT_ERROR_KIND) is None
+
+
+@pytest.mark.asyncio
+async def test_provider_reset_between_requests() -> None:
+    """A durable upstream attribution must not outlive the request that made it.
+
+    The completions/embeddings error paths publish ``provider`` with
+    ``req_ctx.update``, which is not self-unwinding, so the label survives the end
+    of the failed request. Both the request log and the failed-request rule read a
+    present ``provider`` as "an upstream refused us", so a gateway-issued 401
+    seeded in the same task would inherit the label and be counted as an upstream
+    outage — turning ordinary client-auth churn into a service-failure signal.
+    """
+    req_ctx.publish_upstream_provider("diffusiongemma")
+    assert req_ctx.get().get(req_ctx.PROVIDER) == "diffusiongemma"
+    captured: dict = {}
+    await _drive([], captured)
+    assert captured.get(req_ctx.PROVIDER) is None
+
+
+@pytest.mark.asyncio
+async def test_clearing_provider_preserves_reader_defaults() -> None:
+    """Clearing must drop ``provider``, not set it to ``None``.
+
+    Some readers supply a non-``None`` default — ``_provider_for_error`` falls back
+    to the ``"router"`` sentinel and the HTTP retry log to ``"unknown"``. A
+    present-but-``None`` value silences the default, so a pre-routing failure
+    would be labelled ``None`` instead of ``"router"`` in the DB log row (where
+    the provider-performance aggregations filter on the sentinel by name).
+    """
+    req_ctx.publish_upstream_provider("diffusiongemma")
+    captured: dict = {}
+    await _drive([], captured)
+    assert req_ctx.PROVIDER not in captured
+    assert captured.get(req_ctx.PROVIDER, req_ctx.ROUTER_PROVIDER_SENTINEL) == "router"
+
+
+@pytest.mark.asyncio
+async def test_reset_keeps_keys_outside_the_request_scope() -> None:
+    """Only per-request keys are cleared; unrelated context is left alone.
+
+    ``model``, affinity keys and similar are written by handlers and read back
+    within the same request, so a blanket wipe would break them.
+    """
+    req_ctx.update({"model": "kept-model", "affinity_key": "kept-key"})
+    captured: dict = {}
+    await _drive([], captured)
+    assert captured.get("model") == "kept-model"
+    assert captured.get("affinity_key") == "kept-key"
+
+
+@pytest.mark.asyncio
+async def test_every_request_scoped_key_is_cleared() -> None:
+    """The reset covers the whole declared key set, not a hand-maintained subset.
+
+    Guards the invariant rather than one key: a future durable per-request key
+    added to ``REQUEST_SCOPED_KEYS`` is cleared automatically, and one dropped
+    from it fails here instead of silently leaking into the next request.
+    """
+    req_ctx.update(dict.fromkeys(req_ctx.REQUEST_SCOPED_KEYS, "stale"))
+    captured: dict = {}
+    await _drive([], captured)
+    for key in req_ctx.REQUEST_SCOPED_KEYS:
+        assert captured.get(key) is None, f"{key} leaked from the previous request"

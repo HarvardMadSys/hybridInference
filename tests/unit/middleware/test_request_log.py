@@ -8,6 +8,8 @@ import pytest
 from fastapi import FastAPI, Response
 from httpx import ASGITransport, AsyncClient
 
+from serving.observability.alert_rules import _is_failed_request
+from serving.servers.middleware.request_id import RequestIdMiddleware
 from serving.servers.middleware.request_log import RequestLogMiddleware
 from serving.utils import context as req_ctx
 
@@ -88,10 +90,48 @@ def app_with_middleware():
     return app
 
 
+@pytest.fixture
+def app_with_id_and_log_middleware():
+    """App with the real middleware pair, in the order ``app.py`` installs them.
+
+    ``add_middleware`` prepends, so ``RequestIdMiddleware`` added last is the
+    outermost and seeds the request context before ``RequestLogMiddleware`` runs.
+    Needed to exercise anything about state carried *between* requests.
+    """
+    app = FastAPI()
+
+    @app.get("/v1/chat/completions-upstream-500")
+    async def upstream_error():
+        req_ctx.publish_upstream_provider("diffusiongemma")
+        return Response(status_code=500)
+
+    @app.get("/user/me")
+    async def gateway_unauthorized():
+        return Response(status_code=401)
+
+    app.add_middleware(RequestLogMiddleware)
+    app.add_middleware(RequestIdMiddleware)
+    return app
+
+
 async def _get(app, path: str, headers: dict[str, str] | None = None) -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         await client.get(path, headers=headers)
+
+
+def _window_item(record: logging.LogRecord) -> dict:
+    """Project a request-log record exactly as ``FailedRequestRateRule`` does.
+
+    Lets a middleware test assert the downstream alerting verdict from the real
+    record instead of a hand-built dict, so the two stay in step.
+    """
+    return {
+        "status": int(record.status_code),
+        "provider": getattr(record, "provider", None),
+        "path": getattr(record, "path", None),
+        "client_error_kind": getattr(record, "client_error_kind", None),
+    }
 
 
 class TestRequestLogMiddleware:
@@ -249,3 +289,39 @@ class TestRequestLogMiddleware:
         assert record.levelno == logging.DEBUG
         assert record.status_code == 401
         assert record.provider is None
+
+    @pytest.mark.asyncio
+    async def test_gateway_401_after_upstream_failure_is_not_an_upstream_failure(
+        self, app_with_id_and_log_middleware, caplog
+    ):
+        """The upstream label must not survive into the next request in the task.
+
+        ``publish_upstream_provider`` writes durably (the ``req_ctx.push`` scope
+        is unwound by the time the error handler runs), and an ASGI server or test
+        transport drives sequential scopes from one task. Without a per-request
+        reset, the next gateway-issued 401 inherits the previous request's
+        provider — so ordinary client-auth churn is logged as an upstream failure
+        and counted by ``FailedRequestRateRule``, which is both a false alarm and
+        a way to keep the rule permanently breached.
+        """
+        with caplog.at_level(logging.DEBUG, logger="serving.servers.middleware.request_log"):
+            await _get(app_with_id_and_log_middleware, "/v1/chat/completions-upstream-500")
+            await _get(app_with_id_and_log_middleware, "/user/me")
+
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
+        assert len(records) == 2
+
+        # The upstream failure itself is still attributed and still loud.
+        upstream = records[0]
+        assert upstream.status_code == 500
+        assert upstream.provider == "diffusiongemma"
+
+        # The gateway's own challenge that follows it is not.
+        challenge = records[1]
+        assert challenge.status_code == 401
+        assert challenge.provider is None, "stale upstream label leaked into the next request"
+        assert challenge.levelno == logging.DEBUG
+
+        # ...and the failed-request rule agrees, reading the same record fields.
+        assert _is_failed_request(_window_item(upstream)) is True
+        assert _is_failed_request(_window_item(challenge)) is False

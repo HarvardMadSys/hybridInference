@@ -24,10 +24,15 @@ from fastapi.responses import Response
 from serving.config.settings import get_settings
 from serving.http import AsyncHTTPClient
 from serving.servers.auth import verify_api_key
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+#: Provider label for upstream Qdrant failures relayed to the client. This proxy
+#: has no ModelConfig, so the label is fixed rather than resolved from routing.
+_QDRANT_PROVIDER = "qdrant"
 
 
 async def _verify_qdrant_user(request: Request) -> dict:
@@ -229,6 +234,13 @@ async def qdrant_proxy(
             "user_id": user_id,
         }
         if status >= 400:
+            # This proxy relays the upstream status verbatim, so an upstream 401
+            # (Qdrant refusing the server-side ``QDRANT_API_KEY``) is otherwise
+            # indistinguishable to RequestLogMiddleware and the failed-request
+            # rule from the 401 this route raises itself for an anonymous caller
+            # — the former is a gateway-credential outage, the latter routine
+            # churn. Publishing attribution is what separates them.
+            req_ctx.publish_upstream_provider(_QDRANT_PROVIDER)
             logger.warning("qdrant_proxy upstream_error", extra=log_extra)
         else:
             logger.info("qdrant_proxy ok", extra=log_extra)

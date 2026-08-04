@@ -68,7 +68,7 @@ class RequestLogMiddleware:
             "status_code": status_code,
             "duration_ms": duration_ms,
             "model": ctx.get("model"),
-            "provider": ctx.get("provider"),
+            "provider": ctx.get(req_ctx.PROVIDER),
             "remote_ip": remote_ip,
             "peer_ip": ip_info.peer_ip,
             "ip_source": ip_info.source,
@@ -96,7 +96,7 @@ class RequestLogMiddleware:
         # upstream attribution into req_ctx), which is what separates them here —
         # the middleware sees only a status code otherwise, and demoting both is
         # what kept an hour-long all-users outage below the INFO threshold.
-        is_auth_challenge = status_code == 401 and not ctx.get("provider")
+        is_auth_challenge = status_code == 401 and not ctx.get(req_ctx.PROVIDER)
 
         if exc_to_raise:
             log_extra["error"] = str(exc_to_raise)
