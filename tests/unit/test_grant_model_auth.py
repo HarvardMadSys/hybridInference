@@ -23,7 +23,6 @@ from serving.agent_jobs.model_auth import (
     AgentModelAuthError,
     AgentQuotaExceeded,
     authenticate_grant_model_call,
-    authenticate_grant_tool_call,
     looks_like_agent_token,
 )
 from serving.config.settings import get_settings
@@ -84,6 +83,10 @@ def store() -> FakeStore:
         "external_job_id": "job_1",
         "external_attempt_id": "1",
         "allowed_models": ["glm-5.1"],
+        # Deliberately still here: a deployment upgraded in place keeps the
+        # physical `allowed_mcp` column, so a row read from it carries the key.
+        # Nothing on the grant path may notice — which is what this row proves
+        # every time it is used, since every case below reads it.
         "allowed_mcp": ["deepwiki"],
         "expires_at": datetime.now(UTC) + timedelta(seconds=300),
         "revoked_at": None,
@@ -294,28 +297,40 @@ async def test_every_store_failure_refuses_rather_than_proceeding(
 
 
 # ---------------------------------------------------------------------------
-# Tool calls
+# Tool calls belong to the cloud agent now
 # ---------------------------------------------------------------------------
+#
+# Three cases lived here — a tool call is not metered, it honours the fence, it
+# refuses an inactive account — against `authenticate_grant_tool_call`. That
+# function is gone: the ownership amendment moved the MCP registry, its
+# credentials and its proxy to the cloud agent, which is where the job, its
+# requested servers and the attempt fence already are. This gateway never had
+# the state to decide a tool call; it only had the token.
+#
+# The three properties did not disappear with the function, they moved: the
+# cloud agent's relay checks its own fence and its own server list, and its
+# tests are where those cases live now. Deleting them here without saying so
+# would read as three properties dropped.
 
 
-async def test_a_tool_call_is_not_charged_against_model_quota(store, token) -> None:
-    """It invokes no inference provider, so there is nothing to meter."""
-    store.spend = CUSTOM_QUOTA * 10
-    context = await authenticate_grant_tool_call(token, op_store=store)
-    assert context["agent_allowed_mcp"] == ["deepwiki"]
-    assert context["agent_job_id"] == "job_1"
+async def test_the_grant_path_offers_no_tool_authorization(store, token) -> None:
+    """**The tripwire.**
 
+    A grant authorizes models. If a tool-call entry point reappears on this
+    module, a sandbox credential would once again be able to buy tools from the
+    gateway — and the cloud agent's relay, which owns the registry and the
+    credentials, would no longer be the only door to them.
+    """
+    import serving.agent_jobs.model_auth as module
 
-async def test_a_tool_call_still_honours_the_fence(store, token) -> None:
-    store.grant["revoked_at"] = datetime.now(UTC)
-    with pytest.raises(AgentModelAuthError):
-        await authenticate_grant_tool_call(token, op_store=store)
-
-
-async def test_a_tool_call_still_refuses_an_inactive_account(store, token) -> None:
-    store.users["user_1"]["status"] = "suspended"
-    with pytest.raises(AgentModelAuthError):
-        await authenticate_grant_tool_call(token, op_store=store)
+    grant_tool_paths = [
+        name for name in dir(module) if "grant" in name.lower() and "tool" in name.lower()
+    ]
+    assert not grant_tool_paths, grant_tool_paths
+    # The legacy per-attempt path stays until H4: the deployed agent still
+    # carries those tokens, and removing it now would break every running job
+    # for a boundary the cloud agent's relay is not yet serving.
+    assert hasattr(module, "authenticate_agent_tool_call")
 
 
 # ---------------------------------------------------------------------------
