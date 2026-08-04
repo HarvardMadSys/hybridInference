@@ -686,7 +686,7 @@ def _gpu_query_result(stdout: str) -> Any:
 
 
 def test_detect_profile_selects_h200_for_four_h200s(monkeypatch: Any, tmp_path: Path) -> None:
-    # A box with 4x H200 must serve the DeepSeek-V4-Flash (PP=3 on 0,2,3) profile.
+    # A box with 4x H200 must serve the DeepSeek-V4-Flash-0731 (TP=2 on 2,3) profile.
     proxy = _load_proxy(monkeypatch, tmp_path)
     monkeypatch.setattr(
         proxy.subprocess,
@@ -696,25 +696,36 @@ def test_detect_profile_selects_h200_for_four_h200s(monkeypatch: Any, tmp_path: 
     assert proxy._detect_profile_config().name == "models.h200.json"
 
 
-def test_h200_profile_uses_pp3_and_skips_gpu1() -> None:
-    """Canonical H200 profile shards DeepSeek-V4-Flash with PP=3 on GPUs 0,2,3.
+def test_h200_profile_uses_tp2_on_gpus_2_and_3() -> None:
+    """Canonical H200 profile shards DeepSeek-V4-Flash-0731 with TP=2 on GPUs 2,3.
 
-    The 273 GiB of FP8 weights do not fit at TP=2 on two H200s, and TP=3 is
-    illegal (64 attention heads are not divisible by 3). Pipeline parallelism
-    splits by layer, so PP=3 fits on three GPUs while leaving GPU 1 free.
+    The earlier profile needed PP=3 across GPUs 0,2,3 because 273 GiB of FP8
+    weights do not fit at TP=2 (and TP=3 is illegal — 64 attention heads are not
+    divisible by 3). The 0731 release ships FP4 experts at ~156 GiB, so it fits on
+    two GPUs and frees a third. Must stay in step with the dedicated
+    ``ops/h200_idle_proxy`` profile, which is what actually runs on h200a/h200b.
     """
     import json
     from pathlib import Path
 
-    cfg_path = (
-        Path(__file__).resolve().parents[1] / "ops" / "local_deployment_proxy" / "models.h200.json"
-    )
-    cfg = json.loads(cfg_path.read_text())
-    model = cfg["deepseek-v4-flash"]
-    assert model["pipeline_parallel_size"] == 3
-    assert model["tensor_parallel_size"] == 1
-    assert model["gpu_index"] == "0,2,3"
-    assert "1" not in str(model["gpu_index"]).split(",")
+    root = Path(__file__).resolve().parents[1] / "ops"
+    profile = json.loads((root / "local_deployment_proxy" / "models.h200.json").read_text())
+    dedicated = json.loads((root / "h200_idle_proxy" / "models.json").read_text())
+
+    model = profile["deepseek-v4-flash"]
+    assert model["tensor_parallel_size"] == 2
+    assert "pipeline_parallel_size" not in model
+    assert model["gpu_index"] == "2,3"
+    # DSpark needs the official checkpoint: the NVFP4 conversion excludes mtp.*, so
+    # the draft-expert scales are dropped at load and accept length collapses to 1.0.
+    assert model["hf_repo"] == "deepseek-ai/DeepSeek-V4-Flash-0731"
+    assert model["speculative_algorithm"] == "DSPARK"
+    assert model["moe_runner_backend"] == "marlin"
+
+    for key in ("model_dir", "hf_repo", "gpu_index", "speculative_algorithm", "sglang_image"):
+        assert model[key] == dedicated["deepseek-v4-flash"][key], (
+            f"models.h200.json and h200_idle_proxy/models.json disagree on {key!r}"
+        )
 
 
 def test_h200_profiles_use_deepseek_v4_parsers() -> None:
