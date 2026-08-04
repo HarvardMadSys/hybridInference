@@ -346,6 +346,68 @@ async def test_capture_skips_a_body_with_no_declared_length():
 
 
 @pytest.mark.asyncio
+async def test_capture_skips_when_transfer_encoding_is_present():
+    """``Transfer-Encoding`` disqualifies a body even if a length is declared.
+
+    RFC 9112 says ``Content-Length`` must be ignored when ``Transfer-Encoding``
+    is present, so a length alongside it is not a bound worth trusting — and
+    trusting it is how a "bounded" read becomes unbounded.
+    """
+    body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+    request = _real_request(
+        body,
+        headers=[
+            (b"transfer-encoding", b"chunked"),
+            (b"content-length", str(len(body)).encode()),
+        ],
+    )
+    assert await capture_rejected_prompt(request) == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_gives_up_instead_of_queueing_when_all_slots_are_busy():
+    """Past the concurrency cap, capture returns immediately without reading.
+
+    This is what keeps a blocked flood cheap to shed: a source that declares a
+    small body and then stalls can tie up at most the cap, and every request
+    beyond it is refused as fast as it was before enrichment existed.
+    """
+    import serving.observability.rejection_log as mod
+
+    body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+    exhausted = asyncio.Semaphore(1)
+    await exhausted.acquire()  # value now 0 -> locked()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(mod, "_body_read_slots", exhausted)
+    try:
+        assert await capture_rejected_prompt(_real_request(body)) == ""
+    finally:
+        monkeypatch.undo()
+
+    # With a free slot the same request is captured, so the skip above was the
+    # cap talking and not a broken read path.
+    assert await capture_rejected_prompt(_real_request(body)) == [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.asyncio
+async def test_capture_releases_its_slot_after_a_failed_read():
+    """A timed-out read must not leak the slot it held."""
+    import serving.observability.rejection_log as mod
+
+    stalled = _real_request(
+        b"",
+        headers=[(b"content-length", b"200")],
+        chunks=[{"type": "http.request", "body": b'{"messages":', "more_body": True}],
+    )
+    assert await capture_rejected_prompt(stalled, timeout_sec=0.01) == ""
+    assert not mod._body_read_slots.locked()
+    body = json.dumps({"messages": [{"role": "user", "content": "after"}]}).encode()
+    assert await capture_rejected_prompt(_real_request(body)) == [
+        {"role": "user", "content": "after"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_capture_skips_an_oversized_body():
     """A body larger than the cap is skipped rather than buffered."""
     body = json.dumps({"messages": [{"role": "user", "content": "x" * 5000}]}).encode()

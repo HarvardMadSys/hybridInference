@@ -138,9 +138,12 @@ async def _identify_rejected_caller(
         # request, and a broken lookup is not worth amplifying into log volume.
         logger.warning("Rejection-log identity lookup failed: %s", exc)
         return None
-    if not row:
+    # A row with no user_id is not an identity. Returning one would write a
+    # ``{"user_id": None, "role": "free"}`` row that reads as a resolved free
+    # account rather than the unresolved caller it actually is.
+    if not row or not row.get("user_id"):
         return None
-    return {"user_id": row.get("user_id"), "role": row.get("role") or "free"}
+    return {"user_id": row["user_id"], "role": row.get("role") or "free"}
 
 
 async def _authenticate_by_api_key(

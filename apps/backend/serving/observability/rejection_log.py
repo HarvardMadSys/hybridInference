@@ -41,8 +41,24 @@ REJECTED_PROMPT_MAX_BODY_BYTES = 1_048_576
 
 #: Wall-clock cap on that read. A rejected caller has no claim on the server's
 #: time, so a stalled or trickled upload yields no prompt rather than pinning a
-#: task for as long as the client cares to hold the connection open.
-REJECTED_PROMPT_BODY_TIMEOUT_SEC = 2.0
+#: task for as long as the client cares to hold the connection open. Deliberately
+#: short: a well-behaved client's body is already in the server's buffer by the
+#: time a dependency runs, so this only ever elapses for a client that is *not*
+#: sending, and that client should be shed rather than waited on.
+REJECTED_PROMPT_BODY_TIMEOUT_SEC = 0.25
+
+#: How many rejected requests may be reading a body at once, process-wide.
+#: The timeout alone bounds one request; this bounds the whole flood. Past the
+#: cap, enrichment is skipped instantly and the rejection is shed as cheaply as
+#: it was before any of this existed — so a source that declares a small
+#: ``Content-Length`` and then stalls can occupy at most this many tasks for at
+#: most :data:`REJECTED_PROMPT_BODY_TIMEOUT_SEC`, no matter how many
+#: connections it opens.
+REJECTED_PROMPT_MAX_CONCURRENT_READS = 8
+
+#: Never awaited: callers check :meth:`asyncio.Semaphore.locked` first and give
+#: up rather than queue, which is what keeps a flood from forming a backlog here.
+_body_read_slots = asyncio.Semaphore(REJECTED_PROMPT_MAX_CONCURRENT_READS)
 
 INFERENCE_PATH_PREFIXES: tuple[str, ...] = (
     "/v1/chat/completions",
@@ -161,11 +177,17 @@ async def capture_rejected_prompt(
 
     Prefers a body an earlier dependency already parsed and cached (Starlette
     stores it on ``request._json`` after ``await request.json()``). Otherwise
-    reads the body itself — which a pre-handler gate has not yet done — under
-    two bounds: a declared ``Content-Length`` no larger than *max_body_bytes*,
-    and *timeout_sec* of wall clock. A body whose length is unknown (chunked
-    transfer) is skipped outright. Without those bounds, awaiting the full body
-    of a request the server is refusing is a slowloris foothold.
+    reads the body itself — which a pre-handler gate has not yet done.
+
+    Awaiting the body of a request the server is refusing is attacker-controlled
+    input on a shed-load path, so the read is bounded three ways: a declared
+    ``Content-Length`` no larger than *max_body_bytes*, *timeout_sec* of wall
+    clock, and :data:`REJECTED_PROMPT_MAX_CONCURRENT_READS` such reads
+    process-wide. A body whose length is not declared up front — chunked
+    transfer, or ``Transfer-Encoding`` present at all — is skipped without
+    reading anything. Together those keep the worst case a rejected flood can
+    buy to a fixed handful of tasks for a fraction of a second, rather than one
+    held task per connection.
 
     Returns ``""`` when no prompt can be recovered, for any reason.
 
@@ -179,6 +201,11 @@ async def capture_rejected_prompt(
         except Exception:
             return ""
 
+    # ``Transfer-Encoding`` at all, not just "chunked": when it is present
+    # RFC 9112 requires ``Content-Length`` to be ignored, so a declared length
+    # alongside it is not a bound we may rely on.
+    if request.headers.get("transfer-encoding"):
+        return ""
     declared = request.headers.get("content-length")
     if declared is None:
         return ""
@@ -189,13 +216,19 @@ async def capture_rejected_prompt(
     if length <= 0 or length > max_body_bytes:
         return ""
 
-    try:
-        raw = await asyncio.wait_for(request.body(), timeout_sec)
-        return extract_prompt_from_body(json.loads(raw))
-    except Exception:
-        # Timeout, disconnect, non-JSON body — all mean "no prompt", never an
-        # error the caller has to handle.
+    # Give up rather than queue. Waiting for a slot would rebuild exactly the
+    # backlog the cap exists to prevent. Checking before acquiring is race-free
+    # here: no await separates the two, and the loop is single-threaded.
+    if _body_read_slots.locked():
         return ""
+    async with _body_read_slots:
+        try:
+            raw = await asyncio.wait_for(request.body(), timeout_sec)
+            return extract_prompt_from_body(json.loads(raw))
+        except Exception:
+            # Timeout, disconnect, non-JSON body — all mean "no prompt", never
+            # an error the caller has to handle.
+            return ""
 
 
 async def log_rejection(

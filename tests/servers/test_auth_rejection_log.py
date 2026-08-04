@@ -178,6 +178,33 @@ async def test_blocked_ip_rejection_without_a_valid_key_has_no_user(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_blocked_ip_treats_a_row_without_a_user_id_as_unresolved(
+    monkeypatch, blocked_localhost
+):
+    """A partial lookup row logs no user rather than a null-id "free" account.
+
+    Passing ``{"user_id": None, "role": "free"}`` through would render in the
+    dashboard as an identified free user, which is worse than an honest blank.
+    """
+    app, log_calls, _op = _build_blocked_app(
+        monkeypatch, lightweight_user={"role": "free"}, logging_on=True
+    )
+    await blocked_localhost("127.0.0.1")
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer hyi-valid"},
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        await asyncio.sleep(0)
+
+    assert resp.status_code == 429
+    assert log_calls[0]["user"] is None
+
+
+@pytest.mark.asyncio
 async def test_blocked_ip_skips_enrichment_when_rejection_logging_is_off(
     monkeypatch, blocked_localhost
 ):
