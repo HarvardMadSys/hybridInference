@@ -6,7 +6,8 @@ import asyncio
 import os
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -40,16 +41,33 @@ _OFFENDERS_IN_ALERT = 10
 # ``api_keys:``). 401 (WWW-Authenticate) and 407 (Proxy-Authenticate) are
 # unambiguous credential challenges, so an outage here is 100% fatal for every
 # user until an operator fixes the key — never a per-request client mistake.
+#
+# 403 is deliberately NOT here, even though a gateway-owned endpoint's 403 is the
+# same class of fault. Remote providers overload 403 for per-request rejections —
+# content policy, safety blocks, region/IP restrictions — where the upstream is
+# healthy and correctly refused one prompt, so escalating those would reinstate
+# the "one user's bad request opens the circuit for everyone" cascade the
+# client-error exemption exists to prevent. Scoping the escalation to
+# gateway-owned endpoints needs an ownership signal, and the only one available
+# at this call site is the ``endpoint_id`` string, which cannot carry it:
+#
+# - ``serving.servers.registry._make_provider_id`` stamps ``:local-<port>`` only
+#   for hosts in its four-entry ``_LOCAL_HOSTS`` set, so a gateway-owned server on
+#   the LAN (``http://10.0.0.5:8000`` -> ``:10-api``) reads as remote.
+# - Conversely the identifier is not authoritative: admin runtime routes carry a
+#   ``route_id`` that ``_runtime_route_id_for_target`` only checks against other
+#   providers' generated forms, so any value that ends in ``:local-<digits>``
+#   would be honoured here as gateway-owned whatever its base_url.
+#
+# Deriving ownership from the endpoint's base_url instead would mean threading it
+# (or an explicit ownership flag) through ``record_failure`` at every router,
+# RouteWise, and hedging call site — new plumbing on the failure path to widen an
+# escalation that is already covered indirectly: 403 is key-specific for
+# ``KeyPool``, so an endpoint answering 403 to everything mutes its keys and then
+# fails with ``KeyPoolExhausted``, which carries no HTTP status, is not exempt,
+# and trips the breaker into its own ``circuit_open`` page. So 403 keeps the
+# pre-existing exemption, and only the unambiguous statuses escalate.
 _AUTH_MISCONFIG_STATUSES = frozenset({401, 407})
-
-# 403 only counts as credential misconfiguration for endpoints this deployment
-# owns. Remote providers overload 403 for per-request rejections — content
-# policy, safety blocks, region/IP restrictions — where the upstream is healthy
-# and correctly refused one prompt; tripping the shared breaker on those would
-# reintroduce the "one user's bad request opens the circuit for everyone"
-# cascade. A gateway-owned endpoint has no content-policy layer and no per-user
-# identity reaching it, so its 403 is an ACL/credential fault, all-users fatal.
-_GATEWAY_OWNED_AUTH_STATUSES = frozenset({403})
 
 # Cooldown for the upstream-auth page. Matches the circuit-open alert so a
 # persistent misconfiguration re-pages on the same cadence.
@@ -60,10 +78,11 @@ _AUTH_ALERT_COOLDOWN_SEC = 300
 _AUTH_ALERT_TITLE = "Upstream rejected gateway credential"
 
 # Minimum spacing between *scheduling* upstream-auth pages for one endpoint. The
-# condition fails 100% of requests, so without this every request would spawn an
-# alert task and pay ``alert_slack``'s snooze lookup only to be dropped by the
-# cooldown above. Deliberately far shorter than that cooldown so a page dropped
-# by an unreachable sink is retried in seconds rather than after five minutes.
+# condition fails 100% of requests, so without this every request would queue an
+# alert edge and pay ``alert_slack``'s snooze lookup only to be dropped by the
+# cooldown above; it is also what keeps the per-endpoint delivery queue short.
+# Deliberately far shorter than that cooldown so a page dropped by an unreachable
+# sink is retried in seconds rather than after five minutes.
 _AUTH_ALERT_SCHEDULE_INTERVAL_SEC = 5.0
 
 
@@ -75,6 +94,19 @@ def _auth_alert_key(endpoint_id: str) -> str:
     the tracker matches them by key.
     """
     return f"upstream_auth:{endpoint_id}"
+
+
+@dataclass(frozen=True)
+class _AuthAlertEdge:
+    """One upstream-auth transition waiting to be delivered for an endpoint.
+
+    ``context`` is captured when the edge is queued, not when it is sent: later
+    requests keep moving the endpoint's counters, and the page has to describe the
+    rejection that produced it.
+    """
+
+    breached: bool
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 def _reason_str(s: str) -> str:
@@ -110,52 +142,22 @@ def _http_status_of(exc: BaseException) -> int | None:
     return None
 
 
-def _is_gateway_owned_endpoint(endpoint_id: str) -> bool:
-    """Return whether ``endpoint_id`` names an endpoint this deployment runs.
-
-    ``serving.servers.registry._make_provider_id`` stamps ``:local-<port>`` (or
-    ``:local`` when the base_url carries no port) for every endpoint whose host
-    is in its ``_LOCAL_HOSTS`` set, so the suffix is the existing marker for
-    "the operator owns both ends of this connection".
-
-    Matched exactly rather than by prefix, because the same function mints
-    ``:{name}-api`` for a *remote* host, where ``name`` is the first label left
-    after stripping ``api.``/``llm.``. A remote provider hosted at
-    ``api.local.<tld>`` (or ``local.<tld>``) therefore yields ``:local-api``,
-    which a ``startswith("local-")`` test would report as gateway-owned — and
-    that would escalate the remote provider's per-request content-policy and
-    region 403s into the shared breaker, the exact cascade the 403 scoping below
-    exists to prevent.
-    """
-    _, separator, suffix = endpoint_id.rpartition(":")
-    if not separator:
-        return False
-    if suffix == "local":
-        return True
-    return suffix.startswith("local-") and suffix.removeprefix("local-").isdigit()
-
-
-def _is_auth_misconfig(status: int | None, endpoint_id: str) -> bool:
+def _is_auth_misconfig(status: int | None) -> bool:
     """Return whether ``status`` means this gateway's own credential was rejected.
 
     Such a rejection is not a client error: the caller never supplies the
     upstream credential, so no request the user could have sent would have
     succeeded. It is a deployment-wide fault and must reach the breaker and an
     operator, which is why it is excluded from the client-error exemption below.
+
+    Provider-independent by construction — see ``_AUTH_MISCONFIG_STATUSES`` for
+    why only the unambiguous credential challenges qualify.
     """
-    if status is None:
-        return False
-    if status in _AUTH_MISCONFIG_STATUSES:
-        return True
-    return status in _GATEWAY_OWNED_AUTH_STATUSES and _is_gateway_owned_endpoint(endpoint_id)
+    return status is not None and status in _AUTH_MISCONFIG_STATUSES
 
 
-def _is_client_error(exc: BaseException, endpoint_id: str = "") -> bool:
-    """Return whether ``exc`` is a client error that must not trip the breaker.
-
-    ``endpoint_id`` decides the ambiguous 403 case; the default treats the
-    endpoint as remote, i.e. keeps a 403 exempt.
-    """
+def _is_client_error(exc: BaseException) -> bool:
+    """Return whether ``exc`` is a client error that must not trip the breaker."""
     status = _http_status_of(exc)
     if status is None or not (400 <= status < 500):
         return False
@@ -163,7 +165,7 @@ def _is_client_error(exc: BaseException, endpoint_id: str = "") -> bool:
     if status in (408, 429):
         return False
     # Auth statuses reject the gateway's credential, not the user's request.
-    return not _is_auth_misconfig(status, endpoint_id)
+    return not _is_auth_misconfig(status)
 
 
 def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
@@ -561,6 +563,12 @@ class EndpointHealthRegistry:
         # scheduled, throttling the scheduling itself (see
         # ``_AUTH_ALERT_SCHEDULE_INTERVAL_SEC``).
         self._auth_alert_at: dict[str, float] = {}
+        # Per-endpoint FIFO of upstream-auth edges awaiting delivery, plus the
+        # endpoints that already have a worker draining theirs. Together they keep
+        # one endpoint's firing and resolution in order — see
+        # ``_enqueue_auth_alert``.
+        self._auth_alert_queue: dict[str, deque[_AuthAlertEdge]] = {}
+        self._auth_alert_sending: set[str] = set()
         self._lock = threading.RLock()
 
     def ensure(self, endpoint_id: str) -> None:
@@ -593,8 +601,9 @@ class EndpointHealthRegistry:
                 self._auth_alert_at.pop(endpoint_id, None)
             self._circuits[endpoint_id].on_success()
         if auth_run_ended:
-            # Outside the lock, like the failure path: alert delivery must not
-            # hold the lock every other endpoint's health accounting needs.
+            # Reported after the accounting, like the failure path: the report
+            # only logs and queues, and the delivery it queues must not hold the
+            # lock every other endpoint's health accounting needs.
             self._resolve_auth_misconfig(endpoint_id)
 
     def record_failure(
@@ -609,8 +618,8 @@ class EndpointHealthRegistry:
         status = _http_status_of(exc) if exc is not None else None
         # Checked before the client-error exemption: an auth rejection sits in the
         # 4xx range but is a deployment fault, so it must not be exempted.
-        auth_misconfig = _is_auth_misconfig(status, endpoint_id)
-        if not auth_misconfig and exc is not None and _is_client_error(exc, endpoint_id):
+        auth_misconfig = _is_auth_misconfig(status)
+        if not auth_misconfig and exc is not None and _is_client_error(exc):
             logger.info(
                 "client_error_skip_breaker",
                 extra={
@@ -644,8 +653,9 @@ class EndpointHealthRegistry:
         # run and any open incident alone (see ``note_failure``) — whatever is
         # failing now is the breaker's ``circuit_open`` incident to report.
         if auth_misconfig:
-            # Reported outside the registry lock: alert scheduling must not hold
-            # the lock every other endpoint's health accounting needs.
+            # Reported after the accounting: the report only logs and queues the
+            # page, and the delivery it queues must not hold the lock every other
+            # endpoint's health accounting needs.
             self._report_auth_misconfig(
                 endpoint_id,
                 status=status,
@@ -706,17 +716,7 @@ class EndpointHealthRegistry:
         }
         if detail:
             context["upstream_error"] = detail
-        _fire_and_forget(
-            alert_on_transition(
-                key=_auth_alert_key(endpoint_id),
-                breached=True,
-                severity=AlertSeverity.ERROR,
-                title=_AUTH_ALERT_TITLE,
-                context=lambda: context,
-                cooldown_sec=_AUTH_ALERT_COOLDOWN_SEC,
-                kind="state",
-            )
-        )
+        self._enqueue_auth_alert(endpoint_id, _AuthAlertEdge(breached=True, context=context))
 
     def _resolve_auth_misconfig(self, endpoint_id: str) -> None:
         """Close the upstream-auth incident now that the credential works again.
@@ -740,16 +740,89 @@ class EndpointHealthRegistry:
                 "endpoint_id": endpoint_id,
             },
         )
-        _fire_and_forget(
-            alert_on_transition(
-                key=_auth_alert_key(endpoint_id),
-                breached=False,
-                severity=AlertSeverity.ERROR,
-                title=_AUTH_ALERT_TITLE,
-                context=dict,
-                cooldown_sec=_AUTH_ALERT_COOLDOWN_SEC,
-                kind="state",
-            )
+        self._enqueue_auth_alert(endpoint_id, _AuthAlertEdge(breached=False))
+
+    def _enqueue_auth_alert(self, endpoint_id: str, edge: _AuthAlertEdge) -> None:
+        """Queue one upstream-auth edge for this endpoint's serial delivery.
+
+        Firing and resolution must reach the control plane in the order the
+        endpoint produced them, and as two independent tasks they do not.
+        ``alert_slack`` awaits the admin snooze lookup *before* registering its
+        send as in-flight, so a resolution scheduled while the firing sits in that
+        lookup finds nothing to wait for and is posted first. The firing then
+        lands after the recovery it precedes and opens an incident whose only
+        healthy edge is already spent — and state alerts are never swept, because
+        silence is not recovery — so that page stays open for an endpoint that is
+        working, holding principal quota until it is exhausted.
+
+        One worker per endpoint, draining a FIFO, is the ordering guarantee. Edges
+        are queued rather than collapsed to the latest state: a firing overtaken by
+        a recovery is still the only page a flapping credential may produce, and
+        dropping it would trade a stuck-open incident for a silent one.
+
+        The queue stays short without a cap: firings are throttled per endpoint
+        (``_AUTH_ALERT_SCHEDULE_INTERVAL_SEC``) and a resolution needs an
+        intervening accepted request, so even a sink sitting in every timeout it
+        has queues single digits — and ``alert_slack``'s cooldown collapses the
+        repeats into one message when they are finally delivered.
+
+        Enqueueing takes the registry lock, which is safe and cheap because the
+        queue write and the task creation never block and never await. The
+        delivery itself still happens in the worker, so a failing request never
+        waits on an alert sink — the property the callers' "outside the lock"
+        comments are about.
+        """
+        with self._lock:
+            self._auth_alert_queue.setdefault(endpoint_id, deque()).append(edge)
+            if endpoint_id in self._auth_alert_sending:
+                # A worker is already draining this endpoint and will take the new
+                # edge in turn. Scheduling a second one is what breaks the order.
+                return
+            self._auth_alert_sending.add(endpoint_id)
+        if _fire_and_forget(self._drain_auth_alerts(endpoint_id)):
+            return
+        # No running loop (sync caller / teardown): nothing will drain the queue,
+        # so release it rather than leaving the endpoint marked as sending, which
+        # would mute every later page for it for the process's lifetime.
+        with self._lock:
+            self._auth_alert_sending.discard(endpoint_id)
+            self._auth_alert_queue.pop(endpoint_id, None)
+
+    async def _drain_auth_alerts(self, endpoint_id: str) -> bool:
+        """Deliver one endpoint's queued upstream-auth edges, one at a time.
+
+        Returns whether any edge became a message, matching ``alert_on_transition``
+        so the task type stays uniform across ``_ALERT_TASKS``.
+        """
+        delivered = False
+        try:
+            while True:
+                with self._lock:
+                    queue = self._auth_alert_queue.get(endpoint_id)
+                    edge = queue.popleft() if queue else None
+                    if edge is None:
+                        self._auth_alert_queue.pop(endpoint_id, None)
+                        self._auth_alert_sending.discard(endpoint_id)
+                        return delivered
+                if await self._send_auth_alert(endpoint_id, edge):
+                    delivered = True
+        finally:
+            # A raising or cancelled send must not leave the endpoint marked as
+            # sending: nothing would ever schedule a worker for it again. Anything
+            # still queued is picked up by the next enqueue's worker.
+            with self._lock:
+                self._auth_alert_sending.discard(endpoint_id)
+
+    async def _send_auth_alert(self, endpoint_id: str, edge: _AuthAlertEdge) -> bool:
+        """Deliver one upstream-auth edge through the state transition tracker."""
+        return await alert_on_transition(
+            key=_auth_alert_key(endpoint_id),
+            breached=edge.breached,
+            severity=AlertSeverity.ERROR,
+            title=_AUTH_ALERT_TITLE,
+            context=lambda: edge.context,
+            cooldown_sec=_AUTH_ALERT_COOLDOWN_SEC,
+            kind="state",
         )
 
     def snapshot(self) -> dict[str, dict[str, Any]]:

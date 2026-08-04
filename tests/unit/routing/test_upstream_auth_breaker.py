@@ -17,6 +17,7 @@ import inspect
 import json
 import logging
 import threading
+import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -31,7 +32,6 @@ from routing.endpoint_health import (
     _CircuitState,
     _is_auth_misconfig,
     _is_client_error,
-    _is_gateway_owned_endpoint,
 )
 from routing.routers import AllCircuitsOpenError, FixedRouter
 from serving.adapters.key_pool import KeyPoolExhausted
@@ -112,68 +112,45 @@ async def _drain_alerts() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_gateway_owned_endpoint_detection():
-    assert _is_gateway_owned_endpoint("diffusiongemma:local-8002") is True
-    assert _is_gateway_owned_endpoint("qwen3-coder:local") is True
-    assert _is_gateway_owned_endpoint("glm-4.6:zai-api") is False
-    assert _is_gateway_owned_endpoint("gpt-4o:openai-api") is False
-    # A bare provider label (the endpoint_id fallback) is not a local marker.
-    assert _is_gateway_owned_endpoint("local") is False
-    assert _is_gateway_owned_endpoint("") is False
-
-
-def test_a_remote_provider_named_local_is_not_gateway_owned():
-    """``:local-api`` is a *remote* id and must not be read as the local marker.
-
-    ``_make_provider_id`` mints ``:{name}-api`` for remote hosts, where ``name``
-    is the first label after stripping ``api.``/``llm.`` — so a provider hosted
-    at ``api.local.<tld>`` or ``local.<tld>`` produces ``:local-api``. Treating
-    that as gateway-owned would escalate the provider's per-request
-    content-policy and region 403s into the shared breaker: one user's refused
-    prompt would open the circuit for everyone, the cascade the 403 scoping
-    exists to prevent.
-    """
-    assert _is_gateway_owned_endpoint("mistral-small:local-api") is False
-    assert _is_auth_misconfig(403, "mistral-small:local-api") is False
-    assert _is_client_error(_StatusError(403), "mistral-small:local-api") is True
-    # The real marker is a port, and only a port.
-    assert _is_gateway_owned_endpoint("m:local-8002") is True
-    assert _is_gateway_owned_endpoint("m:local-") is False
-    assert _is_gateway_owned_endpoint("m:localhost") is False
-
-
 def test_auth_statuses_are_never_client_errors():
     """401/407 reject the gateway's credential at every provider, local or not."""
-    for endpoint_id in (_LOCAL_ENDPOINT, _REMOTE_ENDPOINT):
-        for code in (401, 407):
-            assert _is_auth_misconfig(code, endpoint_id) is True, (endpoint_id, code)
-            assert _is_client_error(_StatusError(code), endpoint_id) is False, (endpoint_id, code)
+    for code in (401, 407):
+        assert _is_auth_misconfig(code) is True, code
+        assert _is_client_error(_StatusError(code)) is False, code
 
 
-def test_403_is_scoped_to_gateway_owned_endpoints():
-    """403 escalates only where the gateway owns both ends of the connection.
+def test_403_is_never_classified_as_a_credential_rejection():
+    """403 is never escalated, whatever the endpoint identifier looks like.
 
     Remote providers overload 403 for per-request rejections — content policy,
     safety blocks, region/IP restrictions — where the upstream is healthy and
-    correctly refused one prompt. Escalating those would reinstate the "one
-    user's bad request opens the circuit for everyone" cascade. A gateway-owned
-    endpoint has no content-policy layer and no per-user identity reaching it,
-    so its 403 is an ACL/credential fault that fails every caller.
-    """
-    assert _is_auth_misconfig(403, _LOCAL_ENDPOINT) is True
-    assert _is_client_error(_StatusError(403), _LOCAL_ENDPOINT) is False
+    correctly refused one prompt. Escalating those would reinstate the "one user's
+    bad request opens the circuit for everyone" cascade, so escalation would have
+    to be scoped to endpoints the deployment owns — and ``endpoint_id`` cannot
+    carry that fact in either direction:
 
-    assert _is_auth_misconfig(403, _REMOTE_ENDPOINT) is False
-    assert _is_client_error(_StatusError(403), _REMOTE_ENDPOINT) is True
-    # Unknown endpoint attribution defaults to "remote", i.e. stays exempt.
+    - ``registry._make_provider_id`` mints ``:local-<port>`` only for its four
+      ``_LOCAL_HOSTS`` entries, so a gateway-owned box on the LAN
+      (``http://10.0.0.5:8000``) becomes ``:10-api`` and reads as remote;
+    - the identifier is not authoritative anyway — an admin runtime route's
+      ``route_id`` becomes the ``endpoint_id`` verbatim, so a remote route could
+      present any ``:local-<port>`` suffix it liked.
+
+    So classification stays on the two statuses that need no ownership signal —
+    structurally, by taking no endpoint at all. An endpoint answering 403 to
+    everything is still caught: 403 is key-specific for ``KeyPool``, so its keys
+    mute and the follow-on ``KeyPoolExhausted`` carries no status, is not exempt,
+    and trips the breaker's own page.
+    """
+    assert _is_auth_misconfig(403) is False
     assert _is_client_error(_StatusError(403)) is True
 
 
 def test_ordinary_client_errors_are_not_auth_misconfig():
-    for code in (400, 402, 404, 413, 422):
-        assert _is_auth_misconfig(code, _LOCAL_ENDPOINT) is False, code
-    # Statuses with no HTTP status at all (timeout / connection reset).
-    assert _is_auth_misconfig(None, _LOCAL_ENDPOINT) is False
+    for code in (400, 402, 403, 404, 413, 422):
+        assert _is_auth_misconfig(code) is False, code
+    # Failures with no HTTP status at all (timeout / connection reset).
+    assert _is_auth_misconfig(None) is False
 
 
 # ---------------------------------------------------------------------------
@@ -244,25 +221,31 @@ async def test_ordinary_client_error_still_skips_the_breaker(monkeypatch, caplog
     assert mock_alert.await_count == 0
 
 
-async def test_remote_403_still_skips_the_breaker(monkeypatch):
-    """A content-policy 403 from a remote provider must not open the circuit."""
+@pytest.mark.parametrize("endpoint_id", (_REMOTE_ENDPOINT, _LOCAL_ENDPOINT))
+async def test_403_still_skips_the_breaker_on_any_endpoint(monkeypatch, endpoint_id):
+    """A content-policy 403 must not open the circuit — on any endpoint.
+
+    Including one whose identifier carries the ``:local-<port>`` suffix, since a
+    remote runtime route can present exactly that (the admin ``route_id`` becomes
+    the ``endpoint_id`` verbatim) and reading it as an ownership claim is what
+    would let one refused prompt open the shared circuit for everyone.
+    """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
 
     registry = EndpointHealthRegistry()
-    registry.record_success(_REMOTE_ENDPOINT)
-    baseline = registry.snapshot()[_REMOTE_ENDPOINT]["availability"]
+    registry.record_success(endpoint_id)
+    baseline = registry.snapshot()[endpoint_id]["availability"]
 
     with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
         for _ in range(5):
-            registry.record_failure(
-                _REMOTE_ENDPOINT, reason="chat_exception", exc=_StatusError(403)
-            )
-        await asyncio.sleep(0)
+            registry.record_failure(endpoint_id, reason="chat_exception", exc=_StatusError(403))
+        await _drain_alerts()
 
-    status = registry.snapshot()[_REMOTE_ENDPOINT]
+    status = registry.snapshot()[endpoint_id]
     assert status["circuit_state"] == _CircuitState.CLOSED
     assert status["availability"] == baseline
+    assert status["consecutive_auth_rejections"] == 0
     assert mock_alert.await_count == 0
 
 
@@ -679,6 +662,134 @@ async def test_remote_401_also_escalates(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Firing and recovery must not race each other to the sink
+# ---------------------------------------------------------------------------
+
+
+async def _post_until(predicate, *, timeout: float = 5.0) -> None:
+    """Yield to the loop until ``predicate`` holds, so alert tasks can progress."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "alert deliveries did not settle"
+        await asyncio.sleep(0)
+
+
+async def test_recovery_cannot_overtake_the_page_it_closes(monkeypatch):
+    """A recovery delivered before its page leaves the incident open forever.
+
+    Driven through the real ``alert_slack``: it awaits the admin snooze lookup
+    *before* registering the send as in-flight, and skips that lookup entirely for
+    a resolution. So a firing parked in the lookup has published no in-flight
+    marker for the resolution to wait on, and the resolution — scheduled the
+    moment the credential works again — reaches the sink first. The firing then
+    lands *after* the recovery, opening an incident whose only healthy edge is
+    already spent: the rejection run is over, so nothing will resolve it again,
+    and state alerts are never swept.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+    key = _auth_alert_key(_LOCAL_ENDPOINT)
+    posted: list[str] = []
+    lookup_reached = asyncio.Event()
+    release_lookup = asyncio.Event()
+
+    async def _stalled_is_snoozed() -> bool:
+        # Stands in for any await inside alert_slack that precedes the in-flight
+        # registration: the snooze lookup is the one on the firing path today.
+        lookup_reached.set()
+        await release_lookup.wait()
+        return False
+
+    async def _record_post(_webhook_url: str, message: str) -> bool:
+        # The plain-webhook sink has only the text, so that is where the recovery
+        # is distinguishable — see ``alerts._format_message``.
+        posted.append("resolved" if "*Recovered:*" in message else "firing")
+        return True
+
+    with (
+        patch("serving.observability.alert_snooze.is_snoozed", new=_stalled_is_snoozed),
+        patch("serving.observability.alerts._post_to_slack", new=_record_post),
+    ):
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
+        await asyncio.wait_for(lookup_reached.wait(), timeout=5)
+        assert not posted, "the page must still be mid-delivery for this to be the race"
+
+        # The operator fixes the key while that page is in flight.
+        registry.record_success(_LOCAL_ENDPOINT)
+        await _drain_alerts()
+        assert posted != ["resolved"], "the recovery was delivered before the page it closes"
+
+        release_lookup.set()
+        await _post_until(lambda: len(posted) >= 2)
+
+    assert posted == ["firing", "resolved"]
+    # Delivered in order, so the incident the page opened is the one that closed.
+    assert _STATE_TRANSITIONS.is_firing(key) is False
+
+
+async def test_a_recovery_scheduled_before_the_page_runs_still_closes_it(monkeypatch):
+    """The other order: both edges are queued before either has been delivered.
+
+    Serializing must not swallow one of them — the page still opens the incident
+    and the recovery still closes it, in that order, so nothing is left open and
+    nothing is announced as recovered that never fired.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+    key = _auth_alert_key(_LOCAL_ENDPOINT)
+    statuses: list[str] = []
+
+    async def _record(severity, title, context, **kwargs):
+        statuses.append(kwargs.get("status", "firing"))
+        return True
+
+    with patch("serving.observability.alerts.alert_slack", new=_record):
+        # No loop turn in between, so neither delivery has started yet.
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
+        registry.record_success(_LOCAL_ENDPOINT)
+        await _post_until(lambda: len(statuses) >= 2)
+
+    assert statuses == ["firing", "resolved"]
+    assert _STATE_TRANSITIONS.is_firing(key) is False
+
+
+async def test_one_endpoints_stalled_page_does_not_delay_anothers(monkeypatch):
+    """Serialization is per endpoint, not global.
+
+    A single unreachable endpoint's page can sit in the sink's timeouts for tens
+    of seconds; queueing every other endpoint's outage behind it would hide the
+    next real one.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+    stalled = asyncio.Event()
+    delivered: list[str] = []
+
+    async def _record(severity, title, context, **kwargs):
+        endpoint_id = str(context.get("endpoint_id"))
+        if endpoint_id == _LOCAL_ENDPOINT:
+            await stalled.wait()
+        delivered.append(endpoint_id)
+        return True
+
+    with patch("serving.observability.alerts.alert_slack", new=_record):
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
+        registry.record_failure(_REMOTE_ENDPOINT, reason="chat_exception", exc=_StatusError(401))
+        await _post_until(lambda: delivered == [_REMOTE_ENDPOINT])
+
+        stalled.set()
+        await _post_until(lambda: len(delivered) == 2)
+
+    assert delivered == [_REMOTE_ENDPOINT, _LOCAL_ENDPOINT]
+
+
+# ---------------------------------------------------------------------------
 # Through the router, so the exception really reaches health accounting
 # ---------------------------------------------------------------------------
 
@@ -846,19 +957,25 @@ def test_circuit_open_scheduling_closes_its_coroutine_without_a_loop(monkeypatch
 
 
 def test_auth_page_scheduling_closes_its_coroutine_without_a_loop(monkeypatch):
-    """Same contract on the auth page, the helper's other caller."""
+    """Same contract on the auth page, the helper's other caller.
+
+    The queued edge and the endpoint's "a worker is draining" mark must be
+    released too. Leaving the mark set would make the registry believe a worker
+    owns this endpoint forever, and every later page for it would be queued behind
+    a worker that does not exist.
+    """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
 
     coroutines: list[Any] = []
-    original = endpoint_health.alert_on_transition
+    original = EndpointHealthRegistry._drain_auth_alerts
 
-    def _capture(**kwargs):
-        coro = original(**kwargs)
+    def _capture(self, endpoint_id):
+        coro = original(self, endpoint_id)
         coroutines.append(coro)
         return coro
 
-    monkeypatch.setattr(endpoint_health, "alert_on_transition", _capture)
+    monkeypatch.setattr(EndpointHealthRegistry, "_drain_auth_alerts", _capture)
     registry = EndpointHealthRegistry()
 
     _run_without_a_loop(
@@ -870,3 +987,5 @@ def test_auth_page_scheduling_closes_its_coroutine_without_a_loop(monkeypatch):
     assert len(coroutines) == 1
     assert inspect.getcoroutinestate(coroutines[0]) == inspect.CORO_CLOSED
     assert registry.snapshot()[_LOCAL_ENDPOINT]["consecutive_auth_rejections"] == 1
+    assert registry._auth_alert_sending == set()
+    assert registry._auth_alert_queue == {}
