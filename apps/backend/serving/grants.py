@@ -13,15 +13,15 @@ cannot widen anything by asking louder.
 |---|---|
 | ``user_id`` | Caller names it; we look it up and refuse unless active |
 | ``allowed_models`` | **Clamped** to what the role may reach |
+| ``allowed_mcp`` | **Validated** — an unknown name refuses the mint |
 | ``ttl_seconds`` | ``min(requested, MAX_GRANT_TTL_S)`` |
 
-**Models are the whole of it.** A grant authorizes model inference and nothing
-else; it carried an MCP scope until the ownership amendment moved the MCP
-registry, its credentials and its proxy to the cloud agent, which is where the
-job, its requested tools and the attempt fence already live. A sandbox reaches
-tools with a separate credential this gateway neither mints nor accepts, so a
-leaked grant buys models and no tools, and a leaked MCP token buys tools and no
-models.
+Clamp versus validate is not a stylistic difference. Narrowing a model list
+leaves a working job; silently narrowing an MCP list hands back a grant that
+looks fine and produces an agent running without the one tool the task was
+written around, failing far from the cause. ``McpRegistry.resolve`` already
+decided this — unknown names raise — and this module keeps that decision rather
+than re-litigating it at the boundary.
 
 **No budget.** A grant scopes *what* may be called, never *how much*. Inference
 spend stays subject to the gateway's existing per-user quota, which is the one
@@ -204,6 +204,11 @@ def model_allowed(row: dict[str, Any], model: str) -> bool:
     return model in (row.get("allowed_models") or [])
 
 
+def mcp_allowed(row: dict[str, Any], server: str) -> bool:
+    """Whether this grant's effective MCP scope covers ``server``."""
+    return server in (row.get("allowed_mcp") or [])
+
+
 #: DDL for the gateway-owned grants table.
 #:
 #: Deliberately not in ``agent_job_store``: that module is frozen and leaves
@@ -220,6 +225,7 @@ CREATE TABLE IF NOT EXISTS agent_grants (
     external_job_id TEXT NOT NULL,
     external_attempt_id TEXT NOT NULL,
     allowed_models JSONB NOT NULL DEFAULT '[]'::jsonb,
+    allowed_mcp JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ NOT NULL,
     revoked_at TIMESTAMPTZ,

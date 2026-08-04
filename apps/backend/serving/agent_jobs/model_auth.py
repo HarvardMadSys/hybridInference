@@ -243,6 +243,30 @@ async def authenticate_grant_model_call(
     }
 
 
+async def authenticate_grant_tool_call(
+    api_key: str,
+    *,
+    op_store: Any | None,
+) -> dict[str, Any]:
+    """Resolve an inference grant for an MCP proxy call.
+
+    The same signature, row, liveness and subject checks as a model call, and
+    deliberately no quota: a tool call invokes no inference provider, so it
+    spends nothing there is a limit on.
+
+    Raises:
+        AgentModelAuthError: For an unusable grant or subject.
+    """
+    row = await _resolve_grant(api_key, op_store=op_store)
+    await _active_subject(op_store, row["user_id"])
+    return {
+        "user_id": row["user_id"],
+        "agent_job_id": row["external_job_id"],
+        "agent_grant_id": row["grant_id"],
+        "agent_allowed_mcp": row.get("allowed_mcp") or [],
+    }
+
+
 async def _active_subject(op_store: Any, user_id: str) -> dict[str, Any]:
     """Load the grant's owner, refusing anyone who may no longer sign in.
 

@@ -1,12 +1,5 @@
 """Internal endpoints the cloud agent's control plane calls to get capability.
 
-**Model inference only.** A grant carried an MCP scope until the ownership
-amendment moved the MCP registry, its credentials and its proxy to the cloud
-agent — which is where the job, its requested servers and the attempt fence
-already live, so nothing here had the state to decide MCP access with. A
-sandbox now reaches tools with a separate credential this gateway neither mints
-nor accepts.
-
 Not public API. These sit behind a shared dispatch token and exist because the
 control plane, after the split, cannot answer "may this user call this model"
 on its own — it has no user table and no model registry. It asks; this gateway
@@ -26,6 +19,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
 from serving import grants
+from serving.agent_jobs.mcp_registry import McpRegistryError, get_registry
 from serving.agent_jobs.visible_models import agent_visible_models
 from serving.model_access import get_disabled_models_from_preferences
 from serving.servers.deps import (
@@ -108,6 +102,8 @@ class MintGrantRequest(BaseModel):
     external_attempt_id: str = Field(max_length=128)
     #: ``None`` means "everything this user's role can reach".
     allowed_models: list[str] | None = None
+    #: ``None`` means the deployment's default MCP servers.
+    allowed_mcp: list[str] | None = None
     ttl_seconds: int | None = None
 
 
@@ -124,6 +120,7 @@ def _grant_response(row: dict[str, Any], *, token: str | None = None) -> dict[st
         "external_job_id": row["external_job_id"],
         "external_attempt_id": row["external_attempt_id"],
         "allowed_models": row["allowed_models"],
+        "allowed_mcp": row["allowed_mcp"],
         "expires_at": row["expires_at"].isoformat(),
         "revoked_at": row["revoked_at"].isoformat() if row.get("revoked_at") else None,
     }
@@ -194,6 +191,14 @@ async def mint_grant(
     )
     effective_models = grants.clamp_models(body.allowed_models, visible=visible)
 
+    # MCP is validated, not clamped. Dropping an unknown name would hand back a
+    # grant that looks fine and produce an agent missing the one tool the task
+    # was written around — a failure far from its cause.
+    try:
+        effective_mcp = get_registry().resolve(body.allowed_mcp)
+    except McpRegistryError as exc:
+        raise _error(status.HTTP_400_BAD_REQUEST, "unknown_mcp_server", str(exc)) from exc
+
     ttl = grants.clamp_ttl(body.ttl_seconds)
     row = await store.upsert_agent_grant(
         grant_id=grants.new_grant_id(),
@@ -201,6 +206,7 @@ async def mint_grant(
         external_job_id=body.external_job_id,
         external_attempt_id=body.external_attempt_id,
         allowed_models=effective_models,
+        allowed_mcp=list(effective_mcp),
         expires_at=grants.expiry_from(ttl),
     )
 
