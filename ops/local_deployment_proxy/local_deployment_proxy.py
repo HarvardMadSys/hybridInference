@@ -213,6 +213,20 @@ HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
 # on a name available to us — it is detected (`_is_name_conflict`) and read as
 # contention, which sends the ownership decision round again rather than
 # destroying anything.
+#
+# All of that guards the moment a backend is *started*. The mirror-image gap is a
+# backend already running: `_proxy` forwards a request straight to
+# localhost:backend_port whenever the manager says "ready", with no ownership check
+# and no docker call, because a warm request must not pay for one. Nothing demoted
+# "ready" when the container died out of band — the idle watcher reads only local
+# state, and the reactive reconcile in `_forward_with_body` needs the port to stop
+# answering — so once a sibling reclaimed this backend's corpse and launched its own
+# container on the same name and port, that fast path forwarded to the sibling's
+# backend indefinitely: the wrong model, success-shaped, under two idle watchers that
+# each believed they owned it. The identity the manager is ready over is therefore
+# recorded (`_container_id`, free from `docker run -d`'s own output) and re-checked in
+# the loop the proxy already runs, not on the request path — see
+# `_disown_if_replaced`.
 OWNER_LABEL = "com.freeinference.proxy.owner"
 PROFILE_LABEL = "com.freeinference.proxy.profile"
 PROXY_OWNER = os.environ.get("PROXY_OWNER", "").strip() or f"port-{LISTEN_PORT}"
@@ -288,6 +302,28 @@ _MISSING_CONTAINER_RE = re.compile(r"no such container", re.IGNORECASE)
 def _is_missing_container(stderr: str) -> bool:
     """Return True if this ``docker rm`` failure means "it was already gone"."""
     return bool(_MISSING_CONTAINER_RE.search(stderr or ""))
+
+
+def _launched_container_id(stdout: str) -> str | None:
+    """Read the container id ``docker run -d`` printed, or None if it did not.
+
+    Both engines launch detached, and a detached run's whole stdout is the new
+    container's id — so the identity this proxy later re-checks
+    (``_disown_if_replaced``) is free: no second ``docker inspect``, on a path where
+    an extra daemon call would land during a cold-start storm.
+
+    The *last* non-empty line is taken, not the whole output: a sudo or docker
+    wrapper that prints a banner first would otherwise make the id unusable. A
+    single token is required for the same reason — anything else is a wrapper
+    talking, and the honest answer is then "no id", which downgrades the identity
+    check to the owner-label check rather than inventing a mismatch that would
+    demote a healthy backend on every poll.
+    """
+    lines = [line.strip() for line in (stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return None
+    candidate = lines[-1]
+    return candidate if len(candidate.split()) == 1 else None
 
 
 class _ContainerState(NamedTuple):
@@ -575,6 +611,11 @@ class BackendManager:
         # container so a later process can tell "the backend I asked for" from
         # "some other backend wearing the same name".
         self._profile = _launch_profile(config)
+        # Id of the container this manager launched or adopted, so the identity it
+        # believes in can be re-checked without a per-request docker call. See
+        # `_disown_if_replaced`: the labels prove *who owns the name now*, and this
+        # proves *whether it is still the container we became ready over*.
+        self._container_id: str | None = None
         # Last unrunnable-`docker inspect` reason already reported, so the
         # ownership check on the streaming warmup path says it once instead of on
         # every request (see `_log_inspect_failure`).
@@ -608,6 +649,7 @@ class BackendManager:
             if self._state == "ready":
                 self._state = "stopped"
                 self._current_gpu = None
+                self._container_id = None
                 self._ready_event.clear()
 
     def ensure_running(self) -> None:
@@ -866,6 +908,10 @@ class BackendManager:
         waiting for ("removal of container … is already in progress"). A short pause
         costs nothing next to a container start and takes that flake out of the one
         retry there is.
+
+        A successful launch records the new container's id. ``docker run -d`` prints
+        it on stdout, which is already captured, so the identity
+        ``_disown_if_replaced`` re-checks later costs no extra daemon round trip.
         """
         attempts = 2
         removal_error: str | None = None
@@ -876,6 +922,7 @@ class BackendManager:
             log.info("Running: %s", " ".join(cmd))
             result = subprocess.run(cmd, check=False, capture_output=True, text=True)
             if result.returncode == 0:
+                self._container_id = _launched_container_id(result.stdout)
                 return
             stderr = (result.stderr or "").strip()
             if not _is_name_conflict(stderr):
@@ -1371,6 +1418,7 @@ class BackendManager:
             with self._lock:
                 self._state = "stopped"
                 self._current_gpu = None
+                self._container_id = None
             return
         log.info("[%s] Stopping container %s …", self.model_name, self.container)
         removal_error = (
@@ -1379,6 +1427,9 @@ class BackendManager:
         with self._lock:
             self._state = "stopped"
             self._current_gpu = None
+            # "Stopped" must mean "this manager holds no container", or a later
+            # identity check could compare against an id from a previous life.
+            self._container_id = None
         if removal_error:
             # Local state is released either way — the alternative is a backend this
             # proxy believes is ready and cannot reach. But the GPUs are *not* back,
@@ -1464,9 +1515,11 @@ class BackendManager:
     def _inspect_container(self) -> tuple[bool, dict[str, str]]:
         """Return ``(running, labels)`` for the container of this name.
 
-        The pair every ownership decision that does not remove anything needs.
-        Removals go through ``_inspect_state`` instead, which also carries the id
-        they must be aimed at.
+        The narrow view, for callers that need nothing else: a bare liveness probe
+        (``_container_running``) and an ownership question asked without a state to
+        hand (``_container_owner``). Anything that removes a container, or that has
+        to remember *which* container it decided about, goes through
+        ``_inspect_state`` for the id — the same one inspect either way.
         """
         state = self._inspect_state()
         return state.running, state.labels
@@ -1537,13 +1590,14 @@ class BackendManager:
         ``debug`` record here would be dropped before it reached the journal — the
         operator this exists for would see exactly nothing.
 
-        Latched on the reason instead: ``contention_error`` runs on *every*
-        streaming request until the backend is ready, and the causes are not all
-        transient — a proxy that cannot execute ``sudo docker`` at all answers "no
-        contention" for every request it will ever serve, which at one line per
-        request would bury the journal. Cleared by the next contention check whose
-        inspect succeeds, so a genuinely intermittent failure is reported each time
-        it recurs.
+        Latched on the reason instead, because both callers repeat:
+        ``contention_error`` runs on *every* streaming request until the backend is
+        ready, and ``_disown_if_replaced`` on every idle-watcher tick while it is.
+        The causes are not all transient either — a proxy that cannot execute ``sudo
+        docker`` at all answers "no contention" for every request it will ever serve,
+        which at one line per request or per tick would bury the journal. Cleared by
+        the next ownership read whose inspect succeeds, so a genuinely intermittent
+        failure is reported each time it recurs.
         """
         reason = f"{type(exc).__name__}: {exc}"
         if reason == self._inspect_failure:
@@ -1607,6 +1661,102 @@ class BackendManager:
             ),
         )
 
+    def _stale_ownership_reason(self, state: _ContainerState) -> str | None:
+        """Say why the container of this name is no longer the one we became ready over.
+
+        Answers on *positive evidence only*. An inspect that reports no container —
+        which is also what an unreachable daemon and an unparseable answer degrade
+        to (see ``_inspect_state``) — returns None, so a docker hiccup can never
+        demote a warm backend. A container that has genuinely gone away is already
+        reconciled reactively, by the ``URLError`` branch of ``_forward_with_body``:
+        the port stops answering, ``alive()`` says the container is gone, and the
+        request path restarts it. What that branch cannot see is the case here,
+        because the port *does* answer — it is another proxy's backend answering.
+
+        Two disagreements count, and they catch different things:
+
+        * a **foreign owner label**. Container names are unique, so a foreign
+          container holding this name proves ours is no longer under it: whatever
+          this manager's ``ready`` state refers to, it is not this container. There
+          is no false positive to worry about — our own container cannot be wearing
+          a sibling's owner label.
+        * a **different container id**, when one was recorded. This is what catches
+          a replacement that reads as *ours*: an operator who hand-restarts the
+          backend leaves an unlabelled container, which the upgrade rule in
+          ``_container_owner`` deliberately reads as this proxy's own, and two units
+          can also be given the same ``PROXY_OWNER``. Same name, same port, possibly
+          a different profile — and nothing in the labels to say so.
+
+        Only compared when both ids are known, so a launch whose id could not be
+        read (``_launched_container_id``) degrades to the owner check instead of
+        mismatching against the empty string every poll.
+        """
+        if not state.exists:
+            return None
+        owner = self._container_owner(state.labels)
+        if owner is not None:
+            return (
+                f"the name is now held by container {state.container_id} owned by {owner!r}, "
+                f"not by this proxy ({PROXY_OWNER!r})"
+            )
+        launched = self._container_id
+        if launched and state.container_id and state.container_id != launched:
+            return (
+                f"the name is now held by container {state.container_id}, not by "
+                f"{launched}, the container this proxy became ready over"
+            )
+        return None
+
+    def _disown_if_replaced(self) -> bool:
+        """Drop a ``ready`` state that refers to a container someone else replaced.
+
+        The gap this closes. ``_proxy`` forwards a request straight to
+        ``localhost:backend_port`` whenever ``state == "ready"``, with no ownership
+        check and no docker call — that fast path is the whole point of being ready.
+        But nothing demoted ``ready`` when the container died *out of band*: the idle
+        watcher only reads local state, and the reactive ``URLError`` reconcile in
+        ``_forward_with_body`` needs the port to go quiet. So after a sibling proxy
+        reclaims this backend's corpse (which the start path now does, by design) and
+        launches its own container on the same name and host port, this manager keeps
+        answering "ready" and forwards to a port that is now the sibling's backend.
+        Two configs that collide on name and port but differ in profile then serve
+        each other's clients the wrong model, success-shaped, for as long as traffic
+        keeps the idle timer alive — and two idle watchers each believe they own it.
+
+        Checked here, in a loop the proxy already runs, rather than on the request
+        path: a warm request must still cost zero docker round trips, and the
+        cold-start storm this guard's earlier rounds were about must not gain a
+        ``docker inspect`` per request. The watcher only runs while a backend is
+        ``ready``, so a starting backend adds nothing either. The exposure is
+        therefore bounded by one watcher tick — ``min(10, IDLE_TIMEOUT / 2)`` seconds
+        — instead of being unbounded.
+
+        Removes nothing, ever. The container belongs to its new owner and may be
+        mid-load or mid-stream; local state is all this proxy has any claim on, which
+        is exactly what ``_stop_container`` concluded for the same situation arriving
+        through the idle door. Returns True when the backend was demoted.
+        """
+        try:
+            state = self._inspect_state()
+        except Exception as exc:  # docker unreachable: not evidence of a takeover
+            self._log_inspect_failure(exc)
+            return False
+        self._inspect_failure = None
+        reason = self._stale_ownership_reason(state)
+        if reason is None:
+            return False
+        log.warning(
+            "[%s] Backend %s was ready, but %s. Releasing local state without touching the "
+            "container: this proxy has been serving another owner's backend on port %d, and "
+            "the next request must re-decide ownership rather than forward to it.",
+            self.model_name,
+            self.container,
+            reason,
+            self.backend_port,
+        )
+        self.mark_stopped()
+        return True
+
     def _adopt_running_container(self) -> bool:
         """Adopt an already-running, healthy container instead of reloading it.
 
@@ -1621,8 +1771,13 @@ class BackendManager:
         eight minutes into a fourteen-minute load fails ``_backend_healthy``, so
         without this guard the caller would fall through to ``_start_container``
         and ``docker rm -f`` it.
+
+        Reads the full state rather than ``(running, labels)`` so the adopted
+        container's *id* is recorded too — an adopted backend needs the same later
+        identity re-check as a launched one, and this inspect is already paid for.
         """
-        running, labels = self._inspect_container()
+        state = self._inspect_state()
+        running, labels = state.running, state.labels
         if not running:
             return False
         owner = self._container_owner(labels)
@@ -1643,6 +1798,7 @@ class BackendManager:
             return False
         if self._backend_healthy():
             self._current_gpu = self._running_container_gpu()
+            self._container_id = state.container_id or None
             return True
         return False
 
@@ -1758,6 +1914,12 @@ class BackendManager:
                         return
                     continue
                 idle_for = time.monotonic() - self._last_activity
+            # Outside the lock: this issues a `docker inspect`, and holding the lock
+            # across it would stall every request thread reading `.state` for the
+            # length of a daemon round trip. Before the idle check, because a backend
+            # whose container someone else replaced has nothing left to idle-stop.
+            if self._disown_if_replaced():
+                return
             if idle_for >= IDLE_TIMEOUT:
                 with self._lock:
                     if self._state != "ready":

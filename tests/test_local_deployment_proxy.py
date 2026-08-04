@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -555,8 +555,15 @@ def test_ensure_running_adopts_healthy_running_container(monkeypatch: Any, tmp_p
     monkeypatch.setattr(backend, "_wait_healthy", lambda: None)
     # Running, and unlabelled: a container started before ownership labels
     # existed. Reading it as this proxy's own is what keeps this path working
-    # across the upgrade.
-    monkeypatch.setattr(backend, "_inspect_container", lambda: (True, {}))
+    # across the upgrade. Adoption reads the full state rather than
+    # ``(running, labels)`` so it can record the id it becomes ready over.
+    monkeypatch.setattr(
+        backend,
+        "_inspect_state",
+        lambda: proxy._ContainerState(
+            exists=True, container_id="cid-adopted", running=True, status="running", labels={}
+        ),
+    )
     start = Mock()
     monkeypatch.setattr(backend, "_start_container", start)
 
@@ -566,6 +573,7 @@ def test_ensure_running_adopts_healthy_running_container(monkeypatch: Any, tmp_p
     start.assert_not_called()
     assert backend.state == "ready"
     assert backend._current_gpu == "3"
+    assert backend._container_id == "cid-adopted"
 
 
 # ── Container ownership ────────────────────────────────────────────────────
@@ -601,6 +609,11 @@ class _FakeDocker:
       answering afterwards would let that read move below the ``rm`` with the
       suite still green, where real docker returns nothing and the backend
       migrates.
+    * **a container's name can come to point at a different container.** The fake's
+      ``container_id`` changes when a container is replaced, and a detached ``docker
+      run`` reports the new id on stdout, so a test can express "the name still
+      resolves, but not to the container this proxy launched" — the reading the
+      ready fast path had no way to take.
     * **a container has a state word, not just a running flag.** ``.State.Status``
       distinguishes a container that has *finished* from one that has not started
       *yet*: `docker run -d` reserves the name and writes the labels at create time
@@ -696,7 +709,11 @@ class _FakeDocker:
             self.status = None
             self.labels = _labels_from_run(command) or None
             self.container_id = f"cid-launched-{self.runs}"
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+            # A detached run prints the new container's id and nothing else. That
+            # output is what lets the proxy record the identity it becomes ready
+            # over without a second daemon call, so a fake that returned an empty
+            # stdout would hide a launch path that recorded no id at all.
+            return SimpleNamespace(returncode=0, stdout=f"{self.container_id}\n", stderr="")
         if verb in {"rm", "kill"}:
             if self.on_rm is not None:
                 override = self.on_rm(self, command[-1])
@@ -2089,6 +2106,305 @@ def test_warmup_stream_survives_an_unreadable_docker_inspect(
     monkeypatch.setattr(proxy.subprocess, "run", boom)
     assert backend.contention_error() is None
     assert [r.getMessage() for r in caplog.records]
+
+
+# ── Ready over a container someone else replaced ───────────────────────────
+#
+# The start path is guarded; the *running* backend was not. `_proxy` forwards
+# straight to localhost:backend_port whenever the manager says "ready", with no
+# ownership check and no docker call, and nothing demoted "ready" when the
+# container died out of band: the idle watcher reads only local state, and the
+# `URLError` reconcile in `_forward_with_body` needs the port to stop answering.
+# So once a sibling reclaimed this backend's corpse and launched its own container
+# on the same name and host port, the fast path served the sibling's backend --
+# the wrong model, success-shaped, under two idle watchers both believing they
+# owned it. These cover the identity re-check that closes it, in the loop the proxy
+# already runs rather than on the request path.
+
+
+class _WatcherStopped(Exception):
+    """Sentinel that breaks out of ``_idle_watcher``'s endless loop."""
+
+
+def _run_idle_watcher(proxy: Any, backend: Any, *, ticks: int = 4) -> int:
+    """Drive ``_idle_watcher`` for at most ``ticks`` iterations without sleeping.
+
+    Goes through the real loop rather than calling the re-check directly, because
+    *which* loop it runs in is the claim under test: on the request path it would
+    cost a ``docker inspect`` per warm request, which two earlier review rounds on
+    this code rejected.
+
+    The ``time.sleep`` patch is scoped to this helper and not to the test, so a
+    caller can start an HTTP server afterwards without a booby-trapped ``sleep``
+    waiting in another thread.
+    """
+    seen = {"n": 0}
+
+    def _sleep(_seconds: float) -> None:
+        seen["n"] += 1
+        if seen["n"] > ticks:
+            raise _WatcherStopped
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(proxy.time, "sleep", _sleep)
+        # A demotion ends the watcher by returning; the sentinel only fires when it
+        # keeps looping, which is the pre-fix behaviour.
+        with suppress(_WatcherStopped):
+            backend._idle_watcher()
+    return seen["n"]
+
+
+def _make_ready(proxy: Any, backend: Any, container_id: str | None) -> None:
+    """Put a backend in the state the ready fast path forwards from.
+
+    ``_last_activity`` is set to now on purpose: left at its ``0.0`` default the
+    idle timer reads as expired the moment the watcher ticks, and the test would be
+    exercising idle teardown instead of the ownership re-check.
+    """
+    with backend._lock:
+        backend._state = "ready"
+        backend._current_gpu = "0"
+        backend._last_activity = proxy.time.monotonic()
+    backend._container_id = container_id
+
+
+def test_idle_watcher_disowns_a_ready_backend_whose_name_was_taken_over(
+    monkeypatch: Any, tmp_path: Path, caplog: Any
+) -> None:
+    """A sibling that reclaimed our corpse must not keep being served as ours.
+
+    Reclaiming a foreign corpse is deliberate — nothing else here would ever remove
+    one — but it has a mirror image: *our* corpse is what a sibling reclaims, and
+    this manager is still ``ready`` over it, because a container that dies outside
+    this proxy's control demotes nothing. The sibling then holds the name and the
+    host port, so the ready fast path forwards this proxy's clients into the
+    sibling's backend and gets 200s back from the wrong model.
+
+    Demoting drops local state only. The container is the sibling's and may be
+    mid-load or mid-stream, which is the same conclusion ``_stop_container`` reaches
+    for this situation arriving through the idle door.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(
+        labels={proxy.OWNER_LABEL: "port-8003"}, running=True, container_id="cid-sibling"
+    )
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    _make_ready(proxy, backend, "cid-mine")
+
+    with caplog.at_level(logging.WARNING):
+        _run_idle_watcher(proxy, backend)
+
+    assert backend.state == "stopped"
+    assert backend._current_gpu is None
+    # The GPU bookkeeping other backends' auto-selection reads must be released
+    # too: this proxy was excluding a device on behalf of a container it does not
+    # own.
+    assert fake.mutations == []
+    assert fake.running is True
+    assert fake.container_id == "cid-sibling"
+    messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("port-8003" in m for m in messages), messages
+
+
+def test_idle_watcher_disowns_a_ready_backend_replaced_under_its_own_name(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The takeover can read as *ours*, so the owner label is not enough on its own.
+
+    An operator who hand-restarts a wedged backend leaves an unlabelled container,
+    and the upgrade rule in ``_container_owner`` deliberately reads an absent owner
+    label as this proxy's own — two units can also be handed the same
+    ``PROXY_OWNER``. Same name, same port, and possibly a different profile, with
+    nothing in the labels to say so. The recorded container id is what sees it.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(labels=None, running=True, container_id="cid-hand-restarted")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    _make_ready(proxy, backend, "cid-mine")
+
+    _run_idle_watcher(proxy, backend)
+
+    assert backend.state == "stopped"
+    assert fake.mutations == []
+    assert fake.container_id == "cid-hand-restarted"
+
+
+def test_a_ready_backend_survives_an_inspect_that_reports_no_container(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Demotion needs positive evidence, and "no answer" is not evidence.
+
+    ``_inspect_state`` degrades an unreachable daemon and an unparseable reply to
+    the same absent-container reading as a name that genuinely does not exist, so
+    demoting on it would let a docker hiccup knock a warm backend out and,
+    with docker still unreachable, turn the next request into a 502 rather than a
+    forward. A container that has really gone away is already reconciled reactively
+    by the ``URLError`` branch of ``_forward_with_body``, which the fast path can
+    reach because the port stops answering.
+
+    The re-check must still have *run*, or this test would pass on code that never
+    looks.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(exists=False)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    _make_ready(proxy, backend, "cid-mine")
+
+    _run_idle_watcher(proxy, backend)
+
+    assert backend.state == "ready"
+    assert fake.state_inspects, "the ownership re-check never ran"
+    assert fake.mutations == []
+
+
+def test_ownership_recheck_runs_only_while_ready_and_keeps_our_own_container(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Where the re-check runs is half the fix, so pin it.
+
+    A ``starting`` backend must cost nothing: a cold-start storm bringing several
+    units up at once is exactly when extra daemon calls hurt, and it is the case two
+    earlier rounds on this code pushed back on. And the steady state — ready over
+    the very container the name resolves to — must survive the re-check untouched,
+    or every poll would reload a healthy backend's weights.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    stamped = _labels_from_run(["docker", "run", *backend._ownership_label_args()])
+    fake = _FakeDocker(labels=stamped, running=True, container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    with backend._lock:
+        backend._state = "starting"
+    _run_idle_watcher(proxy, backend)
+    assert fake.state_inspects == [], "a starting backend must not be inspected"
+
+    _make_ready(proxy, backend, "cid-mine")
+    _run_idle_watcher(proxy, backend)
+
+    assert fake.state_inspects, "the ownership re-check never ran"
+    assert backend.state == "ready"
+    assert backend._current_gpu == "0"
+    assert fake.mutations == []
+
+
+def test_launch_records_the_container_id_without_another_docker_call(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The identity has to be free, or it is a cost on the cold-start path.
+
+    ``docker run -d`` prints the new container's id and the output is already
+    captured, so recording it adds no daemon round trip to a start that two review
+    rounds have already trimmed. Asserting that nothing is inspected *after* the run
+    is what pins that.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(exists=False)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    backend._start_container()
+
+    assert backend._container_id == "cid-launched-1"
+    launched_at = fake.index_of(lambda c: "--name" in c)
+    assert launched_at >= 0
+    assert [c for c in fake.commands[launched_at + 1 :] if "inspect" in c] == []
+
+
+def test_adoption_records_the_adopted_container_id(monkeypatch: Any, tmp_path: Path) -> None:
+    """An adopted backend needs the same identity as a launched one.
+
+    Restart-and-adopt is the ordinary path after a proxy restart, and a manager that
+    became ready that way is just as able to be replaced out from under itself. The
+    id comes from the inspect adoption already pays for, so this costs nothing
+    either — hence the single state inspect.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    stamped = _labels_from_run(["docker", "run", *backend._ownership_label_args()])
+    fake = _FakeDocker(labels=stamped, running=True, gpu="2", container_id="cid-adopted")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: True)
+
+    assert backend._adopt_running_container() is True
+
+    assert backend._container_id == "cid-adopted"
+    assert backend._current_gpu == "2"
+    assert len(fake.state_inspects) == 1
+
+
+def test_an_unreadable_launch_output_downgrades_to_the_owner_check(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A wrapper printing over the id must not cost a healthy backend its weights.
+
+    Reading the id from stdout is what makes it free, and stdout is not guaranteed
+    to be only the id: a sudo or docker wrapper can print a banner first. The last
+    single-token line is the id; anything else is a wrapper talking, and the honest
+    answer is then "no id" — which leaves the identity check downgraded to the owner
+    label rather than mismatching against a bogus value on every poll and reloading
+    a fourteen-minute model each time.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    assert proxy._launched_container_id("cid-launched-1\n") == "cid-launched-1"
+    assert (
+        proxy._launched_container_id("Warning: banner text\ncid-launched-1\n") == "cid-launched-1"
+    )
+    assert proxy._launched_container_id("could not read the id, sorry\n") is None
+    assert proxy._launched_container_id("") is None
+
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(labels=None, running=True, container_id="cid-unknown-to-us")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    _make_ready(proxy, backend, None)
+
+    _run_idle_watcher(proxy, backend)
+
+    assert backend.state == "ready"
+    assert fake.mutations == []
+
+
+def test_a_disowned_backend_stops_forwarding_to_the_new_owners_port(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The consequence, end to end: a 200 from someone else's backend must stop.
+
+    This is why demoting matters rather than just being tidy. While the manager says
+    ``ready`` the request path forwards without any ownership check, so the gateway
+    receives success from a model it did not ask for, never opens a circuit and never
+    fails over. Once the re-check has demoted the backend, the next request re-decides
+    ownership and answers 502 with both owners named.
+    """
+    RecordingBackendHandler.requests = []
+
+    with _serve(RecordingBackendHandler) as backend_port:
+        proxy = _load_proxy(monkeypatch, tmp_path, backend_port=backend_port)
+        backend = proxy._backends[MODEL_NAME]
+        fake = _FakeDocker(
+            labels={proxy.OWNER_LABEL: "port-8003"}, running=True, container_id="cid-sibling"
+        )
+        monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+        _make_ready(proxy, backend, "cid-mine")
+
+        _run_idle_watcher(proxy, backend)
+        assert backend.state == "stopped"
+
+        with _serve(proxy.ProxyHandler) as proxy_port:
+            status, _, body = _request(
+                f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+                method="POST",
+                headers={"Authorization": "Bearer manual-secret"},
+                body={"model": MODEL_NAME, "messages": [{"role": "user", "content": "ping"}]},
+            )
+
+    assert status == 502
+    assert b"port-8003" in body
+    # Nothing of ours reached the port the new owner now serves on.
+    assert RecordingBackendHandler.requests == []
+    assert fake.mutations == []
 
 
 def test_dead_ready_backend_self_heals_and_retries(monkeypatch: Any, tmp_path: Path) -> None:
