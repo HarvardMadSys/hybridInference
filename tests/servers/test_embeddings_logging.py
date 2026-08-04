@@ -8,14 +8,17 @@ the chat/completions logging contract that the dashboards read from.
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import Any
 
+import aiohttp
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from serving.config.runtime_settings import get_runtime_settings
+from serving.observability.alert_rules import _is_failed_request
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
@@ -25,11 +28,14 @@ from serving.servers.deps import (
     get_operational_store,
 )
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
+from serving.servers.middleware.request_id import RequestIdMiddleware
+from serving.servers.middleware.request_log import RequestLogMiddleware
 from serving.servers.routers import embeddings
 
 # A prompt price of 1.0 USD / 1M tokens.
 _PAID_PRICING = {"prompt": "1.0", "completion": "0"}
 _FREE_PRICING = {"prompt": "0", "completion": "0"}
+_REQUEST_LOG_LOGGER = "serving.servers.middleware.request_log"
 
 
 class _FakeAdapter:
@@ -480,3 +486,130 @@ async def test_embeddings_all_backends_fail_is_500():
     assert log_data["status_code"] == 500
     # The last backend's error is what surfaces.
     assert "staging down" in log_data["error"]
+
+
+# ---------------------------------------------------------------------------
+# Upstream attribution on the error path
+#
+# The DB log row takes ``provider`` as a value, but RequestLogMiddleware and the
+# in-process alert rules can only read it from req_ctx. /v1/embeddings relays the
+# upstream status verbatim, so without a req_ctx publish an upstream 401 — the
+# gateway's own credential refused by the embedding backend — reaches both
+# consumers as a bare 401 and is filed as routine client auth churn. The local
+# embedding proxy shares its API key with the chat proxies, so this is the same
+# credential outage the chat path alerts on.
+# ---------------------------------------------------------------------------
+
+
+def _build_logging_app(adapter: Any, logger: _CapturingLogger) -> FastAPI:
+    """``_build_app`` plus the real middleware pair, in the order ``app.py`` uses.
+
+    ``add_middleware`` prepends, so ``RequestIdMiddleware`` added last is
+    outermost and seeds the context before ``RequestLogMiddleware`` observes it.
+    """
+    app = _build_app(adapter, logger)
+    app.add_middleware(RequestLogMiddleware)
+    app.add_middleware(RequestIdMiddleware)
+    return app
+
+
+def _window_item(record: logging.LogRecord) -> dict[str, Any]:
+    """Project a request-log record exactly as ``FailedRequestRateRule`` does."""
+    return {
+        "status": int(record.status_code),
+        "provider": getattr(record, "provider", None),
+        "path": getattr(record, "path", None),
+        "client_error_kind": getattr(record, "client_error_kind", None),
+    }
+
+
+def _upstream_error(status: int) -> aiohttp.ClientResponseError:
+    """An ``aiohttp`` status error shaped like one a real embedding call raises."""
+    url = "http://127.0.0.1:8001/v1/embeddings"
+    request_info = SimpleNamespace(real_url=url, method="POST", url=url, headers={})
+    return aiohttp.ClientResponseError(
+        request_info,  # type: ignore[arg-type]
+        (),
+        status=status,
+        message="Unauthorized",
+    )
+
+
+@pytest.mark.asyncio
+async def test_embeddings_upstream_401_is_attributed_logged_and_counted(caplog):
+    """An upstream 401 on /v1/embeddings must be loud, attributed, and counted.
+
+    Regression for the class of outage this alerting exists for: the local
+    embedding proxy rejects the gateway's configured key on every request, the
+    endpoint relays the 401, and — with no upstream attribution in req_ctx — the
+    request log demotes it to DEBUG and the failed-request rule skips it, so a
+    total embedding outage produces no signal at all.
+    """
+    adapter = _FakeAdapter(raises=_upstream_error(401))
+    adapter.config.provider = "local-embed"
+    log_stub = _CapturingLogger()
+    app = _build_logging_app(adapter, log_stub)
+
+    with caplog.at_level(logging.DEBUG, logger=_REQUEST_LOG_LOGGER):
+        resp = await _post(app, {"model": "emb-model", "input": "hello"})
+
+    # The client still sees the upstream status, as before.
+    assert resp.status_code == 401
+
+    records = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert records, "expected an http_request record for the failed embedding"
+    record = records[-1]
+
+    # Attributed...
+    assert record.provider == "local-embed"
+    # ...logged at INFO rather than demoted into the auth-challenge bucket...
+    assert record.levelno == logging.INFO
+    assert record.status_code == 401
+    # ...and counted by the failed-request rule, from the same record fields it
+    # reads in production.
+    assert _is_failed_request(_window_item(record)) is True
+
+    # The DB log row keeps the status and provider it always had.
+    assert len(log_stub.calls) == 1
+    _, log_data = log_stub.calls[0]
+    assert log_data["status_code"] == 401
+    assert log_data["provider"] == "local-embed"
+
+
+@pytest.mark.asyncio
+async def test_embeddings_gateway_404_stays_unattributed(caplog):
+    """A gateway-issued rejection must not gain a provider label.
+
+    The consumers read a present ``provider`` as "an upstream answered us", so
+    attributing a request that never reached one would both misattribute the
+    failure and erode that distinction.
+    """
+    app = _build_logging_app(_FakeAdapter(response=_OK_RESPONSE), _CapturingLogger())
+
+    with caplog.at_level(logging.DEBUG, logger=_REQUEST_LOG_LOGGER):
+        resp = await _post(app, {"model": "does-not-exist", "input": "hello"})
+
+    assert resp.status_code == 404
+    records = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert records
+    assert records[-1].provider is None
+
+
+@pytest.mark.asyncio
+async def test_embeddings_upstream_500_is_attributed(caplog):
+    """The non-``ClientResponseError`` path is post-dispatch and attributable too.
+
+    A 500 counts as a failure either way, so what the label buys here is naming
+    the offending backend in the alert's provider breakdown instead of "n/a".
+    """
+    adapter = _FakeAdapter(raises=RuntimeError("boom"))
+    adapter.config.provider = "local-embed"
+    app = _build_logging_app(adapter, _CapturingLogger())
+
+    with caplog.at_level(logging.DEBUG, logger=_REQUEST_LOG_LOGGER):
+        resp = await _post(app, {"model": "emb-model", "input": "hello"})
+
+    assert resp.status_code == 500
+    records = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert records
+    assert records[-1].provider == "local-embed"

@@ -68,7 +68,7 @@ class RequestLogMiddleware:
             "status_code": status_code,
             "duration_ms": duration_ms,
             "model": ctx.get("model"),
-            "provider": ctx.get("provider"),
+            "provider": ctx.get(req_ctx.PROVIDER),
             "remote_ip": remote_ip,
             "peer_ip": ip_info.peer_ip,
             "ip_source": ip_info.source,
@@ -89,7 +89,14 @@ class RequestLogMiddleware:
         is_quiet_path = request.url.path in _QUIET_PATHS
         is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
 
-        is_auth_challenge = status_code == 401
+        # A 401 the gateway issued itself is routine SPA token-refresh churn and
+        # stays at DEBUG. A 401 relayed from an upstream is the opposite: the
+        # gateway's own credential was refused, so every caller of that model is
+        # broken. Those carry a provider label (the error path publishes the
+        # upstream attribution into req_ctx), which is what separates them here —
+        # the middleware sees only a status code otherwise, and demoting both is
+        # what kept an hour-long all-users outage below the INFO threshold.
+        is_auth_challenge = status_code == 401 and not ctx.get(req_ctx.PROVIDER)
 
         if exc_to_raise:
             log_extra["error"] = str(exc_to_raise)

@@ -82,6 +82,9 @@ _STRUCTURED_LOG_KEYS = (
     "availability",
     "upstream_error",
     "offending_users",
+    # Upstream rejection of the gateway's own credential
+    # (routing/endpoint_health.py ``upstream_auth_misconfig``).
+    "consecutive_auth_rejections",
 )
 
 

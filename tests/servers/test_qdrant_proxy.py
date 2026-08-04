@@ -27,6 +27,7 @@ from serving.servers.routers.qdrant_proxy import (
     _verify_qdrant_user,
     router,
 )
+from serving.utils import context as req_ctx
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -347,6 +348,30 @@ class TestProxyForwarding:
         mock_upstream.set_response(404, b'{"status":{"error":"Not found"}}')
         resp = await client.get("/v1/qdrant/collections/no_exist")
         assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_upstream_401_is_attributed_to_the_upstream(
+        self, client: AsyncClient, mock_upstream
+    ):
+        """A relayed Qdrant 401 means ``QDRANT_API_KEY`` was refused, not the caller's key.
+
+        This route forwards the upstream status verbatim and also raises its own
+        401 for an anonymous caller, so without attribution the request log and
+        the failed-request rule see one indistinguishable bare 401 and treat both
+        as routine client-auth churn — hiding a gateway-credential outage.
+        """
+        mock_upstream.set_response(401, b'{"status":{"error":"Unauthorized"}}')
+        resp = await client.get("/v1/qdrant/collections/x")
+        assert resp.status_code == 401
+        assert req_ctx.get().get(req_ctx.PROVIDER) == "qdrant"
+
+    @pytest.mark.asyncio
+    async def test_successful_relay_is_not_attributed(self, client: AsyncClient, mock_upstream):
+        """Attribution is an error-path signal; a 2xx must not carry the label."""
+        mock_upstream.set_response(200, b'{"result":{}}')
+        resp = await client.get("/v1/qdrant/collections/x")
+        assert resp.status_code == 200
+        assert req_ctx.get().get(req_ctx.PROVIDER) is None
 
     @pytest.mark.asyncio
     async def test_client_error_returns_502(self, client: AsyncClient, mock_upstream):

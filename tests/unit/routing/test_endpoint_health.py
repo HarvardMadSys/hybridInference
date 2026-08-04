@@ -61,6 +61,8 @@ def test_allow_request_keeps_health_registration_lazy_until_ensure():
         endpoint_id: {
             "availability": 1.0,
             "circuit_state": _CircuitState.CLOSED,
+            "last_error_status": None,
+            "consecutive_auth_rejections": 0,
         }
     }
 

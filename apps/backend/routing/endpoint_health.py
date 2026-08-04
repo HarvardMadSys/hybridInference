@@ -33,6 +33,68 @@ _MAX_TRACKED_OFFENDERS = 50
 # How many of the top offenders to name explicitly in the circuit-open alert.
 _OFFENDERS_IN_ALERT = 10
 
+# Upstream statuses that can only mean the *gateway's* configured credential was
+# rejected, whoever the provider is. The client's own credential is validated by
+# serving.servers.auth before routing, so by the time an adapter runs the only
+# credential in play is the one this deployment configured (models.yaml
+# ``api_keys:``). 401 (WWW-Authenticate) and 407 (Proxy-Authenticate) are
+# unambiguous credential challenges, so an outage here is 100% fatal for every
+# user until an operator fixes the key — never a per-request client mistake.
+#
+# 403 is deliberately NOT here, even though a gateway-owned endpoint's 403 is the
+# same class of fault. Remote providers overload 403 for per-request rejections —
+# content policy, safety blocks, region/IP restrictions — where the upstream is
+# healthy and correctly refused one prompt, so escalating those would reinstate
+# the "one user's bad request opens the circuit for everyone" cascade the
+# client-error exemption exists to prevent. Scoping the escalation to
+# gateway-owned endpoints needs an ownership signal, and the only one available
+# at this call site is the ``endpoint_id`` string, which cannot carry it:
+#
+# - ``serving.servers.registry._make_provider_id`` stamps ``:local-<port>`` only
+#   for hosts in its four-entry ``_LOCAL_HOSTS`` set, so a gateway-owned server on
+#   the LAN (``http://10.0.0.5:8000`` -> ``:10-api``) reads as remote.
+# - Conversely the identifier is not authoritative: admin runtime routes carry a
+#   ``route_id`` that ``_runtime_route_id_for_target`` only checks against other
+#   providers' generated forms, so any value that ends in ``:local-<digits>``
+#   would be honoured here as gateway-owned whatever its base_url.
+#
+# Deriving ownership from the endpoint's base_url instead would mean threading it
+# (or an explicit ownership flag) through ``record_failure`` at every router,
+# RouteWise, and hedging call site — new plumbing on the failure path to widen an
+# escalation that is already covered indirectly: 403 is key-specific for
+# ``KeyPool``, so an endpoint answering 403 to everything mutes its keys and then
+# fails with ``KeyPoolExhausted``, which carries no HTTP status, is not exempt,
+# and trips the breaker into its own ``circuit_open`` page. So 403 keeps the
+# pre-existing exemption, and only the unambiguous statuses escalate.
+_AUTH_MISCONFIG_STATUSES = frozenset({401, 407})
+
+# Cooldown for the upstream-auth page. Matches the circuit-open alert so a
+# persistent misconfiguration re-pages on the same cadence.
+_AUTH_ALERT_COOLDOWN_SEC = 300
+
+# Title of the upstream-auth page. Shared by the firing and resolving edges so
+# the recovery card reads as the same incident ("Recovered: <title>").
+_AUTH_ALERT_TITLE = "Upstream rejected gateway credential"
+
+# Minimum spacing between *scheduling* upstream-auth pages for one endpoint. The
+# condition fails 100% of requests, so without this every request would schedule a
+# send and pay ``alert_slack``'s snooze lookup only to be dropped by the cooldown
+# above. Deliberately far shorter than that cooldown so a page dropped by an
+# unreachable sink is retried in seconds rather than after five minutes.
+_AUTH_ALERT_SCHEDULE_INTERVAL_SEC = 5.0
+
+
+def _auth_alert_key(endpoint_id: str) -> str:
+    """Return the transition/dedupe key for one endpoint's upstream-auth incident.
+
+    One key per endpoint: a wrong key on one local proxy must not mute or resolve
+    another endpoint's rejection. Shared by the firing and resolving edges, since
+    the tracker matches them by key. It is also what orders them: ``alert_slack``
+    serializes per dedupe key, so one endpoint's page and its recovery cannot
+    overtake each other while another endpoint's outage still pages immediately.
+    """
+    return f"upstream_auth:{endpoint_id}"
+
 
 def _reason_str(s: str) -> str:
     return s if s and len(s) < 64 else "error"
@@ -67,13 +129,30 @@ def _http_status_of(exc: BaseException) -> int | None:
     return None
 
 
+def _is_auth_misconfig(status: int | None) -> bool:
+    """Return whether ``status`` means this gateway's own credential was rejected.
+
+    Such a rejection is not a client error: the caller never supplies the
+    upstream credential, so no request the user could have sent would have
+    succeeded. It is a deployment-wide fault and must reach the breaker and an
+    operator, which is why it is excluded from the client-error exemption below.
+
+    Provider-independent by construction — see ``_AUTH_MISCONFIG_STATUSES`` for
+    why only the unambiguous credential challenges qualify.
+    """
+    return status is not None and status in _AUTH_MISCONFIG_STATUSES
+
+
 def _is_client_error(exc: BaseException) -> bool:
     """Return whether ``exc`` is a client error that must not trip the breaker."""
     status = _http_status_of(exc)
     if status is None or not (400 <= status < 500):
         return False
     # 408 and 429 signal upstream slowness/overload, not a malformed request.
-    return status not in (408, 429)
+    if status in (408, 429):
+        return False
+    # Auth statuses reject the gateway's credential, not the user's request.
+    return not _is_auth_misconfig(status)
 
 
 def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
@@ -86,6 +165,35 @@ def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
     if not cleaned:
         return None
     return cleaned if len(cleaned) <= limit else cleaned[: limit - 1] + "…"
+
+
+def _fire_and_forget(coro: Any) -> bool:
+    """Schedule an alert delivery without holding up the failing request.
+
+    Keeps a strong reference for the task's lifetime (asyncio holds only weak
+    ones) and closes the coroutine when there is no loop to run it on, so a sync
+    caller — a unit test, or teardown — does not leak a never-awaited coroutine.
+
+    Returns whether the delivery was actually scheduled, so a caller that set up
+    state for the send (the breaker's in-flight guard) can roll it back.
+
+    A *running* loop is required explicitly rather than inferred from
+    ``ensure_future`` raising, because it does not raise whenever a loop object is
+    merely current: it attaches the task to a loop nothing will ever run, and in
+    the main thread ``asyncio.get_event_loop()`` will even create that loop
+    (DeprecationWarning "There is no current event loop") instead of raising. The
+    schedule then reports success while the delivery silently never happens, and
+    the caller's rollback is skipped.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        coro.close()
+        return False
+    task = loop.create_task(coro)
+    _ALERT_TASKS.add(task)
+    task.add_done_callback(_ALERT_TASKS.discard)
+    return True
 
 
 def _offender_str() -> str | None:
@@ -114,13 +222,62 @@ class _ProviderHealth:
         )
         self.ewma_success = 1.0
         self.ewma_total = 1.0
+        # HTTP status of the most recent recorded failure, or None when no
+        # failure has been recorded (or the failure carried no status, e.g. a
+        # timeout). Sticky across recovery: purely a diagnostic breadcrumb,
+        # ``consecutive_auth_rejections`` is what says whether it is still true.
+        self.last_error_status: int | None = None
+        # Number of gateway-credential rejections since the last *accepted*
+        # request. Non-zero means every request to this endpoint is being
+        # refused for a reason no user can affect, which is what /health/deep
+        # reports as degraded. Only a success clears it (see ``note_failure``).
+        self.consecutive_auth_rejections = 0
         self._lock = threading.Lock()
 
-    def record(self, success: bool) -> None:
+    def record(self, success: bool) -> bool:
+        """Record an outcome; return whether it ended a credential-rejection run.
+
+        That return is the upstream-auth incident's one healthy edge: the caller
+        turns it into the ``resolved`` transition that closes the page, exactly
+        as ``_CircuitBreaker.on_success`` closes ``circuit_open``.
+        """
         inc_s = 1.0 if success else 0.0
         with self._lock:
             self.ewma_success = (1 - self.alpha) * self.ewma_success + self.alpha * inc_s
             self.ewma_total = (1 - self.alpha) * self.ewma_total + self.alpha
+            if success and self.consecutive_auth_rejections:
+                # A single accepted request proves the credential works again.
+                self.consecutive_auth_rejections = 0
+                return True
+            return False
+
+    def note_failure(self, *, status: int | None, auth_misconfig: bool) -> int:
+        """Record the failing status; return the credential-rejection run length.
+
+        A failure never ends the run — only ``record(True)`` does, because only an
+        accepted request is evidence that the credential works. No failure is:
+
+        - One with no HTTP status never reached the upstream's auth layer at all,
+          and that is the *expected* steady state of a real all-keys-rejected
+          outage rather than an edge case: 401 is a key-specific status for
+          ``KeyPool``, so the rejections mute every key and subsequent requests
+          raise ``KeyPoolExhausted`` from ``acquire()`` before anything is sent.
+          Connection resets and timeouts have the same shape.
+        - One carrying some *other* status is no proof either: nothing here can
+          tell an upstream that authenticated the request and then failed from a
+          proxy or load balancer that answered before auth was ever evaluated.
+
+        Treating either as recovery would announce "Recovered" in the middle of
+        the outage — and for a muted key pool, precisely during its worst part. So
+        this mirrors ``circuit_open``, whose only healthy edge is
+        ``_CircuitBreaker.on_success``.
+        """
+        with self._lock:
+            if status is not None:
+                self.last_error_status = status
+            if auth_misconfig:
+                self.consecutive_auth_rejections += 1
+            return self.consecutive_auth_rejections
 
     @property
     def availability(self) -> float:
@@ -225,26 +382,21 @@ class _CircuitBreaker:
                 # The breaker already knew the outage was over and only logged
                 # it. Reporting it is what lets the incident close instead of
                 # sitting open until the principal quota runs out.
-                try:
-                    task = asyncio.ensure_future(
-                        alert_on_transition(
-                            key=f"circuit_open:{self.provider}",
-                            breached=False,
-                            severity=AlertSeverity.ERROR,
-                            title="Provider circuit opened",
-                            context=dict,
-                            cooldown_sec=300,
-                            kind="state",
-                        )
+                #
+                # With no running loop (sync teardown) nothing else will close
+                # this incident: a circuit has one healthy edge and state alerts
+                # are never swept, because silence is not recovery.
+                _fire_and_forget(
+                    alert_on_transition(
+                        key=f"circuit_open:{self.provider}",
+                        breached=False,
+                        severity=AlertSeverity.ERROR,
+                        title="Provider circuit opened",
+                        context=dict,
+                        cooldown_sec=300,
+                        kind="state",
                     )
-                except RuntimeError:
-                    # No running loop (sync teardown). Nothing else will close
-                    # this incident: a circuit has one healthy edge and state
-                    # alerts are never swept, because silence is not recovery.
-                    pass
-                else:
-                    _ALERT_TASKS.add(task)
-                    task.add_done_callback(_ALERT_TASKS.discard)
+                )
 
     def on_failure(
         self,
@@ -337,19 +489,14 @@ class _CircuitBreaker:
             generation = self._recovery_generation
             if reset_epoch is not None:
                 self._alert_in_flight_generation = generation
-            try:
-                task = asyncio.ensure_future(
-                    self._send_circuit_alert(context, reset_epoch, generation)
-                )
-            except RuntimeError:
-                # No running loop (sync caller / test): nothing was scheduled, so
-                # release the in-flight guard we optimistically set (unless a newer
-                # generation already claimed it).
-                if self._alert_in_flight_generation == generation:
-                    self._alert_in_flight_generation = None
-            else:
-                _ALERT_TASKS.add(task)
-                task.add_done_callback(_ALERT_TASKS.discard)
+            # Scheduling goes through the shared helper so that when there is no
+            # running loop (sync caller / test) the unscheduled coroutine is closed
+            # rather than surfacing later as a never-awaited RuntimeWarning.
+            scheduled = _fire_and_forget(self._send_circuit_alert(context, reset_epoch, generation))
+            # Nothing was scheduled, so release the in-flight guard we
+            # optimistically set — unless a newer generation already claimed it.
+            if not scheduled and self._alert_in_flight_generation == generation:
+                self._alert_in_flight_generation = None
 
     async def _send_circuit_alert(
         self, context: dict[str, Any], reset_epoch: float | None, generation: int
@@ -408,6 +555,10 @@ class EndpointHealthRegistry:
     def __init__(self) -> None:
         self._health: dict[str, _ProviderHealth] = {}
         self._circuits: dict[str, _CircuitBreaker] = {}
+        # Monotonic instant each endpoint last had an upstream-auth page
+        # scheduled, throttling the scheduling itself (see
+        # ``_AUTH_ALERT_SCHEDULE_INTERVAL_SEC``).
+        self._auth_alert_at: dict[str, float] = {}
         self._lock = threading.RLock()
 
     def ensure(self, endpoint_id: str) -> None:
@@ -433,8 +584,17 @@ class EndpointHealthRegistry:
         """Record a successful endpoint request."""
         with self._lock:
             self.ensure(endpoint_id)
-            self._health[endpoint_id].record(True)
+            auth_run_ended = self._health[endpoint_id].record(True)
+            if auth_run_ended:
+                # Re-arm scheduling: a later outage must page on its first
+                # rejection instead of serving out a window this one opened.
+                self._auth_alert_at.pop(endpoint_id, None)
             self._circuits[endpoint_id].on_success()
+        if auth_run_ended:
+            # Reported after the accounting, like the failure path: the report only
+            # logs and schedules, and the delivery it schedules must not run while
+            # holding the lock every other endpoint's health accounting needs.
+            self._resolve_auth_misconfig(endpoint_id)
 
     def record_failure(
         self,
@@ -445,13 +605,17 @@ class EndpointHealthRegistry:
         exc: BaseException | None = None,
     ) -> None:
         """Record a failed endpoint request unless it is a client error."""
-        if exc is not None and _is_client_error(exc):
+        status = _http_status_of(exc) if exc is not None else None
+        # Checked before the client-error exemption: an auth rejection sits in the
+        # 4xx range but is a deployment fault, so it must not be exempted.
+        auth_misconfig = _is_auth_misconfig(status)
+        if not auth_misconfig and exc is not None and _is_client_error(exc):
             logger.info(
                 "client_error_skip_breaker",
                 extra={
                     "event": "client_error_skip_breaker",
                     "endpoint_id": endpoint_id,
-                    "status": _http_status_of(exc),
+                    "status": status,
                     "detail": _detail_str(detail),
                 },
             )
@@ -462,16 +626,139 @@ class EndpointHealthRegistry:
         # text work uniformly regardless of call site.
         if detail is None and exc is not None:
             detail = operator_safe_error(exc)
+        safe_detail = _detail_str(detail)
         with self._lock:
             self.ensure(endpoint_id)
-            self._health[endpoint_id].record(False)
-            availability = self._health[endpoint_id].availability
+            health = self._health[endpoint_id]
+            health.record(False)
+            auth_rejections = health.note_failure(status=status, auth_misconfig=auth_misconfig)
+            availability = health.availability
             self._circuits[endpoint_id].on_failure(
                 availability=availability,
                 reason=_reason_str(reason),
-                detail=_detail_str(detail),
+                detail=safe_detail,
                 offender=_offender_str(),
             )
+        # No ``else`` branch: a failure of any other kind leaves both the rejection
+        # run and any open incident alone (see ``note_failure``) — whatever is
+        # failing now is the breaker's ``circuit_open`` incident to report.
+        if auth_misconfig:
+            # Reported after the accounting: the report only logs and schedules the
+            # page, and the delivery it schedules must not run while holding the
+            # lock every other endpoint's health accounting needs.
+            self._report_auth_misconfig(
+                endpoint_id,
+                status=status,
+                detail=safe_detail,
+                consecutive=auth_rejections,
+            )
+
+    def _report_auth_misconfig(
+        self,
+        endpoint_id: str,
+        *,
+        status: int | None,
+        detail: str | None,
+        consecutive: int,
+    ) -> None:
+        """Log and page for an upstream rejection of this gateway's credential.
+
+        Fired on the *first* rejection rather than waiting for the breaker to
+        trip, because there is no partial version of this failure: every request
+        to the endpoint is refused until an operator rotates or fixes the key.
+
+        Routed through ``alert_on_transition`` as a *state* alert, exactly like
+        the breaker's own ``circuit_open``: this is a condition the process
+        already tracks, with one healthy edge (the first accepted request — see
+        ``_resolve_auth_misconfig``) and no meaningful staleness, since silence is
+        not evidence the credential works. A fire-only ``alert_slack`` would open
+        an incident nothing could ever close, holding principal quota until it is
+        exhausted and real outages start being suppressed.
+
+        The log line is emitted for every rejection — it is the audit trail, and
+        it replaces an equally frequent INFO line — while the page is throttled.
+        """
+        logger.warning(
+            "upstream_auth_misconfig",
+            extra={
+                "event": "upstream_auth_misconfig",
+                "endpoint_id": endpoint_id,
+                "status": status,
+                "consecutive_auth_rejections": consecutive,
+                "upstream_error": detail,
+            },
+        )
+        now = time.monotonic()
+        with self._lock:
+            last_scheduled = self._auth_alert_at.get(endpoint_id)
+            if (
+                last_scheduled is not None
+                and (now - last_scheduled) < _AUTH_ALERT_SCHEDULE_INTERVAL_SEC
+            ):
+                return
+            self._auth_alert_at[endpoint_id] = now
+        context: dict[str, Any] = {
+            "endpoint_id": endpoint_id,
+            "status": status,
+            "consecutive_auth_rejections": consecutive,
+            "impact": "every request to this endpoint is rejected; no caller can work around it",
+            "likely_cause": "gateway-configured api_keys wrong, expired, or revoked",
+        }
+        if detail:
+            context["upstream_error"] = detail
+        _fire_and_forget(
+            alert_on_transition(
+                key=_auth_alert_key(endpoint_id),
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title=_AUTH_ALERT_TITLE,
+                context=lambda: context,
+                cooldown_sec=_AUTH_ALERT_COOLDOWN_SEC,
+                kind="state",
+            )
+        )
+
+    def _resolve_auth_misconfig(self, endpoint_id: str) -> None:
+        """Close the upstream-auth incident now that the credential works again.
+
+        This is the state incident's only healthy edge, so it is what stops the
+        page from staying open forever: the endpoint just did the thing the page
+        said no caller could make it do. Called only on the *first* accepted
+        request after a rejection run, not on every success, so the resolution is
+        emitted once per outage — and never on a failure, since no failure proves
+        the credential was accepted (see ``_ProviderHealth.note_failure``).
+
+        Ordering against the page it closes is the sink's job: ``alert_slack``
+        publishes an in-flight marker per dedupe key before it awaits anything,
+        and a resolution waits on that marker instead of racing past it. Getting
+        that wrong would land this recovery *before* the page, leaving an incident
+        open whose only healthy edge is already spent.
+
+        With no running loop (sync teardown) nothing else will close this
+        incident: state alerts report one healthy edge and are never swept,
+        because silence is not recovery. Same limitation, and the same reason for
+        it, as ``_CircuitBreaker.on_success``.
+        """
+        logger.info(
+            "upstream_auth_recovered",
+            extra={
+                "event": "upstream_auth_recovered",
+                "endpoint_id": endpoint_id,
+            },
+        )
+        _fire_and_forget(
+            alert_on_transition(
+                key=_auth_alert_key(endpoint_id),
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title=_AUTH_ALERT_TITLE,
+                # Never called: ``alert_on_transition`` builds its own context
+                # for a resolution, so this only has to be a valid callable.
+                context=lambda: {},
+                cooldown_sec=_AUTH_ALERT_COOLDOWN_SEC,
+                kind="state",
+            )
+        )
 
     def snapshot(self) -> dict[str, dict[str, Any]]:
         """Return a detached snapshot of endpoint health and circuit state."""
@@ -480,6 +767,8 @@ class EndpointHealthRegistry:
                 endpoint_id: {
                     "availability": health.availability,
                     "circuit_state": self._circuits[endpoint_id].state,
+                    "last_error_status": health.last_error_status,
+                    "consecutive_auth_rejections": health.consecutive_auth_rejections,
                 }
                 for endpoint_id, health in self._health.items()
             }

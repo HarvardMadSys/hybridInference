@@ -77,3 +77,93 @@ async def test_client_error_kind_reset_between_requests() -> None:
     captured: dict = {}
     await _drive([], captured)
     assert captured.get(req_ctx.CLIENT_ERROR_KIND) is None
+
+
+@pytest.mark.asyncio
+async def test_provider_reset_between_requests() -> None:
+    """A durable upstream attribution must not outlive the request that made it.
+
+    The completions/embeddings error paths publish ``provider`` with
+    ``req_ctx.update``, which is not self-unwinding, so the label survives the end
+    of the failed request. Both the request log and the failed-request rule read a
+    present ``provider`` as "an upstream refused us", so a gateway-issued 401
+    seeded in the same task would inherit the label and be counted as an upstream
+    outage — turning ordinary client-auth churn into a service-failure signal.
+    """
+    req_ctx.publish_upstream_provider("diffusiongemma")
+    assert req_ctx.get().get(req_ctx.PROVIDER) == "diffusiongemma"
+    captured: dict = {}
+    await _drive([], captured)
+    assert captured.get(req_ctx.PROVIDER) is None
+
+
+@pytest.mark.asyncio
+async def test_clearing_provider_preserves_reader_defaults() -> None:
+    """Clearing must drop ``provider``, not set it to ``None``.
+
+    Some readers supply a non-``None`` default — ``_provider_for_error`` falls back
+    to the ``"router"`` sentinel and the HTTP retry log to ``"unknown"``. A
+    present-but-``None`` value silences the default, so a pre-routing failure
+    would be labelled ``None`` instead of ``"router"`` in the DB log row (where
+    the provider-performance aggregations filter on the sentinel by name).
+    """
+    req_ctx.publish_upstream_provider("diffusiongemma")
+    captured: dict = {}
+    await _drive([], captured)
+    assert req_ctx.PROVIDER not in captured
+    assert captured.get(req_ctx.PROVIDER, req_ctx.ROUTER_PROVIDER_SENTINEL) == "router"
+
+
+@pytest.mark.asyncio
+async def test_reset_keeps_keys_outside_the_request_scope() -> None:
+    """Only per-request keys are cleared; unrelated context is left alone.
+
+    ``model``, affinity keys and similar are written by handlers and read back
+    within the same request, so a blanket wipe would break them.
+    """
+    req_ctx.update({"model": "kept-model", "affinity_key": "kept-key"})
+    captured: dict = {}
+    await _drive([], captured)
+    assert captured.get("model") == "kept-model"
+    assert captured.get("affinity_key") == "kept-key"
+
+
+#: The per-request keys as of this change, spelled out here rather than read from
+#: ``req_ctx.REQUEST_SCOPED_KEYS``. Seeding *and* asserting from that tuple would
+#: make the clearing test below vacuous in the direction that matters: dropping a
+#: key from the tuple would remove it from both halves, so the test would keep
+#: passing while the key silently leaked into the next request. Pinning the
+#: membership separately means a removal has to be made here too — deliberately,
+#: with the leak in view.
+_PINNED_REQUEST_SCOPED_KEYS = frozenset(
+    {"client_user_agent", "user_id", "user_name", "client_error_kind", "provider"}
+)
+
+
+def test_request_scoped_key_set_is_pinned() -> None:
+    """``REQUEST_SCOPED_KEYS`` matches the set the clearing test guards.
+
+    Each key is there because some consumer reads "key present" as a fact about
+    the current request: ``user_id``/``user_name`` for circuit-breaker
+    attribution, ``client_error_kind`` for the 404 split, ``provider`` for the
+    401 split. Dropping one un-clears it and makes the next request inherit it,
+    so the set is not something to shrink as a side effect of another change.
+    """
+    assert set(req_ctx.REQUEST_SCOPED_KEYS) == _PINNED_REQUEST_SCOPED_KEYS
+
+
+@pytest.mark.asyncio
+async def test_every_request_scoped_key_is_cleared() -> None:
+    """The reset covers the whole declared key set, not a hand-maintained subset.
+
+    Checks the union of the pinned set and the live tuple: the pinned half keeps
+    a key that is dropped from ``REQUEST_SCOPED_KEYS`` under test (it fails here
+    rather than leaking), and the live half covers a future key added to the
+    tuple without anyone touching this file.
+    """
+    keys = _PINNED_REQUEST_SCOPED_KEYS | set(req_ctx.REQUEST_SCOPED_KEYS)
+    req_ctx.update(dict.fromkeys(keys, "stale"))
+    captured: dict = {}
+    await _drive([], captured)
+    for key in keys:
+        assert captured.get(key) is None, f"{key} leaked from the previous request"

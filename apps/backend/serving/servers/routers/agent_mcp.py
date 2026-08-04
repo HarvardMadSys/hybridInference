@@ -51,6 +51,7 @@ from serving.agent_jobs.model_auth import (
     looks_like_agent_token,
 )
 from serving.servers.deps import get_agent_job_store, get_operational_store
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -88,6 +89,12 @@ _SSE_HEADERS = {
     "Cache-Control": "no-cache, no-transform",
     "X-Accel-Buffering": "no",
 }
+
+#: Prefix for the provider label published when an MCP server refuses us. An MCP
+#: server has no ``ModelConfig``, so the label is synthesized rather than resolved
+#: from routing; the server name is kept because a deployment holds one credential
+#: per server and the alert's provider breakdown is what names the broken one.
+_MCP_PROVIDER_PREFIX = "mcp:"
 
 
 def _bearer(authorization: str | None) -> str:
@@ -264,6 +271,19 @@ async def _proxy(
                 }
             },
         ) from exc
+
+    if upstream.status_code >= 400:
+        # Both returns below relay the upstream status verbatim, and this route
+        # also issues its own 401 (a token that is not a job token, or a dead
+        # attempt fence). Without attribution those are one indistinguishable
+        # bare 401 to ``RequestLogMiddleware`` and the failed-request rule, which
+        # treat an unattributed 401 as routine client-auth churn — so an MCP
+        # server refusing *this deployment's* credential, breaking every tool
+        # call of every running job, would be logged at DEBUG and excluded from
+        # the failure rate. Published here rather than at either return because
+        # the SSE branch hands back a generator whose body runs after this
+        # handler has returned, by which point the context is no longer ours.
+        req_ctx.publish_upstream_provider(f"{_MCP_PROVIDER_PREFIX}{server.name}")
 
     content_type = upstream.headers.get("content-type", "")
     if content_type.startswith("text/event-stream"):

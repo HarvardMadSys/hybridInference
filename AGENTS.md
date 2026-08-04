@@ -110,8 +110,13 @@ For the full diagram (network layer, observability, storage), see
 - **`provider` vs `endpoint_id`** — `provider` is a string label on `ModelConfig`
   identifying the API service (used in metrics labels, e.g. `"openai"`,
   `"anthropic"`). `endpoint_id` is the unique per-endpoint key
-  (format `{provider}:{host}:{port}`) used for latency profiling and
-  availability tracking. The word "upstream" appears informally in code
+  (format `{model_id}:{location}`, minted by `registry._make_provider_id` —
+  `local-<port>` / `local` for a host in `_LOCAL_HOSTS`, otherwise
+  `<service>-api`, e.g. `glm-4.6:local-12003`, `glm-4.6:zai-api`) used for
+  latency profiling and availability tracking. The suffix is not a reliable
+  ownership signal: a gateway-owned server on a LAN address is stamped
+  `<octet>-api`, and an admin-supplied `route_id` becomes the `endpoint_id`
+  verbatim. The word "upstream" appears informally in code
   comments meaning "the remote API" but isn't a formal type.
 - **Router** — `FixedRouter` in [apps/backend/routing/routers.py](apps/backend/routing/routers.py)
   does weighted random selection plus automatic fallback.

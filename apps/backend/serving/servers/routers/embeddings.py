@@ -286,6 +286,16 @@ async def create_embeddings(
         raise
     except aiohttp.ClientResponseError as exc:
         logger.error(f"Embedding request failed for model={model}: {exc.status} {exc.message}")
+        # Publish the upstream attribution, not just log it as a value: the DB row
+        # is handed ``provider`` below, but RequestLogMiddleware and the
+        # in-process alert rules can only read it from req_ctx. This endpoint
+        # relays the upstream status verbatim, so without attribution an upstream
+        # 401 — the gateway's own key refused by the embedding backend — arrives
+        # at both consumers as a bare 401 and is filed as routine client auth
+        # churn: logged at DEBUG and excluded from the failed-request rate. The
+        # local embedding proxy shares its API key with the chat proxies, so this
+        # is the same credential outage the chat path now alerts on.
+        req_ctx.publish_upstream_provider(provider)
         _schedule_log(
             provider=provider,
             status_code=exc.status,
@@ -297,6 +307,10 @@ async def create_embeddings(
         raise HTTPException(exc.status, "Embedding service error") from exc
     except Exception as exc:
         logger.error(f"Embedding request failed for model={model}: {exc}")
+        # Reached only after dispatch, so an upstream is always attributable here
+        # too. The resulting 500 already counts as a failure, but the label is
+        # what names the offending backend in the alert's provider breakdown.
+        req_ctx.publish_upstream_provider(provider)
         _schedule_log(
             provider=provider,
             status_code=500,

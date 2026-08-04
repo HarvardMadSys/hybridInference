@@ -52,34 +52,45 @@ _REQUEST_LOG_LOGGER = "serving.servers.middleware.request_log"
 #: than at the next multiple of a long interval.
 _STALE_SWEEP_INTERVAL_SEC = 60
 
-# 401 is normal SPA token-refresh churn (the auth_failure_spike rule covers
-# real auth attacks separately); excluding it from the failed-request rate
-# stops admin/refresh sequences from tripping the alert.
 # 429 covers quota-exceeded and concurrency-limit rejections — expected user-facing
 # rate limiting, not service failures, so excluded from the failure-rate alert.
 #
-# 404 is NOT blanket-excluded: an upstream provider can return 404 for a routed
-# completion (bad provider model id / endpoint path), which the gateway re-raises
-# as a 404 — a genuine provider/config regression that must still alert. Only the
-# gateway's own model-not-found 404s (a user asking for an unknown/unauthorized
-# model) are excluded, via the per-record marker checked in ``_is_failed_request``.
-_FAILED_REQUEST_IGNORED_STATUSES = frozenset({401, 429})
+# Neither 404 nor 401 is blanket-excluded, for the same reason in both cases: the
+# gateway's own client-driven rejection and a relayed upstream failure share a
+# status code, and only the second is a service failure.
+#
+# 404: an upstream provider can return 404 for a routed completion (bad provider
+# model id / endpoint path), which the gateway re-raises — a genuine
+# provider/config regression that must alert. Only the gateway's own
+# model-not-found 404s (a user asking for an unknown/unauthorized model) are
+# excluded, via the per-record marker checked in ``_is_failed_request``.
+#
+# 401: a gateway-issued auth challenge is normal SPA token-refresh churn (the
+# auth_failure_spike rule covers real auth attacks separately), but an upstream
+# 401 means the gateway's *own* configured credential was refused — a 100%-fatal,
+# all-users outage. Only the former is excluded, via upstream attribution
+# (``provider``) on the record. Blanket-excluding 401 is why a local endpoint
+# rejecting the gateway's key for an hour never reached this rule.
+_FAILED_REQUEST_IGNORED_STATUSES = frozenset({429})
 
 
 def _is_failed_request(item: dict) -> bool:
     """Return True if a window item counts as a service-side failed request.
 
     Excludes the client-driven statuses in ``_FAILED_REQUEST_IGNORED_STATUSES``
-    (401/429) and gateway model-not-found 404s (a request for an unknown or
-    unauthorized model — tagged via ``req_ctx.mark_model_not_found``). Genuine
-    upstream provider 404s carry no such tag and still count. This mirrors the
-    DB-query alerter, which excludes the model-not-found error strings (not all
-    404s) from ``FAILURE_PREDICATE_SQL``.
+    (429), gateway model-not-found 404s (a request for an unknown or unauthorized
+    model — tagged via ``req_ctx.mark_model_not_found``), and gateway-issued 401
+    auth challenges. Genuine upstream 404s and 401s carry provider attribution /
+    no model-not-found tag and still count. This mirrors the DB-query alerter,
+    which excludes the model-not-found error strings (not all 404s) from
+    ``FAILURE_PREDICATE_SQL``.
     """
     status = item["status"]
     if status < 400:
         return False
     if status in _FAILED_REQUEST_IGNORED_STATUSES:
+        return False
+    if status == 401 and not item.get("provider"):
         return False
     return not (status == 404 and item.get("client_error_kind") == MODEL_NOT_FOUND)
 
