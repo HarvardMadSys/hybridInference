@@ -20,6 +20,8 @@ from serving.schemas_admin import (
     ListProviderApiKeyProvidersResponse,
     ListProviderApiKeysResponse,
     ProviderApiKeyItem,
+    ProviderKeyByRefRequest,
+    ProviderKeyByRefResponse,
     SetProviderApiKeyStatusResponse,
     VerifyProviderApiKeyRequest,
     VerifyProviderApiKeyResponse,
@@ -413,6 +415,136 @@ async def enable_provider_env_key(
     return EnableProviderEnvKeyResponse(
         id=payload.env_key_id,
         provider=payload.provider,
+        pools_updated=pools_updated,
+    )
+
+
+async def _resolve_key_ref(op_store, provider: str, key_ref: str) -> tuple[str, str, str]:
+    """Resolve an opaque ``key_ref`` to ``(source, id, status)``.
+
+    ``source`` is ``"db"`` or ``"env"``; ``id`` is the DB row id or the
+    ``env:{hash}`` id the env endpoints accept. Raises 404 when the ref matches
+    no key of *provider*.
+    """
+    try:
+        db_rows = await op_store.list_provider_keys(provider)
+    except Exception as exc:
+        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
+
+    db_raw_keys: set[str] = set()
+    for row in db_rows:
+        target = await op_store.get_provider_key_full(row.id)
+        if target is None:
+            continue
+        raw = target[1]
+        db_raw_keys.add(raw)
+        if dynamic_keys.env_key_hash(raw)[:32] == key_ref:
+            return ("db", row.id, row.status)
+
+    candidates = list(_env_keys_for_provider(provider))
+    for raw in dynamic_keys.list_candidate_env_keys(provider):
+        if raw not in candidates:
+            candidates.append(raw)
+    for raw in candidates:
+        if raw in db_raw_keys:
+            continue
+        raw_hash = dynamic_keys.env_key_hash(raw)
+        if raw_hash[:32] == key_ref:
+            return ("env", f"env:{raw_hash[:32]}", "active")
+
+    try:
+        tombstones = await op_store.list_disabled_provider_env_keys(provider)
+    except Exception as exc:
+        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
+    for key_hash, _prefix in tombstones:
+        if key_hash[:32] == key_ref:
+            return ("env", f"env:{key_hash[:32]}", "disabled")
+
+    raise HTTPException(404, "Provider key not found")
+
+
+@router.post("/provider-keys/by-ref/disable", response_model=ProviderKeyByRefResponse)
+async def disable_provider_key_by_ref(
+    payload: ProviderKeyByRefRequest,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> ProviderKeyByRefResponse:
+    """Disable one provider key identified by the quota dashboard's ``key_ref``.
+
+    Dispatches to the DB or env disable path depending on where the key came
+    from, so the caller does not need to know its source.
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    _validate_provider(payload.provider)
+    source, key_id, status = await _resolve_key_ref(op_store, payload.provider, payload.key_ref)
+    if status == "disabled":
+        return ProviderKeyByRefResponse(
+            provider=payload.provider,
+            key_ref=payload.key_ref,
+            source=source,  # type: ignore[arg-type]
+            status="disabled",
+            pools_updated=0,
+        )
+
+    if source == "db":
+        db_result = await disable_provider_key(key_id, admin_id, op_store)
+        pools_updated = db_result.pools_updated
+    else:
+        env_result = await disable_provider_env_key(
+            DisableProviderEnvKeyRequest(provider=payload.provider, env_key_id=key_id),
+            admin_id,
+            op_store,
+        )
+        pools_updated = env_result.pools_updated
+
+    return ProviderKeyByRefResponse(
+        provider=payload.provider,
+        key_ref=payload.key_ref,
+        source=source,  # type: ignore[arg-type]
+        status="disabled",
+        pools_updated=pools_updated,
+    )
+
+
+@router.post("/provider-keys/by-ref/enable", response_model=ProviderKeyByRefResponse)
+async def enable_provider_key_by_ref(
+    payload: ProviderKeyByRefRequest,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> ProviderKeyByRefResponse:
+    """Re-enable one provider key identified by the quota dashboard's ``key_ref``."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    _validate_provider(payload.provider)
+    source, key_id, status = await _resolve_key_ref(op_store, payload.provider, payload.key_ref)
+    if status == "active":
+        return ProviderKeyByRefResponse(
+            provider=payload.provider,
+            key_ref=payload.key_ref,
+            source=source,  # type: ignore[arg-type]
+            status="active",
+            pools_updated=0,
+        )
+
+    if source == "db":
+        db_result = await enable_provider_key(key_id, admin_id, op_store)
+        pools_updated = db_result.pools_updated
+    else:
+        env_result = await enable_provider_env_key(
+            EnableProviderEnvKeyRequest(provider=payload.provider, env_key_id=key_id),
+            admin_id,
+            op_store,
+        )
+        pools_updated = env_result.pools_updated
+
+    return ProviderKeyByRefResponse(
+        provider=payload.provider,
+        key_ref=payload.key_ref,
+        source=source,  # type: ignore[arg-type]
+        status="active",
         pools_updated=pools_updated,
     )
 

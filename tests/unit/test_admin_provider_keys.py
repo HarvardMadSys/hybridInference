@@ -1328,3 +1328,129 @@ async def test_delete_does_not_disable_env_key_with_same_value(client):
     # never tracked, so remove returns 0.
     assert dynamic_keys.remove_key_from_provider("zai-other", shared_key) == 0
     assert shared_key in pool2.snapshot_keys()
+
+
+@pytest.mark.asyncio
+async def test_by_ref_disable_and_enable_db_key(client):
+    """The quota dashboard's key_ref resolves to a DB key and toggles it."""
+    http, store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    api_key = "sk-zai-byref-aaaaaaaaaa12"
+    add_resp = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": api_key},
+        headers=AUTH,
+    )
+    key_id = add_resp.json()["key"]["id"]
+    key_ref = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:32]
+
+    dis = await http.post(
+        "/admin/provider-keys/by-ref/disable",
+        json={"provider": "zai", "key_ref": key_ref},
+        headers=AUTH,
+    )
+    assert dis.status_code == 200, dis.text
+    assert dis.json() == {
+        "provider": "zai",
+        "key_ref": key_ref,
+        "source": "db",
+        "status": "disabled",
+        "pools_updated": 1,
+    }
+    assert store.rows[key_id].status == "disabled"
+    assert api_key not in pool.snapshot_keys()
+
+    # Disabling again is a no-op rather than an error.
+    again = await http.post(
+        "/admin/provider-keys/by-ref/disable",
+        json={"provider": "zai", "key_ref": key_ref},
+        headers=AUTH,
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["pools_updated"] == 0
+
+    en = await http.post(
+        "/admin/provider-keys/by-ref/enable",
+        json={"provider": "zai", "key_ref": key_ref},
+        headers=AUTH,
+    )
+    assert en.status_code == 200, en.text
+    assert en.json()["status"] == "active"
+    assert store.rows[key_id].status == "active"
+    assert api_key in pool.snapshot_keys()
+
+
+@pytest.mark.asyncio
+async def test_by_ref_disable_and_enable_env_key(client):
+    """An env-sourced key is tombstoned and restored through the by-ref path."""
+    http, _store = client
+    env_key = "env-zai-by-ref-cccccccccccc"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="by-ref-model",
+            name="by-ref-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[env_key],
+            provider_model_id="by-ref-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    key_ref = dynamic_keys.env_key_hash(env_key)[:32]
+
+    dis = await http.post(
+        "/admin/provider-keys/by-ref/disable",
+        json={"provider": "zai", "key_ref": key_ref},
+        headers=AUTH,
+    )
+    assert dis.status_code == 200, dis.text
+    assert dis.json()["source"] == "env"
+    assert env_key not in adapter._key_pool.snapshot_keys()
+
+    en = await http.post(
+        "/admin/provider-keys/by-ref/enable",
+        json={"provider": "zai", "key_ref": key_ref},
+        headers=AUTH,
+    )
+    assert en.status_code == 200, en.text
+    assert en.json() == {
+        "provider": "zai",
+        "key_ref": key_ref,
+        "source": "env",
+        "status": "active",
+        "pools_updated": 1,
+    }
+    assert env_key in adapter._key_pool.snapshot_keys()
+
+
+@pytest.mark.asyncio
+async def test_by_ref_unknown_ref_is_404(client):
+    """An unmatched key_ref must not be mistaken for a key id path segment."""
+    http, _store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    resp = await http.post(
+        "/admin/provider-keys/by-ref/disable",
+        json={"provider": "zai", "key_ref": "0" * 32},
+        headers=AUTH,
+    )
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_by_ref_unknown_provider_rejected(client):
+    """Providers outside the model registry whitelist are rejected."""
+    http, _store = client
+    resp = await http.post(
+        "/admin/provider-keys/by-ref/disable",
+        json={"provider": "fictional", "key_ref": "0" * 32},
+        headers=AUTH,
+    )
+    assert resp.status_code == 400, resp.text
