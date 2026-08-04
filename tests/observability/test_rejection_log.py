@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from serving.observability.rejection_log import (
     INFERENCE_PATH_PREFIXES,
+    bounded_enrichment,
+    capture_rejected_prompt,
     extract_prompt_from_body,
     log_rejection,
 )
@@ -277,6 +281,389 @@ async def test_log_store_failure_is_swallowed(fake_log_store, runtime_on, caplog
     )
     # Spot-check: an error-level log was emitted.
     assert any("rejection_log_failed" in rec.message for rec in caplog.records)
+
+
+def _real_request(
+    body: bytes,
+    *,
+    headers: list[tuple[bytes, bytes]] | None = None,
+    chunks: list[dict] | None = None,
+):
+    """A real Starlette Request whose body arrives over the ASGI receive channel.
+
+    Used instead of a mock because what these tests exercise *is* the body
+    read: a mocked ``request.body()`` would not tell us whether the bounds hold.
+    """
+    from starlette.requests import Request
+
+    if headers is None:
+        headers = [(b"content-length", str(len(body)).encode())]
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": headers,
+        "client": ("203.0.113.9", 40000),
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("testserver", 80),
+    }
+    queue = list(chunks or [{"type": "http.request", "body": body, "more_body": False}])
+
+    async def receive():
+        if queue:
+            return queue.pop(0)
+        await asyncio.sleep(3600)  # stalls, like a client that never finishes
+
+    return Request(scope, receive)
+
+
+@pytest.mark.asyncio
+async def test_capture_reads_the_body_of_a_request_rejected_pre_handler():
+    """The prompt is recovered even though no handler ever parsed the body.
+
+    Recovered as raw text, not a decoded object — see
+    ``capture_rejected_prompt`` on why decoding attacker-chosen JSON here is
+    unbounded in ways a byte cap cannot reach.
+    """
+    body = json.dumps({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]}).encode()
+    got = await capture_rejected_prompt(_real_request(body))
+    assert got == body.decode()
+
+
+@pytest.mark.asyncio
+async def test_capture_uses_an_already_cached_body():
+    """A body already read is reused, not re-read.
+
+    This is the live path on typed-body routes: FastAPI reads and parses a
+    declared body model *before* solving dependencies, so ``/v1/embeddings``
+    reaches a gate rejection with the bytes already on ``request._body``.
+    """
+    raw = json.dumps({"messages": [{"role": "user", "content": "cached"}]}).encode()
+    request = _real_request(b"")
+    request._body = raw
+    assert await capture_rejected_prompt(request) == raw.decode()
+
+
+@pytest.mark.asyncio
+async def test_capture_truncates_rather_than_declining_an_oversized_cached_body():
+    """A cached body is bounded by truncation, whatever its size or headers.
+
+    Bytes already in hand need no length header to bound them, and a truncated
+    prefix is more useful than nothing — the point of the row is showing what a
+    refused caller sent.
+    """
+    raw = json.dumps({"messages": [{"role": "user", "content": "x" * 5000}]}).encode()
+    request = _real_request(b"", headers=[(b"transfer-encoding", b"chunked")])
+    request._body = raw
+    got = await capture_rejected_prompt(request, max_chars=256)
+    assert len(got) == 256
+    assert got == raw[:256].decode()
+
+
+@pytest.mark.asyncio
+async def test_capture_bounds_a_decoded_expansion_bomb_to_its_wire_size():
+    """A body that would explode when decoded costs only its text length.
+
+    A wire-valid ~1 MiB array of tiny objects decodes into tens of MiB of Python
+    objects, so a byte cap on the wire bounds nothing that matters. Returning
+    text means the retained size *is* the length — no decode, no expansion.
+    """
+    raw = ('{"messages":[' + "{}," * 60_000 + "{}]}").encode()
+    request = _real_request(b"")
+    request._body = raw
+    got = await capture_rejected_prompt(request, max_chars=4096)
+    assert isinstance(got, str)
+    assert len(got) == 4096
+
+
+@pytest.mark.asyncio
+async def test_capture_survives_a_deeply_nested_body():
+    """A nesting bomb yields text instead of tripping a recursive sanitizer.
+
+    Decoded and handed to the store, ~1000-deep nesting makes its recursive
+    ``strip_null_bytes`` raise ``RecursionError``, which ``log_rejection``
+    swallows — dropping the row and handing a blocked caller a way to suppress
+    their own audit record. Text has nothing to recurse into.
+    """
+    raw = b'{"messages":' + b"[" * 1200 + b"]" * 1200 + b"}"
+    request = _real_request(b"")
+    request._body = raw
+    got = await capture_rejected_prompt(request)
+    assert isinstance(got, str)
+    assert got.startswith('{"messages":[[[')
+
+
+@pytest.mark.asyncio
+async def test_capture_replaces_a_codepoint_split_by_truncation():
+    """Slicing mid-codepoint mangles one character, never loses the prompt."""
+    raw = ('{"messages":"' + "é" * 100 + '"}').encode()
+    request = _real_request(b"")
+    request._body = raw
+    got = await capture_rejected_prompt(request, max_chars=14)
+    assert got.startswith('{"messages":"')
+    assert "�" in got
+
+
+@pytest.mark.asyncio
+async def test_capture_skips_a_body_with_no_declared_length():
+    """Chunked uploads are skipped: their length is unknown until they finish.
+
+    Reading one to completion would let a rejected client hold the read open for
+    as long as it likes — the slowloris foothold these bounds exist to close.
+    """
+    body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+    request = _real_request(body, headers=[(b"transfer-encoding", b"chunked")])
+    assert await capture_rejected_prompt(request) == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_skips_when_transfer_encoding_is_present():
+    """``Transfer-Encoding`` disqualifies a body even if a length is declared.
+
+    RFC 9112 says ``Content-Length`` must be ignored when ``Transfer-Encoding``
+    is present, so a length alongside it is not a bound worth trusting — and
+    trusting it is how a "bounded" read becomes unbounded.
+    """
+    body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+    request = _real_request(
+        body,
+        headers=[
+            (b"transfer-encoding", b"chunked"),
+            (b"content-length", str(len(body)).encode()),
+        ],
+    )
+    assert await capture_rejected_prompt(request) == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_gives_up_instead_of_queueing_when_all_slots_are_busy():
+    """Past the concurrency cap, capture returns immediately without reading.
+
+    This is what keeps a blocked flood cheap to shed: a source that declares a
+    small body and then stalls can tie up at most the cap, and every request
+    beyond it is refused as fast as it was before enrichment existed.
+    """
+    import serving.observability.rejection_log as mod
+
+    body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+    exhausted = asyncio.Semaphore(1)
+    await exhausted.acquire()  # value now 0 -> locked()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(mod, "_enrichment_slots", exhausted)
+    try:
+        assert await capture_rejected_prompt(_real_request(body)) == ""
+    finally:
+        monkeypatch.undo()
+
+    # With a free slot the same request is captured, so the skip above was the
+    # cap talking and not a broken read path.
+    assert await capture_rejected_prompt(_real_request(body)) == body.decode()
+
+
+@pytest.mark.asyncio
+async def test_capture_releases_its_slot_after_a_failed_read():
+    """A timed-out read must not leak the slot it held."""
+    import serving.observability.rejection_log as mod
+
+    stalled = _real_request(
+        b"",
+        headers=[(b"content-length", b"200")],
+        chunks=[{"type": "http.request", "body": b'{"messages":', "more_body": True}],
+    )
+    assert await capture_rejected_prompt(stalled, timeout_sec=0.01) == ""
+    assert not mod._enrichment_slots.locked()
+    body = json.dumps({"messages": [{"role": "user", "content": "after"}]}).encode()
+    assert await capture_rejected_prompt(_real_request(body)) == body.decode()
+
+
+@pytest.mark.asyncio
+async def test_queue_rejection_log_drops_the_prompt_past_the_pending_cap(
+    fake_log_store, runtime_on, monkeypatch
+):
+    """Over the cap the row is still written, without its prompt.
+
+    A thin row beats worker memory growing with the flood. The reservation is
+    taken synchronously, before the task exists, because a coroutine retains its
+    arguments from creation — a check inside the task body would read zero while
+    every queued prompt was already held.
+    """
+    import serving.observability.rejection_log as mod
+
+    monkeypatch.setattr(mod, "REJECTED_PROMPT_MAX_PENDING_LOGS", 2)
+    monkeypatch.setattr(mod, "_pending_prompt_logs", 0)
+
+    messages = [{"role": "user", "content": "hi"}]
+    kwargs = {
+        "log_store": fake_log_store,
+        "runtime_settings": runtime_on,
+        "request": _fake_request(),
+        "status_code": 429,
+        "error_code": "ip_blocked",
+        "reason": "auth_failures_exceeded",
+        "user": None,
+        "prompt": messages,
+    }
+
+    # Create (not yet await) two coroutines: both reserve, filling the cap.
+    first = mod.queue_rejection_log(**kwargs)
+    second = mod.queue_rejection_log(**kwargs)
+    assert mod.pending_prompt_log_count() == 2
+
+    # The third is created while the cap is full, so it carries no prompt.
+    third = mod.queue_rejection_log(**kwargs)
+    assert mod.pending_prompt_log_count() == 2
+
+    await asyncio.gather(first, second, third)
+    prompts = [c.kwargs["prompt"] for c in fake_log_store.log_request.await_args_list]
+    assert prompts == [messages, messages, ""]
+    # Reservations freed once the writes drained.
+    assert mod.pending_prompt_log_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_queue_rejection_log_frees_its_reservation_when_the_write_fails(
+    fake_log_store, runtime_on, monkeypatch
+):
+    """A failed write must not permanently consume a prompt reservation."""
+    import serving.observability.rejection_log as mod
+
+    monkeypatch.setattr(mod, "_pending_prompt_logs", 0)
+    fake_log_store.log_request = AsyncMock(side_effect=RuntimeError("db down"))
+
+    await mod.queue_rejection_log(
+        log_store=fake_log_store,
+        runtime_settings=runtime_on,
+        request=_fake_request(),
+        status_code=429,
+        error_code="ip_blocked",
+        reason="x",
+        user=None,
+        prompt=[{"role": "user", "content": "hi"}],
+    )
+    assert mod.pending_prompt_log_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_queue_rejection_log_reserves_nothing_without_a_prompt(
+    fake_log_store, runtime_on, monkeypatch
+):
+    """A promptless rejection holds no memory, so it takes no reservation."""
+    import serving.observability.rejection_log as mod
+
+    monkeypatch.setattr(mod, "_pending_prompt_logs", 0)
+    await mod.queue_rejection_log(
+        log_store=fake_log_store,
+        runtime_settings=runtime_on,
+        request=_fake_request(),
+        status_code=429,
+        error_code="ip_blocked",
+        reason="x",
+        user=None,
+        prompt="",
+    )
+    assert mod.pending_prompt_log_count() == 0
+    fake_log_store.log_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_bounded_enrichment_runs_work_and_returns_its_value():
+    async def work():
+        return {"user_id": "u1"}
+
+    assert await bounded_enrichment(work()) == {"user_id": "u1"}
+
+
+@pytest.mark.asyncio
+async def test_bounded_enrichment_declines_without_running_when_budget_is_spent():
+    """No slot means the work never runs — the whole point of the budget.
+
+    A blocked source spraying random tokens must not reach the database once the
+    budget is spent, since unsuccessful auth lookups are not cached and would
+    otherwise hit the shared pool on every single request.
+    """
+    import serving.observability.rejection_log as mod
+
+    ran = False
+
+    async def work():
+        nonlocal ran
+        ran = True
+        return "should not happen"
+
+    exhausted = asyncio.Semaphore(1)
+    await exhausted.acquire()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(mod, "_enrichment_slots", exhausted)
+    try:
+        assert await bounded_enrichment(work(), default="gave-up") == "gave-up"
+    finally:
+        monkeypatch.undo()
+    assert ran is False
+
+
+@pytest.mark.asyncio
+async def test_bounded_enrichment_times_out_slow_work():
+    """A slow lookup yields the default rather than delaying the rejection."""
+
+    async def slow():
+        await asyncio.sleep(5)
+        return "too late"
+
+    assert await bounded_enrichment(slow(), default=None, timeout_sec=0.01) is None
+
+
+@pytest.mark.asyncio
+async def test_bounded_enrichment_swallows_failures_and_frees_the_slot():
+    import serving.observability.rejection_log as mod
+
+    async def boom():
+        raise RuntimeError("db down")
+
+    assert await bounded_enrichment(boom(), default="fallback") == "fallback"
+    assert not mod._enrichment_slots.locked()
+
+
+@pytest.mark.asyncio
+async def test_capture_skips_an_oversized_body():
+    """A body larger than the cap is skipped rather than buffered."""
+    body = json.dumps({"messages": [{"role": "user", "content": "x" * 5000}]}).encode()
+    got = await capture_rejected_prompt(_real_request(body), max_body_bytes=1024)
+    assert got == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_gives_up_on_a_stalled_body():
+    """A trickled body yields no prompt instead of pinning the task."""
+    request = _real_request(
+        b"",
+        headers=[(b"content-length", b"200")],
+        chunks=[{"type": "http.request", "body": b'{"messages":', "more_body": True}],
+    )
+    assert await capture_rejected_prompt(request, timeout_sec=0.01) == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_records_a_non_json_body_verbatim():
+    """Malformed bodies are still worth recording — often that *is* the finding.
+
+    Nothing parses the body any more, so a scanner's garbage payload is logged as
+    the text it was rather than discarded for failing to be JSON.
+    """
+    assert await capture_rejected_prompt(_real_request(b"not json at all")) == "not json at all"
+
+
+@pytest.mark.asyncio
+async def test_capture_skips_an_empty_body():
+    request = _real_request(b"", headers=[(b"content-length", b"0")])
+    assert await capture_rejected_prompt(request) == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_skips_a_malformed_content_length():
+    body = json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()
+    request = _real_request(body, headers=[(b"content-length", b"not-a-number")])
+    assert await capture_rejected_prompt(request) == ""
 
 
 @pytest.mark.asyncio

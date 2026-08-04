@@ -23,7 +23,14 @@ from serving.agent_jobs.model_auth import (
 from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
 from serving.model_access import get_disabled_models_from_preferences
-from serving.observability.rejection_log import log_rejection
+from serving.observability.rejection_log import (
+    bounded_enrichment,
+    capture_rejected_prompt,
+    log_rejection,
+    queue_rejection_log,
+    rejection_logging_enabled,
+    release_cached_body,
+)
 from serving.servers.deps import (
     auth_database_detail,
     get_agent_job_store,
@@ -107,6 +114,50 @@ def _extract_api_key(authorization: str | None, x_api_key: str | None) -> str | 
     return x_api_key or None
 
 
+async def _identify_rejected_caller(
+    authorization: str | None,
+    x_api_key: str | None,
+    op_store: Any,
+) -> dict[str, Any] | None:
+    """Resolve who a *rejected* request belongs to, for the rejection log only.
+
+    Read-only and side-effect free: no ``last_used_at`` write, no quota gate, no
+    email-verification check. The caller is being refused either way; this only
+    labels the log row so an operator can distinguish a real account caught in
+    an IP block from an anonymous scanner.
+
+    Runs under :func:`bounded_enrichment`, which matters more here than the name
+    suggests: ``CachedOperationalStore`` caches only *successful* auth lookups,
+    so a source spraying fresh random tokens misses the cache on every request
+    and reaches the shared Postgres pool. Unbounded, that would restore per
+    request exactly the database cost the IP block exists to eliminate, and could
+    starve real traffic of pool connections. Past the budget this returns
+    ``None`` instantly instead.
+
+    Returns the ``{user_id, role}`` shape :func:`log_rejection` consumes, or
+    ``None`` when no key was presented, the key does not resolve to an active
+    user, or the lookup is skipped/times out/fails — which is also exactly what
+    a credential-less scanner produces. Never raises.
+    """
+    api_key = _extract_api_key(authorization, x_api_key)
+    if not api_key or not op_store:
+        return None
+    try:
+        # Both cheap and local: an unset API_KEY_SECRET raises, and a store that
+        # doesn't offer the lookup would raise before any coroutine exists to
+        # hand to the budget.
+        work = op_store.get_auth_context_lightweight(hash_api_key(api_key))
+    except Exception:
+        return None
+    row = await bounded_enrichment(work)
+    # A row with no user_id is not an identity. Returning one would write a
+    # ``{"user_id": None, "role": "free"}`` row that reads as a resolved free
+    # account rather than the unresolved caller it actually is.
+    if not isinstance(row, dict) or not row.get("user_id"):
+        return None
+    return {"user_id": row["user_id"], "role": row.get("role") or "free"}
+
+
 async def _authenticate_by_api_key(
     request: Request,
     authorization: str | None,
@@ -122,19 +173,56 @@ async def _authenticate_by_api_key(
     Returns ``(user_row, key_hash)``. Raises ``HTTPException(401)`` for a
     missing/invalid key and ``HTTPException(403)`` for an unverified email.
     """
-    # Refuse sources already blocked for repeated auth failures, before any key
-    # extraction or DB lookup so a flood is shed cheaply. ``ip_info`` is computed
-    # once here and reused by the failure logs below.
+    # Refuse sources already blocked for repeated auth failures. The *decision*
+    # costs no key extraction and no DB lookup, so a flood is shed cheaply.
+    # ``ip_info`` is computed once here and reused by the failure logs below.
     ip_info = get_client_ip_info(request)
     blocked, retry_after = await is_ip_blocked(ip_info.client_ip)
     if blocked:
+        # Only once the refusal is settled — and only when the rejection log is
+        # actually on — spend anything on making the row useful in the admin
+        # dashboard. Without this, every ip_blocked row lands with a null prompt
+        # and a null user, which says nothing about what was blocked or whether
+        # a real account was caught in someone else's block. Both lookups are
+        # bounded (see ``capture_rejected_prompt``) and strictly diagnostic: any
+        # failure here leaves the 429 below exactly as it was.
+        blocked_prompt: list[dict[str, Any]] | str = ""
+        blocked_user: dict[str, Any] | None = None
+        try:
+            # The gate read goes through the budget too. It looks free, but
+            # ``RuntimeSettings._get`` has no single-flight: when its 30 s TTL
+            # lapses, every request arriving before the first refresh returns
+            # issues its own query, so a flood turns one expiry into a herd
+            # against the shared pool — the same cost this whole path is trying
+            # not to reintroduce.
+            enabled = await bounded_enrichment(
+                rejection_logging_enabled(request, status_code=429), default=False
+            )
+            if enabled:
+                blocked_prompt = await capture_rejected_prompt(request)
+                blocked_user = await _identify_rejected_caller(authorization, x_api_key, op_store)
+        except Exception:
+            logger.exception(
+                "ip_blocked_enrichment_failed",
+                extra={"event": "ip_blocked_enrichment_failed", "remote_ip": ip_info.client_ip},
+            )
+        # Release the body before queueing. The task below retains the request,
+        # so a cached body would outlive the response and make the prompt cap
+        # above meaningless — it would free one of two references to the same
+        # megabyte. Safe here precisely because the handler never runs.
+        release_cached_body(request)
+        # Via queue_rejection_log, not log_rejection directly: the write is
+        # fire-and-forget, so without a bound on how many captured prompts sit
+        # queued behind it, a flood would grow worker memory by up to a megabyte
+        # per rejection while rows drain.
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
-            log_rejection(
+            queue_rejection_log(
                 request=request,
                 status_code=429,
                 error_code="ip_blocked",
                 reason="auth_failures_exceeded",
-                user=None,
+                user=blocked_user,
+                prompt=blocked_prompt,
             )
         )
         raise HTTPException(
