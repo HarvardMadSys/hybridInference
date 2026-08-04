@@ -156,13 +156,32 @@ async def _discover_provider_keys(
     return keys
 
 
+def key_ref(raw_key: str) -> str:
+    """Return the opaque per-key handle used by the admin dashboard.
+
+    Derived from the raw credential so a key discovered by a quota fetcher can
+    be matched back to its DB row or env var by
+    ``/admin/provider-keys/by-ref/{disable,enable}`` without the dashboard ever
+    seeing the secret. Shares the truncated-hash form of the env key ids
+    exposed by ``/admin/provider-keys`` (``env:{hash[:32]}``).
+    """
+    return dynamic_keys.env_key_hash(raw_key)[:32]
+
+
 def _process_multi_key_results(
     name: str,
     display_name: str,
     keys: list[tuple[int, str]],
     results: list[ProviderQuotaResult | BaseException],
+    *,
+    manageable: bool = True,
 ) -> list[ProviderQuotaResult]:
-    """Process parallel fetch results into a list of ProviderQuotaResult."""
+    """Process parallel fetch results into a list of ProviderQuotaResult.
+
+    ``manageable`` marks the credentials as API keys the admin provider-key
+    endpoints can enable/disable; pass False for session cookies, which have no
+    such handle.
+    """
     out: list[ProviderQuotaResult] = []
     multi = len(keys) > 1
     for (idx, _key), result in zip(keys, results, strict=True):
@@ -172,6 +191,7 @@ def _process_multi_key_results(
                     update={
                         "key_index": idx if multi else None,
                         "display_name": f"{display_name} #{idx}" if multi else display_name,
+                        "key_ref": key_ref(_key) if manageable else None,
                     }
                 )
             )
@@ -188,6 +208,7 @@ def _process_multi_key_results(
                     ok=False,
                     error="unexpected",
                     usages=[],
+                    key_ref=key_ref(_key) if manageable else None,
                 )
             )
     return out
@@ -938,7 +959,13 @@ async def fetch_minimax(operational_store: Any | None = None) -> list[ProviderQu
         return_exceptions=True,
     )
 
-    return _process_multi_key_results("minimax", "MiniMax", cookie_keys, results)
+    return _process_multi_key_results(
+        "minimax",
+        "MiniMax",
+        cookie_keys,
+        results,
+        manageable=False,
+    )
 
 
 _USAGE_PATTERN = re.compile(
@@ -1219,7 +1246,13 @@ async def fetch_ollama(operational_store: Any | None = None) -> list[ProviderQuo
         return_exceptions=True,
     )
 
-    return _process_multi_key_results("ollama", "Ollama Cloud", cookie_keys, results)
+    return _process_multi_key_results(
+        "ollama",
+        "Ollama Cloud",
+        cookie_keys,
+        results,
+        manageable=False,
+    )
 
 
 def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
@@ -1509,6 +1542,67 @@ async def fetch_kimi(operational_store: Any | None = None) -> list[ProviderQuota
     return _process_multi_key_results("kimi", "Kimi", keys, results)
 
 
+def _disabled_key_result(
+    provider: str,
+    display_name: str,
+    key_masked: str,
+    key_ref_value: str,
+) -> ProviderQuotaResult:
+    """Build the card shown for a key an admin has disabled."""
+    return ProviderQuotaResult(
+        name=provider,
+        display_name=display_name,
+        key_configured=True,
+        key_masked=key_masked,
+        fetched_at=None,
+        ok=False,
+        error="key_disabled",
+        usages=[],
+        key_ref=key_ref_value,
+        key_disabled=True,
+    )
+
+
+async def _disabled_keys_for_provider(
+    operational_store: Any,
+    provider: str,
+    display_name: str,
+) -> list[ProviderQuotaResult]:
+    """Return cards for every disabled key of *provider* (env and DB alike).
+
+    Disabled keys are filtered out of key discovery, so without this they would
+    silently vanish from the dashboard with no way to turn them back on.
+    """
+    out: list[ProviderQuotaResult] = []
+
+    try:
+        tombstones = await operational_store.list_disabled_provider_env_keys(provider)
+    except Exception as exc:
+        logger.warning("failed to load disabled env keys for provider=%s: %s", provider, exc)
+        tombstones = []
+    for key_hash, key_prefix in tombstones:
+        out.append(_disabled_key_result(provider, display_name, key_prefix, key_hash[:32]))
+
+    try:
+        rows = await operational_store.list_provider_keys(provider)
+    except Exception as exc:
+        logger.warning("failed to load DB keys for provider=%s: %s", provider, exc)
+        rows = []
+    for row in rows:
+        if row.status != "disabled":
+            continue
+        try:
+            full = await operational_store.get_provider_key_full(row.id)
+        except Exception as exc:
+            logger.warning("failed to load DB key %s for provider=%s: %s", row.id, provider, exc)
+            continue
+        if full is None:
+            continue
+        out.append(_disabled_key_result(provider, display_name, row.key_prefix, key_ref(full[1])))
+
+    return out
+
+
 async def gather_all(
     operational_store: Any | None = None,
     services: Any | None = None,
@@ -1516,8 +1610,9 @@ async def gather_all(
     """Run all provider fetchers in parallel; never raise.
 
     Each fetcher returns a ``list[ProviderQuotaResult]`` (one per key).
-    Results are flattened into a single list. If a fetcher raises, the
-    exception is caught and converted to a single error result.
+    Results are flattened into a single list, followed by a card per
+    admin-disabled key so the dashboard can re-enable it. If a fetcher raises,
+    the exception is caught and converted to a single error result.
     """
     fetchers = [
         ("chutes", "Chutes", fetch_chutes(operational_store)),
@@ -1549,6 +1644,13 @@ async def gather_all(
                     usages=[],
                 )
             )
+
+    if operational_store is not None:
+        for name, display_name, _ in fetchers:
+            out.extend(
+                await _disabled_keys_for_provider(operational_store, name, display_name),
+            )
+
     return out
 
 

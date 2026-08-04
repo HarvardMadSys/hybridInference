@@ -30,6 +30,7 @@ from serving.admin.provider_quotas import (
     fetch_ollama,
     fetch_zai,
     gather_all,
+    key_ref,
 )
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin as admin_router
@@ -2109,3 +2110,151 @@ class TestNextReset:
         now = datetime(2026, 12, 31, 23, 59, 0, tzinfo=timezone.utc)
         reset = _next_reset("monthly", now=now)
         assert reset == datetime(2027, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+
+class _QuotaKeyStore:
+    """Minimal operational-store stand-in for key discovery in gather_all."""
+
+    def __init__(self, disabled_env=None, db_rows=None, db_raw=None):
+        # provider -> list[(key_hash, key_prefix)]
+        self.disabled_env = disabled_env or {}
+        # provider -> list[SimpleNamespace(id, key_prefix, status)]
+        self.db_rows = db_rows or {}
+        # key_id -> (provider, raw_key)
+        self.db_raw = db_raw or {}
+
+    async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
+        return {h for h, _ in self.disabled_env.get(provider, [])}
+
+    async def list_disabled_provider_env_keys(self, provider: str) -> list[tuple[str, str]]:
+        return list(self.disabled_env.get(provider, []))
+
+    async def list_provider_keys(self, provider: str | None = None):
+        return list(self.db_rows.get(provider, []))
+
+    async def list_provider_keys_full(self, provider: str, *, exclude_ids=None) -> list[str]:
+        return []
+
+    async def get_provider_key_full(self, key_id: str):
+        return self.db_raw.get(key_id)
+
+    async def list_all_provider_route_configs(self) -> list[dict]:
+        return []
+
+    async def list_all_provider_route_candidates(self) -> list[dict]:
+        return []
+
+
+def _clear_provider_env(monkeypatch):
+    for var in (
+        "CHUTES_API_KEY",
+        "ZAI_API_KEY",
+        "MINIMAX_API_KEY",
+        "MINIMAX_SESSION_COOKIE",
+        "KIMI_CODING_API_KEY",
+        "OLLAMA_API_KEY",
+        "OLLAMA_SESSION_COOKIE",
+        "FEATHERLESS_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+class TestPerKeyRef:
+    def test_key_ref_matches_env_key_id_hash(self):
+        raw = "sk-example-key-0123456789"
+        assert key_ref(raw) == dynamic_keys.env_key_hash(raw)[:32]
+
+    @pytest.mark.asyncio
+    async def test_api_key_results_carry_key_ref(self, monkeypatch):
+        _clear_provider_env(monkeypatch)
+        keys = ["rc_1111111111111111aaaa", "rc_2222222222222222bbbb"]
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool(keys, "featherless")),
+        )
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            del _services, provider, api_key, timeout_seconds
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+
+        async def _no_concurrency_usage(_key):
+            return None
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_featherless_concurrency_usage",
+            _no_concurrency_usage,
+        )
+
+        results = await fetch_featherless(services=SimpleNamespace())
+
+        assert [r.key_ref for r in results] == [key_ref(k) for k in keys]
+        assert all(r.key_disabled is False for r in results)
+
+    @pytest.mark.asyncio
+    async def test_cookie_results_have_no_key_ref(self, monkeypatch):
+        """Session cookies are not managed by the provider-key endpoints."""
+        _clear_provider_env(monkeypatch)
+        monkeypatch.setattr("serving.admin.provider_quotas.settings", SimpleNamespace())
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abc123def456ghi789jkl")
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("no network in tests")
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_minimax_for_key",
+            _boom,
+        )
+
+        results = await fetch_minimax()
+
+        assert results
+        assert all(r.key_ref is None for r in results)
+
+
+class TestDisabledKeyCards:
+    @pytest.mark.asyncio
+    async def test_gather_all_surfaces_disabled_env_and_db_keys(self, monkeypatch):
+        _clear_provider_env(monkeypatch)
+        env_raw = "zai-env-disabled-key-000000"
+        db_raw = "zai-db-disabled-key-111111"
+        store = _QuotaKeyStore(
+            disabled_env={
+                "zai": [(dynamic_keys.env_key_hash(env_raw), "zai-env-...0000")],
+            },
+            db_rows={
+                "zai": [
+                    SimpleNamespace(id="key-1", key_prefix="zai-db-1...1111", status="disabled"),
+                    SimpleNamespace(id="key-2", key_prefix="zai-db-2...2222", status="active"),
+                ],
+            },
+            db_raw={"key-1": ("zai", db_raw)},
+        )
+
+        results = await gather_all(store)
+
+        disabled = [r for r in results if r.key_disabled]
+        assert {r.key_ref for r in disabled} == {key_ref(env_raw), key_ref(db_raw)}
+        assert all(r.name == "zai" for r in disabled)
+        assert all(r.ok is False and r.error == "key_disabled" for r in disabled)
+        # The active DB row is not duplicated as a disabled card.
+        assert len(disabled) == 2
+
+    @pytest.mark.asyncio
+    async def test_gather_all_tolerates_store_failures(self, monkeypatch):
+        _clear_provider_env(monkeypatch)
+
+        class _BrokenStore(_QuotaKeyStore):
+            async def list_disabled_provider_env_keys(self, provider: str):
+                raise RuntimeError("boom")
+
+            async def list_provider_keys(self, provider: str | None = None):
+                raise RuntimeError("boom")
+
+        results = await gather_all(_BrokenStore())
+
+        assert len(results) == 6
+        assert not any(r.key_disabled for r in results)

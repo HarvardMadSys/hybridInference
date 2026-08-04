@@ -1091,6 +1091,9 @@ export interface ProviderQuotaResult {
   error: string | null;
   usages: ProviderQuotaUsage[];
   disabled: boolean;
+  /** Handle for toggling this single key; null for cookie-based credentials. */
+  key_ref: string | null;
+  key_disabled: boolean;
 }
 
 export interface AdminProviderQuotasResponse {
@@ -1101,6 +1104,28 @@ export interface AdminProviderQuotasResponse {
 export async function getProviderQuotas(): Promise<AdminProviderQuotasResponse> {
   const resp = await fetchWithAuth(API_BASE, '/admin/provider-quotas');
   return jsonOrThrow<AdminProviderQuotasResponse>(resp);
+}
+
+export interface ProviderKeyByRefResponse {
+  provider: string;
+  key_ref: string;
+  source: 'db' | 'env';
+  status: 'active' | 'disabled';
+  pools_updated: number;
+}
+
+export async function setProviderQuotaKeyDisabled(
+  provider: string,
+  keyRef: string,
+  disabled: boolean,
+): Promise<ProviderKeyByRefResponse> {
+  const action = disabled ? 'disable' : 'enable';
+  const resp = await fetchWithAuth(API_BASE, `/admin/provider-keys/by-ref/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, key_ref: keyRef }),
+  });
+  return jsonOrThrow<ProviderKeyByRefResponse>(resp);
 }
 
 // ========================================

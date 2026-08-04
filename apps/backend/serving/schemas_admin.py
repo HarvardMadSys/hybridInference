@@ -866,12 +866,24 @@ class ProviderQuotaResult(BaseModel):
     ok: bool = Field(..., description="True if quota fetch succeeded")
     error: str | None = Field(
         None,
-        description="Short reason code if !ok: 'auth_failed' | 'plan_api_disabled' | 'timeout' | 'not_configured' | 'probe_unavailable' | 'parse_error' | 'unexpected'",
+        description="Short reason code if !ok: 'auth_failed' | 'plan_api_disabled' | 'timeout' | 'not_configured' | 'probe_unavailable' | 'parse_error' | 'unexpected' | 'key_disabled'",
     )
     usages: list[ProviderQuotaUsage] = Field(default_factory=list)
     disabled: bool = Field(
         False,
         description="True if an admin has disabled this provider (excluded from routing)",
+    )
+    key_ref: str | None = Field(
+        None,
+        description=(
+            "Opaque handle for this individual API key, accepted by "
+            "/admin/provider-keys/by-ref/disable and /enable. None for cookie-based "
+            "credentials and unconfigured providers, which have no per-key toggle."
+        ),
+    )
+    key_disabled: bool = Field(
+        False,
+        description="True if an admin has disabled this individual key",
     )
 
 
@@ -1874,6 +1886,28 @@ class SetProviderApiKeyStatusResponse(BaseModel):  # type: ignore[no-any-unimpor
 
     id: str
     provider: str
+    status: Literal["active", "disabled"]
+    pools_updated: int
+
+
+class ProviderKeyByRefRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for the by-ref provider key enable/disable endpoints.
+
+    ``key_ref`` is the opaque handle carried on ``ProviderQuotaResult.key_ref``
+    so the quota dashboard can toggle one key without knowing whether it came
+    from the DB or the environment.
+    """
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    key_ref: str = Field(..., min_length=1, max_length=128)
+
+
+class ProviderKeyByRefResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``POST /admin/provider-keys/by-ref/{disable,enable}``."""
+
+    provider: str
+    key_ref: str
+    source: Literal["db", "env"]
     status: Literal["active", "disabled"]
     pools_updated: int
 

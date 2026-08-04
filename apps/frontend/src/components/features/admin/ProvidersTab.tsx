@@ -8,6 +8,7 @@ import {
   getProviderQuotas,
   getRoutableProviders,
   setProviderDisabled,
+  setProviderQuotaKeyDisabled,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { PerformanceTab } from '@/components/features/admin/PerformanceTab';
@@ -80,11 +81,13 @@ function ProviderToggle({
   busy,
   onToggle,
   label,
+  noun = 'Provider',
 }: {
   disabled: boolean;
   busy: boolean;
   onToggle: () => void;
   label: string;
+  noun?: string;
 }) {
   return (
     <button
@@ -94,9 +97,7 @@ function ProviderToggle({
       role="switch"
       aria-checked={!disabled}
       aria-label={`${disabled ? 'Enable' : 'Disable'} ${label}`}
-      title={
-        disabled ? 'Provider disabled — click to enable' : 'Provider enabled — click to disable'
-      }
+      title={disabled ? `${noun} disabled — click to enable` : `${noun} enabled — click to disable`}
       className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition disabled:opacity-50 ${
         disabled ? 'bg-gray-300' : 'bg-emerald-500'
       }`}
@@ -113,14 +114,19 @@ function ProviderToggle({
 function ProviderCard({
   provider,
   busy,
+  keyBusy,
   onToggleDisabled,
+  onToggleKeyDisabled,
 }: {
   provider: ProviderQuotaResult;
   busy: boolean;
+  keyBusy: boolean;
   onToggleDisabled: () => void;
+  onToggleKeyDisabled: () => void;
 }) {
   const isFeatherless = provider.name === 'featherless';
-  const stripeColor = provider.disabled
+  const dimmed = provider.disabled || provider.key_disabled;
+  const stripeColor = dimmed
     ? 'bg-gray-400'
     : provider.ok
       ? 'bg-emerald-500'
@@ -131,11 +137,11 @@ function ProviderCard({
   return (
     <div
       className={`overflow-hidden rounded-xl border shadow-sm ${
-        provider.disabled ? 'border-gray-200 bg-gray-50' : 'border-gray-200 bg-white'
+        dimmed ? 'border-gray-200 bg-gray-50' : 'border-gray-200 bg-white'
       }`}
     >
       <div className={`h-1 ${stripeColor}`} />
-      <div className={`p-4 ${provider.disabled ? 'opacity-60' : ''}`}>
+      <div className={`p-4 ${dimmed ? 'opacity-60' : ''}`}>
         <div className="flex items-baseline justify-between gap-3">
           <div className="flex items-center gap-2">
             <h3 className="text-[15px] font-semibold text-gray-900">{provider.display_name}</h3>
@@ -144,23 +150,47 @@ function ProviderCard({
                 Disabled
               </span>
             )}
+            {provider.key_disabled && (
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700">
+                Key disabled
+              </span>
+            )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <span
               className={`tabular-nums text-[11px] ${provider.key_configured ? 'text-gray-500' : 'text-gray-400'}`}
             >
               {provider.key_masked ?? 'Not configured'}
             </span>
-            <ProviderToggle
-              disabled={provider.disabled}
-              busy={busy}
-              onToggle={onToggleDisabled}
-              label={provider.display_name}
-            />
+            {provider.key_ref && (
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] uppercase tracking-wide text-gray-400">Key</span>
+                <ProviderToggle
+                  disabled={provider.key_disabled}
+                  busy={keyBusy}
+                  onToggle={onToggleKeyDisabled}
+                  label={`${provider.display_name} key ${provider.key_masked ?? ''}`.trim()}
+                  noun="Key"
+                />
+              </div>
+            )}
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] uppercase tracking-wide text-gray-400">Provider</span>
+              <ProviderToggle
+                disabled={provider.disabled}
+                busy={busy}
+                onToggle={onToggleDisabled}
+                label={provider.display_name}
+              />
+            </div>
           </div>
         </div>
 
-        {isFeatherless ? (
+        {provider.key_disabled ? (
+          <p className="mt-3 text-[12px] text-amber-700">
+            Key disabled — removed from the rotation pool and not used for inference.
+          </p>
+        ) : isFeatherless ? (
           <p
             className={`mt-3 text-[12px] ${
               provider.ok
@@ -229,6 +259,7 @@ function QuotasSection() {
   const [providerQuotas, setProviderQuotas] = useState<ProviderQuotaResult[]>([]);
   const [providerQuotasLoading, setProviderQuotasLoading] = useState(false);
   const [togglingProvider, setTogglingProvider] = useState<string | null>(null);
+  const [togglingKeyRef, setTogglingKeyRef] = useState<string | null>(null);
 
   const loadProviderQuotas = useCallback(async () => {
     setProviderQuotasLoading(true);
@@ -261,6 +292,39 @@ function QuotasSection() {
     }
   }, []);
 
+  const handleToggleKey = useCallback(
+    async (provider: ProviderQuotaResult) => {
+      if (!provider.key_ref) return;
+      const next = !provider.key_disabled;
+      if (
+        next &&
+        !window.confirm(
+          `Disable key ${provider.key_masked ?? ''} for ${provider.name}? ` +
+            'It stops serving traffic immediately.',
+        )
+      ) {
+        return;
+      }
+      setTogglingKeyRef(provider.key_ref);
+      try {
+        const res = await setProviderQuotaKeyDisabled(provider.name, provider.key_ref, next);
+        if (!next && res.pools_updated === 0) {
+          toast.error('Key enabled but not attached to any live pool — it will not be used.');
+        } else {
+          toast.success(`Key ${next ? 'disabled' : 'enabled'}`);
+        }
+        // Reload rather than patch in place: disabling moves the key out of the
+        // probed set and onto a disabled card (and enabling does the reverse).
+        await loadProviderQuotas();
+      } catch (e) {
+        toast.error(getErrorMessage(e));
+      } finally {
+        setTogglingKeyRef(null);
+      }
+    },
+    [loadProviderQuotas],
+  );
+
   useEffect(() => {
     loadProviderQuotas();
   }, [loadProviderQuotas]);
@@ -292,10 +356,12 @@ function QuotasSection() {
         <div className="grid gap-3 sm:grid-cols-2">
           {providerQuotas.map((p, index) => (
             <ProviderCard
-              key={`${p.name}-${p.key_index ?? 'single'}-${p.key_masked ?? index}`}
+              key={`${p.name}-${p.key_index ?? 'single'}-${p.key_ref ?? p.key_masked ?? index}`}
               provider={p}
               busy={togglingProvider === p.name}
+              keyBusy={p.key_ref != null && togglingKeyRef === p.key_ref}
               onToggleDisabled={() => handleToggle(p)}
+              onToggleKeyDisabled={() => handleToggleKey(p)}
             />
           ))}
         </div>
