@@ -328,10 +328,43 @@ async def test_capture_reads_the_body_of_a_request_rejected_pre_handler():
 
 @pytest.mark.asyncio
 async def test_capture_prefers_an_already_parsed_body():
-    """A body a previous dependency cached is reused, not re-read."""
+    """A body a previous dependency cached is reused, not re-read.
+
+    This is the live path on typed-body routes: FastAPI parses a declared body
+    model *before* solving dependencies, so ``/v1/embeddings`` reaches a gate
+    rejection with the body already on ``request._json``.
+    """
     request = _real_request(b"")
     request._json = {"messages": [{"role": "user", "content": "cached"}]}
     assert await capture_rejected_prompt(request) == [{"role": "user", "content": "cached"}]
+
+
+@pytest.mark.asyncio
+async def test_capture_applies_the_size_bound_to_a_cached_body_too():
+    """An oversized payload is declined whether or not it was already parsed.
+
+    Checked from the header, never by re-serializing the parsed object: measuring
+    it that way would allocate the whole payload again, costing more than the
+    bound saves.
+    """
+    request = _real_request(b"", headers=[(b"content-length", b"9999999")])
+    request._json = {"messages": [{"role": "user", "content": "huge"}]}
+    assert await capture_rejected_prompt(request, max_body_bytes=1024) == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_uses_a_cached_body_with_no_declared_length():
+    """A parsed body stays usable without a Content-Length.
+
+    The chunked/unknown-length skip exists to bound a read we have not done yet.
+    An already-parsed body cost us nothing, so declining it would forfeit a free
+    prompt for no gain.
+    """
+    request = _real_request(b"", headers=[(b"transfer-encoding", b"chunked")])
+    request._json = {"messages": [{"role": "user", "content": "chunked but parsed"}]}
+    assert await capture_rejected_prompt(request) == [
+        {"role": "user", "content": "chunked but parsed"}
+    ]
 
 
 @pytest.mark.asyncio

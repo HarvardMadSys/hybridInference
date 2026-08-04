@@ -271,6 +271,41 @@ async def test_blocked_ip_identity_lookup_is_skipped_when_the_budget_is_spent(
 
 
 @pytest.mark.asyncio
+async def test_blocked_ip_settings_read_is_bounded_too(monkeypatch, blocked_localhost):
+    """A spent budget skips even the toggle read, not just the lookups.
+
+    ``RuntimeSettings._get`` has no single-flight, so an expired 30 s TTL under a
+    flood would otherwise turn one expiry into a query per arriving request.
+    """
+    import serving.observability.rejection_log as mod
+
+    app, _log_calls, op = _build_blocked_app(
+        monkeypatch, lightweight_user={"user_id": "u1", "role": "pro"}, logging_on=True
+    )
+    rs = app.state.services.runtime_settings
+    await blocked_localhost("127.0.0.1")
+
+    exhausted = asyncio.Semaphore(1)
+    await exhausted.acquire()
+    monkeypatch.setattr(mod, "_enrichment_slots", exhausted)
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer hyi-valid"},
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        await asyncio.sleep(0)
+
+    assert resp.status_code == 429
+    # Not consulted at all on the inline path. log_rejection is faked out here,
+    # so this asserts the enrichment gate specifically.
+    rs.get_bool.assert_not_awaited()
+    op.get_auth_context_lightweight.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_blocked_ip_identity_lookup_failure_still_returns_429(monkeypatch, blocked_localhost):
     """A broken identity lookup degrades the log row, never the response."""
     app, log_calls, op = _build_blocked_app(monkeypatch, lightweight_user=None, logging_on=True)

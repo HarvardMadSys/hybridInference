@@ -187,7 +187,16 @@ async def _authenticate_by_api_key(
         blocked_prompt: list[dict[str, Any]] | str = ""
         blocked_user: dict[str, Any] | None = None
         try:
-            if await rejection_logging_enabled(request, status_code=429):
+            # The gate read goes through the budget too. It looks free, but
+            # ``RuntimeSettings._get`` has no single-flight: when its 30 s TTL
+            # lapses, every request arriving before the first refresh returns
+            # issues its own query, so a flood turns one expiry into a herd
+            # against the shared pool — the same cost this whole path is trying
+            # not to reintroduce.
+            enabled = await bounded_enrichment(
+                rejection_logging_enabled(request, status_code=429), default=False
+            )
+            if enabled:
                 blocked_prompt = await capture_rejected_prompt(request)
                 blocked_user = await _identify_rejected_caller(authorization, x_api_key, op_store)
         except Exception:

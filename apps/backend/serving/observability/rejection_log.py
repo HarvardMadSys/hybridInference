@@ -215,24 +215,43 @@ async def capture_rejected_prompt(
 ) -> list[dict[str, Any]] | str:
     """Best-effort prompt for a request rejected before its handler ran.
 
-    Prefers a body an earlier dependency already parsed and cached (Starlette
-    stores it on ``request._json`` after ``await request.json()``). Otherwise
-    reads the body itself — which a pre-handler gate has not yet done.
+    Two routes reach here in different states, and the difference is not
+    cosmetic. FastAPI parses a *typed* body before it solves dependencies, so on
+    a route declaring a model (``/v1/embeddings`` takes ``EmbeddingRequest``) the
+    body is already read and cached on ``request._json`` by the time a gate
+    rejects — reusing it costs nothing. A route taking a bare ``Request``
+    (``/v1/chat/completions``) has had nothing read, so the body must be read
+    here or the prompt is lost.
 
-    Awaiting the body of a request the server is refusing is attacker-controlled
-    input on a shed-load path, so the read is bounded three ways: a declared
-    ``Content-Length`` no larger than *max_body_bytes*, *timeout_sec* of wall
-    clock, and the shared :func:`bounded_enrichment` budget. A body whose length
-    is not declared up front — chunked transfer, or ``Transfer-Encoding`` present
-    at all — is skipped without reading anything. Together those keep the worst
-    case a rejected flood can buy to a fixed handful of tasks for a fraction of a
-    second, rather than one held task per connection.
+    That second case is attacker-controlled input on a shed-load path, so the
+    read is bounded four ways: ``Transfer-Encoding`` absent (RFC 9112 makes
+    ``Content-Length`` meaningless when it is present, so it would not be a bound
+    at all), a declared ``Content-Length`` no larger than *max_body_bytes*,
+    *timeout_sec* of wall clock, and the shared :func:`bounded_enrichment`
+    budget. Worst case a rejected flood buys is a fixed handful of tasks for a
+    fraction of a second, rather than one held task per connection.
+
+    The size bound is applied from the header for *both* paths, so an oversized
+    payload is declined either way. It is deliberately not measured from the
+    parsed object: sizing that would mean re-serializing it, newly allocating the
+    very payload the bound exists to avoid handling — the check would cost more
+    than the thing it is checking.
 
     Returns ``""`` when no prompt can be recovered, for any reason.
 
     Must be awaited *before* the rejection response is sent: once the response
     completes, the ASGI ``receive`` channel no longer yields body chunks.
     """
+    declared = request.headers.get("content-length")
+    declared_len: int | None = None
+    if declared is not None:
+        try:
+            declared_len = int(declared)
+        except ValueError:
+            return ""
+        if declared_len > max_body_bytes:
+            return ""
+
     cached_json = getattr(request, "_json", None)
     if cached_json is not None:
         try:
@@ -242,17 +261,11 @@ async def capture_rejected_prompt(
 
     # ``Transfer-Encoding`` at all, not just "chunked": when it is present
     # RFC 9112 requires ``Content-Length`` to be ignored, so a declared length
-    # alongside it is not a bound we may rely on.
+    # alongside it is not a bound we may rely on. Only relevant to a body we are
+    # about to read ourselves — an already-parsed one cost us nothing.
     if request.headers.get("transfer-encoding"):
         return ""
-    declared = request.headers.get("content-length")
-    if declared is None:
-        return ""
-    try:
-        length = int(declared)
-    except ValueError:
-        return ""
-    if length <= 0 or length > max_body_bytes:
+    if declared_len is None or declared_len <= 0:
         return ""
 
     raw = await bounded_enrichment(request.body(), default=None, timeout_sec=timeout_sec)
