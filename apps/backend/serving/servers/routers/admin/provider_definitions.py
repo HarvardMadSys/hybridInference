@@ -385,7 +385,10 @@ async def _build_provider_item(
         updated_at = custom_row.updated_at
     elif provider in PROVIDER_TARGETS:
         target = PROVIDER_TARGETS[provider]
-        display_name = target.label
+        # A route-level provider_display_name wins over the built-in label, so
+        # this tab agrees with the performance, token-usage, and availability
+        # views — which read the same config-declared name.
+        display_name = (config_spec.display_name if config_spec else "") or target.label
         adapter_kind = target.kind
         base_url = (
             runtime_base_url

@@ -1478,6 +1478,31 @@ def _resolve_provider_model_id(
     )
 
 
+def _relabelled_analytics_label(adapter) -> str | None:
+    """Return a route's models.yaml provider label, if it was relabelled.
+
+    Only the registry's ``provider:`` relabelling makes ``config.provider``
+    diverge from the pinned ``upstream_provider``, so that divergence is what
+    distinguishes an analytics label from an ordinary provider — including a
+    route whose upstream an admin has overridden, where the two stay equal.
+
+    The pinned value is compared in its bare form: an OpenRouter-pinned route
+    stores ``openrouter[parasail]`` against a ``openrouter`` provider, and
+    reading that as a label would pin the provider on later retargets.
+    """
+    config = getattr(adapter, "config", None)
+    label = str(getattr(config, "provider", "") or "")
+    route_metadata = getattr(config, "route_metadata", None) or {}
+    pinned = str(route_metadata.get("upstream_provider") or "")
+    if not label or not pinned:
+        return None
+    try:
+        base_pinned, _pin = parse_openrouter_kind(pinned)
+    except ValueError:
+        base_pinned = pinned
+    return label if label != base_pinned else None
+
+
 def _preserve_route_semantics(
     cfg: dict[str, Any],
     *,
@@ -1490,6 +1515,17 @@ def _preserve_route_semantics(
     route_metadata["route_provider"] = _route_provider(current_adapter)
     route_metadata["upstream_provider"] = upstream_provider
     route_metadata["openrouter_sort"] = cfg.get("openrouter_sort")
+
+    # The caller already set cfg["provider"] to the upstream this target
+    # implies. For a route relabelled in models.yaml that would silently merge
+    # it back into the upstream's dashboard cohort and leave its own disable
+    # switch inert — and because persisted overrides are replayed through this
+    # path at every boot, the label would not come back on restart. Keep the
+    # label and re-pin the key pool to the (possibly new) upstream.
+    analytics_label = _relabelled_analytics_label(current_adapter)
+    if analytics_label is not None:
+        cfg["provider"] = analytics_label
+        route_metadata["key_provider"] = upstream_provider
 
     provider_type = _route_type(current_adapter)
     cfg["provider_type"] = provider_type

@@ -109,6 +109,38 @@ def test_relabelled_routes_share_the_kind_key_pool(tmp_path, monkeypatch):
     dynamic_keys.reset()
 
 
+def test_explicit_route_metadata_wins_over_the_pins(tmp_path, monkeypatch):
+    """An explicit route_metadata is the operator declaring the upstream, which
+    is how the override-provider quota pattern is configured. The label's pins
+    must not overwrite it."""
+    monkeypatch.setenv("LOCAL_API_KEY", "local-key")
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        models:
+          - id: qwen-local
+            name: qwen-local
+            provider: vllm
+            base_url: http://localhost:8002/v1
+            route:
+              - kind: vllm
+                weight: 1.0
+                provider: local-a
+                base_url: http://localhost:8002/v1
+                api_key: ${LOCAL_API_KEY}
+                route_metadata:
+                  upstream_provider: chutes
+        """,
+    )
+    router = RouteExecutor()
+    register_from_models_yaml(router, yaml_path)
+
+    metadata = router.routes["qwen-local"].adapters[0][0].config.route_metadata
+    assert metadata["upstream_provider"] == "chutes"
+    # The keys the config did not set still get pinned.
+    assert metadata["key_provider"] == "vllm"
+
+
 def test_display_names_are_exposed_for_the_dashboard(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
     router = RouteExecutor()

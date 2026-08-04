@@ -400,3 +400,96 @@ async def test_provider_registry_boot_skips_reserved_provider_rows():
     finally:
         provider_registry.unregister_provider_definition("kimi")
         provider_registry.unregister_provider_definition("acme")
+
+
+class _NoKeysStore:
+    """Minimal op_store for _build_provider_item: no keys of any kind."""
+
+    async def list_provider_keys(self, provider: str):
+        return []
+
+    async def list_provider_keys_full(self, provider: str):
+        return []
+
+    async def list_disabled_provider_env_key_hashes(self, provider: str):
+        return set()
+
+
+def test_configured_provider_specs_pick_up_route_labels_and_display_names(tmp_path, monkeypatch):
+    """Route-level `provider:` becomes its own registry slug, and its
+    `provider_display_name:` is the name the tab shows."""
+    models_config = tmp_path / "models.yaml"
+    models_config.write_text(
+        """
+models:
+  - id: qwen-local
+    provider: vllm
+    route:
+      - kind: vllm
+        provider: local-a
+        provider_display_name: "Local box A"
+        base_url: http://localhost:8002/v1
+      - kind: vllm
+        provider: local-b
+        provider_display_name: "Local box B"
+        base_url: http://localhost:8003/v1
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+
+    specs = _configured_provider_specs()
+
+    assert {"local-a", "local-b"} <= set(specs)
+    assert specs["local-a"].display_name == "Local box A"
+    assert specs["local-b"].display_name == "Local box B"
+    # The adapter kind still comes from `kind:`, not the label.
+    assert specs["local-a"].adapter_kind == "vllm"
+
+
+@pytest.mark.asyncio
+async def test_display_name_applies_to_a_selectable_built_in_provider(monkeypatch):
+    """A `provider_display_name:` on a route of a PROVIDER_TARGETS provider must
+    reach the registry tab too, or it would disagree with the performance,
+    token-usage, and availability views, which read the same config name."""
+    spec = provider_definitions.ConfigProviderSpec(
+        provider="chutes",
+        adapter_kind="chutes",
+        default_base_url="https://llm.chutes.ai/v1",
+        model_ids=frozenset(["minimax-fast"]),
+        display_name="Chutes (subscription)",
+    )
+    op_store = _NoKeysStore()
+
+    item = await provider_definitions._build_provider_item(
+        provider="chutes",
+        custom_row=None,
+        config_spec=spec,
+        source="built_in",
+        op_store=op_store,
+        models_by_provider={"chutes": {"minimax-fast"}},
+    )
+
+    assert item.display_name == "Chutes (subscription)"
+
+
+@pytest.mark.asyncio
+async def test_built_in_label_is_used_when_config_names_nothing(monkeypatch):
+    spec = provider_definitions.ConfigProviderSpec(
+        provider="chutes",
+        adapter_kind="chutes",
+        default_base_url="https://llm.chutes.ai/v1",
+        model_ids=frozenset(["minimax-fast"]),
+    )
+    op_store = _NoKeysStore()
+
+    item = await provider_definitions._build_provider_item(
+        provider="chutes",
+        custom_row=None,
+        config_spec=spec,
+        source="built_in",
+        op_store=op_store,
+        models_by_provider={"chutes": {"minimax-fast"}},
+    )
+
+    assert item.display_name == "Chutes"

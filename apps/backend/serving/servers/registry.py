@@ -654,6 +654,12 @@ def register_from_models_yaml(
                 # and route-target resolution keep following the route's kind.
                 # Both keys carry the same value so RouteWise does not read the
                 # pair as an override provider and switch to local quota state.
+                #
+                # setdefault, not assignment: an explicit route_metadata in the
+                # YAML is the operator declaring the upstream themselves, which
+                # is how the override-provider quota pattern is configured
+                # (route_provider != upstream_provider). Overwriting it here
+                # would silently undo that declaration.
                 if provider_label != canonical_provider:
                     route_metadata.setdefault("key_provider", canonical_provider)
                     route_metadata.setdefault("route_provider", canonical_provider)

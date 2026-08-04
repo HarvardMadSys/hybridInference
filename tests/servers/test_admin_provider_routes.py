@@ -4601,3 +4601,110 @@ async def test_persisted_runtime_model_strategy_failure_never_publishes_fixed_ro
     assert len(dynamic_keys.get_pools_for_provider("openrouter")) == openrouter_pool_count
     registry.clear_router_override.assert_called_once_with(model_id)
     assert services.managed_routers == []
+
+
+# ---------------------------------------------------------------------------
+# Analytics-label preservation across route overrides
+#
+# `_prepare_route_update` sets cfg["provider"] to the upstream the target
+# implies. For a route relabelled with `provider:` in models.yaml that would
+# merge it back into the upstream's dashboard cohort and leave its own disable
+# switch inert — and persisted overrides replay through the same path at every
+# boot, so the label would not survive a restart either.
+# ---------------------------------------------------------------------------
+
+
+def _relabelled_route_adapter(*, label: str = "local-a", upstream: str = "vllm"):
+    return _compat_adapter(
+        model_id="qwen-local",
+        provider=label,
+        endpoint_id="qwen-local:local-8002",
+        base_url="http://localhost:8002/v1",
+        provider_model_id="Qwen/Qwen3.6-35B-A3B-FP8",
+    ), upstream
+
+
+def test_preserve_route_semantics_keeps_a_models_yaml_provider_label():
+    adapter, upstream = _relabelled_route_adapter()
+    adapter.config.route_metadata = {
+        "provider_type": "on_demand",
+        "key_provider": upstream,
+        "route_provider": upstream,
+        "upstream_provider": upstream,
+    }
+    # What _prepare_route_update would have written before preservation runs.
+    cfg = {"provider": upstream, "route_metadata": dict(adapter.config.route_metadata)}
+
+    provider_routes._preserve_route_semantics(
+        cfg,
+        current_adapter=adapter,
+        upstream_provider=upstream,
+        route_id="qwen-local:local-8002",
+    )
+
+    assert cfg["provider"] == "local-a"
+    assert cfg["route_metadata"]["key_provider"] == "vllm"
+    assert cfg["route_metadata"]["upstream_provider"] == "vllm"
+
+
+def test_preserve_route_semantics_repins_keys_when_a_labelled_route_is_retargeted():
+    adapter, upstream = _relabelled_route_adapter()
+    adapter.config.route_metadata = {
+        "provider_type": "on_demand",
+        "key_provider": upstream,
+        "route_provider": upstream,
+        "upstream_provider": upstream,
+    }
+    cfg = {"provider": "chutes", "route_metadata": dict(adapter.config.route_metadata)}
+
+    provider_routes._preserve_route_semantics(
+        cfg,
+        current_adapter=adapter,
+        upstream_provider="chutes",
+        route_id="qwen-local:local-8002",
+    )
+
+    # The operator's name for this route slot survives; its keys follow the new
+    # upstream.
+    assert cfg["provider"] == "local-a"
+    assert cfg["route_metadata"]["key_provider"] == "chutes"
+
+
+def test_preserve_route_semantics_leaves_an_ordinary_retarget_alone():
+    adapter = _compat_adapter(
+        provider="chutes",
+        endpoint_id="minimax-fast:chutes-api",
+        base_url="https://llm.chutes.ai/v1",
+        provider_model_id="MiniMaxAI/MiniMax-M2.5-TEE",
+    )
+    cfg = {"provider": "openrouter", "route_metadata": dict(adapter.config.route_metadata)}
+
+    provider_routes._preserve_route_semantics(
+        cfg,
+        current_adapter=adapter,
+        upstream_provider="openrouter",
+        route_id="minimax-fast:chutes-api",
+    )
+
+    assert cfg["provider"] == "openrouter"
+
+
+def test_openrouter_pin_is_not_mistaken_for_an_analytics_label():
+    """A pinned route stores `openrouter[parasail]` against an `openrouter`
+    provider. Reading that divergence as a label would freeze the provider on
+    every later retarget."""
+    adapter = _openrouter_deepinfra_adapter()
+    adapter.config.route_metadata = {
+        **(adapter.config.route_metadata or {}),
+        "upstream_provider": "openrouter[parasail]",
+    }
+    assert provider_routes._relabelled_analytics_label(adapter) is None
+
+    cfg = {"provider": "chutes", "route_metadata": dict(adapter.config.route_metadata)}
+    provider_routes._preserve_route_semantics(
+        cfg,
+        current_adapter=adapter,
+        upstream_provider="chutes",
+        route_id="minimax-fast:deepinfra-api",
+    )
+    assert cfg["provider"] == "chutes"
