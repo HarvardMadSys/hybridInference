@@ -35,6 +35,37 @@ const nextConfig = {
         source: '/internal/playground/:path*',
         destination: `${BACKEND_INTERNAL_URL}/internal/playground/:path*`,
       },
+      // The cloud agent's control plane runs on its own machine and reaches
+      // this gateway over its public origin. Nginx sends unmatched paths here,
+      // so a path with no rewrite is answered by Next.js — and its 404 is an
+      // HTML page, which reads to the caller as "the gateway is down" rather
+      // than "this path is not forwarded". Every one of these was unreachable
+      // in production and staging until this entry existed.
+      //
+      // Named individually, because this prefix is shared: /internal/verify-*
+      // authenticate a browser session by cookie, and a blanket
+      // /internal/:path* would forward whatever lands here next without anyone
+      // deciding it should be reachable from outside.
+      {
+        source: '/internal/model-catalog',
+        destination: `${BACKEND_INTERNAL_URL}/internal/model-catalog`,
+      },
+      {
+        source: '/internal/users/:userId/status',
+        destination: `${BACKEND_INTERNAL_URL}/internal/users/:userId/status`,
+      },
+      // Whole prefix, unlike the two above: every route on that router carries
+      // the dispatch token as a router-level dependency, so a route added
+      // later is authorized by construction. Enumerating them here instead
+      // would mean the next one 404s at this layer with nothing to say why.
+      {
+        source: '/internal/agent-grants',
+        destination: `${BACKEND_INTERNAL_URL}/internal/agent-grants`,
+      },
+      {
+        source: '/internal/agent-grants/:path*',
+        destination: `${BACKEND_INTERNAL_URL}/internal/agent-grants/:path*`,
+      },
       { source: '/health', destination: `${BACKEND_INTERNAL_URL}/health` },
       // Public homepage updates. Nginx routes unmatched paths to the frontend,
       // so this rewrite forwards the request on to FastAPI (same pattern as
