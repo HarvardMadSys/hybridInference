@@ -271,6 +271,74 @@ async def test_blocked_ip_identity_lookup_is_skipped_when_the_budget_is_spent(
 
 
 @pytest.mark.asyncio
+async def test_blocked_ip_on_a_typed_body_route_bounds_an_oversized_prompt(
+    monkeypatch, blocked_localhost
+):
+    """End-to-end over the path that actually pre-parses the body.
+
+    FastAPI parses a declared body model *before* solving dependencies, so on a
+    typed route (``/v1/embeddings`` takes ``EmbeddingRequest``) the gate sees a
+    body already on ``request._json``. The size cap has to hold there too, or a
+    blocked caller — under no quota, auth, or concurrency limit — could write
+    arbitrarily large prompts into api_logs.
+    """
+    from pydantic import BaseModel
+
+    from serving.observability.rejection_log import REJECTED_PROMPT_MAX_BODY_BYTES
+
+    log_calls: list[dict] = []
+
+    async def fake_log_rejection(**kwargs):
+        log_calls.append(kwargs)
+
+    monkeypatch.setattr("serving.servers.auth.log_rejection", fake_log_rejection)
+
+    op = MagicMock()
+    op.get_auth_context_lightweight = AsyncMock(return_value=None)
+
+    from fastapi import Depends
+
+    from serving.servers.deps import get_log_store, get_operational_store
+
+    class EmbedBody(BaseModel):
+        model: str
+        input: str
+
+    app = FastAPI()
+    app.dependency_overrides[get_operational_store] = lambda: op
+    app.dependency_overrides[get_log_store] = lambda: MagicMock()
+
+    @app.post("/v1/embeddings")
+    async def embed(body: EmbedBody, _u: dict = Depends(verify_api_key)):
+        return {"ok": True}
+
+    app.state.services = type("S", (), {})()
+    app.state.services.log_store = MagicMock()
+    rs = MagicMock()
+    rs.get_bool = AsyncMock(return_value=True)
+    app.state.services.runtime_settings = rs
+
+    await blocked_localhost("127.0.0.1")
+
+    # A real oversized payload against the real constant — no patched cap, so
+    # this exercises the bound that actually ships.
+    oversized = "x" * (REJECTED_PROMPT_MAX_BODY_BYTES + 1024)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        big = await client.post("/v1/embeddings", json={"model": "m", "input": oversized})
+        await asyncio.sleep(0)
+        small = await client.post("/v1/embeddings", json={"model": "m", "input": "hi"})
+        await asyncio.sleep(0)
+
+    assert big.status_code == 429
+    assert small.status_code == 429
+    # Oversized declined; a small one on the same pre-parsed path still captured,
+    # so the decline above is the cap and not a broken cached-body path.
+    assert log_calls[0]["prompt"] == ""
+    assert log_calls[1]["prompt"] == "hi"
+
+
+@pytest.mark.asyncio
 async def test_blocked_ip_settings_read_is_bounded_too(monkeypatch, blocked_localhost):
     """A spent budget skips even the toggle read, not just the lookups.
 

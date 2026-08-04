@@ -231,11 +231,18 @@ async def capture_rejected_prompt(
     budget. Worst case a rejected flood buys is a fixed handful of tasks for a
     fraction of a second, rather than one held task per connection.
 
-    The size bound is applied from the header for *both* paths, so an oversized
-    payload is declined either way. It is deliberately not measured from the
-    parsed object: sizing that would mean re-serializing it, newly allocating the
-    very payload the bound exists to avoid handling — the check would cost more
-    than the thing it is checking.
+    The size bound applies to *both* paths — an oversized payload is declined
+    however it arrived, because the prompt gets serialized into ``api_logs`` and
+    a blocked caller is subject to no quota, no auth, and no concurrency limit.
+    Unbounded, that is a way for a refused source to grow the database.
+
+    For an already-parsed body the bound is measured from the raw bytes Starlette
+    cached on ``request._body`` — exact, and free, since FastAPI read them before
+    parsing. That is the only bound available when the request declared no
+    ``Content-Length`` at all (chunked, HTTP/2), and such a body is declined when
+    even that is missing. It is *not* measured by re-serializing the parsed
+    object, which would newly allocate the whole payload — costing more than the
+    check saves.
 
     Returns ``""`` when no prompt can be recovered, for any reason.
 
@@ -254,6 +261,17 @@ async def capture_rejected_prompt(
 
     cached_json = getattr(request, "_json", None)
     if cached_json is not None:
+        # Prefer the exact raw length over the declared one. Starlette caches the
+        # bytes on ``_body`` when FastAPI reads them, so this is O(1) and holds
+        # even for a request that declared no length at all — the case a header
+        # check cannot bound. With neither available there is no bound to apply,
+        # so the body is declined rather than logged unmeasured.
+        cached_body = getattr(request, "_body", None)
+        if cached_body is not None:
+            if len(cached_body) > max_body_bytes:
+                return ""
+        elif declared_len is None:
+            return ""
         try:
             return extract_prompt_from_body(cached_json)
         except Exception:

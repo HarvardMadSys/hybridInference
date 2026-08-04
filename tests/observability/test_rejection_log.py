@@ -353,18 +353,44 @@ async def test_capture_applies_the_size_bound_to_a_cached_body_too():
 
 
 @pytest.mark.asyncio
-async def test_capture_uses_a_cached_body_with_no_declared_length():
-    """A parsed body stays usable without a Content-Length.
+async def test_capture_uses_a_cached_body_with_no_declared_length_when_raw_bytes_fit():
+    """No Content-Length is fine when the raw bytes are there and within the cap.
 
-    The chunked/unknown-length skip exists to bound a read we have not done yet.
-    An already-parsed body cost us nothing, so declining it would forfeit a free
-    prompt for no gain.
+    The chunked/unknown-length skip exists to bound a read not yet done; an
+    already-parsed body is bounded by its actual size instead, so declining it
+    would forfeit a free prompt for no gain.
     """
+    raw = json.dumps({"messages": [{"role": "user", "content": "chunked but parsed"}]}).encode()
     request = _real_request(b"", headers=[(b"transfer-encoding", b"chunked")])
-    request._json = {"messages": [{"role": "user", "content": "chunked but parsed"}]}
+    request._body = raw
+    request._json = json.loads(raw)
     assert await capture_rejected_prompt(request) == [
         {"role": "user", "content": "chunked but parsed"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_capture_bounds_a_cached_body_by_its_raw_bytes():
+    """An oversized parsed body is declined even with no Content-Length at all.
+
+    This is the case a header check cannot bound — chunked, or HTTP/2, where
+    FastAPI has already populated ``_json``. The prompt would be serialized into
+    ``api_logs``, and a blocked caller is subject to no quota, so leaving it
+    unbounded is a way for a refused source to grow the database.
+    """
+    raw = json.dumps({"messages": [{"role": "user", "content": "x" * 5000}]}).encode()
+    request = _real_request(b"", headers=[(b"transfer-encoding", b"chunked")])
+    request._body = raw
+    request._json = json.loads(raw)
+    assert await capture_rejected_prompt(request, max_body_bytes=1024) == ""
+
+
+@pytest.mark.asyncio
+async def test_capture_declines_a_cached_body_that_cannot_be_measured():
+    """With neither raw bytes nor a declared length, there is no bound to apply."""
+    request = _real_request(b"", headers=[(b"transfer-encoding", b"chunked")])
+    request._json = {"messages": [{"role": "user", "content": "unmeasurable"}]}
+    assert await capture_rejected_prompt(request) == ""
 
 
 @pytest.mark.asyncio
