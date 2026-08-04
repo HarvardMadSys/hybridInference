@@ -191,6 +191,11 @@ PROXY_OWNER = os.environ.get("PROXY_OWNER", "").strip() or f"port-{LISTEN_PORT}"
 # every streaming request until the backend is ready) and leave a window in which
 # the container can stop between the two answers.
 _INSPECT_STATE_FORMAT = '{"running":{{json .State.Running}},"labels":{{json .Config.Labels}}}'
+# The device request is read as raw JSON and joined in Python (see
+# `_running_container_gpu`). A Go template cannot do it: `range` emits its
+# elements with no separator, so DeviceIDs ["2","3"] — how docker stores the
+# single quoted request `--gpus '"device=2,3"'` — came back as the token "23".
+_INSPECT_DEVICES_FORMAT = "{{json .HostConfig.DeviceRequests}}"
 # Config keys deliberately left *out* of the profile hash: they never reach either
 # `docker run` command line, so a container launched before such an edit is not
 # stale after it. This matters because a hash mismatch destroys a healthy backend
@@ -446,6 +451,10 @@ class BackendManager:
         # container so a later process can tell "the backend I asked for" from
         # "some other backend wearing the same name".
         self._profile = _launch_profile(config)
+        # Last unrunnable-`docker inspect` reason already reported, so the
+        # ownership check on the streaming warmup path says it once instead of on
+        # every request (see `_log_inspect_failure`).
+        self._inspect_failure: str | None = None
 
     @property
     def state(self) -> str:
@@ -1021,6 +1030,12 @@ class BackendManager:
         ``_container_owner``), which is both the pre-labelling behaviour and the
         safe direction: a docker hiccup cannot invent a collision that wedges a
         model.
+
+        Those failures are silent because ``docker inspect`` exits non-zero with
+        the same status for "no such object" as for "cannot connect to the daemon",
+        and the first is the ordinary cold-start case on every single start — so a
+        warning here would be noise on the happy path. Only a docker command that
+        cannot be executed at all raises, and ``contention_error`` reports that.
         """
         result = subprocess.run(
             ["sudo", "docker", "inspect", "-f", _INSPECT_STATE_FORMAT, self.container],
@@ -1094,6 +1109,34 @@ class BackendManager:
             f"'sudo docker rm -f {self.container}' or set PROXY_OWNER to {owner!r}."
         )
 
+    def _log_inspect_failure(self, exc: BaseException) -> None:
+        """Report an ownership inspect that could not be run at all.
+
+        At ``warning`` because this module configures the root handler at ``INFO``
+        (see ``logging.basicConfig`` at the top) and exposes no level knob, so a
+        ``debug`` record here would be dropped before it reached the journal — the
+        operator this exists for would see exactly nothing.
+
+        Latched on the reason instead: ``contention_error`` runs on *every*
+        streaming request until the backend is ready, and the causes are not all
+        transient — a proxy that cannot execute ``sudo docker`` at all answers "no
+        contention" for every request it will ever serve, which at one line per
+        request would bury the journal. Cleared by the next contention check whose
+        inspect succeeds, so a genuinely intermittent failure is reported each time
+        it recurs.
+        """
+        reason = f"{type(exc).__name__}: {exc}"
+        if reason == self._inspect_failure:
+            return
+        self._inspect_failure = reason
+        log.warning(
+            "[%s] Ownership inspect of %s could not run (%s); assuming no contention. "
+            "A foreign container of this name would go unnoticed until this is fixed.",
+            self.model_name,
+            self.container,
+            reason,
+        )
+
     def contention_error(self) -> ForeignContainerError | None:
         """Return the diagnosis if a live foreign container holds this name.
 
@@ -1106,24 +1149,20 @@ class BackendManager:
         over — the exact silent failure the labels were added to end. Calling this
         before the response line is written keeps the 502 available.
 
-        Never raises. An unreadable ``docker inspect`` answers "no contention", so
-        a transient docker hiccup cannot turn every streaming request into a 502.
-        It does log the reason at debug level: the return value cannot distinguish
-        "nobody else owns this" from "the daemon is down" or "this user cannot
-        reach the socket", and an operator chasing a proxy that never starts a
+        Never raises. A ``docker inspect`` that cannot even be executed answers
+        "no contention", so a transient docker hiccup cannot turn every streaming
+        request into a 502. The reason is logged (see
+        ``_log_inspect_failure``): the return value cannot distinguish "nobody
+        else owns this" from "the docker CLI is not installed" or "this user
+        cannot run sudo", and an operator chasing a proxy that never starts a
         backend needs to see which it was.
         """
         try:
             running, labels = self._inspect_container()
         except Exception as exc:  # docker unreachable: not evidence of a collision
-            log.debug(
-                "[%s] Ownership inspect of %s failed (%s: %s); assuming no contention.",
-                self.model_name,
-                self.container,
-                type(exc).__name__,
-                exc,
-            )
+            self._log_inspect_failure(exc)
             return None
+        self._inspect_failure = None
         owner = self._container_owner(labels)
         if owner is None or not running:
             return None
@@ -1184,13 +1223,24 @@ class BackendManager:
             return False
 
     def _running_container_gpu(self) -> str | None:
-        """Return the GPU device id assigned to the running container, if any.
+        """Return the device list assigned to the running container, if any.
 
-        Read back from the container's ``--gpus device=N`` request so an
+        Read back from the container's ``--gpus device=…`` request so an
         adopted backend keeps the right device for colocation/GPU-exclusion
-        bookkeeping — and so a container being *replaced* hands its device to the
+        bookkeeping — and so a container being *replaced* hands its devices to the
         replacement instead of letting auto-selection move the backend elsewhere
         (see ``_start_container``).
+
+        Returned in the same comma-separated shape ``_docker_gpu_arg`` consumes
+        and ``_current_gpu`` records, because both round-trip it: the value is
+        counted against ``tensor_parallel_size x pipeline_parallel_size``, handed
+        to ``docker run``, and split on commas to exclude each device from other
+        backends' auto-selection. Docker stores ``--gpus '"device=2,3"'`` as *one*
+        request whose ``DeviceIDs`` is ``["2", "3"]`` — that single-request parse
+        is exactly what the quoting in ``_docker_gpu_arg`` buys — so the ids are
+        joined here rather than read through a Go template, whose ``range``
+        concatenates without a separator and turned a two-GPU container into the
+        one bogus token ``"23"``.
         """
         result = subprocess.run(
             [
@@ -1198,15 +1248,33 @@ class BackendManager:
                 "docker",
                 "inspect",
                 "-f",
-                "{{range .HostConfig.DeviceRequests}}{{range .DeviceIDs}}{{.}}{{end}}{{end}}",
+                _INSPECT_DEVICES_FORMAT,
                 self.container,
             ],
             capture_output=True,
             text=True,
             check=False,
         )
-        gpu = result.stdout.strip()
-        return gpu or None
+        if result.returncode != 0:
+            return None
+        try:
+            requests = _json.loads(result.stdout.strip() or "null")
+        except ValueError:
+            return None
+        if not isinstance(requests, list):
+            return None
+        # Flattened across requests: this proxy always emits one, but a
+        # hand-started container can carry several (`--gpus device=0 --gpus
+        # device=1`), and every one of them holds a device this backend owns.
+        # A request that asks for a *count* rather than named devices
+        # (`--gpus all`) contributes nothing — there is no id to reuse.
+        devices = [
+            str(device)
+            for request in requests
+            if isinstance(request, dict)
+            for device in (request.get("DeviceIDs") or [])
+        ]
+        return ",".join(devices) or None
 
     def _container_logs_tail(self, lines: int = 20) -> str:
         """Return the last ``lines`` of the container log for error reporting."""

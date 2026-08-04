@@ -592,6 +592,15 @@ class _FakeDocker:
     def run(self, command: list[str], **_: Any) -> Any:
         self.commands.append(list(command))
         if "inspect" not in command:
+            # `docker rm -f` / `docker kill` really do destroy the container, and
+            # modelling that is load-bearing rather than pedantic: the whole GPU
+            # reuse fix rests on reading the outgoing container's devices *before*
+            # the removal. A fake that keeps answering afterwards lets that read
+            # be moved below the `rm` with the suite still green, where real docker
+            # returns nothing and the backend migrates.
+            if "docker" in command and command[command.index("docker") + 1] in {"rm", "kill"}:
+                self.exists = False
+                self.running = False
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if not self.exists:
             return SimpleNamespace(returncode=1, stdout="", stderr="No such object")
@@ -602,7 +611,26 @@ class _FakeDocker:
             # the way docker would: an unlabelled container reports null, not {}.
             body = json.dumps({"running": self.running, "labels": self.labels})
         else:
-            body = self.gpu
+            # The device request, as docker stores it. `--gpus '"device=2,3"'` is
+            # ONE request whose DeviceIDs is ["2", "3"] — that single-request parse
+            # is what the quoting exists for — so a multi-GPU `gpu` here must not
+            # be flattened into one id, or the fake would hide the very bug that
+            # the separator-less Go template caused.
+            body = (
+                json.dumps(
+                    [
+                        {
+                            "Driver": "",
+                            "Count": 0,
+                            "DeviceIDs": self.gpu.split(","),
+                            "Capabilities": [["gpu"]],
+                            "Options": {},
+                        }
+                    ]
+                )
+                if self.gpu
+                else "null"
+            )
         return SimpleNamespace(returncode=0, stdout=body + "\n", stderr="")
 
     @property
@@ -629,6 +657,17 @@ class _FakeDocker:
             if "inspect" in c
             and any(".State.Running" in tok or ".Config.Labels" in tok for tok in c)
         ]
+
+    def index_of(self, predicate: Any) -> int:
+        """Position of the first recorded command matching ``predicate``, or -1.
+
+        Lets a test assert on *ordering* between two docker calls, which some of
+        them depend on and none of them could previously see.
+        """
+        for i, command in enumerate(self.commands):
+            if predicate(command):
+                return i
+        return -1
 
 
 def _labelled_backend(
@@ -925,6 +964,154 @@ def test_replacing_own_stale_container_keeps_the_gpu_it_holds(
     assert launched[launched.index("--gpus") + 1] == "device=1"
     # And recorded, so a colocate partner starting later follows it onto GPU 1.
     assert backend._current_gpu == "1"
+    # The ordering is the fix, so pin it directly: the device request is read
+    # while the container still exists. Move that read below the `docker rm -f`
+    # and real docker answers nothing, `replacing_gpu` is None, and the backend
+    # migrates — with every assertion above still satisfied by a fake that kept
+    # answering after the removal.
+    read_devices = fake.index_of(lambda c: any("DeviceRequests" in tok for tok in c))
+    removed = fake.index_of(lambda c: "docker" in c and c[c.index("docker") + 1] == "rm")
+    assert 0 <= read_devices < removed, fake.commands
+
+
+def test_replacing_a_tensor_parallel_container_keeps_all_of_its_gpus(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The device read-back must round-trip a multi-GPU list, not concatenate it.
+
+    ``--gpus '"device=2,3"'`` is stored by docker as one device request whose
+    ``DeviceIDs`` is ``["2", "3"]`` — that single-request parse is the entire
+    reason ``_docker_gpu_arg`` quotes the list. Reading it back through a Go
+    template that ranged over the ids emitted them with no separator, so a
+    two-GPU container came back as the token ``"23"``, and both halves of the
+    reuse then broke:
+
+    * the device-count guard saw ``len("23".split(",")) == 1 != 2`` and skipped
+      reuse, so a ``tensor_parallel_size: 2`` model with no ``gpu_index`` — the
+      shape the README documents and ``_pick_free_gpus`` exists to serve —
+      auto-selected while the outgoing container still held its devices, and
+      migrated. That is the exact bug the reuse was added to prevent.
+    * with ``tp`` edited back down to 1 the count matched by accident, so ``"23"``
+      was reused verbatim: ``--gpus device=23`` names a device no host has, and
+      ``docker run`` fails *after* the ``docker rm -f`` has destroyed the working
+      backend.
+
+    Nothing shipped today hits the first case — ``h200_idle_proxy/models.json``
+    is the only multi-device profile and it pins ``gpu_index: "2,3"`` — but
+    dropping that pin to let the H200 auto-place is a one-key edit.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path, name="tp2", gpu_index=None, tensor_parallel_size=2)
+    fake = _FakeDocker(
+        labels={
+            proxy.OWNER_LABEL: proxy.PROXY_OWNER,
+            proxy.PROFILE_LABEL: "0000staleprofile",
+        },
+        running=True,
+        gpu="2,3",
+    )
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    def fail_pick(exclude: set[str] | None = None) -> str:
+        raise AssertionError("must not auto-select while holding devices of its own")
+
+    monkeypatch.setattr(proxy, "_pick_free_gpu", fail_pick)
+
+    backend._start_container()
+
+    launched = fake.mutations[-1]
+    # Quoted, because docker splits an unquoted comma list into separate requests.
+    assert launched[launched.index("--gpus") + 1] == '"device=2,3"'
+    # Recorded in the form the exclusion set splits on, so another auto-selecting
+    # backend skips GPU 2 *and* GPU 3 rather than looking for a device "23".
+    assert backend._current_gpu == "2,3"
+
+
+def test_shrinking_tensor_parallel_size_reselects_instead_of_reusing(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A device-count change must re-select: the old list no longer fits.
+
+    Editing ``tensor_parallel_size`` from 2 down to 1 leaves a two-device
+    container to replace and a one-device shape to launch, so the count guard has
+    to reject the old list. The failure mode it protects against is not a
+    misplacement but a hard one: reusing ``"2,3"`` for a single-GPU launch hands
+    ``docker run`` two devices for a backend that will only shard across one,
+    and reusing the concatenated ``"23"`` the old template produced named no
+    device at all — either way after the ``docker rm -f`` already took the
+    working backend down.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path, name="tp2", gpu_index=None, tensor_parallel_size=1)
+    fake = _FakeDocker(
+        labels={
+            proxy.OWNER_LABEL: proxy.PROXY_OWNER,
+            proxy.PROFILE_LABEL: "0000staleprofile",
+        },
+        running=True,
+        gpu="2,3",
+    )
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    monkeypatch.setattr(proxy, "_pick_free_gpu", lambda exclude=None: "1")
+
+    backend._start_container()
+
+    launched = fake.mutations[-1]
+    assert launched[launched.index("--gpus") + 1] == "device=1"
+    assert backend._current_gpu == "1"
+
+
+def test_a_container_without_a_device_request_reads_back_as_no_gpu(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """``--gpus all`` (or no ``--gpus``) yields no id to reuse, so re-select.
+
+    ``docker inspect`` reports an empty ``DeviceRequests`` as ``null`` and a
+    count-based request with ``DeviceIDs: null``; neither names a device, so the
+    read-back must answer ``None`` rather than an empty or malformed list that
+    would reach ``docker run``.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path, name="nodevice", gpu_index=None)
+    fake = _FakeDocker(
+        labels={
+            proxy.OWNER_LABEL: proxy.PROXY_OWNER,
+            proxy.PROFILE_LABEL: "0000staleprofile",
+        },
+        running=True,
+        gpu="",
+    )
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    assert backend._running_container_gpu() is None
+
+    monkeypatch.setattr(proxy, "_pick_free_gpu", lambda exclude=None: "0")
+    backend._start_container()
+
+    launched = fake.mutations[-1]
+    assert launched[launched.index("--gpus") + 1] == "device=0"
+
+
+def test_adopting_a_tensor_parallel_container_records_every_device(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Adoption's GPU bookkeeping has to survive a multi-device backend too.
+
+    ``_current_gpu`` is split on commas to build the exclusion set every other
+    auto-selecting backend consults, so an adopted TP backend that recorded the
+    concatenated ``"23"`` excluded neither GPU 2 nor GPU 3 and invited a second
+    backend onto both.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path, name="tp2adopt", tensor_parallel_size=2)
+    stamped = _labels_from_run(["docker", "run", *backend._ownership_label_args()])
+    fake = _FakeDocker(labels=stamped, running=True, gpu="2,3")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: True)
+
+    assert backend._adopt_running_container() is True
+    assert backend._current_gpu == "2,3"
+    assert fake.mutations == []
 
 
 def test_colocation_partner_outranks_the_replaced_containers_gpu(
@@ -1109,15 +1296,19 @@ def test_warmup_stream_survives_an_unreadable_docker_inspect(
     """A docker hiccup must not 502 every streaming request — but must be visible.
 
     The contention check runs on the hot warmup path, so it has to fail towards
-    "no collision": an unreadable ``docker inspect`` is not evidence that someone
-    else owns the container, and treating it as such would take a model offline
-    for the duration of a transient daemon problem.
+    "no collision": a ``docker inspect`` that cannot be run is not evidence that
+    someone else owns the container, and treating it as such would take a model
+    offline for the duration of a transient problem.
 
     Failing that way is indistinguishable from "nobody else owns this" in the
     return value, though, and the causes are not transient hiccups only: a proxy
-    whose user cannot reach the docker socket answers "no contention" for every
-    request it will ever serve. Log the reason so an operator chasing a backend
-    that never starts sees which it was.
+    that cannot execute ``sudo docker`` at all answers "no contention" for every
+    request it will ever serve. So the reason is logged — and deliberately *not*
+    captured at a forced level here. The module configures the root handler at
+    ``INFO`` and ships no level knob, so a ``debug`` record would be dropped
+    before it reached the journal and this test would pass while the operator it
+    exists for saw nothing. Asserting that the module's own logger is enabled for
+    the record's level is what makes the coverage real.
     """
     proxy = _load_proxy(monkeypatch, tmp_path)
     backend = proxy._backends[MODEL_NAME]
@@ -1127,12 +1318,28 @@ def test_warmup_stream_survives_an_unreadable_docker_inspect(
 
     monkeypatch.setattr(proxy.subprocess, "run", boom)
 
-    with caplog.at_level(logging.DEBUG, logger=proxy.log.name):
-        assert backend.contention_error() is None
+    assert backend.contention_error() is None
 
-    logged = [r.getMessage() for r in caplog.records]
-    assert any("cannot connect to the Docker daemon" in m for m in logged), logged
-    assert any("OSError" in m for m in logged), logged
+    logged = [r for r in caplog.records if "cannot connect to the Docker daemon" in r.getMessage()]
+    assert logged, [r.getMessage() for r in caplog.records]
+    assert "OSError" in logged[0].getMessage()
+    assert proxy.log.isEnabledFor(logged[0].levelno), logging.getLevelName(logged[0].levelno)
+
+    # Latched: the check runs on every streaming request until the backend is
+    # ready, and a proxy that cannot run docker at all fails identically every
+    # time, so one line per request would bury the journal.
+    caplog.clear()
+    assert backend.contention_error() is None
+    assert caplog.records == []
+
+    # An inspect that succeeds re-arms it, so a genuinely intermittent failure is
+    # reported again rather than silenced for the life of the process.
+    fake = _FakeDocker(labels=None, running=False)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    assert backend.contention_error() is None
+    monkeypatch.setattr(proxy.subprocess, "run", boom)
+    assert backend.contention_error() is None
+    assert [r.getMessage() for r in caplog.records]
 
 
 def test_dead_ready_backend_self_heals_and_retries(monkeypatch: Any, tmp_path: Path) -> None:
