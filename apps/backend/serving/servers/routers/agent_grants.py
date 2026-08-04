@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from serving import grants
 from serving.agent_jobs.mcp_registry import McpRegistryError, get_registry
 from serving.agent_jobs.visible_models import agent_visible_models
+from serving.model_access import get_disabled_models_from_preferences
 from serving.servers.deps import (
     get_model_visibility_resolver,
     get_operational_store,
@@ -179,7 +180,14 @@ async def mint_grant(
     visible = await agent_visible_models(
         router_exec,
         visibility_resolver=visibility_resolver,
-        user_ctx={"role": user.get("role") or "free", "user_id": user["id"]},
+        user_ctx={
+            "role": user.get("role") or "free",
+            "user_id": user["id"],
+            # Without this the resolver's denylist check reads an absent
+            # key and passes, so a model the owner disabled resolves here
+            # as visible — and a grant gets minted for it.
+            "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
+        },
     )
     effective_models = grants.clamp_models(body.allowed_models, visible=visible)
 
@@ -201,8 +209,28 @@ async def mint_grant(
         allowed_mcp=list(effective_mcp),
         expires_at=grants.expiry_from(ttl),
     )
-    # The row may be a pre-existing grant (idempotent retry), so the token is
-    # minted from what the store returned rather than from the id we generated.
+
+    # The row may be one that already existed: `(external_job_id,
+    # external_attempt_id)` is unique, so a retried mint returns the first
+    # grant rather than making a second. That is the behaviour we want, but it
+    # is only *idempotent* when the request was the same request.
+    #
+    # Returning the old grant for a different subject or a different scope
+    # would be a privilege decision made by whichever call happened to arrive
+    # first — a caller asking for a narrower scope would silently be handed the
+    # wider one, and a caller naming a different user would be handed a
+    # capability belonging to someone else. The key is the control plane's own
+    # id pair, so a collision here means its state and ours disagree; refusing
+    # is the only answer that does not resolve that disagreement by guessing.
+    if row["user_id"] != user["id"] or list(row["allowed_models"]) != list(effective_models):
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "grant_conflict",
+            "A grant already exists for this attempt with a different subject or scope.",
+        )
+
+    # The token is minted from what the store returned rather than from the id
+    # generated above, which is not the id that won on a retry.
     return _grant_response(row, token=grants.mint_grant_token(row["grant_id"]))
 
 

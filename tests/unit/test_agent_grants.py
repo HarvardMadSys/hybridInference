@@ -314,11 +314,62 @@ def test_re_minting_the_same_attempt_returns_the_first_grant(client) -> None:
     """A retry after a timeout must not create a second capability."""
     _, http = client
     first = _mint(http).json()
-    second = _mint(http, allowed_models=["kimi-k2"], ttl_seconds=30).json()
+    second = _mint(http, ttl_seconds=30).json()
     assert second["grant_id"] == first["grant_id"]
-    # And the retry cannot re-scope or re-time the existing grant.
-    assert second["allowed_models"] == first["allowed_models"]
+    # The retry cannot re-time the existing grant either. A lifetime is not a
+    # privilege, so a differing TTL is still the same request — it is refused
+    # by being ignored rather than by a conflict.
     assert second["expires_at"] == first["expires_at"]
+
+
+def test_a_retry_that_asks_for_a_different_scope_is_refused(client) -> None:
+    """**Idempotent means "the same request", not "the same key".**
+
+    This case used to return 200 with the *first* grant's scope. A caller
+    asking for a narrower capability was handed a wider one and told it
+    succeeded — the privilege decision going to whichever call happened to
+    arrive first. The key is the control plane's own id pair, so a mismatch
+    means its state and ours disagree, and answering at all resolves that
+    disagreement by guessing.
+    """
+    _, http = client
+    first = _mint(http).json()
+    conflict = _mint(http, allowed_models=["kimi-k2"])
+
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["type"] == "grant_conflict"
+    # And the existing grant is untouched by the attempt.
+    assert _mint(http).json()["allowed_models"] == first["allowed_models"]
+
+
+def test_a_model_the_owner_disabled_is_not_granted(client, store, monkeypatch) -> None:
+    """The mint resolves visibility with the owner's own denylist, or without it.
+
+    `agent_visible_models` already refuses a disabled model — but only if it is
+    told which ones. The mint passed `role` and `user_id` and nothing else, so
+    the resolver's denylist check read an absent key, passed, and a grant was
+    issued for a model the owner had explicitly turned off in their dashboard.
+
+    The fake here filters the way the real resolver does, so this asserts the
+    outcome rather than the call signature: drop the wiring and a disabled
+    model comes back inside `allowed_models`.
+    """
+    seen: dict[str, Any] = {}
+
+    async def _visible(_router, **kwargs):
+        seen.update(kwargs)
+        denied = set((kwargs.get("user_ctx") or {}).get("disabled_models") or [])
+        return [m for m in ["glm-5.1", "qwen3.6-35b", "kimi-k2"] if m not in denied]
+
+    monkeypatch.setattr(agent_grants, "agent_visible_models", _visible)
+    store.users["user_1"]["preferences"] = {"disabled_models": ["glm-5.1"]}
+
+    _, http = client
+    granted = _mint(http).json()["allowed_models"]
+
+    assert seen["user_ctx"]["disabled_models"] == ["glm-5.1"]
+    assert "glm-5.1" not in granted
+    assert "kimi-k2" in granted, "the denylist narrowed more than the one model"
 
 
 def test_a_different_attempt_gets_its_own_grant(client) -> None:
