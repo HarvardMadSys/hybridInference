@@ -366,10 +366,12 @@ async def alert_slack(
     # the only one there is, so a discarded resolution strands the incident.
     #
     # Waiting is also what keeps one key's firing and resolved in order, and that
-    # only works because nothing above suspends: from this function's first line
-    # to the ``_IN_FLIGHT`` registration below there is no await that yields
-    # (``_DEDUPE_LOCK`` is never held across one), so a firing always publishes
-    # its marker before the resolution that closes it can look for it. Any await
+    # only works because a *firing* registers its marker synchronously, before any
+    # await that could yield: the wait loop below breaks immediately when
+    # ``resolution`` is false, and ``_DEDUPE_LOCK`` is never held across an await.
+    # (A resolution does suspend there — that suspension is the wait itself.) So a
+    # firing always publishes its marker before the resolution that closes it can
+    # look for it. Any await
     # added before that point reintroduces the inversion — the resolution finds
     # nothing to wait on, posts first, and the firing then lands after the
     # recovery it precedes, opening an incident whose only healthy edge is

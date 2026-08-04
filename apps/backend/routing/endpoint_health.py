@@ -752,7 +752,9 @@ class EndpointHealthRegistry:
                 breached=False,
                 severity=AlertSeverity.ERROR,
                 title=_AUTH_ALERT_TITLE,
-                context=dict,
+                # Never called: ``alert_on_transition`` builds its own context
+                # for a resolution, so this only has to be a valid callable.
+                context=lambda: {},
                 cooldown_sec=_AUTH_ALERT_COOLDOWN_SEC,
                 kind="state",
             )
