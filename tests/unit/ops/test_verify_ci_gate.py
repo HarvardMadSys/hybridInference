@@ -38,6 +38,8 @@ def _results(**overrides: str) -> str:
     "files",
     [
         ["docs/developer/architecture.md"],
+        ["docs/user/models.md"],
+        ["docs/developer/routing.md", "apps/frontend/src/app/page.tsx"],
         ["tests/unit/test_router.py"],
         ["apps/frontend/src/app/page.tsx"],
         ["apps/backend/routing/routers.py"],
@@ -58,6 +60,38 @@ def test_pr_docs_only_requires_only_changes_and_security() -> None:
         _classification(security_only=True),
         _results(),
     )
+
+
+def test_pr_sphinx_docs_requires_docs_build_alongside_security_only() -> None:
+    verify_gate(
+        "pull_request",
+        _classification(docs=True, security_only=True),
+        _results(**{"docs-build": "success"}),
+    )
+
+
+def test_pr_sphinx_docs_rejects_skipped_docs_build() -> None:
+    with pytest.raises(ValueError, match="docs-build"):
+        verify_gate(
+            "pull_request",
+            _classification(docs=True, security_only=True),
+            _results(),
+        )
+
+
+def test_pr_non_docs_change_rejects_unexpected_docs_build() -> None:
+    with pytest.raises(ValueError, match="docs-build"):
+        verify_gate(
+            "pull_request",
+            _classification(backend=True, python_tests=True),
+            _results(
+                **{
+                    "backend-quality": "success",
+                    "test": "success",
+                    "docs-build": "success",
+                }
+            ),
+        )
 
 
 def test_pr_backend_source_requires_backend_tests_and_affected_docker() -> None:
@@ -124,6 +158,7 @@ def test_pr_full_requires_all_application_jobs_and_images() -> None:
             **{
                 "backend-quality": "success",
                 "frontend-quality": "success",
+                "docs-build": "success",
                 "alert-control-plane-check": "success",
                 "test": "success",
                 "docker-build": "success",
@@ -140,6 +175,7 @@ def test_push_requires_all_app_jobs_and_skips_docker() -> None:
             **{
                 "backend-quality": "success",
                 "frontend-quality": "success",
+                "docs-build": "success",
                 "alert-control-plane-check": "success",
                 "test": "success",
             }
@@ -156,6 +192,7 @@ def test_schedule_and_manual_require_all_app_jobs_and_docker(event_name: str) ->
             **{
                 "backend-quality": "success",
                 "frontend-quality": "success",
+                "docs-build": "success",
                 "alert-control-plane-check": "success",
                 "test": "success",
                 "docker-build": "success",

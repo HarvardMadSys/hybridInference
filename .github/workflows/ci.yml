@@ -43,6 +43,7 @@ jobs:
       alert_control_plane: ${{ steps.validate.outputs.alert_control_plane }}
       docker_shared: ${{ steps.validate.outputs.docker_shared }}
       python_tests: ${{ steps.validate.outputs.python_tests }}
+      docs: ${{ steps.validate.outputs.docs }}
       security_only: ${{ steps.validate.outputs.security_only }}
       full: ${{ steps.validate.outputs.full }}
       docker_matrix: ${{ steps.validate.outputs.docker_matrix }}
@@ -82,6 +83,7 @@ jobs:
             "alert_control_plane":${{ toJSON(steps.classify.outputs.alert_control_plane) }},
             "docker_shared":${{ toJSON(steps.classify.outputs.docker_shared) }},
             "python_tests":${{ toJSON(steps.classify.outputs.python_tests) }},
+            "docs":${{ toJSON(steps.classify.outputs.docs) }},
             "security_only":${{ toJSON(steps.classify.outputs.security_only) }},
             "full":${{ toJSON(steps.classify.outputs.full) }},
             "docker_matrix":${{ toJSON(steps.classify.outputs.docker_matrix) }}}
@@ -211,6 +213,75 @@ jobs:
       # does not suppress formatting, lint, type-check, and test results.
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+
+  docs-build:
+    name: Docs Build
+    needs: changes
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' ||
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.full == 'true' ||
+      needs.changes.outputs.docs == 'true')
+    runs-on: [self-hosted, Linux, ci-general]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full fetch: GitHub intermittently serves shallow-clone packs with
+          # missing delta bases, which has been failing random jobs at checkout.
+          fetch-depth: 0
+
+      - name: Isolate uv cache dir
+        # Per-job UV_CACHE_DIR via GITHUB_ENV: job-level env cannot use the
+        # runner context, and concurrent self-hosted jobs otherwise share
+        # ~/.cache/uv and race on hardlinking into the venv.
+        run: |
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}" >> "${GITHUB_ENV}"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          prune-cache: false
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Cache .venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          uv venv
+          # Bounded retry for residual install-time cache ENOENT.
+          for attempt in 1 2 3; do
+            if uv sync --group dev; then
+              exit 0
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              echo "uv sync failed (attempt ${attempt}/3); retrying..." >&2
+              sleep $((attempt * 2))
+            fi
+          done
+          echo "uv sync failed after 3 attempts" >&2
+          exit 1
+
+      - name: Build internal docs (warnings are errors)
+        # Mirrors the Cloudflare Pages build command for the `hybridinference`
+        # project (internaldoc.freeinference.org), which runs `sphinx-build -W`
+        # and therefore fails its deploy on any Sphinx warning. Preview
+        # deployments are effectively disabled for non-production branches, so
+        # without this job a broken toctree or xref only surfaces after merge,
+        # as a stale site. Sphinx/myst-parser/sphinx-rtd-theme come from the
+        # `dev` dependency group so the versions track uv.lock.
+        run: uv run sphinx-build -b html docs/developer docs/build/html -W --keep-going
 
   alert-control-plane-check:
     name: Alert Service Quality
@@ -607,6 +678,7 @@ jobs:
       - changes
       - backend-quality
       - frontend-quality
+      - docs-build
       - alert-control-plane-check
       - test
       - security
@@ -627,6 +699,7 @@ jobs:
             "alert_control_plane":${{ toJSON(needs.changes.outputs.alert_control_plane) }},
             "docker_shared":${{ toJSON(needs.changes.outputs.docker_shared) }},
             "python_tests":${{ toJSON(needs.changes.outputs.python_tests) }},
+            "docs":${{ toJSON(needs.changes.outputs.docs) }},
             "security_only":${{ toJSON(needs.changes.outputs.security_only) }},
             "full":${{ toJSON(needs.changes.outputs.full) }},
             "docker_matrix":${{ toJSON(needs.changes.outputs.docker_matrix) }}}
@@ -634,6 +707,7 @@ jobs:
             {"changes":${{ toJSON(needs.changes.result) }},
             "backend-quality":${{ toJSON(needs.backend-quality.result) }},
             "frontend-quality":${{ toJSON(needs.frontend-quality.result) }},
+            "docs-build":${{ toJSON(needs.docs-build.result) }},
             "alert-control-plane-check":${{ toJSON(needs.alert-control-plane-check.result) }},
             "test":${{ toJSON(needs.test.result) }},
             "security":${{ toJSON(needs.security.result) }},

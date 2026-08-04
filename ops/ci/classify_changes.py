@@ -30,6 +30,7 @@ CATEGORIES = (
     "alert_control_plane",
     "docker_shared",
     "python_tests",
+    "docs",
     "security_only",
     "full",
 )
@@ -87,6 +88,11 @@ DOCKER_IMAGE_FILES = {
 # repo-root README counts as docs regardless of directory.
 DOCS_FILES = frozenset({"LICENSE"})
 DOCS_PREFIXES = ("docs/",)
+# Sphinx source tree for the internal doc site (internaldoc.freeinference.org).
+# Only this subtree feeds `sphinx-build docs/developer`, so it -- not docs in
+# general -- gates the docs build. The toctree is self-contained and no page
+# uses autodoc, so nothing outside this prefix can break that build.
+SPHINX_SOURCE_PREFIX = "docs/developer/"
 
 
 @dataclass
@@ -100,6 +106,7 @@ class Classification:
     alert_control_plane: bool = False
     docker_shared: bool = False
     python_tests: bool = False
+    docs: bool = False
     security_only: bool = False
     full: bool = False
     reason: str = ""
@@ -178,9 +185,14 @@ def classify(files: Sequence[str] | None) -> Classification:
             result.python_tests = True
             hit("full", path)
             continue
-        # 2. Documentation never triggers application checks.
+        # 2. Documentation never triggers application checks, but the Sphinx
+        #    source tree gates the docs build.
         if _is_docs(path):
-            hit("docs", path)
+            if path.startswith(SPHINX_SOURCE_PREFIX):
+                result.docs = True
+                hit("docs", path)
+            else:
+                hit("docs_other", path)
             continue
         # 3. Narrow buckets (a path may hit more than one, e.g. oncall+backend).
         recognized = False
@@ -247,8 +259,11 @@ def classify(files: Sequence[str] | None) -> Classification:
         or result.docker_shared
         or result.python_tests
     )
+    # `docs` is deliberately absent from `narrow`: it gates the docs build, not
+    # an application check, so a docs-only change stays security_only.
     if not result.full and not narrow:
-        # Everything was documentation: only security scan + gate are needed.
+        # Everything was documentation: only the docs build (when the Sphinx
+        # source changed), the security scan, and the gate are needed.
         result.security_only = True
 
     if unknown:
@@ -256,7 +271,8 @@ def classify(files: Sequence[str] | None) -> Classification:
     elif result.full:
         result.reason = "matched full triggers"
     elif result.security_only:
-        result.reason = "docs-only change; only security + gate needed"
+        suffix = " + docs build" if result.docs else ""
+        result.reason = f"docs-only change; only security + gate{suffix} needed"
     else:
         result.reason = "matched narrow rules"
 
@@ -346,7 +362,9 @@ def _write_summary(
     ]
     lines += [f"| `{name}` | {value} |" for name, value in result.as_outputs().items()]
     lines.append(f"| `docker_matrix` | `{json.dumps(result.docker_matrix())}` |")
-    narrow_matches = {k: v for k, v in result.matched.items() if k != "docs"}
+    # `docs_other` is documentation with no CI consequence at all; the `docs`
+    # bucket does gate the docs build, so it stays in the summary.
+    narrow_matches = {k: v for k, v in result.matched.items() if k != "docs_other"}
     if narrow_matches:
         lines += ["", "<details><summary>matched files</summary>", ""]
         for category in sorted(narrow_matches):
