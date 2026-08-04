@@ -320,77 +320,89 @@ def _real_request(
 
 @pytest.mark.asyncio
 async def test_capture_reads_the_body_of_a_request_rejected_pre_handler():
-    """The prompt is recovered even though no handler ever parsed the body."""
+    """The prompt is recovered even though no handler ever parsed the body.
+
+    Recovered as raw text, not a decoded object — see
+    ``capture_rejected_prompt`` on why decoding attacker-chosen JSON here is
+    unbounded in ways a byte cap cannot reach.
+    """
     body = json.dumps({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]}).encode()
     got = await capture_rejected_prompt(_real_request(body))
-    assert got == [{"role": "user", "content": "hi"}]
+    assert got == body.decode()
 
 
 @pytest.mark.asyncio
-async def test_capture_prefers_an_already_parsed_body():
-    """A body a previous dependency cached is reused, not re-read.
+async def test_capture_uses_an_already_cached_body():
+    """A body already read is reused, not re-read.
 
-    This is the live path on typed-body routes: FastAPI parses a declared body
-    model *before* solving dependencies, so ``/v1/embeddings`` reaches a gate
-    rejection with the body already on ``request._json``.
+    This is the live path on typed-body routes: FastAPI reads and parses a
+    declared body model *before* solving dependencies, so ``/v1/embeddings``
+    reaches a gate rejection with the bytes already on ``request._body``.
     """
+    raw = json.dumps({"messages": [{"role": "user", "content": "cached"}]}).encode()
     request = _real_request(b"")
-    request._json = {"messages": [{"role": "user", "content": "cached"}]}
-    assert await capture_rejected_prompt(request) == [{"role": "user", "content": "cached"}]
-
-
-@pytest.mark.asyncio
-async def test_capture_applies_the_size_bound_to_a_cached_body_too():
-    """An oversized payload is declined whether or not it was already parsed.
-
-    Checked from the header, never by re-serializing the parsed object: measuring
-    it that way would allocate the whole payload again, costing more than the
-    bound saves.
-    """
-    request = _real_request(b"", headers=[(b"content-length", b"9999999")])
-    request._json = {"messages": [{"role": "user", "content": "huge"}]}
-    assert await capture_rejected_prompt(request, max_body_bytes=1024) == ""
-
-
-@pytest.mark.asyncio
-async def test_capture_uses_a_cached_body_with_no_declared_length_when_raw_bytes_fit():
-    """No Content-Length is fine when the raw bytes are there and within the cap.
-
-    The chunked/unknown-length skip exists to bound a read not yet done; an
-    already-parsed body is bounded by its actual size instead, so declining it
-    would forfeit a free prompt for no gain.
-    """
-    raw = json.dumps({"messages": [{"role": "user", "content": "chunked but parsed"}]}).encode()
-    request = _real_request(b"", headers=[(b"transfer-encoding", b"chunked")])
     request._body = raw
-    request._json = json.loads(raw)
-    assert await capture_rejected_prompt(request) == [
-        {"role": "user", "content": "chunked but parsed"}
-    ]
+    assert await capture_rejected_prompt(request) == raw.decode()
 
 
 @pytest.mark.asyncio
-async def test_capture_bounds_a_cached_body_by_its_raw_bytes():
-    """An oversized parsed body is declined even with no Content-Length at all.
+async def test_capture_truncates_rather_than_declining_an_oversized_cached_body():
+    """A cached body is bounded by truncation, whatever its size or headers.
 
-    This is the case a header check cannot bound — chunked, or HTTP/2, where
-    FastAPI has already populated ``_json``. The prompt would be serialized into
-    ``api_logs``, and a blocked caller is subject to no quota, so leaving it
-    unbounded is a way for a refused source to grow the database.
+    Bytes already in hand need no length header to bound them, and a truncated
+    prefix is more useful than nothing — the point of the row is showing what a
+    refused caller sent.
     """
     raw = json.dumps({"messages": [{"role": "user", "content": "x" * 5000}]}).encode()
     request = _real_request(b"", headers=[(b"transfer-encoding", b"chunked")])
     request._body = raw
-    request._json = json.loads(raw)
-    assert await capture_rejected_prompt(request, max_body_bytes=1024) == ""
+    got = await capture_rejected_prompt(request, max_chars=256)
+    assert len(got) == 256
+    assert got == raw[:256].decode()
 
 
 @pytest.mark.asyncio
-async def test_capture_declines_a_cached_body_that_cannot_be_measured():
-    """With neither raw bytes nor a declared length, there is no bound to apply."""
-    request = _real_request(b"", headers=[(b"transfer-encoding", b"chunked")])
-    request._json = {"messages": [{"role": "user", "content": "unmeasurable"}]}
-    assert await capture_rejected_prompt(request) == ""
+async def test_capture_bounds_a_decoded_expansion_bomb_to_its_wire_size():
+    """A body that would explode when decoded costs only its text length.
+
+    A wire-valid ~1 MiB array of tiny objects decodes into tens of MiB of Python
+    objects, so a byte cap on the wire bounds nothing that matters. Returning
+    text means the retained size *is* the length — no decode, no expansion.
+    """
+    raw = ('{"messages":[' + "{}," * 60_000 + "{}]}").encode()
+    request = _real_request(b"")
+    request._body = raw
+    got = await capture_rejected_prompt(request, max_chars=4096)
+    assert isinstance(got, str)
+    assert len(got) == 4096
+
+
+@pytest.mark.asyncio
+async def test_capture_survives_a_deeply_nested_body():
+    """A nesting bomb yields text instead of tripping a recursive sanitizer.
+
+    Decoded and handed to the store, ~1000-deep nesting makes its recursive
+    ``strip_null_bytes`` raise ``RecursionError``, which ``log_rejection``
+    swallows — dropping the row and handing a blocked caller a way to suppress
+    their own audit record. Text has nothing to recurse into.
+    """
+    raw = b'{"messages":' + b"[" * 1200 + b"]" * 1200 + b"}"
+    request = _real_request(b"")
+    request._body = raw
+    got = await capture_rejected_prompt(request)
+    assert isinstance(got, str)
+    assert got.startswith('{"messages":[[[')
+
+
+@pytest.mark.asyncio
+async def test_capture_replaces_a_codepoint_split_by_truncation():
+    """Slicing mid-codepoint mangles one character, never loses the prompt."""
+    raw = ('{"messages":"' + "é" * 100 + '"}').encode()
+    request = _real_request(b"")
+    request._body = raw
+    got = await capture_rejected_prompt(request, max_chars=14)
+    assert got.startswith('{"messages":"')
+    assert "�" in got
 
 
 @pytest.mark.asyncio
@@ -446,7 +458,7 @@ async def test_capture_gives_up_instead_of_queueing_when_all_slots_are_busy():
 
     # With a free slot the same request is captured, so the skip above was the
     # cap talking and not a broken read path.
-    assert await capture_rejected_prompt(_real_request(body)) == [{"role": "user", "content": "hi"}]
+    assert await capture_rejected_prompt(_real_request(body)) == body.decode()
 
 
 @pytest.mark.asyncio
@@ -462,9 +474,7 @@ async def test_capture_releases_its_slot_after_a_failed_read():
     assert await capture_rejected_prompt(stalled, timeout_sec=0.01) == ""
     assert not mod._enrichment_slots.locked()
     body = json.dumps({"messages": [{"role": "user", "content": "after"}]}).encode()
-    assert await capture_rejected_prompt(_real_request(body)) == [
-        {"role": "user", "content": "after"}
-    ]
+    assert await capture_rejected_prompt(_real_request(body)) == body.decode()
 
 
 @pytest.mark.asyncio
@@ -634,8 +644,13 @@ async def test_capture_gives_up_on_a_stalled_body():
 
 
 @pytest.mark.asyncio
-async def test_capture_tolerates_a_non_json_body():
-    assert await capture_rejected_prompt(_real_request(b"not json at all")) == ""
+async def test_capture_records_a_non_json_body_verbatim():
+    """Malformed bodies are still worth recording — often that *is* the finding.
+
+    Nothing parses the body any more, so a scanner's garbage payload is logged as
+    the text it was rather than discarded for failing to be JSON.
+    """
+    assert await capture_rejected_prompt(_real_request(b"not json at all")) == "not json at all"
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import BaseModel
 
 from serving.servers.auth import verify_api_key
 
@@ -54,6 +55,20 @@ def _build_app(monkeypatch, *, op_store_user: dict[str, Any] | None) -> tuple[Fa
     app.state.services.log_store = MagicMock()
     app.state.services.runtime_settings = MagicMock()
     return app, log_calls
+
+
+class EmbedBody(BaseModel):
+    """Stand-in for ``EmbeddingRequest``: a route with a *declared* body model.
+
+    Module scope on purpose. This file uses ``from __future__ import
+    annotations``, so annotations are strings that FastAPI resolves against
+    module globals — a model defined inside a test function is invisible there,
+    FastAPI never registers a body field, and the route silently stops being the
+    typed-body route the test means to exercise.
+    """
+
+    model: str
+    input: str
 
 
 def _recording_queue(sink: list[dict]):
@@ -169,7 +184,9 @@ async def test_blocked_ip_rejection_logs_prompt_and_user(monkeypatch, blocked_lo
     assert resp.status_code == 429
     assert len(log_calls) == 1
     assert log_calls[0]["error_code"] == "ip_blocked"
-    assert log_calls[0]["prompt"] == messages
+    # Raw request text, not a parsed messages array: nothing decodes an
+    # attacker-chosen body on this path. The content is still all there.
+    assert '"who am I"' in log_calls[0]["prompt"]
     assert log_calls[0]["user"] == {"user_id": "u1", "role": "pro"}
 
 
@@ -189,7 +206,7 @@ async def test_blocked_ip_rejection_without_a_valid_key_has_no_user(monkeypatch,
 
     assert resp.status_code == 429
     assert log_calls[0]["user"] is None
-    assert log_calls[0]["prompt"] == [{"role": "user", "content": "probe"}]
+    assert '"probe"' in log_calls[0]["prompt"]
 
 
 @pytest.mark.asyncio
@@ -291,15 +308,16 @@ async def test_blocked_ip_on_a_typed_body_route_bounds_an_oversized_prompt(
 ):
     """End-to-end over the path that actually pre-parses the body.
 
-    FastAPI parses a declared body model *before* solving dependencies, so on a
-    typed route (``/v1/embeddings`` takes ``EmbeddingRequest``) the gate sees a
-    body already on ``request._json``. The size cap has to hold there too, or a
-    blocked caller — under no quota, auth, or concurrency limit — could write
-    arbitrarily large prompts into api_logs.
+    FastAPI reads and parses a declared body model *before* solving dependencies,
+    so on a typed route (``/v1/embeddings`` takes ``EmbeddingRequest``) the gate
+    sees a body already cached. The retained prompt has to stay bounded there
+    too, or a blocked caller — under no quota, auth, or concurrency limit — could
+    write arbitrarily large rows into api_logs.
     """
-    from pydantic import BaseModel
-
-    from serving.observability.rejection_log import REJECTED_PROMPT_MAX_BODY_BYTES
+    from serving.observability.rejection_log import (
+        REJECTED_PROMPT_MAX_BODY_BYTES,
+        REJECTED_PROMPT_MAX_CHARS,
+    )
 
     log_calls: list[dict] = []
     monkeypatch.setattr("serving.servers.auth.queue_rejection_log", _recording_queue(log_calls))
@@ -310,10 +328,6 @@ async def test_blocked_ip_on_a_typed_body_route_bounds_an_oversized_prompt(
     from fastapi import Depends
 
     from serving.servers.deps import get_log_store, get_operational_store
-
-    class EmbedBody(BaseModel):
-        model: str
-        input: str
 
     app = FastAPI()
     app.dependency_overrides[get_operational_store] = lambda: op
@@ -343,10 +357,12 @@ async def test_blocked_ip_on_a_typed_body_route_bounds_an_oversized_prompt(
 
     assert big.status_code == 429
     assert small.status_code == 429
-    # Oversized declined; a small one on the same pre-parsed path still captured,
-    # so the decline above is the cap and not a broken cached-body path.
-    assert log_calls[0]["prompt"] == ""
-    assert log_calls[1]["prompt"] == "hi"
+    # Truncated to the retention cap rather than declined: a prefix of what a
+    # refused caller sent beats nothing, and its length is its whole cost.
+    assert len(log_calls[0]["prompt"]) == REJECTED_PROMPT_MAX_CHARS
+    # A small one on the same pre-parsed path is captured whole, so the
+    # truncation above is the cap and not a broken cached-body path.
+    assert log_calls[1]["prompt"] == '{"model":"m","input":"hi"}'
 
 
 @pytest.mark.asyncio
@@ -374,7 +390,7 @@ async def test_blocked_ip_queued_log_retains_no_body_bytes(monkeypatch, blocked_
     assert resp.status_code == 429
     # The prompt still made it through — releasing the body must not cost the row
     # the thing this whole change exists to record.
-    assert log_calls[0]["prompt"] == body["messages"]
+    assert '"z' in log_calls[0]["prompt"]
     # But the request handed to the queued task carries no body bytes.
     queued_request = log_calls[0]["request"]
     assert not getattr(queued_request, "_body", b"")
@@ -436,7 +452,7 @@ async def test_blocked_ip_identity_lookup_failure_still_returns_429(monkeypatch,
     assert resp.headers["Retry-After"] == "1000"
     assert log_calls[0]["user"] is None
     # The prompt is captured independently, so it survives the failed lookup.
-    assert log_calls[0]["prompt"] == [{"role": "user", "content": "hi"}]
+    assert '"hi"' in log_calls[0]["prompt"]
 
 
 @pytest.mark.asyncio

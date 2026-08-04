@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 from typing import TYPE_CHECKING, Any
 
 from serving.utils import context as req_ctx
@@ -41,6 +40,14 @@ logger = get_logger(__name__)
 #: refused either way, so buffering an arbitrarily large payload to enrich a log
 #: row would hand a rejected source a cheap memory-amplification lever.
 REJECTED_PROMPT_MAX_BODY_BYTES = 1_048_576
+
+#: Longest prompt text kept for a rejection row. The byte cap above bounds what
+#: is *read*; this bounds what is *retained and written*, and it is the only
+#: bound that survives contact with attacker-chosen content — see
+#: :func:`capture_rejected_prompt` on why the prompt is text and not a decoded
+#: object. Generous enough that a real request's opening is legible, small enough
+#: that the whole pending queue cannot amount to anything.
+REJECTED_PROMPT_MAX_CHARS = 65_536
 
 #: Wall-clock cap on any single enrichment lookup (body read, identity
 #: resolution). A rejected caller has no claim on the server's time, so slow work
@@ -227,87 +234,85 @@ async def capture_rejected_prompt(
     request: Request,
     *,
     max_body_bytes: int = REJECTED_PROMPT_MAX_BODY_BYTES,
+    max_chars: int = REJECTED_PROMPT_MAX_CHARS,
     timeout_sec: float = REJECTED_ENRICHMENT_TIMEOUT_SEC,
-) -> list[dict[str, Any]] | str:
+) -> str:
     """Best-effort prompt for a request rejected before its handler ran.
 
     Two routes reach here in different states, and the difference is not
     cosmetic. FastAPI parses a *typed* body before it solves dependencies, so on
     a route declaring a model (``/v1/embeddings`` takes ``EmbeddingRequest``) the
-    body is already read and cached on ``request._json`` by the time a gate
-    rejects — reusing it costs nothing. A route taking a bare ``Request``
-    (``/v1/chat/completions``) has had nothing read, so the body must be read
-    here or the prompt is lost.
+    body is already read and cached by the time a gate rejects — reusing it costs
+    nothing. A route taking a bare ``Request`` (``/v1/chat/completions``) has had
+    nothing read, so the body must be read here or the prompt is lost. That read
+    is attacker-controlled input on a shed-load path, so it is bounded four ways:
+    ``Transfer-Encoding`` absent (RFC 9112 makes ``Content-Length`` meaningless
+    when it is present, so it would not be a bound at all), a declared
+    ``Content-Length`` no larger than *max_body_bytes*, *timeout_sec* of wall
+    clock, and the shared :func:`bounded_enrichment` budget.
 
-    That second case is attacker-controlled input on a shed-load path, so the
-    read is bounded four ways: ``Transfer-Encoding`` absent (RFC 9112 makes
-    ``Content-Length`` meaningless when it is present, so it would not be a bound
-    at all), a declared ``Content-Length`` no larger than *max_body_bytes*,
-    *timeout_sec* of wall clock, and the shared :func:`bounded_enrichment`
-    budget. Worst case a rejected flood buys is a fixed handful of tasks for a
-    fraction of a second, rather than one held task per connection.
+    **Returns raw text, truncated to *max_chars* — never a decoded object.** This
+    is the load-bearing decision, not an implementation detail. A refused caller
+    is subject to no quota, auth, or concurrency limit, and ``json.loads`` on a
+    body they chose is unbounded in two ways a byte cap cannot reach:
 
-    The size bound applies to *both* paths — an oversized payload is declined
-    however it arrived, because the prompt gets serialized into ``api_logs`` and
-    a blocked caller is subject to no quota, no auth, and no concurrency limit.
-    Unbounded, that is a way for a refused source to grow the database.
+    - *Expansion.* A wire-valid 1 MiB array of tiny objects decodes into tens of
+      MiB of Python objects, so bounding the bytes bounds nothing that matters.
+    - *Depth.* A deeply nested body decodes fine, then makes the log store's
+      recursive sanitizer raise ``RecursionError`` — which
+      :func:`log_rejection` swallows, dropping the row. That would hand a blocked
+      caller a way to suppress their own audit record, which is strictly worse
+      than logging no prompt at all.
 
-    For an already-parsed body the bound is measured from the raw bytes Starlette
-    cached on ``request._body`` — exact, and free, since FastAPI read them before
-    parsing. That is the only bound available when the request declared no
-    ``Content-Length`` at all (chunked, HTTP/2), and such a body is declined when
-    even that is missing. It is *not* measured by re-serializing the parsed
-    object, which would newly allocate the whole payload — costing more than the
-    check saves.
+    A byte-sliced string has neither property: its memory is its length, and
+    there is nothing to recurse into. The cost is that a rejection row records
+    the raw request text rather than a parsed ``messages`` array — the right
+    trade for a row whose whole purpose is showing what a refused caller sent.
 
     Returns ``""`` when no prompt can be recovered, for any reason.
 
     Must be awaited *before* the rejection response is sent: once the response
     completes, the ASGI ``receive`` channel no longer yields body chunks.
     """
+    # An already-cached body needs no read and no length header: it is bytes in
+    # hand, and slicing bounds it whatever its size. Starlette caches it on
+    # ``_body`` whenever FastAPI read it, including for a request that declared
+    # no length at all (chunked, HTTP/2) — the case a header check cannot bound.
+    cached_body = getattr(request, "_body", None)
+    if cached_body:
+        return _bounded_text(cached_body, max_chars)
+
     declared = request.headers.get("content-length")
-    declared_len: int | None = None
-    if declared is not None:
-        try:
-            declared_len = int(declared)
-        except ValueError:
-            return ""
-        if declared_len > max_body_bytes:
-            return ""
-
-    cached_json = getattr(request, "_json", None)
-    if cached_json is not None:
-        # Prefer the exact raw length over the declared one. Starlette caches the
-        # bytes on ``_body`` when FastAPI reads them, so this is O(1) and holds
-        # even for a request that declared no length at all — the case a header
-        # check cannot bound. With neither available there is no bound to apply,
-        # so the body is declined rather than logged unmeasured.
-        cached_body = getattr(request, "_body", None)
-        if cached_body is not None:
-            if len(cached_body) > max_body_bytes:
-                return ""
-        elif declared_len is None:
-            return ""
-        try:
-            return extract_prompt_from_body(cached_json)
-        except Exception:
-            return ""
-
+    if declared is None:
+        return ""
+    try:
+        declared_len = int(declared)
+    except ValueError:
+        return ""
+    if declared_len <= 0 or declared_len > max_body_bytes:
+        return ""
     # ``Transfer-Encoding`` at all, not just "chunked": when it is present
     # RFC 9112 requires ``Content-Length`` to be ignored, so a declared length
     # alongside it is not a bound we may rely on. Only relevant to a body we are
-    # about to read ourselves — an already-parsed one cost us nothing.
+    # about to read ourselves — an already-cached one needed no bound to obtain.
     if request.headers.get("transfer-encoding"):
-        return ""
-    if declared_len is None or declared_len <= 0:
         return ""
 
     raw = await bounded_enrichment(request.body(), default=None, timeout_sec=timeout_sec)
     if raw is None:
         # No slot, timeout, or disconnect — all mean "no prompt".
         return ""
+    return _bounded_text(raw, max_chars)
+
+
+def _bounded_text(raw: bytes, max_chars: int) -> str:
+    """Decode at most *max_chars* bytes of *raw* to text, never raising.
+
+    ``errors="replace"`` because slicing can land mid-codepoint, and a mangled
+    final character is not a reason to lose the whole prompt.
+    """
     try:
-        return extract_prompt_from_body(json.loads(raw))
+        return raw[:max_chars].decode("utf-8", errors="replace")
     except Exception:
         return ""
 
