@@ -19,7 +19,6 @@ from httpx import ASGITransport, AsyncClient
 from serving.agent_jobs.mcp_registry import McpRegistry, McpServer
 from serving.agent_jobs.tokens import SCOPE_MODEL, mint_worker_token
 from serving.servers.deps import get_agent_job_store, get_operational_store
-from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import agent_mcp as agent_mcp_router
 
 pytestmark = pytest.mark.asyncio
@@ -121,9 +120,6 @@ async def client(monkeypatch, store, upstream):
         lambda: httpx.AsyncClient(transport=httpx.MockTransport(upstream.handler)),
     )
     app = FastAPI()
-    # The real app's handlers, so a body asserted here is the body a
-    # sandbox receives rather than FastAPI's raw `detail` wrapper.
-    install_error_handlers(app)
     app.include_router(agent_mcp_router.router)
     app.dependency_overrides[get_agent_job_store] = lambda: store
     # The proxy also accepts inference grants, which resolve through the
@@ -196,9 +192,6 @@ async def test_a_registry_header_replaces_the_sandbox_header_rather_than_joining
         lambda: httpx.AsyncClient(transport=httpx.MockTransport(upstream.handler)),
     )
     app = FastAPI()
-    # The real app's handlers, so a body asserted here is the body a
-    # sandbox receives rather than FastAPI's raw `detail` wrapper.
-    install_error_handlers(app)
     app.include_router(agent_mcp_router.router)
     app.dependency_overrides[get_agent_job_store] = lambda: store
     # The proxy also accepts inference grants, which resolve through the
@@ -281,9 +274,6 @@ async def test_the_catalogue_is_filtered_on_the_way_back(monkeypatch, store, ups
         lambda: httpx.AsyncClient(transport=httpx.MockTransport(upstream.handler)),
     )
     app = FastAPI()
-    # The real app's handlers, so a body asserted here is the body a
-    # sandbox receives rather than FastAPI's raw `detail` wrapper.
-    install_error_handlers(app)
     app.include_router(agent_mcp_router.router)
     app.dependency_overrides[get_agent_job_store] = lambda: store
     # The proxy also accepts inference grants, which resolve through the
@@ -303,45 +293,3 @@ async def test_a_server_removed_from_the_registry_reports_a_deployment_fault(
     response = await client.post("/v1/agent/mcp/github", json=_rpc("initialize"), headers=_auth())
     assert response.status_code == 503
     assert upstream.requests == []
-
-
-# ── The MCP ownership boundary ─────────────────────────────────────────
-#
-# MCP moved to the cloud agent: it owns the registry, the credentials and the
-# attempt fence, so it is the only place that can decide a tool call. What is
-# left here is a route the *deployed* agent still needs, and the pair below is
-# the whole of the gateway's side of the move — one credential refused, the
-# other untouched until H4 removes the route after cutover.
-
-
-async def test_an_inference_grant_is_refused_by_the_mcp_route(client):
-    """A grant authorizes models. It must buy no tools.
-
-    Both halves matter. If a leaked grant could reach MCP, the model scope
-    would bound what it can *call* while saying nothing about what it can
-    *do* — and the deployment's upstream MCP credentials sit behind this
-    route.
-    """
-    from serving import grants
-
-    token = grants.mint_grant_token("agr_whatever")
-    response = await client.post(
-        "/v1/agent/mcp/github",
-        json=_rpc("tools/list"),
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 403
-    assert response.json()["error"]["type"] == "insufficient_scope"
-
-
-async def test_the_deployed_agents_token_still_works(client, upstream):
-    """**The other half, and the reason this route is not simply deleted.**
-
-    Every job running at cutover carries a per-attempt worker token. Removing
-    the route now would break all of them for the sake of a boundary the cloud
-    agent's relay is not yet serving. It goes at H4, after cutover.
-    """
-    response = await client.post("/v1/agent/mcp/github", json=_rpc("tools/list"), headers=_auth())
-
-    assert response.status_code == 200

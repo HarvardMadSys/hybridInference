@@ -627,6 +627,7 @@ class CachedOperationalStore(OperationalStore):
         external_job_id: str,
         external_attempt_id: str,
         allowed_models: list[str],
+        allowed_mcp: list[str],
         expires_at: datetime,
     ) -> Row:
         """Delegate to wrapped store."""
@@ -636,6 +637,7 @@ class CachedOperationalStore(OperationalStore):
             external_job_id=external_job_id,
             external_attempt_id=external_attempt_id,
             allowed_models=allowed_models,
+            allowed_mcp=allowed_mcp,
             expires_at=expires_at,
         )
 

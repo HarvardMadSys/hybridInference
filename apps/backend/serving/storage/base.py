@@ -612,6 +612,7 @@ class OperationalStore(ABC):
         external_job_id: str,
         external_attempt_id: str,
         allowed_models: list[str],
+        allowed_mcp: list[str],
         expires_at: datetime,
     ) -> Row:
         """Create a grant, or return the existing one for this attempt.
