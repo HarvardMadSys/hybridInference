@@ -119,10 +119,10 @@ def test_full_triggers(path: str) -> None:
 @pytest.mark.parametrize(
     "path",
     [
-        "docs/developer/architecture.md",
         "apps/frontend/README.md",  # non-root markdown is documentation
         "LICENSE",
         "some/deep/NOTES.md",
+        "docs/user/models.md",  # not part of the internal Sphinx build
         # Overlay doc-site source: exempt from the distributions/ full trigger,
         # markdown and non-markdown alike.
         "distributions/example-site/content/docs/docs/source/quickstart.md",
@@ -135,6 +135,30 @@ def test_docs_only_changes_are_security_only(path: str) -> None:
     assert _true_categories(result) == {"security_only"}
     assert result.full is False
     assert result.docker_matrix() == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/developer/architecture.md",
+        "docs/developer/index.rst",
+        "docs/developer/conf.py",
+        "docs/developer/_static/custom.css",
+    ],
+)
+def test_sphinx_source_changes_add_the_docs_build(path: str) -> None:
+    # The internal doc site builds `docs/developer` with `sphinx-build -W`, so
+    # this subtree must gate the docs build -- and nothing else.
+    result = classify([path])
+    assert _true_categories(result) == {"docs", "security_only"}
+    assert result.full is False
+    assert result.docker_matrix() == []
+
+
+def test_docs_build_does_not_suppress_application_categories() -> None:
+    result = classify(["docs/developer/routing.md", "apps/frontend/src/app/page.tsx"])
+    assert _true_categories(result) == {"docs", "frontend"}
+    assert result.docker_matrix() == ["frontend"]
 
 
 def test_unknown_path_forces_full() -> None:
@@ -211,6 +235,7 @@ def test_cli_writes_outputs_and_json(tmp_path: Path) -> None:
         line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines() if line
     )
     assert written["frontend"] == "true"
+    assert written["docs"] == "false"
     assert written["security_only"] == "false"
     assert written["docker_matrix"] == '["frontend"]'
 

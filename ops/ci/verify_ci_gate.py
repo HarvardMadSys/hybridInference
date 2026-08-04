@@ -21,6 +21,7 @@ BOOLEAN_OUTPUTS = (
     "alert_control_plane",
     "docker_shared",
     "python_tests",
+    "docs",
     "security_only",
     "full",
 )
@@ -30,7 +31,12 @@ APP_JOB_CATEGORIES = {
     "frontend-quality": "frontend",
     "alert-control-plane-check": "alert_control_plane",
     "test": "python_tests",
+    "docs-build": "docs",
 }
+# Outputs that are not application-check categories: `full` and `security_only`
+# describe the run shape, and `docs` gates the docs build, which a docs-only
+# change runs *alongside* security_only rather than instead of it.
+NON_CATEGORY_OUTPUTS = frozenset({"security_only", "full", "docs"})
 REQUIRED_JOBS = (
     "changes",
     *APP_JOB_CATEGORIES,
@@ -99,7 +105,7 @@ def parse_classification(payload: str) -> ClassificationOutputs:
     if matrix != canonical:
         raise ValueError(f"docker_matrix must use stable order {list(DOCKER_IMAGES)}")
 
-    narrow = [name for name in BOOLEAN_OUTPUTS if name not in {"security_only", "full"}]
+    narrow = [name for name in BOOLEAN_OUTPUTS if name not in NON_CATEGORY_OUTPUTS]
     primary = [name for name in narrow if name != "python_tests"]
     if booleans["security_only"]:
         if booleans["full"] or any(booleans[name] for name in narrow):
