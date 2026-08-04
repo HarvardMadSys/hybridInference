@@ -6,8 +6,7 @@ import asyncio
 import os
 import threading
 import time
-from collections import Counter, deque
-from dataclasses import dataclass, field
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
@@ -78,11 +77,10 @@ _AUTH_ALERT_COOLDOWN_SEC = 300
 _AUTH_ALERT_TITLE = "Upstream rejected gateway credential"
 
 # Minimum spacing between *scheduling* upstream-auth pages for one endpoint. The
-# condition fails 100% of requests, so without this every request would queue an
-# alert edge and pay ``alert_slack``'s snooze lookup only to be dropped by the
-# cooldown above; it is also what keeps the per-endpoint delivery queue short.
-# Deliberately far shorter than that cooldown so a page dropped by an unreachable
-# sink is retried in seconds rather than after five minutes.
+# condition fails 100% of requests, so without this every request would schedule a
+# send and pay ``alert_slack``'s snooze lookup only to be dropped by the cooldown
+# above. Deliberately far shorter than that cooldown so a page dropped by an
+# unreachable sink is retried in seconds rather than after five minutes.
 _AUTH_ALERT_SCHEDULE_INTERVAL_SEC = 5.0
 
 
@@ -91,22 +89,11 @@ def _auth_alert_key(endpoint_id: str) -> str:
 
     One key per endpoint: a wrong key on one local proxy must not mute or resolve
     another endpoint's rejection. Shared by the firing and resolving edges, since
-    the tracker matches them by key.
+    the tracker matches them by key. It is also what orders them: ``alert_slack``
+    serializes per dedupe key, so one endpoint's page and its recovery cannot
+    overtake each other while another endpoint's outage still pages immediately.
     """
     return f"upstream_auth:{endpoint_id}"
-
-
-@dataclass(frozen=True)
-class _AuthAlertEdge:
-    """One upstream-auth transition waiting to be delivered for an endpoint.
-
-    ``context`` is captured when the edge is queued, not when it is sent: later
-    requests keep moving the endpoint's counters, and the page has to describe the
-    rejection that produced it.
-    """
-
-    breached: bool
-    context: dict[str, Any] = field(default_factory=dict)
 
 
 def _reason_str(s: str) -> str:
@@ -189,12 +176,21 @@ def _fire_and_forget(coro: Any) -> bool:
 
     Returns whether the delivery was actually scheduled, so a caller that set up
     state for the send (the breaker's in-flight guard) can roll it back.
+
+    A *running* loop is required explicitly rather than inferred from
+    ``ensure_future`` raising, because it does not raise whenever a loop object is
+    merely current: it attaches the task to a loop nothing will ever run, and in
+    the main thread ``asyncio.get_event_loop()`` will even create that loop
+    (DeprecationWarning "There is no current event loop") instead of raising. The
+    schedule then reports success while the delivery silently never happens, and
+    the caller's rollback is skipped.
     """
     try:
-        task = asyncio.ensure_future(coro)
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         coro.close()
         return False
+    task = loop.create_task(coro)
     _ALERT_TASKS.add(task)
     task.add_done_callback(_ALERT_TASKS.discard)
     return True
@@ -563,12 +559,6 @@ class EndpointHealthRegistry:
         # scheduled, throttling the scheduling itself (see
         # ``_AUTH_ALERT_SCHEDULE_INTERVAL_SEC``).
         self._auth_alert_at: dict[str, float] = {}
-        # Per-endpoint FIFO of upstream-auth edges awaiting delivery, plus the
-        # endpoints that already have a worker draining theirs. Together they keep
-        # one endpoint's firing and resolution in order — see
-        # ``_enqueue_auth_alert``.
-        self._auth_alert_queue: dict[str, deque[_AuthAlertEdge]] = {}
-        self._auth_alert_sending: set[str] = set()
         self._lock = threading.RLock()
 
     def ensure(self, endpoint_id: str) -> None:
@@ -601,9 +591,9 @@ class EndpointHealthRegistry:
                 self._auth_alert_at.pop(endpoint_id, None)
             self._circuits[endpoint_id].on_success()
         if auth_run_ended:
-            # Reported after the accounting, like the failure path: the report
-            # only logs and queues, and the delivery it queues must not hold the
-            # lock every other endpoint's health accounting needs.
+            # Reported after the accounting, like the failure path: the report only
+            # logs and schedules, and the delivery it schedules must not run while
+            # holding the lock every other endpoint's health accounting needs.
             self._resolve_auth_misconfig(endpoint_id)
 
     def record_failure(
@@ -653,9 +643,9 @@ class EndpointHealthRegistry:
         # run and any open incident alone (see ``note_failure``) — whatever is
         # failing now is the breaker's ``circuit_open`` incident to report.
         if auth_misconfig:
-            # Reported after the accounting: the report only logs and queues the
-            # page, and the delivery it queues must not hold the lock every other
-            # endpoint's health accounting needs.
+            # Reported after the accounting: the report only logs and schedules the
+            # page, and the delivery it schedules must not run while holding the
+            # lock every other endpoint's health accounting needs.
             self._report_auth_misconfig(
                 endpoint_id,
                 status=status,
@@ -716,7 +706,17 @@ class EndpointHealthRegistry:
         }
         if detail:
             context["upstream_error"] = detail
-        self._enqueue_auth_alert(endpoint_id, _AuthAlertEdge(breached=True, context=context))
+        _fire_and_forget(
+            alert_on_transition(
+                key=_auth_alert_key(endpoint_id),
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title=_AUTH_ALERT_TITLE,
+                context=lambda: context,
+                cooldown_sec=_AUTH_ALERT_COOLDOWN_SEC,
+                kind="state",
+            )
+        )
 
     def _resolve_auth_misconfig(self, endpoint_id: str) -> None:
         """Close the upstream-auth incident now that the credential works again.
@@ -727,6 +727,12 @@ class EndpointHealthRegistry:
         request after a rejection run, not on every success, so the resolution is
         emitted once per outage — and never on a failure, since no failure proves
         the credential was accepted (see ``_ProviderHealth.note_failure``).
+
+        Ordering against the page it closes is the sink's job: ``alert_slack``
+        publishes an in-flight marker per dedupe key before it awaits anything,
+        and a resolution waits on that marker instead of racing past it. Getting
+        that wrong would land this recovery *before* the page, leaving an incident
+        open whose only healthy edge is already spent.
 
         With no running loop (sync teardown) nothing else will close this
         incident: state alerts report one healthy edge and are never swept,
@@ -740,89 +746,16 @@ class EndpointHealthRegistry:
                 "endpoint_id": endpoint_id,
             },
         )
-        self._enqueue_auth_alert(endpoint_id, _AuthAlertEdge(breached=False))
-
-    def _enqueue_auth_alert(self, endpoint_id: str, edge: _AuthAlertEdge) -> None:
-        """Queue one upstream-auth edge for this endpoint's serial delivery.
-
-        Firing and resolution must reach the control plane in the order the
-        endpoint produced them, and as two independent tasks they do not.
-        ``alert_slack`` awaits the admin snooze lookup *before* registering its
-        send as in-flight, so a resolution scheduled while the firing sits in that
-        lookup finds nothing to wait for and is posted first. The firing then
-        lands after the recovery it precedes and opens an incident whose only
-        healthy edge is already spent — and state alerts are never swept, because
-        silence is not recovery — so that page stays open for an endpoint that is
-        working, holding principal quota until it is exhausted.
-
-        One worker per endpoint, draining a FIFO, is the ordering guarantee. Edges
-        are queued rather than collapsed to the latest state: a firing overtaken by
-        a recovery is still the only page a flapping credential may produce, and
-        dropping it would trade a stuck-open incident for a silent one.
-
-        The queue stays short without a cap: firings are throttled per endpoint
-        (``_AUTH_ALERT_SCHEDULE_INTERVAL_SEC``) and a resolution needs an
-        intervening accepted request, so even a sink sitting in every timeout it
-        has queues single digits — and ``alert_slack``'s cooldown collapses the
-        repeats into one message when they are finally delivered.
-
-        Enqueueing takes the registry lock, which is safe and cheap because the
-        queue write and the task creation never block and never await. The
-        delivery itself still happens in the worker, so a failing request never
-        waits on an alert sink — the property the callers' "outside the lock"
-        comments are about.
-        """
-        with self._lock:
-            self._auth_alert_queue.setdefault(endpoint_id, deque()).append(edge)
-            if endpoint_id in self._auth_alert_sending:
-                # A worker is already draining this endpoint and will take the new
-                # edge in turn. Scheduling a second one is what breaks the order.
-                return
-            self._auth_alert_sending.add(endpoint_id)
-        if _fire_and_forget(self._drain_auth_alerts(endpoint_id)):
-            return
-        # No running loop (sync caller / teardown): nothing will drain the queue,
-        # so release it rather than leaving the endpoint marked as sending, which
-        # would mute every later page for it for the process's lifetime.
-        with self._lock:
-            self._auth_alert_sending.discard(endpoint_id)
-            self._auth_alert_queue.pop(endpoint_id, None)
-
-    async def _drain_auth_alerts(self, endpoint_id: str) -> bool:
-        """Deliver one endpoint's queued upstream-auth edges, one at a time.
-
-        Returns whether any edge became a message, matching ``alert_on_transition``
-        so the task type stays uniform across ``_ALERT_TASKS``.
-        """
-        delivered = False
-        try:
-            while True:
-                with self._lock:
-                    queue = self._auth_alert_queue.get(endpoint_id)
-                    edge = queue.popleft() if queue else None
-                    if edge is None:
-                        self._auth_alert_queue.pop(endpoint_id, None)
-                        self._auth_alert_sending.discard(endpoint_id)
-                        return delivered
-                if await self._send_auth_alert(endpoint_id, edge):
-                    delivered = True
-        finally:
-            # A raising or cancelled send must not leave the endpoint marked as
-            # sending: nothing would ever schedule a worker for it again. Anything
-            # still queued is picked up by the next enqueue's worker.
-            with self._lock:
-                self._auth_alert_sending.discard(endpoint_id)
-
-    async def _send_auth_alert(self, endpoint_id: str, edge: _AuthAlertEdge) -> bool:
-        """Deliver one upstream-auth edge through the state transition tracker."""
-        return await alert_on_transition(
-            key=_auth_alert_key(endpoint_id),
-            breached=edge.breached,
-            severity=AlertSeverity.ERROR,
-            title=_AUTH_ALERT_TITLE,
-            context=lambda: edge.context,
-            cooldown_sec=_AUTH_ALERT_COOLDOWN_SEC,
-            kind="state",
+        _fire_and_forget(
+            alert_on_transition(
+                key=_auth_alert_key(endpoint_id),
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title=_AUTH_ALERT_TITLE,
+                context=dict,
+                cooldown_sec=_AUTH_ALERT_COOLDOWN_SEC,
+                kind="state",
+            )
         )
 
     def snapshot(self) -> dict[str, dict[str, Any]]:

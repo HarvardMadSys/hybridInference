@@ -359,22 +359,22 @@ async def alert_slack(
     # incident is not the noise an operator silences alerts to avoid.
     resolution = status == "resolved"
 
-    # Admin-controlled global snooze: pause all alerts until a deadline.
-    if not resolution:
-        try:
-            from serving.observability.alert_snooze import is_snoozed
-
-            if await is_snoozed():
-                return False
-        except Exception:
-            log.debug("alert snooze check failed; sending alert", exc_info=True)
-
     key = dedupe_key or f"{severity.value}:{title}"
     # A resolution waits for a send already running for this key rather than
     # being dropped by the guard. Dropping it costs a repeat for a breach —
     # another evaluation follows — but for a state alert the recovery edge is
     # the only one there is, so a discarded resolution strands the incident.
-    # Waiting also keeps firing and resolved in order.
+    #
+    # Waiting is also what keeps one key's firing and resolved in order, and that
+    # only works because nothing above suspends: from this function's first line
+    # to the ``_IN_FLIGHT`` registration below there is no await that yields
+    # (``_DEDUPE_LOCK`` is never held across one), so a firing always publishes
+    # its marker before the resolution that closes it can look for it. Any await
+    # added before that point reintroduces the inversion — the resolution finds
+    # nothing to wait on, posts first, and the firing then lands after the
+    # recovery it precedes, opening an incident whose only healthy edge is
+    # already spent. That is why the snooze lookup runs *after* the
+    # registration rather than here.
     for _ in range(_RESOLUTION_WAIT_ATTEMPTS):
         async with _DEDUPE_LOCK:
             done = _IN_FLIGHT.get(key)
@@ -402,6 +402,20 @@ async def alert_slack(
 
     sent = False
     try:
+        # Admin-controlled global snooze: pause all alerts until a deadline.
+        # Deliberately inside the try, after the in-flight registration: the
+        # lookup awaits, and a firing that suspends here before publishing its
+        # marker is exactly the inversion described above. The early return is
+        # safe from here — the ``finally`` releases the marker, and ``sent`` stays
+        # False so a snoozed breach does not consume its cooldown either.
+        if not resolution:
+            try:
+                from serving.observability.alert_snooze import is_snoozed
+
+                if await is_snoozed():
+                    return False
+            except Exception:
+                log.debug("alert snooze check failed; sending alert", exc_info=True)
         message = _format_message(severity, title, context, status)
         if relay_configured:
             try:

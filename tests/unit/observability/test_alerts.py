@@ -494,6 +494,71 @@ class TestResolutionWaitsForAnInFlightFiring:
         assert "Recovered" not in posted[0]
         assert "Recovered" in posted[1]
 
+    async def test_a_recovery_cannot_overtake_a_firing_stalled_in_the_snooze_lookup(
+        self, monkeypatch
+    ):
+        """The in-flight marker must be published before anything on this path awaits.
+
+        The snooze lookup used to run *before* the marker was registered, and it is
+        skipped entirely for a resolution. So a firing parked in that lookup had
+        published nothing for the recovery to wait on: the recovery went out first
+        and the firing landed after it, opening an incident whose only healthy edge
+        was already spent. State alerts are never swept, so that page then stayed
+        open for a provider that was working, holding principal quota.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        reached_lookup = asyncio.Event()
+        release_lookup = asyncio.Event()
+        posted: list[str] = []
+
+        async def stalled_is_snoozed() -> bool:
+            reached_lookup.set()
+            await release_lookup.wait()
+            return False
+
+        async def record_post(_url, message):
+            posted.append(message)
+            return True
+
+        with (
+            patch("serving.observability.alert_snooze.is_snoozed", new=stalled_is_snoozed),
+            patch("serving.observability.alerts._post_to_slack", new=record_post),
+        ):
+            firing = asyncio.ensure_future(
+                alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=True,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+            )
+            await reached_lookup.wait()
+            assert not posted, "the firing must still be mid-delivery for this to be the race"
+            recovery = asyncio.ensure_future(
+                alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=False,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+            )
+            await asyncio.sleep(0)
+            assert not posted, "the recovery was delivered before the page it closes"
+            release_lookup.set()
+            assert await firing is True
+            assert await recovery is True
+
+        assert [("Recovered" in message) for message in posted] == [False, True]
+        assert _STATE_TRANSITIONS.is_firing("circuit_open:zhipu") is False
+
 
 class TestAFailedSweepRetriesPromptly:
     async def test_the_next_sweep_retries_rather_than_the_next_window(self, monkeypatch):

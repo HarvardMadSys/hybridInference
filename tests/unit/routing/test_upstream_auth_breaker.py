@@ -677,14 +677,15 @@ async def _post_until(predicate, *, timeout: float = 5.0) -> None:
 async def test_recovery_cannot_overtake_the_page_it_closes(monkeypatch):
     """A recovery delivered before its page leaves the incident open forever.
 
-    Driven through the real ``alert_slack``: it awaits the admin snooze lookup
-    *before* registering the send as in-flight, and skips that lookup entirely for
-    a resolution. So a firing parked in the lookup has published no in-flight
-    marker for the resolution to wait on, and the resolution — scheduled the
-    moment the credential works again — reaches the sink first. The firing then
-    lands *after* the recovery, opening an incident whose only healthy edge is
-    already spent: the rejection run is over, so nothing will resolve it again,
-    and state alerts are never swept.
+    Driven through the real ``alert_slack`` rather than a mock, because the
+    ordering guarantee lives there: it registers the send as in-flight before it
+    awaits anything, and a resolution waits on that marker. The regression this
+    covers is any await slipping in ahead of that registration — the admin snooze
+    lookup was one, and it is skipped entirely for a resolution, so a firing
+    parked in it published nothing for the recovery to wait on. The recovery then
+    reached the sink first and the page landed after it, opening an incident whose
+    only healthy edge is already spent: the rejection run is over, so nothing will
+    resolve it again, and state alerts are never swept.
     """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
@@ -762,7 +763,8 @@ async def test_one_endpoints_stalled_page_does_not_delay_anothers(monkeypatch):
 
     A single unreachable endpoint's page can sit in the sink's timeouts for tens
     of seconds; queueing every other endpoint's outage behind it would hide the
-    next real one.
+    next real one. One dedupe key per endpoint is what keeps the sink's ordering
+    scoped that way — see ``_auth_alert_key``.
     """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
@@ -902,21 +904,41 @@ def test_auth_escalation_without_a_running_loop_does_not_raise(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _run_without_a_loop(call) -> None:
-    """Run ``call`` on a worker thread, where asyncio has no current event loop.
+#: The two shapes "off the event loop" comes in. Only the first is detectable by
+#: letting ``asyncio.ensure_future`` raise, which is why the scheduler probes for
+#: a *running* loop instead:
+#:
+#: - ``no current loop`` — ``ensure_future`` raises ``RuntimeError``.
+#: - ``idle current loop`` — a loop object is current but is not running.
+#:   ``ensure_future`` *succeeds* there (on 3.12 it will even create the loop
+#:   itself, with a "There is no current event loop" DeprecationWarning), handing
+#:   back a task attached to something nothing will ever run. Reporting that as a
+#:   scheduled delivery is a silent drop, and it strands whatever state the caller
+#:   set up for the send.
+_OFF_LOOP_SHAPES = ("no current loop", "idle current loop")
 
-    ``asyncio.ensure_future`` raises ``RuntimeError`` there on every supported
-    Python. The main thread is not a reliable stand-in: whether it still carries a
-    current loop depends on what ran before, so a main-thread version of these
-    tests could schedule the coroutine instead of exercising the branch.
+
+def _run_off_the_loop(call, *, shape: str) -> None:
+    """Run ``call`` on a worker thread with no *running* loop, in one ``shape``.
+
+    A worker thread is used for both shapes so the surrounding test's own running
+    loop is never disturbed; the main thread would additionally be unreliable,
+    since whether it still carries a current loop depends on what ran before.
     """
     failure: list[BaseException] = []
 
     def target() -> None:
+        loop = asyncio.new_event_loop() if shape == "idle current loop" else None
+        if loop is not None:
+            asyncio.set_event_loop(loop)
         try:
             call()
         except BaseException as exc:
             failure.append(exc)
+        finally:
+            if loop is not None:
+                asyncio.set_event_loop(None)
+                loop.close()
 
     thread = threading.Thread(target=target)
     thread.start()
@@ -926,7 +948,8 @@ def _run_without_a_loop(call) -> None:
         raise failure[0]
 
 
-def test_circuit_open_scheduling_closes_its_coroutine_without_a_loop(monkeypatch):
+@pytest.mark.parametrize("shape", _OFF_LOOP_SHAPES)
+def test_circuit_open_scheduling_closes_its_coroutine_off_the_loop(monkeypatch, shape):
     """The circuit-open page must not leak a never-awaited coroutine.
 
     ``on_failure`` builds ``_send_circuit_alert(...)`` before handing it to the
@@ -949,43 +972,75 @@ def test_circuit_open_scheduling_closes_its_coroutine_without_a_loop(monkeypatch
     monkeypatch.setattr(_CircuitBreaker, "_send_circuit_alert", _capture)
     breaker = _CircuitBreaker(_LOCAL_ENDPOINT)
 
-    _run_without_a_loop(lambda: breaker.on_failure(availability=0.0, reason="stream_exception"))
+    _run_off_the_loop(
+        lambda: breaker.on_failure(availability=0.0, reason="stream_exception"), shape=shape
+    )
 
     assert breaker.state == _CircuitState.OPEN
     assert len(coroutines) == 1, "the circuit-open page must still be attempted"
     assert inspect.getcoroutinestate(coroutines[0]) == inspect.CORO_CLOSED
 
 
-def test_auth_page_scheduling_closes_its_coroutine_without_a_loop(monkeypatch):
+@pytest.mark.parametrize("shape", _OFF_LOOP_SHAPES)
+def test_auth_page_scheduling_closes_its_coroutine_off_the_loop(monkeypatch, shape):
     """Same contract on the auth page, the helper's other caller.
 
-    The queued edge and the endpoint's "a worker is draining" mark must be
-    released too. Leaving the mark set would make the registry believe a worker
-    owns this endpoint forever, and every later page for it would be queued behind
-    a worker that does not exist.
+    The rejection is still accounted for — only the delivery is impossible — and
+    nothing is left holding a coroutine no loop will drive.
     """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
 
     coroutines: list[Any] = []
-    original = EndpointHealthRegistry._drain_auth_alerts
+    original = endpoint_health.alert_on_transition
 
-    def _capture(self, endpoint_id):
-        coro = original(self, endpoint_id)
+    def _capture(**kwargs):
+        coro = original(**kwargs)
         coroutines.append(coro)
         return coro
 
-    monkeypatch.setattr(EndpointHealthRegistry, "_drain_auth_alerts", _capture)
+    monkeypatch.setattr(endpoint_health, "alert_on_transition", _capture)
     registry = EndpointHealthRegistry()
 
-    _run_without_a_loop(
+    _run_off_the_loop(
         lambda: registry.record_failure(
             _LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401)
-        )
+        ),
+        shape=shape,
     )
 
     assert len(coroutines) == 1
     assert inspect.getcoroutinestate(coroutines[0]) == inspect.CORO_CLOSED
     assert registry.snapshot()[_LOCAL_ENDPOINT]["consecutive_auth_rejections"] == 1
-    assert registry._auth_alert_sending == set()
-    assert registry._auth_alert_queue == {}
+
+
+@pytest.mark.parametrize("shape", _OFF_LOOP_SHAPES)
+async def test_a_page_that_could_not_be_scheduled_does_not_mute_later_ones(monkeypatch, shape):
+    """An impossible delivery must cost one page, never the endpoint's later ones.
+
+    A scheduler that mistook an idle current loop for a live one would report the
+    send as scheduled and leave any per-endpoint bookkeeping it set up in place —
+    silently muting every later page for that endpoint for the rest of the
+    process's life, which is strictly worse than losing the single page whose loop
+    was missing.
+    """
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
+    registry = EndpointHealthRegistry()
+
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
+        _run_off_the_loop(
+            lambda: registry.record_failure(
+                _LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401)
+            ),
+            shape=shape,
+        )
+        assert not _auth_alerts(mock_alert, _LOCAL_ENDPOINT), "no loop, so nothing was delivered"
+
+        # Pretend the throttle window elapsed rather than sleeping through it.
+        registry._auth_alert_at[_LOCAL_ENDPOINT] -= _AUTH_ALERT_SCHEDULE_INTERVAL_SEC + 1
+        registry.record_failure(_LOCAL_ENDPOINT, reason="stream_exception", exc=_StatusError(401))
+        await _drain_alerts()
+
+    assert len(_auth_alerts(mock_alert, _LOCAL_ENDPOINT)) == 1
