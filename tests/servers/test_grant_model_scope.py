@@ -175,3 +175,50 @@ def test_the_policy_distinguishes_absent_from_empty() -> None:
     # Not a grant at all.
     assert is_model_outside_grant_scope(GRANTED, {"user_id": "u"}) is False
     assert is_model_outside_grant_scope(GRANTED, None) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("module", "path", "body"), _SURFACES)
+async def test_an_ordinary_api_key_is_not_subject_to_grant_scope(
+    module, path, body, mock_db_logger
+):
+    """**The red line for this whole change**, stated as narrowly as it is true.
+
+    The grant scope is a gate only a caller carrying `agent_allowed_models` can
+    be behind, and an API key never carries one — so this change adds no
+    restriction to an ordinary request.
+
+    It removes none either: role, `published` and the owner's denylist all
+    still apply, and the models here are deliberately unrestricted so that this
+    case measures the grant gate and nothing else. `test_admin_only_rejected_for_non_admin`
+    and `test_a_grant_is_still_subject_to_the_owners_denylist` are where those
+    other gates are held.
+    """
+    ctx = {"user_id": "user-1", "role": "pro", "authenticated": True, "is_admin": False}
+    app = _app(module, ctx, mock_db_logger)
+
+    for model in (GRANTED, UNGRANTED):
+        assert await _call(app, path, body(model)) != status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("module", "path", "body"), _SURFACES)
+async def test_an_api_key_still_obeys_the_gates_that_predate_grants(
+    module, path, body, mock_db_logger
+):
+    """The other half of the red line: nothing was loosened.
+
+    A denylisted model is still refused for an ordinary key. Without this, the
+    case above could pass on an implementation that had accidentally turned the
+    denylist into a grant-only check.
+    """
+    ctx = {
+        "user_id": "user-1",
+        "role": "pro",
+        "authenticated": True,
+        "is_admin": False,
+        "disabled_models": [GRANTED],
+    }
+    app = _app(module, ctx, mock_db_logger)
+
+    assert await _call(app, path, body(GRANTED)) == status.HTTP_404_NOT_FOUND
