@@ -98,9 +98,9 @@ def _normalize(pem: str) -> str:
 
     A key pasted into an environment variable usually arrives with literal
     ``\n`` sequences, which PEM parsing rejects in a way that is tedious to
-    diagnose. ``AppConfig.from_env`` in ``serving.agent_jobs.github_app`` does
-    the same for the GitHub App key, so this is an established provisioning
-    shape in this deployment rather than a convenience.
+    diagnose. The cloud agent's GitHub App loader does the same for its
+    private key, so this is an established provisioning shape across this
+    deployment rather than a convenience.
     """
     return pem.replace("\\n", "\n").strip()
 

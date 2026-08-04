@@ -156,7 +156,7 @@ class Settings(BaseSettings):
             "ROUTING_CONFIG_PATH", "ROUTING_CONFIG", "routing_config_path"
         ),
     )
-    # The deployment's MCP server registry (serving.agent_jobs.mcp_registry).
+    # The deployment's MCP server registry (serving.mcp_registry).
     # Empty, and a path that does not exist, both mean "no MCP servers" — the
     # neutral upstream ships none, and an agent job without tools is a
     # supported shape rather than a broken one.

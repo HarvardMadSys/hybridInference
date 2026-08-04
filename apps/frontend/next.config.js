@@ -13,6 +13,26 @@ const nextConfig = {
       ? [{ protocol: 'https', hostname: process.env.NEXT_PUBLIC_TEAM_IMAGE_HOST }]
       : [],
   },
+  async redirects() {
+    // The cloud agent moved to its own deployment. Anyone who bookmarked
+    // /agents, or follows a link from a PR this gateway's agent opened months
+    // ago, lands here — and a 404 tells them the product was withdrawn rather
+    // than moved.
+    //
+    // Configured, not hardcoded: this repository is deployed by more than one
+    // operator, and a fixed destination would send a self-hosted user's traffic
+    // to somebody else's site. A deployment that does not set it simply 404s,
+    // which is the truthful answer when there is nowhere to send them.
+    //
+    // 307, not 308: a permanent redirect is cached by browsers indefinitely,
+    // and a wrong value would be uncorrectable for the people who hit it first.
+    const target = process.env.NEXT_PUBLIC_CLOUD_AGENT_URL;
+    if (!target) return [];
+    return [
+      { source: '/agents', destination: target, permanent: false },
+      { source: '/agents/:path*', destination: target, permanent: false },
+    ];
+  },
   async rewrites() {
     return [
       { source: '/v1/:path*', destination: `${BACKEND_INTERNAL_URL}/v1/:path*` },
