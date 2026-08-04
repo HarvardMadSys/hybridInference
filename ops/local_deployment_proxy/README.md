@@ -236,6 +236,7 @@ To add a new model, append an entry to `models.json` and restart the proxy.
 | `HEALTH_INTERVAL` | `10` | Seconds between health-check polls |
 | `MODELS_CONFIG` | auto-detected | Path to the models config JSON. When unset, selected by GPU hardware (see [Hardware profiles](#hardware-profiles)); set explicitly to override. **Not settable from the environment under systemd** — see below |
 | `LOCAL_API_KEY` | `freeinference_api` | API key for request auth; accepts an `Authorization: Bearer` or `X-API-Key` header. A blank value falls back to the default rather than disabling auth — there is no way to turn auth off |
+| `PROXY_OWNER` | `port-$LISTEN_PORT` | Identity stamped on the containers this proxy starts, so it never destroys or adopts another proxy's backend of the same name (see [Container ownership](#container-ownership)). The default is unique per host and stable across restarts; override only to give a hand-run proxy an identity of its own |
 
 ### `MODELS_CONFIG` under systemd
 
@@ -289,17 +290,51 @@ For **tensor-parallel** or **pipeline-parallel** backends (`tensor_parallel_size
 
 ## Hardware profiles
 
-The same proxy runs on machines with different GPUs and serves the model set that fits the hardware. When `MODELS_CONFIG` is **unset**, the proxy inspects `nvidia-smi` once at startup and selects a profile JSON next to the script:
+The same proxy runs on machines with different GPUs and serves the model set that fits the hardware. When `MODELS_CONFIG` is **unset**, the proxy inspects `nvidia-smi` once at startup and selects a profile JSON:
 
 | Detected hardware | Profile | Serves |
 |---|---|---|
-| 4+ × H200 | `models.h200.json` | `deepseek-v4-flash` — sglang, `pipeline_parallel_size: 3` on GPUs **0,2,3** (GPU 1 free) |
+| 4+ × H200 | [`../h200_idle_proxy/models.json`](../h200_idle_proxy/models.json) | `deepseek-v4-flash` — sglang, `tensor_parallel_size: 2` on GPUs **2,3** (GPUs 0,1 free) |
 | RTX (PRO) 6000 | `models.rtx6000.json` | `Qwen/Qwen3.6-35B-A3B-FP8` + `BAAI/bge-m3` (single GPU) |
 | anything else / no `nvidia-smi` | `models.json` | default fallback |
 
 A matched-but-missing profile falls back to `models.json`; setting `MODELS_CONFIG` explicitly bypasses detection entirely.
 
+The H200 row points **out of this directory on purpose.** A 4×H200 box has one DeepSeek deployment, not two, and the file the dedicated `h200_idle_proxy` unit pins on its `ExecStart` line *is* that deployment's definition — so the auto-detected profile is that same file rather than a copy of it. There used to be a local `models.h200.json` mirror: it drifted (FP8 at PP=3 on GPUs 0,2,3 on one side, NVFP4 at TP=2 on the other) until #1185 reconverged the two, and only a partial five-key test assertion held them in step afterwards — #1187's `mem_fraction` change still had to be applied twice by hand. Two entry points that resolve the same `container` and `backend_port` must resolve the same config, or they fight over it; see [Container ownership](#container-ownership).
+
 The H200 profile serves `deepseek-ai/DeepSeek-V4-Flash-0731` on GPUs 2,3 (TP=2; GPUs 0,1 left free for other workloads), with DSpark speculative decoding and the `marlin` MoE runner that FP4 experts require on SM90. It previously needed PP=3 across GPUs 0,2,3, because ~274 GiB of FP8 weights do not fit at TP=2 on two H200s and TP=3 is illegal (64 attention heads are not divisible by 3); the 0731 release ships FP4 experts at ~156 GiB, so it fits on two GPUs and frees a third. For the dedicated service with reverse tunnels to staging and production (port 8003 on h200a, 8004 on h200b), prefer [`ops/h200_idle_proxy`](../h200_idle_proxy/README.md). Its `tool_call_parser` / `reasoning_parser` use the DeepSeek-V4 pairing (`deepseekv4` / `deepseek-v4`) that the [sglang DeepSeek-V4 cookbook](https://lmsysorg.mintlify.app/cookbook/autoregressive/DeepSeek/DeepSeek-V4) prescribes. Do **not** substitute the V3-era parsers: `deepseek-r1` treats the whole generation as reasoning until a `</think>` close tag — requests that do not enable thinking never produce that tag, so every reply comes back with empty `content` and the answer buried in `reasoning_content` — and `deepseekv3` does not recognize V4's DSML tool-call markup, so `tool_calls` stays null and agentic clients cannot run tools.
+
+## Container ownership
+
+Every lifecycle operation here addresses its backend by container *name*: a `docker rm -f <name>` before each start, another when the idle timer expires, and an adoption check that asks only "is something running under this name and answering on `backend_port`?". A name is not proof of ownership, so each container is stamped with two labels at `docker run` and they are consulted before anything is destroyed or adopted:
+
+| Label | Value | Meaning |
+|---|---|---|
+| `com.freeinference.proxy.owner` | `port-<LISTEN_PORT>`, or `$PROXY_OWNER` when set | Which proxy runs it. Only one process can hold a listen port on a host, and the value is stable across restarts of the same unit — so restart-and-adopt keeps working. |
+| `com.freeinference.proxy.profile` | first 16 hex of `sha256(json.dumps(model_config, sort_keys=True))` | Which config it was launched from. |
+
+The rules:
+
+- **Owner matches, or no owner label** → this proxy's container. Adopt it when healthy, replace it when not, stop it when idle. An *absent* label means "started before labelling existed, therefore mine" — that keeps the change a no-op for containers already running at upgrade time (see [Upgrading](#upgrading-from-an-unlabelled-deployment)).
+- **Owner matches, profile differs** → the config on disk changed since launch (a `mem_fraction` bump, a new `sglang_image`). Replace the container; do not adopt a backend running the previous config.
+- **Owner differs** → hands off. The proxy neither adopts nor destroys it, and the request fails 502 with both owners named. Taking it over would be worse either way: `docker rm -f` kills a backend another process may be eleven minutes into loading or actively streaming from, and adopting it puts one container under two idle watchers that cannot see each other's activity, so whichever fires first stops it out from under the other's traffic.
+
+This only ever triggers when two processes resolve the *same* container name. Running this proxy pinned to `models.json` (Qwen + bge-m3 on GPUs 0,1) alongside `h200_idle_proxy` (DeepSeek on GPUs 2,3) on one 4-GPU box shares no container name or port and is unaffected.
+
+To protect a hand-started container from every proxy on the box — benchmarking with [`bench_decode.sh`](../h200_idle_proxy/bench_decode.sh), say — give it an owner of its own:
+
+```bash
+sudo docker run -d --name deepseek-v4-flash-sglang \
+  --label com.freeinference.proxy.owner=manual  …
+```
+
+### Upgrading from an unlabelled deployment
+
+Nothing to do, and nothing to restart. Containers running now carry no labels, are therefore read as this proxy's own, and keep being adopted and idle-stopped exactly as before. Each gets labelled at its next cold start, and is protected from then on. There is no window in which a running backend is orphaned or unreclaimable.
+
+### Changing `LISTEN_PORT` on a box with a labelled backend running
+
+The owner identity is derived from the listen port, so moving a node's port orphans the container it started: the proxy reads it as another owner's and refuses to adopt or remove it. Either remove it once by hand (`sudo docker rm -f <container>`), or keep the old identity across the move by pinning `PROXY_OWNER` to what it used to be. Nothing is silently wrong in the meantime — requests fail 502 naming both owners.
 
 ## On-demand Hugging Face download
 

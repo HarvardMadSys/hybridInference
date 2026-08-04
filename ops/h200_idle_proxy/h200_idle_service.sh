@@ -2,7 +2,14 @@
 # ops/h200_idle_proxy/h200_idle_service.sh — start/stop the H200 idle proxy daemon.
 #
 # Reuses ops/local_deployment_proxy/local_deployment_proxy.py with this package's
-# models.json (DeepSeek-V4-Flash FP8, PP=3 on GPUs 0,2,3 — GPU 1 left free).
+# models.json (DeepSeek-V4-Flash-0731, TP=2 on GPUs 2,3 — GPUs 0,1 left free).
+# That same file is what the proxy's own hardware detection resolves to on a
+# 4+ x H200 box, so a hand-run and this service agree on one config.
+#
+# The `stop` verb below removes the containers named in that models.json. It is
+# an explicit operator teardown, so it does not consult the ownership labels the
+# proxy stamps (ops/local_deployment_proxy/README.md, "Container ownership") --
+# on a box where another proxy owns one of those names, stop that proxy instead.
 #
 # Usage:
 #   ./ops/h200_idle_proxy/h200_idle_service.sh start

@@ -26,13 +26,16 @@ IDLE_TIMEOUT   : Seconds of inactivity before stopping    (default 1440 = 24 min
 HEALTH_TIMEOUT : Max seconds to wait for backend startup  (default 600)
 HEALTH_INTERVAL: Seconds between health-check polls       (default 10)
 MODELS_CONFIG  : Path to a JSON config file               (see below)
+PROXY_OWNER    : Identity stamped on containers this proxy starts, so it never
+                 destroys or adopts a sibling proxy's backend of the same name
+                 (default ``port-$LISTEN_PORT``; see "Container ownership")
 
 When ``MODELS_CONFIG`` is unset the proxy auto-selects a hardware profile from
-``nvidia-smi``: ``models.h200.json`` on a 4+ x H200 box (DeepSeek-V4-Flash-0731 at
-``tensor_parallel_size`` 2 on GPUs 2,3), ``models.rtx6000.json``
-on an RTX (PRO) 6000 (Qwen3.6-35B), else ``models.json``. See
-``_detect_profile_config``. For the dedicated H200 service (port 8003 +
-staging/prod tunnels) use ``ops/h200_idle_proxy`` instead.
+``nvidia-smi``: ``../h200_idle_proxy/models.json`` on a 4+ x H200 box
+(DeepSeek-V4-Flash-0731 at ``tensor_parallel_size`` 2 on GPUs 2,3),
+``models.rtx6000.json`` on an RTX (PRO) 6000 (Qwen3.6-35B), else
+``models.json``. See ``_detect_profile_config``. For the dedicated H200 service
+(port 8003 + staging/prod tunnels) use ``ops/h200_idle_proxy`` instead.
 
 Model configuration
 -------------------
@@ -129,6 +132,7 @@ flag adds ``--mamba-scheduler-strategy extra_buffer`` (override with
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json as _json
 import logging
 import os
@@ -152,6 +156,30 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8001"))
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1440"))
 HEALTH_TIMEOUT = float(os.environ.get("HEALTH_TIMEOUT", "600"))
 HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
+
+# ── Container ownership ────────────────────────────────────────────────────
+# A container *name* is not proof of ownership. Several units run this same
+# script with different MODELS_CONFIG values (deploy/systemd/*_idle_proxy.service),
+# an operator can hand-start a backend to benchmark it
+# (ops/h200_idle_proxy/bench_decode.sh), and every lifecycle call here addresses
+# the container by name alone: `docker rm -f <name>` before every start, another
+# on the idle path, and an adoption check that only asks "is something running
+# and answering on this port?". So two processes that happen to resolve the same
+# container name will silently destroy and re-adopt each other's backend, mid
+# model load or mid stream.
+#
+# Fix: stamp two labels at `docker run` and consult them before destroying or
+# adopting anything.
+#   owner   — who runs it. The listen port is the natural identity: only one
+#             process can hold it on a host, and it is stable across restarts of
+#             the same unit (so restart-and-adopt keeps working). Override with
+#             PROXY_OWNER to claim a distinct identity for a hand-run container.
+#   profile — sha256 of the resolved per-model config. Same owner + different
+#             hash means "my own config changed on disk" → replace. A *different*
+#             owner means hands off, whatever the hash.
+OWNER_LABEL = "com.freeinference.proxy.owner"
+PROFILE_LABEL = "com.freeinference.proxy.profile"
+PROXY_OWNER = os.environ.get("PROXY_OWNER", "").strip() or f"port-{LISTEN_PORT}"
 # LOCAL_API_KEY is the key the gateway signs its requests to this proxy with. (A
 # comment here used to name FREEINFERENCE_API_KEY as a compatibility fallback; no
 # such fallback is read, and that variable is the gateway's *own* client key --
@@ -170,6 +198,15 @@ LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY", "").strip() or "freeinference_ap
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = _SCRIPT_DIR / "models.json"
+# The H200 profile is NOT a copy kept next to this script: it is the very file
+# the dedicated ops/h200_idle_proxy unit pins on its ExecStart line. A 4x-H200
+# box has one DeepSeek deployment, not two, and both entry points must resolve
+# to the same (container, backend_port, gpu_index) or they fight over the same
+# container name — see ``_container_owner`` for what happens when they do.
+# There used to be a local ``models.h200.json`` mirror of this file, kept in
+# step only by a partial 5-key test assertion; #1187 had to apply one
+# mem_fraction change to both by hand. One file, no drift.
+H200_CONFIG_PATH = _SCRIPT_DIR.parent / "h200_idle_proxy" / "models.json"
 
 
 def _detect_profile_config() -> Path:
@@ -177,9 +214,10 @@ def _detect_profile_config() -> Path:
 
     The same proxy code runs on machines with very different GPUs, and each
     machine should serve the model that fits it. We inspect ``nvidia-smi`` once
-    at import and map the hardware to a profile JSON next to this script:
+    at import and map the hardware to a profile JSON:
 
-      * **4+ x H200**       -> ``models.h200.json``     (DeepSeek-V4-Flash-0731, TP=2 on 2,3)
+      * **4+ x H200**       -> ``../h200_idle_proxy/models.json``
+                               (DeepSeek-V4-Flash-0731, TP=2 on 2,3)
       * **RTX (PRO) 6000**  -> ``models.rtx6000.json``  (Qwen3.6-35B)
       * anything else / no ``nvidia-smi`` → ``models.json`` (default fallback)
 
@@ -204,7 +242,7 @@ def _detect_profile_config() -> Path:
 
     chosen: Path | None = None
     if h200_count >= 4:
-        chosen = _SCRIPT_DIR / "models.h200.json"
+        chosen = H200_CONFIG_PATH
     elif has_rtx6000:
         chosen = _SCRIPT_DIR / "models.rtx6000.json"
 
@@ -332,6 +370,17 @@ def _docker_gpu_arg(gpu: str) -> str:
     return f'"device={gpu}"' if "," in gpu else f"device={gpu}"
 
 
+class ForeignContainerError(RuntimeError):
+    """Raised when the container of this name belongs to another proxy.
+
+    Deliberately fails the request instead of taking the container over. The two
+    alternatives are both worse: destroying it kills a backend another process is
+    loading or streaming from, and adopting it puts a backend under two idle
+    watchers that cannot see each other's activity, so whichever fires first
+    stops it out from under the other's traffic.
+    """
+
+
 class BackendManager:
     """Manages the lifecycle of a single sglang Docker container."""
 
@@ -350,6 +399,12 @@ class BackendManager:
         # auto-selecting backends can exclude it (config gpu_index is empty for
         # auto-selected models). Cleared when the container stops.
         self._current_gpu: str | None = None
+        # Fingerprint of the config this manager was built from, stamped onto the
+        # container so a later process can tell "the backend I asked for" from
+        # "some other backend wearing the same name".
+        self._profile = hashlib.sha256(_json.dumps(config, sort_keys=True).encode()).hexdigest()[
+            :16
+        ]
 
     @property
     def state(self) -> str:
@@ -517,7 +572,27 @@ class BackendManager:
             args += ["-e", f"{key}={val}"]
         return args
 
+    def _ownership_label_args(self) -> list[str]:
+        """Build the ``--label`` flags that make this container's owner readable.
+
+        Stamped by both engines' run commands. Without them the container name is
+        the only ownership token there is, and it is not one — see the
+        "Container ownership" block near the top of this module.
+        """
+        return [
+            "--label",
+            f"{OWNER_LABEL}={PROXY_OWNER}",
+            "--label",
+            f"{PROFILE_LABEL}={self._profile}",
+        ]
+
     def _start_container(self) -> None:
+        # Ownership first: everything below either destroys the container of this
+        # name or binds its host port, so a foreign container must stop us before
+        # we touch the GPU or the filesystem.
+        owner = self._container_owner()
+        if owner is not None:
+            raise self._foreign_container_error(owner, "replace")
         gpu = self._resolve_gpu()
         self._ensure_model_dir()
         subprocess.run(
@@ -559,6 +634,7 @@ class BackendManager:
             "-d",
             "--name",
             self.container,
+            *self._ownership_label_args(),
             "--gpus",
             _docker_gpu_arg(gpu),
             "--shm-size",
@@ -626,6 +702,7 @@ class BackendManager:
             "-d",
             "--name",
             self.container,
+            *self._ownership_label_args(),
             "--gpus",
             _docker_gpu_arg(gpu),
             "--shm-size",
@@ -800,6 +877,24 @@ class BackendManager:
         log.info("[%s] Downloaded %s.", self.model_name, repo_id)
 
     def _stop_container(self) -> None:
+        # The idle watcher measures *this* process's last activity, which says
+        # nothing about traffic another proxy is putting through a container of
+        # the same name. Dropping local state without removing the container is
+        # the safe outcome: the owner's own watcher will reclaim its GPUs.
+        owner = self._container_owner()
+        if owner is not None:
+            log.warning(
+                "[%s] Not removing container %s: it is owned by %s, not by this proxy (%s). "
+                "Releasing local state only.",
+                self.model_name,
+                self.container,
+                owner,
+                PROXY_OWNER,
+            )
+            with self._lock:
+                self._state = "stopped"
+                self._current_gpu = None
+            return
         log.info("[%s] Stopping container %s …", self.model_name, self.container)
         subprocess.run(
             ["sudo", "docker", "rm", "-f", self.container],
@@ -829,6 +924,74 @@ class BackendManager:
         # no longer running.
         return result.returncode == 0 and result.stdout.strip() == "true"
 
+    def _container_labels(self) -> dict[str, str]:
+        """Return the ownership labels on the container of this name.
+
+        Empty when the container does not exist, carries no labels, or docker
+        prints something unparseable — every caller treats an unlabelled
+        container as its own (see ``_container_owner``).
+        """
+        result = subprocess.run(
+            [
+                "sudo",
+                "docker",
+                "inspect",
+                "-f",
+                "{{json .Config.Labels}}",
+                self.container,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return {}
+        try:
+            labels = _json.loads(result.stdout.strip() or "null")
+        except ValueError:
+            return {}
+        if not isinstance(labels, dict):
+            return {}
+        return {str(k): str(v) for k, v in labels.items()}
+
+    def _container_owner(self, labels: dict[str, str] | None = None) -> str | None:
+        """Return the owner of the container of this name, or None if it is ours.
+
+        Pass ``labels`` to reuse an inspect the caller has already paid for.
+
+        UPGRADE RULE — an *absent* owner label means "started by a build of this
+        script from before labelling, therefore mine". Do not invert this. Every
+        container running right now is unlabelled, so reading absent-label as
+        "foreign" would make the idle watcher refuse to stop any of them and the
+        GPUs would never be reclaimed after the idle timeout. With this rule an
+        already-running deployment behaves exactly as it does today until its
+        next cold start, which labels it.
+        """
+        if labels is None:
+            labels = self._container_labels()
+        owner = labels.get(OWNER_LABEL)
+        if owner is None or owner == PROXY_OWNER:
+            return None
+        return owner
+
+    def _foreign_container_error(self, owner: str, action: str) -> ForeignContainerError:
+        """Build the error raised when another proxy owns this container name.
+
+        Kept to plain ASCII on purpose. This message reaches clients through
+        ``BaseHTTPRequestHandler.send_error``, which puts it in the HTTP status
+        line and encodes that latin-1: one em dash there raises
+        ``UnicodeEncodeError`` mid-response and the client sees a dropped
+        connection instead of the diagnosis.
+        """
+        return ForeignContainerError(
+            f"[{self.model_name}] Refusing to {action} container {self.container}: it is "
+            f"owned by {owner!r}, not by this proxy ({PROXY_OWNER!r}). Two proxies have "
+            f"resolved the same container name, most likely two units running "
+            f"ops/local_deployment_proxy/local_deployment_proxy.py with different "
+            f"MODELS_CONFIG files on one host. Point one of them at a config whose "
+            f"'container' and 'backend_port' do not collide, or disable it."
+        )
+
     def _adopt_running_container(self) -> bool:
         """Adopt an already-running, healthy container instead of reloading it.
 
@@ -836,8 +999,34 @@ class BackendManager:
         containers keep running. Without adoption the next request would
         ``docker rm -f`` a perfectly healthy backend and pay the multi-minute
         model reload. Returns True if the existing container was adopted.
+
+        Raises ``ForeignContainerError`` when the container of this name belongs
+        to another proxy — including while it is still loading and therefore not
+        yet answering health checks. That case is the sharp one: a container
+        eight minutes into a fourteen-minute load fails ``_backend_healthy``, so
+        without this guard the caller would fall through to ``_start_container``
+        and ``docker rm -f`` it.
         """
-        if self._container_running() and self._backend_healthy():
+        if not self._container_running():
+            return False
+        labels = self._container_labels()
+        owner = self._container_owner(labels)
+        if owner is not None:
+            raise self._foreign_container_error(owner, "adopt")
+        stamped = labels.get(PROFILE_LABEL)
+        if stamped is not None and stamped != self._profile:
+            # My own container, but the config it was launched from has changed
+            # since (a mem_fraction bump, a new image tag). Replace it rather
+            # than adopt a backend running the previous config.
+            log.info(
+                "[%s] Container %s runs profile %s but the config is now %s — replacing it.",
+                self.model_name,
+                self.container,
+                stamped,
+                self._profile,
+            )
+            return False
+        if self._backend_healthy():
             self._current_gpu = self._running_container_gpu()
             return True
         return False

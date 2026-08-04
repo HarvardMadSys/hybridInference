@@ -21,12 +21,21 @@ WorkingDirectory=__REPO_ROOT__/ops/h200_idle_proxy
 # that YAML and come up with no backends.
 #
 # The sibling units answer that with UnsetEnvironment=MODELS_CONFIG, but this
-# one has to *keep* a value: the H200 profile the proxy would auto-detect for
-# itself (ops/local_deployment_proxy/models.h200.json) is a different
-# deployment of the same model — PP=3 across GPUs 0,2,3 — and this node serves
-# the TP=2-on-2,3 config next to this unit. `/usr/bin/env VAR=…` sets the
-# variable in the child after systemd has compiled its environment, so it
-# outranks EnvironmentFile= and UnsetEnvironment= both.
+# one has to *keep* a value: auto-detection resolves profiles relative to the
+# script's own directory (ops/local_deployment_proxy), not this unit's
+# WorkingDirectory, so dropping the pin would hand the choice of config to
+# nvidia-smi. The pin is what makes this node serve the config named below
+# whatever the hardware reports. `/usr/bin/env VAR=…` sets the variable in the
+# child after systemd has compiled its environment, so it outranks
+# EnvironmentFile= and UnsetEnvironment= both.
+#
+# The detector's 4+ x H200 branch now resolves to this very file, so both routes
+# reach one DeepSeek config (TP=2 on GPUs 2,3) rather than two that can drift.
+# It is still the same container name on the same backend_port either way: a
+# second proxy on this host needs a config whose 'container' and 'backend_port'
+# do not collide with it. Ownership labels turn a collision into a 502 naming
+# both owners instead of two processes destroying each other's container — see
+# ops/local_deployment_proxy/README.md, "Container ownership".
 ExecStart=/usr/bin/env MODELS_CONFIG=__REPO_ROOT__/ops/h200_idle_proxy/models.json __REPO_ROOT__/.venv/bin/python3 __REPO_ROOT__/ops/local_deployment_proxy/local_deployment_proxy.py
 
 Restart=on-failure

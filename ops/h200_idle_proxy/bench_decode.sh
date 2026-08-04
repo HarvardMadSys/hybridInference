@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ops/h200_idle_proxy/bench_decode.sh — decode-throughput benchmark for the
-# running DeepSeek-V4-Flash backend (sglang, PP=3 on GPUs 0,2,3).
+# running DeepSeek-V4-Flash-0731 backend (sglang, TP=2 on GPUs 2,3).
 #
 # Runs sglang.bench_serving *inside* the backend container against
 # 127.0.0.1:8001, so no host-side sglang install is needed. Output length is
@@ -10,6 +10,15 @@
 #
 # The backend must already be running — send one request through the idle proxy
 # first to cold-start it (a streaming request returns immediately and loads it).
+# A backend cold-started that way is the proxy's, and its idle timer keeps
+# running: it can be reclaimed mid-benchmark after IDLE_TIMEOUT of no proxy
+# traffic (docker exec does not count as activity). To bench a container the
+# proxy will not touch at all, start it by hand with an owner of its own:
+#
+#   sudo docker run -d --name deepseek-v4-flash-sglang \
+#     --label com.freeinference.proxy.owner=manual  …
+#
+# See ops/local_deployment_proxy/README.md, "Container ownership".
 #
 # Usage:
 #   ./ops/h200_idle_proxy/bench_decode.sh

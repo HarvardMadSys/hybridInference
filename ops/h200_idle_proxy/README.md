@@ -7,6 +7,16 @@ with a dedicated model profile and port.
 Runs on **both h200a and h200b**, distinguished only by port: the same
 `models.json` is used on each node.
 
+This package's [`models.json`](models.json) is the single definition of that
+deployment. `local_deployment_proxy.py`'s hardware detection resolves its
+`4+ × H200` branch to *this* file, so a bare hand-run on an H200 box and the
+`h200_idle_proxy` unit agree on one config instead of two that can drift apart.
+Both still name one container on one `backend_port`, so a second proxy on the
+same host needs a config that collides on neither — ownership labels turn a
+collision into a diagnosable 502 rather than the two processes destroying each
+other's container. See
+[Container ownership](../local_deployment_proxy/README.md#container-ownership).
+
 | Setting | h200a | h200b |
 |---|---|---|
 | Listen port / remote port | **8003** | **8004** |

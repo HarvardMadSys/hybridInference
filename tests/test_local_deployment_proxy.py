@@ -54,6 +54,34 @@ def _request(
         return exc.code, dict(exc.headers), exc.read()
 
 
+def _no_such_container() -> Any:
+    """Fake ``subprocess.run`` result standing in for a container that is absent.
+
+    ``docker inspect`` exits non-zero when the name does not exist, which the
+    proxy reads as "no container, therefore no owner". Stubs that return ``None``
+    instead are not standing in for anything docker can do.
+    """
+    return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+
+def _container_mutations(run: Mock) -> list[list[str]]:
+    """Return the mocked docker commands that would actually change something.
+
+    The proxy reads a container's ownership labels with ``docker inspect`` before
+    it starts or stops anything, so "no container was touched" is a claim about
+    ``run``/``rm``/``stop``/``kill`` — not about the call count.
+    """
+    mutating: list[list[str]] = []
+    for call in run.call_args_list:
+        cmd = call.args[0] if call.args else call.kwargs.get("args")
+        if not isinstance(cmd, list) or "docker" not in cmd:
+            continue
+        rest = cmd[cmd.index("docker") + 1 :]
+        if rest and rest[0] in {"run", "rm", "stop", "kill"}:
+            mutating.append(cmd)
+    return mutating
+
+
 def _load_proxy(monkeypatch: Any, tmp_path: Path, *, backend_port: int = 18080) -> Any:
     config_path = tmp_path / "models.json"
     config_path.write_text(
@@ -135,13 +163,13 @@ def test_start_container_rejects_model_dir_without_config(monkeypatch: Any, tmp_
             "model_dir": str(model_dir),
         },
     )
-    run = Mock()
+    run = Mock(return_value=_no_such_container())
     monkeypatch.setattr(proxy.subprocess, "run", run)
 
     with pytest.raises(RuntimeError, match=r"model_dir missing config\.json"):
         backend._start_container()
 
-    run.assert_not_called()
+    assert _container_mutations(run) == []
 
 
 def test_missing_huggingface_model_is_downloaded_on_demand(
@@ -341,13 +369,13 @@ def test_huggingface_download_failure_prevents_container_start(
             "hf_repo": "BAAI/bge-m3",
         },
     )
-    run = Mock()
+    run = Mock(return_value=_no_such_container())
     monkeypatch.setattr(proxy.subprocess, "run", run)
 
     with pytest.raises(RuntimeError, match="failed to download Hugging Face model"):
         backend._start_container()
 
-    run.assert_not_called()
+    assert _container_mutations(run) == []
 
 
 def test_embedding_container_uses_embedding_runtime_flags(monkeypatch: Any, tmp_path: Path) -> None:
@@ -372,8 +400,9 @@ def test_embedding_container_uses_embedding_runtime_flags(monkeypatch: Any, tmp_
     )
     commands: list[list[str]] = []
 
-    def record_run(command: list[str], **_: Any) -> None:
+    def record_run(command: list[str], **_: Any) -> Any:
         commands.append(command)
+        return _no_such_container()
 
     monkeypatch.setattr(proxy.subprocess, "run", record_run)
 
@@ -514,6 +543,9 @@ def test_ensure_running_adopts_healthy_running_container(monkeypatch: Any, tmp_p
     monkeypatch.setattr(backend, "_backend_healthy", lambda: True)
     monkeypatch.setattr(backend, "_running_container_gpu", lambda: "3")
     monkeypatch.setattr(backend, "_wait_healthy", lambda: None)
+    # Unlabelled: a container started before ownership labels existed. Reading it
+    # as this proxy's own is what keeps this path working across the upgrade.
+    monkeypatch.setattr(backend, "_container_labels", dict)
     start = Mock()
     monkeypatch.setattr(backend, "_start_container", start)
 
@@ -523,6 +555,283 @@ def test_ensure_running_adopts_healthy_running_container(monkeypatch: Any, tmp_p
     start.assert_not_called()
     assert backend.state == "ready"
     assert backend._current_gpu == "3"
+
+
+# ── Container ownership ────────────────────────────────────────────────────
+#
+# Several units run this same script with different MODELS_CONFIG values, and a
+# container name is the only thing the lifecycle code used to key on: `docker rm
+# -f <name>` before every start, another on the idle path, and an adoption check
+# that asked only "is something running under this name and answering on this
+# port?". Two processes that resolve the same name therefore destroyed and
+# re-adopted each other's backend. These cover the labels that fix it.
+
+
+class _FakeDocker:
+    """Stand-in for the ``docker`` CLI: answers ``inspect``, records the rest."""
+
+    def __init__(
+        self,
+        *,
+        labels: dict[str, str] | None = None,
+        exists: bool = True,
+        running: bool = True,
+        gpu: str = "0",
+    ) -> None:
+        self.labels = labels
+        self.exists = exists
+        self.running = running
+        self.gpu = gpu
+        self.commands: list[list[str]] = []
+
+    def run(self, command: list[str], **_: Any) -> Any:
+        self.commands.append(list(command))
+        if "inspect" not in command:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if not self.exists:
+            return SimpleNamespace(returncode=1, stdout="", stderr="No such object")
+        fmt = command[command.index("-f") + 1]
+        if ".Config.Labels" in fmt:
+            body = "null" if self.labels is None else json.dumps(self.labels)
+        elif ".State.Running" in fmt:
+            body = "true" if self.running else "false"
+        else:
+            body = self.gpu
+        return SimpleNamespace(returncode=0, stdout=body + "\n", stderr="")
+
+    @property
+    def mutations(self) -> list[list[str]]:
+        """Commands that would actually change a container's existence."""
+        return [
+            c
+            for c in self.commands
+            if "docker" in c
+            and c[c.index("docker") + 1 :][:1]
+            and c[c.index("docker") + 1] in {"run", "rm", "stop", "kill"}
+        ]
+
+
+def _labelled_backend(proxy: Any, tmp_path: Path, name: str = "owned-model") -> Any:
+    """Build a backend over a model dir complete enough for ``_start_container``."""
+    model_dir = tmp_path / name
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type": "llama"}')
+    return proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "contended-sglang",
+            "gpu_index": "0",
+            "backend_port": 18099,
+            "model_dir": str(model_dir),
+            "served_name": MODEL_NAME,
+        },
+    )
+
+
+def _labels_from_run(command: list[str]) -> dict[str, str]:
+    """Extract ``--label k=v`` pairs from a ``docker run`` command."""
+    out: dict[str, str] = {}
+    for i, token in enumerate(command):
+        if token == "--label":
+            key, _, value = command[i + 1].partition("=")
+            out[key] = value
+    return out
+
+
+def test_start_container_stamps_owner_and_profile_labels(monkeypatch: Any, tmp_path: Path) -> None:
+    """Every container this proxy launches must say who owns it.
+
+    Without these two labels the name is the only ownership token there is, and a
+    sibling proxy that resolves the same name cannot tell "my backend" from
+    "someone else's" — which is what let it ``docker rm -f`` a container another
+    process was loading.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(exists=False)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    backend._start_container()
+
+    launched = [c for c in fake.mutations if c[c.index("docker") + 1] == "run"]
+    assert len(launched) == 1
+    labels = _labels_from_run(launched[0])
+    assert labels[proxy.OWNER_LABEL] == proxy.PROXY_OWNER == f"port-{proxy.LISTEN_PORT}"
+    assert labels[proxy.PROFILE_LABEL] == backend._profile
+
+
+def test_start_container_refuses_to_replace_another_proxys_container(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The unconditional ``docker rm -f`` must not fire on a foreign container.
+
+    This is the collision the two H200 units would produce if both ran on one
+    box: whichever started last destroyed the other's backend by name.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(labels={proxy.OWNER_LABEL: "port-8003"})
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    with pytest.raises(RuntimeError, match=r"Refusing to replace container contended-sglang"):
+        backend._start_container()
+
+    # Nothing destroyed, nothing launched — and the message names both sides so
+    # an operator can tell which unit to reconfigure.
+    assert fake.mutations == []
+
+
+def test_foreign_container_still_loading_is_not_torn_down(monkeypatch: Any, tmp_path: Path) -> None:
+    """The sharp edge: a container mid-load fails the health probe.
+
+    DeepSeek-V4-Flash takes ~11 minutes cold. A sibling proxy asked for the same
+    name eight minutes in would find it running but unhealthy, decline to adopt
+    it, and fall straight through to ``docker rm -f`` — killing a load that was
+    nearly done, so the first proxy's ``_wait_healthy`` raised and the model fell
+    back to a paid remote route. Refuse loudly instead.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(labels={proxy.OWNER_LABEL: "port-8003"}, running=True)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    # Still loading: the backend port is not answering yet.
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: False)
+
+    with pytest.raises(RuntimeError, match=r"Refusing to adopt container contended-sglang"):
+        backend.ensure_running()
+
+    assert fake.mutations == []
+    assert backend.state == "stopped"
+
+
+def test_idle_stop_leaves_another_proxys_container_running(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The idle timer measures this process's traffic, not the owner's.
+
+    So an idle expiry here says nothing about whether the owning proxy is
+    streaming from that container right now. Drop local state; leave the
+    container to its owner's own watcher.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(labels={proxy.OWNER_LABEL: "port-8003"})
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    with backend._lock:
+        backend._state = "ready"
+        backend._current_gpu = "0"
+
+    backend._stop_container()
+
+    assert fake.mutations == []
+    assert backend.state == "stopped"
+    assert backend._current_gpu is None
+
+
+def test_unlabelled_container_counts_as_this_proxys_own(monkeypatch: Any, tmp_path: Path) -> None:
+    """UPGRADE RULE: no owner label means "mine", never "someone else's".
+
+    Every container running at the moment this ships is unlabelled. Reading an
+    absent label as foreign would make the idle watcher refuse to remove any of
+    them, so GPUs would stay held long past ``IDLE_TIMEOUT`` on every deployment
+    that upgrades without a cold start.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(labels=None)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    assert backend._container_owner() is None
+
+    backend._stop_container()
+
+    removed = [c for c in fake.mutations if c[c.index("docker") + 1] == "rm"]
+    assert removed and removed[0][-1] == "contended-sglang"
+
+
+def test_own_labelled_container_is_still_adopted_on_restart(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Round-trip: the labels this proxy stamps must read back as its own.
+
+    Restart-and-adopt exists so a proxy restart does not reload weights, and it
+    has to survive labelling. Feed the labels straight from the run command back
+    through the inspect path.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    stamped = _labels_from_run(["docker", "run", *backend._ownership_label_args()])
+    fake = _FakeDocker(labels=stamped, running=True, gpu="2")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: True)
+
+    assert backend._adopt_running_container() is True
+    assert backend._current_gpu == "2"
+    assert fake.mutations == []
+
+
+def test_own_container_from_a_changed_profile_is_replaced_not_refused(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A profile edit must still take effect on the next start.
+
+    Same owner, different profile hash means "my own config changed on disk"
+    (the next ``mem_fraction`` bump, a new ``sglang_image``) — replace the
+    container rather than adopt a backend running the previous config. Refusing
+    here would wedge every ordinary config change.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(
+        labels={
+            proxy.OWNER_LABEL: proxy.PROXY_OWNER,
+            proxy.PROFILE_LABEL: "0000staleprofile",
+        },
+        running=True,
+    )
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: True)
+
+    # Healthy and running, but not adopted: the config it was launched from is gone.
+    assert backend._adopt_running_container() is False
+
+    # And replacing it is allowed — no ForeignContainerError for my own container.
+    backend._start_container()
+    verbs = [c[c.index("docker") + 1] for c in fake.mutations]
+    assert verbs == ["rm", "run"]
+
+
+def test_contended_container_surfaces_as_502_naming_both_owners(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A collision must be diagnosable from the response, not just the journal.
+
+    The alternative is what happens today: the two proxies take turns destroying
+    each other's container and the client sees an opaque startup timeout.
+
+    Also pins the message to ASCII. ``send_error`` puts it in the HTTP status
+    line, which is encoded latin-1, so a single em dash in the text raises
+    ``UnicodeEncodeError`` mid-response and the client gets a dropped connection
+    rather than the diagnosis.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+    fake = _FakeDocker(labels={proxy.OWNER_LABEL: "port-8003"}, running=True)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: False)
+
+    with _serve(proxy.ProxyHandler) as proxy_port:
+        status, _, body = _request(
+            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            method="POST",
+            headers={"Authorization": "Bearer manual-secret"},
+            body={"model": MODEL_NAME, "messages": [{"role": "user", "content": "ping"}]},
+        )
+
+    assert status == 502
+    assert b"port-8003" in body
+    assert proxy.PROXY_OWNER.encode() in body
+    assert fake.mutations == []
 
 
 def test_dead_ready_backend_self_heals_and_retries(monkeypatch: Any, tmp_path: Path) -> None:
@@ -685,15 +994,31 @@ def _gpu_query_result(stdout: str) -> Any:
     return SimpleNamespace(stdout=stdout, returncode=0)
 
 
-def test_detect_profile_selects_h200_for_four_h200s(monkeypatch: Any, tmp_path: Path) -> None:
-    # A box with 4x H200 must serve the DeepSeek-V4-Flash-0731 (TP=2 on 2,3) profile.
+def test_detect_profile_selects_the_dedicated_h200_profile(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A 4x-H200 box resolves to the dedicated profile, not a copy of it.
+
+    There is one DeepSeek deployment on such a box, so there must be one file
+    describing it. A local ``models.h200.json`` mirror is what let the two
+    definitions drift to FP8/PP=3 against NVFP4/TP=2 before #1185 reconverged
+    them; pointing the detector at the file ``h200_idle_proxy.service`` pins
+    makes agreement structural rather than something a partial test guards.
+    """
+    from pathlib import Path as _Path
+
     proxy = _load_proxy(monkeypatch, tmp_path)
     monkeypatch.setattr(
         proxy.subprocess,
         "run",
         lambda *a, **k: _gpu_query_result("NVIDIA H200\nNVIDIA H200\nNVIDIA H200\nNVIDIA H200\n"),
     )
-    assert proxy._detect_profile_config().name == "models.h200.json"
+    script_dir = _Path(proxy.__file__).resolve().parent
+    resolved = proxy._detect_profile_config()
+    assert resolved == script_dir.parent / "h200_idle_proxy" / "models.json"
+    assert resolved.is_file()
+    # No stale duplicate left behind for the next reader to edit by mistake.
+    assert not (script_dir / "models.h200.json").exists()
 
 
 def test_h200_profile_uses_tp2_on_gpus_2_and_3() -> None:
@@ -702,15 +1027,15 @@ def test_h200_profile_uses_tp2_on_gpus_2_and_3() -> None:
     The earlier profile needed PP=3 across GPUs 0,2,3 because 273 GiB of FP8
     weights do not fit at TP=2 (and TP=3 is illegal — 64 attention heads are not
     divisible by 3). The 0731 release ships FP4 experts at ~156 GiB, so it fits on
-    two GPUs and frees a third. Must stay in step with the dedicated
-    ``ops/h200_idle_proxy`` profile, which is what actually runs on h200a/h200b.
+    two GPUs and frees a third. This is the profile ``h200_idle_proxy.service``
+    pins and the one hardware detection resolves to, so it is what actually runs
+    on h200a/h200b by either route.
     """
     import json
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1] / "ops"
-    profile = json.loads((root / "local_deployment_proxy" / "models.h200.json").read_text())
-    dedicated = json.loads((root / "h200_idle_proxy" / "models.json").read_text())
+    profile = json.loads((root / "h200_idle_proxy" / "models.json").read_text())
 
     model = profile["deepseek-v4-flash"]
     assert model["tensor_parallel_size"] == 2
@@ -722,14 +1047,9 @@ def test_h200_profile_uses_tp2_on_gpus_2_and_3() -> None:
     assert model["speculative_algorithm"] == "DSPARK"
     assert model["moe_runner_backend"] == "marlin"
 
-    for key in ("model_dir", "hf_repo", "gpu_index", "speculative_algorithm", "sglang_image"):
-        assert model[key] == dedicated["deepseek-v4-flash"][key], (
-            f"models.h200.json and h200_idle_proxy/models.json disagree on {key!r}"
-        )
 
-
-def test_h200_profiles_use_deepseek_v4_parsers() -> None:
-    """Both H200 configs must use the DeepSeek-V4 parser pairing.
+def test_h200_profile_uses_deepseek_v4_parsers() -> None:
+    """The H200 config must use the DeepSeek-V4 parser pairing.
 
     The ``deepseek-r1`` reasoning parser assumes the whole generation is
     reasoning until a ``</think>`` close tag; requests here do not enable
@@ -741,14 +1061,10 @@ def test_h200_profiles_use_deepseek_v4_parsers() -> None:
     import json
     from pathlib import Path
 
-    repo = Path(__file__).resolve().parents[1]
-    for cfg_path in (
-        repo / "ops" / "local_deployment_proxy" / "models.h200.json",
-        repo / "ops" / "h200_idle_proxy" / "models.json",
-    ):
-        model = json.loads(cfg_path.read_text())["deepseek-v4-flash"]
-        assert model["reasoning_parser"] == "deepseek-v4", cfg_path
-        assert model["tool_call_parser"] == "deepseekv4", cfg_path
+    cfg_path = Path(__file__).resolve().parents[1] / "ops" / "h200_idle_proxy" / "models.json"
+    model = json.loads(cfg_path.read_text())["deepseek-v4-flash"]
+    assert model["reasoning_parser"] == "deepseek-v4", cfg_path
+    assert model["tool_call_parser"] == "deepseekv4", cfg_path
 
 
 def _load_smoke_test() -> Any:

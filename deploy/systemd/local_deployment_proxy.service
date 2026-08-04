@@ -47,12 +47,16 @@ Environment=HEALTH_INTERVAL=10
 # configuration source, including ... Environment= or EnvironmentFile=".
 #
 # Dropped rather than pinned deliberately. Unset is the value this proxy wants:
-# it then picks its own profile from the local GPUs (models.h200.json,
+# it then picks its own profile from the local GPUs (../h200_idle_proxy/models.json,
 # models.rtx6000.json, else models.json), and pinning models.json here would
 # quietly downgrade the RTX PRO 6000 boxes — narrower context window, no
 # hf_repo to fetch from — and point an H200 box at a checkpoint that is not on
 # its disks. On the H200 boxes that config belongs to h200_idle_proxy.service,
-# which pins ops/h200_idle_proxy/models.json explicitly.
+# which pins ops/h200_idle_proxy/models.json explicitly — the same file this
+# unit's detector resolves to, so the two cannot drift apart. They would still
+# contend for one container name on one backend_port if both ran here; the
+# container ownership labels make that a 502 naming both owners rather than a
+# pair of processes tearing down each other's backend.
 #
 # To serve a specific config here anyway, set it in the child process the way
 # that unit does. A drop-in that resets UnsetEnvironment= and then sets the
