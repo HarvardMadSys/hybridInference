@@ -968,6 +968,99 @@ def test_sglang_mtp_algorithm_override(monkeypatch: Any, tmp_path: Path) -> None
     assert cmd[cmd.index("--speculative-algorithm") + 1] == "EAGLE"
 
 
+def _dspark_base() -> dict[str, Any]:
+    return {
+        "container": "ds-sglang",
+        "engine": "sglang",
+        "gpu_index": "2,3",
+        "tensor_parallel_size": 2,
+        "backend_port": 18003,
+        "model_dir": "/tmp/ds",
+        "served_name": MODEL_NAME,
+        "max_model_len": 4096,
+        "mem_fraction": "0.90",
+        "mtp": True,
+        "speculative_algorithm": "DSPARK",
+    }
+
+
+def test_sglang_dspark_omits_single_mtp_layer_defaults(monkeypatch: Any, tmp_path: Path) -> None:
+    # DeepSeek-V4-Flash-0731's DSpark head carries its own block size (gamma) in the
+    # checkpoint. Sending the single-MTP-layer defaults would override it --
+    # --speculative-num-draft-tokens 2 collapses a 5-token block to 1 -- so none of
+    # the step/topk/draft-token flags may be emitted unless explicitly configured.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+
+    cmd = proxy.BackendManager(MODEL_NAME, _dspark_base())._sglang_run_cmd("2,3")
+
+    assert cmd[cmd.index("--speculative-algorithm") + 1] == "DSPARK"
+    assert "--speculative-num-draft-tokens" not in cmd
+    assert "--speculative-num-steps" not in cmd
+    assert "--speculative-eagle-topk" not in cmd
+
+
+def test_sglang_dspark_passes_explicit_overrides(monkeypatch: Any, tmp_path: Path) -> None:
+    # Explicit tuning still wins over checkpoint inference when it is set.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+
+    cmd = proxy.BackendManager(
+        MODEL_NAME,
+        {**_dspark_base(), "speculative_num_draft_tokens": 6, "speculative_dspark_block_size": 5},
+    )._sglang_run_cmd("2,3")
+
+    assert cmd[cmd.index("--speculative-num-draft-tokens") + 1] == "6"
+    assert cmd[cmd.index("--speculative-dspark-block-size") + 1] == "5"
+
+
+def test_sglang_non_dspark_mtp_keeps_defaults(monkeypatch: Any, tmp_path: Path) -> None:
+    # The DSPARK special case must not change behaviour for EAGLE/NEXTN models.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+
+    cmd = proxy.BackendManager(
+        MODEL_NAME, {**_dspark_base(), "speculative_algorithm": "EAGLE"}
+    )._sglang_run_cmd("2,3")
+
+    assert cmd[cmd.index("--speculative-algorithm") + 1] == "EAGLE"
+    assert cmd[cmd.index("--speculative-num-steps") + 1] == "1"
+    assert cmd[cmd.index("--speculative-eagle-topk") + 1] == "1"
+    assert cmd[cmd.index("--speculative-num-draft-tokens") + 1] == "2"
+
+
+def test_sglang_cache_dir_and_image_pin(monkeypatch: Any, tmp_path: Path) -> None:
+    # A persistent JIT cache mount and a pinned image are both opt-in; DSpark needs
+    # sglang >= 0.5.16, so the deployment pins the tag rather than tracking :latest.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    base = _dspark_base()
+
+    default = proxy.BackendManager(MODEL_NAME, dict(base))._sglang_run_cmd("2,3")
+    assert "lmsysorg/sglang:latest" in default
+    assert not any(arg.endswith(":/root/.cache") for arg in default)
+
+    pinned = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            **base,
+            "cache_dir": "/var/tmp/sglang-cache/ds",
+            "sglang_image": "lmsysorg/sglang:v0.5.16",
+        },
+    )._sglang_run_cmd("2,3")
+    assert "lmsysorg/sglang:v0.5.16" in pinned
+    assert "lmsysorg/sglang:latest" not in pinned
+    assert "/var/tmp/sglang-cache/ds:/root/.cache" in pinned
+
+
+def test_sglang_skip_server_warmup_opt_in(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    base = _dspark_base()
+
+    assert "--skip-server-warmup" not in proxy.BackendManager(
+        MODEL_NAME, dict(base)
+    )._sglang_run_cmd("2,3")
+    assert "--skip-server-warmup" in proxy.BackendManager(
+        MODEL_NAME, {**base, "skip_server_warmup": True}
+    )._sglang_run_cmd("2,3")
+
+
 def test_sglang_mamba_mtp_uses_extra_buffer_and_spec_v2(monkeypatch: Any, tmp_path: Path) -> None:
     # Hybrid Mamba MoE models (Qwen3.5/3.6) must keep the radix (prefix) cache while
     # running MTP spec decoding. sglang disables the radix cache for these unless the

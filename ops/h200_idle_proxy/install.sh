@@ -119,4 +119,10 @@ echo
 echo "NOTE: each tunnel connects as the user in the SSH_HOST entry (default root)"
 echo "      using this box's root SSH key. That key must be authorized on the"
 echo "      router, and the router needs GatewayPorts clientspecified (or yes)."
-echo "      Gateways should set H200_DEPLOYMENT_URL=http://host.docker.internal:${REMOTE_PORT}/v1"
+# The two H200 nodes are distinguished by remote port: h200a keeps the original
+# 8003 / H200_DEPLOYMENT_URL pair, h200b uses 8004 / H200B_DEPLOYMENT_URL.
+case "$REMOTE_PORT" in
+  8004) GATEWAY_VAR=H200B_DEPLOYMENT_URL ;;
+  *) GATEWAY_VAR=H200_DEPLOYMENT_URL ;;
+esac
+echo "      Gateways should set ${GATEWAY_VAR}=http://host.docker.internal:${REMOTE_PORT}/v1"

@@ -102,6 +102,19 @@ tokens) suit a single MTP layer; override with ``speculative_num_steps``,
 ``speculative_algorithm`` if needed. DeepSeek-V4-Flash requires
 ``"speculative_algorithm": "EAGLE"`` (sglang rejects ``NEXTN`` for that arch).
 
+DeepSeek-V4-Flash-**0731** instead ships a DSpark head (3 blocks, plus markov and
+confidence heads) and needs ``"speculative_algorithm": "DSPARK"`` on sglang
+>= 0.5.16; earlier builds only implement the preview checkpoint's single-block
+MTP and load an unpopulated draft head, which serves 500s. For DSPARK the
+step/topk/draft-token knobs are left unset unless configured, so sglang can read
+the draft block size (gamma) from the checkpoint and size the verify window as
+gamma + 1. Pin ``"sglang_image"`` to hold a known-good tag.
+
+Set ``"skip_server_warmup": true`` to pass ``--skip-server-warmup``, and
+``"cache_dir"`` to bind-mount a persistent DeepGEMM/JIT kernel cache at
+``/root/.cache``; both cut startup time on large MoE models. Keep ``cache_dir``
+node-local rather than on shared storage.
+
 Set ``"moe_runner_backend"`` (e.g. ``"marlin"``) to override the MoE runner.
 NVFP4 / FP4-expert checkpoints need ``"marlin"`` on pre-Blackwell (SM90, e.g.
 H200) GPUs; the default ``triton`` runner asserts on the packed FP4 shapes.
@@ -611,8 +624,18 @@ class BackendManager:
             f"{self.backend_port}:8001",
             "-v",
             f"{self.config['model_dir']}:/model:ro",
+            # Persist sglang's DeepGEMM/JIT kernel cache across container restarts.
+            # Cold-compiling it costs several minutes on DeepSeek-V4 (~680s to ready
+            # vs ~370s warm), which can outrun the health-check budget after an
+            # idle-timeout teardown. Keep the dir node-local -- a cache shared over
+            # NFS between boxes would have them racing on the same files.
+            *(
+                ["-v", f"{self.config['cache_dir']}:/root/.cache"]
+                if self.config.get("cache_dir")
+                else []
+            ),
             *self._docker_env_args(),
-            "lmsysorg/sglang:latest",
+            str(self.config.get("sglang_image", "lmsysorg/sglang:latest")),
             "python3",
             "-m",
             "sglang.launch_server",
@@ -638,6 +661,11 @@ class BackendManager:
         moe_backend = self.config.get("moe_runner_backend")
         if moe_backend:
             cmd += ["--moe-runner-backend", str(moe_backend)]
+        # sglang's startup warmup request runs after the scheduler is up and can add
+        # minutes on a large MoE model. The proxy's own health check already gates
+        # readiness, so skipping it keeps slow models inside HEALTH_TIMEOUT.
+        if self.config.get("skip_server_warmup"):
+            cmd += ["--skip-server-warmup"]
         if self.config.get("is_embedding"):
             # Embedding models run sglang in encode-only mode; tool-call parsing
             # and chat-completion endpoints are irrelevant for them.
@@ -665,16 +693,33 @@ class BackendManager:
             # draft model path is needed. The step/topk/draft-token counts are
             # tunable; the defaults suit a single MTP layer (one extra token).
             if self.config.get("mtp"):
-                cmd += [
-                    "--speculative-algorithm",
-                    str(self.config.get("speculative_algorithm", "NEXTN")),
-                    "--speculative-num-steps",
-                    str(self.config.get("speculative_num_steps", 1)),
-                    "--speculative-eagle-topk",
-                    str(self.config.get("speculative_eagle_topk", 1)),
-                    "--speculative-num-draft-tokens",
-                    str(self.config.get("speculative_num_draft_tokens", 2)),
-                ]
+                algo = str(self.config.get("speculative_algorithm", "NEXTN"))
+                cmd += ["--speculative-algorithm", algo]
+                # DSpark (DeepSeek-V4-Flash-0731) carries its own draft geometry in the
+                # checkpoint: sglang reads dspark_block_size (gamma) and derives the
+                # verify window as gamma + 1. The single-MTP-layer defaults below would
+                # override that -- --speculative-num-draft-tokens 2 collapses a 5-token
+                # DSpark block to 1 and gives up most of the speedup -- so pass only the
+                # knobs that were set explicitly and let sglang infer the rest.
+                if algo.upper() == "DSPARK":
+                    for key, flag in (
+                        ("speculative_num_steps", "--speculative-num-steps"),
+                        ("speculative_eagle_topk", "--speculative-eagle-topk"),
+                        ("speculative_num_draft_tokens", "--speculative-num-draft-tokens"),
+                        ("speculative_dspark_block_size", "--speculative-dspark-block-size"),
+                    ):
+                        value = self.config.get(key)
+                        if value is not None:
+                            cmd += [flag, str(value)]
+                else:
+                    cmd += [
+                        "--speculative-num-steps",
+                        str(self.config.get("speculative_num_steps", 1)),
+                        "--speculative-eagle-topk",
+                        str(self.config.get("speculative_eagle_topk", 1)),
+                        "--speculative-num-draft-tokens",
+                        str(self.config.get("speculative_num_draft_tokens", 2)),
+                    ]
                 # Hybrid Mamba/linear-attention models (Qwen3.5/3.6 MoE) reject
                 # spec decoding alongside radix cache unless the Mamba scheduler
                 # reserves extra cache buffers and the v2 spec path is enabled

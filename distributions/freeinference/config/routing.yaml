@@ -12,7 +12,11 @@ local_deployment:
   - endpoint: ${LOCAL_DEPLOYMENT_URL}
     models:
       - qwen3.6-35b
+  # h200a (port 8003) and h200b (port 8004) both serve deepseek-v4-flash.
   - endpoint: ${H200_DEPLOYMENT_URL}
+    models:
+      - deepseek-v4-flash
+  - endpoint: ${H200B_DEPLOYMENT_URL}
     models:
       - deepseek-v4-flash
   - endpoint: ${RC_DEPLOYMENT_URL}

@@ -621,7 +621,8 @@ models:
         provider_model_id: "diffusiongemma"
 
   # ── DeepSeek V4 (kind: deepseek) ─────────────────────────
-  # Local H200 idle proxy: ops/h200_idle_proxy (sglang PP=3 on GPUs 0,2,3, port 8003).
+  # Local H200 idle proxy: ops/h200_idle_proxy, on both h200a (port 8003) and
+  # h200b (port 8004) — sglang TP=2 on GPUs 2,3 with DSpark speculative decoding.
   - id: deepseek-v4-flash
     name: DeepSeek V4 Flash (high speed)
     provider: deepseek
@@ -647,12 +648,23 @@ models:
       input_cache_reads: "0.0028"
       input_cache_writes: "0"
     route:
-      # H200 local sglang (key via H200_DEPLOYMENT_URL + LOCAL_API_KEY).
-      # optional: skipped when H200_DEPLOYMENT_URL is unset/blank.
+      # H200 local sglang — one route per node, each running ops/h200_idle_proxy.
+      # h200a keeps the unsuffixed H200_DEPLOYMENT_URL (tunnelled on port 8003) so
+      # gateways configured for the earlier single-node setup need no env change;
+      # h200b adds H200B_DEPLOYMENT_URL (port 8004).
+      # optional: each route is skipped when its own env var is unset/blank, so one
+      # node being down or unconfigured does not take the other's capacity with it.
       - kind: sglang
         weight: 1.0
         optional: true
         base_url: ${H200_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "deepseek-v4-flash"
+      - kind: sglang
+        weight: 1.0
+        optional: true
+        base_url: ${H200B_DEPLOYMENT_URL}
         api_keys:
           - ${LOCAL_API_KEY}
         provider_model_id: "deepseek-v4-flash"
