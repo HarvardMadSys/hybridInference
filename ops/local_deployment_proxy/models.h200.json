@@ -11,7 +11,7 @@
         "sglang_image": "lmsysorg/sglang:v0.5.16",
         "served_name": "deepseek-v4-flash",
         "max_model_len": 1048576,
-        "mem_fraction": "0.90",
+        "mem_fraction": "0.85",
         "moe_runner_backend": "marlin",
         "skip_server_warmup": true,
         "mtp": true,

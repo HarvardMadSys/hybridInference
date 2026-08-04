@@ -124,7 +124,7 @@ See [`models.json`](models.json):
 | `model_dir` | `/netscratch/juncheng/models/DeepSeek-V4-Flash-0731` |
 | `hf_repo` | `deepseek-ai/DeepSeek-V4-Flash-0731` |
 | `max_model_len` | `1048576` (1M — the model's YARN architectural max, not VRAM-bound) |
-| `mem_fraction` | `0.90` |
+| `mem_fraction` | `0.85` — **not** 0.90; DSpark needs the extra headroom (see below) |
 | `moe_runner_backend` | `marlin` — **required** for FP4 experts on H200 (SM90) |
 | `mtp` / `speculative_algorithm` | `true` / `DSPARK` |
 | `sglang_image` | `lmsysorg/sglang:v0.5.16` — DSpark needs ≥ 0.5.16 |
@@ -141,6 +141,16 @@ See [`models.json`](models.json):
 > accept length falls to exactly 1.00 and decode drops ~24% below unspeculated. The
 > official checkpoint has no ignore list, so the experts bind to
 > `Mxfp4MarlinMoEMethod` and accept length is ~4.3.
+
+> **Why `mem_fraction` 0.85 and not 0.90?** DSpark costs roughly 10 GB/GPU beyond the
+> non-speculative configuration: ~5.5 GB of draft weights, plus a *second* set of verify
+> CUDA graphs (sglang captures a target verify graph and a draft verify graph, each about
+> 5 GB at the default `bs` ladder up to 256). At 0.90 that left ~4.7 GB free of 143.7 GB
+> once both graph sets were captured, and the server OOM-crashed within a minute of taking
+> real production traffic — the idle proxy then rebuilt the container, so clients saw the
+> "model is starting up" banner on a ~9-minute loop. 0.85 frees ~21 GB instead of ~14 GB,
+> which covers the draft model, both graph sets, and activation headroom. Raise it only
+> alongside a smaller CUDA-graph batch ladder.
 
 > **Why `DSPARK` and not `EAGLE`?** 0731's speculative module is DSpark, not the
 > preview checkpoint's MTP: 3 blocks (`dspark_target_layer_ids: [40,41,42]`) with
