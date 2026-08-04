@@ -48,7 +48,6 @@ from serving.agent_jobs.mcp_registry import McpServer, get_registry
 from serving.agent_jobs.model_auth import (
     AgentModelAuthError,
     authenticate_agent_tool_call,
-    authenticate_grant_tool_call,
     looks_like_agent_token,
 )
 from serving.servers.deps import get_agent_job_store, get_operational_store
@@ -117,17 +116,32 @@ async def _authorize(
 ) -> tuple[McpServer, str]:
     """Resolve the token and the named server, or raise the right HTTP error."""
     token = _bearer(authorization)
+
+    # An inference grant is refused here, and this is the whole of the
+    # gateway's side of the MCP ownership move. MCP belongs to the cloud
+    # agent: it owns the registry, the credentials and the fence, so it is the
+    # only place that can decide a tool call. A grant authorizes models.
+    #
+    # **This route itself stays**, serving the per-attempt worker tokens the
+    # deployed agent still carries, until H4 removes it after cutover. Turning
+    # it off now would break every running job for the sake of a boundary the
+    # new relay is not yet serving.
+    if grants.looks_like_grant_token(token):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": {
+                    "type": "insufficient_scope",
+                    "message": (
+                        "An inference grant authorizes model calls only. "
+                        "MCP is served by the cloud agent's own relay."
+                    ),
+                }
+            },
+        )
+
     try:
-        if grants.looks_like_grant_token(token):
-            # Same fence, no quota: a tool call invokes no inference provider,
-            # so it spends nothing there is a limit on.
-            granted = await authenticate_grant_tool_call(token, op_store=op_store)
-            identity = {
-                "job_id": granted["agent_job_id"],
-                "mcp_servers": granted["agent_allowed_mcp"],
-            }
-        else:
-            identity = await authenticate_agent_tool_call(token, job_store=store)
+        identity = await authenticate_agent_tool_call(token, job_store=store)
     except AgentModelAuthError as exc:
         raise HTTPException(
             status_code=exc.status_code,
