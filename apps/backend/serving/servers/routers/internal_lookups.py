@@ -82,6 +82,43 @@ async def mcp_registry(_: None = Depends(require_dispatch_token)) -> dict[str, A
     return {"servers": servers}
 
 
+def _aliases_for(router_exec: Any, visible: list[str]) -> dict[str, str]:
+    """Return ``{alias: canonical}`` for the models this user can see.
+
+    The route table keys canonical ids *and* their aliases at the same level,
+    each pointing at the same config, so an entry is an alias exactly when its
+    key is not the canonical id it resolves to.
+
+    Two entries are dropped rather than returned, because a consumer resolves
+    with ``aliases.get(name, name)`` and either would make that lie:
+
+    * an alias whose canonical this user cannot see — it would resolve to a
+      model the catalog does not list, and the caller would be refused a
+      moment later with nothing to explain it;
+    * an alias spelled the same as some model's canonical id, which would
+      shadow that real model.
+
+    Case is left exactly as configured. Lowercasing here would accept spellings
+    the inference path does not, which is a difference nobody would find until
+    a job failed at its first call.
+    """
+    visible_set = set(visible)
+    canonicals = {
+        route.canonical_model_id
+        for route in router_exec.routes.values()
+        if getattr(route, "canonical_model_id", None)
+    }
+    aliases: dict[str, str] = {}
+    for name, route in router_exec.routes.items():
+        canonical = getattr(route, "canonical_model_id", None)
+        if not canonical or canonical == name:
+            continue
+        if canonical not in visible_set or name in canonicals:
+            continue
+        aliases[name] = canonical
+    return aliases
+
+
 @router.get("/model-catalog")
 async def model_catalog(
     user_id: str = Query(max_length=128),
@@ -130,7 +167,16 @@ async def model_catalog(
             "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
         },
     )
-    return {"user_id": user["id"], "role": user.get("role") or "free", "models": models}
+    return {
+        "user_id": user["id"],
+        "role": user.get("role") or "free",
+        "models": models,
+        # The translation table, so the control plane resolves an alias the way
+        # it used to when it could read this registry in-process. It resolves
+        # once and works in canonical ids from there; nothing downstream — the
+        # grant, the store, the scope check — ever sees an alias.
+        "aliases": _aliases_for(router_exec, models),
+    }
 
 
 @router.get("/users/{user_id}/status")

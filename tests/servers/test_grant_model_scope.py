@@ -175,3 +175,23 @@ def test_the_policy_distinguishes_absent_from_empty() -> None:
     # Not a grant at all.
     assert is_model_outside_grant_scope(GRANTED, {"user_id": "u"}) is False
     assert is_model_outside_grant_scope(GRANTED, None) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("module", "path", "body"), _SURFACES)
+async def test_an_ordinary_api_key_reaches_a_model_by_any_spelling(
+    module, path, body, mock_db_logger
+):
+    """**The red line for this whole change.**
+
+    Nothing about an ordinary request may move. A user with an API key calling
+    a model — by its canonical id here, and through the router's own alias
+    table in `test_registry.py` — is routed exactly as before; the grant scope
+    is a gate that only a caller carrying `agent_allowed_models` can be behind,
+    and an API key never carries one.
+    """
+    ctx = {"user_id": "user-1", "role": "pro", "authenticated": True, "is_admin": False}
+    app = _app(module, ctx, mock_db_logger)
+
+    for model in (GRANTED, UNGRANTED):
+        assert await _call(app, path, body(model)) != status.HTTP_404_NOT_FOUND

@@ -895,3 +895,145 @@ def test_embedding_model_single_route_uses_plain_adapter(tmp_path, monkeypatch):
     adapter = emb["emb-solo"]
     assert not isinstance(adapter, FallbackEmbeddingAdapter)
     assert adapter.config.provider == "sglang"
+
+
+@pytest.mark.unit
+def test_two_models_claiming_one_alias_is_reported_without_changing_routing(
+    tmp_path, monkeypatch, caplog
+):
+    """An ambiguous alias is reported, and routing is left exactly as it was.
+
+    `register_route` writes aliases into the route table unconditionally, so
+    the second model to claim a name already wins today. Refusing to start
+    would turn a deployment that has been serving that way into one that will
+    not boot — from a change whose only purpose is to hand the cloud agent a
+    translation table.
+
+    So the load warns and carries on, and the *shipped* configuration is what
+    CI holds to a stricter standard. Fail-closed at startup is a later,
+    separate decision, once the live configs are known clean.
+    """
+    yaml_text = (
+        "models:\n"
+        "  - id: model-a\n"
+        "    name: Model A\n"
+        "    provider: zai\n"
+        "    base_url: ${ZAI_BASE_URL}\n"
+        "    api_key: ${LLAMA_API_KEY}\n"
+        '    aliases: ["shared-name"]\n'
+        "  - id: model-b\n"
+        "    name: Model B\n"
+        "    provider: zai\n"
+        "    base_url: ${ZAI_BASE_URL}\n"
+        "    api_key: ${LLAMA_API_KEY}\n"
+        '    aliases: ["shared-name"]\n'
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("ZAI_BASE_URL", "http://zai.local")
+    monkeypatch.setenv("LLAMA_API_KEY", "sk-test")
+
+    exe = RouteExecutor()
+    with caplog.at_level("WARNING"):
+        registry.register_from_models_yaml(exe, Path(p))
+
+    assert any("shared-name" in record.getMessage() for record in caplog.records)
+    # Unchanged behaviour: last one loaded still wins, exactly as before.
+    assert exe.routes["shared-name"].canonical_model_id == "model-b"
+
+
+@pytest.mark.unit
+def test_one_model_repeating_its_own_alias_is_fine(tmp_path, monkeypatch):
+    """Duplication within a model is a typo, not an ambiguity — it still
+    resolves to exactly one place, so refusing to start would be a stricter
+    rule than the problem calls for."""
+    yaml_text = (
+        "models:\n"
+        "  - id: model-a\n"
+        "    name: Model A\n"
+        "    provider: zai\n"
+        "    base_url: ${ZAI_BASE_URL}\n"
+        "    api_key: ${LLAMA_API_KEY}\n"
+        '    aliases: ["same", "same"]\n'
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("ZAI_BASE_URL", "http://zai.local")
+    monkeypatch.setenv("LLAMA_API_KEY", "sk-test")
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    assert exe.routes["same"].canonical_model_id == "model-a"
+
+
+@pytest.mark.unit
+def test_shipped_config_has_no_ambiguous_alias():
+    """CI holds the configuration to the standard the loader only warns about.
+
+    The loader warns rather than refuses so that a deployment already serving
+    an ambiguous alias keeps working. That is the right call for *running*
+    code and the wrong one for what we ship: an alias whose meaning depends on
+    YAML order is a request that means different things after an unrelated
+    reordering.
+
+    Checked against the file itself rather than a loaded registry, because the
+    loader has already collapsed the duplicate by the time it returns.
+    """
+    import yaml
+
+    for path in sorted(
+        Path(__file__).resolve().parents[2].glob("distributions/*/config/models.yaml")
+    ):
+        document = yaml.safe_load(path.read_text()) or {}
+        owner: dict[str, str] = {}
+        clashes: list[str] = []
+        for model in document.get("models") or []:
+            model_id = str(model.get("id"))
+            for alias in model.get("aliases") or []:
+                previous = owner.get(str(alias))
+                if previous is not None and previous != model_id:
+                    clashes.append(f"{alias!r}: {previous!r} and {model_id!r}")
+                owner[str(alias)] = model_id
+        assert not clashes, f"{path.name} has aliases claimed by two models: {clashes}"
+
+        # And no alias may be spelled like some model's canonical id, which
+        # would shadow that model for anything resolving by name.
+        canonical_ids = {str(model.get("id")) for model in document.get("models") or []}
+        shadowed = sorted(set(owner) & canonical_ids)
+        assert not shadowed, f"{path.name} has aliases shadowing real model ids: {shadowed}"
+
+
+@pytest.mark.unit
+def test_an_existing_alias_still_reaches_the_same_adapter(tmp_path, monkeypatch):
+    """**The regression this whole change must not cause.**
+
+    The internal catalog is additive: it tells the cloud agent which canonical
+    id an alias means. Nothing about how an ordinary request is routed may
+    move — same route, same canonical id, same adapter object as the canonical
+    id resolves to.
+
+    Asserted on identity, not equality: the alias and the canonical share one
+    `RouteConfig` by reference, and a copy would be a behaviour change that
+    compares equal.
+    """
+    yaml_text = (
+        "models:\n"
+        "  - id: real-model\n"
+        "    name: Real Model\n"
+        "    provider: zai\n"
+        "    base_url: ${ZAI_BASE_URL}\n"
+        "    api_key: ${LLAMA_API_KEY}\n"
+        '    aliases: ["legacy-name"]\n'
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("ZAI_BASE_URL", "http://zai.local")
+    monkeypatch.setenv("LLAMA_API_KEY", "sk-test")
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    assert exe.routes["legacy-name"] is exe.routes["real-model"]
+    assert exe.canonical_id("legacy-name") == "real-model"
+    assert exe.routes["legacy-name"].adapters[0][0] is exe.routes["real-model"].adapters[0][0]

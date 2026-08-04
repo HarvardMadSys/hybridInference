@@ -9,7 +9,7 @@ split is for.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from fastapi import FastAPI
@@ -83,13 +83,40 @@ def _visible_models(monkeypatch) -> None:
     monkeypatch.setattr(internal_lookups, "agent_visible_models", _visible)
 
 
+class _FakeRoute:
+    def __init__(self, canonical: str) -> None:
+        self.canonical_model_id = canonical
+
+
+class _FakeRouter:
+    """A route table shaped like the real one: aliases and canonicals are peers.
+
+    `glm-5.1` and `kimi-k2` are the visible pair the catalog fixture returns.
+    The rest are the three cases the alias map has to get right.
+    """
+
+    routes: ClassVar[dict[str, _FakeRoute]] = {
+        "glm-5.1": _FakeRoute("glm-5.1"),
+        "glm-latest": _FakeRoute("glm-5.1"),
+        "kimi-k2": _FakeRoute("kimi-k2"),
+        # Points at a model this user cannot see.
+        "secret-alias": _FakeRoute("admin-only-model"),
+        "admin-only-model": _FakeRoute("admin-only-model"),
+        # The shadowing shape, as it actually appears: some model declared
+        # `glm-5.1` as its own alias, so its entry overwrote glm-5.1's own —
+        # which is still reachable through `glm-latest`, and so still shows up
+        # as a canonical id that this key is now pointing away from.
+        "glm-5.1-conflicted": _FakeRoute("kimi-k2"),
+    }
+
+
 @pytest.fixture
 def client(store: FakeStore) -> TestClient:
     app = FastAPI()
     app.include_router(internal_lookups.router)
     install_error_handlers(app)
     app.dependency_overrides[get_operational_store] = lambda: store
-    app.dependency_overrides[get_router] = lambda: object()
+    app.dependency_overrides[get_router] = lambda: _FakeRouter()
     app.dependency_overrides[get_model_visibility_resolver] = lambda: None
     return TestClient(app)
 
@@ -242,3 +269,50 @@ def test_user_status_carries_no_password_or_key_material(client: TestClient, sto
     store.users["user_1"]["password_hash"] = "$argon2id$fake"
     body = client.get("/internal/users/user_1/status", headers=AUTH).json()
     assert "password_hash" not in json.dumps(body)
+
+
+# ── The alias translation table ────────────────────────────────────────
+#
+# Before the split the control plane read this registry in-process and got
+# alias resolution for free. Afterwards it asks over HTTP, and a contract of
+# canonical ids alone silently stopped accepting every alias a user had been
+# typing. The table is how it resolves once and works in canonical ids from
+# there — nothing downstream, grant or scope check, ever sees an alias.
+
+
+def test_the_catalog_carries_the_translation_table(client: TestClient) -> None:
+    body = client.get("/internal/model-catalog", params={"user_id": "user_1"}, headers=AUTH).json()
+
+    assert body["aliases"]["glm-latest"] == "glm-5.1"
+    assert body["aliases"]["glm-latest"] in body["models"]
+
+
+def test_an_alias_for_an_invisible_model_is_not_offered(client: TestClient) -> None:
+    """It would resolve to a model the catalog does not list, and the caller
+    would be refused a moment later with nothing to explain it."""
+    body = client.get("/internal/model-catalog", params={"user_id": "user_1"}, headers=AUTH).json()
+
+    assert "secret-alias" not in body["aliases"]
+    assert "admin-only-model" not in body["models"]
+
+
+def test_an_alias_spelled_like_a_canonical_id_is_dropped(client: TestClient) -> None:
+    """**The one that would shadow a real model.**
+
+    A consumer resolves with `aliases.get(name, name)`. An entry keyed on some
+    model's canonical id would send every request for *that* model somewhere
+    else — and the request would look perfectly valid at both ends.
+    """
+    body = client.get("/internal/model-catalog", params={"user_id": "user_1"}, headers=AUTH).json()
+
+    body_aliases = body["aliases"]
+    assert not (set(body_aliases) & set(body["models"])), (
+        "an alias is spelled like a model this catalog lists"
+    )
+
+
+def test_every_alias_target_is_a_model_the_catalog_lists(client: TestClient) -> None:
+    """The invariant a consumer is entitled to assume, stated as a whole."""
+    body = client.get("/internal/model-catalog", params={"user_id": "user_1"}, headers=AUTH).json()
+
+    assert set(body["aliases"].values()) <= set(body["models"])

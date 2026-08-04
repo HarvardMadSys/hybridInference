@@ -289,6 +289,11 @@ def register_from_models_yaml(
     # typo. Collect what was dropped and say so once, plainly, at the end.
     skipped_for_missing_env: list[str] = []
     unset_env_vars: set[str] = set()
+    # Every alias seen so far, and the model that claimed it. `register_route`
+    # writes aliases into the route table unconditionally, so without this the
+    # second model to claim a name silently wins and the first one's alias
+    # resolves to somebody else's model — with nothing anywhere saying so.
+    alias_owner: dict[str, str] = {}
     for m in models:
         try:
             # Environment expansion for base_url/api_key in both top-level and route entries
@@ -568,6 +573,33 @@ def register_from_models_yaml(
 
             model_id = str(top_cfg["id"])  # type: ignore
             aliases = (top_cfg.get("aliases") or []) or []
+
+            # An ambiguous alias is a configuration error, and it is reported
+            # rather than enforced. `register_route` writes aliases into the
+            # route table unconditionally, so the second model to claim a name
+            # already wins today — and refusing to start would turn a
+            # deployment that has been serving that way into one that will not
+            # boot, from a change whose whole purpose is to hand the cloud
+            # agent a translation table.
+            #
+            # So: warn here, fail in CI against the shipped configuration
+            # (`test_shipped_config_has_no_ambiguous_alias`), and make it
+            # fail-closed at startup only once the live configs are known
+            # clean. Routing is untouched either way.
+            for alias in aliases:
+                previous = alias_owner.get(str(alias))
+                if previous is not None and previous != model_id:
+                    import logging as _logging
+
+                    _logging.getLogger(__name__).warning(
+                        "alias %r is claimed by both %r and %r; it resolves to "
+                        "whichever loads last, so the same request means "
+                        "different things depending on YAML order",
+                        alias,
+                        previous,
+                        model_id,
+                    )
+                alias_owner[str(alias)] = model_id
 
             if model_type == "embedding" and embedding_adapters is not None:
                 # Embedding models bypass the weighted RouteExecutor. Register
