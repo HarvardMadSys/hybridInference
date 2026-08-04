@@ -2712,13 +2712,55 @@ async def test_sandbox_token_is_refused_on_owner_routes(client: AsyncClient):
 
             self.url = urlparse(f"http://x{path}")
 
-    # Inference surfaces the sandbox legitimately needs.
-    for path in ("/v1/chat/completions", "/v1/messages", "/v1/embeddings"):
+    # Inference surfaces the sandbox legitimately needs, `count_tokens`
+    # included: agents call it before a request, it bills nothing, and refusing
+    # it breaks the flow it belongs to.
+    for path in (
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/messages",
+        "/v1/messages/count_tokens",
+        "/v1/responses",
+        "/anthropic/v1/messages",
+        "/anthropic/v1/messages/count_tokens",
+    ):
         assert _is_inference_path(_Req(path)) is True
 
     # Control-plane routes it must not reach.
     for path in ("/v1/agent/jobs", "/v1/agent/jobs/ajob_1", "/v1/agent/worker/claim", "/v1/models"):
         assert _is_inference_path(_Req(path)) is False
+
+    # `/v1/embeddings` was on this list and is not any more. A grant's
+    # `allowed_models` come from the chat catalog, so it names no embedding
+    # model — and the model-scope check runs in the two chat routers, not
+    # there. Admitting the route meant an agent credential reaching an
+    # inference surface with no model scope applied to it at all.
+    assert _is_inference_path(_Req("/v1/embeddings")) is False
+
+
+async def test_a_sandbox_token_cannot_read_or_delete_stored_responses(client: AsyncClient):
+    """**A prefix match handed out more than the route it named.**
+
+    `/v1/responses` is a create endpoint the sandbox uses. Matching it as a
+    *prefix* also admitted `/v1/responses/{id}`, whose GET and DELETE read and
+    destroy responses the owner stored from anywhere — a sandbox credential
+    reaching the owner's saved data, and able to remove it.
+
+    The allowlist names whole paths now, so a sub-path is admitted only by
+    someone deciding to admit it.
+    """
+    from serving.servers.auth import _is_inference_path
+
+    class _Req:
+        def __init__(self, path: str) -> None:
+            from urllib.parse import urlparse
+
+            self.url = urlparse(f"http://x{path}")
+
+    assert _is_inference_path(_Req("/v1/responses")) is True
+    assert _is_inference_path(_Req("/v1/responses/resp_abc123")) is False
+    # And nothing else invented under an allowed name gets in either.
+    assert _is_inference_path(_Req("/v1/chat/completions/anything")) is False
 
 
 async def test_event_type_guard_rejects_a_trailing_newline(client: AsyncClient):

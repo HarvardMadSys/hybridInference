@@ -310,22 +310,37 @@ async def _resolve_effective_identity(
 # The only routes an agent-job token may reach. An allowlist rather than a
 # denylist: a new control-plane route must not silently become reachable by a
 # sandbox credential just because nobody remembered to exclude it.
-_AGENT_TOKEN_PATH_PREFIXES = (
-    "/v1/chat/completions",
-    "/v1/messages",
-    "/v1/embeddings",
-    "/v1/completions",
-    "/v1/responses",
-    "/anthropic/v1/messages",
+#
+# **Whole paths, not prefixes.** A prefix match extends the grant to every
+# route that happens to live under one — which is how `/v1/responses/{id}`
+# became reachable: a sandbox could read, and delete, responses its owner
+# stored from anywhere. Sub-paths that belong here are named, so adding one is
+# a decision rather than a side effect of a route's URL.
+#
+# `count_tokens` is included deliberately: agents call it before a request, it
+# bills nothing, and refusing it breaks the flow it belongs to.
+_AGENT_TOKEN_PATHS = frozenset(
+    {
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/messages",
+        "/v1/messages/count_tokens",
+        "/v1/responses",
+        "/anthropic/v1/messages",
+        "/anthropic/v1/messages/count_tokens",
+    }
 )
+
+# `/v1/embeddings` is deliberately absent. A grant's `allowed_models` come from
+# the chat catalog, so it names no embedding model at all — and the scope check
+# runs in the two chat routers, not there. Admitting the route would have meant
+# an agent credential reaching an inference surface with no model scope applied
+# to it whatsoever.
 
 
 def _is_inference_path(request: Request) -> bool:
-    """Return whether this request targets a billed inference endpoint."""
-    path = request.url.path.rstrip("/")
-    return any(
-        path == prefix or path.startswith(prefix + "/") for prefix in _AGENT_TOKEN_PATH_PREFIXES
-    )
+    """Return whether this request targets a route a sandbox credential may use."""
+    return request.url.path.rstrip("/") in _AGENT_TOKEN_PATHS
 
 
 async def verify_api_key(
