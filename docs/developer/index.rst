@@ -15,6 +15,7 @@ as a worked example of what that covers.
    installation
    deployment
    codex-oncall
+   agent-sandbox-operations
    architecture
    routing
    add-local-model
