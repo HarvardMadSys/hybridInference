@@ -14,10 +14,46 @@ ExecStart=__REPO_ROOT__/.venv/bin/python3 __REPO_ROOT__/ops/spark_idle_proxy/spa
 Restart=on-failure
 RestartSec=10s
 
+# The proxy authenticates inbound gateway requests against LOCAL_API_KEY, and
+# the gateway signs them with the LOCAL_API_KEY from this same .env (see the
+# api_keys entries in distributions/freeinference/config/models.yaml). Reading
+# one file keeps the two ends in step: without this the unit could only ever use
+# the hardcoded default in spark_idle_proxy.py, so the first rotation would 401
+# every request with nothing in the logs to say why.
+#
+# systemd parses this file with POSIX shell quoting rules, so a line written as
+# LOCAL_API_KEY='freeinference_api' yields the bare value — unlike a hand-rolled
+# `grep | cut -d= -f2-`, which hands the surrounding quotes to the process and is
+# how the key arrived malformed when this proxy was last started by hand.
+#
+# The leading '-' keeps the unit startable on a box with no .env.
+EnvironmentFile=-__REPO_ROOT__/.env
+
 Environment=LISTEN_PORT=8002
 Environment=IDLE_TIMEOUT=1440
 Environment=HEALTH_TIMEOUT=900
 Environment=HEALTH_INTERVAL=10
+
+# Reading a whole .env costs one collision: MODELS_CONFIG is also a *gateway*
+# variable (a legacy alias of MODELS_CONFIG_PATH — see the AliasChoices in
+# apps/backend/serving/config/settings.py), so a gateway .env may point it at a
+# YAML registry. This proxy would then json.load() that YAML and come up with no
+# backends at all.
+#
+# Ordering cannot prevent it. systemd.exec(5) is unconditional: "Settings from
+# these files override settings made with Environment=" — no matter which
+# directive is written first — so an Environment= line here would lose. What
+# does win is UnsetEnvironment=, "applied as final step when the environment
+# list passed to executed processes is compiled", undoing assignments "from any
+# configuration source, including ... Environment= or EnvironmentFile=".
+#
+# Dropping it rather than pinning it leaves the value the proxy resolves for
+# itself, ops/spark_idle_proxy/models.json. To serve a different config, add a
+# drop-in that resets the list first:
+#   [Service]
+#   UnsetEnvironment=
+#   Environment=MODELS_CONFIG=/path/to/models.json
+UnsetEnvironment=MODELS_CONFIG
 
 StandardOutput=journal
 StandardError=journal

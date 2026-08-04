@@ -14,10 +14,50 @@ ExecStart=__REPO_ROOT__/.venv/bin/python3 __REPO_ROOT__/ops/local_deployment_pro
 Restart=on-failure
 RestartSec=10s
 
+# The proxy authenticates inbound gateway requests against LOCAL_API_KEY, and the
+# gateway signs them with the LOCAL_API_KEY from this same .env, so reading one
+# file keeps the two ends in step through a rotation instead of 401ing every
+# request against the hardcoded default in local_deployment_proxy.py.
+#
+# systemd parses this file with POSIX shell quoting rules, so a line written as
+# LOCAL_API_KEY='freeinference_api' yields the bare value — unlike a hand-rolled
+# `grep | cut -d= -f2-`, which hands the surrounding quotes to the process.
+#
+# The leading '-' matters here: a GPU box that runs only this proxy and its
+# tunnel usually has no .env, and there ops/local_deployment_proxy/install.sh
+# supplies the key as a drop-in instead.
+EnvironmentFile=-__REPO_ROOT__/.env
+
 Environment=LISTEN_PORT=8001
 Environment=IDLE_TIMEOUT=1440
 Environment=HEALTH_TIMEOUT=600
 Environment=HEALTH_INTERVAL=10
+
+# MODELS_CONFIG is also a *gateway* variable (a legacy alias of
+# MODELS_CONFIG_PATH — see the AliasChoices in
+# apps/backend/serving/config/settings.py), so a gateway .env may point it at a
+# YAML registry that this proxy would then json.load() and come up with no
+# backends at all.
+#
+# Ordering cannot prevent it. systemd.exec(5) is unconditional: "Settings from
+# these files override settings made with Environment=" — no matter which
+# directive is written first — so an Environment= line here would lose. What
+# does win is UnsetEnvironment=, "applied as final step when the environment
+# list passed to executed processes is compiled", undoing assignments "from any
+# configuration source, including ... Environment= or EnvironmentFile=".
+#
+# Dropped rather than pinned deliberately. Unset is the value this proxy wants:
+# it then picks its own profile from the local GPUs (models.h200.json,
+# models.rtx6000.json, else models.json), and pinning models.json here would
+# quietly downgrade the RTX PRO 6000 boxes — narrower context window, no
+# hf_repo to fetch from — and point an H200 box at a checkpoint that is not on
+# its disks. To serve a specific config, add a drop-in that resets the list:
+#   [Service]
+#   UnsetEnvironment=
+#   Environment=MODELS_CONFIG=/path/to/models.json
+# On the H200 boxes that config belongs to h200_idle_proxy.service, which pins
+# ops/h200_idle_proxy/models.json explicitly.
+UnsetEnvironment=MODELS_CONFIG
 
 StandardOutput=journal
 StandardError=journal
