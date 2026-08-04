@@ -110,8 +110,10 @@ async def test_helper_skips_migration_ddl_when_schema_current():
         s for s in statements if s.strip().startswith(("ALTER TABLE", "CREATE INDEX", "DROP INDEX"))
     ]
     assert migrations == [], f"expected no migration DDL, got: {migrations}"
-    # The two idempotent CREATE TABLE IF NOT EXISTS statements still run.
-    assert all("CREATE TABLE IF NOT EXISTS" in s for s in statements)
+    # The two idempotent CREATE TABLE IF NOT EXISTS statements still run. The
+    # lock_timeout guard brackets the (here empty) DDL phase either way.
+    non_guard = [s for s in statements if not s.strip().startswith("SET lock_timeout")]
+    assert all("CREATE TABLE IF NOT EXISTS" in s for s in non_guard)
 
 
 @pytest.mark.asyncio

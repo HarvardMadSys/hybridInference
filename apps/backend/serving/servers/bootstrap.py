@@ -40,6 +40,7 @@ from serving.servers.routewise_compat import (
 from serving.storage.agent_job_store import AgentJobStore
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
+from serving.storage.log_schema import SchemaLockUnavailable
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.postgres_operational import PostgresOperationalStore
 from serving.storage.responses_store import ResponseStore
@@ -60,6 +61,63 @@ logger = get_logger(__name__)
 # asyncio holds only weak refs to running tasks, so without this set the
 # garbage collector can cancel mid-flight tasks.
 _BACKGROUND_TASKS: set = set()
+
+# Backoff for a schema migration that could not get its table lock at startup.
+# The ceiling is generous on purpose: the usual lock holder is the nightly
+# ``pg_dump``, which takes hours over ``api_logs``, and there is no value in
+# polling hard while it runs. The attempt cap bounds the task at roughly a
+# working day rather than leaving it alive for the process's lifetime.
+_SCHEMA_RETRY_INITIAL_DELAY = 30  # seconds
+_SCHEMA_RETRY_MAX_DELAY = 600  # seconds
+_SCHEMA_RETRY_MAX_ATTEMPTS = 60
+
+
+def _describe_exc(exc: BaseException) -> str:
+    """Render *exc* so the type survives even when the message is empty.
+
+    ``asyncio.TimeoutError`` — the shape a lock-blocked migration used to take —
+    stringifies to the empty string, so plain ``f"{exc}"`` logged
+    ``initialization failed: .`` and hid the cause of a production outage.
+    """
+    return repr(exc)
+
+
+def _schedule_deferred_schema_migration(db_logger: DatabaseLogger) -> None:
+    """Finish a lock-blocked schema migration in the background.
+
+    Startup must not block on it. The lock holder is typically a long-running
+    reader rather than anything broken, and waiting is what turns a backup
+    window into a failed deploy: the container misses its healthcheck, so
+    compose never starts the services gated on it.
+    """
+
+    async def _retry() -> None:
+        delay = _SCHEMA_RETRY_INITIAL_DELAY
+        for attempt in range(1, _SCHEMA_RETRY_MAX_ATTEMPTS + 1):
+            await asyncio.sleep(delay)
+            try:
+                await db_logger.ensure_schema()
+            except SchemaLockUnavailable:
+                delay = min(delay * 2, _SCHEMA_RETRY_MAX_DELAY)
+                logger.info(
+                    f"Deferred schema migration still lock-blocked "
+                    f"(attempt {attempt}/{_SCHEMA_RETRY_MAX_ATTEMPTS}); "
+                    f"retrying in {delay}s"
+                )
+            except Exception as exc:
+                logger.error(f"Deferred schema migration failed: {_describe_exc(exc)}")
+                return
+            else:
+                logger.info(f"Deferred schema migration completed after {attempt} attempt(s)")
+                return
+        logger.error(
+            f"Deferred schema migration gave up after {_SCHEMA_RETRY_MAX_ATTEMPTS} attempts; "
+            "api_logs is still missing schema changes and inserts may fail"
+        )
+
+    task = asyncio.create_task(_retry())
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
 class _RouteWiseRouterTypeError(TypeError):
@@ -605,8 +663,23 @@ async def initialize() -> AppServices:
         retry_delay = 2  # seconds
         for attempt in range(max_retries):
             try:
-                await db_logger.initialize()
-                logger.info("Database logger initialized successfully")
+                try:
+                    await db_logger.initialize()
+                    logger.info("Database logger initialized successfully")
+                except SchemaLockUnavailable as lock_exc:
+                    # The pool is up and usable — only a migration could not get
+                    # its table lock. Discarding a working database over that is
+                    # what previously left the gateway permanently unhealthy and
+                    # took the whole deploy down, so keep it and land the DDL in
+                    # the background. Writes touching a not-yet-added column
+                    # fail until then, and request logging already treats a
+                    # failed insert as non-fatal.
+                    logger.warning(
+                        f"Schema migration deferred: {_describe_exc(lock_exc)}. "
+                        "Database logging stays enabled; retrying the migration "
+                        "in the background."
+                    )
+                    _schedule_deferred_schema_migration(db_logger)
                 # Start broadcast email scheduler. Tear it down if rehydration
                 # fails to avoid a half-initialized scheduler running in background.
                 if db_logger.pool:
@@ -687,13 +760,13 @@ async def initialize() -> AppServices:
                 if attempt < max_retries - 1:
                     logger.warning(
                         f"Database initialization failed (attempt {attempt + 1}/{max_retries}): "
-                        f"{exc}. Retrying in {retry_delay}s..."
+                        f"{_describe_exc(exc)}. Retrying in {retry_delay}s..."
                     )
                     await asyncio.sleep(retry_delay)
                 else:
                     logger.error(
                         f"Database logger failed to initialize after {max_retries} attempts: "
-                        f"{exc}. Service will start without database logging."
+                        f"{_describe_exc(exc)}. Service will start without database logging."
                     )
                     db_logger = None
 

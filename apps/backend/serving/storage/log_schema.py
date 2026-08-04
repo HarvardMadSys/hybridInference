@@ -24,14 +24,80 @@ worker scaling), so it first reads the catalogs (``pg_attribute`` / ``pg_indexes
 cheap ``ACCESS SHARE``) and only issues the DDL that is actually missing. The
 ``IF [NOT] EXISTS`` clauses are kept on the statements that do run so two workers
 booting at once can't collide on the create.
+
+The catalog check cannot help the deploy that actually adds a column, though —
+that one has to take the lock. So the DDL phase additionally runs under a short
+``lock_timeout`` and raises :class:`SchemaLockUnavailable` rather than waiting,
+because a queued ``ACCESS EXCLUSIVE`` request blocks every reader behind it.
+Callers are expected to retry it in the background instead of failing startup:
+the usual lock holder is the nightly ``pg_dump``, which runs for hours.
 """
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     import asyncpg
+
+# How long a migration waits for its table lock before Postgres cancels it.
+#
+# The catalog pre-check below removes the lock from the *steady-state* path, but
+# not from the deploy that actually adds a column — that one has to take
+# ``ACCESS EXCLUSIVE``. Waiting for it is the dangerous part: a queued exclusive
+# request also parks every read that arrives behind it, so a migration blocked
+# by one long-running reader stalls the whole table for as long as it waits.
+# The readers that block it are long: the nightly ``pg_dump`` holds
+# ``ACCESS SHARE`` over ``api_logs`` for hours. Bounded low so a contended
+# migration fails immediately and leaves the queue clear; the caller retries it
+# later rather than holding startup (or the table) hostage.
+_DDL_LOCK_TIMEOUT = "3s"
+
+# SQLSTATE Postgres raises when ``lock_timeout`` expires (asyncpg surfaces it as
+# ``LockNotAvailableError``). Matched by code rather than by exception class so
+# this module keeps its asyncpg import type-only.
+_LOCK_NOT_AVAILABLE = "55P03"
+
+
+class SchemaLockUnavailable(RuntimeError):
+    """A migration could not acquire its table lock within the timeout.
+
+    Distinct from a genuine schema error: the connection is healthy and the
+    statement is valid, another session simply holds a conflicting lock. Callers
+    should treat it as transient and retry, not as a reason to give up on the
+    database.
+    """
+
+
+@asynccontextmanager
+async def _bounded_lock_wait(conn: asyncpg.Connection) -> AsyncIterator[None]:
+    """Bound how long DDL inside the block waits on a lock.
+
+    Reset on the way out because the connection goes back to a pool: leaving
+    ``lock_timeout`` set would silently apply it to ordinary query traffic.
+    """
+    await conn.execute(f"SET lock_timeout = '{_DDL_LOCK_TIMEOUT}'")
+    try:
+        yield
+    finally:
+        await conn.execute("SET lock_timeout = DEFAULT")
+
+
+async def _execute_ddl(conn: asyncpg.Connection, ddl: str) -> None:
+    """Run one DDL statement, translating a lock timeout into a typed error."""
+    try:
+        await conn.execute(ddl)
+    except Exception as exc:
+        if getattr(exc, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
+            raise
+        raise SchemaLockUnavailable(
+            f"could not acquire the lock for {ddl!r} within {_DDL_LOCK_TIMEOUT}; "
+            "another session holds a conflicting lock on api_logs"
+        ) from exc
+
 
 # ``(name, ddl)`` for each column added over the table's lifetime, applied as
 # idempotent ``ADD COLUMN IF NOT EXISTS`` migrations so databases created by an
@@ -252,21 +318,25 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
     existing_columns = await _existing_columns(conn)
     existing_indexes = await _existing_indexes(conn)
 
-    # Drop legacy columns/indexes from very old databases.
-    for index_name, drop_ddl in _API_LOGS_LEGACY_INDEX_DROPS:
-        if index_name in existing_indexes:
-            await conn.execute(drop_ddl)
-    for col_name, drop_ddl in _API_LOGS_LEGACY_COLUMN_DROPS:
-        if col_name in existing_columns:
-            await conn.execute(drop_ddl)
+    # Everything below takes a strong lock, so it runs under a bounded wait: if
+    # a concurrent reader holds the table, fail fast (SchemaLockUnavailable)
+    # instead of queueing an exclusive request that blocks the table behind it.
+    async with _bounded_lock_wait(conn):
+        # Drop legacy columns/indexes from very old databases.
+        for index_name, drop_ddl in _API_LOGS_LEGACY_INDEX_DROPS:
+            if index_name in existing_indexes:
+                await _execute_ddl(conn, drop_ddl)
+        for col_name, drop_ddl in _API_LOGS_LEGACY_COLUMN_DROPS:
+            if col_name in existing_columns:
+                await _execute_ddl(conn, drop_ddl)
 
-    for col_name, col_ddl in _API_LOGS_COLUMN_MIGRATIONS:
-        if col_name not in existing_columns:
-            await conn.execute(col_ddl)
+        for col_name, col_ddl in _API_LOGS_COLUMN_MIGRATIONS:
+            if col_name not in existing_columns:
+                await _execute_ddl(conn, col_ddl)
 
-    for index_name, index_ddl in _API_LOGS_INDEXES:
-        if index_name not in existing_indexes:
-            await conn.execute(index_ddl)
+        for index_name, index_ddl in _API_LOGS_INDEXES:
+            if index_name not in existing_indexes:
+                await _execute_ddl(conn, index_ddl)
 
     # Aggregated hourly stats.
     await conn.execute("""
