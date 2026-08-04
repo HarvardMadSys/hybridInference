@@ -601,6 +601,16 @@ class _FakeDocker:
       answering afterwards would let that read move below the ``rm`` with the
       suite still green, where real docker returns nothing and the backend
       migrates.
+    * **a container has a state word, not just a running flag.** ``.State.Status``
+      distinguishes a container that has *finished* from one that has not started
+      *yet*: `docker run -d` reserves the name and writes the labels at create time
+      and starts the container after, so an ordinary sibling launch is observable as
+      ``created`` with ``Running`` false. A fake that only flipped a boolean could
+      not express that state at all, which is how "not running" came to be treated
+      as "a corpse, reclaim it" with the suite green.
+
+    ``status`` defaults to whatever ``running`` implies, so a test says nothing about
+    it unless the distinction is the point.
     """
 
     def __init__(
@@ -609,6 +619,8 @@ class _FakeDocker:
         labels: dict[str, str] | None = None,
         exists: bool = True,
         running: bool = True,
+        status: str | None = None,
+        omit_status: bool = False,
         gpu: str = "0",
         container_id: str = "cid-original",
         on_run: Any = None,
@@ -616,6 +628,10 @@ class _FakeDocker:
         self.labels = labels
         self.exists = exists
         self.running = running
+        self.status = status
+        # A daemon that answers the inspect without a state word at all, for the
+        # fallback that keeps an unreadable reading from wedging a name.
+        self.omit_status = omit_status
         self.gpu = gpu
         self.container_id = container_id
         # Called with (fake, attempt_number) just before each `docker run` is
@@ -628,7 +644,9 @@ class _FakeDocker:
         # the mirror-image window: the container was replaced after its labels were
         # read but before the removal landed. Whether the removal then hits is the
         # whole point of naming an id, so the fake has to be able to be changed
-        # underneath one.
+        # underneath one. Returning a result object overrides the answer, which is
+        # how a removal docker refuses — an overlay2 mount that is busy, a
+        # CUDA-wedged process in D state — is injected while the container stays.
         self.on_rm: Any = None
         self.runs = 0
         self.name: str | None = None
@@ -673,12 +691,17 @@ class _FakeDocker:
                 return self._name_conflict()
             self.exists = True
             self.running = True
+            # A launched container is running, whatever state a test set up for the
+            # one that was there before it.
+            self.status = None
             self.labels = _labels_from_run(command) or None
             self.container_id = f"cid-launched-{self.runs}"
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if verb in {"rm", "kill"}:
             if self.on_rm is not None:
-                self.on_rm(self, command[-1])
+                override = self.on_rm(self, command[-1])
+                if override is not None:
+                    return override
             target = command[-1]
             if not self.exists or target not in {self.container_id, self.name}:
                 return SimpleNamespace(
@@ -693,13 +716,19 @@ class _FakeDocker:
             return SimpleNamespace(returncode=1, stdout="", stderr="No such object")
         fmt = command[command.index("-f") + 1]
         if ".State.Running" in fmt or ".Config.Labels" in fmt:
-            # The proxy reads identity, liveness and ownership with one inspect,
-            # so the answer is the JSON object its format string builds. Rendered
-            # here the way docker would: an unlabelled container reports null,
-            # not {}.
-            body = json.dumps(
-                {"id": self.container_id, "running": self.running, "labels": self.labels}
-            )
+            # The proxy reads identity, liveness, state word and ownership with one
+            # inspect, so the answer is the JSON object its format string builds.
+            # Rendered here the way docker would: an unlabelled container reports
+            # null, not {}.
+            payload = {
+                "id": self.container_id,
+                "running": self.running,
+                "status": self.status or ("running" if self.running else "exited"),
+                "labels": self.labels,
+            }
+            if self.omit_status:
+                del payload["status"]
+            body = json.dumps(payload)
         else:
             # The device request, as docker stores it. `--gpus '"device=2,3"'` is
             # ONE request whose DeviceIDs is ["2", "3"] — that single-request parse
@@ -846,11 +875,26 @@ def test_start_container_refuses_to_replace_another_proxys_container(
     foreign container being alive, since an exited one holds nothing and must be
     reclaimable — see
     ``test_exited_foreign_container_is_reclaimed_not_refused_forever``.
+
+    Asserts *where* the refusal happens, not only that one happens. ``_start_container``
+    keeps this check at the top as the early, cheap refusal — the one that saves a
+    several-hundred-GiB download that was going to be thrown away — while
+    ``_clear_container_name`` re-takes the same decision before the removal and
+    raises the same message. So a test that only matched the message passed with the
+    early check deleted, and the whole property it exists for was pinned by nothing:
+    the unguarded path reads the container's devices, resolves a GPU (which records
+    ``_current_gpu``, so sibling backends exclude a device this one never gets) and
+    runs ``_ensure_model_dir`` before refusing — on every retried request.
     """
     proxy = _load_proxy(monkeypatch, tmp_path)
     backend = _labelled_backend(proxy, tmp_path)
     fake = _FakeDocker(labels={proxy.OWNER_LABEL: "port-8003"}, running=True)
     monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    def must_not_be_reached() -> None:
+        raise AssertionError("refused too late: the download was already being paid for")
+
+    monkeypatch.setattr(backend, "_ensure_model_dir", must_not_be_reached)
 
     with pytest.raises(RuntimeError, match=r"Refusing to replace container contended-sglang"):
         backend._start_container()
@@ -858,6 +902,10 @@ def test_start_container_refuses_to_replace_another_proxys_container(
     # Nothing destroyed, nothing launched — and the message names both sides so
     # an operator can tell which unit to reconfigure.
     assert fake.mutations == []
+    # Refused before any GPU bookkeeping: no device read of the foreign container,
+    # and no device claimed on its behalf.
+    assert fake.index_of(lambda c: any("DeviceRequests" in tok for tok in c)) == -1, fake.commands
+    assert backend._current_gpu is None
 
 
 def test_exited_foreign_container_is_reclaimed_not_refused_forever(
@@ -881,6 +929,146 @@ def test_exited_foreign_container_is_reclaimed_not_refused_forever(
 
     verbs = [c[c.index("docker") + 1] for c in fake.mutations]
     assert verbs == ["rm", "run"]
+
+
+def test_foreign_container_created_but_not_started_is_not_reclaimed(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A container that has not started yet is not a corpse, and is not reclaimable.
+
+    ``docker run -d`` creates the container and starts it in two steps: the name is
+    reserved and the ``--label`` owner stamp is written at create, the process starts
+    after (nvidia-container hooks, device injection — not instantaneous). For that
+    whole window docker reports ``Status: created`` with ``Running: false``, so a
+    reclaim gated on liveness alone destroys a stranger's container at t=0 — with no
+    operator and no stale label reading involved, on an ordinary sibling launch.
+
+    Refuse it instead, and say which state it was in: a foreign container is
+    reclaimed only once it has genuinely exited. Refused as early as a live one,
+    too — the check at the top of the start path applies the same rule, so a
+    collision visible up front still costs no download.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(
+        labels={proxy.OWNER_LABEL: "port-8003"},
+        exists=True,
+        running=False,
+        status="created",
+        container_id="cid-sibling-created",
+    )
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    def must_not_be_reached() -> None:
+        raise AssertionError("refused too late: the download was already being paid for")
+
+    monkeypatch.setattr(backend, "_ensure_model_dir", must_not_be_reached)
+
+    with pytest.raises(RuntimeError, match=r"Refusing to replace container") as raised:
+        backend._start_container()
+
+    assert fake.mutations == []
+    assert backend._current_gpu is None
+    assert fake.exists is True
+    assert fake.container_id == "cid-sibling-created"
+    # The state is named, so the operator is not sent looking for a live backend.
+    assert "'created'" in str(raised.value)
+    # Reaches the client through send_error, which encodes the status line latin-1.
+    str(raised.value).encode("ascii")
+
+
+def test_a_siblings_container_created_during_the_download_is_not_destroyed(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The same, in the window the removal actually runs in.
+
+    The check at the top of the start path cannot see this one: the sibling's
+    ``docker run`` happens while ``_ensure_model_dir`` is fetching weights, so the
+    only reading that matters is the one ``_clear_container_name`` takes immediately
+    before its ``docker rm -f``. That is the reading which must not treat ``created``
+    as a corpse — and it is reachable by an ordinary sibling launch, not by an
+    operator, which is what made this worth narrowing rather than documenting.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(exists=False)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    def sibling_creates_but_has_not_started_it_yet() -> None:
+        fake.exists = True
+        fake.running = False
+        fake.status = "created"
+        fake.container_id = "cid-sibling-created"
+        fake.labels = {proxy.OWNER_LABEL: "port-8003"}
+
+    monkeypatch.setattr(backend, "_ensure_model_dir", sibling_creates_but_has_not_started_it_yet)
+
+    with pytest.raises(RuntimeError, match=r"Refusing to replace container"):
+        backend._start_container()
+
+    assert fake.mutations == []
+    assert fake.exists is True
+    assert fake.container_id == "cid-sibling-created"
+
+
+def test_an_inspect_without_a_state_word_still_reclaims_a_foreign_corpse(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """An unreadable state word must not be able to wedge a name.
+
+    The status check narrows an existing removal rather than adding one, so where
+    docker does not report a state word the previous rule stands — the same
+    direction ``_inspect_state`` already takes when the id is unreadable (degrade to
+    the name) or the whole inspect fails (read as "nothing there"). Refusing on a
+    reading we cannot interpret would turn a docker oddity into a permanently
+    unstartable model.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(
+        labels={proxy.OWNER_LABEL: "manual"},
+        exists=True,
+        running=False,
+        omit_status=True,
+        container_id="cid-stateless",
+    )
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    backend._start_container()
+
+    verbs = [c[c.index("docker") + 1] for c in fake.mutations]
+    assert verbs == ["rm", "run"]
+    assert fake.mutations[0][-1] == "cid-stateless"
+
+
+def test_our_own_container_is_cleared_whatever_state_it_is_in(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The narrowing applies to *foreign* containers only.
+
+    Refusing our own container because it is ``created`` rather than ``exited``
+    would wedge this proxy's own name with nobody to take it from: a launch of ours
+    that the daemon left half-made is exactly what the removal before ``docker run``
+    is for. ``removing`` and ``dead`` are reclaimable for either owner — both are
+    finished containers, and a name held by one is a name no proxy can use.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    for status in ("created", "removing", "dead", "exited"):
+        backend = _labelled_backend(proxy, tmp_path)
+        fake = _FakeDocker(
+            labels={proxy.OWNER_LABEL: proxy.PROXY_OWNER, proxy.PROFILE_LABEL: "0000stale"},
+            exists=True,
+            running=False,
+            status=status,
+            container_id=f"cid-mine-{status}",
+        )
+        monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+        backend._start_container()
+
+        verbs = [c[c.index("docker") + 1] for c in fake.mutations]
+        assert verbs == ["rm", "run"], status
+        assert fake.mutations[0][-1] == f"cid-mine-{status}", status
 
 
 def test_foreign_container_still_loading_is_not_torn_down(monkeypatch: Any, tmp_path: Path) -> None:
@@ -1032,9 +1220,16 @@ def test_losing_the_name_race_to_a_sibling_that_then_exits_relaunches(
     corpse is reclaimable, so the retry removes it by id and launches. Failing the
     request instead would leave the model down until the next one, having proved
     only that a race existed.
+
+    The retry also waits first. Docker frees a name as the removal completes inside
+    the daemon, which can be after ``docker rm -f`` has returned, so an instant
+    re-run can collide with the release it is waiting for and burn the only retry
+    there is on docker's own asynchrony.
     """
     proxy = _load_proxy(monkeypatch, tmp_path)
     backend = _labelled_backend(proxy, tmp_path)
+    slept: list[float] = []
+    monkeypatch.setattr(proxy.time, "sleep", slept.append)
 
     def sibling_takes_the_name_then_dies(fake: Any, attempt: int) -> None:
         if attempt == 1:
@@ -1049,6 +1244,9 @@ def test_losing_the_name_race_to_a_sibling_that_then_exits_relaunches(
     backend._start_container()
 
     assert fake.runs == 2
+    # One pause, between the two attempts, and a real one.
+    assert slept == [proxy._NAME_CONFLICT_RETRY_DELAY]
+    assert proxy._NAME_CONFLICT_RETRY_DELAY > 0
     assert [c[c.index("docker") + 1] for c in fake.mutations] == ["run", "rm", "run"]
     # The removal names the corpse's id, so it cannot have been aimed at whatever
     # else might by then answer to the container name.
@@ -1090,6 +1288,101 @@ def test_repeatedly_losing_the_name_race_gives_up_instead_of_looping(
     # UnicodeEncodeError mid-response and the client sees a dropped connection
     # instead of the diagnosis.
     str(raised.value).encode("ascii")
+
+
+def test_a_removal_docker_refuses_is_reported_not_blamed_on_a_sibling(
+    monkeypatch: Any, tmp_path: Path, caplog: Any
+) -> None:
+    """A name this proxy could not free itself is not contention, and must not read as it.
+
+    ``docker rm -f`` failing while the container survives is an ordinary docker
+    failure mode — an overlay2 or cgroup mount that is busy, a removal already in
+    progress, a CUDA-wedged process in D state — and a wedged backend is precisely
+    when this proxy is trying to replace one. The removal's result used to be
+    discarded, so the failure was never logged, and the ``docker run`` that then hit
+    the container still holding the name was read as contention: the proxy gave up
+    accusing "a second unit running this script with a different MODELS_CONFIG" of
+    starting containers in a loop, while the container in question was its own and
+    the one message that explained anything had been thrown away.
+
+    So: report the removal failure, and diagnose the give-up from the owner just
+    read rather than by assuming a sibling.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    monkeypatch.setattr(proxy.time, "sleep", lambda _s: None)
+    busy = (
+        'Error response from daemon: container cid-mine: driver "overlay2" failed to '
+        "remove root filesystem: device or resource busy"
+    )
+    fake = _FakeDocker(
+        labels={proxy.OWNER_LABEL: proxy.PROXY_OWNER, proxy.PROFILE_LABEL: "0000stale"},
+        running=True,
+        container_id="cid-mine",
+    )
+    # Refused by the daemon, and the container stays exactly where it was.
+    fake.on_rm = lambda _f, _target: SimpleNamespace(returncode=1, stdout="", stderr=busy)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(RuntimeError, match=r"Gave up starting container") as raised,
+    ):
+        backend._start_container()
+
+    message = str(raised.value)
+    # The container that actually holds the name, and what docker said about it.
+    assert "cid-mine" in message
+    assert "device or resource busy" in message
+    assert "sudo docker rm -f contended-sglang" in message
+    # Not a sibling's fault, and not described as one.
+    assert "second unit" not in message
+    assert "in a loop" not in message
+    message.encode("ascii")
+    # The failure itself reaches the journal, at a level this module logs.
+    failed = [r for r in caplog.records if busy in r.getMessage() and r.levelno >= logging.WARNING]
+    assert failed, [r.getMessage() for r in caplog.records]
+    assert proxy.log.isEnabledFor(failed[0].levelno)
+    # And the backend it could not remove is still running: nothing was destroyed on
+    # the strength of a removal that did not happen.
+    assert fake.exists is True
+    assert fake.running is True
+    assert fake.container_id == "cid-mine"
+
+
+def test_idle_stop_reports_a_container_it_could_not_remove(
+    monkeypatch: Any, tmp_path: Path, caplog: Any
+) -> None:
+    """The idle path must not log "stopped" over a container that is still running.
+
+    Its ``docker rm -f`` result was discarded too, so a removal the daemon refused
+    ended in "Container … stopped." and a released ``_current_gpu`` while the
+    container — and its GPUs — were still there. The next auto-selecting start then
+    picks against a device that is busy for a backend nothing here believes in.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    busy = "Error response from daemon: removal of container cid-mine is already in progress"
+    fake = _FakeDocker(labels=None, running=True, container_id="cid-mine")
+    fake.on_rm = lambda _f, _target: SimpleNamespace(returncode=1, stdout="", stderr=busy)
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    with backend._lock:
+        backend._state = "ready"
+        backend._current_gpu = "0"
+
+    with caplog.at_level(logging.WARNING):
+        backend._stop_container()
+
+    # Local state is released either way: the alternative is a backend this proxy
+    # thinks is ready and cannot reach.
+    assert backend.state == "stopped"
+    assert backend._current_gpu is None
+    said = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+    assert busy in said
+    assert "NOT removed" in said
+    assert "still held" in said
+    # And no "stopped" claim over a live container.
+    assert "Container contended-sglang stopped." not in [r.getMessage() for r in caplog.records]
 
 
 def test_replacing_our_own_stale_container_removes_it_by_id_and_keeps_its_gpu(
@@ -1209,7 +1502,7 @@ def test_idle_stop_leaves_another_proxys_container_running(
 
 
 def test_idle_stop_misses_a_container_replaced_since_the_label_read(
-    monkeypatch: Any, tmp_path: Path
+    monkeypatch: Any, tmp_path: Path, caplog: Any
 ) -> None:
     """The idle path can hold a stale reading too, and it removes things.
 
@@ -1241,7 +1534,8 @@ def test_idle_stop_misses_a_container_replaced_since_the_label_read(
         backend._state = "ready"
         backend._current_gpu = "0"
 
-    backend._stop_container()
+    with caplog.at_level(logging.WARNING):
+        backend._stop_container()
 
     # Local state released either way — that is all this path owes the GPU.
     assert backend.state == "stopped"
@@ -1250,6 +1544,13 @@ def test_idle_stop_misses_a_container_replaced_since_the_label_read(
     assert fake.running is True
     assert fake.container_id == "cid-sibling"
     assert [c[-1] for c in fake.mutations] == ["cid-mine"]
+    # "No such container" is this design working, not a failure to report: aiming
+    # the removal at an id is what makes a replaced container get missed. Reporting
+    # it as a failed removal would put a permanent error in the journal of every
+    # deployment whose idle timer fires on an already-dead backend.
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == [], (
+        "a missed removal must not be reported as a failure"
+    )
 
 
 def test_unlabelled_container_counts_as_this_proxys_own(monkeypatch: Any, tmp_path: Path) -> None:
@@ -1705,6 +2006,37 @@ def test_contended_container_surfaces_as_502_naming_both_owners(
     # Never the success-shaped warmup banner, which the gateway reads as healthy.
     assert b'"id":"warmup"' not in body
     assert fake.mutations == []
+
+
+def test_contention_check_reports_what_the_start_path_will_refuse(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The pre-flight check has to agree with the start path, or the 502 is lost.
+
+    ``contention_error`` runs before a streaming response commits its ``200``,
+    because ``ensure_running`` then raises on a background thread that can only
+    log. So anything the start path refuses must be reported here too: a foreign
+    container stuck in ``created`` — its launcher died between docker's create and
+    its start — is refused there, and answering "no contention" for it would put
+    the endpoint back to answering every request success-shaped forever.
+
+    A foreign *corpse* is the opposite case and must stay silent: the start path
+    reclaims it, so reporting it would 502 a request that was going to succeed.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    foreign = {proxy.OWNER_LABEL: "port-8003"}
+
+    created = _FakeDocker(labels=foreign, exists=True, running=False, status="created")
+    monkeypatch.setattr(proxy.subprocess, "run", created.run)
+    error = backend.contention_error()
+    assert error is not None
+    assert "'created'" in str(error)
+    str(error).encode("ascii")
+
+    corpse = _FakeDocker(labels=foreign, exists=True, running=False, status="exited")
+    monkeypatch.setattr(proxy.subprocess, "run", corpse.run)
+    assert backend.contention_error() is None
 
 
 def test_warmup_stream_survives_an_unreadable_docker_inspect(
