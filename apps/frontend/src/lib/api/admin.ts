@@ -1134,6 +1134,7 @@ export async function setProviderQuotaKeyDisabled(
 
 export interface RoutableProvider {
   provider: string;
+  display_name: string;
   model_count: number;
   endpoint_count: number;
   disabled: boolean;
@@ -1210,6 +1211,9 @@ export interface ProviderStatsResponse {
   // Providers that have rows inside the selected window. The dropdown lists
   // above span the full retained table regardless of the selected range.
   window_providers: string[];
+  // Provider label -> human-readable name. Sparse: labels retained only in
+  // history are absent, and the raw label is shown for those.
+  provider_display_names?: Record<string, string>;
 }
 
 export async function getProviderStats(params: {
@@ -1259,6 +1263,7 @@ export interface ProviderErrorTypeRow {
 
 export interface ProviderObservabilityResponse {
   provider: string;
+  provider_display_name?: string | null;
   window: { from: string; to: string };
   bucket_minutes: number;
   totals: ProviderObservabilityTotals;
@@ -1293,6 +1298,7 @@ export type TokenUsageRange = '1h' | '24h' | '7d' | '30d';
 
 export interface ProviderTokenUsageRow {
   provider: string;
+  provider_display_name?: string | null;
   model_id: string;
   input_tokens: number;
   output_tokens: number;

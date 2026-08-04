@@ -53,17 +53,24 @@ function rowTotal(r: ProviderTokenUsageRow): number {
 
 function groupByProvider(
   rows: ProviderTokenUsageRow[],
-): { provider: string; rows: ProviderTokenUsageRow[]; total: number }[] {
+): { provider: string; label: string; rows: ProviderTokenUsageRow[]; total: number }[] {
   const buckets = new Map<string, ProviderTokenUsageRow[]>();
   for (const r of rows) {
     const arr = buckets.get(r.provider) ?? [];
     arr.push(r);
     buckets.set(r.provider, arr);
   }
-  const out: { provider: string; rows: ProviderTokenUsageRow[]; total: number }[] = [];
+  const out: { provider: string; label: string; rows: ProviderTokenUsageRow[]; total: number }[] =
+    [];
   for (const [provider, providerRows] of buckets) {
     const total = providerRows.reduce((acc, r) => acc + rowTotal(r), 0);
-    out.push({ provider, rows: providerRows, total });
+    // A relabelled route (models.yaml `provider_display_name:`) shows its name
+    // with the raw label kept alongside, since that label is what api_logs and
+    // the other provider tabs are keyed on.
+    const displayName = providerRows.find((r) => r.provider_display_name)?.provider_display_name;
+    const label =
+      displayName && displayName !== provider ? `${displayName} · ${provider}` : provider;
+    out.push({ provider, label, rows: providerRows, total });
   }
   out.sort((a, b) => b.total - a.total);
   return out;
@@ -142,7 +149,7 @@ export function TokenUsageTab({ perfRefreshNonce }: { perfRefreshNonce?: number 
           ) : (
             <div className="space-y-4">
               {groups.map((g) => (
-                <ProviderTable key={g.provider} provider={g.provider} rows={g.rows} />
+                <ProviderTable key={g.provider} provider={g.label} rows={g.rows} />
               ))}
             </div>
           )}

@@ -47,10 +47,12 @@ vi.mock('@/lib/api/admin', async () => {
       providers: ['openai'],
       pairs: [{ provider: 'openai', model_id: 'gpt-4o-mini' }],
       window_providers: ['openai'],
+      provider_display_names: { openai: 'OpenAI' },
       rows: provider === '__none__' ? [] : [mockStatsRow],
     })),
     getProviderObservability: vi.fn(async () => ({
       provider: 'openai',
+      provider_display_name: 'OpenAI',
       window: {
         from: '2026-05-07T00:00:00.000Z',
         to: '2026-05-08T00:00:00.000Z',
@@ -123,5 +125,17 @@ describe('ProviderPerformanceTab', () => {
     expect(screen.getByText('rate_limited')).toBeInTheDocument();
     expect(screen.getByText('other')).toBeInTheDocument();
     expect(screen.queryByText('Errors and cache')).not.toBeInTheDocument();
+  });
+
+  it('names the selected provider while keeping its raw label visible', async () => {
+    render(<ProviderPerformanceTab />);
+
+    // The label is what api_logs and provider_hourly_stats are keyed on, so it
+    // stays next to the display name rather than being replaced by it.
+    const option = await screen.findByRole('option', { name: 'OpenAI · openai' });
+    expect(option).toHaveValue('openai');
+    // Also captioned under the Errors section, so a shared screenshot says
+    // which endpoint the numbers belong to.
+    expect(screen.getAllByText('OpenAI · openai').length).toBeGreaterThan(1);
   });
 });

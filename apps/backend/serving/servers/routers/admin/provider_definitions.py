@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from serving.adapters import dynamic_keys, provider_registry
 from serving.config.distribution import resolve_config_path
+from serving.config.provider_labels import BUILT_IN_DISPLAY_NAMES, humanize_provider
 from serving.schemas_admin import (
     CreateProviderDefinitionRequest,
     DeleteProviderDefinitionResponse,
@@ -42,18 +43,6 @@ PROVIDER_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 SELF_SERVE_ADAPTER_KINDS = {"openai_compat"}
 PROBE_TIMEOUT_SEC = 30.0
 
-DISPLAY_NAMES = {
-    "deepseek": "DeepSeek",
-    "kimi": "Kimi",
-    "minimax": "MiniMax",
-    "ollama": "Ollama",
-    "openrouter": "OpenRouter",
-    "sglang": "SGLang",
-    "staging": "staging",
-    "vllm": "vLLM",
-    "zai": "ZAI",
-}
-
 ENV_TEMPLATE_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*))?\}$")
 PROVIDER_DEFAULT_BASE_URLS = {
     "chutes": "https://llm.chutes.ai",
@@ -77,6 +66,8 @@ class ConfigProviderSpec:
     adapter_kind: str
     default_base_url: str
     model_ids: frozenset[str]
+    # Route-level ``provider_display_name:``, when the config declares one.
+    display_name: str = ""
 
 
 def _validate_provider_slug(provider: str) -> str:
@@ -92,7 +83,7 @@ def _validate_provider_slug(provider: str) -> str:
 def _display_name(provider: str) -> str:
     if provider in PROVIDER_TARGETS:
         return PROVIDER_TARGETS[provider].label
-    return DISPLAY_NAMES.get(provider, provider.replace("_", " ").replace("-", " ").title())
+    return BUILT_IN_DISPLAY_NAMES.get(provider) or humanize_provider(provider)
 
 
 def _models_config_path() -> Path:
@@ -178,6 +169,7 @@ def _merge_config_provider_spec(
     adapter_kind: str,
     default_base_url: str,
     model_id: str | None,
+    display_name: str = "",
 ) -> None:
     if not provider:
         return
@@ -190,22 +182,26 @@ def _merge_config_provider_spec(
             adapter_kind=adapter_kind,
             default_base_url=default_base_url,
             model_ids=model_ids,
+            display_name=display_name,
         )
         return
     merged_adapter_kind = current.adapter_kind
     if current.adapter_kind == provider and adapter_kind != provider:
         merged_adapter_kind = adapter_kind
     merged_model_ids = current.model_ids | model_ids
+    merged_display_name = current.display_name or display_name
     if (
         (not current.default_base_url and default_base_url)
         or (merged_adapter_kind != current.adapter_kind)
         or (merged_model_ids != current.model_ids)
+        or (merged_display_name != current.display_name)
     ):
         specs[provider] = ConfigProviderSpec(
             provider=provider,
             adapter_kind=merged_adapter_kind,
             default_base_url=current.default_base_url or default_base_url,
             model_ids=merged_model_ids,
+            display_name=merged_display_name,
         )
 
 
@@ -252,12 +248,19 @@ def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
             if not raw_kind:
                 continue
             provider, adapter_kind = _provider_spec_from_route_kind(raw_kind, model_provider)
+            # A route may relabel itself (`provider:`) so endpoints sharing a
+            # kind stay separate providers in analytics. The label owns the
+            # registry slug; the adapter kind still comes from `kind:`.
+            route_label = str(route.get("provider") or "").strip()
+            if route_label:
+                provider = route_label
             _merge_config_provider_spec(
                 specs,
                 provider=provider,
                 adapter_kind=adapter_kind,
                 default_base_url=_expand_config_string(route.get("base_url")),
                 model_id=model_id,
+                display_name=str(route.get("provider_display_name") or "").strip(),
             )
     return specs
 
@@ -393,7 +396,7 @@ async def _build_provider_item(
         created_at = None
         updated_at = None
     else:
-        display_name = _display_name(provider)
+        display_name = (config_spec.display_name if config_spec else "") or _display_name(provider)
         adapter_kind = config_spec.adapter_kind if config_spec else provider
         config_base_url = config_spec.default_base_url if config_spec else ""
         base_url = runtime_base_url or _base_url_with_provider_default(provider, config_base_url)

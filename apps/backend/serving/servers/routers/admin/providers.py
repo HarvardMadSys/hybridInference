@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from routing.endpoints import endpoint_id_for_adapter
 from serving.admin.provider_quotas import gather_all
+from serving.config.provider_labels import resolve_display_names
 from serving.schemas_admin import (
     AdminProviderQuotasResponse,
     ListRoutableProvidersResponse,
@@ -158,9 +159,11 @@ async def admin_list_routable_providers(
     for provider in disabled:
         by_provider.setdefault(provider, (set(), set()))
 
+    display_names = resolve_display_names(services.router)
     providers = [
         RoutableProvider(
             provider=provider,
+            display_name=display_names.get(provider, provider),
             model_count=len(models),
             endpoint_count=len(endpoints),
             disabled=provider in disabled,
@@ -231,6 +234,7 @@ async def admin_provider_stats(
     to: datetime | None = None,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
+    services=Depends(get_services),
 ) -> ProviderStatsResponse:
     """Return hourly performance stats for a provider, optionally filtered by model.
 
@@ -342,12 +346,18 @@ async def admin_provider_stats(
     providers = sorted({r["provider"] for r in pairs})
     models = sorted({r["model_id"] for r in pairs})
 
+    # Only ship names for labels this response mentions; the dropdown spans the
+    # retained table, which can include labels no longer in models.yaml.
+    all_names = resolve_display_names(services.router)
+    display_names = {p: all_names[p] for p in providers if p in all_names}
+
     return ProviderStatsResponse(
         rows=[ProviderStatsRow(**dict(r)) for r in rows],
         providers=providers,
         models=models,
         pairs=[ProviderModelPair(provider=r["provider"], model_id=r["model_id"]) for r in pairs],
         window_providers=[r["provider"] for r in window_providers],
+        provider_display_names=display_names,
     )
 
 
@@ -367,6 +377,7 @@ async def admin_provider_observability(
     to: datetime | None = None,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
+    services=Depends(get_services),
 ) -> ProviderObservabilityResponse:
     """Return provider-scoped error and prompt-cache stats over a bounded window."""
     del request
@@ -537,6 +548,7 @@ async def admin_provider_observability(
     total_errors = max(totals.error_count, 1)
     return ProviderObservabilityResponse(
         provider=provider,
+        provider_display_name=resolve_display_names(services.router).get(provider),
         window=ProviderObservabilityWindow.model_validate({"from": start, "to": end}),
         bucket_minutes=bucket_minutes,
         totals=totals,
@@ -565,6 +577,7 @@ async def admin_provider_token_usage(
     range: Literal["1h", "24h", "7d", "30d"] = "24h",
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
+    services=Depends(get_services),
 ) -> ProviderTokenUsageResponse:
     """Per-(provider, model_id) token totals + cost over a fixed window.
 
@@ -618,11 +631,13 @@ async def admin_provider_token_usage(
             end,
         )
 
+    display_names = resolve_display_names(services.router)
     out_rows: list[ProviderTokenUsageRow] = []
     for row in rows:
         row_dict = dict(row)
         if row_dict.get("provider") in {"", "router"}:
             continue
+        row_dict["provider_display_name"] = display_names.get(str(row_dict.get("provider")))
         out_rows.append(ProviderTokenUsageRow(**row_dict))
     totals = ProviderTokenUsageTotals(
         input_tokens=sum(r.input_tokens for r in out_rows),

@@ -409,6 +409,13 @@ route:
     api_key: ${API_KEY}
 ```
 
+A route reports its `kind` as the provider label — the value recorded in
+`api_logs.provider` and grouped on by every provider-scoped admin view. Two
+routes of the same kind therefore share one dashboard row. Add `provider:` (and
+optionally `provider_display_name:`) to a route to give it its own label and
+name; see
+[Naming a route in the dashboard](add-local-model.md#naming-a-route-in-the-dashboard).
+
 ### Supported Adapter Kinds
 
 The `kind` field in each route entry selects the backend adapter. All kinds marked **OpenAI-compat** share the same `OpenAICompatAdapter` implementation with provider-specific profiles applied automatically.

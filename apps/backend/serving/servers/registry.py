@@ -26,6 +26,7 @@ from serving.adapters import (
     OpenAICompatAdapter,
     OpenRouterAdapter,
 )
+from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
 if TYPE_CHECKING:
@@ -116,6 +117,42 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
         # Fallback if URL parsing fails
         return f"{model_id}:{kind}"
 
+
+_PROVIDER_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+# Adapter kinds `_make_adapter` knows how to build, plus the provider labels it
+# derives from them. A route may not borrow one of these as a custom label:
+# `api_logs.provider` drives quota reporting, the admin disable switch, and
+# weight overrides, so relabelling a local vLLM box as "zai" would fold its
+# traffic into an unrelated provider's cohort. "" and "router" are the
+# gateway's own synthetic labels (see admin/providers.py) and are reserved too.
+#
+# test_registry_provider_label.py asserts this set stays in sync with
+# `_make_adapter`'s dispatch.
+RESERVED_PROVIDER_LABELS = frozenset(
+    {
+        "",
+        "anthropic",
+        "chutes",
+        "claude",
+        "cliproxy",
+        "deepseek",
+        "featherless",
+        "gemini",
+        "kimi",
+        "kimi_coding",
+        "minimax",
+        "ollama",
+        "openai",
+        "openai_compat",
+        "openrouter",
+        "router",
+        "sglang",
+        "staging",
+        "vllm",
+        "zai",
+    }
+)
 
 _OPENROUTER_KIND_RE = re.compile(r"^openrouter\[([A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*)\]$")
 
@@ -239,10 +276,74 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     raise ValueError(f"Unknown adapter kind: {kind}")
 
 
+def parse_route_provider_label(
+    route: dict[str, Any],
+    canonical_provider: str,
+    model_id: str,
+) -> tuple[str, str | None]:
+    """Resolve one route's provider label and optional display name.
+
+    A route may override the label it reports to analytics with ``provider:``,
+    and give that label a human-readable name with ``provider_display_name:``::
+
+        route:
+          - kind: vllm
+            provider: local-a               # api_logs.provider / dashboard cohort
+            provider_display_name: "Local box A"
+            base_url: ${LOCAL_A_URL}
+
+    Without ``provider:`` the label is ``canonical_provider`` (derived from
+    ``kind``) and the display name comes from the built-in table, exactly as
+    before. Only the label changes: the adapter, its API-key pool, and quota
+    accounting all stay bound to the route's kind.
+
+    Args:
+        route: One entry of a model's ``route:`` list.
+        canonical_provider: Label the route would carry with no override.
+        model_id: Model the route belongs to, for error messages.
+
+    Returns:
+        Tuple of (provider label, display name or ``None``).
+
+    Raises:
+        ValueError: When the label is not a slug, collides with a built-in
+            provider other than the route's own, or the display name is blank.
+    """
+    raw_label = route.get("provider")
+    raw_display_name = route.get("provider_display_name")
+
+    if raw_display_name is not None and not (
+        isinstance(raw_display_name, str) and raw_display_name.strip()
+    ):
+        raise ValueError(f"provider_display_name for model {model_id!r} must be a non-empty string")
+    display_name = raw_display_name.strip() if isinstance(raw_display_name, str) else None
+
+    if raw_label is None:
+        return (canonical_provider, display_name)
+    if not isinstance(raw_label, str) or not _PROVIDER_LABEL_RE.fullmatch(raw_label):
+        raise ValueError(
+            f"Route provider label {raw_label!r} for model {model_id!r} must use "
+            f"lowercase letters, numbers, dashes, or underscores (max 64 chars)"
+        )
+    if raw_label != canonical_provider and raw_label in RESERVED_PROVIDER_LABELS:
+        raise ValueError(
+            f"Route provider label {raw_label!r} for model {model_id!r} is reserved "
+            f"by a built-in provider; pick a distinct label such as "
+            f"{canonical_provider}-1"
+        )
+    return (raw_label, display_name)
+
+
 def _dynamic_key_provider_name(kind: str, adapter_cfg: dict[str, Any]) -> str:
     from serving.adapters import dynamic_keys
 
-    return dynamic_keys.normalize_key_provider(str(adapter_cfg.get("provider") or kind))
+    # A relabelled route keeps its API keys in the pool of the provider it
+    # actually talks to, not under its dashboard label — two local boxes with
+    # distinct labels still share one LOCAL_API_KEY pool. The registry records
+    # that canonical provider in route_metadata when it applies a label.
+    metadata = adapter_cfg.get("route_metadata") or {}
+    canonical = metadata.get("key_provider") or adapter_cfg.get("provider") or kind
+    return dynamic_keys.normalize_key_provider(str(canonical))
 
 
 def register_from_models_yaml(
@@ -268,6 +369,13 @@ def register_from_models_yaml(
                 weight: 1.0
                 base_url: ${LLAMA_BASE_URL}
                 api_key: ${LLAMA_API_KEY}
+              # Optional per-route relabelling: two endpoints of the same kind
+              # report as separate providers in api_logs and the dashboard.
+              - kind: vllm
+                weight: 1.0
+                provider: local-a
+                provider_display_name: "Local box A"
+                base_url: ${LOCAL_A_URL}
 
     Args:
         router: Executor to receive registered routes.
@@ -495,9 +603,16 @@ def register_from_models_yaml(
                 # surfaced as owned_by=openai, while leaving other cross-kind
                 # variants (e.g., zai->ollama/chutes, minimax->ollama) unchanged.
                 if kind == "openai_compat" and top_cfg.get("provider") == "openai":
-                    adapter_cfg["provider"] = "openai"
+                    canonical_provider = "openai"
                 else:
-                    adapter_cfg["provider"] = provider_for_cfg
+                    canonical_provider = provider_for_cfg
+                # A route may relabel itself so that endpoints sharing a kind
+                # (e.g. two local GPU boxes on vLLM) stay separate cohorts in
+                # api_logs and every provider-scoped dashboard view.
+                provider_label, provider_display_name = parse_route_provider_label(
+                    r, canonical_provider, str(top_cfg.get("id"))
+                )
+                adapter_cfg["provider"] = provider_label
                 # Generate unique endpoint_id for availability tracking and circuit breaker
                 adapter_cfg["endpoint_id"] = _make_provider_id(str(top_cfg["id"]), kind, base_url)
 
@@ -534,6 +649,17 @@ def register_from_models_yaml(
                 route_metadata = dict(adapter_cfg.get("route_metadata") or {})
                 if isinstance(r.get("route_metadata"), dict):
                     route_metadata.update(r["route_metadata"])
+                # Pin a relabelled route's *upstream* identity in metadata. The
+                # label owns analytics only; key pools, the admin Routing tab,
+                # and route-target resolution keep following the route's kind.
+                # Both keys carry the same value so RouteWise does not read the
+                # pair as an override provider and switch to local quota state.
+                if provider_label != canonical_provider:
+                    route_metadata.setdefault("key_provider", canonical_provider)
+                    route_metadata.setdefault("route_provider", canonical_provider)
+                    route_metadata.setdefault("upstream_provider", canonical_provider)
+                if provider_display_name:
+                    route_metadata[DISPLAY_NAME_METADATA_KEY] = provider_display_name
                 if "provider_type" in r:
                     adapter_cfg["provider_type"] = r["provider_type"]
                     route_metadata["provider_type"] = r["provider_type"]

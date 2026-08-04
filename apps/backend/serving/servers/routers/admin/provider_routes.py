@@ -1152,6 +1152,13 @@ def _upstream_provider(adapter) -> str:
     pinned = getattr(adapter.config, "openrouter_pinned_provider", None)
     if pinned:
         return str(pinned)
+    # A route relabelled via `provider:` in models.yaml carries its real
+    # upstream identity in metadata. There, config.provider is only the
+    # analytics label and would not resolve to a ProviderTarget.
+    route_metadata = getattr(adapter.config, "route_metadata", None) or {}
+    upstream = route_metadata.get("upstream_provider")
+    if isinstance(upstream, str) and upstream.strip():
+        return upstream.strip()
     return str(adapter.config.provider)
 
 

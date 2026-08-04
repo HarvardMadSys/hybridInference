@@ -128,6 +128,59 @@ Use these fields carefully:
   serving runtime's model name.
 - `aliases`: Optional extra public names that resolve to the same gateway model.
 - `supported_params`: Only include parameters that the local runtime accepts.
+- `route[].provider`: Optional label override — see
+  [Naming a route in the dashboard](#naming-a-route-in-the-dashboard).
+- `route[].provider_display_name`: Optional human-readable name for that label.
+
+### Naming a Route in the Dashboard
+
+By default a route reports its `kind` as the provider label, and that label is
+what `api_logs.provider` records and what every provider-scoped admin view
+groups on: Token Usage, Provider Performance, Provider Observability, the
+provider disable switch, and the provider registry. Two local boxes both served
+by `kind: vllm` therefore land in one row and cannot be compared.
+
+Give each route its own label to split them, and optionally a display name:
+
+```yaml
+    route:
+      - kind: vllm
+        weight: 1.0
+        provider: local-a
+        provider_display_name: "Local box A"
+        base_url: ${LOCAL_A_URL}
+        api_key: ${LOCAL_API_KEY}
+      - kind: vllm
+        weight: 1.0
+        provider: local-b
+        provider_display_name: "Local box B"
+        base_url: ${LOCAL_B_URL}
+        api_key: ${LOCAL_API_KEY}
+```
+
+The dashboard then shows `Local box A · local-a` and `Local box B · local-b` as
+separate providers, each with its own error rate, cache-hit rate, token totals,
+and enable/disable switch.
+
+Only the analytics label changes. The route still talks to the upstream its
+`kind` selects, `endpoint_id` still keys on kind and port, and API keys stay
+pooled under the kind — so one `LOCAL_API_KEY` continues to serve both boxes.
+
+Rules and caveats:
+
+- The label must be lowercase letters, numbers, dashes, or underscores (max 64
+  characters), and may not borrow a built-in provider's name (`vllm`, `zai`,
+  `openrouter`, …). Reusing one would fold this route's traffic into that
+  provider's quota reporting and disable switch. A malformed label fails the
+  config load at startup rather than silently mislabelling traffic.
+- `provider_display_name` works on its own too, if you want to rename a
+  provider in the dashboard without splitting it.
+- Renaming does not rewrite history. Rows already written under the old label
+  keep it, so both labels appear until the old data ages out of
+  `provider_hourly_stats` (30 days) — expect a gap in the new label's charts
+  before the rename.
+- Per-model route weight overrides key on `endpoint_id`, not the label, so a
+  rename leaves them intact.
 
 ## Step 3: Add Optional Remote Fallbacks
 
