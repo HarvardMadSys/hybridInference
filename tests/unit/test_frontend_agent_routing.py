@@ -45,7 +45,8 @@ def test_the_dockerfile_carries_them_into_the_build() -> None:
     for name in AGENT_URLS:
         assert f"ARG {name}=" in text, f"{name} is not declared as an ARG"
         assert f"ENV {name}=${name}" in text, (
-            f"{name} is declared but never promoted to ENV, so `next build` does not see it"
+            f"{name} is declared but never promoted to ENV, so `next build` "
+            "does not see it"
         )
 
 
@@ -53,4 +54,6 @@ def test_they_default_to_empty_so_other_deployments_are_untouched() -> None:
     """Unset must mean "keep this app's own /agents pages", not "route to ''"."""
     args = _frontend()["build"]["args"]
     for name in AGENT_URLS:
-        assert args[name] == f"${{{name}-}}", f"{name} must default to empty; got {args[name]!r}"
+        assert args[name] == f"${{{name}-}}", (
+            f"{name} must default to empty; got {args[name]!r}"
+        )

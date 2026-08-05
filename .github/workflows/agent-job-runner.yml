@@ -21,6 +21,22 @@
 
 name: agent-job-runner
 
+# **Retired as an automatic runner, 2026-08-05. Manual only.**
+#
+# The `*/10` tick woke a GitHub-hosted runner 144 times a day to ask an empty
+# queue for work — roughly 4300 minutes a month against a free plan's 2000, on
+# its own, before any CI ran. That is what exhausted the org's Actions budget
+# and stopped every workflow in both repositories, deploys and rollback with
+# them.
+#
+# It was superseded either way. This is the dogfood substrate, and the header
+# below already says it does not generalize past our own repository. The
+# host-based orchestrator it describes as the real answer now exists in
+# freeinference-cloud-agent, and was verified end to end on staging: a host
+# enrols with the control plane, comes up `online`, and claims.
+#
+# This whole file is deleted by H4 (#1184). That is gated on the production
+# cutover; this was costing money now.
 on:
   workflow_dispatch:
     inputs:
@@ -28,12 +44,6 @@ on:
         description: Identifier recorded on the claimed attempt
         required: false
         default: actions-runner
-  repository_dispatch:
-    types: [agent-job-queued]
-  schedule:
-    # Drains the queue on a slow tick so a job submitted without a dispatch
-    # still runs. Harmless when the queue is empty: the runner exits 0.
-    - cron: "*/10 * * * *"
 
 # One runner at a time: two concurrent claims would each take a different job,
 # which is safe, but serializing keeps dogfood cost and log noise predictable.
