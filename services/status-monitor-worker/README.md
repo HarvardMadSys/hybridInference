@@ -64,6 +64,33 @@ Two whole-deployment cases are also covered:
   **"N models down"** / **"N models recovered"** webhook summary, because one
   text per model would flood the channel there.
 
+## History retention and D1 read cost
+
+Probe history is kept for `RETENTION_DAYS` (**1024**), so `probe_results` grows
+for years and every statement that scans it gets steadily more expensive — D1
+bills `rows_read` per row *scanned*, not per row returned. Two places are
+deliberately shaped around that:
+
+- **Pruning by age** (`prune`) filters on `checked_at`, which
+  `idx_probe_results_checked_at` serves as a range scan.
+- **Evicting removed models** (`reconcileModels`) diffs the new active set
+  against the previous one recorded in `meta.model_ids`, then deletes the
+  departed ids with `model_id IN (...)` — an index seek on
+  `idx_probe_results_model_id`. An unchanged catalog, which is the case on almost
+  every cycle, issues no `probe_results` statement at all.
+
+  The equivalent one-liner, `DELETE ... WHERE model_id NOT IN (active ids)`,
+  cannot use either index (SQLite will not satisfy a negated equality set from
+  one) and full-scans the table. It survives only as a backstop for rows the
+  diff structurally cannot name — a cycle that dies between `recordResults` and
+  `reconcileModels` stores no id for what it just wrote — and runs at most once a
+  day, plus immediately when `meta.model_ids` is missing or corrupt.
+
+Similarly, dashboard reads resolve the model list from the single
+`meta.model_ids` row rather than `SELECT DISTINCT model_id`. When adding a query
+here, check whether its predicate can actually be served by an index before
+putting it on the cron path.
+
 ## Endpoints
 
 | Path | Description |

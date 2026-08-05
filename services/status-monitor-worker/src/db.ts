@@ -184,6 +184,42 @@ export async function prune(db: D1Database, retentionDays: number): Promise<void
   await db.prepare(`DELETE FROM probe_results WHERE checked_at < ?`).bind(cutoff).run();
 }
 
+const MODEL_IDS_KEY = "model_ids";
+const MODEL_SWEEP_KEY = "model_ids_swept_at";
+
+/**
+ * How long the full `NOT IN` sweep may be deferred. One sweep/day against a
+ * 20-minute cron is 1 scan per 72 cycles, which keeps the backstop's cost in the
+ * noise while still bounding how long an unreferenced row can occupy storage.
+ */
+export const MODEL_SWEEP_INTERVAL_MS = 86_400_000;
+
+/** Reads the previous active set and last sweep time in one keyed statement. */
+async function readReconcileState(
+  db: D1Database,
+): Promise<{ previous: string[] | null; rawPrevious: string | null; sweptAtMs: number | null }> {
+  const rows = await db
+    .prepare(`SELECT key, value FROM meta WHERE key IN (?,?)`)
+    .bind(MODEL_IDS_KEY, MODEL_SWEEP_KEY)
+    .all<{ key: string; value: string | null }>();
+  const byKey = new Map((rows.results ?? []).map((r) => [r.key, r.value]));
+
+  let previous: string[] | null = null;
+  const rawPrevious = byKey.get(MODEL_IDS_KEY) ?? null;
+  if (rawPrevious != null) {
+    try {
+      const parsed = JSON.parse(rawPrevious);
+      if (Array.isArray(parsed) && parsed.every((id) => typeof id === "string")) {
+        previous = parsed;
+      }
+    } catch {
+      // Corrupt value: leave `previous` null so the caller does a full sweep.
+    }
+  }
+  const sweptAt = Number(byKey.get(MODEL_SWEEP_KEY));
+  return { previous, rawPrevious, sweptAtMs: Number.isFinite(sweptAt) ? sweptAt : null };
+}
+
 /**
  * Drops probe rows for models no longer in the active set, so models removed,
  * disabled, or hidden by a runtime visibility change leave the dashboard
@@ -193,29 +229,85 @@ export async function prune(db: D1Database, retentionDays: number): Promise<void
  * authenticated catalog is legitimately empty, so all rows are cleared. (A
  * failed discovery is handled by the caller before reaching here, so it never
  * wipes the dashboard during an outage.)
+ *
+ * ## Why this diffs instead of scanning
+ *
+ * The obvious statement — `DELETE ... WHERE model_id NOT IN (active ids)` — is
+ * unindexable: SQLite cannot satisfy a negated equality set from
+ * `idx_probe_results_model_id`, so it full-scans `probe_results` and D1 bills
+ * rows_read ~ the entire retained history (~models × probes/day ×
+ * `RETENTION_DAYS`, which at `RETENTION_DAYS=1024` never stops growing). Running
+ * that every cycle to normally delete *nothing* was the single largest rows_read
+ * source in this Worker.
+ *
+ * So the common cases avoid it entirely. `meta.model_ids` already records the
+ * previous cycle's active set, so diffing it against `activeIds` names the
+ * departed models outright: an unchanged catalog issues no `probe_results`
+ * statement at all, and a shrunken one deletes by `model_id IN (departed)`,
+ * which *does* seek the index and reads only what it removes.
+ *
+ * The diff has one blind spot: a cycle that dies between `recordResults` and
+ * this function leaves rows whose `model_id` was never stored, so no later diff
+ * can name them. {@link MODEL_SWEEP_INTERVAL_MS} bounds that leak by falling
+ * back to the full sweep periodically — and immediately when the stored set is
+ * missing or corrupt (first deploy against an existing database), where there is
+ * no previous set to diff against.
  */
-export async function reconcileModels(db: D1Database, activeIds: string[]): Promise<void> {
+export async function reconcileModels(
+  db: D1Database,
+  activeIds: string[],
+  nowMs: number,
+): Promise<void> {
   // Persist the active model list in a single meta row so getSnapshot can read it
   // with an O(1) keyed lookup. Deriving it from probe_results (e.g. SELECT
-  // DISTINCT model_id) instead scans the whole covering index, which D1 bills as
-  // rows_read proportional to retained history (~models × probes/day ×
-  // RETENTION_DAYS) — reviving the full-scan cost this module caps history reads
-  // to avoid. Written here because a successful cycle's active set is exactly
-  // what the dashboard should show.
-  const sortedIds = [...activeIds].sort((a, b) => a.localeCompare(b));
+  // DISTINCT model_id) instead scans the whole covering index, at the same
+  // rows_read cost described above. Written here because a successful cycle's
+  // active set is exactly what the dashboard should show.
+  const sortedIds = [...new Set(activeIds)].sort((a, b) => a.localeCompare(b));
+  const serialized = JSON.stringify(sortedIds);
   const setModelIds = db
-    .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('model_ids', ?)`)
-    .bind(JSON.stringify(sortedIds));
+    .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+    .bind(MODEL_IDS_KEY, serialized);
+  const markSwept = db
+    .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+    .bind(MODEL_SWEEP_KEY, String(nowMs));
 
-  if (activeIds.length === 0) {
-    await db.batch([db.prepare(`DELETE FROM probe_results`), setModelIds]);
+  if (sortedIds.length === 0) {
+    // Unfiltered DELETE, so there is no predicate to index in the first place.
+    await db.batch([db.prepare(`DELETE FROM probe_results`), setModelIds, markSwept]);
     return;
   }
-  const placeholders = activeIds.map(() => "?").join(",");
-  await db.batch([
-    db.prepare(`DELETE FROM probe_results WHERE model_id NOT IN (${placeholders})`).bind(...activeIds),
-    setModelIds,
-  ]);
+
+  const { previous, rawPrevious, sweptAtMs } = await readReconcileState(db);
+  const sweepDue = sweptAtMs === null || nowMs - sweptAtMs >= MODEL_SWEEP_INTERVAL_MS;
+
+  if (previous === null || sweepDue) {
+    const placeholders = sortedIds.map(() => "?").join(",");
+    await db.batch([
+      db.prepare(`DELETE FROM probe_results WHERE model_id NOT IN (${placeholders})`).bind(...sortedIds),
+      setModelIds,
+      markSwept,
+    ]);
+    return;
+  }
+
+  const active = new Set(sortedIds);
+  const departed = previous.filter((id) => !active.has(id));
+  const statements: D1PreparedStatement[] = [];
+  if (departed.length > 0) {
+    const placeholders = departed.map(() => "?").join(",");
+    statements.push(
+      db.prepare(`DELETE FROM probe_results WHERE model_id IN (${placeholders})`).bind(...departed),
+    );
+  }
+  // Exact string comparison, so any drift in the stored representation (legacy
+  // ordering, a duplicate id) is rewritten once and then stops costing anything.
+  if (rawPrevious !== serialized) {
+    statements.push(setModelIds);
+  }
+  // Steady state: catalog unchanged, nothing departed — no statement to run.
+  if (statements.length === 0) return;
+  await db.batch(statements);
 }
 
 /**
