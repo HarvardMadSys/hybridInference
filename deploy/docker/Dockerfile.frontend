@@ -12,6 +12,15 @@ WORKDIR /app
 # neutral fallback for each. A deployment passes its values as build args --
 # see deploy/docker/docker-compose.yml and distributions/*/deploy/frontend.env.
 ARG NEXT_PUBLIC_API_BASE=
+
+# Where the standalone cloud agent is, if this deployment runs one. **Build
+# args, not runtime environment**: Next resolves `rewrites()` at build time and
+# writes the result into `.next/routes-manifest.json`, so a value supplied only
+# at `docker run` is read by nothing. Empty by default — then `/agents` keeps
+# resolving to this app's own pages, which is what every deployment that runs
+# no agent service needs.
+ARG AGENT_WEB_INTERNAL_URL=
+ARG AGENT_CONTROL_PLANE_INTERNAL_URL=
 ARG NEXT_PUBLIC_DEPLOY_TARGET=production
 ARG NEXT_PUBLIC_BUILD_SHA=
 ARG NEXT_PUBLIC_BUILD_TIMESTAMP=
@@ -39,6 +48,8 @@ ARG NEXT_PUBLIC_TEAM_JSON=
 ARG NEXT_PUBLIC_SPONSORS_JSON=
 ARG NEXT_PUBLIC_TEAM_IMAGE_HOST=
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
+ENV AGENT_WEB_INTERNAL_URL=$AGENT_WEB_INTERNAL_URL
+ENV AGENT_CONTROL_PLANE_INTERNAL_URL=$AGENT_CONTROL_PLANE_INTERNAL_URL
 ENV NEXT_PUBLIC_DEPLOY_TARGET=$NEXT_PUBLIC_DEPLOY_TARGET
 ENV NEXT_PUBLIC_BUILD_SHA=$NEXT_PUBLIC_BUILD_SHA
 ENV NEXT_PUBLIC_BUILD_TIMESTAMP=$NEXT_PUBLIC_BUILD_TIMESTAMP

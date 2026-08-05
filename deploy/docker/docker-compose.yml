@@ -184,24 +184,34 @@ services:
         NEXT_PUBLIC_TEAM_JSON: ${NEXT_PUBLIC_TEAM_JSON-}
         NEXT_PUBLIC_SPONSORS_JSON: ${NEXT_PUBLIC_SPONSORS_JSON-}
         NEXT_PUBLIC_TEAM_IMAGE_HOST: ${NEXT_PUBLIC_TEAM_IMAGE_HOST-}
+        # Where the standalone cloud agent is, if this deployment runs one.
+        # Both unset (the default) and `/agents` keeps resolving to this app's
+        # own pages, exactly as before the split — `next.config.js` gates the
+        # rewrite on both being present.
+        #
+        # **Build args, and they have to be.** Next resolves `rewrites()` at
+        # build time and writes the result into `.next/routes-manifest.json`;
+        # a value supplied only at `docker run` is read by nothing, and the
+        # symptom is the old pages continuing to serve with every variable
+        # looking correctly set in `docker inspect`. Adopting or rolling back
+        # the agent service is therefore a rebuild.
+        #
+        # Reachability is the deployment's problem, not this file's. Co-located
+        # these are service names on a shared network; on separate machines —
+        # which is where the agent service is meant to live — they are whatever
+        # address it answers on.
+        AGENT_WEB_INTERNAL_URL: ${AGENT_WEB_INTERNAL_URL-}
+        AGENT_CONTROL_PLANE_INTERNAL_URL: ${AGENT_CONTROL_PLANE_INTERNAL_URL-}
     container_name: hybridinference-frontend
     restart: unless-stopped
     environment:
       NODE_ENV: production
       PORT: "3001"
-      # Where the standalone cloud agent is, if this deployment runs one.
-      # Both unset (the default) and `/agents` keeps resolving to this app's
-      # own pages, exactly as before the split — see `next.config.js`, which
-      # gates the rewrite on both being present.
-      #
-      # Read at **runtime**, not baked into the bundle: `rewrites()` runs in
-      # the server process, so pointing a deployment at its agent service is a
-      # restart rather than a rebuild. That also makes rolling the cutover back
-      # a matter of clearing two variables.
-      #
-      # Reachability is the deployment's problem, not this file's. Co-located,
-      # these are service names on `agent-edge` below; on separate machines
-      # they are whatever address the agent service answers on.
+      # Present here as well as in `build.args` above, and the build args are
+      # the ones that matter: Next bakes `rewrites()` into
+      # `.next/routes-manifest.json`. These exist so `docker inspect` on a
+      # running container shows what the image was built to route to — the
+      # manifest is not somewhere an operator will think to look.
       AGENT_WEB_INTERNAL_URL: ${AGENT_WEB_INTERNAL_URL-}
       AGENT_CONTROL_PLANE_INTERNAL_URL: ${AGENT_CONTROL_PLANE_INTERNAL_URL-}
     ports:
