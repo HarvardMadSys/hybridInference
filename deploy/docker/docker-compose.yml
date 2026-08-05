@@ -189,6 +189,21 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3001"
+      # Where the standalone cloud agent is, if this deployment runs one.
+      # Both unset (the default) and `/agents` keeps resolving to this app's
+      # own pages, exactly as before the split — see `next.config.js`, which
+      # gates the rewrite on both being present.
+      #
+      # Read at **runtime**, not baked into the bundle: `rewrites()` runs in
+      # the server process, so pointing a deployment at its agent service is a
+      # restart rather than a rebuild. That also makes rolling the cutover back
+      # a matter of clearing two variables.
+      #
+      # Reachability is the deployment's problem, not this file's. Co-located,
+      # these are service names on `agent-edge` below; on separate machines
+      # they are whatever address the agent service answers on.
+      AGENT_WEB_INTERNAL_URL: ${AGENT_WEB_INTERNAL_URL-}
+      AGENT_CONTROL_PLANE_INTERNAL_URL: ${AGENT_CONTROL_PLANE_INTERNAL_URL-}
     ports:
       - "${FRONTEND_HOST:-0.0.0.0}:${FRONTEND_PORT:-3001}:3001"
     depends_on:
