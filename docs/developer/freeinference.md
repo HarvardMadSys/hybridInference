@@ -1,26 +1,38 @@
 # FreeInference Deployment
 
-## Cloudflare + Nginx + FastAPI (current)
+## Cloudflare + console + FastAPI (current)
 
-Traffic flows through three layers before reaching the application:
+Public traffic reaches the console first, and the console routes it:
 
 ```
-Client ──▶ Cloudflare ──▶ Nginx (:443) ──▶ FastAPI  (:8080)
-                                      ├──▶ pgAdmin  (:5050)   [admin-only]
-                                      └──▶ Frontend (:3001)
+Client ──▶ Cloudflare Tunnel ──▶ Console (:3001) ──┬──▶ FastAPI (:8080)
+                                                   ├──▶ pgAdmin (:5050)  [admin-only]
+                                                   └──▶ its own pages
 ```
 
 | Layer | Role |
 |-------|------|
-| **Cloudflare** | CDN, DDoS protection, edge SSL termination. SSL/TLS mode set to **Full (strict)** so Cloudflare verifies the origin certificate. `CF-Connecting-IP` header carries the real client IP, and is what the gateway reads first (see [Client IP resolution](#client-ip-resolution)). |
-| **Nginx** | TLS termination (Let's Encrypt cert), path-based routing (see below), per-location body size limits (`/v1/` is bumped to 50 MB to accommodate large completion payloads and Qdrant vector upserts via the `/v1/qdrant` proxy; everything else uses the Nginx 1 MB default), WebSocket upgrade. |
+| **Cloudflare** | CDN, DDoS protection, edge SSL termination. A Cloudflare Tunnel (`cloudflared`, see `ops/setup/setup_cloudflared.sh`) carries requests to the host, so the origin needs no inbound port. `CF-Connecting-IP` carries the real client IP, and is what the gateway reads first (see [Client IP resolution](#client-ip-resolution)). |
+| **Console** | Path routing, via the rewrite table in `apps/frontend/next.config.js` plus the pgAdmin route below. Anything it does not forward, it serves itself. |
 | **FastAPI** | API logic — request authentication, model routing, backpressure, Qdrant proxy, and observability. Listens on `127.0.0.1:8080`. |
 
-Nginx path routing:
+Console path routing (`apps/frontend/next.config.js`):
 
-- `/v1/`, `/auth/`, `/user/`, `/admin/`, `/internal/playground/` → FastAPI
-- `/pgadmin/` → pgAdmin — gated by `auth_request` against FastAPI's `/internal/verify-admin` endpoint, so only admins reach it
-- everything else → frontend
+- `/v1/`, `/anthropic/`, `/auth/`, `/user/`, `/admin/`, `/internal/playground/`,
+  `/internal/verify-admin`, `/internal/verify-grafana`, `/health`,
+  `/site-updates`, `/site-config` → FastAPI
+- `/pgadmin/` → pgAdmin, gated on an admin session by
+  `apps/frontend/src/app/pgadmin/[[...path]]/route.ts` — a rewrite cannot
+  authenticate, so this one path is a route handler rather than a table entry
+- everything else → the console's own pages
+
+> **Nginx is installed on the host but is not in the public path.** It still
+> holds a config with its own copy of the routing above, and that config still
+> works when you reach it directly on the host — but the tunnel delivers public
+> traffic straight to the services, so none of it runs. Verified 2026-08-05:
+> `/internal/verify-admin` answers 404 from Nginx (the location is marked
+> `internal`) and 401 from FastAPI over the public URL. Do not add a public
+> route by editing Nginx; it will do nothing.
 
 Docker Compose manages all services (backend, frontend, PostgreSQL, plus
 pgAdmin behind the `admin` profile) with automatic restarts via
@@ -36,8 +48,8 @@ make up                # Start all services
 make ps                # Verify health
 ```
 
-Nginx runs on the host (not containerized) for SSL termination. See
-[Deployment](deployment.md) for the full guide.
+Nginx runs on the host (not containerized), left over from the pre-tunnel
+topology described above. See [Deployment](deployment.md) for the full guide.
 
 ### Client IP resolution
 

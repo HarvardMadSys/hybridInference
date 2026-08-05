@@ -242,6 +242,16 @@ services:
     networks:
       - hybridinference
 
+  # Reached two ways: directly on the published port (an SSH tunnel to
+  # 127.0.0.1:5050 needs nothing else), and through the console at /pgadmin/,
+  # which gates it on an admin session — see
+  # apps/frontend/src/app/pgadmin/[[...path]]/route.ts. The route handler is
+  # the only gate, because SERVER_MODE below leaves pgAdmin without a login of
+  # its own; changing SCRIPT_NAME means changing the path that handler serves.
+  #
+  # The `admin` profile means nothing starts this unless a profile is named:
+  # `make up COMPOSE_PROFILES=admin`, or an env file the deploy reads (see
+  # distributions/freeinference/deploy/compose.env).
   pgadmin:
     image: dpage/pgadmin4:8
     container_name: hybridinference-pgadmin

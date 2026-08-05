@@ -4,6 +4,12 @@ const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || 'http://backend
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // Next strips a trailing slash by redirecting; pgAdmin (Flask) adds one back
+  // the same way. Left on, the two bounce a request between them forever the
+  // first time anyone opens /pgadmin/browser/ — so the normalization is turned
+  // off here and reimplemented in middleware.ts for everything except the
+  // proxied path, which has to reach pgAdmin exactly as the browser asked.
+  skipTrailingSlashRedirect: true,
   images: {
     // Remote host for team-member photos (branding.team). A deployment that
     // hosts photos off-site names the host; one that has no team, or serves

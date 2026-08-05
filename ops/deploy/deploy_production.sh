@@ -38,6 +38,35 @@ dump_diagnostics() {
 
 trap dump_diagnostics EXIT
 
+# pgAdmin is reached through the console, which gates it on an admin session
+# (apps/frontend/src/app/pgadmin/). Two things can go wrong here without
+# anything looking broken, and the second one went unnoticed for three months:
+#
+#   1. pgAdmin is not running — the link 502s. Loud, harmless, warn only.
+#   2. the gate is not in front of it — an anonymous request gets a database
+#      console. Nothing in a deployment reports this on its own, so fail.
+#
+# Anonymous means unauthenticated: the expected answer is a redirect to the
+# login page. A 200 means something is answering that should not be.
+check_pgadmin_route() {
+  local url="${FRONTEND_HEALTH_URL%/}/pgadmin"
+  local status
+
+  if [[ "$(docker inspect -f '{{.State.Running}}' hybridinference-pgadmin 2>/dev/null || true)" != "true" ]]; then
+    log "WARNING: pgAdmin is not running, so the console's pgAdmin link will fail."
+    log "WARNING: it needs the 'admin' Compose profile — see docs/developer/deployment.md."
+    return 0
+  fi
+
+  log "Checking that the pgAdmin route refuses an anonymous request."
+  status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" || echo 000)"
+  if [[ "$status" == "200" ]]; then
+    log "FAILED: ${url} answered 200 without a session; the admin gate is not in front of pgAdmin."
+    exit 1
+  fi
+  log "pgAdmin route refused an anonymous request with ${status}, as expected."
+}
+
 # Wrap body in a function so bash parses the entire script into memory before
 # executing any command. The script self-modifies via `git reset --hard` below;
 # without this guard, bash continues reading the disk file at the byte offset
@@ -124,6 +153,8 @@ main() {
     fi
     sleep 5
   done
+
+  check_pgadmin_route
 
   log "Production deployment completed."
 }

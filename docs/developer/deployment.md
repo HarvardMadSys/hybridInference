@@ -139,6 +139,22 @@ docker compose -f deploy/docker/docker-compose.yml --env-file .env --profile adm
 # Access at http://localhost:5050
 ```
 
+A deployment that wants pgAdmin reachable through the console instead sets the
+profile in an env file the deploy reads, rather than passing the flag by hand —
+`distributions/freeinference/deploy/compose.env` is the worked example. The
+console then serves it at `/pgadmin/`, gated on an admin session by
+`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`.
+
+Two things to know before relying on it:
+
+- pgAdmin has **no login of its own** in the default configuration
+  (`PGADMIN_CONFIG_SERVER_MODE` defaults to `False`), so that route handler is
+  the only thing in front of a database console. It denies on every unexpected
+  condition, including a backend it cannot reach.
+- A host whose own `.env` sets `COMPOSE_PROFILES` overrides the file above and
+  must list every profile it wants — `COMPOSE_PROFILES=admin,oncall`. The
+  deploy scripts warn when pgAdmin ends up not running.
+
 See [Database](database.md) for schema details.
 
 ## Troubleshooting

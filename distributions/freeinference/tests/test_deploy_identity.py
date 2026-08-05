@@ -167,13 +167,43 @@ def test_overlay_states_the_deployment_data_policy() -> None:
     assert "logged for research purposes" in _overlay_values()["NEXT_PUBLIC_DATA_POLICY_NOTICE"]
 
 
+# Compose reads these itself rather than interpolating them into a service, so
+# they are configuration for the run and not values that reach a container. The
+# check below would otherwise report them as dead weight. Keep this set small:
+# anything named here escapes the guarantee the test exists to give.
+_COMPOSE_OWN_SETTINGS = frozenset({"COMPOSE_PROFILES"})
+
+
 def test_every_overlay_key_is_actually_read_by_compose() -> None:
     """An overlay key compose never names is a value that silently does nothing."""
-    unused = sorted(set(_overlay_values()) - set(_compose_defaults()))
+    unused = sorted(set(_overlay_values()) - set(_compose_defaults()) - _COMPOSE_OWN_SETTINGS)
     assert not unused, (
         "the overlay sets these, but no compose default interpolates them, so "
         f"they never reach a container: {unused}"
     )
+
+
+def test_compose_own_settings_name_a_profile_that_exists() -> None:
+    """COMPOSE_PROFILES escapes the check above, so pin what it selects.
+
+    It is exempt because Compose consumes it directly, which also means a typo
+    in it fails the way the pgAdmin outage did: nothing errors, a service just
+    never starts. Naming a profile no service declares is that typo.
+    """
+    profiles = {
+        profile.strip()
+        for profile in _overlay_values().get("COMPOSE_PROFILES", "").split(",")
+        if profile.strip()
+    }
+    assert profiles, "the overlay sets COMPOSE_PROFILES; it should name at least one profile"
+
+    compose = yaml.safe_load(COMPOSE.read_text())
+    declared = {
+        profile
+        for service in compose["services"].values()
+        for profile in service.get("profiles", [])
+    }
+    assert profiles <= declared, f"no service declares: {sorted(profiles - declared)}"
 
 
 def test_overlay_carries_no_secrets() -> None:
