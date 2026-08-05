@@ -73,14 +73,15 @@ def test_both_queries_exclude_gateway_model_not_found():
         assert "ILIKE '%not found%'" not in sql
 
 
-def test_both_queries_exclude_quota_and_concurrency_rejections():
-    """Per-user quota/concurrency 429 rejections must never page Slack.
+def test_both_queries_exclude_rate_limit_rejections_by_status():
+    """429 rate-limit rejections must never page Slack, whatever the error code.
 
-    ``rejection_log.log_rejection`` persists these as 429 rows with a non-null
-    ``error`` (``quota_exceeded`` / ``concurrency_limit_exceeded``). They are
-    expected user-facing rate limiting, not a service fault, so both the count
-    and breakdown predicates must exclude them on the error branch (genuine 5xx
-    still counts via ``status_code >= 500``).
+    Excluded by *status*, not by enumerating error strings: the gateway's own
+    ``quota_exceeded`` / ``concurrency_limit_exceeded`` rejections are only two
+    of the sources. Edge/proxy layers in front of the gateway persist 429 rows
+    with their own codes (e.g. ``ip_blocked`` from IP-level rate limiting), and
+    a string allowlist silently re-admits every code nobody thought to list.
+    Genuine 5xx still counts via ``status_code >= 500``.
     """
     from serving.admin.failed_request_alerter import (
         FAILED_REQUEST_BREAKDOWN_SQL,
@@ -88,8 +89,11 @@ def test_both_queries_exclude_quota_and_concurrency_rejections():
     )
 
     for sql in (FAILED_REQUEST_COUNT_SQL, FAILED_REQUEST_BREAKDOWN_SQL):
-        assert "error <> 'quota_exceeded'" in sql
-        assert "error <> 'concurrency_limit_exceeded'" in sql
+        # IS DISTINCT FROM (not <>) keeps NULL-status error rows counting.
+        assert "status_code IS DISTINCT FROM 429" in sql
+        # The brittle per-code form must not come back.
+        assert "error <> 'quota_exceeded'" not in sql
+        assert "error <> 'concurrency_limit_exceeded'" not in sql
 
 
 def test_both_queries_exclude_client_disconnects():

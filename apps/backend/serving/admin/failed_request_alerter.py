@@ -51,11 +51,24 @@ logger = get_logger(__name__)
 # service-side failure and must still alert, so a broad ``%not found%`` would be
 # wrong — it would silence provider/config regressions.
 #
-# Per-user quota/concurrency rejections (``quota_exceeded`` /
-# ``concurrency_limit_exceeded``, persisted by rejection_log.log_rejection as
-# 429s with a non-null ``error``) are expected user-facing rate limiting, not a
-# service fault, so they are excluded here and never page Slack. The exclusions
-# live on the error branch, so a genuine 5xx still counts via ``status_code >= 500``.
+# Rate-limit rejections (status 429) are expected user-facing throttling, not a
+# service fault, so they are excluded here and never page Slack. The whole status
+# is excluded rather than specific error strings: the gateway's own rejections
+# (``quota_exceeded`` / ``concurrency_limit_exceeded``, persisted by
+# rejection_log.log_rejection) are only two of the sources. Edge/proxy layers in
+# front of the gateway also persist 429 rows with their own error codes (e.g.
+# ``ip_blocked`` from IP-level rate limiting), and enumerating error strings
+# silently re-admits every code nobody thought to list — a burst of edge-blocked
+# clients then pages Slack as if it were an outage. Matching on status is exact
+# and survives new or reworded rejection codes. This mirrors
+# ``_FAILED_REQUEST_IGNORED_STATUSES`` in observability/alert_rules.py, which
+# already drops 429 as a class for the metrics-based detector.
+#
+# Trade-off: a provider-exhaustion 429 (anthropic_messages returns 429 when every
+# upstream key is in cooldown) no longer counts here. That is deliberate — it was
+# already invisible to the metrics detector for the same reason, and provider
+# exhaustion surfaces through the fivexx_rate rule and the circuit_open state
+# change instead.
 #
 # Client disconnects (status 499, error "Client disconnected before the stream
 # completed") are excluded for the same reason. When a caller drops a streaming
@@ -70,12 +83,11 @@ logger = get_logger(__name__)
 # ``IS DISTINCT FROM`` (not ``<>``) keeps NULL-status error rows counting.
 FAILURE_PREDICATE_SQL = (
     "(status_code >= 500 OR (error IS NOT NULL "
+    "AND status_code IS DISTINCT FROM 429 "
     "AND status_code IS DISTINCT FROM 499 "
     "AND error NOT ILIKE 'Model ''%'' not found' "
     "AND error NOT ILIKE 'Embedding model ''%'' not found' "
-    "AND error <> 'model_not_found' "
-    "AND error <> 'quota_exceeded' "
-    "AND error <> 'concurrency_limit_exceeded'))"
+    "AND error <> 'model_not_found'))"
 )
 
 # Module-level SQL so tests can introspect the predicate text.
