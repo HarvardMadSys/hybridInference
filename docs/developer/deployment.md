@@ -147,10 +147,13 @@ console then serves it at `/pgadmin/`, gated on an admin session by
 
 Two things to know before relying on it:
 
-- pgAdmin has **no login of its own** in the default configuration
-  (`PGADMIN_CONFIG_SERVER_MODE` defaults to `False`), so that route handler is
-  the only thing in front of a database console. It denies on every unexpected
-  condition, including a backend it cannot reach.
+- Whether pgAdmin **also** asks for a login is a per-host choice, and the two
+  defaults disagree: the Compose service falls back to
+  `PGADMIN_CONFIG_SERVER_MODE=False`, which serves it with no login at all,
+  while `.env.example` suggests `True`, which turns pgAdmin's own login on.
+  `True` is the safer of the two — it puts a second gate behind the console's.
+  The route handler assumes it is the only one either way, and denies on every
+  unexpected condition, including a backend it cannot reach.
 - A host whose own `.env` sets `COMPOSE_PROFILES` overrides the file above and
   must list every profile it wants — `COMPOSE_PROFILES=admin,oncall`. The
   deploy scripts warn when pgAdmin ends up not running.

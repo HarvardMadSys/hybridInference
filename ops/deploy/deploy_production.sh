@@ -46,11 +46,14 @@ trap dump_diagnostics EXIT
 #   2. the gate is not in front of it — an anonymous request gets a database
 #      console. Nothing in a deployment reports this on its own, so fail.
 #
-# Anonymous means unauthenticated: the expected answer is a redirect to the
-# login page. A 200 means something is answering that should not be.
+# Assert the exact refusal rather than "anything but 200". The outage this
+# check exists for — the route missing, so the console answers with its own
+# 404 — is itself a non-200, and would sail through a looser test while the
+# link stayed exactly as broken. An anonymous GET has one correct answer: a
+# 302 to the login page.
 check_pgadmin_route() {
   local url="${FRONTEND_HEALTH_URL%/}/pgadmin"
-  local status
+  local probe code location
 
   if [[ "$(docker inspect -f '{{.State.Running}}' hybridinference-pgadmin 2>/dev/null || true)" != "true" ]]; then
     log "WARNING: pgAdmin is not running, so the console's pgAdmin link will fail."
@@ -59,12 +62,19 @@ check_pgadmin_route() {
   fi
 
   log "Checking that the pgAdmin route refuses an anonymous request."
-  status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" || echo 000)"
-  if [[ "$status" == "200" ]]; then
-    log "FAILED: ${url} answered 200 without a session; the admin gate is not in front of pgAdmin."
+  # Split by hand rather than with `read`: curl's -w output has no trailing
+  # newline, read returns non-zero at EOF, and `set -e` turns that into an
+  # exit that looks like the check passed.
+  probe="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 "$url" || echo '000 ')"
+  code="${probe%% *}"
+  location="${probe#* }"
+  if [[ "$code" != "302" || "$location" != */login ]]; then
+    log "FAILED: an anonymous GET of ${url} must redirect to the login page."
+    log "FAILED: got status '${code}', redirect '${location}'."
+    log "FAILED: 404 means the console route is gone; 200 means nothing is gating pgAdmin."
     exit 1
   fi
-  log "pgAdmin route refused an anonymous request with ${status}, as expected."
+  log "pgAdmin route redirected an anonymous request to the login page, as expected."
 }
 
 # Wrap body in a function so bash parses the entire script into memory before

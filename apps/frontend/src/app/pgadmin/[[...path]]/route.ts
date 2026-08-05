@@ -8,11 +8,12 @@
  * public goes through Nginx any more, so that block never runs — which is why
  * clicking pgAdmin in the dashboard returned the console's own 404 page.
  *
- * A rewrite alone cannot replace it: rewrites cannot authenticate, and pgAdmin
- * is deliberately configured without a login of its own (see the pgadmin
- * service in deploy/docker/docker-compose.yml). The admin check below is
- * therefore the ONLY gate in front of a database console, which is why it
- * fails closed on every unexpected condition rather than falling through.
+ * A rewrite alone cannot replace it: rewrites cannot authenticate. Whether
+ * pgAdmin also asks for a login depends on the host — `SERVER_MODE` defaults
+ * to False in the pgadmin service, and a host that sets it True gains a second
+ * gate. This code cannot tell which, so it assumes it is the only thing in
+ * front of a database console: it fails closed on every unexpected condition
+ * rather than falling through.
  */
 import { NextResponse, type NextRequest } from 'next/server';
 
@@ -108,6 +109,26 @@ function requestHeaders(request: NextRequest): Headers {
   return headers;
 }
 
+/**
+ * Fold a redirect that points at the upstream itself back to a bare path.
+ *
+ * pgAdmin should emit relative redirects, but Werkzeug can be configured to
+ * build absolute ones from the Host header it saw — which here is the
+ * container name, and resolves nowhere in a browser. Derived from the
+ * configured upstream rather than a literal so it still holds when
+ * PGADMIN_INTERNAL_URL is overridden. Returns null to leave the value alone.
+ */
+function foldUpstreamRedirect(location: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(location, PGADMIN_INTERNAL_URL);
+  } catch {
+    return null;
+  }
+  if (parsed.origin !== new URL(PGADMIN_INTERNAL_URL).origin) return null;
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+}
+
 function responseHeaders(upstream: Response): Headers {
   const headers = new Headers();
   upstream.headers.forEach((value, name) => {
@@ -120,6 +141,13 @@ function responseHeaders(upstream: Response): Headers {
   });
   // forEach folds repeated Set-Cookie into one value; getSetCookie keeps them apart.
   for (const cookie of upstream.headers.getSetCookie()) headers.append('set-cookie', cookie);
+
+  const location = headers.get('location');
+  if (location) {
+    const folded = foldUpstreamRedirect(location);
+    if (folded) headers.set('location', folded);
+  }
+
   return headers;
 }
 

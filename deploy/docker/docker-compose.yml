@@ -245,9 +245,11 @@ services:
   # Reached two ways: directly on the published port (an SSH tunnel to
   # 127.0.0.1:5050 needs nothing else), and through the console at /pgadmin/,
   # which gates it on an admin session — see
-  # apps/frontend/src/app/pgadmin/[[...path]]/route.ts. The route handler is
-  # the only gate, because SERVER_MODE below leaves pgAdmin without a login of
-  # its own; changing SCRIPT_NAME means changing the path that handler serves.
+  # apps/frontend/src/app/pgadmin/[[...path]]/route.ts. SERVER_MODE below
+  # defaults to False, which serves pgAdmin with no login of its own — leave it
+  # there and the console's check is the only gate; set it True in .env and
+  # pgAdmin asks for its own credentials behind that check. Changing
+  # SCRIPT_NAME means changing the path the route handler serves.
   #
   # The `admin` profile means nothing starts this unless a profile is named:
   # `make up COMPOSE_PROFILES=admin`, or an env file the deploy reads (see

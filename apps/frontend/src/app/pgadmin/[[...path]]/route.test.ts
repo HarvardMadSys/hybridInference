@@ -1,8 +1,8 @@
 /**
- * pgAdmin has no login of its own in this deployment, so the admin check in
- * this route is the only thing standing between the public internet and a
- * database console. These tests pin the deny paths first: every one of them
- * must also prove the proxy was never called, because a gate that answers 403
+ * Whether pgAdmin asks for a login of its own is a per-host setting, so this
+ * route has to hold as if it were the only thing between the public internet
+ * and a database console. These tests pin the deny paths first, and every one
+ * of them also proves the proxy was never called: a gate that answers 403
  * while still forwarding the request is no gate at all.
  */
 import { NextRequest } from 'next/server';
@@ -146,6 +146,34 @@ describe('pgAdmin proxy — forwarding', () => {
 
     expect(response.headers.get('content-encoding')).toBeNull();
     expect(response.headers.get('content-type')).toBe('text/html');
+  });
+
+  it('folds a redirect aimed at the container back to a path', async () => {
+    // The container name resolves nowhere in a browser, so an absolute
+    // redirect built from the Host pgAdmin saw would strand the client.
+    stubFetch({
+      verify: () => new Response(null, { status: 200 }),
+      upstream: () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: 'http://pgadmin/pgadmin/browser/?x=1' },
+        }),
+    });
+
+    const response = await GET(request('/pgadmin/', admin));
+
+    expect(response.headers.get('location')).toBe('/pgadmin/browser/?x=1');
+  });
+
+  it('leaves a redirect that already is a path alone', async () => {
+    stubFetch({
+      verify: () => new Response(null, { status: 200 }),
+      upstream: () => new Response(null, { status: 302, headers: { location: '/pgadmin/login' } }),
+    });
+
+    const response = await GET(request('/pgadmin/', admin));
+
+    expect(response.headers.get('location')).toBe('/pgadmin/login');
   });
 
   it('reports a stopped pgAdmin as a bad gateway', async () => {
