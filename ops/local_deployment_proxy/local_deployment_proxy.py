@@ -118,6 +118,17 @@ Set ``"skip_server_warmup": true`` to pass ``--skip-server-warmup``, and
 ``/root/.cache``; both cut startup time on large MoE models. Keep ``cache_dir``
 node-local rather than on shared storage.
 
+Set ``"hicache_size"`` (GB) to give a generative model an L2 prefix-cache tier
+in host DRAM (sglang HiCache), so prefixes evicted from HBM are restored over
+PCIe instead of recomputed. The size is allocated **per scheduler process** --
+per TP rank per PP stage -- so a box pins about ``tp * pp * hicache_size`` GB of
+unswappable memory; size it against ``free -g`` divided by the rank count, not
+against total RAM. sglang aborts a rank whose share exceeds free RAM minus a
+10 GB reserve. ``hicache_ratio`` sizes the pool as a multiple of the device pool
+instead (ignored when ``hicache_size`` is set); ``hicache_write_policy``,
+``hicache_io_backend`` and ``hicache_mem_layout`` map to the matching flags.
+Ignored for embedding models, which run ``--disable-radix-cache``.
+
 Set ``"moe_runner_backend"`` (e.g. ``"marlin"``) to override the MoE runner.
 NVFP4 / FP4-expert checkpoints need ``"marlin"`` on pre-Blackwell (SM90, e.g.
 H200) GPUs; the default ``triton`` runner asserts on the packed FP4 shapes.
@@ -1227,6 +1238,48 @@ class BackendManager:
                 cmd += ["--enable-auto-tool-choice", "--tool-call-parser", str(tcp)]
         return cmd
 
+    def _hicache_args(self) -> list[str]:
+        """Build the HiCache (host-DRAM KV tier) flags for an sglang backend.
+
+        HiCache adds an L2 prefix-cache tier in host DRAM: prefixes evicted from
+        HBM are restored over PCIe instead of recomputed, which cuts TTFT on
+        cache hits. It does *not* enlarge the running-request KV budget or the
+        usable context length.
+
+        ``hicache_size`` is in GB and is what sglang allocates **per scheduler
+        process** -- i.e. per TP rank per PP stage, since each rank builds its
+        own host pool. A box therefore pins roughly ``tp * pp * hicache_size``
+        GB of unswappable memory, and sglang refuses to start a rank whose share
+        exceeds free RAM minus a 10 GB reserve. Size it against ``free -g``
+        divided by the rank count, never against total RAM.
+
+        Off unless the model config opts in. Never emitted for embedding models:
+        those run with ``--disable-radix-cache``, which sglang rejects alongside
+        ``--enable-hierarchical-cache``.
+        """
+        size = self.config.get("hicache_size")
+        ratio = self.config.get("hicache_ratio")
+        policy = self.config.get("hicache_write_policy")
+        io_backend = self.config.get("hicache_io_backend")
+        mem_layout = self.config.get("hicache_mem_layout")
+        if not any((size, ratio, policy, io_backend, mem_layout)):
+            return []
+
+        args = ["--enable-hierarchical-cache"]
+        # An absolute size overrides the ratio inside sglang; pass only one so the
+        # launch command says what the pool will actually be.
+        if size:
+            args += ["--hicache-size", str(size)]
+        elif ratio:
+            args += ["--hicache-ratio", str(ratio)]
+        if policy:
+            args += ["--hicache-write-policy", str(policy)]
+        if io_backend:
+            args += ["--hicache-io-backend", str(io_backend)]
+        if mem_layout:
+            args += ["--hicache-mem-layout", str(mem_layout)]
+        return args
+
     def _sglang_run_cmd(self, gpu: str) -> list[str]:
         """Build the ``docker run`` command for an sglang backend."""
         tp = int(self.config.get("tensor_parallel_size", 1))
@@ -1309,6 +1362,7 @@ class BackendManager:
             # Without this flag sglang omits prompt_tokens_details.cached_tokens
             # from the usage block, so prefix-cache hits never surface to clients.
             cmd += ["--enable-cache-report"]
+            cmd += self._hicache_args()
             tcp = self.config.get("tool_call_parser")
             if tcp:
                 cmd += ["--tool-call-parser", tcp]

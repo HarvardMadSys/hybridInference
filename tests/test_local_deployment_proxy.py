@@ -428,6 +428,109 @@ def test_embedding_container_uses_embedding_runtime_flags(monkeypatch: Any, tmp_
     ]
 
 
+def _record_launch(proxy: Any, monkeypatch: Any, config: dict[str, Any]) -> list[str]:
+    """Start a backend with ``config`` and return the ``docker run`` command."""
+    backend = proxy.BackendManager(MODEL_NAME, config)
+    commands: list[list[str]] = []
+
+    def record_run(command: list[str], **_: Any) -> Any:
+        commands.append(command)
+        if "inspect" in command:
+            return _no_such_container()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(proxy.subprocess, "run", record_run)
+    backend._start_container()
+    return commands[-1]
+
+
+def _chat_model_config(model_dir: Path, **extra: Any) -> dict[str, Any]:
+    model_dir.mkdir(exist_ok=True)
+    (model_dir / "config.json").write_text('{"model_type": "deepseek_v3"}')
+    return {
+        "container": "manual-test-sglang",
+        "gpu_index": "0",
+        "backend_port": 18080,
+        "model_dir": str(model_dir),
+        "served_name": MODEL_NAME,
+        "max_model_len": 8192,
+        "mem_fraction": "0.80",
+        **extra,
+    }
+
+
+def test_hicache_config_enables_the_host_kv_tier(monkeypatch: Any, tmp_path: Path) -> None:
+    # A host-DRAM KV tier is opt-in per model: the size is in GB *per scheduler
+    # process*, so the flags only appear when the model config asks for them.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    launch_command = _record_launch(
+        proxy,
+        monkeypatch,
+        _chat_model_config(
+            tmp_path / "chat-model",
+            hicache_size=400,
+            hicache_write_policy="write_through_selective",
+            hicache_io_backend="kernel",
+        ),
+    )
+
+    assert "--enable-hierarchical-cache" in launch_command
+    assert launch_command[launch_command.index("--hicache-size") + 1] == "400"
+    assert (
+        launch_command[launch_command.index("--hicache-write-policy") + 1]
+        == "write_through_selective"
+    )
+    assert launch_command[launch_command.index("--hicache-io-backend") + 1] == "kernel"
+
+
+def test_hicache_ratio_is_used_when_no_absolute_size_is_given(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    launch_command = _record_launch(
+        proxy, monkeypatch, _chat_model_config(tmp_path / "chat-model", hicache_ratio=3)
+    )
+
+    assert "--enable-hierarchical-cache" in launch_command
+    assert launch_command[launch_command.index("--hicache-ratio") + 1] == "3"
+    assert "--hicache-size" not in launch_command
+
+
+def test_a_model_without_hicache_config_gets_no_host_tier_flags(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # Regression guard: enabling the host tier by accident would pin hundreds of
+    # gigabytes of unswappable DRAM on every model the proxy starts.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    launch_command = _record_launch(proxy, monkeypatch, _chat_model_config(tmp_path / "chat-model"))
+
+    host_tier_flags = [
+        arg
+        for arg in launch_command
+        if arg.startswith("--") and ("hicache" in arg or "hierarchical" in arg)
+    ]
+    assert host_tier_flags == []
+
+
+def test_embedding_models_never_get_the_host_tier(monkeypatch: Any, tmp_path: Path) -> None:
+    # --enable-hierarchical-cache and --disable-radix-cache are mutually exclusive
+    # in sglang; an embedding model that sets both would refuse to start.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    launch_command = _record_launch(
+        proxy,
+        monkeypatch,
+        _chat_model_config(
+            tmp_path / "embed-model",
+            is_embedding=True,
+            disable_radix_cache=True,
+            hicache_size=64,
+        ),
+    )
+
+    assert "--enable-hierarchical-cache" not in launch_command
+    assert "--hicache-size" not in launch_command
+
+
 def test_wait_healthy_fails_fast_when_container_exits(monkeypatch: Any, tmp_path: Path) -> None:
     # HEALTH_TIMEOUT is 0.2s in the test config but a crashed container should be
     # detected on the first poll, long before the timeout, and the raised error
