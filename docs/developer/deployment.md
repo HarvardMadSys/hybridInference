@@ -154,9 +154,14 @@ Two things to know before relying on it:
   `True` is the safer of the two — it puts a second gate behind the console's.
   The route handler assumes it is the only one either way, and denies on every
   unexpected condition, including a backend it cannot reach.
-- A host whose own `.env` sets `COMPOSE_PROFILES` overrides the file above and
-  must list every profile it wants — `COMPOSE_PROFILES=admin,oncall`. The
-  deploy scripts warn when pgAdmin ends up not running.
+- The deploy scripts do not rely on `--env-file` to carry that profile:
+  Compose ignored `COMPOSE_PROFILES` there from 2.27.1 until the fix for
+  [docker/compose#11856](https://github.com/docker/compose/issues/11856). They
+  read the overlay themselves and export the union of it and whatever the
+  host's `.env` selects, so a host that also runs `oncall` keeps it. Running
+  Compose by hand is the exception — on an affected version a host `.env` that
+  sets `COMPOSE_PROFILES` wins outright, so list every profile you want. The
+  deploy scripts warn when pgAdmin ends up not running either way.
 
 See [Database](database.md) for schema details.
 

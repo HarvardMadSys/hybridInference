@@ -55,6 +55,37 @@ trap dump_diagnostics EXIT
 #   2. the gate is not in front of it — an anonymous request gets a database
 #      console. Nothing in a deployment reports this on its own, so fail.
 #
+# Hand Compose its profile selection through the process environment.
+#
+# The overlay states it in an env file, which is where a deployment's choices
+# belong — but that is not a reliable transport for this one variable, twice
+# over. Compose ignored COMPOSE_PROFILES inside `--env-file` from 2.27.1 until
+# the fix for docker/compose#11856, and these scripts pass even the host's own
+# `.env` that way. And `--profile` on the command line is not a substitute:
+# compose-go's WithDefaultProfiles drops COMPOSE_PROFILES entirely once any
+# profile is passed explicitly, so a flag would silently switch off whatever a
+# host had selected for itself.
+#
+# The process environment is honoured by every version, so resolve the union
+# here: the overlay's selection plus the host's own. Runs after the checkout,
+# so it reads the revision being deployed rather than the one on disk.
+export_compose_profiles() {
+  local overlay host combined
+  overlay="$(read_compose_profiles distributions/freeinference/deploy/compose.env)"
+  host="$(read_compose_profiles .env)"
+  combined="${overlay}${overlay:+${host:+,}}${host}"
+
+  if [[ -n "$combined" ]]; then
+    export COMPOSE_PROFILES="$combined"
+    log "Compose profiles: ${COMPOSE_PROFILES}."
+  fi
+}
+
+read_compose_profiles() {
+  [[ -f "$1" ]] || return 0
+  sed -n 's/^[[:space:]]*COMPOSE_PROFILES=//p' "$1" | tail -1 | tr -d "\"'"
+}
+
 # An anonymous GET has one correct answer — a 302 to the login page — and the
 # check asserts exactly that. "Anything but 200" would not do: the outage this
 # exists for is the console answering with its own 404, which is also non-200.
@@ -198,6 +229,8 @@ main() {
       exit 1
     fi
   fi
+
+  export_compose_profiles
 
   log "Rebuilding and restarting Docker Compose services."
   # The rebuild needs this site's identity too: the console's is compiled in
