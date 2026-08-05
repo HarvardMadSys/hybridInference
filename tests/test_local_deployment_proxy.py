@@ -2328,12 +2328,21 @@ def test_adoption_records_the_adopted_container_id(monkeypatch: Any, tmp_path: P
     fake = _FakeDocker(labels=stamped, running=True, gpu="2", container_id="cid-adopted")
     monkeypatch.setattr(proxy.subprocess, "run", fake.run)
     monkeypatch.setattr(backend, "_backend_healthy", lambda: True)
+    # A finding against some *earlier* container of this name, left over from a
+    # takeover this manager has since recovered from. Adopting means the name
+    # resolves to a container this manager holds, so the claim is spent — carrying it
+    # on would leave the manager judging its own backend against a container from a
+    # previous life, which is the stale state ``_container_id`` is cleared to avoid.
+    backend._disowned_container_id = "cid-a-previous-life"
+    backend._disowned_reason = "the name was held by cid-a-previous-life"
 
     assert backend._adopt_running_container() is True
 
     assert backend._container_id == "cid-adopted"
     assert backend._current_gpu == "2"
     assert len(fake.state_inspects) == 1
+    assert backend._disowned_container_id is None
+    assert backend._disowned_reason is None
 
 
 def test_an_unreadable_launch_output_downgrades_to_the_owner_check(
@@ -2405,6 +2414,257 @@ def test_a_disowned_backend_stops_forwarding_to_the_new_owners_port(
     # Nothing of ours reached the port the new owner now serves on.
     assert RecordingBackendHandler.requests == []
     assert fake.mutations == []
+
+
+# ── What the request *after* an id-mismatch demotion does ──────────────────
+#
+# Demoting removes nothing, but demoting is also what puts the manager back on the
+# start path, and every refusal down that path is gated on a foreign owner *label*.
+# The id-mismatch branch fires precisely when the label reads as ours — an
+# unlabelled hand-restart, or a second unit given the same PROXY_OWNER — so on its
+# own the demotion handed the next request a `docker rm -f` of a running container
+# this proxy had just positively established it did not launch, or a re-adoption
+# that put the manager back to `ready` over it with the ids now agreeing, so the
+# re-check could never fire again. Both are worse than the wrong-model forwarding
+# the re-check exists to stop, and neither existed before it. These pin the
+# carried-forward id that closes them.
+
+
+@pytest.mark.parametrize(
+    ("labels", "container_id", "healthy"),
+    [
+        # A sibling handed this proxy's own identity, running a different config.
+        # Live and healthy, but the profile label differs, so adoption declines and
+        # the start path takes over -- straight onto `docker rm -f`.
+        ("same-owner-other-profile", "cid-sibling-live", True),
+        # An operator's hand-restart, still loading its weights. Unlabelled, so
+        # neither the owner test nor the profile test sees anything, and
+        # `_backend_healthy` is false -- the same route to the removal.
+        ("unlabelled", "cid-hand-restarted", False),
+        # The same hand-restart once it answers. Nothing declines adoption here, so
+        # this is the case that ends in a *re-adoption* rather than a removal: back
+        # to `ready` over the disowned container, with `_container_id` overwritten by
+        # its id so the ids agree from then on and the re-check can never fire again.
+        # A mis-serve bounded at one watcher tick becomes a permanent one.
+        ("unlabelled", "cid-hand-restarted-healthy", True),
+    ],
+    ids=["same-owner-different-profile", "unlabelled-mid-load", "unlabelled-and-healthy"],
+)
+def test_the_request_after_an_id_mismatch_demotion_destroys_nothing(
+    monkeypatch: Any, tmp_path: Path, labels: str, container_id: str, healthy: bool
+) -> None:
+    """A container disowned by id must survive the request that follows.
+
+    The demotion declined to touch it *because* it is another owner's and may be
+    mid-load or mid-stream. Handing the very next request a `docker rm -f` of it
+    contradicts that in one tick, and does so on evidence this proxy produced
+    itself: an id mismatch is a positive finding that the container is not the one
+    it launched, which is the standard every other removal in this module is held
+    to. So it is refused, and the refusal names the container rather than blaming a
+    sibling that carries no label.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    # Free the one retry's pause; nothing here should reach a second attempt.
+    monkeypatch.setattr(proxy.time, "sleep", lambda _s: None)
+    fake = _FakeDocker(
+        labels=(
+            None
+            if labels == "unlabelled"
+            else {
+                proxy.OWNER_LABEL: proxy.PROXY_OWNER,
+                proxy.PROFILE_LABEL: "0000siblingprofile",
+            }
+        ),
+        running=True,
+        container_id=container_id,
+    )
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: healthy)
+    monkeypatch.setattr(backend, "_wait_healthy", lambda: None)
+    download = Mock()
+    monkeypatch.setattr(backend, "_ensure_model_dir", download)
+    _make_ready(proxy, backend, "cid-mine")
+
+    _run_idle_watcher(proxy, backend)
+    assert backend.state == "stopped"
+    assert fake.mutations == []
+
+    with pytest.raises(proxy.ForeignContainerError) as raised:
+        backend.ensure_running()
+
+    # Refused before the GPU is claimed and before `_ensure_model_dir`, which on a
+    # real host can be a several-hundred-GiB `snapshot_download` that was going to be
+    # thrown away. That is all the early check at the top of `_start_container` buys —
+    # the removal itself is authorised later, by `_clear_container_name`.
+    download.assert_not_called()
+
+    # The container the watcher declined to touch is still exactly where it was.
+    assert fake.mutations == []
+    assert fake.exists is True
+    assert fake.running is True
+    assert fake.container_id == container_id
+    assert backend.state == "stopped"
+    message = str(raised.value)
+    # Both containers named: the one holding the name now, and the one this manager
+    # was ready over. There is no second *owner* to name -- that is what makes this
+    # branch different from the foreign-label one.
+    assert container_id in message
+    assert "cid-mine" in message
+    assert "sudo docker rm -f contended-sglang" in message
+    # Reaches the client through ``send_error``, which latin-1 encodes the status
+    # line: one em dash there drops the connection instead of the diagnosis.
+    message.encode("ascii")
+
+
+def test_a_disowned_container_is_still_reclaimed_once_it_exits(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Refusing while it runs must not wedge the name once it stops.
+
+    The refusal rests on the container being *live*: that is what makes destroying
+    it destructive. An exited one holds no GPU and serves nothing, and nothing else
+    in this module would ever remove it, so declining there would leave the model
+    502ing until an operator cleared the corpse by hand — the failure mode
+    ``_clear_container_name`` already refuses to create for a foreign corpse. The
+    carried-forward id must therefore expire against docker's state word, not
+    outlive the container.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    monkeypatch.setattr(proxy.time, "sleep", lambda _s: None)
+    fake = _FakeDocker(labels=None, running=True, container_id="cid-hand-restarted")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: False)
+    monkeypatch.setattr(backend, "_wait_healthy", lambda: None)
+    _make_ready(proxy, backend, "cid-mine")
+
+    _run_idle_watcher(proxy, backend)
+    assert backend._disowned_container_id == "cid-hand-restarted"
+
+    # The other owner's backend finishes. Same id, same name, now a corpse.
+    fake.running = False
+    fake.status = "exited"
+
+    backend.ensure_running()
+
+    verbs = [c[c.index("docker") + 1] for c in fake.mutations]
+    assert verbs == ["rm", "run"], fake.mutations
+    assert fake.mutations[0][-1] == "cid-hand-restarted"
+    assert backend.state == "ready"
+    # And the spent finding is dropped, so it cannot be re-used against the
+    # container this manager now holds.
+    assert backend._disowned_container_id is None
+    assert backend._container_id == "cid-launched-1"
+
+
+@pytest.mark.parametrize(
+    ("revive_after", "download_expected"),
+    [
+        # Back up before the start path takes its early reading: refused there, and
+        # the point of refusing there is that the download never starts.
+        (1, False),
+        # Still a corpse at the early reading, so it is let past as reclaimable, and
+        # back up by the time the removal is authorised. Only the second decision can
+        # see this, which is why there are two.
+        (2, True),
+    ],
+    ids=["at-the-early-check", "after-the-download"],
+)
+def test_a_disowned_container_that_comes_back_up_is_not_removed(
+    monkeypatch: Any, tmp_path: Path, revive_after: int, download_expected: bool
+) -> None:
+    """This refusal obeys the module's own rule: decided twice, the second time to remove.
+
+    A container's state changes under a start, because between the top of the start
+    path and the `docker rm -f` lie GPU selection and an ``_ensure_model_dir`` that
+    can be a several-hundred-GiB ``snapshot_download``. A corpse is reclaimable, so
+    an exited container is deliberately let past the early test; a ``--restart``
+    policy or a plain ``docker start`` then brings the *same id* back up while the
+    download runs. Deciding only at the top would destroy a live backend on a reading
+    minutes stale — the exact race the id-aimed removal closes for the owner label —
+    and deciding only at the bottom would pay for the download first.
+
+    The state inspects one ``ensure_running`` makes, in order: (1) adoption, which
+    declines a container that is not running; (2) the early refusal at the top of
+    ``_start_container``; (3) the one ``_clear_container_name`` takes to authorise the
+    removal. Reviving after (1) or after (2) puts the change in front of one decision
+    each.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    monkeypatch.setattr(proxy.time, "sleep", lambda _s: None)
+    fake = _FakeDocker(labels=None, running=True, container_id="cid-hand-restarted")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: False)
+    monkeypatch.setattr(backend, "_wait_healthy", lambda: None)
+    download = Mock()
+    monkeypatch.setattr(backend, "_ensure_model_dir", download)
+    _make_ready(proxy, backend, "cid-mine")
+
+    _run_idle_watcher(proxy, backend)
+    assert backend._disowned_container_id == "cid-hand-restarted"
+
+    fake.running = False
+    fake.status = "exited"
+    inspects = {"n": 0}
+    real_run = fake.run
+
+    def run_and_revive(command: list[str], **kwargs: Any) -> Any:
+        result = real_run(command, **kwargs)
+        if "inspect" in command and proxy._INSPECT_DEVICES_FORMAT not in command:
+            inspects["n"] += 1
+            if inspects["n"] == revive_after:
+                fake.running = True
+                fake.status = "running"
+        return result
+
+    monkeypatch.setattr(proxy.subprocess, "run", run_and_revive)
+
+    with pytest.raises(proxy.ForeignContainerError) as raised:
+        backend.ensure_running()
+
+    # Which decision refused, pinned by what it cost: the early one stops before the
+    # download, and reaching the later one means the early one really did let the
+    # corpse past rather than this test asserting nothing about where either lives.
+    assert download.call_count == (1 if download_expected else 0)
+    assert inspects["n"] > revive_after, inspects
+    assert fake.mutations == []
+    assert fake.exists is True
+    assert fake.running is True
+    assert fake.container_id == "cid-hand-restarted"
+    assert "cid-hand-restarted" in str(raised.value)
+
+
+def test_a_warmup_stream_reports_a_disowned_container_before_committing_200(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The streaming path has to see this refusal too, or it answers success forever.
+
+    ``contention_error`` exists because the streaming warmup commits ``200`` and a
+    "the model is starting up" banner *before* ``ensure_running`` runs, on a
+    background thread that can only log what it raises — so any refusal the start
+    path can make and this method cannot report is a request answered
+    success-shaped, with the gateway never opening a circuit and never failing over.
+    Its contract is "exactly what the start path will refuse", and a refusal that
+    needs no foreign owner label is one more thing to report.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = _labelled_backend(proxy, tmp_path)
+    fake = _FakeDocker(labels=None, running=True, container_id="cid-hand-restarted")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    _make_ready(proxy, backend, "cid-mine")
+
+    _run_idle_watcher(proxy, backend)
+
+    contention = backend.contention_error()
+    assert contention is not None
+    assert "cid-hand-restarted" in str(contention)
+    str(contention).encode("ascii")
+    # An unlabelled container nobody disowned is still no contention at all: this
+    # must not become a blanket 502 for the ordinary upgrade-rule case.
+    backend._forget_disowned_container()
+    assert backend.contention_error() is None
 
 
 def test_dead_ready_backend_self_heals_and_retries(monkeypatch: Any, tmp_path: Path) -> None:

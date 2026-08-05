@@ -616,6 +616,16 @@ class BackendManager:
         # `_disown_if_replaced`: the labels prove *who owns the name now*, and this
         # proves *whether it is still the container we became ready over*.
         self._container_id: str | None = None
+        # Identity of a container this manager positively established was *not* the
+        # one it became ready over, carried forward out of `_disown_if_replaced`.
+        # Needed because the demotion there clears `_container_id`, and every
+        # refusal on the start path is gated on a foreign owner *label*: a same-
+        # `PROXY_OWNER` sibling or an unlabelled hand-restart reads as this proxy's
+        # own, so without this the next request would `docker rm -f` — or silently
+        # re-adopt — the very container the re-check had just disowned. See
+        # `_disowned_container_error`.
+        self._disowned_container_id: str | None = None
+        self._disowned_reason: str | None = None
         # Last unrunnable-`docker inspect` reason already reported, so the
         # ownership check on the streaming warmup path says it once instead of on
         # every request (see `_log_inspect_failure`).
@@ -860,6 +870,15 @@ class BackendManager:
                     else f"and in docker state {state.status!r}, so it has not finished"
                 ),
             )
+        # The label is not the only positive evidence available: a takeover the idle
+        # watcher caught by container id reads as *ours* here, and would otherwise be
+        # destroyed by the removal below. Refused early for the same reason the label
+        # is — before the GPU is claimed and before a several-hundred-GiB download
+        # that was going to be thrown away — and re-taken in
+        # `_clear_container_name`, which is the check the removal actually rests on.
+        disowned = self._disowned_container_error(state, "replace")
+        if disowned is not None:
+            raise disowned
         # A *running* container of this name that is ours is about to be replaced
         # — a changed profile hash, or one that never became healthy. Its device
         # request is the only reliable record of where this backend lives, and it
@@ -923,6 +942,7 @@ class BackendManager:
             result = subprocess.run(cmd, check=False, capture_output=True, text=True)
             if result.returncode == 0:
                 self._container_id = _launched_container_id(result.stdout)
+                self._forget_disowned_container()
                 return
             stderr = (result.stderr or "").strip()
             if not _is_name_conflict(stderr):
@@ -1053,6 +1073,14 @@ class BackendManager:
                     f"starts, so removing this one would destroy a launch in progress"
                 ),
             )
+        # The reading the owner label cannot take, re-taken here rather than trusted
+        # from `_start_container`: this is the check the `docker rm -f` below rests
+        # on, and a container the idle watcher disowned by id reads as this proxy's
+        # own at every one of the tests above. Removing it would destroy a running
+        # backend this proxy has established it did not launch.
+        disowned = self._disowned_container_error(state, "replace")
+        if disowned is not None:
+            raise disowned
         if owner is not None:
             log.warning(
                 "[%s] Reclaiming %s container %s owned by %s: it holds no GPU and "
@@ -1582,6 +1610,69 @@ class BackendManager:
             f"'sudo docker rm -f {self.container}' or set PROXY_OWNER to {owner!r}."
         )
 
+    def _disowned_container_error(
+        self, state: _ContainerState, action: str
+    ) -> ForeignContainerError | None:
+        """Refuse to destroy or re-adopt the running container this manager disowned.
+
+        ``_disown_if_replaced`` establishes, from container ids, that the name no
+        longer resolves to the container this manager became ready over — and it
+        does so in the one case the owner label cannot see, where the replacement
+        reads as *ours* (an unlabelled hand-restart, or a second unit given the same
+        ``PROXY_OWNER``). That finding has to outlive the demotion, because nothing
+        downstream can re-derive it: ``mark_stopped`` clears ``_container_id``, and
+        every refusal on the start path is gated on ``owner is not None``. Left to
+        itself the next request would either ``docker rm -f`` a running container
+        this proxy has positively established it did not launch — which is worse
+        than the wrong-model forwarding the re-check exists to stop, and is what
+        ``_clear_container_name`` would do, since an absent owner label reads as ours
+        — or re-adopt it and go straight back to ``ready`` over it, at which point
+        the ids agree again and the re-check can never fire a second time. So the
+        evidence is kept, and it refuses both.
+
+        Gated on ``running`` on purpose. Once that container exits it holds no GPU
+        and serves nothing, and the start path's reclaim rule applies as usual —
+        otherwise this guard would wedge the name until an operator cleared it by
+        hand, which is the failure mode ``_clear_container_name`` already refuses to
+        create for a foreign corpse.
+
+        Plain ASCII, like ``_foreign_container_error`` and for the same reason: this
+        text reaches clients through ``send_error``, which puts it in the HTTP status
+        line and encodes that latin-1.
+        """
+        disowned = self._disowned_container_id
+        if not disowned or not state.running or state.container_id != disowned:
+            return None
+        return ForeignContainerError(
+            f"[{self.model_name}] Refusing to {action} container {self.container}: "
+            f"{self._disowned_reason or 'this proxy disowned the container of that name'}, and "
+            f"that container is still running. This proxy read the takeover itself, on the idle "
+            f"watcher's ownership re-check, and released its local state without touching the "
+            f"container; removing it now would destroy a backend this proxy has established it "
+            f"did not launch (possibly mid-load or mid-stream), and adopting it would resume "
+            f"serving whatever model it runs under this model's name. It carries no foreign "
+            f"owner label, so it was either started by hand or by a second unit given this "
+            f"proxy's own identity ({PROXY_OWNER!r}) -- 'sudo docker inspect {self.container}' "
+            f"says which. If it should not be there, 'sudo docker rm -f {self.container}' and "
+            f"the next request launches a fresh one. If it is the backend this host should "
+            f"serve, restart this proxy so it adopts that container deliberately. To keep two "
+            f"units apart for good, point one at a config whose 'container' and 'backend_port' "
+            f"do not collide, or give it its own PROXY_OWNER."
+        )
+
+    def _forget_disowned_container(self) -> None:
+        """Drop the disowned-container evidence once this manager holds a backend again.
+
+        Called on a successful launch and on a successful adoption, both of which
+        end with the name resolving to a container this manager owns — so the
+        finding is spent. Keeping it would be harmless (ids are unique and never
+        reused, and the check is gated on that id still running) but it would leave
+        the manager carrying a claim about a container that no longer holds its
+        name, which is the sort of stale state this whole guard exists to remove.
+        """
+        self._disowned_container_id = None
+        self._disowned_reason = None
+
     def _log_inspect_failure(self, exc: BaseException) -> None:
         """Report an ownership inspect that could not be run at all.
 
@@ -1646,7 +1737,14 @@ class BackendManager:
         self._inspect_failure = None
         owner = self._container_owner(state.labels)
         if owner is None:
-            return None
+            # No foreign label, but the start path has a second refusal that does not
+            # need one: a container the idle watcher disowned by id. Reporting it here
+            # too is what keeps this method's contract — "exactly what the start path
+            # will refuse" — from going stale, and without it a warmup stream would
+            # commit its 200 and banner and then discover the refusal on a background
+            # thread that can only log, which is the silent-success shape this exists
+            # to prevent.
+            return self._disowned_container_error(state, "adopt")
         if not state.running and self._is_reclaimable(state):
             # A foreign corpse is reclaimed rather than refused, so it is not a
             # collision to report — the start path will remove it and launch.
@@ -1686,6 +1784,15 @@ class BackendManager:
           ``_container_owner`` deliberately reads as this proxy's own, and two units
           can also be given the same ``PROXY_OWNER``. Same name, same port, possibly
           a different profile — and nothing in the labels to say so.
+
+        The two do *not* end the same way, and the difference matters enough to
+        state. A foreign label is re-read by every guard on the start path, so the
+        next request is refused there and 502s naming both owners. An id mismatch is
+        not: it fires precisely when the label reads as ours, so there is no second
+        owner to name and nothing downstream would refuse anything — the finding is
+        instead carried out of ``_disown_if_replaced`` in
+        ``_disowned_container_id``, and the start path refuses on *that*. See
+        ``_disowned_container_error`` for what would happen otherwise.
 
         Only compared when both ids are known, so a launch whose id could not be
         read (``_launched_container_id``) degrades to the owner check instead of
@@ -1735,6 +1842,17 @@ class BackendManager:
         mid-load or mid-stream; local state is all this proxy has any claim on, which
         is exactly what ``_stop_container`` concluded for the same situation arriving
         through the idle door. Returns True when the backend was demoted.
+
+        And it makes sure the *next* request removes nothing either, which does not
+        follow from this method touching nothing. Demotion is what puts the manager
+        back on the start path, and every refusal there is gated on a foreign owner
+        *label*: an unlabelled hand-restart or a same-``PROXY_OWNER`` sibling reads as
+        this proxy's own, so ``_clear_container_name`` would ``docker rm -f`` the very
+        container just disowned — the running backend of whoever replaced ours. So the
+        id evidence is recorded in ``_disowned_container_id`` before ``mark_stopped``
+        discards ``_container_id``, and the start path refuses on it. What the next
+        request then does depends on which reading fired: a foreign label 502s naming
+        both owners, an id mismatch 502s naming the two containers.
         """
         try:
             state = self._inspect_state()
@@ -1754,6 +1872,17 @@ class BackendManager:
             reason,
             self.backend_port,
         )
+        if state.container_id and self._container_owner(state.labels) is None:
+            # The id branch fired: the name resolves to a container that reads as
+            # *ours*. Every guard on the start path re-reads the owner label and
+            # would agree, so this reading is the only thing standing between that
+            # container and a `docker rm -f` (or a re-adoption) on the next request.
+            # `mark_stopped` clears `_container_id` immediately below, so carry it.
+            # A foreign owner label needs no help: it is re-read, and refused, by
+            # `_start_container`, `_clear_container_name` and
+            # `_adopt_running_container` alike.
+            self._disowned_container_id = state.container_id
+            self._disowned_reason = reason
         self.mark_stopped()
         return True
 
@@ -1783,6 +1912,16 @@ class BackendManager:
         owner = self._container_owner(labels)
         if owner is not None:
             raise self._foreign_container_error(owner, "adopt")
+        # A container the idle watcher disowned by id must not be taken back. It
+        # reads as ours (that is the whole point of the id check), it is unlabelled
+        # or same-owner so the profile test below cannot see it either, and a healthy
+        # one would otherwise be adopted straight back into `ready` — with
+        # `_container_id` overwritten by its id, so the ids agree from then on and
+        # the re-check can never fire again. That turns a mis-serve bounded at one
+        # watcher tick into a permanent one.
+        disowned = self._disowned_container_error(state, "adopt")
+        if disowned is not None:
+            raise disowned
         stamped = labels.get(PROFILE_LABEL)
         if stamped is not None and stamped != self._profile:
             # My own container, but the config it was launched from has changed
@@ -1799,6 +1938,7 @@ class BackendManager:
         if self._backend_healthy():
             self._current_gpu = self._running_container_gpu()
             self._container_id = state.container_id or None
+            self._forget_disowned_container()
             return True
         return False
 
