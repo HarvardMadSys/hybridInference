@@ -179,6 +179,16 @@ def _redact_routing(routing: Any) -> dict[str, Any] | None:
     # the provider label is its canonical fallback.
     endpoint_id = str(routing.get("endpoint_id") or provider)
     if not endpoint_id:
+        # Unreachable on the router the playground actually uses: `get_router`
+        # hands back the FixedRouter, and `routing_chunk()` always stamps a
+        # provider. RouteWise is the exception — its final decision frame is
+        # enrichment-only (fallback + failed_attempts, no provider/endpoint,
+        # see routewise/router.py `_attach_decision_info`) and would be dropped
+        # here. It cannot reach this path because the playground never consults
+        # `model_router_registry`. Whoever wires the playground to per-model
+        # routers must make this branch merge into the running summary instead
+        # of discarding it, and teach the UI merge- rather than replace-
+        # semantics — otherwise RouteWise fallbacks show up as clean successes.
         return None
 
     summary: dict[str, Any] = {"provider": provider, "endpoint_id": endpoint_id}
