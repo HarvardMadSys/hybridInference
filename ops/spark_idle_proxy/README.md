@@ -74,8 +74,16 @@ port does not need that.
 `TUNNEL_USER=juncheng` is not optional on the Spark: the unit defaults to `root`,
 and root here has no SSH key for the gateway host — `sudo ssh` there fails host key
 verification outright, so the tunnel would restart forever. The installer writes it
-to a `User=` drop-in, and passing it on every run keeps a reinstall from reverting
-it.
+to a `User=` drop-in and a later run that omits it **keeps** the installed value,
+the same contract `LOCAL_API_KEY` gets and for the same reason: silently reverting
+it is an outage, not a cosmetic regression. To hand the tunnels back to root, ask
+for it explicitly with `TUNNEL_USER=`.
+
+The rest of the drop-in — the ports and the bind address — is rewritten on every
+run, defaults included, so restoring a default actually restores it. A re-run also
+retires any `spark_idle_tunnel@<host>` instance that `SSH_HOST` no longer names:
+otherwise it keeps running under `Restart=always` with its boot symlink intact, and
+a gateway removed from the list goes on being advertised this box indefinitely.
 
 ### Why the tunnel is a unit and not an `ssh -N -R`
 

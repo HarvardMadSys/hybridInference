@@ -19,9 +19,12 @@
 # failed to connect, so it read as a dead model server and was not one.
 #
 # On this box the tunnels must run as `juncheng`: root has no SSH key for the
-# gateway host and fails host key verification there. Pass TUNNEL_USER so a
-# reinstall does not revert that and leave autossh restarting forever:
+# gateway host and fails host key verification there, so the tunnels have to run as
+# `juncheng`:
 #   sudo TUNNEL_USER=juncheng ./ops/spark_idle_proxy/install_service.sh
+# A later run that does not pass it keeps the user already installed, the way it
+# keeps the API key — reverting to the unit's `root` default would leave autossh
+# restarting forever. To hand the tunnels back to root, ask for it: TUNNEL_USER=.
 #
 # Override hosts/ports if needed (SSH_HOST takes a '|'-separated list):
 #   sudo SSH_HOST='jason@internal.freeinference.org' REMOTE_PORT=8002 \
@@ -62,7 +65,10 @@ SSH_HOST="${SSH_HOST:-jason@internal.freeinference.org}"
 LISTEN_PORT="${LISTEN_PORT:-8002}"
 REMOTE_PORT="${REMOTE_PORT:-8002}"
 REMOTE_BIND="${REMOTE_BIND:-0.0.0.0}"
-TUNNEL_USER="${TUNNEL_USER:-}"
+# TUNNEL_USER is deliberately *not* defaulted here: the drop-in writer below has to
+# tell "unset" (keep whatever is installed) from "set to nothing" (clear it), the
+# same distinction write_local_api_key_dropin makes about the API key and for the
+# same reason — reverting it silently is an outage, not a cosmetic regression.
 
 # shellcheck source=../lib/systemd_local_api_key.sh
 source "${REPO_DIR}/ops/lib/systemd_local_api_key.sh"
@@ -92,6 +98,19 @@ for host in "${_hosts[@]}"; do
   TUNNEL_HOSTS+=("$host")
 done
 
+# Every tunnel instance systemd knows about — running or merely enabled. Both
+# callers need it, and for the same reason: what SSH_HOST names now says nothing
+# about what an earlier run left behind.
+_installed_instances() {
+  {
+    systemctl list-units --all --type=service --no-legend --no-pager \
+      "${TUNNEL_BASE}@*.service" 2>/dev/null
+    systemctl list-unit-files --no-legend --no-pager \
+      "${TUNNEL_BASE}@*.service" 2>/dev/null
+  } | grep -oE "${TUNNEL_BASE}@[^[:space:]]+\.service" \
+    | grep -v '@\.service$' | sort -u
+}
+
 if [[ "$MODE" == "uninstall" ]]; then
   # Every instance systemd knows about, not just the ones SSH_HOST names: a host
   # dropped from the default since install time would otherwise keep a tunnel
@@ -100,15 +119,7 @@ if [[ "$MODE" == "uninstall" ]]; then
   while IFS= read -r unit; do
     [[ -z "$unit" ]] && continue
     INSTANCES+=("$unit")
-  done < <(
-    {
-      systemctl list-units --all --type=service --no-legend --no-pager \
-        "${TUNNEL_BASE}@*.service" 2>/dev/null
-      systemctl list-unit-files --no-legend --no-pager \
-        "${TUNNEL_BASE}@*.service" 2>/dev/null
-    } | grep -oE "${TUNNEL_BASE}@[^[:space:]]+\.service" \
-      | grep -v '@\.service$' | sort -u
-  )
+  done < <(_installed_instances)
   for unit in "${INSTANCES[@]}"; do
     echo "Stopping and disabling ${unit} …"
     systemctl disable --now "$unit" 2>/dev/null || true
@@ -174,19 +185,40 @@ if [[ "$MODE" != "tunnels" ]]; then
 fi
 render_unit "$TUNNEL_UNIT"
 
-if [[ "$LISTEN_PORT" != "8002" || "$REMOTE_PORT" != "8002" \
-      || "$REMOTE_BIND" != "0.0.0.0" || -n "$TUNNEL_USER" ]]; then
-  DROPIN_DIR="${SYSTEMD_DST}/${TUNNEL_UNIT}.d"
-  echo "Writing tunnel override (LISTEN_PORT=${LISTEN_PORT} REMOTE_PORT=${REMOTE_PORT} REMOTE_BIND=${REMOTE_BIND}${TUNNEL_USER:+ User=$TUNNEL_USER}) …"
-  mkdir -p "$DROPIN_DIR"
-  cat > "${DROPIN_DIR}/override.conf" <<EOF
+DROPIN_DIR="${SYSTEMD_DST}/${TUNNEL_UNIT}.d"
+OVERRIDE_CONF="${DROPIN_DIR}/override.conf"
+
+# Written on every run, including the all-defaults one. Writing it only when a value
+# differs from the unit's own default — which is what this did first, and what the
+# h200 installer still does — leaves the file behind when a later run restores the
+# defaults: the block is skipped, the stale drop-in still outranks the unit, and the
+# tunnel goes on forwarding the retired port while the gateway has moved back to
+# 8002. Silent, and invisible in the installer's output.
+#
+# User= inverts that rule rather than following it. An unset TUNNEL_USER keeps
+# whatever is installed, because on this box the value is load-bearing: root has no
+# SSH key for the gateway host, so a re-run that quietly reverted `juncheng` to the
+# unit's `root` default would leave autossh restarting forever. Only an explicitly
+# empty TUNNEL_USER= clears it. That is the contract the API-key drop-in already
+# uses, for the same "absence is not a request to remove" reason.
+if [[ -z "${TUNNEL_USER+set}" && -f "$OVERRIDE_CONF" ]]; then
+  installed_user="$(sed -n 's/^User=//p' "$OVERRIDE_CONF" | tail -1)"
+  if [[ -n "$installed_user" ]]; then
+    TUNNEL_USER="$installed_user"
+    echo "Keeping installed tunnel User=${TUNNEL_USER} (pass TUNNEL_USER= to clear it)."
+  fi
+fi
+TUNNEL_USER="${TUNNEL_USER:-}"
+
+echo "Writing tunnel override (LISTEN_PORT=${LISTEN_PORT} REMOTE_PORT=${REMOTE_PORT} REMOTE_BIND=${REMOTE_BIND}${TUNNEL_USER:+ User=$TUNNEL_USER}) …"
+mkdir -p "$DROPIN_DIR"
+cat > "$OVERRIDE_CONF" <<EOF
 [Service]
 ${TUNNEL_USER:+User=${TUNNEL_USER}}
 Environment=LISTEN_PORT=${LISTEN_PORT}
 Environment=REMOTE_PORT=${REMOTE_PORT}
 Environment=REMOTE_BIND=${REMOTE_BIND}
 EOF
-fi
 
 # The other half of the tunnel unit's BindsTo=. BindsTo= stops a tunnel whose proxy
 # died, which is what keeps this box from advertising a port it cannot serve — but
@@ -230,6 +262,27 @@ if [[ "$MODE" != "tunnels" ]]; then
   systemctl enable "${SERVICE_NAME}"
   systemctl restart "${SERVICE_NAME}"
 fi
+
+# Instances an earlier run enabled that this SSH_HOST no longer names. Resetting
+# Upholds= above only drops the proxy's dependency on them — each one keeps running
+# under Restart=always and keeps its multi-user.target symlink, so a gateway host
+# taken out of the list would go on being advertised this box, across reboots, with
+# nothing in the installer's output to say so.
+while IFS= read -r unit; do
+  [[ -z "$unit" ]] && continue
+  wanted=0
+  for host in "${TUNNEL_HOSTS[@]}"; do
+    if [[ "$unit" == "${TUNNEL_BASE}@${host}.service" ]]; then
+      wanted=1
+      break
+    fi
+  done
+  if [[ "$wanted" -eq 0 ]]; then
+    echo "Retiring ${unit} — no longer named by SSH_HOST …"
+    systemctl disable --now "$unit" 2>/dev/null || true
+    systemctl reset-failed "$unit" 2>/dev/null || true
+  fi
+done < <(_installed_instances)
 
 for host in "${TUNNEL_HOSTS[@]}"; do
   echo "Enabling ${TUNNEL_BASE}@${host} …"
