@@ -179,13 +179,19 @@ async def list_provider_keys(
             )
 
     # Disabled env keys are no longer in any pool, so surface them from the
-    # tombstone table with their masked prefix and an enable affordance.
+    # tombstone table with their masked prefix and an enable affordance. A
+    # tombstone shadowed by an active DB row holding the same value is stale —
+    # that key is live, and listing it twice (once active, once disabled) is
+    # what the entry would otherwise say.
     for prov in providers_to_inspect:
         try:
             tombstones = await op_store.list_disabled_provider_env_keys(prov)
         except Exception as exc:
             raise HTTPException(503, f"Failed to load provider keys for {prov}: {exc}") from exc
+        active_db_hashes = {dynamic_keys.env_key_hash(raw) for raw in db_raw_keys.get(prov, set())}
         for key_hash, key_prefix in tombstones:
+            if key_hash in active_db_hashes:
+                continue
             keys.append(
                 ProviderApiKeyItem(
                     id=f"env:{key_hash[:32]}",
@@ -248,6 +254,12 @@ async def add_provider_key(
     api_key = payload.api_key.strip()
     if not api_key:
         raise HTTPException(422, "api_key must not be blank")
+
+    # Adding a credential states that it should serve traffic, and
+    # ``add_key_to_provider`` below puts it straight into the pools — so a
+    # tombstone left over from an earlier env-key disable has to go, or the key
+    # runs live while a disabled record still exists for it.
+    await _clear_env_tombstone_for_key(op_store, payload.provider, api_key, admin_id)
 
     key_id = await op_store.add_provider_key(
         provider=payload.provider,
@@ -414,6 +426,38 @@ async def enable_provider_env_key(
         provider=payload.provider,
         pools_updated=pools_updated,
     )
+
+
+async def _clear_env_tombstone_for_key(
+    op_store,
+    provider: str,
+    raw_key: str,
+    admin_id: str,
+) -> bool:
+    """Clear the tombstone for *raw_key* if it carries one. Returns True if so.
+
+    Unlike :func:`_clear_env_tombstone` this is a no-op — no store write, no
+    audit entry — when the key was never disabled, so it is safe to call on
+    every add. A store failure is logged and treated as "no tombstone": the add
+    itself must not fail because the tombstone table was unreadable.
+    """
+    key_hash = dynamic_keys.env_key_hash(raw_key)
+    try:
+        tombstones = await op_store.list_disabled_provider_env_keys(provider)
+    except Exception as exc:
+        logger.warning(
+            "failed to check disabled env keys for provider=%r while adding a key: %s",
+            provider,
+            exc,
+        )
+        return False
+
+    tombstoned = any(key_hash == existing for existing, _prefix in tombstones)
+    if not tombstoned and not dynamic_keys.is_env_key_disabled(provider, key_hash):
+        return False
+
+    await _clear_env_tombstone(op_store, provider, key_hash, admin_id)
+    return True
 
 
 async def _clear_env_tombstone(op_store, provider: str, key_hash: str, admin_id: str) -> int:
