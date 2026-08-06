@@ -16,7 +16,12 @@ concurrency:
 jobs:
   sync:
     name: Fast-forward main to dev
-    runs-on: ubuntu-latest
+    # Self-hosted rather than a GitHub-hosted runner: hosted jobs are refused
+    # outright when the account's Actions billing lapses or hits its spending
+    # limit, which silently stalls the sync (run 31068821298 left main 29
+    # commits behind dev). The `trusted-automation` label already provides the
+    # `gh` CLI this job's release step needs — see rag-index.yml.
+    runs-on: [self-hosted, Linux, trusted-automation]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,7 +32,11 @@ jobs:
         id: sync
         run: |
           set -euo pipefail
-          git checkout main
+          # -B rather than a plain checkout: the self-hosted runner reuses its
+          # workspace, so a local `main` left by an earlier run would otherwise
+          # be checked out at that run's commit instead of the freshly fetched
+          # remote tip.
+          git checkout -B main origin/main
           git merge --ff-only origin/dev
           git push origin main
           echo "after=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
