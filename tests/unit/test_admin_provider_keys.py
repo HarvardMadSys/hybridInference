@@ -1428,6 +1428,101 @@ async def test_by_ref_disable_and_enable_env_key(client):
 
 
 @pytest.mark.asyncio
+async def test_by_ref_toggles_every_source_holding_the_key(client):
+    """A key recorded in env *and* in a DB row toggles at both sources.
+
+    Disabling only one of them left the key live in the pool while a disabled
+    record existed for it, which the quota dashboard rendered as a second card
+    for the same key.
+    """
+    http, store = client
+    shared = "shared-zai-byref-dddddddddddd"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="shared-byref-model",
+            name="shared-byref-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[shared],
+            provider_model_id="shared-byref-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+    key_ref = dynamic_keys.env_key_hash(shared)[:32]
+
+    dis = await http.post(
+        "/admin/provider-keys/by-ref/disable",
+        json={"provider": "zai", "key_ref": key_ref},
+        headers=AUTH,
+    )
+    assert dis.status_code == 200, dis.text
+    assert dis.json()["status"] == "disabled"
+    assert store.rows[key_id].status == "disabled"
+    assert ("zai", dynamic_keys.env_key_hash(shared)) in store.disabled
+    # The key actually stopped serving traffic.
+    assert shared not in adapter._key_pool.snapshot_keys()
+
+    en = await http.post(
+        "/admin/provider-keys/by-ref/enable",
+        json={"provider": "zai", "key_ref": key_ref},
+        headers=AUTH,
+    )
+    assert en.status_code == 200, en.text
+    assert en.json()["status"] == "active"
+    assert store.rows[key_id].status == "active"
+    assert ("zai", dynamic_keys.env_key_hash(shared)) not in store.disabled
+    assert shared in adapter._key_pool.snapshot_keys()
+
+
+@pytest.mark.asyncio
+async def test_by_ref_enable_clears_tombstone_when_env_var_still_set(client, monkeypatch):
+    """Re-enabling must clear the tombstone even though the env var is present.
+
+    ``_resolve_key_ref`` used to report any key it could still find among the
+    env candidates as active, so enabling a tombstoned key short-circuited: the
+    dashboard reported success while the key stayed disabled.
+    """
+    http, store = client
+    env_key = "env-zai-still-set-eeeeeeeeeeee"
+    monkeypatch.setenv("ZAI_API_KEY", env_key)
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="still-set-model",
+            name="still-set-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[env_key],
+            provider_model_id="still-set-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    key_ref = dynamic_keys.env_key_hash(env_key)[:32]
+
+    await http.post(
+        "/admin/provider-keys/by-ref/disable",
+        json={"provider": "zai", "key_ref": key_ref},
+        headers=AUTH,
+    )
+    assert ("zai", dynamic_keys.env_key_hash(env_key)) in store.disabled
+
+    en = await http.post(
+        "/admin/provider-keys/by-ref/enable",
+        json={"provider": "zai", "key_ref": key_ref},
+        headers=AUTH,
+    )
+    assert en.status_code == 200, en.text
+    assert en.json()["pools_updated"] == 1
+    assert ("zai", dynamic_keys.env_key_hash(env_key)) not in store.disabled
+    assert env_key in adapter._key_pool.snapshot_keys()
+
+
+@pytest.mark.asyncio
 async def test_by_ref_unknown_ref_is_404(client):
     """An unmatched key_ref must not be mistaken for a key id path segment."""
     http, _store = client

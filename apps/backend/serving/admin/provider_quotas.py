@@ -1613,6 +1613,11 @@ async def gather_all(
     Results are flattened into a single list, followed by a card per
     admin-disabled key so the dashboard can re-enable it. If a fetcher raises,
     the exception is caught and converted to a single error result.
+
+    One credential yields at most one card. The same raw key can be recorded in
+    several places (an env var and a DB row, or several DB rows), so a disabled
+    record is dropped when a live card already covers that ``key_ref`` — the
+    dashboard would otherwise show two cards for one key.
     """
     fetchers = [
         ("chutes", "Chutes", fetch_chutes(operational_store)),
@@ -1646,10 +1651,14 @@ async def gather_all(
             )
 
     if operational_store is not None:
+        seen_refs = {(r.name, r.key_ref) for r in out if r.key_ref is not None}
         for name, display_name, _ in fetchers:
-            out.extend(
-                await _disabled_keys_for_provider(operational_store, name, display_name),
-            )
+            for card in await _disabled_keys_for_provider(operational_store, name, display_name):
+                ref = (card.name, card.key_ref)
+                if ref in seen_refs:
+                    continue
+                seen_refs.add(ref)
+                out.append(card)
 
     return out
 
