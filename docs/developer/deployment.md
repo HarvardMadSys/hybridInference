@@ -139,6 +139,30 @@ docker compose -f deploy/docker/docker-compose.yml --env-file .env --profile adm
 # Access at http://localhost:5050
 ```
 
+A deployment that wants pgAdmin reachable through the console instead sets the
+profile in an env file the deploy reads, rather than passing the flag by hand —
+`distributions/freeinference/deploy/compose.env` is the worked example. The
+console then serves it at `/pgadmin/`, gated on an admin session by
+`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`.
+
+Two things to know before relying on it:
+
+- Whether pgAdmin **also** asks for a login is a per-host choice, and the two
+  defaults disagree: the Compose service falls back to
+  `PGADMIN_CONFIG_SERVER_MODE=False`, which serves it with no login at all,
+  while `.env.example` suggests `True`, which turns pgAdmin's own login on.
+  `True` is the safer of the two — it puts a second gate behind the console's.
+  The route handler assumes it is the only one either way, and denies on every
+  unexpected condition, including a backend it cannot reach.
+- The deploy scripts do not rely on `--env-file` to carry that profile:
+  Compose ignored `COMPOSE_PROFILES` there from 2.27.1 until the fix for
+  [docker/compose#11856](https://github.com/docker/compose/issues/11856). They
+  read the overlay themselves and export the union of it and whatever the
+  host's `.env` selects, so a host that also runs `oncall` keeps it. Running
+  Compose by hand is the exception — on an affected version a host `.env` that
+  sets `COMPOSE_PROFILES` wins outright, so list every profile you want. The
+  deploy scripts warn when pgAdmin ends up not running either way.
+
 See [Database](database.md) for schema details.
 
 ## Troubleshooting
