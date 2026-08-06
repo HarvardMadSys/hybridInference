@@ -12,7 +12,21 @@
 # bring it back after a reboot of this GPU box — the gap that left port 8001
 # dark after the gateway rebooted.
 Description=local deployment reverse tunnel to %i (autossh)
-Wants=network-online.target local_deployment_proxy.service
+Wants=network-online.target
+
+# BindsTo=, not Wants=, so the tunnel cannot outlive the listener it advertises.
+# h200a is the worked example: its proxy was inactive for hours while its tunnels
+# stayed up, so the router accepted connections on the forwarded port and every
+# one died at the far end with nothing listening — hidden by the breaker and the
+# paid-API fallback, so it read as fallback spend rather than an outage. BindsTo=
+# also covers a crash, which no explicit systemctl action reports.
+#
+# It needs its counterpart to be safe: stop propagation has no start-propagating
+# opposite, so the proxy's own Restart= would bring the proxy back from a crash and
+# leave this tunnel stopped — the Spark's 2026-08-06 outage, a healthy proxy behind
+# a dead route. install.sh writes the matching `Upholds=` drop-in on the proxy,
+# which is the only place the per-host instance name exists.
+BindsTo=local_deployment_proxy.service
 After=network-online.target local_deployment_proxy.service
 
 [Service]

@@ -10,7 +10,22 @@
 # Defaults target staging (spark2) and production (internal.freeinference.org)
 # on port 8003 (see ops/h200_idle_proxy/install.sh).
 Description=H200 idle reverse tunnel to %i (autossh)
-Wants=network-online.target h200_idle_proxy.service
+Wants=network-online.target
+
+# BindsTo=, not the Wants= this unit used to carry. h200a showed what Wants=
+# costs: its proxy was inactive for hours while both of its tunnels stayed up, so
+# the router accepted connections on 8003, forwarded them, and every one failed at
+# the node with nothing listening. The gateway's circuit breaker and the paid-API
+# fallback hid it, so it surfaced as silent fallback spend rather than an alert.
+# BindsTo= stops a tunnel outliving the listener it advertises, including when the
+# proxy crashes rather than being stopped.
+#
+# It needs its counterpart to be safe: stop-propagation has no start-propagating
+# opposite, so the proxy's own Restart=on-failure would bring the proxy back from a
+# crash and leave this tunnel stopped — the Spark's 2026-08-06 outage exactly, a
+# healthy proxy behind a dead route. install.sh writes the matching `Upholds=`
+# drop-in on the proxy, which is the only place the per-host instance name exists.
+BindsTo=h200_idle_proxy.service
 After=network-online.target h200_idle_proxy.service
 
 [Service]

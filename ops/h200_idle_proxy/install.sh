@@ -148,6 +148,34 @@ Environment=LISTEN_PORT=${LISTEN_PORT}
 EOF
 fi
 
+IFS='|' read -ra HOSTS <<< "$SSH_HOST"
+
+# The other half of the tunnel units' BindsTo=. BindsTo= stops a tunnel whose proxy
+# died, which is what keeps this node from advertising a port it cannot serve — but
+# systemd propagates stops and never starts, and the proxy carries
+# Restart=on-failure. So a proxy crash stops the tunnels, systemd brings the proxy
+# straight back, and the tunnels stay down: a healthy proxy behind a dead route,
+# which is how the DGX Spark lost diffusiongemma on 2026-08-06. Upholds= is the
+# start-propagating direction, and it has to live in a drop-in because the instance
+# names are per-host and the template cannot know them.
+#
+# Its own file, not the override.conf above: that one is keyed on the ports, this
+# one on SSH_HOST.
+UPHOLDS_CONF="${SYSTEMD_DST}/${PROXY_UNIT}.d/upholds-tunnels.conf"
+echo "Writing ${UPHOLDS_CONF##*/} …"
+mkdir -p "${SYSTEMD_DST}/${PROXY_UNIT}.d"
+{
+  echo "[Unit]"
+  # An empty assignment first, so a host dropped from SSH_HOST since the last run is
+  # actually gone rather than merged with what this run writes.
+  echo "Upholds="
+  for host in "${HOSTS[@]}"; do
+    host="${host// /}"
+    [[ -z "$host" ]] && continue
+    echo "Upholds=${TUNNEL_BASE}@${host}.service"
+  done
+} > "$UPHOLDS_CONF"
+
 # Both H200 nodes authenticate against the same LOCAL_API_KEY the gateway signs
 # with. The unit reads ${REPO_ROOT}/.env, which covers a box that also hosts the
 # gateway; on a box that runs only this proxy the key arrives here instead.
@@ -166,7 +194,6 @@ echo "Enabling ${PROXY_UNIT} …"
 systemctl enable "${PROXY_UNIT}"
 systemctl restart "${PROXY_UNIT}"
 
-IFS='|' read -ra HOSTS <<< "$SSH_HOST"
 for host in "${HOSTS[@]}"; do
   host="${host// /}"
   [[ -z "$host" ]] && continue

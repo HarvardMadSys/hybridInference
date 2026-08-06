@@ -7,13 +7,21 @@
 #   systemctl enable --now h200_idle_tunnel_b@spark2
 #   systemctl enable --now h200_idle_tunnel_b@jason@internal.freeinference.org
 #
-# Bound to the replica B proxy with BindsTo=, not just Wants=. The replica A
-# tunnel uses Wants=, and h200a showed what that costs: its proxy was inactive
-# for hours while both of its tunnels stayed up, so the router accepted
-# connections on 8003, forwarded them, and every one failed at the node with
-# nothing listening. The gateway's circuit breaker and the paid-API fallback hid
-# it, so it surfaced as silent fallback spend rather than an alert. BindsTo=
-# stops a tunnel outliving the listener it advertises.
+# Bound to the replica B proxy with BindsTo=, not just Wants=. h200a showed what
+# Wants= costs: its proxy was inactive for hours while both of its tunnels stayed
+# up, so the router accepted connections on 8003, forwarded them, and every one
+# failed at the node with nothing listening. The gateway's circuit breaker and the
+# paid-API fallback hid it, so it surfaced as silent fallback spend rather than an
+# alert. BindsTo= stops a tunnel outliving the listener it advertises. (The replica
+# A tunnel used to be the Wants= example here; it now carries the same pair.)
+#
+# BindsTo= needs its counterpart to be safe, which this unit went without: stop
+# propagation has no start-propagating opposite, so the proxy's Restart=on-failure
+# brings the proxy back from a crash and leaves this tunnel stopped. That is the
+# Spark's 2026-08-06 outage — a healthy proxy behind a dead route — reachable here
+# by the directive meant to prevent the h200a one. install.sh now writes the
+# matching `Upholds=` drop-in on the proxy, the only place the per-host instance
+# name exists.
 Description=H200 idle reverse tunnel (replica B) to %i (autossh)
 Wants=network-online.target
 BindsTo=h200_idle_proxy_b.service

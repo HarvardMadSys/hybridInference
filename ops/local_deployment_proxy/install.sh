@@ -111,7 +111,32 @@ Environment=REMOTE_BIND=${REMOTE_BIND}
 EOF
 fi
 
-# The block above configures the *tunnel* unit. The proxy process needs one env
+IFS='|' read -ra HOSTS <<< "$SSH_HOST"
+
+# The other half of the tunnel unit's BindsTo=. BindsTo= stops a tunnel whose proxy
+# died, so this box cannot advertise a port it is unable to serve — but systemd
+# propagates stops and never starts, and the proxy carries Restart=. So a proxy
+# crash stops the tunnels, systemd brings the proxy straight back, and the tunnels
+# stay down: a healthy proxy behind a dead route, which is how the DGX Spark lost
+# diffusiongemma on 2026-08-06. Upholds= is the start-propagating direction, and it
+# belongs in a drop-in because the instance names are per-host and the template
+# cannot know them.
+UPHOLDS_CONF="${SYSTEMD_DST}/${PROXY_UNIT}.d/upholds-tunnels.conf"
+echo "Writing ${UPHOLDS_CONF##*/} …"
+mkdir -p "${SYSTEMD_DST}/${PROXY_UNIT}.d"
+{
+  echo "[Unit]"
+  # An empty assignment first, so a host dropped from SSH_HOST since the last run is
+  # actually gone rather than merged with what this run writes.
+  echo "Upholds="
+  for host in "${HOSTS[@]}"; do
+    host="${host// /}"
+    [[ -z "$host" ]] && continue
+    echo "Upholds=local_deployment_tunnel@${host}.service"
+  done
+} > "$UPHOLDS_CONF"
+
+# The blocks above configure the *tunnel* unit. The proxy process needs one env
 # var of its own: LOCAL_API_KEY, which it checks every inbound request against and
 # otherwise defaults to a value hardcoded in local_deployment_proxy.py — so a
 # rotated key turns into a silent 100% 401 rate. See
@@ -138,12 +163,16 @@ echo "Enabling ${PROXY_UNIT} …"
 systemctl enable "${PROXY_UNIT}"
 systemctl restart "${PROXY_UNIT}"
 
-IFS='|' read -ra HOSTS <<< "$SSH_HOST"
 for host in "${HOSTS[@]}"; do
   host="${host// /}"
   [[ -z "$host" ]] && continue
   echo "Enabling local_deployment_tunnel@${host} …"
-  systemctl enable --now "local_deployment_tunnel@${host}"
+  # enable + restart, for the same reason the proxy above gets it: `--now` starts a
+  # stopped unit but is a no-op on a running one, so a re-run that changed the
+  # tunnel drop-in (a moved port, a new REMOTE_BIND) would leave the new value on
+  # disk and the old one live in the process.
+  systemctl enable "local_deployment_tunnel@${host}"
+  systemctl restart "local_deployment_tunnel@${host}"
 done
 
 echo
