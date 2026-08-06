@@ -202,7 +202,7 @@ See [`models.json`](models.json):
 | `hf_repo` | `deepseek-ai/DeepSeek-V4-Flash-0731` |
 | `max_model_len` | `1048576` (1M — the model's YARN architectural max, not VRAM-bound) |
 | `mem_fraction` | `0.80` — **not** 0.90; DSpark + a 1M prefill need the headroom (see below) |
-| `hicache_size` | `400` — GB of host DRAM **per TP rank**, so 800 GB of the box's 1507 GB (see below) |
+| `hicache_ratio` | `5` — host DRAM as a multiple of the device KV pool, ~175 GB **per TP rank** (see below) |
 | `hicache_write_policy` | `write_through_selective` — only reused prefixes are pushed down to DRAM |
 | `moe_runner_backend` | `marlin` — **required** for FP4 experts on H200 (SM90) |
 | `mtp` / `speculative_algorithm` | `true` / `DSPARK` |
@@ -242,25 +242,39 @@ See [`models.json`](models.json):
 > Raise it again only alongside a smaller CUDA-graph batch ladder, and re-test 1M before
 > trusting it — sustained-load stability does **not** imply long-context safety.
 
-> **Why `hicache_size` 400 and not the full box?** HiCache adds an L2 prefix-cache tier
-> in host DRAM: a prefix evicted from the 2.94M-token HBM pool is restored over PCIe
-> instead of recomputed. It does **not** enlarge the running-request KV budget or the
-> usable context — only TTFT on a cache hit improves.
+> **Why `hicache_ratio` and not `hicache_size`?** Because sglang **rejects
+> `--hicache-size` for this architecture**: DeepSeek V4's HiCache path raises
+> `ValueError: DeepSeek V4 HiCache currently does not support --hicache-size; use
+> --hicache-ratio instead` at scheduler init, and the rank dies with a SIGQUIT.
 >
-> The size is **per scheduler process**, not per box. `memory_pool_host.py` computes
-> `size = hicache_size * 1e9 // size_per_token` inside each rank's own pool
-> constructor, so at TP=2 the node pins `2 × hicache_size` GB of unswappable memory.
-> Each rank also guards its own allocation against
-> `psutil.virtual_memory().available - 10 GB`, which makes over-sizing fail
-> asymmetrically: rank 0 pins its share, then rank 1 raises `Not enough host memory
-> available` and the container dies — or the two race past the check and the kernel
-> OOM-killer takes the node, the same failure mode as `mem_fraction` 0.85 above.
+> That was a live landmine rather than a theoretical one. A running container keeps
+> serving on the launch flags it started with, so the node stayed healthy while the
+> config on disk could no longer boot: the failure only appears on the **next** cold
+> start, which the idle proxy performs unattended after 24 idle minutes. It was found
+> by a second replica starting from the same config, not by the replica already
+> serving.
 >
-> With 1507 GB total (~1295 GB free) on h200a/h200b, **400 GB/rank = 800 GB** leaves
-> ~495 GB. Do not raise it toward `free -g` — DeepSeek V4 builds additional host pools
-> (paged, state, indexer) whose cost is *not* covered by `hicache_size`, so the real
-> total exceeds 800 GB. Check the per-rank `Allocating N GB host memory for
-> hierarchical KV cache` log line plus `free -g` under load before changing it.
+> HiCache adds an L2 prefix-cache tier in host DRAM: a prefix evicted from the
+> 2.94M-token HBM pool is restored over PCIe instead of recomputed. It does **not**
+> enlarge the running-request KV budget or the usable context — only TTFT on a cache
+> hit improves.
+>
+> Either way the pool is **per scheduler process**, not per box, and each rank guards
+> its own allocation against `psutil.virtual_memory().available - 10 GB`. That makes
+> over-sizing fail asymmetrically: rank 0 pins its share, then rank 1 raises `Not
+> enough host memory available` and the container dies — or the two race past the
+> check and the kernel OOM-killer takes the node, the same failure mode as
+> `mem_fraction` 0.85 above.
+>
+> **`5` is sized for two replicas, not one.** A ratio multiplies the ~34 GB device KV
+> pool (115 GB static budget minus 78 GB of TP=2 weights), so 5 is ~175 GB per rank.
+> This box now runs **two** TP=2 replicas, i.e. **four** ranks, so that is ~700 GB of
+> 1507 GB. The old `400`/rank predates the second replica and would ask for 1.6 TB
+> across four ranks — unsatisfiable even with the key name corrected. Do not raise it
+> toward `free -g`: DeepSeek V4 builds additional host pools (paged, state, indexer)
+> whose cost the ratio does not cover, so the real total exceeds the arithmetic above.
+> Check the per-rank `Allocating N GB host memory for hierarchical KV cache` log line
+> plus `free -g` under load before changing it.
 
 > **Why `DSPARK` and not `EAGLE`?** 0731's speculative module is DSpark, not the
 > preview checkpoint's MTP: 3 blocks (`dspark_target_layer_ids: [40,41,42]`) with
