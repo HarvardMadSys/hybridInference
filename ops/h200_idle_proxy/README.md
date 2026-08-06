@@ -27,7 +27,7 @@ other's container. See
 | Config | [`models.json`](models.json) | derived (below) | [`models.json`](models.json) |
 
 Install replica B with `sudo REPLICA=b ./install.sh` (add `TUNNEL_USER=juncheng`
-on h200a, where root has no SSH key for the routers). Its units are named
+on h200a, where root has no SSH key for the routers — later runs keep it). Its units are named
 separately from A's on purpose: before `REPLICA` existed, re-running the installer
 with a different port rewrote A's single unit in place, so one host could not hold
 two.
@@ -155,6 +155,17 @@ sudo ./ops/h200_idle_proxy/uninstall.sh
 ```
 
 Default tunnels: `spark2` and `jason@internal.freeinference.org`.
+
+`SSH_HOST` is the whole list, not an addition to it. A router an earlier run
+enabled and this one leaves out is stopped and disabled, because `Restart=always`
+plus the `multi-user.target` symlink would otherwise keep it advertising this box
+across reboots. Only the replica being installed is considered, so `REPLICA=a`
+never touches B's tunnels.
+
+`TUNNEL_USER` behaves like `LOCAL_API_KEY` below: a later run that does not pass
+it keeps the user already installed. Reverting h200a's tunnels to the unit's
+`root` default would leave them unable to authenticate against the routers and
+autossh restarting forever, so pass `TUNNEL_USER=` explicitly to hand them back.
 
 The unit reads the repo's `.env` for `LOCAL_API_KEY` (see [Gateway
 configuration](#gateway-configuration)). Neither H200 node normally has one, so

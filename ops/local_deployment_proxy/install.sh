@@ -23,6 +23,8 @@
 # Replace 'user' with the router account that authorizes this box's root key:
 #   sudo SSH_HOST='user@internal.freeinference.org|user@spark2' REMOTE_PORT=8001 \
 #        ./local_deployment_proxy/install.sh
+# SSH_HOST is the whole list, not an addition to it: a router an earlier run
+# enabled and this one leaves out is stopped and disabled.
 #
 # On a GPU box with no repo .env, pass the key the gateway signs its requests
 # with, or the proxy falls back to the default hardcoded in
@@ -97,21 +99,54 @@ echo "Installing systemd units into ${SYSTEMD_DST} (REPO_ROOT=${REPO_ROOT}) …"
 render_unit "$PROXY_UNIT"
 render_unit "$TUNNEL_UNIT"
 
-# Apply port/bind overrides via a drop-in only when they differ from the unit's
-# built-in defaults (8001 / 8001 / 0.0.0.0), so the common case stays untouched.
-if [[ "$LISTEN_PORT" != "8001" || "$REMOTE_PORT" != "8001" || "$REMOTE_BIND" != "0.0.0.0" ]]; then
-  DROPIN_DIR="${SYSTEMD_DST}/${TUNNEL_UNIT}.d"
-  echo "Writing tunnel override (LISTEN_PORT=${LISTEN_PORT} REMOTE_PORT=${REMOTE_PORT} REMOTE_BIND=${REMOTE_BIND}) …"
-  mkdir -p "$DROPIN_DIR"
-  cat > "${DROPIN_DIR}/override.conf" <<EOF
+# Written on every run, including the all-defaults one. Writing it only when a value
+# differs from the unit's built-in defaults (8001 / 8001 / 0.0.0.0) — which is what
+# this did first — leaves the file behind when a later run restores those defaults:
+# the block is skipped, the stale drop-in still outranks the unit, and the tunnel
+# goes on forwarding the retired port while the gateway has moved back to 8001.
+# Silent, and invisible in the installer's output.
+DROPIN_DIR="${SYSTEMD_DST}/${TUNNEL_UNIT}.d"
+echo "Writing tunnel override (LISTEN_PORT=${LISTEN_PORT} REMOTE_PORT=${REMOTE_PORT} REMOTE_BIND=${REMOTE_BIND}) …"
+mkdir -p "$DROPIN_DIR"
+cat > "${DROPIN_DIR}/override.conf" <<EOF
 [Service]
 Environment=LISTEN_PORT=${LISTEN_PORT}
 Environment=REMOTE_PORT=${REMOTE_PORT}
 Environment=REMOTE_BIND=${REMOTE_BIND}
 EOF
+
+# One tunnel instance per '|'-separated SSH destination, cleaned once here so that
+# what gets enabled below and what the retirement pass treats as wanted cannot drift
+# apart.
+declare -a HOSTS=()
+IFS='|' read -ra _hosts <<< "$SSH_HOST"
+for host in "${_hosts[@]}"; do
+  host="${host// /}"
+  [[ -z "$host" ]] && continue
+  HOSTS+=("$host")
+done
+
+if [[ "${#HOSTS[@]}" -eq 0 ]]; then
+  # Not merely useless: with the retirement pass below, an empty list would read as
+  # "retire every tunnel this box has" and take the node off every gateway.
+  echo "ERROR: SSH_HOST is empty, so no gateway could reach this proxy." >&2
+  exit 1
 fi
 
-IFS='|' read -ra HOSTS <<< "$SSH_HOST"
+# Every tunnel instance systemd knows about — running or merely enabled. The
+# discovery uninstall.sh already does, for the same reason: what SSH_HOST names now
+# says nothing about what an earlier run left behind. grep -oE is column-agnostic
+# (list-units may carry a leading "●" glyph that shifts columns) and the
+# @-with-an-instance pattern excludes the bare template unit.
+_installed_instances() {
+  {
+    systemctl list-units --all --type=service --no-legend --no-pager \
+      'local_deployment_tunnel@*.service' 2>/dev/null
+    systemctl list-unit-files --no-legend --no-pager \
+      'local_deployment_tunnel@*.service' 2>/dev/null
+  } | grep -oE 'local_deployment_tunnel@[^[:space:]]+\.service' \
+    | grep -v '@\.service$' | sort -u
+}
 
 # The other half of the tunnel unit's BindsTo=. BindsTo= stops a tunnel whose proxy
 # died, so this box cannot advertise a port it is unable to serve — but systemd
@@ -130,8 +165,6 @@ mkdir -p "${SYSTEMD_DST}/${PROXY_UNIT}.d"
   # actually gone rather than merged with what this run writes.
   echo "Upholds="
   for host in "${HOSTS[@]}"; do
-    host="${host// /}"
-    [[ -z "$host" ]] && continue
     echo "Upholds=local_deployment_tunnel@${host}.service"
   done
 } > "$UPHOLDS_CONF"
@@ -163,9 +196,28 @@ echo "Enabling ${PROXY_UNIT} …"
 systemctl enable "${PROXY_UNIT}"
 systemctl restart "${PROXY_UNIT}"
 
+# Instances an earlier run enabled that this SSH_HOST no longer names. Resetting
+# Upholds= above only drops the proxy's dependency on them — each one keeps running
+# under Restart=always and keeps its multi-user.target symlink, so a router taken out
+# of the list would go on being advertised this box, across reboots, with nothing in
+# the installer's output to say so.
+while IFS= read -r unit; do
+  [[ -z "$unit" ]] && continue
+  wanted=0
+  for host in "${HOSTS[@]}"; do
+    if [[ "$unit" == "local_deployment_tunnel@${host}.service" ]]; then
+      wanted=1
+      break
+    fi
+  done
+  if [[ "$wanted" -eq 0 ]]; then
+    echo "Retiring ${unit} — no longer named by SSH_HOST …"
+    systemctl disable --now "$unit" 2>/dev/null || true
+    systemctl reset-failed "$unit" 2>/dev/null || true
+  fi
+done < <(_installed_instances)
+
 for host in "${HOSTS[@]}"; do
-  host="${host// /}"
-  [[ -z "$host" ]] && continue
   echo "Enabling local_deployment_tunnel@${host} …"
   # enable + restart, for the same reason the proxy above gets it: `--now` starts a
   # stopped unit but is a no-op on a running one, so a re-run that changed the
@@ -179,8 +231,6 @@ echo
 echo "Done. Status:"
 systemctl --no-pager --no-legend status "${PROXY_UNIT}" 2>/dev/null | head -3 || true
 for host in "${HOSTS[@]}"; do
-  host="${host// /}"
-  [[ -z "$host" ]] && continue
   systemctl --no-pager --no-legend status "local_deployment_tunnel@${host}" 2>/dev/null | head -3 || true
 done
 echo
