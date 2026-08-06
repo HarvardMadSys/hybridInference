@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -465,7 +466,7 @@ class _KeyRefTargets:
     """True when the static/env copy carries a disable tombstone."""
 
     @property
-    def source(self) -> str:
+    def source(self) -> Literal["db", "env"]:
         """Primary source label for the response body."""
         return "db" if (self.db_ids or self.disabled_db_ids) else "env"
 
@@ -579,7 +580,7 @@ async def disable_provider_key_by_ref(
         return ProviderKeyByRefResponse(
             provider=payload.provider,
             key_ref=payload.key_ref,
-            source=targets.source,  # type: ignore[arg-type]
+            source=targets.source,
             status="disabled",
             pools_updated=0,
         )
@@ -599,7 +600,7 @@ async def disable_provider_key_by_ref(
     return ProviderKeyByRefResponse(
         provider=payload.provider,
         key_ref=payload.key_ref,
-        source=targets.source,  # type: ignore[arg-type]
+        source=targets.source,
         status="disabled",
         pools_updated=pools_updated,
     )
@@ -626,7 +627,7 @@ async def enable_provider_key_by_ref(
         return ProviderKeyByRefResponse(
             provider=payload.provider,
             key_ref=payload.key_ref,
-            source=targets.source,  # type: ignore[arg-type]
+            source=targets.source,
             status="active",
             pools_updated=0,
         )
@@ -643,7 +644,7 @@ async def enable_provider_key_by_ref(
     return ProviderKeyByRefResponse(
         provider=payload.provider,
         key_ref=payload.key_ref,
-        source=targets.source,  # type: ignore[arg-type]
+        source=targets.source,
         status="active",
         pools_updated=pools_updated,
     )
