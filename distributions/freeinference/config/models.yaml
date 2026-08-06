@@ -651,7 +651,8 @@ models:
       # H200 local sglang — one route per node, each running ops/h200_idle_proxy.
       # h200a keeps the unsuffixed H200_DEPLOYMENT_URL (tunnelled on port 8003) so
       # gateways configured for the earlier single-node setup need no env change;
-      # h200b adds H200B_DEPLOYMENT_URL (port 8004).
+      # h200b adds H200B_DEPLOYMENT_URL (port 8004); h200a's second TP=2
+      # replica adds H200A2_DEPLOYMENT_URL (port 8005).
       # optional: each route is skipped when its own env var is unset/blank, so one
       # node being down or unconfigured does not take the other's capacity with it.
       - kind: sglang
@@ -665,6 +666,20 @@ models:
         weight: 1.0
         optional: true
         base_url: ${H200B_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "deepseek-v4-flash"
+      # h200a replica B (port 8005). A 4xH200 box runs two TP=2 replicas rather
+      # than one TP=4 instance: TP=4 scales at only ~0.71 efficiency on these
+      # cards, so measured on h200a a single TP=2 replica does 4,215 decode tok/s
+      # at c=128 against TP=4's 6,014, and two project to ~8,430 (+40%). The two
+      # replicas are separate routes because that is what makes the gateway's
+      # weighted-random selection spread load across them -- one route can only
+      # ever reach one of them.
+      - kind: sglang
+        weight: 1.0
+        optional: true
+        base_url: ${H200A2_DEPLOYMENT_URL}
         api_keys:
           - ${LOCAL_API_KEY}
         provider_model_id: "deepseek-v4-flash"

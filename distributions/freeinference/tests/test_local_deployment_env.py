@@ -1,7 +1,7 @@
 """This deployment's own models and machines, asserted where they belong.
 
 Every case here names something particular to FreeInference —
-deepseek-v4-flash, minimax-fast, H200_DEPLOYMENT_URL, SPARK_DEPLOYMENT_URL.
+deepseek-v4-flash, minimax-fast, the H200 deployment URLs, SPARK_DEPLOYMENT_URL.
 Upstream has no opinion about any of them, so these moved out of
 tests/unit/config/ along with the routing file they read.
 
@@ -51,11 +51,14 @@ def test_spark_route_uses_spark_deployment_url() -> None:
 
 
 def test_deepseek_v4_flash_has_optional_h200_sglang_routes() -> None:
-    """Both H200 idle proxies must appear as optional sglang routes.
+    """Every H200 replica must appear as its own optional sglang route.
 
-    h200a keeps the unsuffixed H200_DEPLOYMENT_URL; h200b uses H200B_DEPLOYMENT_URL.
-    Both must stay ``optional`` so one node being unconfigured or down cannot take
-    deepseek-v4-flash down with it.
+    h200a keeps the unsuffixed H200_DEPLOYMENT_URL for replica A and adds
+    H200A2_DEPLOYMENT_URL for replica B (the box runs two TP=2 replicas rather than
+    one TP=4 instance); h200b uses H200B_DEPLOYMENT_URL. One route reaches one
+    replica, so a missing route silently strands a loaded replica with no traffic.
+    All must stay ``optional`` so one endpoint being unconfigured or down cannot
+    take deepseek-v4-flash down with it.
     """
     models = yaml.safe_load(
         (ROOT / "distributions" / "freeinference" / "config" / "models.yaml").read_text()
@@ -77,7 +80,11 @@ def test_deepseek_v4_flash_has_optional_h200_sglang_routes() -> None:
     assert sglang_routes, "sglang route not found for deepseek-v4-flash"
 
     by_url = {route["base_url"]: route for route in sglang_routes}
-    assert set(by_url) == {"${H200_DEPLOYMENT_URL}", "${H200B_DEPLOYMENT_URL}"}
+    assert set(by_url) == {
+        "${H200_DEPLOYMENT_URL}",
+        "${H200A2_DEPLOYMENT_URL}",
+        "${H200B_DEPLOYMENT_URL}",
+    }
     for base_url, route in by_url.items():
         assert route.get("optional") is True, f"{base_url} route must be optional"
         assert route["provider_model_id"] == "deepseek-v4-flash"
@@ -93,17 +100,22 @@ def test_routing_local_deployment_uses_local_deployment_url() -> None:
 
     assert "${LOCAL_DEPLOYMENT_URL}" in endpoints
     assert "${H200_DEPLOYMENT_URL}" in endpoints
+    assert "${H200A2_DEPLOYMENT_URL}" in endpoints
     assert "${H200B_DEPLOYMENT_URL}" in endpoints
     assert "${LOCAL_BASE_URL}" not in endpoints
 
 
 def test_routing_h200_local_deployment_lists_deepseek_v4_flash() -> None:
-    """Both H200 local_deployment entries must register deepseek-v4-flash."""
+    """Every H200 local_deployment entry must register deepseek-v4-flash."""
     routing = yaml.safe_load(
         (ROOT / "distributions" / "freeinference" / "config" / "routing.yaml").read_text()
     )
 
-    for env_var in ("${H200_DEPLOYMENT_URL}", "${H200B_DEPLOYMENT_URL}"):
+    for env_var in (
+        "${H200_DEPLOYMENT_URL}",
+        "${H200A2_DEPLOYMENT_URL}",
+        "${H200B_DEPLOYMENT_URL}",
+    ):
         h200 = next(
             (d for d in routing["local_deployment"] if d.get("endpoint") == env_var),
             None,

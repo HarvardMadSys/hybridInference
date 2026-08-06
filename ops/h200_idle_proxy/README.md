@@ -4,8 +4,9 @@ Idle reverse proxy for **DeepSeek-V4-Flash-0731** on the **H200** boxes.
 Reuses [`local_deployment_proxy.py`](../local_deployment_proxy/local_deployment_proxy.py)
 with a dedicated model profile and port.
 
-Runs on **both h200a and h200b**, distinguished only by port: the same
-`models.json` is used on each node.
+Runs on **both h200a and h200b**. h200a runs **two TP=2 replicas** (all four
+GPUs); h200b runs one. Each replica is a separate proxy instance on its own port
+and needs its own gateway route — one route only ever reaches one replica.
 
 This package's [`models.json`](models.json) is the single definition of that
 deployment. `local_deployment_proxy.py`'s hardware detection resolves its
@@ -17,10 +18,59 @@ collision into a diagnosable 502 rather than the two processes destroying each
 other's container. See
 [Container ownership](../local_deployment_proxy/README.md#container-ownership).
 
-| Setting | h200a | h200b |
-|---|---|---|
-| Listen port / remote port | **8003** | **8004** |
-| Gateway env var | `H200_DEPLOYMENT_URL` | `H200B_DEPLOYMENT_URL` |
+| Setting | h200a replica A | h200a replica B | h200b |
+|---|---|---|---|
+| Listen / remote port | **8003** | **8005** | **8004** |
+| GPUs | 2,3 | **0,1** | 2,3 |
+| Gateway env var | `H200_DEPLOYMENT_URL` | `H200A2_DEPLOYMENT_URL` | `H200B_DEPLOYMENT_URL` |
+| systemd unit | `h200_idle_proxy` | `h200_idle_proxy_b` | `h200_idle_proxy` |
+| Config | [`models.json`](models.json) | derived (below) | [`models.json`](models.json) |
+
+Install replica B with `sudo REPLICA=b ./install.sh` (add `TUNNEL_USER=juncheng`
+on h200a, where root has no SSH key for the routers). Its units are named
+separately from A's on purpose: before `REPLICA` existed, re-running the installer
+with a different port rewrote A's single unit in place, so one host could not hold
+two.
+
+### Why two TP=2 replicas instead of one TP=4
+
+**TP=4 scales at only ~0.71 efficiency on these cards**, so two TP=2 replicas beat
+one TP=4 instance on aggregate throughput. Measured on h200a — same node, same
+flags, `/flush_cache` before every point:
+
+| | prefill c=32 | decode c=64 | decode c=128 | decode c=1 ITL |
+|---|---:|---:|---:|---:|
+| 1× TP=4 | 25,181 | 3,979 | 6,014 | 1.92 ms |
+| 1× TP=2 | 16,821 | 3,027 | 4,215 | 1.92 ms |
+| **2× TP=2 (projected)** | **33,643** | **6,054** | **8,430** | 1.92 ms |
+| gain over TP=4 | **+34%** | **+52%** | **+40%** | — |
+
+TP=4 buys latency and KV headroom, not capacity: single-stream median ITL is
+1.92 ms either way, and TP=4's KV pool is 7.38M tokens against TP=2's 2.94M.
+
+Two caveats on that table. The 2× column is **twice a single-replica
+measurement, not a measured concurrent aggregate** — running both replicas flat
+out simultaneously has not been measured, and that is the only way to expose a
+shared-host ceiling. And running two replicas claims all four GPUs permanently,
+so the idle timeout no longer hands the box back to other tenants in practice.
+
+TP=3 is not an option: DeepSeek-V4-Flash has 64 attention heads, indivisible by 3.
+
+### Replica B's config is derived, not copied
+
+Replica B ships no `models.json`. Its unit runs
+[`replica_b_config.py`](replica_b_config.py) as `ExecStartPre`, which reads replica
+A's `models.json`, overrides exactly four keys (`container`, `backend_port`,
+`gpu_index`, `cache_dir`) and writes the result to a tmpfs path under `/run`.
+
+That is deliberate, and it is the warning in the section above taken seriously: a
+checked-in near-duplicate is what `models.h200.json` used to be, and it drifted —
+FP8 at PP=3 on GPUs 0,2,3 on one side, NVFP4 at TP=2 on the other — until #1185
+reconverged them, after which #1187's `mem_fraction` change still had to be
+applied by hand twice. Between two replicas of one model the drift is worse,
+because both answer the same model id behind one route set: a divergence surfaces
+as unexplained latency skew, not as an error. Edit `models.json` and
+`systemctl restart h200_idle_proxy_b`; B follows A.
 
 | Setting | Value |
 |---|---|

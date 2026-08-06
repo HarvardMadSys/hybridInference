@@ -19,6 +19,11 @@ local_deployment:
   - endpoint: ${H200B_DEPLOYMENT_URL}
     models:
       - deepseek-v4-flash
+  # h200a's second TP=2 replica (port 8005); see the deepseek-v4-flash routes in
+  # models.yaml for why the box runs two TP=2 replicas instead of one TP=4.
+  - endpoint: ${H200A2_DEPLOYMENT_URL}
+    models:
+      - deepseek-v4-flash
   - endpoint: ${RC_DEPLOYMENT_URL}
     models:
       - /n/netscratch/juncheng_lab/model/GLM-5.1-FP8-2

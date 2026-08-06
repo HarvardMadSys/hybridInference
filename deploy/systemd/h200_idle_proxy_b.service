@@ -1,0 +1,65 @@
+[Unit]
+# Second DeepSeek-V4-Flash replica on this H200 box — TP=2 on GPUs 0,1.
+#
+# The sibling h200_idle_proxy.service is replica A (TP=2 on GPUs 2,3, port 8003).
+# This one is replica B: same model, same settings, the other GPU pair, port
+# 8005. Two TP=2 replicas beat one TP=4 instance on aggregate throughput because
+# TP=4 scales at only ~0.71 efficiency on these cards — measured on h200a, a
+# single TP=2 replica does 4,215 decode tok/s at c=128 versus TP=4's 6,014, so
+# two project to ~8,430 (+40%), and ~33.6k vs 25.2k input tok/s on prefill.
+#
+# Both replicas serve the same model id behind their own gateway route, so the
+# gateway's weighted-random selection is what spreads load across them.
+Description=H200 idle proxy (replica B) — DeepSeek-V4-Flash, TP=2 on GPUs 0,1
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=__REPO_ROOT__/ops/h200_idle_proxy
+
+# Replica B has no config of its own: it derives one from replica A's
+# models.json on every start, overriding only container / backend_port /
+# gpu_index / cache_dir. A checked-in near-duplicate would drift -- that is what
+# happened to the old models.h200.json mirror (#1185, then #1187 applied twice
+# by hand) -- and between two replicas of one model the drift is silent, showing
+# up as latency skew rather than an error. See replica_b_config.py.
+#
+# /run is tmpfs, so the derived file cannot outlive a reboot and go stale.
+ExecStartPre=/usr/bin/python3 __REPO_ROOT__/ops/h200_idle_proxy/replica_b_config.py --out /run/h200-idle-proxy/models.replica-b.json
+
+# MODELS_CONFIG is pinned with a `/usr/bin/env` prefix for the same reason as in
+# the replica A unit: this unit reads the gateway .env below, MODELS_CONFIG is
+# also a *gateway* variable (a legacy alias of MODELS_CONFIG_PATH naming a YAML
+# registry), and an EnvironmentFile= outranks every Environment= line whatever
+# the order. Only a variable set in the child process, after systemd has
+# finished compiling the environment, outranks EnvironmentFile=.
+ExecStart=/usr/bin/env MODELS_CONFIG=/run/h200-idle-proxy/models.replica-b.json __REPO_ROOT__/.venv/bin/python3 __REPO_ROOT__/ops/local_deployment_proxy/local_deployment_proxy.py
+
+Restart=on-failure
+RestartSec=10s
+
+# Same rationale as replica A: the gateway signs requests with the LOCAL_API_KEY
+# from this .env, so reading the same file keeps both ends in step through a
+# rotation. The leading '-' keeps the unit startable on a box with no .env.
+EnvironmentFile=-__REPO_ROOT__/.env
+
+# PROXY_OWNER defaults to port-$LISTEN_PORT, so this unit's containers are
+# stamped port-8005 and replica A's port-8003. That is what stops the two
+# proxies adopting or destroying each other's backend if a config ever does
+# resolve the same container name -- see the "Container ownership" section of
+# ops/local_deployment_proxy/README.md.
+Environment=LISTEN_PORT=8005
+Environment=IDLE_TIMEOUT=1440
+Environment=HEALTH_TIMEOUT=900
+Environment=HEALTH_INTERVAL=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=h200-idle-proxy-b
+
+[Install]
+WantedBy=multi-user.target
