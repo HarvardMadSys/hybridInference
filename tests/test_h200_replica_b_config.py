@@ -1,9 +1,10 @@
 """Tests for ops/h200_idle_proxy/replica_b_config.py.
 
 Replica B derives its config from replica A's instead of shipping a copy, because
-a checked-in near-duplicate drifts (that is what happened to the old
-models.h200.json mirror). These tests pin the two properties that make the
-derivation safe: the four colliding keys are overridden, and *nothing else* is.
+a checked-in near-duplicate drifts -- that is what happened to the per-node mirror
+config this directory's ops README describes. These tests pin the two properties
+that make the derivation safe: the four colliding keys are overridden, and
+*nothing else* is.
 """
 
 from __future__ import annotations
