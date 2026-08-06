@@ -1147,6 +1147,76 @@ async def test_disable_env_key_rejects_db_sourced_key(client):
 
 
 @pytest.mark.asyncio
+async def test_adding_a_tombstoned_key_clears_its_env_tombstone(client, monkeypatch):
+    """Re-adding a disabled env credential must not leave its tombstone behind.
+
+    ``add_key_to_provider`` puts the value straight back into the pool, so a
+    surviving tombstone means the key serves traffic while a disabled record
+    still exists for it — which the Keys tab renders as a second, disabled
+    entry for the same key.
+    """
+    http, store = client
+    raw = "env-zai-readded-ffffffffffff"
+    monkeypatch.setenv("ZAI_API_KEY", raw)
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="readded-model",
+            name="readded-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[raw],
+            provider_model_id="readded-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    key_hash = dynamic_keys.env_key_hash(raw)
+
+    dis = await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": f"env:{key_hash[:32]}"},
+        headers=AUTH,
+    )
+    assert dis.status_code == 200, dis.text
+    assert ("zai", key_hash) in store.disabled
+
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": raw},
+        headers=AUTH,
+    )
+    assert add.status_code == 201, add.text
+
+    assert ("zai", key_hash) not in store.disabled
+    assert dynamic_keys.is_env_key_disabled("zai", key_hash) is False
+    assert raw in adapter._key_pool.snapshot_keys()
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    entries = [k for k in listing.json()["keys"] if k["key_prefix"] == f"{raw[:8]}...{raw[-4:]}"]
+    assert len(entries) == 1, entries
+    assert entries[0]["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_listing_hides_a_tombstone_shadowed_by_an_active_db_key(client):
+    """A stale tombstone left by an older build must not double-list the key."""
+    http, store = client
+    raw = "sk-zai-shadowed-gggggggggggg"
+    await store.add_provider_key(provider="zai", api_key=raw, label=None, created_by="admin")
+    store.disabled[("zai", dynamic_keys.env_key_hash(raw))] = f"{raw[:8]}...{raw[-4:]}"
+    dynamic_keys.register_adapter_for_provider(
+        "zai",
+        SimpleNamespace(_key_pool=KeyPool([raw], "zai")),
+    )
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+
+    entries = [k for k in listing.json()["keys"] if k["key_prefix"] == f"{raw[:8]}...{raw[-4:]}"]
+    assert len(entries) == 1, entries
+    assert entries[0]["source"] == "db"
+    assert entries[0]["status"] == "active"
+
+
+@pytest.mark.asyncio
 async def test_disable_env_key_fails_closed_when_db_key_lookup_fails(client):
     """The disable endpoint should not proceed when DB-backed key lookup fails."""
     http, store = client
