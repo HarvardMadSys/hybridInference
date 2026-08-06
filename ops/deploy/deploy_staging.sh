@@ -137,6 +137,21 @@ main() {
   # forget. The overlay must ride this same compose invocation (it attaches
   # `backend` to the agent-egress network); with no token the deploy is
   # exactly what it was before this block existed.
+  # The standalone cloud agent, if this host also runs it. The console's
+  # `/agents` rewrites (#1206) are baked with Docker DNS names, so they only
+  # resolve once the console is on that stack's network — and the network
+  # existing is exactly the fact that says the stack is here. Detected rather
+  # than configured: a second switch to set is a second switch to forget, and
+  # forgetting it produces a 500 on a page the console still advertises.
+  CLOUD_AGENT_NETWORK=0
+  agent_network="$(grep -E '^AGENT_NETWORK_NAME=..+' .env | tail -1 | cut -d= -f2- || true)"
+  agent_network="${agent_network:-cloud-agent}"
+  if docker network inspect "$agent_network" >/dev/null 2>&1; then
+    CLOUD_AGENT_NETWORK=1
+    COMPOSE+=(-f deploy/docker/docker-compose.cloud-agent.yml)
+    log "Cloud agent network ${agent_network} found: the console will join it."
+  fi
+
   AGENT_RUNNER=0
   if grep -qE '^AGENT_DISPATCHER_TOKEN=..+' .env; then
     AGENT_RUNNER=1
@@ -237,6 +252,7 @@ main() {
   # as build args. Make builds its own Compose command, so pass the staging
   # files explicitly rather than relying on the diagnostic COMPOSE array above.
   make build DISTRIBUTION=freeinference AGENT_RUNNER="$AGENT_RUNNER" \
+    CLOUD_AGENT_NETWORK="$CLOUD_AGENT_NETWORK" \
     COMPOSE_EXTRA_ENV_FILES='distributions/freeinference/deploy/staging/*.env'
 
   log "Current service state:"

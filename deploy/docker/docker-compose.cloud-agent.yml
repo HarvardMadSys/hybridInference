@@ -1,0 +1,34 @@
+# The console joins the standalone cloud agent's network.
+#
+# `#1206` pointed `/agents/*` at that service through the console's own
+# rewrites — `http://web:3000` and `http://control-plane:8000`, baked into the
+# image at build time. Those are Docker DNS names, and a name only resolves on
+# a network both containers are on. The console was on `hybridinference` alone,
+# so every `/agents` request ended in `getaddrinfo ENOTFOUND web` and the
+# console answered **500**: the rewrite existed, the target was unreachable,
+# and nothing in the console's own health said so.
+#
+# **Why an overlay and not two lines in the base file.** The network belongs to
+# the other repository's stack (`freeinference-cloud-agent`, which names it
+# `${AGENT_NETWORK_NAME:-cloud-agent}`), so it is `external: true` here — and
+# an external network that does not exist is a hard failure for *every*
+# compose command, not a degraded feature. A deployment that runs no cloud
+# agent must never see this file. Same shape as the `AGENT_RUNNER=1` overlay
+# above it in the Makefile, for the same reason.
+#
+# Both sides must agree on the name. That is one variable, defaulted the same
+# way in both repositories, and if they disagree the symptom is this same 500.
+
+services:
+  frontend:
+    networks:
+      # Re-listing `hybridinference` is required, not redundant: compose merges
+      # this list by replacement, so naming only the agent network here would
+      # cut the console off from the backend it proxies everything else to.
+      - hybridinference
+      - cloud-agent
+
+networks:
+  cloud-agent:
+    external: true
+    name: ${AGENT_NETWORK_NAME:-cloud-agent}
