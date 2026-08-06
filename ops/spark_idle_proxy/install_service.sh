@@ -141,7 +141,12 @@ if [[ "$MODE" == "uninstall" ]]; then
   exit 0
 fi
 
-for src in "$SERVICE_SRC" "$TUNNEL_SRC"; do
+# Only the units this mode actually renders: --tunnels-only has no business
+# requiring the proxy unit to be present, and demanding it turns a legitimate
+# tunnels-only run against a partial checkout into a hard error.
+declare -a REQUIRED_SRC=("$TUNNEL_SRC")
+[[ "$MODE" != "tunnels" ]] && REQUIRED_SRC+=("$SERVICE_SRC")
+for src in "${REQUIRED_SRC[@]}"; do
   if [[ ! -f "$src" ]]; then
     echo "ERROR: unit file not found at ${src}" >&2
     echo "       Set REPO_DIR to the hybridInference checkout." >&2
