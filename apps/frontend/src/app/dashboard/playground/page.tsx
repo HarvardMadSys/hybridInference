@@ -9,12 +9,11 @@ import {
   type KeyboardEvent,
   type ChangeEvent,
 } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { hasRole } from '@/components/providers/AuthProvider';
+import { Markdown } from '@/components/ui/Markdown';
 import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
 
@@ -32,6 +31,21 @@ interface PlaygroundModel {
   providers: PlaygroundProvider[];
 }
 
+interface RoutingAttempt {
+  provider: string;
+  endpointId: string;
+  errorType: string;
+}
+
+/** Which upstream actually served a turn — from the `_playground_route` frame. */
+interface RoutingInfo {
+  provider: string;
+  endpointId: string;
+  host?: string;
+  fallback?: boolean;
+  failedAttempts?: RoutingAttempt[];
+}
+
 interface Message {
   role: 'user' | 'assistant';
   content: string;
@@ -40,6 +54,7 @@ interface Message {
   ttftMs?: number;
   completionTokens?: number;
   modelName?: string;
+  routing?: RoutingInfo;
 }
 
 interface PlaygroundSession {
@@ -87,6 +102,42 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+/** Read a `_playground_route` frame; returns null for anything unrecognized. */
+function parseRouting(raw: unknown): RoutingInfo | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const endpointId = typeof r.endpoint_id === 'string' ? r.endpoint_id : '';
+  if (!endpointId) return null;
+  const rawAttempts = Array.isArray(r.failed_attempts) ? r.failed_attempts : [];
+  const attempts = rawAttempts
+    .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
+    .map((a) => ({
+      provider: String(a.provider ?? ''),
+      endpointId: String(a.endpoint_id ?? ''),
+      errorType: String(a.error_type ?? ''),
+    }));
+  return {
+    provider: typeof r.provider === 'string' ? r.provider : '',
+    endpointId,
+    ...(typeof r.host === 'string' && r.host ? { host: r.host } : {}),
+    ...(r.fallback === true ? { fallback: true } : {}),
+    ...(attempts.length > 0 ? { failedAttempts: attempts } : {}),
+  };
+}
+
+function routingTooltip(routing: RoutingInfo): string {
+  const lines = [`endpoint: ${routing.endpointId}`];
+  if (routing.provider && routing.provider !== routing.endpointId) {
+    lines.push(`provider: ${routing.provider}`);
+  }
+  if (routing.host) lines.push(`host: ${routing.host}`);
+  if (routing.fallback) lines.push('served by fallback');
+  for (const attempt of routing.failedAttempts ?? []) {
+    lines.push(`failed: ${attempt.endpointId || attempt.provider} (${attempt.errorType})`);
+  }
+  return lines.join('\n');
+}
+
 function copyToClipboard(text: string): void {
   void navigator.clipboard.writeText(text);
 }
@@ -105,6 +156,7 @@ export default function PlaygroundPage() {
   const abortRef = useRef<AbortController | null>(null);
   const pendingRef = useRef('');
   const pendingReasoningRef = useRef('');
+  const pendingRoutingRef = useRef<RoutingInfo | null>(null);
   const rafRef = useRef<number | null>(null);
   const counterRef = useRef(2);
   const streamStartRef = useRef<number>(0);
@@ -151,9 +203,11 @@ export default function PlaygroundPage() {
   const flushDelta = useCallback(() => {
     const contentDelta = pendingRef.current;
     const reasoningDelta = pendingReasoningRef.current;
-    if (!contentDelta && !reasoningDelta) return;
+    const routing = pendingRoutingRef.current;
+    if (!contentDelta && !reasoningDelta && !routing) return;
     pendingRef.current = '';
     pendingReasoningRef.current = '';
+    pendingRoutingRef.current = null;
     patch((s) => {
       const copy = [...s.messages];
       const last = copy[copy.length - 1];
@@ -164,6 +218,7 @@ export default function PlaygroundPage() {
         ...(reasoningDelta
           ? { reasoningContent: (last.reasoningContent || '') + reasoningDelta }
           : {}),
+        ...(routing ? { routing } : {}),
       };
       return { ...s, messages: copy };
     });
@@ -209,6 +264,7 @@ export default function PlaygroundPage() {
     abortRef.current = null;
     pendingRef.current = '';
     pendingReasoningRef.current = '';
+    pendingRoutingRef.current = null;
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -246,6 +302,7 @@ export default function PlaygroundPage() {
       if (streaming || id === activeSessionId) return;
       pendingRef.current = '';
       pendingReasoningRef.current = '';
+      pendingRoutingRef.current = null;
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
@@ -316,7 +373,9 @@ export default function PlaygroundPage() {
         const err = await resp.text();
         patch((s) => {
           const c = [...s.messages];
-          c[c.length - 1] = { role: 'assistant', content: `Error: ${err}` };
+          // Spread rather than replace: modelName and any routing frame
+          // already seen are what make the failure diagnosable.
+          c[c.length - 1] = { ...c[c.length - 1], role: 'assistant', content: `Error: ${err}` };
           return { ...s, messages: c };
         });
         setStreaming(false);
@@ -343,6 +402,14 @@ export default function PlaygroundPage() {
             if (parsed.usage?.completion_tokens) {
               completionTokensRef.current = parsed.usage.completion_tokens;
             }
+            // The router announces one routing frame per attempt, so a
+            // fallback overwrites the primary — last one wins is the one
+            // that actually served the response.
+            const routing = parseRouting(parsed._playground_route);
+            if (routing) {
+              pendingRoutingRef.current = routing;
+              scheduleFlush();
+            }
             const delta = parsed.choices?.[0]?.delta;
             if (delta?.content) {
               if (!firstTokenTimeRef.current) {
@@ -365,7 +432,11 @@ export default function PlaygroundPage() {
       if ((err as Error).name !== 'AbortError') {
         patch((s) => {
           const c = [...s.messages];
-          c[c.length - 1] = { role: 'assistant', content: `Error: ${(err as Error).message}` };
+          c[c.length - 1] = {
+            ...c[c.length - 1],
+            role: 'assistant',
+            content: `Error: ${(err as Error).message}`,
+          };
           return { ...s, messages: c };
         });
       }
@@ -703,14 +774,29 @@ export default function PlaygroundPage() {
                     return (
                       <div key={`${msg.role}-${i}`} className="group">
                         <div className="mb-1.5 flex items-center justify-between">
-                          <span
-                            className={`text-xs font-medium ${
-                              isUser ? 'text-indigo-400' : 'text-gray-500'
-                            }`}
-                          >
-                            {isUser ? 'You' : msg.modelName || model?.name || 'Assistant'}
-                          </span>
-                          <div className="flex items-center gap-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span
+                              className={`text-xs font-medium ${
+                                isUser ? 'text-indigo-400' : 'text-gray-500'
+                              }`}
+                            >
+                              {isUser ? 'You' : msg.modelName || model?.name || 'Assistant'}
+                            </span>
+                            {!isUser && msg.routing && (
+                              <span
+                                className={`truncate rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                                  msg.routing.fallback
+                                    ? 'bg-amber-500/10 text-amber-400'
+                                    : 'bg-gray-800 text-gray-400'
+                                }`}
+                                title={routingTooltip(msg.routing)}
+                              >
+                                {msg.routing.fallback ? '↳ ' : ''}
+                                {msg.routing.endpointId}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
                             {!isUser && msg.durationMs != null && !isWaiting && (
                               <span className="text-xs tabular-nums text-gray-500">
                                 {msg.ttftMs != null && `${msg.ttftMs}ms TTFT · `}
@@ -810,11 +896,7 @@ export default function PlaygroundPage() {
                               {isUser ? (
                                 <div className="whitespace-pre-wrap">{msg.content}</div>
                               ) : (
-                                <div className="prose prose-invert prose-sm max-w-none prose-pre:bg-gray-950 prose-pre:border prose-pre:border-gray-800 prose-code:text-indigo-300 prose-a:text-indigo-400">
-                                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                    {msg.content}
-                                  </ReactMarkdown>
-                                </div>
+                                <Markdown text={msg.content} tone="dark" />
                               )}
                             </>
                           )}

@@ -37,4 +37,28 @@ describe('Markdown', () => {
     expect(container.querySelector('pre')).not.toBeNull();
     expect(screen.getByText('npm test').tagName).toBe('CODE');
   });
+
+  // The `prose` plugin is not installed, so a dark surface cannot rely on
+  // `prose-invert` — the tone has to reach the elements as real utilities.
+  it('carries structural utilities on both tones', () => {
+    for (const tone of ['light', 'dark'] as const) {
+      const { container } = render(<Markdown text={'- one\n- two'} tone={tone} />);
+      expect(container.querySelector('ul')).toHaveClass('list-disc');
+      cleanup();
+    }
+  });
+
+  it('applies dark accents only on the dark tone', () => {
+    const { container: light } = render(<Markdown text={'`x` and [a](https://x.test)'} />);
+    expect(light.querySelector('code')).toHaveClass('text-crimson');
+    expect(light.querySelector('a')).toHaveClass('text-crimson');
+    cleanup();
+
+    const { container: dark } = render(
+      <Markdown text={'`x` and [a](https://x.test)'} tone="dark" />,
+    );
+    expect(dark.querySelector('code')).toHaveClass('text-indigo-300');
+    expect(dark.querySelector('a')).toHaveClass('text-indigo-400');
+    expect(dark.querySelector('code')).not.toHaveClass('text-crimson');
+  });
 });

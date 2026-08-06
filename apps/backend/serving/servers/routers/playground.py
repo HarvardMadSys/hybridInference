@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from contextlib import suppress
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -17,8 +18,19 @@ from serving.stream import make_role_chunk
 
 router = APIRouter(prefix="/internal/playground", tags=["Playground"])
 
-# Keys that should never be sent to the client (internal routing metadata).
-_INTERNAL_KEYS = frozenset({"_routing"})
+# The router's internal `_routing` blob never reaches the client verbatim: it
+# carries the raw upstream base_url, which on this deployment can be a LAN
+# address or a URL with embedded credentials. But *which* endpoint actually
+# served a request is the one thing a routing gateway's playground most needs
+# to show, so `_sanitize_chunk` republishes an allow-listed, host-only summary
+# under `_PLAYGROUND_ROUTE_KEY` instead of dropping the field outright.
+#
+# Admin-only by construction: this republish lives here, not in the shared
+# `sanitize_chunk` used by the public completions path. The name deliberately
+# avoids containing `_routing` as a substring so that "the internal blob never
+# appears on the wire" stays checkable with a plain substring assertion.
+_ROUTING_KEY = "_routing"
+_PLAYGROUND_ROUTE_KEY = "_playground_route"
 
 
 class PlaygroundProviderItem(BaseModel):
@@ -68,8 +80,6 @@ def _provider_display_name(endpoint_id: str, base_url: str = "") -> str:
     to the endpoint_id mapping.
     """
     if base_url:
-        from urllib.parse import urlparse
-
         host = urlparse(base_url).netloc.lower().split(":")[0]
         for pattern, name in _BASE_URL_DISPLAY_NAMES.items():
             if pattern in host:
@@ -136,22 +146,87 @@ class PlaygroundChatRequest(BaseModel):
     provider: str | None = None
 
 
+def _routing_host(base_url: str) -> str | None:
+    """Return ``host[:port]`` for a base_url, dropping path, query and userinfo.
+
+    Anything unparseable is dropped rather than echoed — the point of this
+    helper is that no raw base_url reaches the browser.
+    """
+    if not base_url:
+        return None
+    try:
+        parsed = urlparse(base_url)
+    except ValueError:
+        return None
+    if not parsed.hostname:
+        return None
+    return f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
+
+
+def _redact_routing(routing: Any) -> dict[str, Any] | None:
+    """Reduce the router's ``_routing`` blob to an admin-safe summary.
+
+    Allow-list, not deny-list: fields the router adds later stay internal
+    until someone deliberately surfaces them here.
+    """
+    if not isinstance(routing, dict):
+        return None
+    provider = str(routing.get("provider") or "")
+    # Mirror `endpoint_id_for_adapter`: `config.endpoint_id` is optional and
+    # the provider label is its canonical fallback.
+    endpoint_id = str(routing.get("endpoint_id") or provider)
+    if not endpoint_id:
+        return None
+
+    summary: dict[str, Any] = {"provider": provider, "endpoint_id": endpoint_id}
+    host = _routing_host(str(routing.get("base_url") or ""))
+    if host:
+        summary["host"] = host
+    if routing.get("fallback"):
+        summary["fallback"] = True
+
+    attempts = routing.get("failed_attempts")
+    if isinstance(attempts, list) and attempts:
+        # Only the *shape* of each failed attempt travels. The raw `error`
+        # string can carry an upstream response body, so it stays server-side
+        # until the in-band error-frame work gives it a vetted channel.
+        summary["failed_attempts"] = [
+            {
+                "provider": str(attempt.get("provider") or ""),
+                "endpoint_id": str(attempt.get("endpoint_id") or attempt.get("provider") or ""),
+                "error_type": str(attempt.get("error_type") or ""),
+            }
+            for attempt in attempts
+            if isinstance(attempt, dict)
+        ]
+    return summary
+
+
 def _sanitize_chunk(chunk: str) -> str:
-    """Strip internal metadata from an SSE chunk before sending to the client."""
+    """Swap internal routing metadata for an admin-safe summary.
+
+    Only the router's own synthetic routing frame — ``routing_chunk()``, the
+    one with an empty ``choices`` list — is republished. Every other carrier of
+    ``_routing`` is stripped outright: ``make_final_usage_chunk`` attaches a
+    provider/base_url pair for cost accounting with no endpoint identity in it,
+    and since it is the *last* frame of the stream, republishing it would
+    overwrite a precise ``glm-4.6:zai-api`` badge with a bare ``zai``.
+    """
     if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
         return chunk
     try:
         obj = json.loads(chunk[6:])
-        changed = False
-        for key in _INTERNAL_KEYS:
-            if key in obj:
-                del obj[key]
-                changed = True
-        if changed:
-            return f"data: {json.dumps(obj)}\n\n"
     except Exception:
-        pass
-    return chunk
+        return chunk
+    if not isinstance(obj, dict) or _ROUTING_KEY not in obj:
+        return chunk
+
+    routing = obj.pop(_ROUTING_KEY)
+    if not obj.get("choices"):
+        summary = _redact_routing(routing)
+        if summary:
+            obj[_PLAYGROUND_ROUTE_KEY] = summary
+    return f"data: {json.dumps(obj)}\n\n"
 
 
 @router.post("/chat")

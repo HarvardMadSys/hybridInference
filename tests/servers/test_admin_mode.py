@@ -194,6 +194,79 @@ class TestAdminModeUnit:
         assert "_routing" not in sanitized
         parsed = json.loads(sanitized[6:])
         assert parsed["choices"][0]["delta"]["content"] == "hello"
+        # A content chunk carries no endpoint identity — nothing to republish.
+        assert playground._PLAYGROUND_ROUTE_KEY not in parsed
+
+    def test_sanitize_chunk_republishes_router_frame_without_base_url(self):
+        chunk = (
+            'data: {"choices":[],"_routing":{"provider":"zai",'
+            '"base_url":"https://user:pw@api.z.ai:8443/v1/chat",'
+            '"endpoint_id":"glm-4.6:zai-api"}}\n\n'
+        )
+
+        sanitized = playground._sanitize_chunk(chunk)
+
+        assert "_routing" not in sanitized
+        assert "user:pw" not in sanitized
+        assert "/v1/chat" not in sanitized
+        route = json.loads(sanitized[6:])[playground._PLAYGROUND_ROUTE_KEY]
+        assert route == {
+            "provider": "zai",
+            "endpoint_id": "glm-4.6:zai-api",
+            "host": "api.z.ai:8443",
+        }
+
+    def test_sanitize_chunk_falls_back_to_provider_as_endpoint_id(self):
+        # `config.endpoint_id` is optional; `endpoint_id_for_adapter` treats the
+        # provider label as its canonical fallback, and so must this.
+        chunk = 'data: {"choices":[],"_routing":{"provider":"test","endpoint_id":null}}\n\n'
+
+        route = json.loads(playground._sanitize_chunk(chunk)[6:])[playground._PLAYGROUND_ROUTE_KEY]
+
+        assert route == {"provider": "test", "endpoint_id": "test"}
+
+    def test_sanitize_chunk_reports_fallback_without_raw_error_text(self):
+        chunk = (
+            'data: {"choices":[],"_routing":{"provider":"chutes","base_url":"https://llm.chutes.ai",'
+            '"endpoint_id":"glm-4.6:chutes-api","fallback":true,'
+            '"failed_attempts":[{"provider":"zai","endpoint_id":"glm-4.6:zai-api",'
+            '"error_type":"HTTPStatusError","error":"401 {\\"key\\": \\"sk-leaked\\"}"}]}}\n\n'
+        )
+
+        sanitized = playground._sanitize_chunk(chunk)
+
+        assert "sk-leaked" not in sanitized
+        route = json.loads(sanitized[6:])[playground._PLAYGROUND_ROUTE_KEY]
+        assert route["fallback"] is True
+        assert route["endpoint_id"] == "glm-4.6:chutes-api"
+        assert route["failed_attempts"] == [
+            {
+                "provider": "zai",
+                "endpoint_id": "glm-4.6:zai-api",
+                "error_type": "HTTPStatusError",
+            }
+        ]
+
+    def test_sanitize_chunk_drops_routing_on_the_final_usage_chunk(self):
+        # The usage chunk's `_routing` exists for cost accounting and carries no
+        # endpoint_id. It is the last frame, so republishing it would overwrite
+        # a precise endpoint badge with a bare provider label.
+        chunk = (
+            'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+            '"usage":{"completion_tokens":7},'
+            '"_routing":{"provider":"zai","base_url":"http://10.0.0.5:12003"}}\n\n'
+        )
+
+        parsed = json.loads(playground._sanitize_chunk(chunk)[6:])
+
+        assert "_routing" not in parsed
+        assert playground._PLAYGROUND_ROUTE_KEY not in parsed
+        assert parsed["usage"]["completion_tokens"] == 7
+
+    def test_sanitize_chunk_passes_through_unrelated_frames(self):
+        assert playground._sanitize_chunk("data: [DONE]\n\n") == "data: [DONE]\n\n"
+        assert playground._sanitize_chunk(": keepalive\n\n") == ": keepalive\n\n"
+        assert playground._sanitize_chunk("data: not-json\n\n") == "data: not-json\n\n"
 
 
 @pytest.mark.dbtest
@@ -305,10 +378,17 @@ class TestPlaygroundAccess:
 
         assert any(line == "data: [DONE]" for line in lines)
         assert all("_routing" not in line for line in lines)
+        assert all("http://secret" not in line for line in lines)
 
+        frames = [json.loads(line[6:]) for line in lines if line != "data: [DONE]"]
+
+        # The router's synthetic frame is republished as an endpoint summary.
+        routes = [f[playground._PLAYGROUND_ROUTE_KEY] for f in frames if "_playground_route" in f]
+        assert routes == [{"provider": "test", "endpoint_id": "test", "host": "test"}]
+
+        # `choices` is empty on the routing frame, so index into it defensively.
         content = "".join(
-            json.loads(line[6:])["choices"][0]["delta"].get("content", "")
-            for line in lines
-            if line != "data: [DONE]"
+            (frame["choices"][0]["delta"].get("content", "") if frame.get("choices") else "")
+            for frame in frames
         )
         assert content == "hello world"
