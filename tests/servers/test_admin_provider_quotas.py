@@ -2244,6 +2244,54 @@ class TestDisabledKeyCards:
         assert len(disabled) == 2
 
     @pytest.mark.asyncio
+    async def test_disabled_card_is_dropped_when_the_key_is_still_live(self, monkeypatch):
+        """One credential yields one card, even when two sources record it.
+
+        A raw value present in a live pool and in a disabled DB row used to
+        produce both an active and a "Key disabled" card for the same key.
+        """
+        _clear_provider_env(monkeypatch)
+        shared = "featherless-shared-key-000000"
+        store = _QuotaKeyStore(
+            db_rows={
+                "featherless": [
+                    SimpleNamespace(
+                        id="key-1",
+                        key_prefix="feathe...0000",
+                        status="disabled",
+                    ),
+                ],
+            },
+            db_raw={"key-1": ("featherless", shared)},
+        )
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool([shared], "featherless")),
+        )
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            del _services, provider, api_key, timeout_seconds
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+
+        async def _no_concurrency_usage(_key):
+            return None
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_featherless_concurrency_usage",
+            _no_concurrency_usage,
+        )
+
+        results = await gather_all(store, services=SimpleNamespace())
+
+        cards = [r for r in results if r.key_ref == key_ref(shared)]
+        assert len(cards) == 1
+        assert cards[0].key_disabled is False
+
+    @pytest.mark.asyncio
     async def test_gather_all_tolerates_store_failures(self, monkeypatch):
         _clear_provider_env(monkeypatch)
 

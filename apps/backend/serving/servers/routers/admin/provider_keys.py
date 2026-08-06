@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from serving.adapters import dynamic_keys
@@ -332,19 +334,31 @@ async def disable_provider_env_key(
     if target_key is None:
         raise HTTPException(404, "Env provider key not found")
 
-    key_hash = dynamic_keys.env_key_hash(target_key)
-    key_prefix = _mask(target_key)
-    await op_store.disable_provider_env_key(
+    pools_updated = await _tombstone_env_key(op_store, payload.provider, target_key, admin_id)
+
+    return DisableProviderEnvKeyResponse(
+        id=payload.env_key_id,
         provider=payload.provider,
+        pools_updated=pools_updated,
+    )
+
+
+async def _tombstone_env_key(op_store, provider: str, raw_key: str, admin_id: str) -> int:
+    """Record the disable tombstone for *raw_key* and drop it from the pools.
+
+    Shared by the ``disable-env`` endpoint — which resolves the raw value from
+    an ``env:{hash}`` id — and the by-ref path, which already holds it. Returns
+    the number of pools the key was removed from.
+    """
+    key_hash = dynamic_keys.env_key_hash(raw_key)
+    key_prefix = _mask(raw_key)
+    await op_store.disable_provider_env_key(
+        provider=provider,
         key_hash=key_hash,
         key_prefix=key_prefix,
         disabled_by=admin_id,
     )
-    pools_updated = dynamic_keys.disable_env_key_for_provider(
-        payload.provider,
-        target_key,
-        key_hash,
-    )
+    pools_updated = dynamic_keys.disable_env_key_for_provider(provider, raw_key, key_hash)
 
     await log_admin_action(
         op_store,
@@ -352,18 +366,13 @@ async def disable_provider_env_key(
         "disable_provider_env_key",
         None,
         {
-            "id": payload.env_key_id,
-            "provider": payload.provider,
+            "id": _env_key_id(raw_key),
+            "provider": provider,
             "key_prefix": key_prefix,
             "pools_updated": pools_updated,
         },
     )
-
-    return DisableProviderEnvKeyResponse(
-        id=payload.env_key_id,
-        provider=payload.provider,
-        pools_updated=pools_updated,
-    )
+    return pools_updated
 
 
 @router.post("/provider-keys/enable-env", response_model=EnableProviderEnvKeyResponse)
@@ -397,20 +406,7 @@ async def enable_provider_env_key(
     if target_hash is None:
         raise HTTPException(404, "Disabled env provider key not found")
 
-    await op_store.enable_provider_env_key(payload.provider, target_hash)
-    pools_updated = dynamic_keys.enable_env_key_for_provider(payload.provider, target_hash)
-
-    await log_admin_action(
-        op_store,
-        admin_id,
-        "enable_provider_env_key",
-        None,
-        {
-            "id": payload.env_key_id,
-            "provider": payload.provider,
-            "pools_updated": pools_updated,
-        },
-    )
+    pools_updated = await _clear_env_tombstone(op_store, payload.provider, target_hash, admin_id)
 
     return EnableProviderEnvKeyResponse(
         id=payload.env_key_id,
@@ -419,48 +415,147 @@ async def enable_provider_env_key(
     )
 
 
-async def _resolve_key_ref(op_store, provider: str, key_ref: str) -> tuple[str, str, str]:
-    """Resolve an opaque ``key_ref`` to ``(source, id, status)``.
+async def _clear_env_tombstone(op_store, provider: str, key_hash: str, admin_id: str) -> int:
+    """Drop the tombstone for *key_hash* and put the key back in its pools.
 
-    ``source`` is ``"db"`` or ``"env"``; ``id`` is the DB row id or the
-    ``env:{hash}`` id the env endpoints accept. Raises 404 when the ref matches
-    no key of *provider*.
+    *key_hash* is the full hash, not the truncated ``key_ref`` form. Returns the
+    number of pools the key was re-added to.
+    """
+    await op_store.enable_provider_env_key(provider, key_hash)
+    pools_updated = dynamic_keys.enable_env_key_for_provider(provider, key_hash)
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "enable_provider_env_key",
+        None,
+        {
+            "id": f"env:{key_hash[:32]}",
+            "provider": provider,
+            "pools_updated": pools_updated,
+        },
+    )
+    return pools_updated
+
+
+@dataclass
+class _KeyRefTargets:
+    """Every source one credential is reachable from, with its current state.
+
+    A raw key can be configured in more than one place at once — an env var and
+    a DB row, several DB rows, or a route-bound row whose value also lives in
+    the adapter's static config. Toggling only the first source found leaves the
+    key live through the others while a disabled record exists for it, which the
+    quota dashboard then renders as a second card for the same key.
+    """
+
+    db_ids: list[str]
+    """DB rows holding this credential that are currently active."""
+
+    disabled_db_ids: list[str]
+    """DB rows holding this credential that are currently disabled."""
+
+    raw_key: str | None
+    """The raw credential, when it is still recoverable from a live source."""
+
+    env_hash: str | None
+    """Full env-key hash when the credential also has a static/env copy."""
+
+    env_disabled: bool
+    """True when the static/env copy carries a disable tombstone."""
+
+    @property
+    def source(self) -> str:
+        """Primary source label for the response body."""
+        return "db" if (self.db_ids or self.disabled_db_ids) else "env"
+
+    @property
+    def all_active(self) -> bool:
+        return not self.disabled_db_ids and not self.env_disabled
+
+    @property
+    def all_disabled(self) -> bool:
+        return not self.db_ids and (self.env_hash is None or self.env_disabled)
+
+
+async def _resolve_key_ref(op_store, provider: str, key_ref: str) -> _KeyRefTargets:
+    """Resolve an opaque ``key_ref`` to every source that holds the credential.
+
+    A raw value can be recorded as several DB rows *and* as a static/env
+    credential at the same time; all of them are reported, because disabling
+    only one leaves the key serving traffic through the others. Raises 404 when
+    the ref matches no key of *provider*.
     """
     try:
         db_rows = await op_store.list_provider_keys(provider)
     except Exception as exc:
         raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
 
-    db_raw_keys: set[str] = set()
+    try:
+        tombstones = await op_store.list_disabled_provider_env_keys(provider)
+    except Exception as exc:
+        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
+    disabled_hashes = {key_hash for key_hash, _prefix in tombstones}
+
+    raw_key: str | None = None
+    db_ids: list[str] = []
+    disabled_db_ids: list[str] = []
     for row in db_rows:
         target = await op_store.get_provider_key_full(row.id)
         if target is None:
             continue
         raw = target[1]
-        db_raw_keys.add(raw)
-        if dynamic_keys.env_key_hash(raw)[:32] == key_ref:
-            return ("db", row.id, row.status)
-
-    candidates = list(_env_keys_for_provider(provider))
-    for raw in dynamic_keys.list_candidate_env_keys(provider):
-        if raw not in candidates:
-            candidates.append(raw)
-    for raw in candidates:
-        if raw in db_raw_keys:
+        if dynamic_keys.env_key_hash(raw)[:32] != key_ref:
             continue
-        raw_hash = dynamic_keys.env_key_hash(raw)
-        if raw_hash[:32] == key_ref:
-            return ("env", f"env:{raw_hash[:32]}", "active")
+        raw_key = raw
+        if row.status == "disabled":
+            disabled_db_ids.append(row.id)
+        else:
+            db_ids.append(row.id)
 
-    try:
-        tombstones = await op_store.list_disabled_provider_env_keys(provider)
-    except Exception as exc:
-        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
-    for key_hash, _prefix in tombstones:
-        if key_hash[:32] == key_ref:
-            return ("env", f"env:{key_hash[:32]}", "disabled")
+    if raw_key is None:
+        candidates = list(_env_keys_for_provider(provider))
+        for raw in dynamic_keys.list_candidate_env_keys(provider):
+            if raw not in candidates:
+                candidates.append(raw)
+        for raw in candidates:
+            if dynamic_keys.env_key_hash(raw)[:32] == key_ref:
+                raw_key = raw
+                break
 
-    raise HTTPException(404, "Provider key not found")
+    env_hash: str | None = None
+    env_disabled = False
+    if raw_key is not None:
+        candidate_hash = dynamic_keys.env_key_hash(raw_key)
+        env_disabled = candidate_hash in disabled_hashes or dynamic_keys.is_env_key_disabled(
+            provider, candidate_hash
+        )
+        # Only a static/env-configured value has a copy the DB status cannot
+        # reach. A dashboard-added key lives in the pool solely because it was
+        # injected from its row, so it needs no tombstone.
+        if (
+            env_disabled
+            or raw_key in dynamic_keys.configured_env_keys_for_provider(provider)
+            or dynamic_keys.is_active_env_static_key(provider, raw_key)
+        ):
+            env_hash = candidate_hash
+    else:
+        for key_hash in disabled_hashes:
+            if key_hash[:32] == key_ref:
+                env_hash = key_hash
+                env_disabled = True
+                break
+
+    if not db_ids and not disabled_db_ids and env_hash is None:
+        raise HTTPException(404, "Provider key not found")
+
+    return _KeyRefTargets(
+        db_ids=db_ids,
+        disabled_db_ids=disabled_db_ids,
+        raw_key=raw_key,
+        env_hash=env_hash,
+        env_disabled=env_disabled,
+    )
 
 
 @router.post("/provider-keys/by-ref/disable", response_model=ProviderKeyByRefResponse)
@@ -471,38 +566,40 @@ async def disable_provider_key_by_ref(
 ) -> ProviderKeyByRefResponse:
     """Disable one provider key identified by the quota dashboard's ``key_ref``.
 
-    Dispatches to the DB or env disable path depending on where the key came
-    from, so the caller does not need to know its source.
+    Disables the credential at *every* source that holds it — each DB row plus
+    the env copy — so a key configured twice cannot keep serving traffic from
+    the source that was not toggled.
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
     _validate_provider(payload.provider)
-    source, key_id, status = await _resolve_key_ref(op_store, payload.provider, payload.key_ref)
-    if status == "disabled":
+    targets = await _resolve_key_ref(op_store, payload.provider, payload.key_ref)
+    if targets.all_disabled:
         return ProviderKeyByRefResponse(
             provider=payload.provider,
             key_ref=payload.key_ref,
-            source=source,  # type: ignore[arg-type]
+            source=targets.source,  # type: ignore[arg-type]
             status="disabled",
             pools_updated=0,
         )
 
-    if source == "db":
-        db_result = await disable_provider_key(key_id, admin_id, op_store)
-        pools_updated = db_result.pools_updated
-    else:
-        env_result = await disable_provider_env_key(
-            DisableProviderEnvKeyRequest(provider=payload.provider, env_key_id=key_id),
-            admin_id,
-            op_store,
+    pools_updated = 0
+    # Tombstone the static/env copy first: the DB path deliberately keeps a raw
+    # value in the pool while an active env key still shares it, so the env copy
+    # has to stop counting as active before the DB rows are evicted.
+    if targets.env_hash is not None and not targets.env_disabled and targets.raw_key is not None:
+        pools_updated += await _tombstone_env_key(
+            op_store, payload.provider, targets.raw_key, admin_id
         )
-        pools_updated = env_result.pools_updated
+    for key_id in targets.db_ids:
+        db_result = await disable_provider_key(key_id, admin_id, op_store)
+        pools_updated += db_result.pools_updated
 
     return ProviderKeyByRefResponse(
         provider=payload.provider,
         key_ref=payload.key_ref,
-        source=source,  # type: ignore[arg-type]
+        source=targets.source,  # type: ignore[arg-type]
         status="disabled",
         pools_updated=pools_updated,
     )
@@ -514,36 +611,39 @@ async def enable_provider_key_by_ref(
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ProviderKeyByRefResponse:
-    """Re-enable one provider key identified by the quota dashboard's ``key_ref``."""
+    """Re-enable one provider key identified by the quota dashboard's ``key_ref``.
+
+    Clears the disabled state at every source holding the credential, so no
+    stale tombstone or disabled row is left behind to strip the key from its
+    pool at the next restart — or to render a second, disabled card for it.
+    """
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
     _validate_provider(payload.provider)
-    source, key_id, status = await _resolve_key_ref(op_store, payload.provider, payload.key_ref)
-    if status == "active":
+    targets = await _resolve_key_ref(op_store, payload.provider, payload.key_ref)
+    if targets.all_active:
         return ProviderKeyByRefResponse(
             provider=payload.provider,
             key_ref=payload.key_ref,
-            source=source,  # type: ignore[arg-type]
+            source=targets.source,  # type: ignore[arg-type]
             status="active",
             pools_updated=0,
         )
 
-    if source == "db":
-        db_result = await enable_provider_key(key_id, admin_id, op_store)
-        pools_updated = db_result.pools_updated
-    else:
-        env_result = await enable_provider_env_key(
-            EnableProviderEnvKeyRequest(provider=payload.provider, env_key_id=key_id),
-            admin_id,
-            op_store,
+    pools_updated = 0
+    if targets.env_hash is not None and targets.env_disabled:
+        pools_updated += await _clear_env_tombstone(
+            op_store, payload.provider, targets.env_hash, admin_id
         )
-        pools_updated = env_result.pools_updated
+    for key_id in targets.disabled_db_ids:
+        db_result = await enable_provider_key(key_id, admin_id, op_store)
+        pools_updated += db_result.pools_updated
 
     return ProviderKeyByRefResponse(
         provider=payload.provider,
         key_ref=payload.key_ref,
-        source=source,  # type: ignore[arg-type]
+        source=targets.source,  # type: ignore[arg-type]
         status="active",
         pools_updated=pools_updated,
     )
