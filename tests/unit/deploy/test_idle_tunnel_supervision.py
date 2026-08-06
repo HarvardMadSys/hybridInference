@@ -32,7 +32,7 @@ on the proxy is the missing direction, and the installers write it because only 
 know the per-host instance name.
 
 No systemd is required: the unit files are parsed directly. The behaviour they
-encode was measured on spark2 (systemd 255) with throwaway units rather than
+encode was measured on the Spark (systemd 255) with throwaway units rather than
 inferred from the manual, which is how the ``PartOf=`` reading -- plausible, and
 wrong -- was caught before it shipped.
 """
@@ -226,7 +226,7 @@ def test_something_starts_the_tunnel_again_after_its_proxy_crashes(
     installer rather than the unit because the instance name is per-host: the
     template cannot name what it will be instantiated as.
 
-    Measured on spark2 (systemd 255), because guessing gets both halves wrong.
+    Measured on the Spark (systemd 255), because guessing gets both halves wrong.
     ``kill -9`` of the proxy leaves the tunnel ``inactive`` with the proxy ``active``
     again; adding the ``Upholds=`` drop-in leaves both active. In the other
     direction ``systemctl restart <proxy>`` does *not* propagate through
