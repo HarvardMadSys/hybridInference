@@ -154,7 +154,14 @@ function responseHeaders(upstream: Response): Headers {
 function denied(request: NextRequest, verdict: Verdict): NextResponse {
   const isNavigation = request.method === 'GET' || request.method === 'HEAD';
   if (verdict === 'unauthenticated' && isNavigation) {
-    return NextResponse.redirect(new URL('/login', request.nextUrl), 302);
+    // A bare path, not an absolute URL. Behind the tunnel this app sees its own
+    // bind address as the Host, so `new URL('/login', request.nextUrl)` renders
+    // as https://0.0.0.0:3001/login and strands the browser — observed on
+    // staging. A relative Location is resolved against the address the client
+    // actually used. NextResponse.redirect() only accepts absolute URLs, hence
+    // the header written by hand; middleware.ts does not need this because Next
+    // relativizes middleware redirects on its own.
+    return new NextResponse(null, { status: 302, headers: { location: '/login' } });
   }
   return new NextResponse('Admin access required.', {
     status: 403,

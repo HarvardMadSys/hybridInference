@@ -51,7 +51,9 @@ describe('pgAdmin proxy — denial', () => {
     const response = await GET(request());
 
     expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('https://freeinference.org/login');
+    // Relative on purpose: an absolute URL is built from the Host this app
+    // sees, which behind the tunnel is its own bind address.
+    expect(response.headers.get('location')).toBe('/login');
     expect(verify).not.toHaveBeenCalled();
     expect(upstream).not.toHaveBeenCalled();
   });
