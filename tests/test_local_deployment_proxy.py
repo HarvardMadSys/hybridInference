@@ -136,10 +136,11 @@ class RecordingBackendHandler(BaseHTTPRequestHandler):
 class WarmupBackend:
     model_name = MODEL_NAME
 
-    def __init__(self) -> None:
+    def __init__(self, giveup: Exception | None = None) -> None:
         self._state = "stopped"
         self.touched = threading.Event()
         self.ensure_running_called = threading.Event()
+        self.giveup = giveup
 
     @property
     def state(self) -> str:
@@ -151,6 +152,10 @@ class WarmupBackend:
     def contention_error(self) -> None:
         """No sibling proxy holds this container name."""
         return None
+
+    def giveup_error(self) -> Exception | None:
+        """The error this backend was given up on, if it has been."""
+        return self.giveup
 
     def ensure_running(self) -> None:
         self.ensure_running_called.set()
@@ -3502,3 +3507,131 @@ def test_blank_local_api_key_still_enforces_auth(
 
     assert unauthenticated == 401
     assert wrong_key == 401
+
+
+# ── Giving up on a crash-looping container ─────────────────────────────────
+
+
+def _failing_start(monkeypatch: Any, backend: Any, make_error: Any) -> list[int]:
+    """Make every start attempt raise, and return the list attempts are counted in."""
+    attempts: list[int] = []
+
+    def _attempt() -> None:
+        attempts.append(1)
+        raise make_error()
+
+    monkeypatch.setattr(backend, "_adopt_running_container", lambda: False)
+    monkeypatch.setattr(backend, "_start_container", _attempt)
+    return attempts
+
+
+def test_backend_is_given_up_on_after_repeated_start_failures(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A container that cannot start must stop being started.
+
+    Without a limit, every request for a model that is not ready launches it
+    again: a bad image tag or a rejected checkpoint then claims a GPU and burns
+    up to HEALTH_TIMEOUT per request, for as long as traffic arrives.
+    """
+    monkeypatch.setenv("MAX_START_FAILURES", "3")
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+    attempts = _failing_start(monkeypatch, backend, lambda: RuntimeError("no such image"))
+
+    for _ in range(3):
+        with pytest.raises(RuntimeError, match="no such image"):
+            backend.ensure_running()
+    assert len(attempts) == 3
+
+    # Latched: further requests fail without going near docker or the GPU, and
+    # the error says what happened and what clears it.
+    for _ in range(5):
+        with pytest.raises(RuntimeError, match=r"(?s)consecutive failed starts.*no such image"):
+            backend.ensure_running()
+    assert len(attempts) == 3
+    assert "restarted" in str(backend.giveup_error())
+
+
+def test_a_successful_start_resets_the_start_failure_count(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The limit counts *consecutive* failures — a start that worked clears it."""
+    monkeypatch.setenv("MAX_START_FAILURES", "3")
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+    attempts = _failing_start(monkeypatch, backend, lambda: RuntimeError("device busy"))
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="device busy"):
+            backend.ensure_running()
+
+    monkeypatch.setattr(backend, "_start_container", lambda: None)
+    monkeypatch.setattr(backend, "_wait_healthy", lambda: None)
+    backend.ensure_running()
+    assert backend.state == "ready"
+    assert backend._start_failures == 0
+
+    backend.mark_stopped()
+    _failing_start(monkeypatch, backend, lambda: RuntimeError("device busy"))
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="device busy"):
+            backend.ensure_running()
+    assert backend.giveup_error() is None
+    assert len(attempts) == 2
+
+
+def test_container_name_contention_does_not_count_toward_the_limit(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A name held by another proxy is a condition that ends, not a broken backend.
+
+    It is also already refused cheaply — one ``docker inspect``, no GPU, no
+    health wait — so the limit is not what protects against it. Counting it would
+    let a long benchmark on a hand-started container latch a healthy model off
+    until someone restarted the proxy.
+    """
+    monkeypatch.setenv("MAX_START_FAILURES", "2")
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+    attempts = _failing_start(
+        monkeypatch,
+        backend,
+        lambda: proxy.ForeignContainerError("owned by port-9999"),
+    )
+
+    for _ in range(6):
+        with pytest.raises(proxy.ForeignContainerError):
+            backend.ensure_running()
+
+    assert len(attempts) == 6
+    assert backend.giveup_error() is None
+
+
+def test_streaming_chat_502s_once_the_backend_has_been_given_up_on(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The warmup banner promises a start that is no longer going to happen.
+
+    A 200 with "the model is starting up…" keeps the gateway from opening its
+    circuit and failing the model over to its remote route — the same reason
+    contention is diagnosed before the response line is committed.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = WarmupBackend(giveup=RuntimeError("20 consecutive failed starts"))
+    proxy._backends = {MODEL_NAME: backend}
+
+    with _serve(proxy.ProxyHandler) as proxy_port:
+        status, _, _ = _request(
+            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            method="POST",
+            headers={"Authorization": "Bearer manual-secret"},
+            body={
+                "model": MODEL_NAME,
+                "stream": True,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+        )
+
+    assert status == 502
+    assert not backend.ensure_running_called.is_set()

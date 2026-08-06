@@ -24,6 +24,7 @@ Client → spark2:8001 ──SSH tunnel──→ GPU box :8001 (proxy)
 6. After **24 minutes** with no incoming requests for a model, that container is stopped.
 7. The proxy keeps listening — the next request re-starts the container automatically.
 8. `GET /v1/models` returns a static list of all configured models (no backend needed).
+9. A container that fails to start 20 times in a row is given up on until the proxy is restarted — see [Giving up on a crash-looping container](#giving-up-on-a-crash-looping-container).
 
 ## Quick start
 
@@ -234,6 +235,7 @@ To add a new model, append an entry to `models.json` and restart the proxy.
 | `IDLE_TIMEOUT` | `1440` | Seconds of inactivity before stopping a container (24 min) |
 | `HEALTH_TIMEOUT` | `600` | Max seconds to wait for a container to become healthy |
 | `HEALTH_INTERVAL` | `10` | Seconds between health-check polls |
+| `MAX_START_FAILURES` | `20` | Consecutive failed starts after which the proxy gives up on that model (see [Giving up on a crash-looping container](#giving-up-on-a-crash-looping-container)). `0` disables the limit |
 | `MODELS_CONFIG` | auto-detected | Path to the models config JSON. When unset, selected by GPU hardware (see [Hardware profiles](#hardware-profiles)); set explicitly to override. **Not settable from the environment under systemd** — see below |
 | `LOCAL_API_KEY` | `freeinference_api` | API key for request auth; accepts an `Authorization: Bearer` or `X-API-Key` header. A blank value falls back to the default rather than disabling auth — there is no way to turn auth off |
 | `PROXY_OWNER` | `port-$LISTEN_PORT` | Identity stamped on the containers this proxy starts, so it never destroys or adopts another proxy's backend of the same name (see [Container ownership](#container-ownership)). The default is unique per host and stable across restarts; override only to give a hand-run proxy an identity of its own |
@@ -374,6 +376,25 @@ Nothing to do, and nothing to restart. Containers running now carry no labels, a
 ### Changing `LISTEN_PORT` on a box with a labelled backend running
 
 The owner identity is derived from the listen port, so moving a node's port orphans the container it started: while that container keeps running the proxy reads it as another owner's and refuses to adopt or remove it. Either remove it once by hand (`sudo docker rm -f <container>`), or keep the old identity across the move by pinning `PROXY_OWNER` to what it used to be. Nothing is silently wrong in the meantime — requests fail 502 naming both owners, streaming ones included, and the 502 text carries both remediations.
+
+## Giving up on a crash-looping container
+
+Every request for a model that is not `ready` starts its container, so a backend that *cannot* start — a bad image tag, a checkpoint the runtime rejects, a device another process holds — is relaunched once per request for as long as traffic keeps arriving. Each attempt claims a GPU, can sit in the health wait for the whole `HEALTH_TIMEOUT` (900 s on the H200 units), and answers with a slow 502 that the gateway reads as a timing-out upstream rather than a dead one.
+
+After `MAX_START_FAILURES` (default 20) **consecutive** failed starts the proxy gives up on that model:
+
+- `ensure_running` raises immediately, touching no docker command and no GPU, so requests 502 fast and the gateway's circuit breaker fails the model over to its remote route.
+- Streaming chat gets that 502 too, instead of the "the model is starting up…" banner — the banner promises a start that is no longer going to be attempted.
+- The log says it once, at `ERROR`, with the last underlying error, rather than repeating the same traceback until it buries the first copy.
+
+The scope and the reset:
+
+- **Per model.** Other backends are untouched; a proxy serving four models keeps serving the three that work.
+- **Consecutive.** Any successful start resets the counter to zero.
+- **Contention does not count.** A `ForeignContainerError` (another proxy or a hand-started container owns the name — see [Container ownership](#container-ownership)) means "someone else holds this right now", which ends when they let go. It is already refused cheaply, so a long benchmark on a hand-started container cannot latch a healthy model off.
+- **Latched until restart.** There is no retry timer. Fixing the cause means editing the model config, which is read once at import, so the restart is part of the repair anyway: `sudo systemctl restart <unit>`.
+
+Set `MAX_START_FAILURES=0` to disable the limit and retry forever.
 
 ## On-demand Hugging Face download
 

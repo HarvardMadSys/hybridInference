@@ -25,6 +25,8 @@ LISTEN_PORT    : Port the proxy binds to                  (default 8001)
 IDLE_TIMEOUT   : Seconds of inactivity before stopping    (default 1440 = 24 min)
 HEALTH_TIMEOUT : Max seconds to wait for backend startup  (default 600)
 HEALTH_INTERVAL: Seconds between health-check polls       (default 10)
+MAX_START_FAILURES : Consecutive failed starts after which the proxy stops
+                 trying to start that backend (default 20; 0 = no limit)
 MODELS_CONFIG  : Path to a JSON config file               (see below)
 PROXY_OWNER    : Identity stamped on containers this proxy starts, so it never
                  destroys or adopts a sibling proxy's backend of the same name
@@ -168,6 +170,28 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8001"))
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1440"))
 HEALTH_TIMEOUT = float(os.environ.get("HEALTH_TIMEOUT", "600"))
 HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
+# Consecutive failed starts after which a backend stops being started at all.
+#
+# Nothing else here bounds a crash-looping container: every request for a model
+# that is not `ready` calls `ensure_running`, so a backend that cannot start --
+# a bad image tag, a checkpoint sglang rejects, a GPU another process owns --
+# gets a fresh `docker run` per request, for as long as traffic keeps arriving.
+# Each attempt claims a GPU, can sit in `_wait_healthy` for HEALTH_TIMEOUT
+# (900s on the H200 units), and answers the caller with a slow 502; the gateway
+# reads that as a timing-out upstream rather than a dead one, and the log fills
+# with the same traceback deep enough to bury the first one, which is the only
+# copy that says why.
+#
+# Past this many consecutive failures the proxy gives up on that model and fails
+# fast instead: the gateway opens its circuit and fails the model over to its
+# remote route, the GPU is left alone, and the log stops. The give-up is latched
+# until the proxy restarts rather than being retried on a timer -- fixing the
+# cause means editing the model config, which is read once at import, so a
+# restart is already part of the repair. Other models are unaffected; the latch
+# is per backend.
+#
+# Set to 0 to disable the limit and keep retrying forever.
+MAX_START_FAILURES = int(os.environ.get("MAX_START_FAILURES", "20"))
 
 # ── Container ownership ────────────────────────────────────────────────────
 # A container *name* is not proof of ownership. Several units run this same
@@ -641,6 +665,10 @@ class BackendManager:
         # ownership check on the streaming warmup path says it once instead of on
         # every request (see `_log_inspect_failure`).
         self._inspect_failure: str | None = None
+        # Consecutive failed starts, and the error that latched this backend off
+        # once they reached MAX_START_FAILURES. Any successful start clears both.
+        self._start_failures = 0
+        self._giveup_error: RuntimeError | None = None
 
     @property
     def state(self) -> str:
@@ -673,13 +701,71 @@ class BackendManager:
                 self._container_id = None
                 self._ready_event.clear()
 
+    def giveup_error(self) -> RuntimeError | None:
+        """Return the error this backend was given up on, if it has been.
+
+        Companion to ``contention_error`` and there for the same reason: the
+        streaming path commits a ``200`` and a warmup banner *before* it starts
+        anything, so a backend nobody is going to start any more would answer
+        every stream with "the model is starting up…" and never start. The
+        gateway would see 200s, never open a circuit, and never fail the model
+        over to its remote route. Cheap enough to call per request — it reads
+        state, and runs no docker command.
+        """
+        with self._lock:
+            return self._giveup_error
+
+    def _record_start_failure(self, exc: BaseException) -> None:
+        """Count a failed start, latching the backend off at the limit.
+
+        Caller must hold ``self._lock``.
+
+        Contention does not count. A ``ForeignContainerError`` says another proxy
+        or an operator holds the container name right now, which is a condition
+        that ends when they let go; it is also already cheap to refuse (one
+        ``docker inspect``, no GPU, no wait), so nothing here is protecting
+        against it. Counting it would let a long benchmark run on a hand-started
+        container latch a healthy model off until someone restarts the proxy.
+        """
+        if isinstance(exc, ForeignContainerError):
+            return
+        self._start_failures += 1
+        if MAX_START_FAILURES <= 0 or self._start_failures < MAX_START_FAILURES:
+            log.warning(
+                "[%s] Start attempt %d failed: %s",
+                self.model_name,
+                self._start_failures,
+                exc,
+            )
+            return
+        self._giveup_error = RuntimeError(
+            f"[{self.model_name}] Giving up on container {self.container}: "
+            f"{self._start_failures} consecutive failed starts. The proxy will not "
+            f"try again until it is restarted. Last error: {exc}"
+        )
+        log.error(
+            "[%s] Container %s failed to start %d times in a row — giving up. "
+            "No further start attempts until this proxy is restarted "
+            "(fix the cause, then `systemctl restart` the unit). Last error: %s",
+            self.model_name,
+            self.container,
+            self._start_failures,
+            exc,
+        )
+
     def ensure_running(self) -> None:
-        """Start the container if needed and block until it is healthy."""
+        """Start the container if needed and block until it is healthy.
+
+        Raises without touching docker once the backend has been given up on
+        after ``MAX_START_FAILURES`` consecutive failed starts.
+        """
         should_start = False
         with self._lock:
             if self._state == "ready":
                 self._last_activity = time.monotonic()
                 return
+            if self._giveup_error is not None:
+                raise self._giveup_error
             if self._state == "starting":
                 pass
             else:
@@ -704,6 +790,9 @@ class BackendManager:
                 with self._lock:
                     self._state = "ready"
                     self._last_activity = time.monotonic()
+                    # Consecutive failures only: a start that worked says the
+                    # backend is startable, whatever went wrong before it.
+                    self._start_failures = 0
                     if self._watcher_thread is None or not self._watcher_thread.is_alive():
                         self._watcher_thread = threading.Thread(
                             target=self._idle_watcher, daemon=True
@@ -716,6 +805,7 @@ class BackendManager:
                     self._state = "stopped"
                     self._current_gpu = None
                     self._start_error = exc
+                    self._record_start_failure(exc)
                 self._ready_event.set()
                 raise
         else:
@@ -2245,6 +2335,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 contention = backend.contention_error()
                 if contention is not None:
                     self.send_error(502, str(contention))
+                    return
+                # Same reasoning for a backend given up on after
+                # MAX_START_FAILURES: "starting up…" would be a lie, and the
+                # start it promises is never going to be attempted.
+                giveup = backend.giveup_error()
+                if giveup is not None:
+                    self.send_error(502, str(giveup))
                     return
                 self._handle_warmup_stream(backend)
                 return

@@ -143,6 +143,7 @@ Models are defined in `spark_idle_proxy/models.json`:
 | `IDLE_TIMEOUT` | `1440` | Seconds of inactivity before stopping a container (24 min) |
 | `HEALTH_TIMEOUT` | `900` | Max seconds to wait for a container to become healthy |
 | `HEALTH_INTERVAL` | `10` | Seconds between health-check polls |
+| `MAX_START_FAILURES` | `20` | Consecutive failed starts after which the proxy gives up on that model: `ensure_running` fails fast without touching docker, streaming chat gets that error instead of the warmup banner, and the give-up is latched (per model) until the proxy restarts. `0` disables the limit |
 | `MODELS_CONFIG` | `models.json` | Path to the models config JSON. **Not settable from the environment under systemd** — see below |
 | `LOCAL_API_KEY` | `freeinference_api` | API key for request auth. A blank value falls back to the default rather than disabling auth — there is no way to turn auth off |
 | `HF_TOKEN` | (none) | Passed into vLLM containers for gated HF downloads |

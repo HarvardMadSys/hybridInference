@@ -18,6 +18,8 @@ LISTEN_PORT    : Port the proxy binds to                  (default 8002)
 IDLE_TIMEOUT   : Seconds of inactivity before stopping    (default 1440 = 24 min)
 HEALTH_TIMEOUT : Max seconds to wait for backend startup  (default 900)
 HEALTH_INTERVAL: Seconds between health-check polls       (default 10)
+MAX_START_FAILURES : Consecutive failed starts after which the proxy stops
+                 trying to start that backend (default 20; 0 = no limit)
 MODELS_CONFIG  : Path to a JSON config file               (see models.json)
 LOCAL_API_KEY  : API key for inbound auth      (default "freeinference_api";
                  a blank value falls back to it -- auth cannot be turned off)
@@ -54,6 +56,22 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8002"))
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1440"))
 HEALTH_TIMEOUT = float(os.environ.get("HEALTH_TIMEOUT", "900"))
 HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
+# Consecutive failed starts after which a backend stops being started at all.
+#
+# Every request for a model that is not `ready` calls `ensure_running`, so a
+# container that cannot start -- a bad image tag, a checkpoint vLLM rejects, a
+# GPU another process owns -- gets a fresh `docker run` per request, for as long
+# as traffic keeps arriving. Each attempt claims a GPU, can sit in
+# `_wait_healthy` for HEALTH_TIMEOUT, and answers with a slow 502 the gateway
+# reads as a timing-out upstream rather than a dead one.
+#
+# Past this many consecutive failures the proxy gives up on that model and fails
+# fast instead, so the gateway can open its circuit and fail the model over. The
+# give-up is latched until the proxy restarts rather than retried on a timer:
+# fixing the cause means editing models.json, which is read once at import, so a
+# restart is already part of the repair. The latch is per backend; other models
+# keep serving. Set to 0 to disable the limit.
+MAX_START_FAILURES = int(os.environ.get("MAX_START_FAILURES", "20"))
 # A *blank* value falls back to the default rather than through it: `or` is
 # deliberate where `os.environ.get(name, default)` would not do. This listener
 # binds 0.0.0.0 and starts and stops GPU containers via the Docker socket, and
@@ -164,6 +182,10 @@ class BackendManager:
         self._ready_event = threading.Event()
         self._start_error: Exception | None = None
         self._current_gpu: str | None = None
+        # Consecutive failed starts, and the error that latched this backend off
+        # once they reached MAX_START_FAILURES. Any successful start clears both.
+        self._start_failures = 0
+        self._giveup_error: RuntimeError | None = None
 
     @property
     def state(self) -> str:
@@ -207,8 +229,53 @@ class BackendManager:
             self._current_gpu = None
             return True
 
+    def giveup_error(self) -> RuntimeError | None:
+        """Return the error this backend was given up on, if it has been.
+
+        Read before the streaming warmup path commits its ``200``: that path
+        answers "the model is starting up…" and starts the backend in the
+        background, so for a backend nobody is going to start any more it would
+        be a success-shaped answer to a permanent failure, and the gateway would
+        never open a circuit or fail the model over.
+        """
+        with self._lock:
+            return self._giveup_error
+
+    def _record_start_failure(self, exc: BaseException) -> None:
+        """Count a failed start, latching the backend off at the limit.
+
+        Caller must hold ``self._lock``.
+        """
+        self._start_failures += 1
+        if MAX_START_FAILURES <= 0 or self._start_failures < MAX_START_FAILURES:
+            log.warning(
+                "[%s] Start attempt %d failed: %s",
+                self.model_name,
+                self._start_failures,
+                exc,
+            )
+            return
+        self._giveup_error = RuntimeError(
+            f"[{self.model_name}] Giving up on container {self.container}: "
+            f"{self._start_failures} consecutive failed starts. The proxy will not "
+            f"try again until it is restarted. Last error: {exc}"
+        )
+        log.error(
+            "[%s] Container %s failed to start %d times in a row — giving up. "
+            "No further start attempts until this proxy is restarted "
+            "(fix the cause, then restart the unit). Last error: %s",
+            self.model_name,
+            self.container,
+            self._start_failures,
+            exc,
+        )
+
     def ensure_running(self) -> None:
-        """Start the container if needed and block until it is healthy."""
+        """Start the container if needed and block until it is healthy.
+
+        Raises without touching docker once the backend has been given up on
+        after ``MAX_START_FAILURES`` consecutive failed starts.
+        """
         while True:
             should_start = False
             wait_for_stop = False
@@ -216,6 +283,8 @@ class BackendManager:
                 if self._state == "ready":
                     self._last_activity = time.monotonic()
                     return
+                if self._giveup_error is not None:
+                    raise self._giveup_error
                 if self._state == "stopping":
                     wait_for_stop = True
                 elif self._state == "starting":
@@ -235,6 +304,9 @@ class BackendManager:
                         with self._lock:
                             self._state = "ready"
                             self._last_activity = time.monotonic()
+                            # Consecutive failures only: a start that worked says
+                            # the backend is startable, whatever preceded it.
+                            self._start_failures = 0
                             if self._watcher_thread is None or not self._watcher_thread.is_alive():
                                 self._watcher_thread = threading.Thread(
                                     target=self._idle_watcher, daemon=True
@@ -249,6 +321,7 @@ class BackendManager:
                             self._state = "stopped"
                             self._current_gpu = None
                             self._start_error = exc
+                            self._record_start_failure(exc)
                         self._ready_event.set()
                         raise
 
@@ -717,6 +790,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _handle_warmup_stream(self, backend: BackendManager) -> None:
+        # Checked before the 200 is committed: once the response line is written
+        # the background start has no way to reach the client, and a
+        # success-shaped answer to a backend that will never be started again
+        # keeps the gateway from failing the model over.
+        giveup = backend.giveup_error()
+        if giveup is not None:
+            self._send_plain_error(502, str(giveup))
+            return
+
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
