@@ -86,6 +86,19 @@ read_compose_profiles() {
   sed -n 's/^[[:space:]]*COMPOSE_PROFILES=//p' "$1" | tail -1 | tr -d "\"'"
 }
 
+# Read one value from a dotenv file the way Compose reads it.
+#
+# **The quotes are the whole point.** `AGENT_NETWORK_NAME="cloud-agent"` is
+# valid dotenv, and Compose strips those quotes when it resolves the overlay —
+# so a reader that keeps them asks Docker about a network named `"cloud-agent"`,
+# is told it does not exist, and quietly skips the attachment. The network is
+# right there; the deploy just never looks at it. Same normalisation as
+# `read_compose_profiles` above, which is where this shape comes from.
+read_env_value() {
+  [[ -f "$2" ]] || return 0
+  sed -n "s/^[[:space:]]*$1=//p" "$2" | tail -1 | tr -d "\"'"
+}
+
 # An anonymous GET has one correct answer — a 302 to the login page — and the
 # check asserts exactly that. "Anything but 200" would not do: the outage this
 # exists for is the console answering with its own 404, which is also non-200.
@@ -144,7 +157,7 @@ main() {
   # than configured: a second switch to set is a second switch to forget, and
   # forgetting it produces a 500 on a page the console still advertises.
   CLOUD_AGENT_NETWORK=0
-  agent_network="$(grep -E '^AGENT_NETWORK_NAME=..+' .env | tail -1 | cut -d= -f2- || true)"
+  agent_network="$(read_env_value AGENT_NETWORK_NAME .env)"
   agent_network="${agent_network:-cloud-agent}"
   if docker network inspect "$agent_network" >/dev/null 2>&1; then
     CLOUD_AGENT_NETWORK=1

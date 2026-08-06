@@ -18,6 +18,8 @@ failure modes it sits between are what these tests pin:
 
 from __future__ import annotations
 
+import subprocess
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -70,6 +72,53 @@ def test_the_makefile_adds_the_overlay_only_when_asked() -> None:
 
     assert "ifeq ($(CLOUD_AGENT_NETWORK),1)" in makefile
     assert "COMPOSE_FILE_ARGS += -f deploy/docker/docker-compose.cloud-agent.yml" in makefile
+
+
+def test_the_network_name_is_read_the_way_compose_reads_it() -> None:
+    """Quoting is valid dotenv, and Compose strips it.
+
+    A reader that does not inspects a network named ``"cloud-agent"`` — quotes
+    included — is told it does not exist, and skips the attachment. The network
+    is present, the overlay is omitted anyway, and the symptom is the 500 this
+    whole change removes.
+
+    Runs the real function rather than asserting on its text: extracting the
+    definition and calling it is the only way to know the normalisation
+    actually happens.
+    """
+    source = DEPLOY_STAGING.read_text()
+    start = source.index("read_env_value() {")
+    body = source[start : source.index("\n}\n", start) + 3]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env = Path(tmp) / ".env"
+        env.write_text('AGENT_NETWORK_NAME="quoted-net"\n')
+        quoted = subprocess.run(
+            ["bash", "-c", f'{body}\nread_env_value AGENT_NETWORK_NAME "{env}"'],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        env.write_text("AGENT_NETWORK_NAME=bare-net\n")
+        bare = subprocess.run(
+            ["bash", "-c", f'{body}\nread_env_value AGENT_NETWORK_NAME "{env}"'],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        missing = subprocess.run(
+            ["bash", "-c", f'{body}\nread_env_value AGENT_NETWORK_NAME "{tmp}/absent"'],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    assert quoted.stdout.strip() == "quoted-net"
+    assert bare.stdout.strip() == "bare-net"
+    # Unset must fall through to the default, not to a name that is one space.
+    assert missing.stdout.strip() == ""
 
 
 def test_the_staging_deploy_detects_the_network_and_passes_it_to_make() -> None:
