@@ -10,6 +10,9 @@ at all. What makes it worth a test is *when* the breakage surfaces: a running
 container keeps serving on the flags it launched with, so the node looks healthy
 while the config on disk can no longer boot. The failure appears on the next cold
 start, which the idle proxy performs unattended after its idle timeout.
+
+HiCache is now off for this profile entirely, because it hangs the scheduler when
+DSpark is on -- see ``test_deepseek_v4_hicache_off_while_dspark_on``.
 """
 
 from __future__ import annotations
@@ -37,6 +40,41 @@ def test_deepseek_v4_does_not_use_hicache_size() -> None:
     for name, profile in profiles:
         assert "hicache_size" not in profile, (
             f"{name}: sglang rejects --hicache-size for DeepSeek V4; use hicache_ratio instead"
+        )
+
+
+def test_deepseek_v4_hicache_off_while_dspark_on() -> None:
+    """HiCache and DSpark together wedge the scheduler; keep HiCache off.
+
+    sglang builds the tree cache with ``hierarchical=True`` but then logs
+
+        Draft pool type DeepSeekV4TokenToKVPool not supported for HiCache, skipping.
+
+    so the target KV pool is written back to host DRAM while the speculative
+    draft pool is not tracked at all. Under ordinary traffic both TP ranks then
+    stop making progress mid-decode, and 300 s later the scheduler watchdog
+    SIGQUITs the server. On 2026-08-06 that took down both h200a replicas about
+    20 minutes into serving, twice each; h200b, which had not yet picked the
+    setting up, stayed up for hours on an otherwise identical config.
+
+    Any hicache key turns the feature on -- ``_hicache_args`` emits
+    ``--enable-hierarchical-cache`` as soon as one is present -- so the guard has
+    to cover the whole family, not just the sizing keys.
+    """
+    hicache_keys = {
+        "hicache_size",
+        "hicache_ratio",
+        "hicache_write_policy",
+        "hicache_io_backend",
+        "hicache_mem_layout",
+    }
+    for name, profile in _deepseek_v4_profiles():
+        if not profile.get("mtp") and not profile.get("speculative_algorithm"):
+            continue
+        present = sorted(hicache_keys & set(profile))
+        assert not present, (
+            f"{name}: HiCache hangs the scheduler when speculative decoding is on; "
+            f"remove {present} or disable DSpark"
         )
 
 

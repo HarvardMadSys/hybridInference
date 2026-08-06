@@ -202,8 +202,7 @@ See [`models.json`](models.json):
 | `hf_repo` | `deepseek-ai/DeepSeek-V4-Flash-0731` |
 | `max_model_len` | `1048576` (1M — the model's YARN architectural max, not VRAM-bound) |
 | `mem_fraction` | `0.80` — **not** 0.90; DSpark + a 1M prefill need the headroom (see below) |
-| `hicache_ratio` | `5` — host DRAM as a multiple of the device KV pool, ~175 GB **per TP rank** (see below) |
-| `hicache_write_policy` | `write_through_selective` — only reused prefixes are pushed down to DRAM |
+| HiCache | **off** — no `hicache_*` key at all; it hangs the scheduler under DSpark (see below) |
 | `moe_runner_backend` | `marlin` — **required** for FP4 experts on H200 (SM90) |
 | `mtp` / `speculative_algorithm` | `true` / `DSPARK` |
 | `sglang_image` | `lmsysorg/sglang:v0.5.16` — DSpark needs ≥ 0.5.16 |
@@ -242,39 +241,49 @@ See [`models.json`](models.json):
 > Raise it again only alongside a smaller CUDA-graph batch ladder, and re-test 1M before
 > trusting it — sustained-load stability does **not** imply long-context safety.
 
-> **Why `hicache_ratio` and not `hicache_size`?** Because sglang **rejects
-> `--hicache-size` for this architecture**: DeepSeek V4's HiCache path raises
-> `ValueError: DeepSeek V4 HiCache currently does not support --hicache-size; use
-> --hicache-ratio instead` at scheduler init, and the rank dies with a SIGQUIT.
+> **Why HiCache is off.** It deadlocks the scheduler when DSpark is on. sglang builds
+> the tree cache hierarchically and then declines to manage the draft pool:
 >
-> That was a live landmine rather than a theoretical one. A running container keeps
-> serving on the launch flags it started with, so the node stayed healthy while the
-> config on disk could no longer boot: the failure only appears on the **next** cold
-> start, which the idle proxy performs unattended after 24 idle minutes. It was found
-> by a second replica starting from the same config, not by the replica already
-> serving.
+> ```
+> Tree cache initialized: impl=UnifiedRadixCache hybrid_swa=True hierarchical=True
+> Draft pool type DeepSeekV4TokenToKVPool not supported for HiCache, skipping.
+> ```
 >
-> HiCache adds an L2 prefix-cache tier in host DRAM: a prefix evicted from the
-> 2.94M-token HBM pool is restored over PCIe instead of recomputed. It does **not**
-> enlarge the running-request KV budget or the usable context — only TTFT on a cache
-> hit improves.
+> So the target KV pool is written back to host DRAM while the speculative draft pool
+> is not tracked at all. Under ordinary traffic — single-digit concurrency, KV pool
+> 4% full — both TP ranks stop making progress mid-decode, and 300 s later the
+> scheduler watchdog SIGQUITs the server:
 >
-> Either way the pool is **per scheduler process**, not per box, and each rank guards
-> its own allocation against `psutil.virtual_memory().available - 10 GB`. That makes
-> over-sizing fail asymmetrically: rank 0 pins its share, then rank 1 raises `Not
-> enough host memory available` and the container dies — or the two race past the
-> check and the kernel OOM-killer takes the node, the same failure mode as
-> `mem_fraction` 0.85 above.
+> ```
+> [TP0] Scheduler watchdog timeout (self.watchdog_timeout=300, self.soft=False)
+> [TP1] Scheduler watchdog timeout (self.watchdog_timeout=300, self.soft=False)
+> ```
 >
-> **`5` is sized for two replicas, not one.** A ratio multiplies the ~34 GB device KV
-> pool (115 GB static budget minus 78 GB of TP=2 weights), so 5 is ~175 GB per rank.
-> This box now runs **two** TP=2 replicas, i.e. **four** ranks, so that is ~700 GB of
-> 1507 GB. The old `400`/rank predates the second replica and would ask for 1.6 TB
-> across four ranks — unsatisfiable even with the key name corrected. Do not raise it
-> toward `free -g`: DeepSeek V4 builds additional host pools (paged, state, indexer)
-> whose cost the ratio does not cover, so the real total exceeds the arithmetic above.
-> Check the per-rank `Allocating N GB host memory for hierarchical KV cache` log line
-> plus `free -g` under load before changing it.
+> On 2026-08-06 this took down **both** h200a replicas, twice each, roughly 20 minutes
+> into serving. There is no OOM, no Xid and no CUDA error — the ranks simply stop, so
+> it reads as a hang rather than a crash, and py-spy cannot dump the stack
+> (`Failed to copy Py_Version symbol`). h200b ran the same model, image, TP size and
+> `mem_fraction` for 3+ hours without a watchdog; the only difference was that the
+> `dev` → `main` promotion had been held, so HiCache had not reached it. Removing the
+> keys and cold-starting both replicas ended it.
+>
+> Turning it back on needs an sglang release whose HiCache path supports
+> `DeepSeekV4TokenToKVPool` for the draft pool, or DSpark switched off — which costs
+> far more than HiCache returns (DSpark is worth 3.2x at c=1 and ~1.3x at saturation;
+> HiCache only improves TTFT on a prefix-cache hit and does not enlarge the KV budget
+> or the usable context).
+>
+> Two traps for whoever re-enables it. **Any** `hicache_*` key turns the feature on —
+> `_hicache_args` emits `--enable-hierarchical-cache` as soon as one is present — so a
+> leftover `hicache_write_policy` is enough. And sglang **rejects `--hicache-size` for
+> this architecture** (`ValueError: DeepSeek V4 HiCache currently does not support
+> --hicache-size; use --hicache-ratio instead`, SIGQUIT at scheduler init), so sizing
+> must go through `hicache_ratio`. The pool is **per scheduler process**, not per box:
+> a ratio multiplies the ~34 GB device KV pool, and this box runs four ranks, so
+> ratio 5 is ~700 GB of 1507 GB. Each rank guards its own allocation against
+> `psutil.virtual_memory().available - 10 GB`, which makes over-sizing fail
+> asymmetrically — rank 0 pins its share, rank 1 raises `Not enough host memory
+> available`, or the two race past the check and the OOM-killer takes the node.
 
 > **Why `DSPARK` and not `EAGLE`?** 0731's speculative module is DSpark, not the
 > preview checkpoint's MTP: 3 blocks (`dspark_target_layer_ids: [40,41,42]`) with

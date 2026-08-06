@@ -12,8 +12,6 @@
         "served_name": "deepseek-v4-flash",
         "max_model_len": 1048576,
         "mem_fraction": "0.80",
-        "hicache_ratio": 5,
-        "hicache_write_policy": "write_through_selective",
         "moe_runner_backend": "marlin",
         "skip_server_warmup": true,
         "mtp": true,
