@@ -171,7 +171,12 @@ for host in "${HOSTS[@]}"; do
   host="${host// /}"
   [[ -z "$host" ]] && continue
   echo "Enabling ${TUNNEL_BASE}@${host} …"
-  systemctl enable --now "${TUNNEL_BASE}@${host}"
+  # enable + restart, not `enable --now`: --now is a no-op on an already-active
+  # unit, so a re-run that changes the tunnel drop-in (a new TUNNEL_USER, say)
+  # would leave the new value on disk and the old one live in the process --
+  # exactly the trap the proxy unit above already sidesteps for its API key.
+  systemctl enable "${TUNNEL_BASE}@${host}"
+  systemctl restart "${TUNNEL_BASE}@${host}"
 done
 
 echo

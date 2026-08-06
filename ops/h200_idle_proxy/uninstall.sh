@@ -51,7 +51,7 @@ else
         "${TUNNEL_BASE}@*.service" 2>/dev/null
       systemctl list-unit-files --no-legend --no-pager \
         "${TUNNEL_BASE}@*.service" 2>/dev/null
-    } | grep -oE 'h200_idle_tunnel@[^[:space:]]+\.service' \
+    } | grep -oE "${TUNNEL_BASE}@[^[:space:]]+\.service" \
       | grep -v '@\.service$' | sort -u
   )
 fi

@@ -86,14 +86,14 @@ def test_derive_rejects_a_config_with_no_models() -> None:
         replica_b_config.derive({})
 
 
-def test_derive_refuses_to_emit_an_unpinned_gpu_index() -> None:
+def test_derive_refuses_to_emit_an_unpinned_gpu_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An empty gpu_index would let both proxies auto-select the same free pair."""
+    # monkeypatch, not a try/finally around a mutation of the module-level dict:
+    # a crash before the finally would leak the empty gpu_index into every later
+    # test in this module, and they all assert on OVERRIDES.
+    monkeypatch.setitem(replica_b_config.OVERRIDES, "gpu_index", "")
     source = {"m": {"gpu_index": "2,3", "tensor_parallel_size": 2}}
-    overrides = dict(replica_b_config.OVERRIDES)
-    replica_b_config.OVERRIDES["gpu_index"] = ""
-    try:
-        with pytest.raises(ValueError, match="gpu_index"):
-            replica_b_config.derive(source)
-    finally:
-        replica_b_config.OVERRIDES.clear()
-        replica_b_config.OVERRIDES.update(overrides)
+    with pytest.raises(ValueError, match="gpu_index"):
+        replica_b_config.derive(source)
