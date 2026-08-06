@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import suppress
 from typing import Any
 from urllib.parse import urlparse
 
@@ -150,17 +149,21 @@ def _routing_host(base_url: str) -> str | None:
     """Return ``host[:port]`` for a base_url, dropping path, query and userinfo.
 
     Anything unparseable is dropped rather than echoed — the point of this
-    helper is that no raw base_url reaches the browser.
+    helper is that no raw base_url reaches the browser. Note that ``urlparse``
+    itself accepts a malformed port; it is ``SplitResult.port`` that raises,
+    so the attribute access has to sit inside the guard too.
     """
     if not base_url:
         return None
     try:
         parsed = urlparse(base_url)
+        host = parsed.hostname
+        port = parsed.port
     except ValueError:
         return None
-    if not parsed.hostname:
+    if not host:
         return None
-    return f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
+    return f"{host}:{port}" if port else host
 
 
 def _redact_routing(routing: Any) -> dict[str, Any] | None:
@@ -211,6 +214,10 @@ def _sanitize_chunk(chunk: str) -> str:
     provider/base_url pair for cost accounting with no endpoint identity in it,
     and since it is the *last* frame of the stream, republishing it would
     overwrite a precise ``glm-4.6:zai-api`` badge with a bare ``zai``.
+
+    Total by contract: this must never raise. `_routing` is popped before the
+    summary is built, so a redaction failure costs the badge, never the
+    redaction — the caller yields whatever comes back.
     """
     if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
         return chunk
@@ -223,7 +230,10 @@ def _sanitize_chunk(chunk: str) -> str:
 
     routing = obj.pop(_ROUTING_KEY)
     if not obj.get("choices"):
-        summary = _redact_routing(routing)
+        try:
+            summary = _redact_routing(routing)
+        except Exception:
+            summary = None
         if summary:
             obj[_PLAYGROUND_ROUTE_KEY] = summary
     return f"data: {json.dumps(obj)}\n\n"
@@ -255,9 +265,11 @@ async def playground_chat(
             routing_options=RoutingRequestOptions(pin_provider=body.provider),
             **kwargs,
         ):
-            with suppress(Exception):
-                chunk = _sanitize_chunk(chunk)
-            yield chunk
+            # Deliberately unguarded: `suppress` here would fail *open* —
+            # a raise inside the redactor would leave `chunk` at its original
+            # value and hand the raw `_routing` blob, base_url and all, to the
+            # browser. `_sanitize_chunk` is total instead.
+            yield _sanitize_chunk(chunk)
 
     return StreamingResponse(
         _generate(),

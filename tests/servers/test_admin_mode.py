@@ -263,6 +263,43 @@ class TestAdminModeUnit:
         assert playground._PLAYGROUND_ROUTE_KEY not in parsed
         assert parsed["usage"]["completion_tokens"] == 7
 
+    def test_sanitize_chunk_fails_closed_on_an_unparseable_port(self):
+        # `urlparse` accepts a malformed port; `SplitResult.port` is what
+        # raises. When that escaped, the caller yielded the *original* chunk
+        # and handed the credentialed base_url straight to the browser.
+        chunk = (
+            'data: {"choices":[],"_routing":{"provider":"zai",'
+            '"base_url":"https://user:pw@api.z.ai:notaport/v1",'
+            '"endpoint_id":"glm-4.6:zai-api"}}\n\n'
+        )
+
+        sanitized = playground._sanitize_chunk(chunk)
+
+        assert "_routing" not in sanitized
+        assert "user:pw" not in sanitized
+        assert "notaport" not in sanitized
+        # The badge is the acceptable loss; the base_url is not.
+        route = json.loads(sanitized[6:]).get(playground._PLAYGROUND_ROUTE_KEY)
+        assert route == {"provider": "zai", "endpoint_id": "glm-4.6:zai-api"}
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.z.ai:notaport/v1",
+            "https://api.z.ai:99999/v1",
+            "https://api.z.ai:-1/v1",
+        ],
+    )
+    def test_routing_host_never_raises_on_a_bad_port(self, base_url: str):
+        assert playground._routing_host(base_url) is None
+
+    def test_sanitize_chunk_never_raises_even_on_a_hostile_routing_blob(self):
+        # `_sanitize_chunk` is total by contract — the caller is unguarded so
+        # that a redaction failure can never fall back to the raw chunk.
+        for routing in ('"a string"', "42", "null", '{"failed_attempts":"not-a-list"}'):
+            chunk = f'data: {{"choices":[],"_routing":{routing}}}\n\n'
+            assert "_routing" not in playground._sanitize_chunk(chunk)
+
     def test_sanitize_chunk_passes_through_unrelated_frames(self):
         assert playground._sanitize_chunk("data: [DONE]\n\n") == "data: [DONE]\n\n"
         assert playground._sanitize_chunk(": keepalive\n\n") == ": keepalive\n\n"
