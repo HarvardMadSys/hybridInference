@@ -694,7 +694,7 @@ models:
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
-        provider_model_id: "deepseek-v4-flash"
+        provider_model_id: "deepseek-v4-flash:0731-cloud"
       # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
