@@ -173,10 +173,31 @@ main() {
 
   export_compose_profiles
 
+  # The standalone cloud agent, if this host also runs it. The console's
+  # `/agents` rewrites (#1206) are Docker DNS names, so they only resolve once
+  # the console is on that stack's network — and the network existing is
+  # exactly the fact that says the stack is here. Detected rather than
+  # configured, for the reason staging gives: a second switch to set is a
+  # second switch to forget, and forgetting it produces a 500 on a page the
+  # console still advertises.
+  #
+  # Staging has had this since #1206. Production had not, so on a host running
+  # both, the rewrite variables could be set and still resolve nothing —
+  # `getaddrinfo ENOTFOUND web`, which is a 500 the console's own health check
+  # never sees.
+  CLOUD_AGENT_NETWORK=0
+  agent_network="$(grep -E '^AGENT_NETWORK_NAME=..+' .env | tail -1 | cut -d= -f2- || true)"
+  agent_network="${agent_network:-cloud-agent}"
+  if docker network inspect "$agent_network" >/dev/null 2>&1; then
+    CLOUD_AGENT_NETWORK=1
+    COMPOSE+=(-f deploy/docker/docker-compose.cloud-agent.yml)
+    log "Cloud agent network ${agent_network} found: the console will join it."
+  fi
+
   log "Rebuilding and restarting Docker Compose services."
   # The rebuild needs this site's identity too: the console's is compiled in
   # as build args, and `make` no longer discovers an overlay on its own.
-  make build DISTRIBUTION=freeinference
+  make build DISTRIBUTION=freeinference CLOUD_AGENT_NETWORK="$CLOUD_AGENT_NETWORK"
 
   log "Current service state:"
   "${COMPOSE[@]}" ps
