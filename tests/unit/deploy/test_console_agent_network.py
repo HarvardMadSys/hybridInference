@@ -27,6 +27,7 @@ BASE = REPO / "deploy" / "docker" / "docker-compose.yml"
 OVERLAY = REPO / "deploy" / "docker" / "docker-compose.cloud-agent.yml"
 MAKEFILE = REPO / "Makefile"
 DEPLOY_STAGING = REPO / "ops" / "deploy" / "deploy_staging.sh"
+DEPLOY_PRODUCTION = REPO / "ops" / "deploy" / "deploy_production.sh"
 
 
 def test_the_overlay_puts_the_console_on_both_networks() -> None:
@@ -81,6 +82,22 @@ def test_the_staging_deploy_detects_the_network_and_passes_it_to_make() -> None:
     rebuilt is the one that stays broken.
     """
     script = DEPLOY_STAGING.read_text()
+
+    assert 'docker network inspect "$agent_network"' in script
+    assert "COMPOSE+=(-f deploy/docker/docker-compose.cloud-agent.yml)" in script
+    assert 'CLOUD_AGENT_NETWORK="$CLOUD_AGENT_NETWORK"' in script
+
+
+def test_the_production_deploy_detects_it_too() -> None:
+    """Production runs the cloud agent as well, and had none of this.
+
+    Staging has detected the network since #1206; production did not, so a
+    host running both could carry the rewrite variables and still resolve
+    nothing — `getaddrinfo ENOTFOUND web`, answered as a 500 by a console
+    whose own health check stays green. The two deploys have to agree, and a
+    test is the only thing that keeps them agreeing.
+    """
+    script = DEPLOY_PRODUCTION.read_text()
 
     assert 'docker network inspect "$agent_network"' in script
     assert "COMPOSE+=(-f deploy/docker/docker-compose.cloud-agent.yml)" in script
