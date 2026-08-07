@@ -49,3 +49,10 @@ def test_force_chat_completions_streaming_registered():
     assert entry["type"] == "bool"
     assert entry["default"] is False
     assert entry.get("description")
+
+
+def test_admin_concurrency_default_is_unlimited():
+    entry = RUNTIME_SETTINGS_REGISTRY["user_concurrency_admin"]
+    assert entry["type"] == "int"
+    assert entry["default"] == 0  # 0 = unlimited
+    assert entry["min"] == 0

@@ -362,7 +362,7 @@ models:
     async def test_initialize_constructs_user_concurrency_limiter(self, mock_env):
         """services.user_concurrency_limiter must be a UserConcurrencyLimiter
         with caps for free/pro/internal/admin."""
-        from serving.servers.concurrency import UserConcurrencyLimiter
+        from serving.servers.concurrency import UNLIMITED_CONCURRENCY, UserConcurrencyLimiter
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
@@ -376,14 +376,14 @@ models:
 
             assert isinstance(services.user_concurrency_limiter, UserConcurrencyLimiter)
             limiter = services.user_concurrency_limiter
-            for role in ("trial", "free", "pro", "internal", "admin"):
+            for role in ("trial", "free", "pro", "internal"):
                 granted, cap, _ = await limiter.try_acquire(f"u-{role}", role, False)
                 assert granted
                 assert cap >= 1
-            # is_admin=True must yield admin cap
+            # is_admin=True must yield the admin cap: the unlimited sentinel (0)
             granted, cap, label = await limiter.try_acquire("admin-user", "free", True)
             assert granted
-            assert cap == 10
+            assert cap == UNLIMITED_CONCURRENCY
             assert label == "admin"
 
     @pytest.mark.asyncio
