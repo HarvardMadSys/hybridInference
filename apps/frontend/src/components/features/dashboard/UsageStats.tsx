@@ -89,7 +89,8 @@ export function UsageStats(): JSX.Element {
                   </div>
                   {quota.max_concurrency != null && (
                     <div className="mt-1 text-sm text-blue-800">
-                      Max concurrent requests: {quota.max_concurrency}
+                      Max concurrent requests:{' '}
+                      {quota.max_concurrency === 0 ? 'Unlimited' : quota.max_concurrency}
                     </div>
                   )}
                 </div>

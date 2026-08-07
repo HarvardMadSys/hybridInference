@@ -121,9 +121,9 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "user_concurrency_admin": {
         "type": "int",
-        "default": 10,
-        "min": 1,
-        "description": "Per-user concurrency cap for admin users",
+        "default": 0,
+        "min": 0,
+        "description": "Per-user concurrency cap for admin users (0 = unlimited)",
     },
     "user_daily_quota_free": {
         "type": "float",

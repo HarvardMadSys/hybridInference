@@ -223,12 +223,12 @@ async def test_list_settings_includes_user_concurrency_keys(admin_client):
 
 @pytest.mark.asyncio
 async def test_update_user_concurrency_admin_below_min_returns_400(admin_client):
-    """Admin floor of 1 prevents self-lockout."""
+    """Negative caps are rejected; the admin floor is 0 (= unlimited)."""
     client, _, _ = admin_client
 
     response = await client.patch(
         "/admin/settings/user_concurrency_admin",
-        json={"value": 0},
+        json={"value": -1},
         headers={"Authorization": "Bearer test-admin"},
     )
     assert response.status_code == 400
@@ -236,16 +236,17 @@ async def test_update_user_concurrency_admin_below_min_returns_400(admin_client)
 
 @pytest.mark.asyncio
 async def test_update_user_concurrency_admin_at_min_succeeds(admin_client):
+    """0 is the 'unlimited' sentinel and is accepted for the admin cap."""
     client, op_store, _ = admin_client
     op_store.get_setting.return_value = None
 
     response = await client.patch(
         "/admin/settings/user_concurrency_admin",
-        json={"value": 1},
+        json={"value": 0},
         headers={"Authorization": "Bearer test-admin"},
     )
     assert response.status_code == 200
-    assert response.json()["value"] == 1
+    assert response.json()["value"] == 0
 
 
 @pytest.mark.asyncio

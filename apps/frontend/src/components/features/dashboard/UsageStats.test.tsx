@@ -41,6 +41,16 @@ describe('UsageStats max_concurrency', () => {
     expect(screen.getByText(/Max concurrent requests:\s*5/)).toBeInTheDocument();
   });
 
+  it('renders "Unlimited" when max_concurrency is 0', () => {
+    mockedUseUsageStats.mockReturnValue({
+      data: { ...baseStats, quota: { ...baseStats.quota, max_concurrency: 0 } },
+      isLoading: false,
+      error: null,
+    });
+    render(<UsageStats />);
+    expect(screen.getByText(/Max concurrent requests:\s*Unlimited/)).toBeInTheDocument();
+  });
+
   it('hides the concurrency line when max_concurrency is undefined', () => {
     mockedUseUsageStats.mockReturnValue({
       data: baseStats,

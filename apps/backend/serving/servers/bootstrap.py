@@ -1259,7 +1259,7 @@ async def initialize() -> AppServices:
         logger.info("User concurrency limiter initialized (runtime-tunable)")
     else:
         user_concurrency_limiter = UserConcurrencyLimiter(
-            static_limits_provider({"free": 3, "pro": 3, "internal": 10, "admin": 10})
+            static_limits_provider({"free": 3, "pro": 3, "internal": 10, "admin": 0})
         )
         logger.warning(
             "User concurrency limiter initialized with static defaults "
