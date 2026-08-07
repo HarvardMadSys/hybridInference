@@ -8,7 +8,7 @@
         "model_dir": "/netscratch/juncheng/models/DeepSeek-V4-Flash-0731",
         "hf_repo": "deepseek-ai/DeepSeek-V4-Flash-0731",
         "cache_dir": "/var/tmp/sglang-cache/deepseek-v4-flash-0731",
-        "sglang_image": "lmsysorg/sglang:v0.5.16",
+        "sglang_image": "lmsysorg/sglang:nightly-dev-20260806-ae5f8c94",
         "served_name": "deepseek-v4-flash",
         "max_model_len": 1048576,
         "mem_fraction": "0.80",

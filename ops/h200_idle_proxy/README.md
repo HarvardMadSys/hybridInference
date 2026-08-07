@@ -216,7 +216,7 @@ See [`models.json`](models.json):
 | HiCache | **off** — no `hicache_*` key at all; it hangs the scheduler under DSpark (see below) |
 | `moe_runner_backend` | `marlin` — **required** for FP4 experts on H200 (SM90) |
 | `mtp` / `speculative_algorithm` | `true` / `DSPARK` |
-| `sglang_image` | `lmsysorg/sglang:v0.5.16` — DSpark needs ≥ 0.5.16 |
+| `sglang_image` | `lmsysorg/sglang:nightly-dev-20260806-ae5f8c94` — DSpark needs ≥ 0.5.16; the nightly is for grammar support (see below) |
 | `cache_dir` | node-local DeepGEMM/JIT cache (**not** on shared `/netscratch`) |
 | `skip_server_warmup` | `true` — the proxy's health check already gates readiness |
 
@@ -304,6 +304,39 @@ See [`models.json`](models.json):
 > "ready to roll" and then 500s every request. Note `config.json` still reports
 > `num_nextn_predict_layers: 1`, which is misleading.
 
+### Why a nightly image
+
+`v0.5.16` rejects **every grammar-constrained request** on this deployment with an
+HTTP 400:
+
+```
+DFLASH speculative decoding does not support grammar-constrained decoding yet.
+```
+
+The guard is `validate_dflash_request()`, and it fires for the whole DFlash family
+— `is_dflash_family()` is `is_dflash() or is_dspark()`, so our `DSPARK` config is in
+scope even though the message says DFLASH. It rejects `response_format`
+(`json_object` **and** `json_schema`), `regex`, `ebnf`, `structural_tag`, and
+`tool_choice: "required"` / a named function. Only `tool_choice: "auto"` survives.
+
+On the streaming path sglang emits that 400 as an **in-band SSE `error` frame under
+an HTTP 200**, followed by a placeholder `usage` of `prompt_tokens: 1,
+completion_tokens: 1`. The gateway therefore logged these as successful 200s with
+1/1 tokens and never failed over — 82 k requests in six hours, ~100% of all
+`response_format` traffic.
+
+[sgl-project/sglang#30096](https://github.com/sgl-project/sglang/pull/30096) makes
+the rejection conditional on `spec_algorithm.supports_grammar_overlap()`, which is
+true for the DFlash family, and adds the verify-time bitmask that makes it correct.
+It merged to `main` on 2026-07-25 **11:36 UTC** — eleven hours after `v0.5.16` was
+cut at 00:13 UTC the same day. No release contains it yet, so the pin is the
+2026-08-06 nightly (`ae5f8c94`, 456 commits past the fix).
+
+**Move back to a tag when v0.5.17 ships.** Releases have run roughly fortnightly
+(0.5.13 Jun 13 → 0.5.14 Jun 26 → 0.5.15 Jul 10 → 0.5.16 Jul 25), so v0.5.17 is due
+around 2026-08-08. A nightly is 456 unreviewed commits of drift on a 1M-context MoE;
+it is a bridge, not a destination.
+
 ## Benchmarks
 
 Measured on **h200b**, official 0731 at TP=2 on GPUs 2,3, marlin, 1M context, with
@@ -360,7 +393,9 @@ collapse at long context. (`bench_serving` simply stops printing "Accept length"
 
 - 4× NVIDIA H200 (or at least GPUs 2 and 3 free)
 - Docker + NVIDIA Container Toolkit
-- `lmsysorg/sglang:v0.5.16` or newer (**DSpark is not in ≤ 0.5.15**)
+- `lmsysorg/sglang:v0.5.16` or newer (**DSpark is not in ≤ 0.5.15**); a
+  post-v0.5.16 nightly if grammar-constrained decoding is needed (see
+  [Why a nightly image](#why-a-nightly-image))
 - Weights at `model_dir` (or `hf_repo` download on first request)
 - SSH to staging/prod with `GatewayPorts clientspecified` (or `yes`)
 - `autossh` for durable tunnels (installed by `install.sh`)
