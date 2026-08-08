@@ -191,19 +191,25 @@ async def _fetch_samples(conn, user_id: str | None, payload: UsageInsightsReques
     #  - this feature's own analysis calls, which we mark as synthetic probes so
     #    the gateway skips logging them; the metadata.synthetic_probe filter is a
     #    belt-and-braces guard for when log_synthetic_probes is enabled.
+    # request_payload and prompt are written together (both only when full-content
+    # storage is on), so "payload present" still selects rows that have content —
+    # but the *content* now lives in the prompt column, which is why it is
+    # selected below and handed to the extractors.
     _content_filter = (
         "request_payload IS NOT NULL"
         " AND (metadata->>'request_type') IS DISTINCT FROM 'embedding'"
         " AND (metadata->>'synthetic_probe') IS DISTINCT FROM 'true'"
     )
     # Two-stage: bound a recent candidate window (the inner query, cheap thanks
-    # to the timestamp index), then draw the random sample from it.
+    # to the timestamp index), then draw the random sample from it. Adding the
+    # prompt column costs about what it saves: the same message text used to ride
+    # along inside request_payload, which no longer stores it.
     if user_id:
         rows = await conn.fetch(
             f"""
-            SELECT timestamp, model_id, provider, metadata, request_payload
+            SELECT timestamp, model_id, provider, metadata, request_payload, prompt
             FROM (
-                SELECT timestamp, model_id, provider, metadata, request_payload
+                SELECT timestamp, model_id, provider, metadata, request_payload, prompt
                 FROM api_logs
                 WHERE user_id = $1 AND {_content_filter}
                 ORDER BY timestamp DESC
@@ -219,9 +225,9 @@ async def _fetch_samples(conn, user_id: str | None, payload: UsageInsightsReques
     else:
         rows = await conn.fetch(
             f"""
-            SELECT timestamp, model_id, provider, metadata, request_payload
+            SELECT timestamp, model_id, provider, metadata, request_payload, prompt
             FROM (
-                SELECT timestamp, model_id, provider, metadata, request_payload
+                SELECT timestamp, model_id, provider, metadata, request_payload, prompt
                 FROM api_logs
                 WHERE user_id IS NOT NULL AND {_content_filter}
                 ORDER BY timestamp DESC
@@ -242,6 +248,10 @@ async def _fetch_samples(conn, user_id: str | None, payload: UsageInsightsReques
     samples: list[dict] = []
     for r in rows:
         body = as_payload_dict(r["request_payload"])
+        # The turns live in the prompt column; request_payload keeps a copy only
+        # on rows logged before the de-duplication, which the extractors fall
+        # back to on their own.
+        turns = r["prompt"]
         samples.append(
             {
                 "timestamp": r["timestamp"].isoformat() if r["timestamp"] else None,
@@ -249,8 +259,8 @@ async def _fetch_samples(conn, user_id: str | None, payload: UsageInsightsReques
                 "provider": r["provider"],
                 "user_agent": user_agent_from_metadata(r["metadata"]),
                 "referer": referer_from_metadata(r["metadata"]),
-                "system_opener": system_opener(body, payload.max_chars),
-                "user_messages": user_messages(body, payload.max_chars),
+                "system_opener": system_opener(body, payload.max_chars, turns),
+                "user_messages": user_messages(body, payload.max_chars, turns),
             }
         )
     return samples

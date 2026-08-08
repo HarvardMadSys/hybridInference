@@ -8,7 +8,9 @@ user-turn text. This answers "what is this person building?" rather than just ho
 much traffic they generate (see ``user_usage_pattern.py`` for the latter).
 
 Handles both OpenAI-shape (``messages``) and Anthropic-shape (``system`` + content
-blocks) payloads.
+blocks) requests, and both storage eras: the conversation turns are read from the
+dedicated ``prompt`` column, falling back to the ``messages`` copy that older rows
+still keep inside ``request_payload``.
 
 Usage:
     python ops/db/analysis/user_prompt_sample.py fred@mccullough.digital --model minimax
@@ -78,10 +80,15 @@ async def _sample(
         return {"email": email, "found": False}
     uid = user["id"]
 
+    # ``prompt`` holds the conversation turns; ``request_payload`` keeps only a
+    # historical copy, so both are needed to cover old and new rows alike.
+    cols = (
+        "SELECT timestamp, request_id, model_id, provider, status_code, metadata, "
+        "request_payload, prompt "
+    )
     if model:
         rows = await conn.fetch(
-            "SELECT timestamp, request_id, model_id, provider, status_code, metadata, request_payload "
-            "FROM api_logs WHERE user_id = $1 AND model_id ILIKE '%' || $2 || '%' "
+            cols + "FROM api_logs WHERE user_id = $1 AND model_id ILIKE '%' || $2 || '%' "
             "ORDER BY timestamp DESC LIMIT $3",
             uid,
             model,
@@ -89,8 +96,7 @@ async def _sample(
         )
     else:
         rows = await conn.fetch(
-            "SELECT timestamp, request_id, model_id, provider, status_code, metadata, request_payload "
-            "FROM api_logs WHERE user_id = $1 ORDER BY timestamp DESC LIMIT $2",
+            cols + "FROM api_logs WHERE user_id = $1 ORDER BY timestamp DESC LIMIT $2",
             uid,
             limit,
         )
@@ -113,6 +119,7 @@ async def main(email: str, model: str | None, limit: int, max_chars: int, as_jso
     samples = []
     for r in res["rows"]:
         payload = as_payload_dict(r["request_payload"])
+        turns = r["prompt"]
         samples.append(
             {
                 "timestamp": r["timestamp"].isoformat(),
@@ -121,8 +128,8 @@ async def main(email: str, model: str | None, limit: int, max_chars: int, as_jso
                 "provider": r["provider"],
                 "status_code": r["status_code"],
                 "user_agent": user_agent_from_metadata(r["metadata"]),
-                "system_opener": system_opener(payload, max_chars),
-                "user_messages": user_messages(payload, max_chars),
+                "system_opener": system_opener(payload, max_chars, turns),
+                "user_messages": user_messages(payload, max_chars, turns),
             }
         )
 

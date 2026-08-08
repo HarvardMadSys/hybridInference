@@ -1,12 +1,38 @@
 # Daily database backup to S3 — runs at 04:00 UTC
-# Install: sudo cp ops/db/backup-cron /etc/cron.d/freeinference-backup && sudo sed -i 's|scripts/db|ops/db|' /etc/cron.d/freeinference-backup
-# Requires: freeinference user in docker group (sudo usermod -aG docker freeinference)
 #
-# Retention: 3 daily + 2 weekly + 1 monthly (GFS rotation)
+# !! THIS FILE IS NOT DEPLOYED. !!
+# Deploys update /srv/hybridInference/ops/db/backup.sh but never touch
+# /etc/cron.d/freeinference-backup, which is installed by hand. Editing the
+# schedule, the flags, MAILTO or the `|| tail` here changes NOTHING in
+# production until someone re-runs the install command below. Anything that has
+# to take effect without that step belongs in backup.sh, not here.
+#
+# Install / update: sudo cp ops/db/backup-cron /etc/cron.d/freeinference-backup
+#                   sudo chmod 644 /etc/cron.d/freeinference-backup
+# Verify what is actually live: sudo cat /etc/cron.d/freeinference-backup
+#
+# Requires: freeinference user in docker group (sudo usermod -aG docker freeinference)
+#           AWS credentials in ~freeinference/.aws/credentials
+#
+# The dump is streamed pg_dump -> zstd -> S3 and never lands on local disk:
+# the database is larger than the free space on the volume Postgres sits on.
+#
+# Retention: 3 daily + 2 weekly + 1 monthly (GFS rotation), applied only after
+#            the new backup has been verified.
 # Logs:      ~freeinference/backup.log (writable without root)
+#
+# Alerting. Four nights failed unnoticed because nothing watched this job:
+#   * the `|| tail` below prints the tail of the log on a failing run only,
+#     which is the one thing cron mails to MAILTO — a clean run stays silent
+#     (pg_dump --verbose would otherwise mail progress every night);
+#   * set BACKUP_ALERT_WEBHOOK_URL in the environment to also post failures
+#     to chat.
+# Neither catches "cron never fired at all" — for that, point an external
+# dead-man's-switch (healthchecks.io or equivalent) at this job.
 
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 HOME=/home/freeinference
+MAILTO=juncheng@seas.harvard.edu
 
-0 4 * * * freeinference /srv/hybridInference/ops/db/backup.sh --compress --s3-bucket s3://freeinference/backup --s3-only >> /home/freeinference/backup.log 2>&1
+0 4 * * * freeinference /srv/hybridInference/ops/db/backup.sh --compress --s3-bucket s3://harvardsys-backup/freeinference --s3-only >> /home/freeinference/backup.log 2>&1 || tail -n 40 /home/freeinference/backup.log

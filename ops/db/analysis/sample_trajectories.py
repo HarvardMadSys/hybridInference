@@ -177,8 +177,14 @@ def _assistant_from_response(response: Any) -> tuple[str, list[dict[str, Any]], 
     return text, tools, stop
 
 
-def _first_context(prompt: Any, request_payload: Any) -> tuple[str, list[str]]:
-    """Return (system-prompt excerpt, offered tool names) from the first request."""
+def _first_context(prompt: Any, request_payload: Any, tools: Any = None) -> tuple[str, list[str]]:
+    """Return (system-prompt excerpt, offered tool names) from the first request.
+
+    Both halves read the dedicated column first and fall back to
+    ``request_payload``: the offered tools are stored in ``api_logs.tools`` and
+    the turns in ``api_logs.prompt``, and the payload keeps its own copies only
+    on rows logged before that de-duplication.
+    """
     rp = _loads(request_payload) or {}
     sys = rp.get("system")
     if sys is None:  # OpenAI surface keeps system as the first message
@@ -186,8 +192,11 @@ def _first_context(prompt: Any, request_payload: Any) -> tuple[str, list[str]]:
             if isinstance(m, dict) and m.get("role") == "system":
                 sys = m.get("content")
                 break
+    offered = _loads(tools)
+    if not isinstance(offered, list) or not offered:
+        offered = rp.get("tools") or []
     names: list[str] = []
-    for t in rp.get("tools") or []:
+    for t in offered:
         if isinstance(t, dict):
             n = t.get("name") or ((t.get("function") or {}).get("name"))
             if n:
@@ -371,13 +380,15 @@ async def _build_pair_file(
         ids = [r["request_id"] for r in t["reqs"]]
         rows = await conn.fetch(
             "SELECT request_id, timestamp, status_code, ttft_ms, prompt_tokens, completion_tokens, "
-            "prompt, response, request_payload, metadata->>'user_agent' ua "
+            "prompt, response, request_payload, tools, metadata->>'user_agent' ua "
             "FROM api_logs WHERE request_id = ANY($1::text[]) ORDER BY timestamp ASC",
             ids,
         )
         if not rows:
             continue
-        sys_txt, tool_names = _first_context(rows[0]["prompt"], rows[0]["request_payload"])
+        sys_txt, tool_names = _first_context(
+            rows[0]["prompt"], rows[0]["request_payload"], rows[0]["tools"]
+        )
         recs, tools_used, prev_hashes = [], set(), []
         for i, r in enumerate(rows):
             msgs, hashes = _messages_and_hashes(r["prompt"])

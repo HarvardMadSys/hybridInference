@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from serving.analytics.automation_score import score_users_from_logs
 from serving.storage.base import LogStore, Row
 from serving.storage.log_schema import ensure_api_logs_schema
+from serving.storage.payload_dedup import strip_duplicated_payload_keys
 from serving.storage.utils import (
     agent_name_from_prompt,
     calculate_cost,
@@ -170,7 +171,20 @@ class PostgresLogStore(LogStore):
         if should_store_full:
             sanitized_prompt = strip_null_bytes(prompt)
             sanitized_response = strip_null_bytes(response)
-            sanitized_request_payload = strip_null_bytes(request_payload)
+            # Drop from the stored body whatever this same row already writes to
+            # the dedicated ``prompt``/``tools`` columns — the duplication that
+            # grew request_payload to roughly half of api_logs on disk. The
+            # sanitized column values are passed in so the dedup is verified
+            # rather than assumed: anything the columns did not capture (a
+            # client's per-message cache_control, or tools on an early-error row
+            # whose params carried none) is kept. Strip *after* strip_null_bytes
+            # so a key obfuscated with null bytes ("mess\x00ages") is caught too,
+            # and so both sides of the comparison are sanitized alike.
+            sanitized_request_payload = strip_duplicated_payload_keys(
+                strip_null_bytes(request_payload),
+                stored_messages=sanitized_prompt,
+                stored_tools=sanitized_tools,
+            )
             prompt_str = (
                 json.dumps(sanitized_prompt)
                 if isinstance(sanitized_prompt, list)
