@@ -169,6 +169,31 @@ def test_keeps_messages_when_they_cannot_be_aligned() -> None:
     assert _stripped(body, stored_messages="not a list")["messages"] == SAMPLE_MESSAGES
 
 
+def test_never_overwrites_a_clients_own_messages_extra_field() -> None:
+    """A vendor field of that name must survive; residuals defer to it."""
+    body = _sample_body()
+    body["messages"] = [{"role": "user", "content": "hi", "cache_control": {"type": "ephemeral"}}]
+    body[MESSAGE_RESIDUAL_KEY] = {"vendor": "do not clobber"}
+    stored = [{"role": "user", "content": "hi"}]
+
+    stripped = _stripped(body, stored_messages=stored)
+
+    assert stripped[MESSAGE_RESIDUAL_KEY] == {"vendor": "do not clobber"}
+    # Dedup is skipped for this row rather than losing the field.
+    assert stripped["messages"] == body["messages"]
+
+
+def test_still_strips_when_messages_extra_exists_but_nothing_is_left_over() -> None:
+    """No residuals to write means no collision, so the dedup still applies."""
+    body = _sample_body()
+    body[MESSAGE_RESIDUAL_KEY] = {"vendor": "keep me"}
+
+    stripped = _stripped(body)
+
+    assert "messages" not in stripped
+    assert stripped[MESSAGE_RESIDUAL_KEY] == {"vendor": "keep me"}
+
+
 def test_keeps_messages_whose_content_the_column_did_not_store() -> None:
     """A truncated/redacted prompt column must not license dropping the body."""
     body = _sample_body()

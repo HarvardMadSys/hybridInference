@@ -95,7 +95,11 @@ def _strip_dict(
 
     if "messages" in result:
         strippable, residuals = _message_residuals(result["messages"], stored_messages)
-        if strippable:
+        # A client is free to send its own top-level "messages_extra"; writing
+        # residuals over it would destroy a field nothing else stores. Rare
+        # enough that skipping the dedup entirely for that row is the honest
+        # trade — a few duplicated kB beats silently losing a vendor field.
+        if strippable and not (residuals is not None and MESSAGE_RESIDUAL_KEY in result):
             del result["messages"]
             if residuals is not None:
                 result[MESSAGE_RESIDUAL_KEY] = residuals
