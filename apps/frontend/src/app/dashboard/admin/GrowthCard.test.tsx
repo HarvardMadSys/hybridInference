@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AdminGrowthResponse, getGrowthAnalytics } from '@/lib/api/admin';
@@ -89,7 +89,7 @@ describe('GrowthCard', () => {
   it('loads the 30-day range by default and shows both slopes', async () => {
     render(<GrowthCard />);
 
-    await waitFor(() => expect(getGrowthAnalytics).toHaveBeenCalledWith(30));
+    await waitFor(() => expect(getGrowthAnalytics).toHaveBeenCalledWith(30, expect.anything()));
     expect(await screen.findByText('Active users')).toBeInTheDocument();
     expect(screen.getByText('Token consumption')).toBeInTheDocument();
 
@@ -125,11 +125,50 @@ describe('GrowthCard', () => {
 
   it('refetches when the range changes', async () => {
     render(<GrowthCard />);
-    await waitFor(() => expect(getGrowthAnalytics).toHaveBeenCalledWith(30));
+    await waitFor(() => expect(getGrowthAnalytics).toHaveBeenCalledWith(30, expect.anything()));
 
     fireEvent.click(screen.getByRole('button', { name: '60d' }));
 
-    await waitFor(() => expect(getGrowthAnalytics).toHaveBeenCalledWith(60));
+    await waitFor(() => expect(getGrowthAnalytics).toHaveBeenCalledWith(60, expect.anything()));
+  });
+
+  it('ignores a superseded range whose response arrives late', async () => {
+    const deferred = (): [Promise<AdminGrowthResponse>, (v: AdminGrowthResponse) => void] => {
+      let settle: (v: AdminGrowthResponse) => void = () => undefined;
+      const promise = new Promise<AdminGrowthResponse>((res) => {
+        settle = res;
+      });
+      return [promise, settle];
+    };
+    const [slow30, resolve30] = deferred();
+    const [slow60, resolve60] = deferred();
+    vi.mocked(getGrowthAnalytics).mockImplementation((days) => (days === 30 ? slow30 : slow60));
+
+    render(<GrowthCard />);
+    await waitFor(() => expect(getGrowthAnalytics).toHaveBeenCalledWith(30, expect.anything()));
+
+    fireEvent.click(screen.getByRole('button', { name: '60d' }));
+    await waitFor(() => expect(getGrowthAnalytics).toHaveBeenCalledWith(60, expect.anything()));
+
+    // The abandoned 30d request lands while 60d is still in flight. It must
+    // neither render its payload nor drop the skeleton.
+    await act(async () => {
+      resolve30({
+        ...RESPONSE,
+        users_trend: { ...RESPONSE.users_trend, slope_per_day: 10 },
+      });
+    });
+    expect(screen.queryByText('+10')).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId('chart')).toHaveLength(0);
+
+    await act(async () => {
+      resolve60({
+        ...RESPONSE,
+        users_trend: { ...RESPONSE.users_trend, slope_per_day: 99 },
+      });
+    });
+    expect(await screen.findByText('+99')).toBeInTheDocument();
+    expect(screen.queryByText('+10')).not.toBeInTheDocument();
   });
 
   it('reports growth from a flat baseline as having no percentage', async () => {

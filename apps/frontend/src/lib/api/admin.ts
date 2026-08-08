@@ -710,6 +710,10 @@ export interface GrowthPoint {
   partial: boolean; // today, still accumulating — excluded from the trends
 }
 
+export interface GetGrowthAnalyticsOptions {
+  signal?: AbortSignal;
+}
+
 export interface GrowthTrend {
   slope_per_day: number;
   recent_avg: number;
@@ -726,8 +730,13 @@ export interface AdminGrowthResponse {
   generated_at: string;
 }
 
-export async function getGrowthAnalytics(days: GrowthRange): Promise<AdminGrowthResponse> {
-  const resp = await fetchWithAuth(API_BASE, `/admin/analytics/growth?days=${days}`);
+export async function getGrowthAnalytics(
+  days: GrowthRange,
+  options: GetGrowthAnalyticsOptions = {},
+): Promise<AdminGrowthResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/analytics/growth?days=${days}`, {
+    signal: options.signal,
+  });
   return jsonOrThrow<AdminGrowthResponse>(resp);
 }
 

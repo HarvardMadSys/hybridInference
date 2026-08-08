@@ -2,7 +2,7 @@
 
 // Loaded via next/dynamic from AnalyticsTab — do not import statically, or the
 // recharts bundle lands back in the tab's initial chunk.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Bar,
   CartesianGrid,
@@ -35,7 +35,6 @@ function fmtCount(n: number): string {
   return Math.abs(n) >= 10_000 ? compact.format(n) : numberFmt.format(Math.round(n));
 }
 
-/** Signed, compact — the slope headline reads "+2.4" / "−1.2M". */
 function fmtSigned(n: number): string {
   if (n === 0) return '0';
   const sign = n > 0 ? '+' : '−';
@@ -61,19 +60,15 @@ const TOOLTIP_STYLE = {
 interface SeriesPoint {
   day: string;
   value: number;
-  /** Trailing mean over complete days; null on the partial day, which would dip it. */
+  /** Null on the partial day, whose short value would dip the mean. */
   ma: number | null;
   cumulative: number;
   partial: boolean;
 }
 
 /**
- * Fold the raw points into what the chart draws: the daily value, its trailing
- * mean, and the running total whose slope the mean describes.
- *
- * `cumulative` sums `pick` straight down the range, so for DAU the caller passes
- * `new_users` (first-seen-in-range) rather than the daily count — summing DAU
- * would count the same person once per active day.
+ * `cumulativePick` is separate from `pick` because for DAU the running total has
+ * to sum `new_users`: summing DAU would count the same person once per active day.
  */
 function toSeries(
   points: AdminGrowthResponse['points'],
@@ -157,6 +152,7 @@ function GrowthChart({
   dailyLabel: string;
   cumulativeLabel: string;
 }) {
+  const half = `${trend.compare_days}d`;
   return (
     <div>
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -170,8 +166,8 @@ function GrowthChart({
         <ChangeBadge trend={trend} />
       </div>
       <p className="mt-1 text-[11px] text-gray-400">
-        recent {trend.compare_days}d avg {fmtCount(trend.recent_avg)} · earlier{' '}
-        {trend.compare_days}d avg {fmtCount(trend.previous_avg)}
+        recent {half} avg {fmtCount(trend.recent_avg)} · earlier {half} avg{' '}
+        {fmtCount(trend.previous_avg)}
       </p>
 
       <div className="mt-3 h-[190px]">
@@ -266,30 +262,49 @@ export default function GrowthCard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async (days: GrowthRange) => {
+  // Aborting on range change keeps a slow earlier request from landing on top of
+  // a newer one. The `cancelled` flag guards the state writes as well: an abort
+  // races the response, so a superseded call must not clear `loading` either —
+  // that would blank the skeleton while the current range is still in flight.
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+
     setLoading(true);
     setError(null);
-    try {
-      setData(await getGrowthAnalytics(days));
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    (async () => {
+      try {
+        const resp = await getGrowthAnalytics(range, { signal: controller.signal });
+        if (!cancelled) setData(resp);
+      } catch (e) {
+        if (!cancelled) setError(getErrorMessage(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
 
-  useEffect(() => {
-    void load(range);
-  }, [load, range]);
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [range]);
 
   const userSeries = useMemo(
-    // Bars are DAU; the running line sums first-seen users, so it reads as
-    // cumulative distinct users reached inside the range.
-    () => (data ? toSeries(data.points, (p) => p.active_users, (p) => p.new_users) : []),
+    () =>
+      toSeries(
+        data?.points ?? [],
+        (p) => p.active_users,
+        (p) => p.new_users,
+      ),
     [data],
   );
   const tokenSeries = useMemo(
-    () => (data ? toSeries(data.points, (p) => p.tokens, (p) => p.tokens) : []),
+    () =>
+      toSeries(
+        data?.points ?? [],
+        (p) => p.tokens,
+        (p) => p.tokens,
+      ),
     [data],
   );
 
@@ -319,8 +334,8 @@ export default function GrowthCard() {
         </div>
       </div>
       <p className="mb-5 text-[11px] text-gray-400">
-        Whole UTC days. Slope is a least-squares fit over the range; today is drawn but excluded
-        from every number here, since it is still filling.
+        Whole UTC days · least-squares fit over the range · today is drawn but excluded from every
+        number here, since it is still filling
       </p>
 
       {error && (
