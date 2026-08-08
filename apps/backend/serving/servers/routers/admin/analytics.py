@@ -9,12 +9,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BeforeValidator
 
 from serving.analytics.geo_demand import floor_hour, get_geo_demand
+from serving.analytics.growth import TrendSummary, summarize
 from serving.schemas_admin import (
     AdminAnalyticsResponse,
+    AdminGrowthResponse,
     AnalyticsBreakdownEntry,
     AnalyticsModelUserEntry,
     AnalyticsModelUsers,
     AnalyticsUserEntry,
+    GrowthPoint,
+    GrowthTrend,
     SparklineBucket,
 )
 from serving.servers.deps import (
@@ -25,6 +29,7 @@ from serving.servers.deps import (
 router = APIRouter(prefix="/admin")
 
 GeoDays = Annotated[Literal[7, 14, 30, 90], BeforeValidator(int)]
+GrowthDays = Annotated[Literal[30, 60, 90], BeforeValidator(int)]
 
 
 # Period → (lookback_minutes, bucket_minutes)
@@ -57,6 +62,122 @@ async def admin_get_geo_analytics(
     start = end - timedelta(days=days)
 
     return await get_geo_demand(db_logger.pool, start, end)
+
+
+def _as_trend(summary: TrendSummary) -> GrowthTrend:
+    """Map the pure trend dataclass onto its response schema."""
+    return GrowthTrend(
+        slope_per_day=summary.slope_per_day,
+        recent_avg=summary.recent_avg,
+        previous_avg=summary.previous_avg,
+        change_pct=summary.change_pct,
+        compare_days=summary.compare_days,
+    )
+
+
+@router.get("/analytics/growth", response_model=AdminGrowthResponse)
+async def admin_get_growth_analytics(
+    days: GrowthDays = 30,
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminGrowthResponse:
+    """Return the daily DAU / token series and its fitted growth slope.
+
+    Scoped to whole UTC days and independent of the overview's period selector:
+    a slope over daily buckets needs a range measured in weeks, not the hour or
+    day the rest of the tab looks at.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    # Whole UTC days, so buckets do not drift with the database session's
+    # timezone. ``end_day`` is today (still filling), and the scan runs up to
+    # tomorrow's midnight to include it.
+    end_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_day = end_day - timedelta(days=days - 1)
+    window_end = end_day + timedelta(days=1)
+
+    async with db_logger.pool.acquire() as conn:
+        # One pass over the window grouped by (day, user), which both the daily
+        # totals and the first-seen-in-range counts are then folded out of —
+        # a second scan of api_logs just to date users is not worth it.
+        rows = await conn.fetch(
+            """
+            WITH series AS (
+                SELECT generate_series($1::timestamptz, $2::timestamptz, interval '1 day') AS day
+            ),
+            per_user_day AS (
+                SELECT
+                    (date_trunc('day', l.timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS day,
+                    l.user_id,
+                    COUNT(*) AS requests,
+                    COALESCE(
+                        SUM(COALESCE(l.prompt_tokens, 0) + COALESCE(l.completion_tokens, 0)),
+                        0
+                    ) AS tokens
+                FROM api_logs l
+                WHERE l.timestamp >= $1::timestamptz
+                  AND l.timestamp < $3::timestamptz
+                GROUP BY 1, 2
+            ),
+            daily AS (
+                -- Rows are already unique per (day, user), so the FILTER count
+                -- is the day's distinct signed-in users. SUM(bigint) comes back
+                -- numeric from asyncpg; cast so the ints stay ints.
+                SELECT
+                    day,
+                    COUNT(*) FILTER (WHERE user_id IS NOT NULL) AS active_users,
+                    SUM(requests)::bigint AS requests,
+                    SUM(tokens)::bigint AS tokens
+                FROM per_user_day
+                GROUP BY day
+            ),
+            new_users AS (
+                SELECT first_day AS day, COUNT(*)::bigint AS new_users
+                FROM (
+                    SELECT user_id, MIN(day) AS first_day
+                    FROM per_user_day
+                    WHERE user_id IS NOT NULL
+                    GROUP BY user_id
+                ) f
+                GROUP BY first_day
+            )
+            SELECT
+                s.day AS day,
+                COALESCE(d.active_users, 0) AS active_users,
+                COALESCE(n.new_users, 0) AS new_users,
+                COALESCE(d.tokens, 0) AS tokens,
+                COALESCE(d.requests, 0) AS requests
+            FROM series s
+            LEFT JOIN daily d ON d.day = s.day
+            LEFT JOIN new_users n ON n.day = s.day
+            ORDER BY s.day ASC
+            """,
+            start_day,
+            end_day,
+            window_end,
+        )
+
+    points = [
+        GrowthPoint(
+            day=row["day"],
+            active_users=int(row["active_users"] or 0),
+            new_users=int(row["new_users"] or 0),
+            tokens=int(row["tokens"] or 0),
+            requests=int(row["requests"] or 0),
+            partial=row["day"] == end_day,
+        )
+        for row in rows
+    ]
+
+    complete = [p for p in points if not p.partial]
+    return AdminGrowthResponse(
+        days=days,
+        points=points,
+        users_trend=_as_trend(summarize([float(p.active_users) for p in complete])),
+        tokens_trend=_as_trend(summarize([float(p.tokens) for p in complete])),
+        generated_at=datetime.now(timezone.utc),
+    )
 
 
 @router.get("/analytics", response_model=AdminAnalyticsResponse)

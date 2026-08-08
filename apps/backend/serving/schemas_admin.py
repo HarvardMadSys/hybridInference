@@ -776,6 +776,42 @@ class AdminAnalyticsResponse(BaseModel):
     generated_at: datetime
 
 
+class GrowthPoint(BaseModel):
+    """One UTC day in the growth series."""
+
+    day: datetime  # UTC midnight opening the day
+    active_users: int  # distinct signed-in users that day (DAU)
+    # Users whose first request *within the requested range* fell on this day.
+    # Range-scoped, so a user active before the range counts as new on their
+    # first day inside it; running-summing this gives cumulative reach.
+    new_users: int
+    tokens: int  # prompt + completion tokens, all traffic
+    requests: int
+    # True for today, which is still accumulating. Trends exclude it — a
+    # half-finished day would drag the fitted slope down on its own.
+    partial: bool = False
+
+
+class GrowthTrend(BaseModel):
+    """Fitted trend for one daily series over the range's complete days."""
+
+    slope_per_day: float  # OLS slope, series units per day
+    recent_avg: float  # mean over the recent half of the range
+    previous_avg: float  # mean over the older half
+    change_pct: float | None  # (recent - previous) / previous; None if previous is 0
+    compare_days: int  # days per half, for labelling the comparison
+
+
+class AdminGrowthResponse(BaseModel):
+    """Response for GET /admin/analytics/growth."""
+
+    days: int
+    points: list[GrowthPoint]
+    users_trend: GrowthTrend  # over active_users (DAU)
+    tokens_trend: GrowthTrend
+    generated_at: datetime
+
+
 # ========================================
 # Usage Insights (LLM-powered request analysis)
 # ========================================

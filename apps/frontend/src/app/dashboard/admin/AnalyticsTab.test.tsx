@@ -3,14 +3,17 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getAnalytics, getGeoAnalytics } from '@/lib/api/admin';
+import { getAnalytics, getGeoAnalytics, getGrowthAnalytics } from '@/lib/api/admin';
 import { AnalyticsTab } from './AnalyticsTab';
 
 vi.mock('recharts', () => ({
   Bar: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   BarChart: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  CartesianGrid: () => null,
   Cell: () => null,
+  ComposedChart: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   LabelList: () => null,
+  Line: () => null,
   Pie: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   PieChart: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   ResponsiveContainer: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
@@ -22,11 +25,13 @@ vi.mock('recharts', () => ({
 vi.mock('@/lib/api/admin', () => ({
   getAnalytics: vi.fn(),
   getGeoAnalytics: vi.fn(),
+  getGrowthAnalytics: vi.fn(),
 }));
 
 describe('AnalyticsTab request-origins entry', () => {
   beforeEach(() => {
     vi.mocked(getAnalytics).mockImplementation(() => new Promise(() => undefined));
+    vi.mocked(getGrowthAnalytics).mockImplementation(() => new Promise(() => undefined));
     vi.mocked(getGeoAnalytics).mockReset();
   });
 
@@ -53,6 +58,12 @@ describe('AnalyticsTab request-origins entry', () => {
 });
 
 describe('AnalyticsTab top users by model', () => {
+  beforeEach(() => {
+    // The growth card fetches on its own; park it so it neither resolves nor
+    // throws while this suite exercises the overview cards.
+    vi.mocked(getGrowthAnalytics).mockImplementation(() => new Promise(() => undefined));
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
