@@ -106,6 +106,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Read safe.directory before writing it. `--add` appended a duplicate
+          # line on every single deploy, so the happy path took a write lock on
+          # ~/.gitconfig it had no need for — and a deploy died on exactly that
+          # write ("failed to write new configuration file ~/.gitconfig.lock",
+          # run 31198858687) before it could reach the deploy script. Checking
+          # first means the settled host never writes the file at all.
           ssh \
             -i "${HOME}/.ssh/production_deploy_key" \
             -p "${PROD_PORT}" \
@@ -114,4 +120,4 @@ jobs:
             -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
             -o GlobalKnownHostsFile=/dev/null \
             "${PROD_USER}@${PROD_HOST}" \
-            "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && DEPLOY_SHA=${DEPLOY_SHA} GITHUB_TOKEN='${ROUTEWISE_GITHUB_TOKEN}' bash ops/deploy/deploy_production.sh"
+            "( git config --global --get-all safe.directory 2>/dev/null | grep -qxF /srv/hybridInference || git config --global --add safe.directory /srv/hybridInference ) && cd /srv/hybridInference && DEPLOY_SHA=${DEPLOY_SHA} GITHUB_TOKEN='${ROUTEWISE_GITHUB_TOKEN}' bash ops/deploy/deploy_production.sh"

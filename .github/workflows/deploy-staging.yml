@@ -114,7 +114,9 @@ jobs:
           # old code. `sudo -n` never blocks on a password prompt; if the deploy
           # user lacks passwordless sudo the reclaim is skipped and the original
           # git error still surfaces below, so this only ever helps.
-          remote_cmd="git config --global --add safe.directory /srv/hybridInference \
+          remote_cmd="{ git config --global --get-all safe.directory 2>/dev/null \
+                        | grep -qxF /srv/hybridInference \
+                        || git config --global --add safe.directory /srv/hybridInference; } \
             && cd /srv/hybridInference \
             && { sudo -n chown -R '${STAGING_USER}' /srv/hybridInference 2>/dev/null \
                  || echo '[deploy-staging] ownership reclaim skipped (no passwordless sudo?); continuing'; } \
