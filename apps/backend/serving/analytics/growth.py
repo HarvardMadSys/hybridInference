@@ -1,8 +1,7 @@
 """Trend arithmetic behind the admin growth cards.
 
-Deliberately free of database and HTTP concerns: the endpoint hands over one
-plain list of daily values per series and gets back the numbers the card puts
-above its chart, so the slope maths can be unit tested on its own.
+Kept free of database and HTTP concerns so the slope maths is unit tested on its
+own: one plain list of daily values in, the card's headline numbers out.
 """
 
 from __future__ import annotations
@@ -25,19 +24,17 @@ class TrendSummary:
     slope_per_day: float
     recent_avg: float
     previous_avg: float
-    # None rather than infinity when the older half is flat zero — growing from
-    # nothing has no meaningful percentage.
+    # None rather than infinity when the older half is flat zero.
     change_pct: float | None
-    # Days per half in the recent-vs-previous comparison, so the card can label
-    # the badge honestly ("vs previous 15d") instead of guessing.
+    # Days per half, so the card can label the badge ("vs previous 15d").
     compare_days: int
 
 
 def linear_slope(values: Sequence[float]) -> float:
     """Return the ordinary-least-squares slope of ``values`` over 0..n-1.
 
-    One value per day in, "units per day" out. A single point (or none) has no
-    defined slope and yields 0.0.
+    One value per day in, "units per day" out. Fewer than two points have no
+    defined slope and yield 0.0.
     """
     n = len(values)
     if n < 2:

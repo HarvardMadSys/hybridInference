@@ -781,14 +781,14 @@ class GrowthPoint(BaseModel):
 
     day: datetime  # UTC midnight opening the day
     active_users: int  # distinct signed-in users that day (DAU)
-    # Users whose first request *within the requested range* fell on this day.
-    # Range-scoped, so a user active before the range counts as new on their
-    # first day inside it; running-summing this gives cumulative reach.
+    # First request *within the requested range* fell on this day. Range-scoped,
+    # so someone active before the range counts as new on their first day inside
+    # it; running-summing this gives cumulative reach.
     new_users: int
     tokens: int  # prompt + completion tokens, all traffic
     requests: int
-    # True for today, which is still accumulating. Trends exclude it — a
-    # half-finished day would drag the fitted slope down on its own.
+    # Today, still accumulating. Trends exclude it — a half-finished day would
+    # drag the fitted slope down on its own.
     partial: bool = False
 
 
