@@ -92,9 +92,11 @@ function toSeries(
 
 function ChangeBadge({ trend }: { trend: GrowthTrend }) {
   if (trend.change_pct == null || trend.compare_days === 0) {
+    // Growth from a flat zero has no percentage, so this is the only place the
+    // recent level shows as a number.
     return (
       <span className="text-[11px] text-gray-400">
-        no baseline · previous {trend.compare_days}d was flat
+        no baseline · recent {trend.compare_days}d avg {fmtCount(trend.recent_avg)}
       </span>
     );
   }
@@ -152,7 +154,6 @@ function GrowthChart({
   dailyLabel: string;
   cumulativeLabel: string;
 }) {
-  const half = `${trend.compare_days}d`;
   return (
     <div>
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -165,10 +166,6 @@ function GrowthChart({
         </div>
         <ChangeBadge trend={trend} />
       </div>
-      <p className="mt-1 text-[11px] text-gray-400">
-        recent {half} avg {fmtCount(trend.recent_avg)} · earlier {half} avg{' '}
-        {fmtCount(trend.previous_avg)}
-      </p>
 
       <div className="mt-3 h-[190px]">
         <ResponsiveContainer width="100%" height="100%">
@@ -201,7 +198,13 @@ function GrowthChart({
             />
             <Tooltip
               cursor={{ fill: 'rgba(59,130,246,0.06)' }}
-              labelFormatter={(label) => fmtDay(label as string)}
+              // The last bar is dimmed because today is still filling. Nothing
+              // else on the card says so, so the tooltip has to.
+              labelFormatter={(label, payload) =>
+                payload?.[0]?.payload?.partial
+                  ? `${fmtDay(label as string)} · partial`
+                  : fmtDay(label as string)
+              }
               formatter={(value, name) => {
                 if (value == null) return ['—', name as string];
                 return [fmtCount(value as number), name as string];
@@ -310,7 +313,7 @@ export default function GrowthCard() {
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-5 sm:col-span-2">
-      <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Growth Rate</p>
         <div
           aria-label="Growth range"
@@ -333,10 +336,6 @@ export default function GrowthCard() {
           ))}
         </div>
       </div>
-      <p className="mb-5 text-[11px] text-gray-400">
-        Whole UTC days · least-squares fit over the range · today is drawn but excluded from every
-        number here, since it is still filling
-      </p>
 
       {error && (
         <div className="rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</div>
