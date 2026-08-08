@@ -13,6 +13,13 @@ const AnalyticsCards = dynamic(() => import('./AnalyticsCards'), {
   loading: () => <AnalyticsSkeleton />,
 });
 
+// Own fetch, own range: the growth series is in whole days and ignores the
+// period selector above, so it must not block on the overview payload.
+const GrowthCard = dynamic(() => import('./GrowthCard'), {
+  ssr: false,
+  loading: () => <SkeletonCard className="sm:col-span-2" />,
+});
+
 const PERIODS: { key: AnalyticsPeriod; label: string }[] = [
   { key: 'hour', label: 'Hour' },
   { key: 'day', label: 'Day' },
@@ -115,6 +122,7 @@ export function AnalyticsTab() {
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {loading || !data ? <AnalyticsSkeleton /> : <AnalyticsCards data={data} period={period} />}
+        <GrowthCard />
       </div>
     </div>
   );
