@@ -258,8 +258,16 @@ main() {
   log "Current service state:"
   "${COMPOSE[@]}" ps
 
+  # --retry-all-errors, not just --retry-connrefused: a published Docker port is
+  # bound by docker-proxy the instant the container starts, so the connect
+  # succeeds and the far end resets while the server inside is still coming up.
+  # That is CURLE_RECV_ERROR (56), which --retry-connrefused does not cover, so
+  # curl gives up on the first attempt and the --retry flags never engage. The
+  # frontend line below already carries the flag; this one did not, and the same
+  # asymmetry on the production script failed six deploys of a stack that came
+  # up healthy anyway.
   log "Checking backend health at ${HEALTH_URL}."
-  curl -fsS --retry 30 --retry-delay 5 --retry-connrefused "$HEALTH_URL"
+  curl -fsS --retry 30 --retry-delay 5 --retry-connrefused --retry-all-errors "$HEALTH_URL"
   printf '\n'
 
   log "Checking frontend health at ${FRONTEND_HEALTH_URL}."

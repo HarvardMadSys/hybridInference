@@ -108,6 +108,36 @@ check_pgadmin_route() {
   log "pgAdmin route redirected an anonymous request to the login page, as expected."
 }
 
+# Poll rather than lean on curl's own --retry, which does not cover the failure
+# a just-restarted container actually produces. curl's transient-error set is
+# HTTP 408/429/5xx and timeouts; --retry-connrefused adds ECONNREFUSED and
+# nothing more. But a published port is bound by docker-proxy the instant the
+# container starts, so the connect succeeds and it is the far end that resets
+# the connection while the server inside is still coming up. That is
+# CURLE_RECV_ERROR (56), which is not transient by curl's reckoning, so it
+# gives up on the first attempt — milliseconds after `compose ps` — and the
+# --retry flags never engage at all.
+#
+# The frontend check hit exactly this and was rewritten as a loop in b4b33149.
+# The backend line kept --retry-connrefused and went on failing deploys of a
+# stack that then came up healthy anyway, so both go through one helper now.
+wait_for_http() {
+  local label="$1" url="$2" attempt
+  shift 2
+
+  log "Checking ${label} health at ${url}."
+  for attempt in $(seq 1 30); do
+    if curl -fsS --max-time 5 "$@" "$url"; then
+      return 0
+    fi
+    if [[ "$attempt" -eq 30 ]]; then
+      log "The ${label} healthcheck failed after 30 attempts."
+      exit 1
+    fi
+    sleep 5
+  done
+}
+
 # Wrap body in a function so bash parses the entire script into memory before
 # executing any command. The script self-modifies via `git reset --hard` below;
 # without this guard, bash continues reading the disk file at the byte offset
@@ -202,21 +232,10 @@ main() {
   log "Current service state:"
   "${COMPOSE[@]}" ps
 
-  log "Checking backend health at ${HEALTH_URL}."
-  curl -fsS --retry 30 --retry-delay 5 --retry-connrefused "$HEALTH_URL"
+  wait_for_http backend "$HEALTH_URL"
   printf '\n'
 
-  log "Checking frontend health at ${FRONTEND_HEALTH_URL}."
-  for attempt in $(seq 1 30); do
-    if curl -fsS --max-time 5 --output /dev/null "$FRONTEND_HEALTH_URL"; then
-      break
-    fi
-    if [[ "$attempt" -eq 30 ]]; then
-      log "Frontend healthcheck failed after 30 attempts."
-      exit 1
-    fi
-    sleep 5
-  done
+  wait_for_http frontend "$FRONTEND_HEALTH_URL" --output /dev/null
 
   check_pgadmin_route
 
