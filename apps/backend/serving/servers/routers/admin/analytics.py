@@ -75,6 +75,69 @@ def _as_trend(summary: TrendSummary) -> GrowthTrend:
     )
 
 
+_GROWTH_SERIES_SQL = """
+WITH series AS (
+    -- Step in naive UTC, not timestamptz: `timestamptz + interval
+    -- '1 day'` is a calendar day in the *session* timezone, so a
+    -- range crossing a DST boundary steps 23 or 25 hours and the
+    -- buckets drift off UTC midnight, matching nothing in the join
+    -- and zeroing out real days.
+    SELECT d AT TIME ZONE 'UTC' AS day
+    FROM generate_series(
+        $1::timestamptz AT TIME ZONE 'UTC',
+        $2::timestamptz AT TIME ZONE 'UTC',
+        interval '1 day'
+    ) AS d
+),
+per_user_day AS (
+    SELECT
+        (date_trunc('day', l.timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS day,
+        l.user_id,
+        COUNT(*) AS requests,
+        COALESCE(
+            SUM(COALESCE(l.prompt_tokens, 0) + COALESCE(l.completion_tokens, 0)),
+            0
+        ) AS tokens
+    FROM api_logs l
+    WHERE l.timestamp >= $1::timestamptz
+      AND l.timestamp < $3::timestamptz
+    GROUP BY 1, 2
+),
+daily AS (
+    -- Rows are already unique per (day, user), so the FILTER count
+    -- is the day's distinct signed-in users. SUM(bigint) comes back
+    -- numeric from asyncpg; cast so the ints stay ints.
+    SELECT
+        day,
+        COUNT(*) FILTER (WHERE user_id IS NOT NULL) AS active_users,
+        SUM(requests)::bigint AS requests,
+        SUM(tokens)::bigint AS tokens
+    FROM per_user_day
+    GROUP BY day
+),
+new_users AS (
+    SELECT first_day AS day, COUNT(*)::bigint AS new_users
+    FROM (
+        SELECT user_id, MIN(day) AS first_day
+        FROM per_user_day
+        WHERE user_id IS NOT NULL
+        GROUP BY user_id
+    ) f
+    GROUP BY first_day
+)
+SELECT
+    s.day AS day,
+    COALESCE(d.active_users, 0) AS active_users,
+    COALESCE(n.new_users, 0) AS new_users,
+    COALESCE(d.tokens, 0) AS tokens,
+    COALESCE(d.requests, 0) AS requests
+FROM series s
+LEFT JOIN daily d ON d.day = s.day
+LEFT JOIN new_users n ON n.day = s.day
+ORDER BY s.day ASC
+"""
+
+
 @router.get("/analytics/growth", response_model=AdminGrowthResponse)
 async def admin_get_growth_analytics(
     days: GrowthDays = 30,
@@ -90,9 +153,8 @@ async def admin_get_growth_analytics(
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
 
-    # Whole UTC days, so buckets do not drift with the database session's
-    # timezone. ``end_day`` is today (still filling), and the scan runs up to
-    # tomorrow's midnight to include it.
+    # ``end_day`` is today, still filling; the scan runs to tomorrow's midnight
+    # so it is included.
     end_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     start_day = end_day - timedelta(days=days - 1)
     window_end = end_day + timedelta(days=1)
@@ -102,57 +164,7 @@ async def admin_get_growth_analytics(
         # totals and the first-seen-in-range counts are then folded out of —
         # a second scan of api_logs just to date users is not worth it.
         rows = await conn.fetch(
-            """
-            WITH series AS (
-                SELECT generate_series($1::timestamptz, $2::timestamptz, interval '1 day') AS day
-            ),
-            per_user_day AS (
-                SELECT
-                    (date_trunc('day', l.timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS day,
-                    l.user_id,
-                    COUNT(*) AS requests,
-                    COALESCE(
-                        SUM(COALESCE(l.prompt_tokens, 0) + COALESCE(l.completion_tokens, 0)),
-                        0
-                    ) AS tokens
-                FROM api_logs l
-                WHERE l.timestamp >= $1::timestamptz
-                  AND l.timestamp < $3::timestamptz
-                GROUP BY 1, 2
-            ),
-            daily AS (
-                -- Rows are already unique per (day, user), so the FILTER count
-                -- is the day's distinct signed-in users. SUM(bigint) comes back
-                -- numeric from asyncpg; cast so the ints stay ints.
-                SELECT
-                    day,
-                    COUNT(*) FILTER (WHERE user_id IS NOT NULL) AS active_users,
-                    SUM(requests)::bigint AS requests,
-                    SUM(tokens)::bigint AS tokens
-                FROM per_user_day
-                GROUP BY day
-            ),
-            new_users AS (
-                SELECT first_day AS day, COUNT(*)::bigint AS new_users
-                FROM (
-                    SELECT user_id, MIN(day) AS first_day
-                    FROM per_user_day
-                    WHERE user_id IS NOT NULL
-                    GROUP BY user_id
-                ) f
-                GROUP BY first_day
-            )
-            SELECT
-                s.day AS day,
-                COALESCE(d.active_users, 0) AS active_users,
-                COALESCE(n.new_users, 0) AS new_users,
-                COALESCE(d.tokens, 0) AS tokens,
-                COALESCE(d.requests, 0) AS requests
-            FROM series s
-            LEFT JOIN daily d ON d.day = s.day
-            LEFT JOIN new_users n ON n.day = s.day
-            ORDER BY s.day ASC
-            """,
+            _GROWTH_SERIES_SQL,
             start_day,
             end_day,
             window_end,
