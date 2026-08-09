@@ -224,3 +224,34 @@ def test_shared_key_muted_but_reserved_healthy_is_role_restricted(monkeypatch):
     with pytest.raises(KeyPoolRoleRestricted):
         pool.acquire("user-C", role="free")
     assert any_lease is not None
+
+
+def test_only_dynamic_keys_writes_a_pool_entry_tier():
+    """``dynamic_keys`` is the sole writer of a pool entry's tier.
+
+    Three review findings came from the tier being written at several call sites:
+    whichever ran last won, so a rebuild or an unrelated key add silently dropped a
+    reservation. The invariant that replaced them is structural, so guard it
+    structurally — a new call site is exactly the regression this catches.
+    """
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[3] / "apps" / "backend"
+    allowed = {
+        backend / "serving" / "adapters" / "key_pool.py",  # defines it
+        backend / "serving" / "adapters" / "dynamic_keys.py",  # the one authority
+    }
+
+    offenders: list[str] = []
+    for path in backend.rglob("*.py"):
+        if path in allowed:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in (".set_key_min_role(", "min_roles="):
+            if marker in text:
+                offenders.append(f"{path.relative_to(backend)} uses {marker}")
+
+    assert not offenders, (
+        "tier writes must go through dynamic_keys' resolver + sweep, not a direct "
+        f"pool write: {offenders}"
+    )
