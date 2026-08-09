@@ -11,6 +11,7 @@ import {
   enableProviderEnvKey,
   listProviderKeyProviders,
   listProviderKeys,
+  setProviderEnvKeyMinRole,
   setProviderKeyMinRole,
   setProviderKeyStatus,
   verifyProviderKey,
@@ -215,10 +216,16 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
     }
   };
 
-  const onChangeMinRole = async (id: string, minRole: ProviderKeyMinRole) => {
+  const onChangeMinRole = async (key: ProviderApiKeyItem, minRole: ProviderKeyMinRole) => {
+    const id = key.id;
+    if (!id) return;
     setRetieringId(id);
     try {
-      const resp = await setProviderKeyMinRole(id, minRole);
+      // Env keys carry no row id, so they are addressed by provider + env id.
+      const resp =
+        key.source === 'env'
+          ? await setProviderEnvKeyMinRole(key.provider, id, minRole)
+          : await setProviderKeyMinRole(id, minRole);
       toast.success(
         minRole === 'free' ? 'Key shared with every tier' : `Key reserved for ${minRole} and above`,
       );
@@ -323,12 +330,12 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                         </span>
                       </td>
                       <td className="px-3 py-2">
-                        {k.source === 'db' && k.id ? (
+                        {k.id ? (
                           <select
                             aria-label={`Reserved tier for key ${k.key_prefix}`}
                             value={k.min_role}
                             onChange={(e) =>
-                              k.id && onChangeMinRole(k.id, e.target.value as ProviderKeyMinRole)
+                              onChangeMinRole(k, e.target.value as ProviderKeyMinRole)
                             }
                             disabled={retieringId === k.id}
                             className="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[12px] focus:border-gray-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
@@ -340,11 +347,8 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                             ))}
                           </select>
                         ) : (
-                          <span
-                            className="text-[12px] text-gray-400"
-                            title="Env-sourced keys cannot be reserved — add the key as a DB key to reserve it."
-                          >
-                            shared
+                          <span className="text-[12px] text-gray-400">
+                            {minRoleLabel(k.min_role)}
                           </span>
                         )}
                       </td>
@@ -475,7 +479,8 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
             </select>
             <p className="mt-1 text-[12px] text-gray-400">
               &quot;shared&quot; lets every tier spend this key. Anything higher hides it from lower
-              tiers, and entitled users spend it before the shared keys.
+              tiers, and entitled users spend it before the shared keys. Existing keys — env-sourced
+              ones included — can be re-tiered from the table above.
             </p>
           </div>
           <div>

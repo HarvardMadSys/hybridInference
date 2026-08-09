@@ -1206,6 +1206,27 @@ class OperationalStore(ABC):
         Returns True when a tombstone row was deleted.
         """
 
+    @abstractmethod
+    async def set_provider_env_key_min_role(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        min_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Persist the tier reservation for an env-sourced provider key.
+
+        Keyed by hash because an env credential has no row of its own — the same
+        addressing the disable tombstone uses. ``min_role="free"`` clears the
+        reservation.
+        """
+
+    @abstractmethod
+    async def list_provider_env_key_min_roles(self, provider: str) -> dict[str, str]:
+        """Return ``{key_hash: min_role}`` for reserved env keys of *provider*."""
+
 
 # ---------------------------------------------------------------------------
 # LogStore — api_logs, api_stats_hourly

@@ -28,6 +28,7 @@ from serving.schemas_admin import (
     SetProviderApiKeyMinRoleRequest,
     SetProviderApiKeyMinRoleResponse,
     SetProviderApiKeyStatusResponse,
+    SetProviderEnvKeyMinRoleRequest,
     VerifyProviderApiKeyRequest,
     VerifyProviderApiKeyResponse,
 )
@@ -125,9 +126,13 @@ async def list_provider_keys(
             raise HTTPException(503, f"Failed to load provider keys for {prov}: {exc}") from exc
 
     disabled_hashes: dict[str, set[str]] = {}
+    env_min_roles: dict[str, dict[str, str]] = {}
     for prov in providers_to_inspect:
         try:
             disabled_hashes[prov] = set(await op_store.list_disabled_provider_env_key_hashes(prov))
+            # Env reservations are keyed by the key's full hash, so they are read
+            # from the DB rather than from the (truncated) list ids.
+            env_min_roles[prov] = dict(await op_store.list_provider_env_key_min_roles(prov))
         except Exception as exc:
             raise HTTPException(503, f"Failed to load provider keys for {prov}: {exc}") from exc
 
@@ -178,6 +183,7 @@ async def list_provider_keys(
                     source="env",
                     status="active",
                     created_at=None,
+                    min_role=env_min_roles.get(prov, {}).get(raw_hash, "free"),  # type: ignore[arg-type]
                 )
             )
 
@@ -204,6 +210,7 @@ async def list_provider_keys(
                     source="env",
                     status="disabled",
                     created_at=None,
+                    min_role=env_min_roles.get(prov, {}).get(key_hash, "free"),  # type: ignore[arg-type]
                 )
             )
 
@@ -438,6 +445,7 @@ async def enable_provider_env_key(
     )
 
 
+<<<<<<< HEAD
 async def _clear_env_tombstone_for_key(
     op_store,
     provider: str,
@@ -445,6 +453,112 @@ async def _clear_env_tombstone_for_key(
     admin_id: str,
 ) -> bool:
     """Clear the tombstone for *raw_key* if it carries one. Returns True if so.
+=======
+async def _resolve_env_key_id(
+    op_store,
+    provider: str,
+    env_key_id: str,
+) -> tuple[str, str, str | None]:
+    """Resolve an ``env:{hash32}`` id to ``(full_hash, key_prefix, raw_key)``.
+
+    The list view exposes a truncated hash, so the full one is recovered either
+    from the live/candidate env keys (hashing the raw value) or — for a key that
+    is currently disabled and therefore absent from every pool — from the
+    tombstone rows, in which case ``raw_key`` is None. Raises 404 when the id
+    matches no env key of *provider*.
+    """
+    try:
+        db_raw_keys = set(await op_store.list_provider_keys_full(provider))
+    except Exception as exc:
+        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
+
+    candidates = list(_env_keys_for_provider(provider))
+    for raw in dynamic_keys.list_candidate_env_keys(provider):
+        if raw not in candidates:
+            candidates.append(raw)
+    for raw in candidates:
+        if raw in db_raw_keys:
+            continue
+        if _env_key_id(raw) == env_key_id:
+            return (dynamic_keys.env_key_hash(raw), _mask(raw), raw)
+
+    try:
+        tombstones = await op_store.list_disabled_provider_env_keys(provider)
+    except Exception as exc:
+        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
+    for key_hash, key_prefix in tombstones:
+        if f"env:{key_hash[:32]}" == env_key_id:
+            # Disabled: the raw value may still be recoverable from adapter
+            # config, but the reservation is stored either way and applies when
+            # the key is re-enabled.
+            return (key_hash, key_prefix, dynamic_keys.find_env_key_by_hash(provider, key_hash))
+
+    raise HTTPException(404, "Env provider key not found")
+
+
+@router.post("/provider-keys/min-role-env", response_model=SetProviderApiKeyMinRoleResponse)
+async def set_provider_env_key_min_role(
+    payload: SetProviderEnvKeyMinRoleRequest,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> SetProviderApiKeyMinRoleResponse:
+    """Reserve an env-sourced provider key for a tier (or release it to all).
+
+    Same semantics as the DB-key endpoint, addressed by hash because an env
+    credential has no row of its own — the same way ``disable-env`` tombstones
+    one. The reservation therefore survives the key leaving rotation (disabled,
+    or its env var temporarily removed) and is re-applied when it returns, and at
+    boot before any request is served.
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    _validate_provider(payload.provider)
+
+    key_hash, key_prefix, _raw = await _resolve_env_key_id(
+        op_store,
+        payload.provider,
+        payload.env_key_id,
+    )
+
+    await op_store.set_provider_env_key_min_role(
+        provider=payload.provider,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        min_role=payload.min_role,
+        updated_by=admin_id,
+    )
+    pools_updated = dynamic_keys.set_env_key_min_role(
+        payload.provider,
+        key_hash,
+        payload.min_role,
+    )
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "set_provider_env_key_min_role",
+        None,
+        {
+            "id": payload.env_key_id,
+            "provider": payload.provider,
+            "key_prefix": key_prefix,
+            "min_role": payload.min_role,
+            "pools_updated": pools_updated,
+        },
+    )
+
+    return SetProviderApiKeyMinRoleResponse(
+        id=payload.env_key_id,
+        provider=payload.provider,
+        min_role=payload.min_role,
+        pools_updated=pools_updated,
+    )
+
+
+async def _resolve_key_ref(op_store, provider: str, key_ref: str) -> tuple[str, str, str]:
+    """Resolve an opaque ``key_ref`` to ``(source, id, status)``.
+>>>>>>> c1e64609 (feat(keys): reserve env-sourced provider keys for a tier too)
 
     Unlike :func:`_clear_env_tombstone` this is a no-op — no store write, no
     audit entry — when the key was never disabled, so it is safe to call on
@@ -818,8 +932,9 @@ async def set_provider_key_min_role(
     ``min_role="free"`` un-reserves the key. Anything higher makes it invisible
     to callers below that role: they neither select it nor fall back to it, and a
     key reserved above every live user simply sits idle. Applied to the live
-    pools immediately — no restart. Env-sourced keys cannot be re-tiered (they
-    have no row to carry the reservation); add them as DB keys instead.
+    pools immediately — no restart. Env-sourced keys go through
+    ``POST /admin/provider-keys/min-role-env`` instead, since they are addressed
+    by hash rather than by row id.
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")

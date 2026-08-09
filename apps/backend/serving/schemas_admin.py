@@ -1957,6 +1957,18 @@ class SetProviderApiKeyMinRoleRequest(BaseModel):  # type: ignore[no-any-unimpor
     min_role: Literal["free", "pro", "internal", "admin"]
 
 
+class SetProviderEnvKeyMinRoleRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for ``POST /admin/provider-keys/min-role-env``.
+
+    Env keys are addressed by ``provider`` + ``env_key_id`` (as with the
+    disable/enable-env endpoints) because they have no row id of their own.
+    """
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    env_key_id: str = Field(..., min_length=1, max_length=128)
+    min_role: Literal["free", "pro", "internal", "admin"]
+
+
 class SetProviderApiKeyMinRoleResponse(BaseModel):  # type: ignore[no-any-unimported]
     """Response for re-tiering a DB-sourced provider API key."""
 

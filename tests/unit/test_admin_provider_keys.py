@@ -93,6 +93,8 @@ class _StubStore:
         self.raw: dict[str, list[tuple[str, str]]] = {}
         # (provider, key_hash) -> key_prefix
         self.disabled: dict[tuple[str, str], str] = {}
+        # (provider, key_hash) -> min_role, for env-sourced key reservations
+        self.env_min_roles: dict[tuple[str, str], str] = {}
         self.route_configs: list[dict] = []
         self.route_candidates: list[dict] = []
         self.audit: list[dict] = []
@@ -225,6 +227,27 @@ class _StubStore:
     async def enable_provider_env_key(self, provider: str, key_hash: str) -> bool:
         return self.disabled.pop((provider, key_hash), None) is not None
 
+    async def set_provider_env_key_min_role(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        min_role: str,
+        updated_by: str | None,
+    ) -> None:
+        if min_role == "free":
+            self.env_min_roles.pop((provider, key_hash), None)
+            return
+        self.env_min_roles[(provider, key_hash)] = min_role
+
+    async def list_provider_env_key_min_roles(self, provider: str) -> dict[str, str]:
+        return {
+            key_hash: role
+            for (prov, key_hash), role in self.env_min_roles.items()
+            if prov == provider
+        }
+
     async def log_admin_action(self, **kwargs):
         self.audit.append(kwargs)
 
@@ -290,6 +313,8 @@ async def client(monkeypatch, store):
         "list_disabled_provider_env_key_hashes",
         "list_disabled_provider_env_keys",
         "enable_provider_env_key",
+        "set_provider_env_key_min_role",
+        "list_provider_env_key_min_roles",
         "log_admin_action",
     ):
         setattr(store_mock, attr, getattr(store, attr))
@@ -1798,8 +1823,8 @@ async def test_re_enabling_a_reserved_key_keeps_its_reservation(client):
 
 
 @pytest.mark.asyncio
-async def test_env_keys_are_listed_as_shared(client):
-    """Env-sourced keys carry no reservation — they surface as 'free'."""
+async def test_env_keys_default_to_shared(client):
+    """An env key with no stored reservation surfaces as 'free'."""
     http, _store = client
     env_key = "env-zai-shared-cccccccccccc"
     adapter = OpenAICompatAdapter(
@@ -1819,3 +1844,207 @@ async def test_env_keys_are_listed_as_shared(client):
     env_entries = [k for k in resp.json()["keys"] if k["source"] == "env"]
     assert env_entries
     assert all(k["min_role"] == "free" for k in env_entries)
+
+
+def _env_adapter(provider: str, keys: list[str]) -> OpenAICompatAdapter:
+    """Register an adapter whose pool is seeded from env-sourced keys."""
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="env-tier-model",
+            name="env-tier-model",
+            provider=provider,
+            base_url="https://api.example.com",
+            api_keys=keys,
+            provider_model_id="env-tier-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider(provider, adapter)
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_env_key_can_be_reserved_for_a_tier(client):
+    """An env-sourced key is re-tiered in the live pool and persisted by hash."""
+    http, store = client
+    env_key = "env-zai-tier-dddddddddddd"
+    adapter = _env_adapter("zai", [env_key])
+    env_id = f"env:{dynamic_keys.env_key_hash(env_key)[:32]}"
+
+    resp = await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "pro"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["min_role"] == "pro"
+    assert body["pools_updated"] == 1
+    assert adapter._key_pool.snapshot_min_roles()[env_key] == "pro"
+    # Persisted against the key's full hash, not the truncated list id.
+    assert store.env_min_roles[("zai", dynamic_keys.env_key_hash(env_key))] == "pro"
+
+    # It reads back on the list view.
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    entry = next(k for k in listing.json()["keys"] if k["id"] == env_id)
+    assert entry["min_role"] == "pro"
+
+    # Releasing it back to every tier clears the stored row.
+    back = await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "free"},
+        headers=AUTH,
+    )
+    assert back.status_code == 200, back.text
+    assert adapter._key_pool.snapshot_min_roles()[env_key] == "free"
+    assert ("zai", dynamic_keys.env_key_hash(env_key)) not in store.env_min_roles
+
+    actions = [entry.get("action") for entry in store.audit]
+    assert actions.count("set_provider_env_key_min_role") == 2
+
+
+@pytest.mark.asyncio
+async def test_env_key_reservation_is_unknown_id_404(client):
+    http, _store = client
+    _env_adapter("zai", ["env-zai-other-eeeeeeeeeeee"])
+
+    resp = await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": f"env:{'0' * 32}", "min_role": "pro"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_env_key_reservation_rejects_unknown_provider(client):
+    http, _store = client
+    resp = await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "fictional", "env_key_id": f"env:{'0' * 32}", "min_role": "pro"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 400, resp.text
+
+
+@pytest.mark.asyncio
+async def test_env_key_reservation_survives_disable_enable(client):
+    """A reserved env key comes back reserved, not shared."""
+    http, _store = client
+    env_key = "env-zai-cycle-ffffffffffff"
+    adapter = _env_adapter("zai", [env_key])
+    env_id = f"env:{dynamic_keys.env_key_hash(env_key)[:32]}"
+
+    await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "internal"},
+        headers=AUTH,
+    )
+    await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert env_key not in adapter._key_pool.snapshot_keys()
+
+    en = await http.post(
+        "/admin/provider-keys/enable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert en.status_code == 200, en.text
+    assert adapter._key_pool.snapshot_min_roles()[env_key] == "internal"
+
+
+@pytest.mark.asyncio
+async def test_disabled_env_key_can_be_reserved_before_it_returns(client):
+    """A tombstoned env key accepts a reservation; it lands when re-enabled."""
+    http, store = client
+    env_key = "env-zai-later-gggggggggggg"
+    adapter = _env_adapter("zai", [env_key])
+    env_id = f"env:{dynamic_keys.env_key_hash(env_key)[:32]}"
+
+    await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+
+    # No live pool holds the key, so nothing is re-tiered right now...
+    resp = await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "pro"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pools_updated"] == 0
+    assert store.env_min_roles[("zai", dynamic_keys.env_key_hash(env_key))] == "pro"
+
+    # ...and the tombstone row still reports the pending reservation.
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    entry = next(k for k in listing.json()["keys"] if k["id"] == env_id)
+    assert entry["status"] == "disabled"
+    assert entry["min_role"] == "pro"
+
+    # Re-enabling applies it.
+    await http.post(
+        "/admin/provider-keys/enable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert adapter._key_pool.snapshot_min_roles()[env_key] == "pro"
+
+
+@pytest.mark.asyncio
+async def test_boot_seeding_applies_stored_env_reservations(client):
+    """Pools are seeded at registry load, so boot must re-apply reservations."""
+    http, store = client
+    env_key = "env-zai-boot-hhhhhhhhhhhh"
+    adapter = _env_adapter("zai", [env_key])
+    key_hash = dynamic_keys.env_key_hash(env_key)
+
+    # Persisted by an earlier process; this process starts unreserved.
+    store.env_min_roles[("zai", key_hash)] = "pro"
+    assert adapter._key_pool.snapshot_min_roles()[env_key] == "free"
+
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    assert adapter._key_pool.snapshot_min_roles()[env_key] == "pro"
+    assert dynamic_keys.env_key_min_role("zai", key_hash) == "pro"
+    # The endpoint agrees with the pool.
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    entry = next(k for k in listing.json()["keys"] if k["source"] == "env")
+    assert entry["min_role"] == "pro"
+
+
+@pytest.mark.asyncio
+async def test_reservation_survives_promotion_by_a_db_key(client):
+    """Adding a DB key promotes/re-seeds pools — reservations must be re-applied."""
+    http, store = client
+    env_key = "env-zai-promote-iiiiiiiiiiii"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="promote-model",
+            name="promote-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_key=env_key,  # single static key: no pool yet
+            provider_model_id="promote-model",
+        )
+    )
+    assert adapter._key_pool is None
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    key_hash = dynamic_keys.env_key_hash(env_key)
+    store.env_min_roles[("zai", key_hash)] = "pro"
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": "sk-zai-promote-jjjjjjjjjjjj"},
+        headers=AUTH,
+    )
+    assert add.status_code == 201, add.text
+
+    roles = adapter._key_pool.snapshot_min_roles()
+    assert roles[env_key] == "pro"  # not demoted by the promotion
+    assert roles["sk-zai-promote-jjjjjjjjjjjj"] == "free"

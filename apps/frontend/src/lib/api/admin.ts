@@ -2344,6 +2344,23 @@ export async function setProviderKeyMinRole(
   return jsonOrThrow<SetProviderApiKeyMinRoleResponse>(resp);
 }
 
+/**
+ * Reserve an env-sourced key for a tier. Env keys have no row id, so they are
+ * addressed by provider + env key id (as with disable/enable-env).
+ */
+export async function setProviderEnvKeyMinRole(
+  provider: string,
+  envKeyId: string,
+  minRole: ProviderKeyMinRole,
+): Promise<SetProviderApiKeyMinRoleResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys/min-role-env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, env_key_id: envKeyId, min_role: minRole }),
+  });
+  return jsonOrThrow<SetProviderApiKeyMinRoleResponse>(resp);
+}
+
 export async function verifyProviderKey(
   provider: string,
   apiKey: string,

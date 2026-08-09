@@ -231,16 +231,37 @@ machinery (a probe blocked by a reservation would mark the endpoint unhealthy an
 take the route down for the entitled users too).
 
 **Managing it:** the admin dashboard's *Provider Keys* tab has a "Reserved for"
-column, backed by `POST /admin/provider-keys/{id}/min-role`; new keys accept
-`min_role` on `POST /admin/provider-keys`. Changes apply to the live pools
-immediately — no restart. Two limits worth knowing:
+column covering both key sources, and new keys accept `min_role` on
+`POST /admin/provider-keys`. Changes apply to the live pools immediately — no
+restart. The endpoint differs by source, because the two are addressed
+differently:
 
-- **Env-sourced keys are always shared.** The reservation lives on the
-  `provider_api_keys` row, so a key configured through `<PROVIDER>_API_KEY` has
-  nowhere to carry one. Add it as a DB key to reserve it.
-- **Route-bound keys ignore `min_role`.** A key pinned to a provider route via
-  `api_key_id` is handed to that route's adapter directly rather than through the
-  shared pool, so access is governed by the model's `required_role` instead.
+| Source | Endpoint | Where the reservation lives |
+|---|---|---|
+| DB (dashboard-added) | `POST /admin/provider-keys/{id}/min-role` | `provider_api_keys.min_role` |
+| Env (`<PROVIDER>_API_KEY`, YAML `api_keys`) | `POST /admin/provider-keys/min-role-env` | `provider_env_key_min_roles`, keyed by the key's hash |
+
+An env credential has no row of its own, so its reservation is keyed by hash —
+the same addressing `disable-env` already uses for env-key tombstones. Two
+consequences worth knowing:
+
+- The reservation outlives the key leaving rotation. Disable/enable it, or drop
+  and restore its env var, and it returns at the tier it was reserved for.
+- Pools are seeded from adapter config at registry load, before any DB read, so
+  `apply_db_keys_at_boot` re-applies stored env reservations (and re-applies
+  again after any pool promotion, e.g. when a DB key is added to a route that
+  had a single static `api_key`). A DB read failure there logs and leaves env
+  keys unreserved rather than failing the boot.
+
+Reservation is declared through the admin API rather than an env var: pool
+membership comes from each route's `api_keys` in `models.yaml`, which need not be
+one of the `<PROVIDER>_API_KEY` vars, so an env-var-per-key convention would not
+cover every configured key.
+
+One remaining limit: **route-bound keys ignore `min_role`.** A key pinned to a
+provider route via `api_key_id` is handed to that route's adapter directly rather
+than through the shared pool, so access is governed by the model's
+`required_role` instead.
 
 ## Migration Notes
 

@@ -732,6 +732,24 @@ class PostgresOperationalStore(OperationalStore):
         """)
         await conn.execute("DROP INDEX IF EXISTS idx_disabled_provider_env_keys_provider")
 
+        # --- provider_env_key_min_roles ---
+        # Tier reservation for env-sourced provider keys. An env credential has
+        # no row of its own (only the var it came from), so — exactly like the
+        # disable tombstone above — the reservation is keyed by the key's hash.
+        # Absent row means unreserved; a row is deleted rather than set to
+        # 'free', so the table reads as "the env keys that are reserved".
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS provider_env_key_min_roles (
+                provider TEXT NOT NULL,
+                key_hash TEXT NOT NULL,
+                key_prefix TEXT NOT NULL,
+                min_role TEXT NOT NULL,
+                updated_by TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (provider, key_hash)
+            )
+        """)
+
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
 
@@ -3346,7 +3364,12 @@ class PostgresOperationalStore(OperationalStore):
         return _parse_command_tag_count(tag) > 0
 
     async def delete_provider_keys_for_provider(self, provider: str) -> int:
-        """Delete DB keys and env-key tombstones for a custom provider."""
+        """Delete DB keys, env-key tombstones and env tier reservations.
+
+        Used when a custom provider is removed. The reservation rows are dropped
+        with the rest so re-adding the provider later starts clean rather than
+        silently re-reserving keys nobody remembers reserving.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
             key_tag = await conn.execute(
                 "DELETE FROM provider_api_keys WHERE provider = $1",
@@ -3354,6 +3377,10 @@ class PostgresOperationalStore(OperationalStore):
             )
             tombstone_tag = await conn.execute(
                 "DELETE FROM disabled_provider_env_keys WHERE provider = $1",
+                provider,
+            )
+            await conn.execute(
+                "DELETE FROM provider_env_key_min_roles WHERE provider = $1",
                 provider,
             )
         return _parse_command_tag_count(key_tag) + _parse_command_tag_count(tombstone_tag)
@@ -3550,6 +3577,54 @@ class PostgresOperationalStore(OperationalStore):
                 key_hash,
             )
         return _parse_command_tag_count(tag) > 0
+
+    async def set_provider_env_key_min_role(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        min_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Persist (or clear) the tier reservation for an env-sourced key.
+
+        ``min_role="free"`` deletes the row: unreserved is the absence of a
+        reservation, so the table stays a list of the keys that are held back.
+        """
+        validated = _validated_min_role(min_role)
+        async with self._pool.acquire() as conn:
+            if validated == "free":
+                await conn.execute(
+                    "DELETE FROM provider_env_key_min_roles WHERE provider = $1 AND key_hash = $2",
+                    provider,
+                    key_hash,
+                )
+                return
+            await conn.execute(
+                "INSERT INTO provider_env_key_min_roles "
+                "(provider, key_hash, key_prefix, min_role, updated_by) "
+                "VALUES ($1, $2, $3, $4, $5) "
+                "ON CONFLICT (provider, key_hash) DO UPDATE SET "
+                "key_prefix = EXCLUDED.key_prefix, "
+                "min_role = EXCLUDED.min_role, "
+                "updated_by = EXCLUDED.updated_by, "
+                "updated_at = NOW()",
+                provider,
+                key_hash,
+                key_prefix,
+                validated,
+                updated_by,
+            )
+
+    async def list_provider_env_key_min_roles(self, provider: str) -> dict[str, str]:
+        """Return ``{key_hash: min_role}`` for reserved env keys of *provider*."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key_hash, min_role FROM provider_env_key_min_roles WHERE provider = $1",
+                provider,
+            )
+        return {r["key_hash"]: r["min_role"] for r in rows}
 
 
 def _mask_provider_key(api_key: str) -> str:

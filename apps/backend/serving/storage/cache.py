@@ -1153,3 +1153,25 @@ class CachedOperationalStore(OperationalStore):
     async def enable_provider_env_key(self, provider: str, key_hash: str) -> bool:
         """Delegate to wrapped store."""
         return await self._store.enable_provider_env_key(provider, key_hash)
+
+    async def set_provider_env_key_min_role(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        min_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_provider_env_key_min_role(
+            provider=provider,
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            min_role=min_role,
+            updated_by=updated_by,
+        )
+
+    async def list_provider_env_key_min_roles(self, provider: str) -> dict[str, str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_env_key_min_roles(provider)

@@ -12,6 +12,7 @@ vi.mock('@/lib/api/admin', () => ({
   enableProviderEnvKey: vi.fn(),
   listProviderKeyProviders: vi.fn(),
   listProviderKeys: vi.fn(),
+  setProviderEnvKeyMinRole: vi.fn(),
   setProviderKeyMinRole: vi.fn(),
   setProviderKeyStatus: vi.fn(),
   verifyProviderKey: vi.fn(),
@@ -28,6 +29,7 @@ import {
   addProviderKey,
   listProviderKeyProviders,
   listProviderKeys,
+  setProviderEnvKeyMinRole,
   setProviderKeyMinRole,
 } from '@/lib/api/admin';
 
@@ -73,6 +75,12 @@ describe('ProviderKeysTab tier reservation', () => {
       min_role: 'internal',
       pools_updated: 1,
     });
+    vi.mocked(setProviderEnvKeyMinRole).mockResolvedValue({
+      id: 'env:abc',
+      provider: 'zai',
+      min_role: 'pro',
+      pools_updated: 1,
+    });
     vi.mocked(addProviderKey).mockResolvedValue({
       key: { ...dbKey, id: 'key-2', min_role: 'pro' },
       pools_updated: 1,
@@ -106,13 +114,34 @@ describe('ProviderKeysTab tier reservation', () => {
     });
   });
 
-  it('renders env keys as shared with no way to reserve them', async () => {
+  it('re-tiers an env key through the env endpoint', async () => {
+    render(<ProviderKeysTab />);
+
+    const select = await screen.findByLabelText<HTMLSelectElement>(
+      `Reserved tier for key ${envKey.key_prefix}`,
+    );
+    expect(select.value).toBe('free');
+
+    fireEvent.change(select, { target: { value: 'pro' } });
+
+    await waitFor(() => {
+      // Env keys are addressed by provider + env id, not by row id.
+      expect(setProviderEnvKeyMinRole).toHaveBeenCalledWith('zai', 'env:abc', 'pro');
+    });
+    expect(setProviderKeyMinRole).not.toHaveBeenCalled();
+  });
+
+  it('shows a plain tier label for a key with no id', async () => {
+    vi.mocked(listProviderKeys).mockResolvedValue({
+      provider: 'zai',
+      keys: [{ ...envKey, id: null, min_role: 'pro' }],
+    });
     render(<ProviderKeysTab />);
 
     await screen.findByText(envKey.key_prefix);
     const row = keyRow(envKey.key_prefix);
     expect(within(row).queryByRole('combobox')).not.toBeInTheDocument();
-    expect(within(row).getByText('shared')).toBeInTheDocument();
+    expect(within(row).getByText('pro+')).toBeInTheDocument();
   });
 
   it('submits the chosen tier when adding a key', async () => {
