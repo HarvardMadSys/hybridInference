@@ -150,6 +150,7 @@ async def list_provider_keys(
     disabled_hashes: dict[str, set[str]] = {}
     env_min_roles: dict[str, dict[str, str]] = {}
     db_min_roles: dict[str, dict[str, str]] = {}
+    db_key_values: dict[str, dict[str, str]] = {}
     for prov in providers_to_inspect:
         try:
             disabled_hashes[prov] = set(await op_store.list_disabled_provider_env_key_hashes(prov))
@@ -161,11 +162,26 @@ async def list_provider_keys(
             # would be the one place an admin cannot notice the difference.
             env_min_roles[prov] = dict(await op_store.list_provider_env_key_min_roles(prov))
             db_min_roles[prov] = dict(await op_store.list_provider_key_min_roles(prov))
+            # Which rows name the same credential — needed to report the tier the
+            # pool enforces rather than each row's own declaration.
+            db_key_values[prov] = dict(await op_store.list_provider_key_values(prov))
         except Exception as exc:
             raise HTTPException(503, f"Failed to load provider keys for {prov}: {exc}") from exc
 
     keys: list[ProviderApiKeyItem] = []
     for row in db_rows:
+        # A disabled row is in no pool, so there is no enforced tier to report:
+        # show what it declares, which is what re-enabling it would contribute.
+        raw = db_key_values.get(row.provider, {}).get(row.id)
+        if row.status == "active" and raw is not None:
+            enforced = _resolved_env_min_role(
+                raw,
+                dynamic_keys.env_key_hash(raw),
+                env_min_roles.get(row.provider, {}),
+                db_min_roles.get(row.provider, {}),
+            )
+        else:
+            enforced = row.min_role
         keys.append(
             ProviderApiKeyItem(
                 id=row.id,
@@ -175,7 +191,8 @@ async def list_provider_keys(
                 source="db",
                 status=row.status,
                 created_at=row.created_at,
-                min_role=row.min_role,  # type: ignore[arg-type]
+                min_role=enforced,  # type: ignore[arg-type]
+                declared_min_role=row.min_role,  # type: ignore[arg-type]
             )
         )
 
@@ -229,6 +246,9 @@ async def list_provider_keys(
                     ),
                     # Surfaced only so its reservation can be seen and lifted; the
                     # DB row holding the same credential owns enable/disable/delete.
+                    declared_min_role=env_min_roles.get(prov, {}).get(  # type: ignore[arg-type]
+                        raw_hash, "free"
+                    ),
                     reservation_only=shadowed,
                 )
             )
@@ -256,7 +276,12 @@ async def list_provider_keys(
                     source="env",
                     status="disabled",
                     created_at=None,
+                    # Out of every pool while tombstoned, so there is no enforced
+                    # tier — its own declaration is what re-enabling would restore.
                     min_role=env_min_roles.get(prov, {}).get(key_hash, "free"),  # type: ignore[arg-type]
+                    declared_min_role=env_min_roles.get(prov, {}).get(  # type: ignore[arg-type]
+                        key_hash, "free"
+                    ),
                 )
             )
 

@@ -1858,11 +1858,21 @@ class ProviderApiKeyItem(BaseModel):  # type: ignore[no-any-unimported]
             "the strictest one is reported, because that is the one in force."
         ),
     )
+    declared_min_role: Literal["free", "pro", "internal", "admin"] = Field(
+        "free",
+        description=(
+            "The tier *this record* declares, which is what editing it changes. "
+            "Differs from 'min_role' only when another record declares a stricter "
+            "tier for the same credential — another row with the same key, or an env "
+            "reservation for it — since the pool holds one entry per credential and "
+            "enforces the strictest declaration."
+        ),
+    )
     reservation_only: bool = Field(
         False,
         description=(
             "True for an env entry listed solely to expose its tier reservation, "
-            "because an active DB row holds the same credential. Only 'min_role' is "
+            "because an active DB row holds the same credential. Only the tier is "
             "editable on such an entry: the DB row is what enables, disables or "
             "deletes the key, and disabling the env side would tombstone a hash "
             "while the key kept serving from that row."

@@ -2241,7 +2241,14 @@ export interface ProviderApiKeyItem {
   source: ProviderKeySource;
   status: string;
   created_at: string | null;
+  /** The tier currently enforced for this credential (strictest declaration wins). */
   min_role: ProviderKeyMinRole;
+  /**
+   * The tier this record itself declares — what editing this row changes. Lower
+   * than `min_role` when another record (a row with the same key, or an env
+   * reservation for it) declares something stricter.
+   */
+  declared_min_role?: ProviderKeyMinRole;
   /**
    * True for an env entry listed only to expose its tier reservation, because an
    * active DB row holds the same credential. Only the tier is editable: the DB row

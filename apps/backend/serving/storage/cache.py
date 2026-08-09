@@ -1097,6 +1097,10 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_provider_keys_full(provider, exclude_ids=exclude_ids)
 
+    async def list_provider_key_values(self, provider: str) -> dict[str, str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_key_values(provider)
+
     async def list_provider_key_min_roles(
         self,
         provider: str,

@@ -163,6 +163,7 @@ describe('ProviderKeysTab tier reservation', () => {
       );
     });
   });
+
   it('offers only the tier control for a reservation-only env row', async () => {
     // An active DB row holds the same credential, so this entry exists purely to
     // carry the reservation — the Disable endpoint rejects it by design.
@@ -179,5 +180,33 @@ describe('ProviderKeysTab tier reservation', () => {
     ).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: /disable/i })).not.toBeInTheDocument();
     expect(within(row).getByText('reservation only')).toBeInTheDocument();
+  });
+
+  it('edits the declared tier and flags the enforced one when they differ', async () => {
+    vi.mocked(listProviderKeys).mockResolvedValue({
+      provider: 'zai',
+      keys: [{ ...dbKey, declared_min_role: 'free', min_role: 'internal' }],
+    });
+    render(<ProviderKeysTab />);
+
+    const select = await screen.findByLabelText<HTMLSelectElement>(
+      `Reserved tier for key ${dbKey.key_prefix}`,
+    );
+    // The selector shows what this row declares — that is what editing changes.
+    expect(select.value).toBe('free');
+    // ...and the tier actually in force is called out, so the edit does not look
+    // like it did nothing.
+    expect(screen.getByText('internal+ enforced')).toBeInTheDocument();
+  });
+
+  it('shows no enforced badge when the row is the only declaration', async () => {
+    vi.mocked(listProviderKeys).mockResolvedValue({
+      provider: 'zai',
+      keys: [{ ...dbKey, declared_min_role: 'pro', min_role: 'pro' }],
+    });
+    render(<ProviderKeysTab />);
+
+    await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
+    expect(screen.queryByText(/enforced/)).not.toBeInTheDocument();
   });
 });

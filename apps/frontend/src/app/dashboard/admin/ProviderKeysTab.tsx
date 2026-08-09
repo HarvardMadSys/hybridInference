@@ -331,21 +331,34 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                       </td>
                       <td className="px-3 py-2">
                         {k.id ? (
-                          <select
-                            aria-label={`Reserved tier for key ${k.key_prefix}`}
-                            value={k.min_role}
-                            onChange={(e) =>
-                              onChangeMinRole(k, e.target.value as ProviderKeyMinRole)
-                            }
-                            disabled={retieringId === k.id}
-                            className="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[12px] focus:border-gray-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {MIN_ROLES.map((r) => (
-                              <option key={r} value={r}>
-                                {minRoleLabel(r)}
-                              </option>
-                            ))}
-                          </select>
+                          <div className="flex items-center gap-1.5">
+                            <select
+                              aria-label={`Reserved tier for key ${k.key_prefix}`}
+                              value={k.declared_min_role ?? k.min_role}
+                              onChange={(e) =>
+                                onChangeMinRole(k, e.target.value as ProviderKeyMinRole)
+                              }
+                              disabled={retieringId === k.id}
+                              className="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[12px] focus:border-gray-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {MIN_ROLES.map((r) => (
+                                <option key={r} value={r}>
+                                  {minRoleLabel(r)}
+                                </option>
+                              ))}
+                            </select>
+                            {(k.declared_min_role ?? k.min_role) !== k.min_role && (
+                              // Another record declares something stricter for this
+                              // same credential, and the pool enforces that one — say
+                              // so, or editing this row looks like it did nothing.
+                              <span
+                                className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700"
+                                title="Another record declares a stricter tier for this same credential, so that is what is enforced."
+                              >
+                                {minRoleLabel(k.min_role)} enforced
+                              </span>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-[12px] text-gray-400">
                             {minRoleLabel(k.min_role)}

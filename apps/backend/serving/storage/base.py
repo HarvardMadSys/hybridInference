@@ -1134,6 +1134,17 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def list_provider_key_values(self, provider: str) -> dict[str, str]:
+        """Return ``{row_id: raw_key}`` for every provider key row, any status.
+
+        Lets a caller holding masked rows work out which of them name the *same*
+        credential — two rows can, and then the tier the pool enforces is the
+        strictest of their declarations, not each row's own. Matching on the masked
+        prefix instead would be ambiguous: keys shorter than 16 characters all mask
+        to the same placeholder.
+        """
+
+    @abstractmethod
     async def list_provider_key_min_roles(
         self,
         provider: str,

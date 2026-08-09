@@ -175,6 +175,9 @@ class _StubStore:
                 strictest[raw] = role
         return strictest
 
+    async def list_provider_key_values(self, provider: str) -> dict[str, str]:
+        return {kid: raw for kid, raw in self.raw.get(provider, []) if kid in self.rows}
+
     async def get_provider_key_min_role(self, key_id: str) -> str | None:
         row = self.rows.get(key_id)
         return None if row is None else row.min_role
@@ -317,6 +320,7 @@ async def client(monkeypatch, store):
         "delete_provider_key",
         "set_provider_key_status",
         "list_provider_key_min_roles",
+        "list_provider_key_values",
         "get_provider_key_min_role",
         "set_provider_key_min_role",
         "disable_provider_env_key",
@@ -2625,3 +2629,91 @@ async def test_declarations_load_for_a_provider_first_known_at_runtime(client):
     assert adapter._key_pool.snapshot_min_roles()[db_key] == "pro"
     with pytest.raises(KeyPoolRoleRestricted):
         adapter._key_pool.acquire("free-user", role="free")
+
+
+@pytest.mark.asyncio
+async def test_db_row_reports_the_enforced_tier_not_just_its_own(client):
+    """Two rows on one credential: each must show what the pool actually enforces.
+
+    Showing only this row's declaration would present a key as shared that free
+    callers cannot spend, and make setting it to shared look ineffective.
+    """
+    http, _store = client
+    shared = "sk-zai-tworows-ggggghhhhhiii"
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    strict = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared, "min_role": "internal"},
+        headers=AUTH,
+    )
+    lax = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared, "min_role": "free"},
+        headers=AUTH,
+    )
+    assert pool.snapshot_min_roles()[shared] == "internal"
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    rows = {k["id"]: k for k in listing.json()["keys"]}
+
+    lax_row = rows[lax.json()["key"]["id"]]
+    assert lax_row["declared_min_role"] == "free"
+    assert lax_row["min_role"] == "internal", "must report the tier in force"
+
+    strict_row = rows[strict.json()["key"]["id"]]
+    assert strict_row["declared_min_role"] == "internal"
+    assert strict_row["min_role"] == "internal"
+
+
+@pytest.mark.asyncio
+async def test_db_row_reports_a_stricter_env_reservation_as_enforced(client):
+    """The other declaration can come from the env side, too."""
+    http, _store = client
+    shared = "env-zai-strictenv-jjjjkkkkllll"
+    _env_adapter("zai", [shared])
+    env_id = f"env:{dynamic_keys.env_key_hash(shared)[:32]}"
+
+    await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "pro"},
+        headers=AUTH,
+    )
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared, "min_role": "free"},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    db_row = next(k for k in listing.json()["keys"] if k["id"] == key_id)
+    assert db_row["declared_min_role"] == "free"
+    assert db_row["min_role"] == "pro"
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_row_reports_its_own_declaration(client):
+    """Out of rotation means no enforced tier — show what re-enabling restores."""
+    http, _store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": "sk-zai-offrow-mmmmnnnnoooo", "min_role": "pro"},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+    await http.post(f"/admin/provider-keys/{key_id}/disable", headers=AUTH)
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    row = next(k for k in listing.json()["keys"] if k["id"] == key_id)
+    assert row["status"] == "disabled"
+    assert row["declared_min_role"] == "pro"
+    assert row["min_role"] == "pro"

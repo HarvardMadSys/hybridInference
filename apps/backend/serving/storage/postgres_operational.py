@@ -3445,6 +3445,15 @@ class PostgresOperationalStore(OperationalStore):
                 )
         return [r["api_key"] for r in rows]
 
+    async def list_provider_key_values(self, provider: str) -> dict[str, str]:
+        """Return ``{row_id: raw_key}`` for every provider key row of *provider*."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, api_key FROM provider_api_keys WHERE provider = $1",
+                provider,
+            )
+        return {r["id"]: r["api_key"] for r in rows}
+
     async def list_provider_key_min_roles(
         self,
         provider: str,
