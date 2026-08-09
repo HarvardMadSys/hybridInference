@@ -185,16 +185,20 @@ class OpenAICompatAdapter(BaseAdapter):
     def _no_usable_key_error(self, provider: str, role: str | None) -> KeyPoolExhausted:
         """Build the pre-flight "no key for this caller" error, typed by cause.
 
-        Mirrors ``KeyPool.acquire``: when the pool could still serve an
-        unrestricted caller, only this tier is shut out, which must not count
-        against the endpoint's health (see ``KeyPoolRoleRestricted``).
+        Must classify the same way ``KeyPool.acquire`` does — "could this pool serve
+        an unrestricted caller right now" — because the two errors are accounted for
+        differently: a role-restricted refusal is exempt from endpoint health, a
+        genuine exhaustion is not. ``acquire`` asks its cooldown-aware selector, so
+        asking the cooldown-blind ``size`` here would mislabel the case where every
+        key is muted (an endpoint problem) as a tier problem, and quietly excuse it
+        from the breaker.
         """
         message = (
             f"No active API keys for provider {provider!r} available to "
             f"role={role or 'unrestricted'}"
         )
         pool = self._key_pool
-        if pool is not None and role is not None and pool.size() > 0:
+        if pool is not None and role is not None and pool.can_serve_role():
             return KeyPoolRoleRestricted(message)
         return KeyPoolExhausted(message)
 

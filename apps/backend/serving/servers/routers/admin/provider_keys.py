@@ -12,6 +12,7 @@ from serving.admin.provider_key_probe import (
     ProviderKeyProbeError,
     probe_provider_key_with_existing_route,
 )
+from serving.config.settings import ROLE_RANK
 from serving.schemas_admin import (
     AddProviderApiKeyRequest,
     AddProviderApiKeyResponse,
@@ -91,6 +92,27 @@ def _validate_provider(provider: str) -> None:
         )
 
 
+def _resolved_env_min_role(
+    raw_key: str,
+    key_hash: str,
+    env_tiers: dict[str, str],
+    db_tiers: dict[str, str],
+) -> str:
+    """Return the tier a credential is held at, from the persisted declarations.
+
+    Mirrors ``dynamic_keys._resolve_min_role_locked`` — strictest declaration wins,
+    ``"free"`` being the absence of one — but reads the DB maps this request already
+    loaded instead of the in-process cache, so the view is right even when the cache
+    has not been populated for this provider yet.
+    """
+    declared = [
+        role for role in (env_tiers.get(key_hash), db_tiers.get(raw_key)) if role and role != "free"
+    ]
+    if not declared:
+        return "free"
+    return max(declared, key=lambda role: ROLE_RANK.get(role, 0))
+
+
 @router.get("/provider-keys", response_model=ListProviderApiKeysResponse)
 async def list_provider_keys(
     provider: str | None = None,
@@ -127,12 +149,18 @@ async def list_provider_keys(
 
     disabled_hashes: dict[str, set[str]] = {}
     env_min_roles: dict[str, dict[str, str]] = {}
+    db_min_roles: dict[str, dict[str, str]] = {}
     for prov in providers_to_inspect:
         try:
             disabled_hashes[prov] = set(await op_store.list_disabled_provider_env_key_hashes(prov))
             # Env reservations are keyed by the key's full hash, so they are read
-            # from the DB rather than from the (truncated) list ids.
+            # from the DB rather than from the (truncated) list ids. Both maps come
+            # from the DB rather than from the in-process cache: a provider can be
+            # known before anything loads its declarations (a definition listed on
+            # another worker, say), and a view that understated a stored reservation
+            # would be the one place an admin cannot notice the difference.
             env_min_roles[prov] = dict(await op_store.list_provider_env_key_min_roles(prov))
+            db_min_roles[prov] = dict(await op_store.list_provider_key_min_roles(prov))
         except Exception as exc:
             raise HTTPException(503, f"Failed to load provider keys for {prov}: {exc}") from exc
 
@@ -189,10 +217,16 @@ async def list_provider_keys(
                     source="env",
                     status="active",
                     created_at=None,
-                    # The tier the pool actually enforces, which is the resolved
-                    # one — a duplicate DB row declaring something stricter for the
-                    # same credential must not be reported as the shared value.
-                    min_role=dynamic_keys.resolve_key_min_role(prov, raw),  # type: ignore[arg-type]
+                    # The tier the pool enforces: the resolved one, derived here
+                    # from the persisted declarations by the same rule the pool
+                    # uses (strictest wins). A duplicate DB row declaring something
+                    # stricter for this credential must not be reported as shared.
+                    min_role=_resolved_env_min_role(  # type: ignore[arg-type]
+                        raw,
+                        raw_hash,
+                        env_min_roles.get(prov, {}),
+                        db_min_roles.get(prov, {}),
+                    ),
                 )
             )
 

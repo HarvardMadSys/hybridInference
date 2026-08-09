@@ -679,6 +679,11 @@ async def create_provider_definition(
         await op_store.delete_provider_definition(provider)
         raise
     provider_registry.register_provider_definition(row)
+    # A newly known provider starts with no cached tier declarations, and
+    # ``add_key_to_provider`` below reconciles against that cache — load first so a
+    # reserved row for this slug (one that outlived an earlier definition) is
+    # enforced from the start rather than after the next mutation or restart.
+    await dynamic_keys.load_min_role_declarations_for_provider(op_store, provider)
     dynamic_keys.add_key_to_provider(provider, payload.api_key.strip())
 
     await log_admin_action(
@@ -782,6 +787,11 @@ async def update_provider_definition(
         status="active",
     )
     provider_registry.register_provider_definition(updated)
+    # Re-activating a provider makes it known again, and unregistering it earlier
+    # dropped its cached declarations while its key rows (and their tiers) survived.
+    # Reload so the reservations are visible to the admin views and applied to any
+    # pool this provider gets next.
+    await dynamic_keys.load_min_role_declarations_for_provider(op_store, provider_slug)
 
     await log_admin_action(
         op_store,
