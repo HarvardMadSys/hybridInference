@@ -13,21 +13,25 @@ would put a second credential inside the sandbox and create something that has
 to be explicitly revoked — and a revocation that is forgotten, or that races a
 cached auth lookup, silently reopens the hole.
 
-Instead the sandbox reuses the one credential it already holds: the per-attempt
-capability token. This module resolves such a token into the identity its model
-calls run as. Two properties follow directly from the store's fence rather than
-from bookkeeping:
+Instead the sandbox holds an ``agr`` grant: a short-lived capability row the
+control plane mints through ``/internal/agent-grants`` and renews while the
+attempt runs. This module resolves that token into the identity its model
+calls run as. Two properties come from the grant row rather than from
+bookkeeping:
 
-- **Revocation is automatic.** The lookup requires the attempt to still be the
-  job's current one, still ``running``, with an unexpired lease, and the job to
-  be in a live state. The instant the reaper supersedes the attempt, the owner
-  cancels, or the job finishes, the same token stops buying inference. There is
-  no key to remember to revoke and no cache to invalidate.
-- **The budget is enforced from the billing ledger**, not from anything the
-  agent reports about itself: spend is summed from ``api_logs.agent_job_id``.
+- **A grant dies on its own.** ``grants.is_live`` requires the row to be
+  unrevoked and unexpired, and the TTL is minutes: the control plane renews a
+  running attempt's grant and revokes it when the attempt settles, but a
+  revoke that is forgotten or lost is a token that stops working at its next
+  expiry — not a standing credential.
+- **Spend is metered as the owner.** A grant carries no budget of its own.
+  The account's daily quota — the same ceiling the direct path enforces — is
+  checked on every call, and spend is measured from the billing ledger, not
+  from anything the agent reports about itself.
 
-Requests bill the job's *owner*, so a job's usage shows up in that user's
-account exactly like any other traffic.
+Requests bill the grant's *owner*, so a job's usage shows up in that user's
+account exactly like any other traffic, attributed via
+``api_logs.agent_job_id``.
 """
 
 from __future__ import annotations
@@ -42,11 +46,13 @@ logger = get_logger(__name__)
 
 
 class AgentModelAuthError(Exception):
-    """Raised when a worker token may not be used for model traffic.
+    """Raised when a grant token may not be used for model traffic.
 
     ``status_code`` mirrors what the HTTP layer should return: 401 for a token
-    that is invalid or whose fence has moved on, 429 when the job's budget is
-    exhausted.
+    that is invalid, revoked or expired; 403 for a subject that may not call
+    (suspended account, no applicable spending limit); 429 when the owner's
+    daily quota is exhausted; 503 when the answer cannot be determined — a
+    grant that cannot be verified refuses rather than proceeding unmetered.
     """
 
     def __init__(self, message: str, *, status_code: int = 401) -> None:
@@ -77,12 +83,13 @@ async def _resolve_grant(
 ) -> dict[str, Any]:
     """Load and validate the grant behind an ``agr`` token.
 
-    Shared by the model and tool paths: signature, row, liveness and subject
-    are the same questions for both. What differs is what each does next —
-    only the model path meters.
+    Token shape, row lookup and liveness only; the subject and quota checks
+    belong to the caller. ``authenticate_grant_model_call`` is the sole
+    consumer since MCP moved out with the cloud agent — the seam stays in
+    case a second grant-authorized capability ever returns.
 
     Raises:
-        AgentModelAuthError: For any unusable token, grant, or subject.
+        AgentModelAuthError: For any unusable token or grant.
     """
     if op_store is None:
         raise AgentModelAuthError("Inference grants require a configured database.")

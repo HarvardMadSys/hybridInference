@@ -61,8 +61,23 @@ def test_no_contract_variable_ships_a_value() -> None:
     assert not populated, f"these ship a value in .env.example: {populated}"
 
 
+# The AGENT_* names the gateway itself still reads after H4. The console's
+# `/agents` rewrites are compiled from the two internal URLs at build time
+# (next.config.js via Dockerfile.frontend build args), and the deploy scripts
+# grep .env for the network name to decide whether the console joins the
+# standalone stack's Docker network. Everything else with the prefix moved out
+# with the cloud agent.
+SURVIVING_AGENT_VARS = frozenset(
+    {
+        "AGENT_WEB_INTERNAL_URL",
+        "AGENT_CONTROL_PLANE_INTERNAL_URL",
+        "AGENT_NETWORK_NAME",
+    }
+)
+
+
 def test_the_moved_half_is_not_still_offered() -> None:
-    """No `AGENT_*` entry survives here — nothing in this repository reads one.
+    """No moved `AGENT_*` entry survives here — the gateway stopped reading them.
 
     H4 removed the cloud agent from the gateway, and with it every reader of
     the dispatcher token, the egress tiers, and the GitHub App and GitLab
@@ -70,14 +85,21 @@ def test_the_moved_half_is_not_still_offered() -> None:
     operator provisioning a GitHub App for a service this repository no longer
     runs, and reading the silence afterwards as a broken integration.
 
-    Assignments only. The section that replaced them names the variables in
+    Not a prefix ban: the names in ``SURVIVING_AGENT_VARS`` are read by the
+    gateway itself and belong in the example file. A new `AGENT_*` assignment
+    is either a new gateway-read variable — extend the allowlist here,
+    deliberately — or a moved one creeping back, which this refuses.
+
+    Assignments only. The section that replaced the moved ones names them in
     prose, so that an upgrading deployment knows what to carry across rather
     than concluding the feature was withdrawn.
     """
     offered = sorted(
-        line.partition("=")[0]
+        name
         for line in ENV_EXAMPLE.read_text().splitlines()
-        if line.startswith("AGENT_") and "=" in line
+        if (name := line.partition("=")[0]).startswith("AGENT_")
+        and "=" in line
+        and name not in SURVIVING_AGENT_VARS
     )
     assert not offered, (
         "these are still offered in .env.example, but nothing in this "

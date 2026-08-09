@@ -170,41 +170,30 @@ Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
 - Frontend is Next.js in `apps/frontend/` — its quality gates are separate
   from the Python `make` targets.
 
-### 6.6 The cloud agent is moving out — freeze in effect
+### 6.6 The cloud agent moved out
 
-The cloud agent is being extracted into
+The cloud agent lives in
 [freeinference-cloud-agent](https://github.com/HarvardMadSys/freeinference-cloud-agent).
-The freeze commit is `764a6f97`; the migration copies files from there, so a
-change to a frozen path after that commit is a change the new repository will
-not have.
+Production cut over on 2026-08-07 and the H4 removal PR deleted the agent code
+from this repository. **All agent work — features, fixes, deploy — happens in
+that repository now**; the plan and manifest are in
+[docs/agents/plans/2026-08-03-cloud-agent-repo-split.md](docs/agents/plans/2026-08-03-cloud-agent-repo-split.md).
 
-**Frozen — do not add features or refactor here:**
+What remains here is the gateway's side of the two service contracts:
 
-```text
-apps/backend/serving/agent_jobs/
-apps/backend/serving/servers/routers/agent_jobs.py
-apps/backend/serving/servers/routers/admin/agent_runner_hosts.py
-apps/backend/serving/schemas_agent_jobs.py
-apps/backend/serving/storage/agent_job_store.py
-apps/frontend/src/app/agents/ and src/components/features/agents/
-apps/frontend/src/lib/api/agents.ts
-deploy/docker/*agent* and ops/deploy/agent_*
-```
+- **Identity** — `servers/routers/identity.py` (`/v1/identity/*`).
+- **Inference grants** — `serving/grants.py` + `serving/grant_auth.py`,
+  `servers/routers/agent_grants.py` (`/internal/agent-grants*`), the
+  `/internal/*` lookups (`servers/routers/internal_lookups.py`,
+  `serving/model_catalog.py`), and `api_logs.agent_job_id` for cost
+  attribution.
+- **`/agents` routing** — the console proxies the path to the standalone web
+  app via the `AGENT_WEB_INTERNAL_URL` / `AGENT_CONTROL_PLANE_INTERNAL_URL`
+  build args (`apps/frontend/next.config.js` rewrites); without them the path
+  is a 404.
 
-New cloud agent work goes to the new repository. Bug fixes urgent enough to
-need shipping here should be flagged in the migration PR so they are re-applied
-after the move.
-
-**Not frozen, and staying here:** `agent_jobs/model_auth.py`, the MCP proxy
-(`agent_jobs/mcp_proxy.py`, `mcp_registry.py`, `servers/routers/agent_mcp.py`),
-and `api_logs.agent_job_id` with its cost queries. These are gateway capability
-surfaces, not agent code, and Phase C of the plan actively changes them.
-
-Repo-wide sweeps — renames, import re-orgs, config extraction — must **exclude**
-the frozen paths until the migration completes, or the file manifest chases a
-moving target.
-
-Plan and manifest: [docs/agents/plans/2026-08-03-cloud-agent-repo-split.md](docs/agents/plans/2026-08-03-cloud-agent-repo-split.md).
+The old `agent_*` tables stay in existing databases as read-only history
+(decision DR5); nothing here creates, reads or migrates them.
 
 ## 7. Common tasks
 
