@@ -144,12 +144,6 @@ main() {
     exit 1
   fi
 
-  # Cloud-agent runner (issue #1041): the host opts in by setting
-  # AGENT_DISPATCHER_TOKEN in .env — the same variable the runner and the
-  # gateway's claim gate already share, so there is no second switch to
-  # forget. The overlay must ride this same compose invocation (it attaches
-  # `backend` to the agent-egress network); with no token the deploy is
-  # exactly what it was before this block existed.
   # The standalone cloud agent, if this host also runs it. The console's
   # `/agents` rewrites (#1206) are baked with Docker DNS names, so they only
   # resolve once the console is on that stack's network — and the network
@@ -163,28 +157,6 @@ main() {
     CLOUD_AGENT_NETWORK=1
     COMPOSE+=(-f deploy/docker/docker-compose.cloud-agent.yml)
     log "Cloud agent network ${agent_network} found: the console will join it."
-  fi
-
-  AGENT_RUNNER=0
-  if grep -qE '^AGENT_DISPATCHER_TOKEN=..+' .env; then
-    AGENT_RUNNER=1
-    # Appended, not spliced: compose accepts flags in any order before the
-    # subcommand, and what decides overlay precedence is the relative order of
-    # the `-f` flags among themselves — which stays base-then-overlay here.
-    COMPOSE+=(-f deploy/docker/docker-compose.agent-runner.yml)
-    # The overlay refuses to start without an image name (an unqualified
-    # default would resolve through Docker Hub). The deploy builds exactly
-    # this tag below, so the name always resolves locally.
-    sandbox_image="$(grep -E '^AGENT_SANDBOX_IMAGE=..+' .env | tail -1 | cut -d= -f2- || true)"
-    export AGENT_SANDBOX_IMAGE="${sandbox_image:-hybridinference-agent-sandbox:latest}"
-    log "Agent runner enabled (AGENT_DISPATCHER_TOKEN is set); sandbox image ${AGENT_SANDBOX_IMAGE}."
-    # Name this machine for the admin host switch. Resolved out here because
-    # the runner container's own hostname is a container id, so it cannot
-    # answer "which machine am I" for itself.
-    if ! grep -qE '^AGENT_RUNNER_HOST=..+' .env; then
-      export AGENT_RUNNER_HOST="${AGENT_RUNNER_HOST:-$(hostname -s 2>/dev/null || hostname)}"
-      log "Runner host pool entry: ${AGENT_RUNNER_HOST} (set AGENT_RUNNER_HOST in .env to rename)."
-    fi
   fi
 
   # Refuse only when the working tree diverges from HEAD for tracked files,
@@ -236,43 +208,29 @@ main() {
     log "WARNING: DB-IP Country Lite update failed; retaining the last good database."
   fi
 
-  if [[ "$AGENT_RUNNER" == "1" ]]; then
-    log "Building the agent sandbox image (${AGENT_SANDBOX_IMAGE})."
-    docker build -f deploy/docker/Dockerfile.agent-sandbox -t "$AGENT_SANDBOX_IMAGE" .
-
-    # Gate the isolation boundary before the stack comes up. Delegated to the
-    # runner script rather than repeated here so there is one definition of
-    # "this host is fit to run sandboxes" — it reads AGENT_SANDBOX_BACKEND the
-    # way compose does, requires the Kata shim when that backend is `kata`, and
-    # proves VM isolation by starting one container from the image just built
-    # and checking it does not report the host's kernel.
-    #
-    # After the image build because the proof needs the image; before
-    # `make build` because a host that cannot isolate should not get runners.
-    log "Preflighting the sandbox isolation boundary."
-    if ! ops/deploy/agent_runner.sh preflight; then
-      log "Refusing to deploy the agent runner: this host cannot provide the"
-      log "isolation its configuration claims. Fix the host, or set"
-      log "AGENT_SANDBOX_BACKEND=container in .env to accept a shared kernel."
-      exit 1
-    fi
-  fi
-
   export_compose_profiles
 
   log "Rebuilding and restarting Docker Compose services."
   # The rebuild needs this site's identity too: the console's is compiled in
   # as build args. Make builds its own Compose command, so pass the staging
   # files explicitly rather than relying on the diagnostic COMPOSE array above.
-  make build DISTRIBUTION=freeinference AGENT_RUNNER="$AGENT_RUNNER" \
+  make build DISTRIBUTION=freeinference \
     CLOUD_AGENT_NETWORK="$CLOUD_AGENT_NETWORK" \
     COMPOSE_EXTRA_ENV_FILES='distributions/freeinference/deploy/staging/*.env'
 
   log "Current service state:"
   "${COMPOSE[@]}" ps
 
+  # --retry-all-errors, not just --retry-connrefused: a published Docker port is
+  # bound by docker-proxy the instant the container starts, so the connect
+  # succeeds and the far end resets while the server inside is still coming up.
+  # That is CURLE_RECV_ERROR (56), which --retry-connrefused does not cover, so
+  # curl gives up on the first attempt and the --retry flags never engage. The
+  # frontend line below already carries the flag; this one did not, and the same
+  # asymmetry on the production script failed six deploys of a stack that came
+  # up healthy anyway.
   log "Checking backend health at ${HEALTH_URL}."
-  curl -fsS --retry 30 --retry-delay 5 --retry-connrefused "$HEALTH_URL"
+  curl -fsS --retry 30 --retry-delay 5 --retry-connrefused --retry-all-errors "$HEALTH_URL"
   printf '\n'
 
   log "Checking frontend health at ${FRONTEND_HEALTH_URL}."

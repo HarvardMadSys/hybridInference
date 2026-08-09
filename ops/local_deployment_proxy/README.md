@@ -84,6 +84,11 @@ sudo SSH_HOST='user@internal.freeinference.org|user@spark2' REMOTE_PORT=8001 \
 sudo ./local_deployment_proxy/uninstall.sh
 ```
 
+`SSH_HOST` is the whole list, not an addition to it. A router an earlier run
+enabled and this one leaves out is stopped and disabled, because `Restart=always`
+plus the `multi-user.target` symlink would otherwise keep it advertising this box
+across reboots.
+
 The unit reads the repo's `.env` for `LOCAL_API_KEY` — the key the gateway signs
 its requests with — so on a box that also hosts the gateway a rotation there
 reaches both ends at once. A box that runs only this proxy and its tunnel has no

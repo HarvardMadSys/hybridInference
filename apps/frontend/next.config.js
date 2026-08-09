@@ -33,19 +33,17 @@ const nextConfig = {
   },
   async rewrites() {
     // **`beforeFiles`, and it has to be.** A rewrite returned in a flat array
-    // is `afterFiles`, which Next checks *after* filesystem routes — and this
-    // app still ships its own `/agents` pages, so those would win and the
-    // rewrite would look like it did nothing. Handing `/agents` to the
-    // standalone service means overriding a page that exists.
+    // is `afterFiles`, which Next checks *after* filesystem routes. This app's
+    // own `/agents` pages were removed at H4, but beforeFiles keeps the proxy
+    // authoritative even if a page ever reappears under that prefix.
     //
-    // That override is the cutover for the UI: the moment this deploys with
-    // the variables set, `/agents` is the new service and this app's agent
-    // pages are unreachable. Rolling back is unsetting the variables or
-    // reverting this commit — no DNS, no dashboard, no ssh.
+    // With the variables unset no rewrite is emitted and `/agents` answers
+    // 404 — the truthful state for a deployment that runs no agent service.
+    // The pre-H4 fallback (this app's own agent pages) is gone, so unsetting
+    // the variables is *not* a rollback to a gateway-served UI; there is none.
     //
-    // Job history does not move with it (decision DR5). The new service has
-    // its own database, so what a user sees at `/agents` afterwards starts
-    // empty.
+    // Job history did not move to the standalone service (decision DR5): it
+    // has its own database, so `/agents` history there started empty.
     const agentRewrites =
       AGENT_WEB_INTERNAL_URL && AGENT_CONTROL_PLANE_INTERNAL_URL
         ? [

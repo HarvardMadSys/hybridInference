@@ -7,9 +7,13 @@ then groups the hits by user, resolves each email, and reports which signature(s
 matched plus a sample. The point is to separate "a human is driving this" from
 "this is a robot looping on its own", which matters for capacity and abuse triage.
 
-Signature matching is a case-insensitive substring test against the JSON request
-payload. Signatures are deliberately specific phrases that interactive coding
-agents do not normally emit, to keep false positives low.
+Signature matching is a case-insensitive substring test against the ``prompt``
+column (the conversation turns) *or* ``request_payload`` (the rest of the body,
+including the Anthropic ``system`` prompt). Both are scanned because the storage
+layer stopped duplicating ``messages`` into ``request_payload``: newer rows carry
+the turns only in ``prompt``, older rows have them in both. Signatures are
+deliberately specific phrases that interactive coding agents do not normally
+emit, to keep false positives low.
 
 Usage:
     python ops/db/analysis/automated_loop_users.py --days 7
@@ -29,7 +33,8 @@ from typing import Any
 import asyncpg
 import dotenv
 
-# Each entry: (label, signature substring matched case-insensitively against request_payload::text).
+# Each entry: (label, signature substring matched case-insensitively against the
+# request's prompt text -- see _SIG_MATCH below for exactly which columns).
 # Phrases chosen to fire on unattended/looping harnesses, not ordinary interactive agent traffic.
 SIGNATURES: list[tuple[str, str]] = [
     ("scheduled-cron", "running as a scheduled cron job"),
@@ -74,14 +79,48 @@ def _dsn() -> str:
     )
 
 
+# Where a signature can be found. ``prompt`` holds the conversation turns, which
+# is where these phrases actually appear; scanning ``request_payload`` alone used
+# to reach them only because the payload carried a duplicate copy of ``messages``,
+# and newer rows do not, so matching on the payload by itself now silently
+# under-counts. The payload arm is kept as-is (rather than narrowed to
+# ``->>'system'``) so no historical row that matches today stops matching: on new
+# rows the payload is small — parameters plus the Anthropic ``system`` prompt,
+# which is stored nowhere else. ``$P`` is replaced with the signature's
+# placeholder.
+#
+# The two arms need DIFFERENT needles. ``prompt`` is TEXT holding
+# ``json.dumps(messages)``, which defaults to ``ensure_ascii=True``, so any
+# non-ASCII character is stored as its ``\uXXXX`` escape -- the em dash in
+# "automated check — not a user request" sits on disk as the six characters
+# ``—``, and an ILIKE carrying a real em dash never matches it.
+# ``request_payload`` is JSONB, whose ``::text`` renders real UTF-8, so that arm
+# wants the raw signature. ``$P`` is the raw needle, ``$E`` the escaped one.
+_SIG_MATCH = (
+    "coalesce(l.prompt, '') ILIKE '%' || $E || '%'"
+    " OR coalesce(l.request_payload::text, '') ILIKE '%' || $P || '%'"
+)
+
+
+def _json_escaped(sig: str) -> str:
+    """Render *sig* the way ``json.dumps`` stores it in the ``prompt`` column."""
+    return json.dumps(sig)[1:-1]
+
+
 async def _scan(conn: asyncpg.Connection, days: int) -> list[dict[str, Any]]:
     """Per user, count how many requests match each automation signature."""
     # Build one aggregate query: for each signature, a FILTER count over the window.
+    # Two placeholders per signature: the raw needle for the JSONB arm and the
+    # json.dumps-escaped one for the TEXT prompt column.
     filters = ",\n".join(
-        f"count(*) FILTER (WHERE l.request_payload::text ILIKE '%' || ${i + 2} || '%') AS sig_{i}"
+        f"count(*) FILTER (WHERE "
+        f"{_SIG_MATCH.replace('$P', f'${2 * i + 2}').replace('$E', f'${2 * i + 3}')}"
+        f") AS sig_{i}"
         for i in range(len(SIGNATURES))
     )
-    params = [days] + [sig for _, sig in SIGNATURES]
+    params: list[Any] = [days]
+    for _, sig in SIGNATURES:
+        params.extend((sig, _json_escaped(sig)))
     rows = await conn.fetch(
         f"""
         WITH hits AS (

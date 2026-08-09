@@ -112,20 +112,33 @@ jobs:
           fetch-depth: 0
 
       - name: Isolate uv cache dir
-        # Per-job UV_CACHE_DIR via GITHUB_ENV: job-level env cannot use the
-        # runner context. Concurrent self-hosted jobs otherwise share
-        # ~/.cache/uv; when a cache entry disappears mid-install, uv fails
-        # with ENOENT while hardlinking into the venv — before tests start.
+        # Set via GITHUB_ENV because job-level env cannot use the runner
+        # context. The default ~/.cache/uv is shared by every runner process on
+        # the machine, and an entry vanishing mid-install fails the job with
+        # ENOENT while uv hardlinks into the venv — before tests start.
+        #
+        # RUNNER_TEMP is the whole isolation: it belongs to one runner process
+        # (.../actions-runners/spark2_5/_work/_temp), and a runner runs one job
+        # at a time. Nothing run-specific may go in this path — see the note on
+        # `enable-cache` below.
         run: |
-          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}" >> "${GITHUB_ENV}"
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache" >> "${GITHUB_ENV}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
         with:
           version: ${{ env.UV_VERSION }}
+          # This only caches while UV_CACHE_DIR is stable across runs. The
+          # cache service derives an entry's version from the paths it covers,
+          # so a path holding GITHUB_RUN_ID misses on every restore and
+          # uploads a fresh copy every time. It did: three consecutive runs
+          # asked for key `setup-uv-2-aarch64-...-018060ae` and all three were
+          # told "No GitHub Actions cache found" — an identical key missing is
+          # the version differing, which is the path.
           enable-cache: true
-          # Still disable prune: even with per-job UV_CACHE_DIR, prune --ci
-          # is unnecessary on self-hosted and has raced with other installs.
+          # Still disable prune: even with UV_CACHE_DIR off the shared default,
+          # prune --ci is unnecessary on self-hosted and has raced with other
+          # installs.
           prune-cache: false
 
       - name: Set up Python
@@ -232,11 +245,11 @@ jobs:
           fetch-depth: 0
 
       - name: Isolate uv cache dir
-        # Per-job UV_CACHE_DIR via GITHUB_ENV: job-level env cannot use the
-        # runner context, and concurrent self-hosted jobs otherwise share
-        # ~/.cache/uv and race on hardlinking into the venv.
+        # Off the shared ~/.cache/uv, which concurrent self-hosted jobs race on
+        # while hardlinking into the venv. Stable across runs — see the note on
+        # `enable-cache` in Backend Quality.
         run: |
-          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}" >> "${GITHUB_ENV}"
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache" >> "${GITHUB_ENV}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -367,22 +380,22 @@ jobs:
           fetch-depth: 0
 
       - name: Isolate uv cache dir
-        # Per-job UV_CACHE_DIR via GITHUB_ENV: job-level env cannot use the
-        # runner context. Concurrent self-hosted jobs otherwise share
-        # ~/.cache/uv; when a cache entry disappears mid-install, uv fails
-        # with ENOENT while hardlinking into the venv — before tests start.
-        env:
-          UV_CACHE_SUFFIX: ${{ matrix.shard }}
+        # Same path, and deliberately the same for every shard: RUNNER_TEMP
+        # already belongs to one runner process running one job at a time, so
+        # the shard number added nothing to the isolation and cost all four
+        # shards their cache. See the note on `enable-cache` in Backend
+        # Quality for why nothing run-specific belongs in this path.
         run: |
-          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}-${UV_CACHE_SUFFIX}" >> "${GITHUB_ENV}"
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache" >> "${GITHUB_ENV}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
-          # Still disable prune: even with per-job UV_CACHE_DIR, prune --ci
-          # is unnecessary on self-hosted and has raced with other installs.
+          # Still disable prune: even with UV_CACHE_DIR off the shared default,
+          # prune --ci is unnecessary on self-hosted and has raced with other
+          # installs.
           prune-cache: false
 
       - name: Set up Python
@@ -588,8 +601,11 @@ jobs:
 
       - name: Isolate uv cache dir
         # Job-level env cannot use the runner context; set via GITHUB_ENV.
+        # This job does not enable the remote cache, so the run id here cost
+        # nothing — it is dropped anyway so the pattern is not copied into a
+        # job that does.
         run: |
-          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}" >> "${GITHUB_ENV}"
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache" >> "${GITHUB_ENV}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0

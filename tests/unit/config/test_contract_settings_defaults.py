@@ -77,7 +77,7 @@ def test_role_concurrency_defaults():
     assert registry["user_concurrency_free"]["default"] == 3
     assert registry["user_concurrency_pro"]["default"] == 3
     assert registry["user_concurrency_internal"]["default"] == 10
-    assert registry["user_concurrency_admin"]["default"] == 10
+    assert registry["user_concurrency_admin"]["default"] == 0  # 0 = unlimited
 
 
 def test_role_daily_quota_defaults():

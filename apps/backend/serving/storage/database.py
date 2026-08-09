@@ -15,6 +15,7 @@ from typing import Any
 import asyncpg
 
 from serving.storage.log_schema import ensure_api_logs_schema
+from serving.storage.payload_dedup import strip_duplicated_payload_keys
 from serving.storage.utils import (
     calculate_cost,
     conversation_shape,
@@ -756,7 +757,10 @@ class DatabaseLogger:
                 None for non-OpenRouter routes.
             request_payload: Raw incoming request body (dict). Stored as JSONB
                 in the ``request_payload`` column when full-content logging
-                is enabled; nulled in privacy mode.
+                is enabled; nulled in privacy mode. Its ``messages``/``tools``
+                keys are dropped before the insert — they already have their own
+                ``prompt``/``tools`` columns (see
+                :mod:`serving.storage.payload_dedup`).
             served_model_id: Model that actually served the request when it
                 diverges from the client-requested ``model_id``. Defaults to
                 ``model_id``. Served endpoint is recovered from ``metadata``.
@@ -778,7 +782,20 @@ class DatabaseLogger:
             # Store full prompt and response text
             sanitized_prompt = strip_null_bytes(prompt)
             sanitized_response = strip_null_bytes(response)
-            sanitized_request_payload = strip_null_bytes(request_payload)
+            # Drop from the stored body whatever this same row already writes to
+            # the dedicated ``prompt``/``tools`` columns — the duplication that
+            # grew request_payload to roughly half of api_logs on disk. The
+            # sanitized column values are passed in so the dedup is verified
+            # rather than assumed: anything the columns did not capture (a
+            # client's per-message cache_control, or tools on an early-error row
+            # whose params carried none) is kept. Strip *after* strip_null_bytes
+            # so a key obfuscated with null bytes ("mess\x00ages") is caught too,
+            # and so both sides of the comparison are sanitized alike.
+            sanitized_request_payload = strip_duplicated_payload_keys(
+                strip_null_bytes(request_payload),
+                stored_messages=sanitized_prompt,
+                stored_tools=sanitized_tools,
+            )
             prompt_str = (
                 json.dumps(sanitized_prompt)
                 if isinstance(sanitized_prompt, list)

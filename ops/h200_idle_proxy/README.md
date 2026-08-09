@@ -27,7 +27,7 @@ other's container. See
 | Config | [`models.json`](models.json) | derived (below) | [`models.json`](models.json) |
 
 Install replica B with `sudo REPLICA=b ./install.sh` (add `TUNNEL_USER=juncheng`
-on h200a, where root has no SSH key for the routers). Its units are named
+on h200a, where root has no SSH key for the routers — later runs keep it). Its units are named
 separately from A's on purpose: before `REPLICA` existed, re-running the installer
 with a different port rewrote A's single unit in place, so one host could not hold
 two.
@@ -156,6 +156,17 @@ sudo ./ops/h200_idle_proxy/uninstall.sh
 
 Default tunnels: `spark2` and `jason@internal.freeinference.org`.
 
+`SSH_HOST` is the whole list, not an addition to it. A router an earlier run
+enabled and this one leaves out is stopped and disabled, because `Restart=always`
+plus the `multi-user.target` symlink would otherwise keep it advertising this box
+across reboots. Only the replica being installed is considered, so `REPLICA=a`
+never touches B's tunnels.
+
+`TUNNEL_USER` behaves like `LOCAL_API_KEY` below: a later run that does not pass
+it keeps the user already installed. Reverting h200a's tunnels to the unit's
+`root` default would leave them unable to authenticate against the routers and
+autossh restarting forever, so pass `TUNNEL_USER=` explicitly to hand them back.
+
 The unit reads the repo's `.env` for `LOCAL_API_KEY` (see [Gateway
 configuration](#gateway-configuration)). Neither H200 node normally has one, so
 pass the key on the first install — `sudo LOCAL_API_KEY='…'
@@ -205,7 +216,7 @@ See [`models.json`](models.json):
 | HiCache | **off** — no `hicache_*` key at all; it hangs the scheduler under DSpark (see below) |
 | `moe_runner_backend` | `marlin` — **required** for FP4 experts on H200 (SM90) |
 | `mtp` / `speculative_algorithm` | `true` / `DSPARK` |
-| `sglang_image` | `lmsysorg/sglang:v0.5.16` — DSpark needs ≥ 0.5.16 |
+| `sglang_image` | `lmsysorg/sglang:v0.5.17` — DSpark needs ≥ 0.5.16, grammar needs ≥ 0.5.17 (see below) |
 | `cache_dir` | node-local DeepGEMM/JIT cache (**not** on shared `/netscratch`) |
 | `skip_server_warmup` | `true` — the proxy's health check already gates readiness |
 
@@ -293,6 +304,48 @@ See [`models.json`](models.json):
 > "ready to roll" and then 500s every request. Note `config.json` still reports
 > `num_nextn_predict_layers: 1`, which is misleading.
 
+### Why grammar decoding needs ≥ v0.5.17
+
+`v0.5.16` rejects **every grammar-constrained request** on this deployment with an
+HTTP 400:
+
+```
+DFLASH speculative decoding does not support grammar-constrained decoding yet.
+```
+
+The guard is `validate_dflash_request()`, and it fires for the whole DFlash family
+— `is_dflash_family()` is `is_dflash() or is_dspark()`, so our `DSPARK` config is in
+scope even though the message says DFLASH. It rejects `response_format`
+(`json_object` **and** `json_schema`), `regex`, `ebnf`, `structural_tag`, and
+`tool_choice: "required"` / a named function. Only `tool_choice: "auto"` survives.
+
+On the streaming path sglang emits that 400 as an **in-band SSE `error` frame under
+an HTTP 200**, followed by a placeholder `usage` of `prompt_tokens: 1,
+completion_tokens: 1`. The gateway therefore logged these as successful 200s with
+1/1 tokens and never failed over — 82 k requests in six hours, ~100% of all
+`response_format` traffic.
+
+[sgl-project/sglang#30096](https://github.com/sgl-project/sglang/pull/30096) added
+the verify-time grammar bitmask and made the rejection conditional. It merged to
+`main` on 2026-07-25 **11:36 UTC** — eleven hours after `v0.5.16` was cut at
+00:13 UTC the same day, which is the whole reason 0.5.16 misses it.
+
+`v0.5.17` (2026-08-08) is the first release that carries it, and by then the guard
+had been dropped outright rather than merely made conditional — `validate_dflash_request()`
+is down to `return_logprob` and `return_hidden_states`:
+
+```python
+def validate_dflash_request(req: Req, enable_overlap: bool) -> Optional[str]:
+    if req.return_logprob: ...
+    if enable_overlap and req.return_hidden_states: ...
+    return None
+```
+
+So **≥ 0.5.17 for any grammar use**. Do not downgrade to 0.5.16 to dodge an
+unrelated regression without first moving `response_format` / forced-tool traffic
+off these routes — 0.5.16 fails it silently (in-band SSE error under a 200), not
+loudly.
+
 ## Benchmarks
 
 Measured on **h200b**, official 0731 at TP=2 on GPUs 2,3, marlin, 1M context, with
@@ -349,7 +402,9 @@ collapse at long context. (`bench_serving` simply stops printing "Accept length"
 
 - 4× NVIDIA H200 (or at least GPUs 2 and 3 free)
 - Docker + NVIDIA Container Toolkit
-- `lmsysorg/sglang:v0.5.16` or newer (**DSpark is not in ≤ 0.5.15**)
+- `lmsysorg/sglang:v0.5.17` or newer (**DSpark is not in ≤ 0.5.15**;
+  grammar-constrained decoding is not in ≤ 0.5.16 — see
+  [Why grammar decoding needs ≥ v0.5.17](#why-grammar-decoding-needs--v0517))
 - Weights at `model_dir` (or `hf_repo` download on first request)
 - SSH to staging/prod with `GatewayPorts clientspecified` (or `yes`)
 - `autossh` for durable tunnels (installed by `install.sh`)

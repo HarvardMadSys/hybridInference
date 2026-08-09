@@ -35,7 +35,13 @@ async def test_postgres_log_request_strips_null_bytes_from_all_serialized_fields
         error="bad\x00error",
         params={"tools": [{"name": "to\x00ol"}]},
         metadata={"us\x00er_id": "user\x00-1", "nested\x00": {"no\x00te": "n\x00ote"}},
-        request_payload={"mess\x00ages": [{"content": "pa\x00yload"}]},
+        request_payload={
+            # Same messages the prompt column gets, but with the key obfuscated
+            # by a null byte: sanitization must resolve it to "messages" first,
+            # otherwise the dedup below would not recognise it as a duplicate.
+            "mess\x00ages": [{"role": "user", "content": "hel\x00lo"}],
+            "sys\x00tem": "be he\x00lpful",
+        },
     )
 
     args = conn.execute.await_args.args
@@ -55,8 +61,16 @@ async def test_postgres_log_request_strips_null_bytes_from_all_serialized_fields
 
     assert json.loads(prompt_str)[0]["content"] == "hello"
     assert json.loads(response_str)["message"]["content"] == "world"
-    assert json.loads(request_payload_str)["messages"][0]["content"] == "payload"
     assert error_str == "baderror"
+
+    # Null-byte sanitization runs *before* the messages/tools dedup, so a key
+    # obfuscated with null bytes ("mess\x00ages") still resolves to "messages",
+    # is recognised as matching the sanitized prompt column, and is dropped from
+    # the stored body. Sibling keys keep their sanitized content. Ordering the
+    # other way round would leave a full messages blob in every row.
+    stored_payload = json.loads(request_payload_str)
+    assert "messages" not in stored_payload
+    assert stored_payload == {"system": "be helpful"}
     assert json.loads(metadata_str)["user_id"] == "user-1"
     assert json.loads(metadata_str)["nested"]["note"] == "note"
     assert json.loads(tools_str)[0]["name"] == "tool"

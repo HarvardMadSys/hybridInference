@@ -15,8 +15,6 @@ from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
-from serving.agent_jobs import terminal_coordination
-from serving.agent_jobs.workspace_broker_client import WorkspaceBrokerError
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.servers import bootstrap
 from serving.servers.deps import AppServices
@@ -32,33 +30,6 @@ def _mock_routewise(*, config: RouteWiseConfig | None = None) -> MagicMock:
 
 class TestBootstrapInitialization:
     """Test bootstrap initialization functions."""
-
-    @pytest.mark.asyncio
-    async def test_settled_terminal_resume_retries_until_broker_confirms(
-        self,
-        monkeypatch,
-    ):
-        broker = SimpleNamespace(
-            resume_settled_terminals=AsyncMock(
-                side_effect=[
-                    WorkspaceBrokerError(503, "broker unavailable"),
-                    {"ok": True},
-                ]
-            )
-        )
-        monkeypatch.setattr(terminal_coordination, "workspace_broker_from_env", lambda: broker)
-        store = SimpleNamespace(
-            list_terminal_resumes_pending=AsyncMock(return_value=["ajob_test"]),
-            mark_terminal_resume_complete=AsyncMock(return_value=True),
-        )
-
-        await bootstrap._reconcile_settled_agent_terminals(store)
-        store.mark_terminal_resume_complete.assert_not_awaited()
-
-        await bootstrap._reconcile_settled_agent_terminals(store)
-        store.mark_terminal_resume_complete.assert_awaited_once_with(job_id="ajob_test")
-        assert broker.resume_settled_terminals.await_count == 2
-        broker.resume_settled_terminals.assert_awaited_with("ajob_test")
 
     @pytest.mark.asyncio
     async def test_routewise_settings_apply_continues_after_one_router_fails(
@@ -203,7 +174,6 @@ class TestBootstrapInitialization:
             patch("serving.servers.bootstrap.DatabaseLogger") as MockDBLogger,
             patch("serving.servers.bootstrap.PostgresOperationalStore") as MockPGOp,
             patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
-            patch("serving.servers.bootstrap.AgentJobStore", return_value=AsyncMock()),
         ):
             mock_logger = AsyncMock()
             MockDBLogger.return_value = mock_logger
@@ -236,7 +206,6 @@ class TestBootstrapInitialization:
             patch("serving.servers.bootstrap.PostgresOperationalStore") as MockPGOp,
             patch("serving.servers.bootstrap.CachedOperationalStore") as MockCachedStore,
             patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
-            patch("serving.servers.bootstrap.AgentJobStore", return_value=AsyncMock()),
         ):
             mock_pg_op = AsyncMock()
             MockPGOp.return_value = mock_pg_op
@@ -267,7 +236,6 @@ class TestBootstrapInitialization:
             patch("serving.servers.bootstrap.PostgresOperationalStore") as MockPGOp,
             patch("serving.servers.bootstrap.CachedOperationalStore") as MockCachedStore,
             patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
-            patch("serving.servers.bootstrap.AgentJobStore", return_value=AsyncMock()),
             patch(
                 "serving.servers.bootstrap.ModelVisibilityResolver",
                 side_effect=RuntimeError("boom"),
@@ -362,7 +330,7 @@ models:
     async def test_initialize_constructs_user_concurrency_limiter(self, mock_env):
         """services.user_concurrency_limiter must be a UserConcurrencyLimiter
         with caps for free/pro/internal/admin."""
-        from serving.servers.concurrency import UserConcurrencyLimiter
+        from serving.servers.concurrency import UNLIMITED_CONCURRENCY, UserConcurrencyLimiter
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
@@ -376,14 +344,14 @@ models:
 
             assert isinstance(services.user_concurrency_limiter, UserConcurrencyLimiter)
             limiter = services.user_concurrency_limiter
-            for role in ("trial", "free", "pro", "internal", "admin"):
+            for role in ("trial", "free", "pro", "internal"):
                 granted, cap, _ = await limiter.try_acquire(f"u-{role}", role, False)
                 assert granted
                 assert cap >= 1
-            # is_admin=True must yield admin cap
+            # is_admin=True must yield the admin cap: the unlimited sentinel (0)
             granted, cap, label = await limiter.try_acquire("admin-user", "free", True)
             assert granted
-            assert cap == 10
+            assert cap == UNLIMITED_CONCURRENCY
             assert label == "admin"
 
     @pytest.mark.asyncio
@@ -550,7 +518,6 @@ models:
             patch("serving.servers.bootstrap.CachedOperationalStore", return_value=cached_store),
             patch("serving.servers.bootstrap.PostgresLogStore", return_value=log_store),
             patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
-            patch("serving.servers.bootstrap.AgentJobStore", return_value=AsyncMock()),
             patch("serving.servers.bootstrap.email_scheduler.start_scheduler"),
             patch(
                 "serving.servers.bootstrap.email_scheduler.rehydrate_scheduled_broadcasts",

@@ -8,6 +8,7 @@ operational store, so the tests wire a mock store alongside the mock db logger.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,7 +22,13 @@ from serving.servers.routers.admin import usage_insights
 
 
 def _sample_rows():
-    """Two api_logs-shaped rows with stored payloads (OpenAI + Anthropic shape)."""
+    """Two historical api_logs rows: the turns still live inside request_payload.
+
+    This is the pre-de-duplication shape — ``prompt`` was written too, but rows
+    from before that column was populated, and any row whose payload copy is the
+    only content, must keep rendering. ``prompt`` is NULL here so these cases
+    exercise the request_payload fallback specifically.
+    """
     return [
         {
             "timestamp": datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc),
@@ -34,6 +41,7 @@ def _sample_rows():
                     {"role": "user", "content": "Fix the bug in foo.py"},
                 ]
             },
+            "prompt": None,
         },
         {
             "timestamp": datetime(2026, 6, 25, 12, 5, tzinfo=timezone.utc),
@@ -44,6 +52,47 @@ def _sample_rows():
                 "system": [{"type": "text", "text": "Kilo Code agent"}],
                 "messages": [{"role": "user", "content": [{"type": "text", "text": "refactor"}]}],
             },
+            "prompt": None,
+        },
+    ]
+
+
+def _sample_rows_new_shape():
+    """The same two requests as stored today: no ``messages`` in request_payload.
+
+    The storage layer strips ``messages``/``tools`` before insert because they are
+    already written to the dedicated ``prompt``/``tools`` columns, so the payload
+    keeps only the call parameters (plus ``system``, which is not stripped).
+    ``prompt`` is TEXT holding ``json.dumps(messages)``, which is what asyncpg
+    hands back.
+    """
+    return [
+        {
+            "timestamp": datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc),
+            "model_id": "glm-5.1",
+            "provider": "zhipu",
+            "metadata": {"user_agent": "claude-cli/1.2.0"},
+            "request_payload": {"model": "glm-5.1", "stream": True, "temperature": 0.2},
+            "prompt": json.dumps(
+                [
+                    {"role": "system", "content": "You are Claude Code."},
+                    {"role": "user", "content": "Fix the bug in foo.py"},
+                ]
+            ),
+        },
+        {
+            "timestamp": datetime(2026, 6, 25, 12, 5, tzinfo=timezone.utc),
+            "model_id": "minimax-m3",
+            "provider": "minimax",
+            "metadata": {"user_agent": "kilo-code/0.9"},
+            # Anthropic surface: ``system`` survives in the payload, turns do not.
+            "request_payload": {
+                "system": [{"type": "text", "text": "Kilo Code agent"}],
+                "max_tokens": 4096,
+            },
+            "prompt": json.dumps(
+                [{"role": "user", "content": [{"type": "text", "text": "refactor"}]}]
+            ),
         },
     ]
 
@@ -128,6 +177,39 @@ class TestAdminUsageInsightsAnalyze:
         assert _patch_llm["api_key"] == "sk-configured-key"
         # The rendered content handed to the LLM includes harness identifiers.
         assert "Kilo Code agent" in _patch_llm["content"]
+        # Historical rows keep their turns inside request_payload — still rendered.
+        assert "Fix the bug in foo.py" in _patch_llm["content"]
+        assert "<none captured>" not in _patch_llm["content"]
+
+    @pytest.mark.asyncio
+    async def test_analyze_renders_rows_whose_payload_has_no_messages(
+        self, admin_app, mock_db_logger, _patch_llm
+    ):
+        """Rows stored today keep the turns only in ``prompt`` — the report must use it.
+
+        Reading ``request_payload["messages"]`` alone would still return 200 here,
+        with every sampled request rendered as "<none captured>": a silent, plausible
+        looking report built from nothing. Assert the real content instead.
+        """
+        mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
+        mock_conn.fetch = AsyncMock(return_value=_sample_rows_new_shape())
+
+        admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/admin/usage-insights/analyze", json={})
+        admin_app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        assert resp.json()["sampled_requests"] == 2
+        content = _patch_llm["content"]
+        assert "<none captured>" not in content
+        # OpenAI shape: both the system turn and the user turn come from `prompt`.
+        assert "You are Claude Code." in content
+        assert "Fix the bug in foo.py" in content
+        # Anthropic shape: `system` still comes from the payload, the turn from `prompt`.
+        assert "Kilo Code agent" in content
+        assert "refactor" in content
 
     @pytest.mark.asyncio
     async def test_analyze_scopes_to_user_email(self, admin_app, _patch_llm):
@@ -336,6 +418,47 @@ class TestFetchSamples:
         assert "random()" in captured["query"]
         assert captured["params"] == ("user-1", usage_insights._SAMPLE_POOL, 100)
         assert len(samples) == 2
+        # The turns live in their own column now, so the query must fetch it.
+        assert "prompt" in captured["query"]
+
+    @pytest.mark.asyncio
+    async def test_extracts_turns_from_the_prompt_column(self):
+        """Rows whose payload no longer carries ``messages`` still yield content."""
+
+        async def _fetch(query, *params):
+            return _sample_rows_new_shape()
+
+        conn = MagicMock()
+        conn.fetch = AsyncMock(side_effect=_fetch)
+        payload = usage_insights.UsageInsightsRequest(limit=10)
+
+        samples = await usage_insights._fetch_samples(conn, None, payload)
+
+        by_model = {s["model_id"]: s for s in samples}
+        openai_row = by_model["glm-5.1"]
+        assert openai_row["system_opener"] == "You are Claude Code."
+        assert openai_row["user_messages"] == ["Fix the bug in foo.py"]
+        anthropic_row = by_model["minimax-m3"]
+        assert anthropic_row["system_opener"] == "Kilo Code agent"
+        assert anthropic_row["user_messages"] == ["refactor"]
+
+    @pytest.mark.asyncio
+    async def test_still_extracts_turns_from_historical_payloads(self):
+        """Old rows keep their copy inside request_payload; the fallback reads it."""
+
+        async def _fetch(query, *params):
+            return _sample_rows()
+
+        conn = MagicMock()
+        conn.fetch = AsyncMock(side_effect=_fetch)
+        payload = usage_insights.UsageInsightsRequest(limit=10)
+
+        samples = await usage_insights._fetch_samples(conn, None, payload)
+
+        by_model = {s["model_id"]: s for s in samples}
+        assert by_model["glm-5.1"]["system_opener"] == "You are Claude Code."
+        assert by_model["glm-5.1"]["user_messages"] == ["Fix the bug in foo.py"]
+        assert by_model["minimax-m3"]["user_messages"] == ["refactor"]
 
     @pytest.mark.asyncio
     async def test_samples_rendered_newest_first(self):

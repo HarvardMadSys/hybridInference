@@ -24,8 +24,8 @@ from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 
 from serving import grants
-from serving.agent_jobs.visible_models import agent_visible_models
 from serving.model_access import get_disabled_models_from_preferences
+from serving.model_catalog import agent_visible_models
 from serving.servers.deps import (
     get_log_store,
     get_model_visibility_resolver,

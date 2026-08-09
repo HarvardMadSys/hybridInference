@@ -24,7 +24,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`h-full ${crimsonText.variable}`}>
       <head>
-        {branding.statcounterProjectId && (
+        {/* Ternary, not `&&`: an unset project id is '', and `{'' && …}` renders
+            the empty string as a text node. A text node inside <head> is invalid
+            HTML, so the parser hoists it out, server and client trees diverge,
+            and the failed hydration tears out <head> — stylesheets included,
+            leaving the whole app unstyled. Only bites builds without a
+            statcounter id, i.e. local and neutral ones. */}
+        {branding.statcounterProjectId ? (
           <>
             <Script id="statcounter-config" strategy="afterInteractive">
               {`var sc_project=${branding.statcounterProjectId}; var sc_invisible=1; var sc_security='${branding.statcounterSecurityKey}';`}
@@ -35,7 +41,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               strategy="lazyOnload"
             />
           </>
-        )}
+        ) : null}
       </head>
       <body
         className="flex min-h-screen flex-col bg-gray-50 text-black antialiased"

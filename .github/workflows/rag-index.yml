@@ -53,13 +53,21 @@ jobs:
           ref: dev
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Isolate uv cache dir
+        # The race the `prune-cache` note below describes is this job sharing
+        # ~/.cache/uv with every other job on the machine. RUNNER_TEMP belongs
+        # to one runner process running one job at a time, which is the actual
+        # fix; stable across runs so the remote cache can restore (see ci.yml).
+        run: |
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache" >> "${GITHUB_ENV}"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
-          # Jobs sharing this self-hosted runner share one UV_CACHE_DIR; a
-          # prune here can race another job's mid-write extraction (see ci.yml).
+          # Kept disabled regardless: a prune can still race another job's
+          # mid-write extraction (see ci.yml).
           prune-cache: false
 
       - name: Set up Python

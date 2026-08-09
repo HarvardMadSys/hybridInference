@@ -53,19 +53,45 @@ def _dsn() -> str:
     )
 
 
-def _payload_fingerprint(payload: Any) -> tuple[int, str, str]:
-    """Return (message_count, first-user-text preview, sha1 of full payload text)."""
-    raw = payload if isinstance(payload, str) else json.dumps(payload, default=str, sort_keys=True)
-    digest = hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:10]
-    p = payload
+def _as_text(value: Any) -> str:
+    """Render a stored column value as the text that goes into the digest."""
+    return value if isinstance(value, str) else json.dumps(value, default=str, sort_keys=True)
+
+
+def _message_list(prompt: Any) -> list[Any]:
+    """Decode the ``api_logs.prompt`` column (TEXT holding a JSON message list)."""
+    p = prompt
     if isinstance(p, str):
         try:
             p = json.loads(p)
         except json.JSONDecodeError:
-            return (0, raw[:60], digest)
-    if not isinstance(p, dict):
-        return (0, "", digest)
-    msgs = p.get("messages", []) or []
+            return []
+    return p if isinstance(p, list) else []
+
+
+def _payload_fingerprint(payload: Any, prompt: Any = None) -> tuple[int, str, str]:
+    """Return (message_count, first-user-text preview, sha1 of the request content).
+
+    The conversation turns live in the dedicated ``prompt`` column; only rows
+    logged before that de-duplication also carry a ``messages`` copy inside
+    ``request_payload``, so prefer the column and fall back to the payload. Both
+    feed the digest: hashing the payload alone would collapse every turn of a
+    session to the same fingerprint now that it holds just the call parameters.
+    """
+    raw = _as_text(payload)
+    digest = hashlib.sha1((raw + _as_text(prompt)).encode("utf-8", "replace")).hexdigest()[:10]
+    msgs = _message_list(prompt)
+    if not msgs:
+        p = payload
+        if isinstance(p, str):
+            try:
+                p = json.loads(p)
+            except json.JSONDecodeError:
+                return (0, raw[:60], digest)
+        if not isinstance(p, dict):
+            return (0, "", digest)
+        raw_msgs = p.get("messages") or []
+        msgs = raw_msgs if isinstance(raw_msgs, list) else []
     first_user = ""
     for m in msgs:
         if isinstance(m, dict) and m.get("role") == "user":
@@ -93,7 +119,7 @@ async def _tail(
         f"""
         SELECT timestamp, request_id, status_code, model_id,
                prompt_tokens, completion_tokens, total_tokens,
-               metadata->>'user_agent' AS ua, request_payload
+               metadata->>'user_agent' AS ua, request_payload, prompt
         FROM api_logs
         WHERE user_id = $1 {clause}
         ORDER BY timestamp DESC
@@ -121,7 +147,7 @@ async def main(email: str, model: str | None, limit: int, dupes_only: bool) -> i
     # Tag each row with its payload fingerprint.
     enriched = []
     for r in rows:
-        nmsg, first_user, digest = _payload_fingerprint(r["request_payload"])
+        nmsg, first_user, digest = _payload_fingerprint(r["request_payload"], r["prompt"])
         enriched.append((r, nmsg, first_user, digest))
 
     # Group by (prompt_tokens, completion_tokens) to surface identical-token clusters.

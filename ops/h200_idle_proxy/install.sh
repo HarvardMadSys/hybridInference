@@ -11,8 +11,11 @@
 #   sudo REPLICA=b ./ops/h200_idle_proxy/install.sh
 #
 # On h200a the tunnels must run as `juncheng` — root there has no SSH key for the
-# routers — so pass TUNNEL_USER so a reinstall does not revert that:
+# routers:
 #   sudo REPLICA=b TUNNEL_USER=juncheng ./ops/h200_idle_proxy/install.sh
+# A later run that does not pass it keeps the user already installed, the way it
+# keeps the API key — reverting to the unit's `root` default would leave autossh
+# restarting forever. To hand the tunnels back to root, ask for it: TUNNEL_USER=.
 #
 # Defaults open tunnels to staging (spark2) and production
 # (internal.freeinference.org) so both gateways can reach DeepSeek-V4-Flash.
@@ -23,6 +26,9 @@
 # Override hosts/ports if needed:
 #   sudo SSH_HOST='juncheng@spark2|jason@internal.freeinference.org' \
 #        REMOTE_PORT=8003 ./ops/h200_idle_proxy/install.sh
+# SSH_HOST is the whole list, not an addition to it: a router an earlier run
+# enabled and this one leaves out is stopped and disabled. Only this replica's
+# tunnels are considered, so installing A never retires B's.
 #
 # On a box with no repo .env, pass the key the gateway signs its requests with, or
 # the proxy falls back to the default hardcoded in local_deployment_proxy.py and
@@ -73,11 +79,14 @@ REMOTE_PORT="${REMOTE_PORT:-$DEFAULT_PORT}"
 
 # TUNNEL_USER writes a `User=` drop-in for the tunnel unit. The units default to
 # root, which is wrong on any box where root has no SSH key or config for the
-# routers -- h200a is such a box, and its replica A tunnels already run as
-# `juncheng` through a hand-written override. Pass TUNNEL_USER=juncheng so a
-# reinstall does not silently revert that and leave the tunnels unable to
-# authenticate.
-TUNNEL_USER="${TUNNEL_USER:-}"
+# routers -- h200a is such a box, and its tunnels run as `juncheng`.
+#
+# It is deliberately *not* defaulted here. The drop-in writer below has to tell
+# "unset" (keep whatever is installed) from "set to nothing" (clear it), the same
+# distinction write_local_api_key_dropin makes about the API key and for the same
+# reason: on h200a a re-run that quietly reverted `juncheng` to the unit's `root`
+# default would leave autossh unable to authenticate and restarting forever. That
+# is an outage, not a cosmetic regression, so absence must not mean removal.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -124,31 +133,85 @@ echo "Installing systemd units into ${SYSTEMD_DST} (REPO_ROOT=${REPO_ROOT}) …"
 render_unit "$PROXY_UNIT"
 render_unit "$TUNNEL_UNIT"
 
-if [[ "$LISTEN_PORT" != "$DEFAULT_PORT" || "$REMOTE_PORT" != "$DEFAULT_PORT" \
-      || "$REMOTE_BIND" != "0.0.0.0" || -n "$TUNNEL_USER" ]]; then
-  DROPIN_DIR="${SYSTEMD_DST}/${TUNNEL_UNIT}.d"
-  echo "Writing tunnel override (LISTEN_PORT=${LISTEN_PORT} REMOTE_PORT=${REMOTE_PORT} REMOTE_BIND=${REMOTE_BIND}${TUNNEL_USER:+ User=$TUNNEL_USER}) …"
-  mkdir -p "$DROPIN_DIR"
-  cat > "${DROPIN_DIR}/override.conf" <<EOF
+DROPIN_DIR="${SYSTEMD_DST}/${TUNNEL_UNIT}.d"
+OVERRIDE_CONF="${DROPIN_DIR}/override.conf"
+
+# User= inverts the write-it-always rule below rather than following it. An unset
+# TUNNEL_USER keeps whatever is installed, because on h200a the value is
+# load-bearing: root there has no SSH key for the routers, so a re-run that
+# reverted `juncheng` to the unit's `root` default would leave autossh restarting
+# forever. Only an explicitly empty TUNNEL_USER= clears it -- the contract the
+# API-key drop-in already uses, for the same "absence is not a request to remove"
+# reason.
+if [[ -z "${TUNNEL_USER+set}" && -f "$OVERRIDE_CONF" ]]; then
+  installed_user="$(sed -n 's/^User=//p' "$OVERRIDE_CONF" | tail -1)"
+  if [[ -n "$installed_user" ]]; then
+    TUNNEL_USER="$installed_user"
+    echo "Keeping installed tunnel User=${TUNNEL_USER} (pass TUNNEL_USER= to clear it)."
+  fi
+fi
+TUNNEL_USER="${TUNNEL_USER:-}"
+
+# Written on every run, including the all-defaults one. Writing it only when a value
+# differs from the unit's own default -- which is what this did first -- leaves the
+# file behind when a later run restores the defaults: the block is skipped, the stale
+# drop-in still outranks the unit, and the tunnel goes on forwarding the retired port
+# while the gateway has moved back. Silent, and invisible in the installer's output.
+echo "Writing tunnel override (LISTEN_PORT=${LISTEN_PORT} REMOTE_PORT=${REMOTE_PORT} REMOTE_BIND=${REMOTE_BIND}${TUNNEL_USER:+ User=$TUNNEL_USER}) …"
+mkdir -p "$DROPIN_DIR"
+cat > "$OVERRIDE_CONF" <<EOF
 [Service]
 ${TUNNEL_USER:+User=${TUNNEL_USER}}
 Environment=LISTEN_PORT=${LISTEN_PORT}
 Environment=REMOTE_PORT=${REMOTE_PORT}
 Environment=REMOTE_BIND=${REMOTE_BIND}
 EOF
-fi
 
-# Proxy env drop-in when LISTEN_PORT differs from this replica's unit default.
-if [[ "$LISTEN_PORT" != "$DEFAULT_PORT" ]]; then
-  PROXY_DROPIN="${SYSTEMD_DST}/${PROXY_UNIT}.d"
-  mkdir -p "$PROXY_DROPIN"
-  cat > "${PROXY_DROPIN}/override.conf" <<EOF
+# The proxy's own LISTEN_PORT, written unconditionally for the same reason and
+# additionally because the tunnel drop-in above now is. The two have to move
+# together: leaving this one conditional means a run that restores the default port
+# retargets the tunnel to ${DEFAULT_PORT} while a stale drop-in keeps the proxy
+# listening on the retired one -- a mismatch that could not happen while both were
+# skipped in lockstep.
+PROXY_DROPIN="${SYSTEMD_DST}/${PROXY_UNIT}.d"
+mkdir -p "$PROXY_DROPIN"
+cat > "${PROXY_DROPIN}/override.conf" <<EOF
 [Service]
 Environment=LISTEN_PORT=${LISTEN_PORT}
 EOF
+
+# One tunnel instance per '|'-separated SSH destination, cleaned once here so that
+# what gets enabled below and what the retirement pass treats as wanted cannot drift
+# apart.
+declare -a HOSTS=()
+IFS='|' read -ra _hosts <<< "$SSH_HOST"
+for host in "${_hosts[@]}"; do
+  host="${host// /}"
+  [[ -z "$host" ]] && continue
+  HOSTS+=("$host")
+done
+
+if [[ "${#HOSTS[@]}" -eq 0 ]]; then
+  # Not merely useless: with the retirement pass below, an empty list would read as
+  # "retire every tunnel this box has" and take the node off both gateways.
+  echo "ERROR: SSH_HOST is empty, so no gateway could reach this proxy." >&2
+  exit 1
 fi
 
-IFS='|' read -ra HOSTS <<< "$SSH_HOST"
+# Every tunnel instance systemd knows about for *this replica* -- running or merely
+# enabled. What SSH_HOST names now says nothing about what an earlier run left
+# behind. The '@' in the pattern is what scopes it: replica A's `h200_idle_tunnel@`
+# cannot match replica B's `h200_idle_tunnel_b@…`, so installing one never retires
+# the other's tunnels.
+_installed_instances() {
+  {
+    systemctl list-units --all --type=service --no-legend --no-pager \
+      "${TUNNEL_BASE}@*.service" 2>/dev/null
+    systemctl list-unit-files --no-legend --no-pager \
+      "${TUNNEL_BASE}@*.service" 2>/dev/null
+  } | grep -oE "${TUNNEL_BASE}@[^[:space:]]+\.service" \
+    | grep -v '@\.service$' | sort -u
+}
 
 # The other half of the tunnel units' BindsTo=. BindsTo= stops a tunnel whose proxy
 # died, which is what keeps this node from advertising a port it cannot serve — but
@@ -170,8 +233,6 @@ mkdir -p "${SYSTEMD_DST}/${PROXY_UNIT}.d"
   # actually gone rather than merged with what this run writes.
   echo "Upholds="
   for host in "${HOSTS[@]}"; do
-    host="${host// /}"
-    [[ -z "$host" ]] && continue
     echo "Upholds=${TUNNEL_BASE}@${host}.service"
   done
 } > "$UPHOLDS_CONF"
@@ -194,9 +255,28 @@ echo "Enabling ${PROXY_UNIT} …"
 systemctl enable "${PROXY_UNIT}"
 systemctl restart "${PROXY_UNIT}"
 
+# Instances an earlier run enabled that this SSH_HOST no longer names. Resetting
+# Upholds= above only drops the proxy's dependency on them -- each one keeps running
+# under Restart=always and keeps its multi-user.target symlink, so a router taken out
+# of the list would go on being advertised this box, across reboots, with nothing in
+# the installer's output to say so.
+while IFS= read -r unit; do
+  [[ -z "$unit" ]] && continue
+  wanted=0
+  for host in "${HOSTS[@]}"; do
+    if [[ "$unit" == "${TUNNEL_BASE}@${host}.service" ]]; then
+      wanted=1
+      break
+    fi
+  done
+  if [[ "$wanted" -eq 0 ]]; then
+    echo "Retiring ${unit} — no longer named by SSH_HOST …"
+    systemctl disable --now "$unit" 2>/dev/null || true
+    systemctl reset-failed "$unit" 2>/dev/null || true
+  fi
+done < <(_installed_instances)
+
 for host in "${HOSTS[@]}"; do
-  host="${host// /}"
-  [[ -z "$host" ]] && continue
   echo "Enabling ${TUNNEL_BASE}@${host} …"
   # enable + restart, not `enable --now`: --now is a no-op on an already-active
   # unit, so a re-run that changes the tunnel drop-in (a new TUNNEL_USER, say)
@@ -210,8 +290,6 @@ echo
 echo "Done. Status:"
 systemctl --no-pager --no-legend status "${PROXY_UNIT}" 2>/dev/null | head -3 || true
 for host in "${HOSTS[@]}"; do
-  host="${host// /}"
-  [[ -z "$host" ]] && continue
   systemctl --no-pager --no-legend status "${TUNNEL_BASE}@${host}" 2>/dev/null | head -3 || true
 done
 echo

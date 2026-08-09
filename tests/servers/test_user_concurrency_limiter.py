@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from serving.servers.concurrency import (
+    UNLIMITED_CONCURRENCY,
     UserConcurrencyLimiter,
     _UserSlot,
     static_limits_provider,
@@ -270,3 +271,49 @@ async def test_per_user_override_live_resize():
     )
     assert granted is True
     assert cap == 10
+
+
+# ---------------------- unlimited (0) sentinel cap ----------------------
+
+
+def test_user_slot_zero_capacity_never_rejects():
+    """capacity == UNLIMITED_CONCURRENCY grants every acquire but still counts."""
+    slot = _UserSlot(capacity=UNLIMITED_CONCURRENCY, role="admin")
+    for _ in range(1000):
+        assert slot.try_acquire() is True
+    assert slot.in_use == 1000
+
+
+@pytest.mark.asyncio
+async def test_admin_zero_cap_is_unlimited():
+    """An admin cap of 0 never rejects, regardless of in-flight count."""
+    lim = UserConcurrencyLimiter(
+        static_limits_provider({"free": 1, "pro": 3, "internal": 10, "admin": 0})
+    )
+    user_id = "admin-unlimited"
+    for _ in range(100):
+        granted, cap, label = await lim.try_acquire(user_id, "free", is_admin=True)
+        assert granted is True
+        assert cap == UNLIMITED_CONCURRENCY
+        assert label == "admin"
+
+
+@pytest.mark.asyncio
+async def test_unlimited_then_finite_cap_applies_on_next_acquire():
+    """Re-imposing a finite cap after unlimited takes effect via lazy resize."""
+    limits = {"free": 1, "pro": 3, "internal": 10, "admin": 0}
+
+    async def provider() -> dict:
+        return dict(limits)
+
+    lim = UserConcurrencyLimiter(provider)
+    user_id = "admin-recapped"
+    for _ in range(5):
+        granted, _, _ = await lim.try_acquire(user_id, "free", is_admin=True)
+        assert granted is True
+
+    # Operator re-imposes a finite cap; the slot already holds 5 in-flight.
+    limits["admin"] = 3
+    granted, cap, _ = await lim.try_acquire(user_id, "free", is_admin=True)
+    assert granted is False
+    assert cap == 3

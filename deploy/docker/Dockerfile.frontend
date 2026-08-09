@@ -16,9 +16,9 @@ ARG NEXT_PUBLIC_API_BASE=
 # Where the standalone cloud agent is, if this deployment runs one. **Build
 # args, not runtime environment**: Next resolves `rewrites()` at build time and
 # writes the result into `.next/routes-manifest.json`, so a value supplied only
-# at `docker run` is read by nothing. Empty by default — then `/agents` keeps
-# resolving to this app's own pages, which is what every deployment that runs
-# no agent service needs.
+# at `docker run` is read by nothing. Empty by default — then no rewrite is
+# emitted and `/agents` answers 404, the truthful answer for a deployment that
+# runs no agent service (the console's own agents pages were removed at H4).
 ARG AGENT_WEB_INTERNAL_URL=
 ARG AGENT_CONTROL_PLANE_INTERNAL_URL=
 ARG NEXT_PUBLIC_DEPLOY_TARGET=production

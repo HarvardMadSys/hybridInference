@@ -13,15 +13,13 @@ from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
 from serving import grants, quota
-from serving.agent_jobs.model_auth import (
-    AgentModelAuthError,
-    AgentQuotaExceeded,
-    authenticate_agent_model_call,
-    authenticate_grant_model_call,
-    looks_like_agent_token,
-)
 from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
+from serving.grant_auth import (
+    AgentModelAuthError,
+    AgentQuotaExceeded,
+    authenticate_grant_model_call,
+)
 from serving.model_access import get_disabled_models_from_preferences
 from serving.observability.rejection_log import (
     bounded_enrichment,
@@ -33,7 +31,6 @@ from serving.observability.rejection_log import (
 )
 from serving.servers.deps import (
     auth_database_detail,
-    get_agent_job_store,
     get_db_logger,
     get_log_store,
     get_operational_store,
@@ -438,7 +435,6 @@ async def verify_api_key(
     x_on_behalf_of: str | None = Header(None, alias="X-On-Behalf-Of"),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
-    agent_job_store=Depends(get_agent_job_store),
 ) -> dict[str, Any]:
     """Verify API key and enforce quotas.
 
@@ -457,7 +453,7 @@ async def verify_api_key(
     # a job's budget and cost attribution are cost controls, not authn, and
     # must hold in every deployment. Ordinary keys pay one prefix comparison.
     presented_key = _extract_api_key(authorization, x_api_key)
-    if looks_like_agent_token(presented_key):
+    if grants.looks_like_grant_token(presented_key):
         # An agent token buys inference and nothing else. This dependency is
         # shared with the owner-facing control plane (/v1/agent/jobs), so
         # resolving one here as its owner's normal context would let a sandbox
@@ -478,11 +474,6 @@ async def verify_api_key(
                 # The grant path meters against the account's daily quota,
                 # which the legacy branch below this return never reached.
                 return await authenticate_grant_model_call(presented_key, op_store=op_store)
-            return await authenticate_agent_model_call(
-                presented_key,
-                job_store=agent_job_store,
-                log_store=log_store,
-            )
         except AgentQuotaExceeded as exc:
             # Same body and headers as the direct path's 429, from the same
             # builder: a caller must not be able to tell which door it used.

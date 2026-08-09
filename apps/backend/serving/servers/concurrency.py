@@ -25,6 +25,12 @@ logger = get_logger(__name__)
 
 LimitsProvider = Callable[[], Awaitable[dict[str, int]]]
 
+# Sentinel cap meaning "no per-user concurrency limit". A role whose limit
+# resolves to this value (e.g. ``user_concurrency_admin = 0``) never has its
+# requests rejected by the limiter; in-flight counts are still tracked so
+# re-imposing a finite cap at runtime takes effect on the next acquire.
+UNLIMITED_CONCURRENCY = 0
+
 # Per-user concurrency cap applied to concurrency-exempt models ("not limited
 # by concurrency"). Exempt-model requests do not count against the user's
 # normal role-based budget, but are still bounded to this many concurrent
@@ -77,7 +83,7 @@ class _UserSlot:
     in_use: int = 0
 
     def try_acquire(self) -> bool:
-        if self.in_use >= self.capacity:
+        if self.capacity != UNLIMITED_CONCURRENCY and self.in_use >= self.capacity:
             return False
         self.in_use += 1
         return True

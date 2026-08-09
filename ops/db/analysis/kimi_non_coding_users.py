@@ -56,19 +56,39 @@ def _dsn() -> str:
     )
 
 
-def _extract_user_messages(request_payload: Any, max_chars: int) -> list[str]:
-    """Pull user-turn text out of a stored request payload (OpenAI or Anthropic shape)."""
-    payload = request_payload
-    if isinstance(payload, str):
+def _message_list(prompt: Any) -> list[Any]:
+    """Decode the ``api_logs.prompt`` column (TEXT holding a JSON message list)."""
+    p = prompt
+    if isinstance(p, str):
         try:
-            payload = json.loads(payload)
+            p = json.loads(p)
         except json.JSONDecodeError:
-            return [payload[:max_chars]]
-    if not isinstance(payload, dict):
-        return []
+            return []
+    return p if isinstance(p, list) else []
+
+
+def _extract_user_messages(request_payload: Any, max_chars: int, prompt: Any = None) -> list[str]:
+    """Pull user-turn text out of a stored request (OpenAI or Anthropic shape).
+
+    The turns are stored in the dedicated ``prompt`` column; ``request_payload``
+    carries a ``messages`` copy only on rows logged before that de-duplication,
+    so prefer the column and fall back to the payload for historical rows.
+    """
+    messages = _message_list(prompt)
+    if not messages:
+        payload = request_payload
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                return [payload[:max_chars]]
+        if not isinstance(payload, dict):
+            return []
+        raw = payload.get("messages") or []
+        messages = raw if isinstance(raw, list) else []
 
     out: list[str] = []
-    for msg in payload.get("messages", []) or []:
+    for msg in messages:
         if not isinstance(msg, dict) or msg.get("role") != "user":
             continue
         content = msg.get("content")
@@ -160,7 +180,7 @@ async def main(days: int, as_json: bool, max_chars: int) -> int:
                 "provider": r["provider"],
                 "surface": surface,
                 "user_agent": user_agent,
-                "messages": _extract_user_messages(r["request_payload"], max_chars),
+                "messages": _extract_user_messages(r["request_payload"], max_chars, r["prompt"]),
             }
         )
 

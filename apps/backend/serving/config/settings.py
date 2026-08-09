@@ -156,15 +156,6 @@ class Settings(BaseSettings):
             "ROUTING_CONFIG_PATH", "ROUTING_CONFIG", "routing_config_path"
         ),
     )
-    # The deployment's MCP server registry (serving.agent_jobs.mcp_registry).
-    # Empty, and a path that does not exist, both mean "no MCP servers" — the
-    # neutral upstream ships none, and an agent job without tools is a
-    # supported shape rather than a broken one.
-    mcp_config_path: str = Field(
-        default="",
-        validation_alias=AliasChoices("MCP_CONFIG_PATH", "MCP_CONFIG", "mcp_config_path"),
-    )
-
     # Distribution manifest (serving.config.distribution). Empty path = pure
     # legacy behavior. Mode "dark" (the default) loads and validates the
     # manifest and logs what would change while current resolution stays

@@ -697,6 +697,49 @@ export async function getAnalytics(period: AnalyticsPeriod): Promise<AdminAnalyt
   return jsonOrThrow<AdminAnalyticsResponse>(resp);
 }
 
+// Growth — daily DAU / token series and its fitted slope. Ranged in days rather
+// than by AnalyticsPeriod: a daily slope needs weeks of buckets to mean anything.
+export type GrowthRange = 30 | 60 | 90;
+
+export interface GrowthPoint {
+  day: string; // UTC midnight opening the day
+  active_users: number; // distinct signed-in users that day
+  new_users: number; // first seen within the requested range on this day
+  tokens: number; // prompt + completion, all traffic
+  requests: number;
+  partial: boolean; // today, still accumulating — excluded from the trends
+}
+
+export interface GetGrowthAnalyticsOptions {
+  signal?: AbortSignal;
+}
+
+export interface GrowthTrend {
+  slope_per_day: number;
+  recent_avg: number;
+  previous_avg: number;
+  change_pct: number | null; // null when the older half is flat zero
+  compare_days: number;
+}
+
+export interface AdminGrowthResponse {
+  days: number;
+  points: GrowthPoint[];
+  users_trend: GrowthTrend;
+  tokens_trend: GrowthTrend;
+  generated_at: string;
+}
+
+export async function getGrowthAnalytics(
+  days: GrowthRange,
+  options: GetGrowthAnalyticsOptions = {},
+): Promise<AdminGrowthResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/analytics/growth?days=${days}`, {
+    signal: options.signal,
+  });
+  return jsonOrThrow<AdminGrowthResponse>(resp);
+}
+
 export type GeoBucketColumn = 'c' | 'cont' | 'n' | 'tout';
 
 export type GeoMetric = 'n' | 'tout';
