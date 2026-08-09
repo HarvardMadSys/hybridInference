@@ -309,9 +309,24 @@ at the next, so `dynamic_keys` owns the whole question instead:
 Reserving a key is therefore a decision to *withhold* capacity, and it is now
 visible rather than silent: a lower-tier caller on a route whose keys are all
 reserved gets a `KeyPoolRoleRestricted` and fails over to the next provider
-instead of quietly spending the reserved credential. Boot order supports this —
-`apply_db_keys_at_boot` loads the declaration caches before persisted routes are
-restored, so a restored route registers into an already-populated cache.
+instead of quietly spending the reserved credential.
+
+Two ordering details the declarations depend on:
+
+- **Boot loads them twice.** `apply_db_keys_at_boot` loads declarations before
+  persisted routes are restored, but a provider can first become *known* during
+  that restore — a built-in provider with no YAML route and no provider-definition
+  row is reached only through its persisted route. Bootstrap therefore calls
+  `load_min_role_declarations` again afterwards. The loader replaces each
+  provider's map and re-derives every pool entry, so repeating it is free.
+- **A failed re-read never widens access.** Every admin mutation re-reads the
+  table, and when that read fails the tier just written is applied directly —
+  "keep the previous tiers" is not uniformly safe, since a `free`→`pro` re-tier
+  would keep serving the key to free callers and a newly added reserved key enters
+  rotation immediately. The direct path only ever *tightens*: the cache holds one
+  entry per raw value and so cannot represent a second row declaring something
+  stricter, so a release waits for a successful read rather than risk relaxing a
+  reservation another row still holds.
 
 Because promotion closes that hole, **route-bound keys now honor `min_role` too**:
 a key pinned via `api_key_id` holds the same secret as any other, and opting a

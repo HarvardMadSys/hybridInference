@@ -255,3 +255,46 @@ def test_only_dynamic_keys_writes_a_pool_entry_tier():
         "tier writes must go through dynamic_keys' resolver + sweep, not a direct "
         f"pool write: {offenders}"
     )
+
+
+# --- one slot per credential ------------------------------------------------
+
+
+def test_constructor_dedupes_a_repeated_key():
+    """A credential listed twice must not become two slots with two tiers.
+
+    Nothing upstream guarantees uniqueness — a route's ``api_keys`` can name two
+    env vars holding the same value — and two slots means re-tiering updates one
+    while selection can still hand out the other.
+    """
+    pool = KeyPool(keys=["dup", "other", "dup"], provider_label="test")
+
+    assert pool.snapshot_keys() == ["dup", "other"]
+    assert pool.size() == 2
+
+
+def test_re_tiering_a_repeated_key_leaves_no_untiered_slot():
+    """Regression: the reserved key must not stay acquirable by a free caller."""
+    pool = KeyPool(keys=["dup", "dup"], provider_label="test")
+    assert pool.set_key_min_role("dup", "pro") is True
+
+    assert pool.snapshot_min_roles() == {"dup": "pro"}
+    with pytest.raises(KeyPoolRoleRestricted):
+        pool.acquire("free-user", role="free")
+    assert pool.acquire("pro-user", role="pro")[0] == "dup"
+
+
+def test_re_tiering_updates_every_live_slot_for_a_key(monkeypatch):
+    """Defensive: a remove/re-add cycle can leave a tombstone beside a live slot."""
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    # Tombstone k0's slot, then re-add the same value — ``add_key`` reactivates the
+    # existing slot, so this asserts the invariant rather than creating a duplicate.
+    assert pool.remove_key("k0") is True
+    pool.add_key("k0")
+    assert pool.set_key_min_role("k0", "internal") is True
+
+    live = [s for s in pool._keys if not s.removed and s.key == "k0"]
+    assert live and all(s.min_role == "internal" for s in live)

@@ -22,7 +22,7 @@ import os
 import threading
 from typing import TYPE_CHECKING
 
-from serving.adapters.key_pool import DEFAULT_MIN_ROLE
+from serving.adapters.key_pool import DEFAULT_MIN_ROLE, normalize_min_role
 from serving.config.settings import ROLE_RANK
 from serving.utils.logging import get_logger
 
@@ -328,6 +328,29 @@ def set_env_key_min_role(provider: str, key_hash: str, min_role: str) -> int:
         _record_declaration_locked(_env_key_min_roles, provider, key_hash, min_role)
         _apply_min_roles_locked(provider)
         return _pools_holding_hash_locked(provider, key_hash)
+
+
+def declare_db_key_min_role_no_relax(provider: str, raw_key: str, min_role: str) -> str:
+    """Merge one DB declaration into the cache without ever relaxing it.
+
+    Fallback for when the authoritative re-read of ``provider_api_keys`` fails after
+    a write: the tier just persisted is known exactly, so it can be applied without
+    the DB. Merging is not the same as the authoritative read, though — the cache
+    holds one entry per raw value, so it cannot represent a *second* row that
+    declares a stricter tier for the same credential. Lowering the cached tier on
+    that incomplete picture could hand a reserved credential to a tier it was
+    withheld from, so a relaxation is refused here and left for the next successful
+    read (a later mutation, or the next restart). Tightening always applies.
+
+    Returns the tier now cached for *raw_key*.
+    """
+    requested = normalize_min_role(min_role)
+    with _lock:
+        cached = _db_key_min_roles.get(provider, {}).get(raw_key, DEFAULT_MIN_ROLE)
+        effective = max((cached, requested), key=lambda role: ROLE_RANK.get(role, 0))
+        _record_declaration_locked(_db_key_min_roles, provider, raw_key, effective)
+        _apply_min_roles_locked(provider)
+        return effective
 
 
 def pools_holding_key(provider: str, raw_key: str) -> int:
@@ -738,21 +761,24 @@ async def _list_route_bound_db_key_ids(operational_store: OperationalStore) -> s
     return key_ids
 
 
-async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
-    """Pull persisted provider keys and seed each registered adapter's pool.
+async def load_min_role_declarations(operational_store: OperationalStore) -> None:
+    """Load every known provider's tier declarations and reconcile the live pools.
 
-    Called once during application bootstrap after the model registry has
-    been loaded. Failures for one provider do not affect the others.
+    Idempotent by construction — each provider's map is replaced wholesale and the
+    sweep re-derives every pool entry — so it is safe (and necessary) to call more
+    than once per boot. ``_known_providers`` grows as adapters register, and a
+    provider can first become known *after* ``apply_db_keys_at_boot`` has run: a
+    built-in provider with no YAML route and no provider-definition row is
+    registered only when its persisted runtime route is restored, which bootstrap
+    does afterwards. Loading once would leave every key on that restored route at
+    ``free`` after every restart.
+
+    Failures are per provider and non-fatal: the keys keep their current tiers, and
+    the next call (a later mutation, or the next restart) applies the stored ones.
     """
     with _lock:
         providers = list(_known_providers)
 
-    # Tier declarations first, and outside the route-bound guard below: pools were
-    # already seeded from adapter config at registry load, so a DB fault that skips
-    # DB-key seeding must not also leave a reserved key serving every tier. Loading
-    # them here also means a route installed later — which builds its pool from the
-    # provider's whole key set — can be tiered from memory, with no DB read inside
-    # the registry lock.
     for provider in providers:
         try:
             env_min_roles = await operational_store.list_provider_env_key_min_roles(provider)
@@ -789,6 +815,25 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
                 len(reserved),
                 provider,
             )
+
+
+async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
+    """Pull persisted provider keys and seed each registered adapter's pool.
+
+    Called once during application bootstrap after the model registry has
+    been loaded. Failures for one provider do not affect the others.
+    """
+    # Tier declarations first, and outside the route-bound guard below: pools were
+    # already seeded from adapter config at registry load, so a DB fault that skips
+    # DB-key seeding must not also leave a reserved key serving every tier. Loading
+    # them here also means a route installed later — which builds its pool from the
+    # provider's whole key set — can be tiered from memory, with no DB read inside
+    # the registry lock. Bootstrap calls ``load_min_role_declarations`` again once
+    # persisted routes are restored, for providers only those routes make known.
+    await load_min_role_declarations(operational_store)
+
+    with _lock:
+        providers = list(_known_providers)
 
     try:
         route_bound_key_ids = await _list_route_bound_db_key_ids(operational_store)

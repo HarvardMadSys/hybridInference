@@ -100,6 +100,7 @@ class _StubStore:
         self.route_candidates: list[dict] = []
         self.audit: list[dict] = []
         self.fail_full_for: set[str] = set()
+        self.fail_min_roles_for: set[str] = set()
         self.fail_disabled_for: set[str] = set()
 
     async def add_provider_key(
@@ -159,6 +160,8 @@ class _StubStore:
         *,
         exclude_ids: set[str] | None = None,
     ) -> dict[str, str]:
+        if provider in self.fail_min_roles_for:
+            raise RuntimeError(f"boom-min-roles-{provider}")
         # Mirrors the store contract: keyed by raw value, most restrictive tier
         # wins when two rows declare different tiers for the same credential.
         excluded = exclude_ids or set()
@@ -2337,3 +2340,142 @@ async def test_adding_a_duplicate_does_not_overwrite_a_stricter_env_reservation(
     # The stricter env reservation wins, and the list view reports what is enforced.
     assert adapter._key_pool.snapshot_min_roles()[shared] == "internal"
     assert dynamic_keys.resolve_key_min_role("zai", shared) == "internal"
+
+
+@pytest.mark.asyncio
+async def test_add_enforces_the_new_tier_even_if_the_tier_read_fails(client):
+    """A degraded read must not put a reserved key into rotation as shared.
+
+    The row is written, then the key is attached immediately — so swallowing the
+    reconciliation read would report a reservation the pool never enforced.
+    """
+    http, store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    api_key = "sk-zai-readfail-uuuuuuuuuuuu"
+    store.fail_min_roles_for.add("zai")
+    resp = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": api_key, "min_role": "pro"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 201, resp.text
+    # The just-written declaration was applied directly, without the read.
+    assert pool.snapshot_min_roles()[api_key] == "pro"
+
+
+@pytest.mark.asyncio
+async def test_retier_enforces_the_new_tier_even_if_the_tier_read_fails(client):
+    """`free`→`pro` must not report success while free callers keep spending it."""
+    http, store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    api_key = "sk-zai-retierfail-vvvvvvvvvvvv"
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": api_key},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+    assert pool.snapshot_min_roles()[api_key] == "free"
+
+    store.fail_min_roles_for.add("zai")
+    resp = await http.post(
+        f"/admin/provider-keys/{key_id}/min-role",
+        json={"min_role": "pro"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert pool.snapshot_min_roles()[api_key] == "pro"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_never_relaxes_a_stricter_cached_tier(client):
+    """The fallback applies a tightening, never a relaxation.
+
+    The cache holds one entry per raw value, so it cannot represent a second row
+    declaring something stricter. Lowering the tier on that partial picture could
+    hand a reserved credential to a tier it was withheld from, so a release waits
+    for an authoritative read.
+    """
+    http, store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    api_key = "sk-zai-norelax-wwwwwwwwwwww"
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": api_key, "min_role": "internal"},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+    assert pool.snapshot_min_roles()[api_key] == "internal"
+
+    store.fail_min_roles_for.add("zai")
+    resp = await http.post(
+        f"/admin/provider-keys/{key_id}/min-role",
+        json={"min_role": "free"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert pool.snapshot_min_roles()[api_key] == "internal"
+
+    # A later successful read applies the release.
+    store.fail_min_roles_for.discard("zai")
+    again = await http.post(
+        f"/admin/provider-keys/{key_id}/min-role",
+        json={"min_role": "free"},
+        headers=AUTH,
+    )
+    assert again.status_code == 200, again.text
+    assert pool.snapshot_min_roles()[api_key] == "free"
+
+
+@pytest.mark.asyncio
+async def test_declarations_load_for_a_provider_known_only_after_boot_seeding(client):
+    """A provider first registered by a persisted route restore still gets tiered.
+
+    ``apply_db_keys_at_boot`` snapshots the known providers, and bootstrap restores
+    persisted routes afterwards — so a built-in provider reached only through such a
+    route was absent from that snapshot and kept every key at ``free`` after every
+    restart. Bootstrap now re-runs the loader once the routes are in.
+    """
+    _http, store = client
+    db_key = "sk-zai-lateprovider-xxxxxxxxxxxx"
+
+    # Nothing is registered for this provider yet, so boot loads no declarations.
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    # The persisted route restore is what makes the provider known.
+    await store.add_provider_key(
+        provider="zai",
+        api_key=db_key,
+        label=None,
+        created_by="admin",
+        min_role="pro",
+    )
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="late-route-model",
+            name="late-route-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[db_key],
+            provider_model_id="late-route-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    assert adapter._key_pool.snapshot_min_roles()[db_key] == "free"
+
+    # The second load bootstrap performs after the restores.
+    await dynamic_keys.load_min_role_declarations(store)
+
+    assert adapter._key_pool.snapshot_min_roles()[db_key] == "pro"

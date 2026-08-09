@@ -285,7 +285,11 @@ async def add_provider_key(
     # Refresh the tier cache from the row just written, then attach: the attach
     # ends in the reconciliation sweep, so the key enters the pools already at its
     # resolved tier rather than untiered for a window.
-    await _refresh_db_key_tiers(op_store, payload.provider)
+    await _refresh_db_key_tiers(
+        op_store,
+        payload.provider,
+        fallback=(api_key, payload.min_role),
+    )
     pools_updated = dynamic_keys.add_key_to_provider(payload.provider, api_key)
     if pools_updated == 0:
         # The key is persisted but no live adapter accepted it, so it will not
@@ -448,19 +452,49 @@ async def enable_provider_env_key(
     )
 
 
-async def _refresh_db_key_tiers(op_store, provider: str) -> None:
+async def _refresh_db_key_tiers(
+    op_store,
+    provider: str,
+    *,
+    fallback: tuple[str, str] | None = None,
+) -> None:
     """Re-read the provider's DB-declared tiers and reconcile the live pools.
 
     Called after every mutation that can change them (add, re-tier, disable,
     enable, delete). The table is the authority — reading it back is what makes two
     rows declaring tiers for one raw value resolve correctly, and what stops a
-    departing row's reservation from outliving it. A failure here leaves the pools
-    on their previous tiers, which is the safe direction: the persisted state is
-    already correct and the next mutation or restart re-applies it.
+    departing row's reservation from outliving it.
+
+    ``fallback`` is ``(raw_key, min_role)`` for the declaration this request just
+    persisted. When the read fails it is applied directly, because "the pools keep
+    their previous tiers" is *not* uniformly safe: a ``free``→``pro`` re-tier would
+    keep serving the key to free callers, and a newly added reserved key is attached
+    straight into rotation with no declaration at all, so it would enter as shared.
+    Applying the known declaration cannot widen anything — it never relaxes a
+    stricter cached tier — so the reservation the caller was told about is enforced
+    even on a degraded read.
+
+    Removals pass no fallback: which declaration should survive depends on the rows
+    that remain, which only the read can say, and guessing could relax a reservation
+    another row still holds. Those keep their stricter cached tier until the next
+    successful read.
     """
     try:
         tiers = await op_store.list_provider_key_min_roles(provider)
     except Exception as exc:
+        if fallback is not None:
+            raw_key, min_role = fallback
+            applied = dynamic_keys.declare_db_key_min_role_no_relax(provider, raw_key, min_role)
+            logger.warning(
+                "failed to refresh DB key tier reservations for provider=%r; applied the "
+                "just-written tier %r directly (enforcing %r) — other keys keep their "
+                "cached tiers until the next read: %s",
+                provider,
+                min_role,
+                applied,
+                exc,
+            )
+            return
         logger.warning(
             "failed to refresh DB key tier reservations for provider=%r; "
             "live pools keep their current tiers: %s",
@@ -921,7 +955,12 @@ async def enable_provider_key(
     # Re-enter at the tier the row was reserved for — re-enabling a pro-only key
     # must not quietly hand it back to every tier. The row counts as active again,
     # so refreshing before the attach is what makes its tier visible to the sweep.
-    await _refresh_db_key_tiers(op_store, provider)
+    row_min_role = await op_store.get_provider_key_min_role(key_id)
+    await _refresh_db_key_tiers(
+        op_store,
+        provider,
+        fallback=(raw_key, row_min_role or "free"),
+    )
     pools_updated = dynamic_keys.add_key_to_provider(provider, raw_key)
     if pools_updated == 0:
         logger.warning(
@@ -979,7 +1018,7 @@ async def set_provider_key_min_role(
     if not updated:
         raise HTTPException(404, f"Provider key {key_id!r} not found")
 
-    await _refresh_db_key_tiers(op_store, provider)
+    await _refresh_db_key_tiers(op_store, provider, fallback=(raw_key, payload.min_role))
     pools_updated = dynamic_keys.pools_holding_key(provider, raw_key)
 
     await log_admin_action(

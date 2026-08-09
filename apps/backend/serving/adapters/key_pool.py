@@ -201,8 +201,19 @@ class KeyPool:
         if not keys:
             raise ValueError("KeyPool requires at least one key")
         roles = min_roles or {}
+        # One slot per raw value. Two slots for the same credential would be two
+        # independent tiers and cooldowns for one secret: re-tiering updates the
+        # first, ``snapshot_min_roles`` reports the last, and selection can hand the
+        # still-unreserved duplicate to a caller the reservation excludes. Nothing
+        # upstream guarantees uniqueness — a route's ``api_keys`` in models.yaml can
+        # name two env vars holding the same key — so dedupe here, where the
+        # invariant belongs. First occurrence wins, preserving configured order.
+        deduped: list[str] = []
+        for key in keys:
+            if key not in deduped:
+                deduped.append(key)
         self._keys: list[_KeyState] = [
-            _KeyState(key=k, min_role=normalize_min_role(roles.get(k))) for k in keys
+            _KeyState(key=k, min_role=normalize_min_role(roles.get(k))) for k in deduped
         ]
         self._affinity: dict[str, _Affinity] = {}
         self._lock = threading.Lock()
@@ -253,17 +264,23 @@ class KeyPool:
         binding to a key it may not be entitled to.
         """
         normalized = normalize_min_role(min_role)
+        found = False
         with self._lock:
+            # Every matching slot, not just the first: the constructor dedupes, but
+            # a slot tombstoned by ``remove_key`` keeps its value, so a re-add can
+            # leave two slots for one credential. Updating one of them would leave
+            # the other enforcing a tier nobody declared.
             for idx, state in enumerate(self._keys):
-                if state.key == key and not state.removed:
-                    if state.min_role == normalized:
-                        return True
-                    state.min_role = normalized
-                    stale = [k for k, a in self._affinity.items() if a.key_index == idx]
-                    for k in stale:
-                        del self._affinity[k]
-                    return True
-            return False
+                if state.key != key or state.removed:
+                    continue
+                found = True
+                if state.min_role == normalized:
+                    continue
+                state.min_role = normalized
+                stale = [k for k, a in self._affinity.items() if a.key_index == idx]
+                for k in stale:
+                    del self._affinity[k]
+        return found
 
     def remove_key(self, key: str) -> bool:
         """Mark a key as removed and drop affinity entries pointing at it.
