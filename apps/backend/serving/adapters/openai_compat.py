@@ -198,7 +198,7 @@ class OpenAICompatAdapter(BaseAdapter):
             f"role={role or 'unrestricted'}"
         )
         pool = self._key_pool
-        if pool is not None and role is not None and pool.can_serve_role():
+        if pool is not None and role is not None and pool.can_serve_role(None):
             return KeyPoolRoleRestricted(message)
         return KeyPoolExhausted(message)
 

@@ -291,6 +291,7 @@ class KeyPool:
         """
         normalized = normalize_min_role(min_role)
         found = False
+        now = time.monotonic()
         with self._lock:
             changed = False
             # Every matching slot, not just the first: the constructor dedupes, but
@@ -306,12 +307,15 @@ class KeyPool:
                 state.min_role = normalized
                 changed = True
             if changed:
-                self._drop_repointed_affinities_locked()
+                self._drop_repointed_affinities_locked(now)
         return found
 
-    def _drop_repointed_affinities_locked(self) -> None:
-        """Drop bindings that no longer point at what selection would choose now."""
-        now = time.monotonic()
+    def _drop_repointed_affinities_locked(self, now: float) -> None:
+        """Drop bindings that no longer point at what selection would choose now.
+
+        Takes *now* from the caller so one clock read decides both the re-tier and
+        the re-evaluation, as ``acquire`` does for its own selection.
+        """
         preferred_by_role: dict[str | None, int | None] = {}
         stale: list[str] = []
         for affinity_key, entry in self._affinity.items():
