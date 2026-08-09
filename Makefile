@@ -183,16 +183,10 @@ endif
 # distribution files and before `.env`, preserving host-local overrides.
 COMPOSE_EXTRA_ENV_FILES ?=
 COMPOSE_EXTRA_ENV_ARGS := $(patsubst %,--env-file %,$(wildcard $(COMPOSE_EXTRA_ENV_FILES)))
-# Cloud-agent runner overlay (issue #1041). A host opts in with AGENT_RUNNER=1
-# and the runner rides the SAME compose invocation as the main stack. That is
-# a correctness requirement, not convenience: the overlay attaches `backend`
-# to the agent-egress network, so a separate compose call without the
-# distribution env files would recreate backend stripped of its identity.
-ifeq ($(AGENT_RUNNER),1)
-COMPOSE_FILE_ARGS := -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.agent-runner.yml
-else
+# The cloud-agent runner overlay was removed at H4: agents run from their own
+# repository and their own deployment, so this stack no longer has an opt-in
+# that attaches `backend` to an agent network.
 COMPOSE_FILE_ARGS := -f deploy/docker/docker-compose.yml
-endif
 # Standalone cloud agent on the same host (freeinference-cloud-agent). Opting
 # in attaches the console to that stack's network so the `/agents` rewrites
 # from #1206 can resolve `web` and `control-plane`; without it they resolve

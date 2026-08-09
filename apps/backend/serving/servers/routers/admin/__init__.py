@@ -1,6 +1,6 @@
 """Admin router package.
 
-Aggregates domain-focused sub-routers (agent_runner_hosts, alerts, analytics,
+Aggregates domain-focused sub-routers (alerts, analytics,
 api_keys, broadcast, export, login_events, metrics, model_concurrency,
 model_visibility, providers, settings, signup_domains, site_updates, stats,
 usage_insights, users) into a single ``router``
@@ -11,7 +11,6 @@ exported at this level. Callers use
 from fastapi import APIRouter
 
 from serving.servers.routers.admin import (
-    agent_runner_hosts,
     alerts,
     analytics,
     api_keys,
@@ -43,7 +42,6 @@ except ImportError:  # optional RouteWise extra not installed
 from serving.servers.routers.admin.metrics import _decode_throughput_tps
 
 router = APIRouter()
-router.include_router(agent_runner_hosts.router)
 router.include_router(alerts.router)
 router.include_router(analytics.router)
 router.include_router(api_keys.router)

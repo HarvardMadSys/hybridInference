@@ -45,7 +45,7 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = 111  # includes role-quota, provider-key verification/probe
+    expected = 108  # includes role-quota, provider-key verification/probe
     # (incl. disable/enable/enable-env and the by-ref disable/enable pair used
     # by the quota dashboard), visibility, concurrency,
     # global + per-model routewise settings/probes/decisions, routing-weight,
@@ -58,8 +58,9 @@ def test_admin_router_has_expected_route_count() -> None:
     # plus provider-definitions list/verify/create/update/delete,
     # plus provider availability list + disable/enable toggle,
     # plus the geo-temporal analytics endpoint,
-    # plus the daily growth-rate analytics endpoint,
-    # plus agent runner-hosts list/set-active/forget
+    # plus the daily growth-rate analytics endpoint.
+    # 111 -> 108 at H4: agent runner-hosts list/set-active/forget went to
+    # the cloud agent's repository with the pool they administer.
     routes = [r for r in _admin_api_routes() if r.path.startswith("/admin")]
     assert len(routes) == expected, (
         f"admin route count drifted: expected {expected}, got {len(routes)}"

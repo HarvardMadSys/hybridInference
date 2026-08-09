@@ -1,6 +1,0 @@
-{"type":"system","subtype":"init","model":"agent-loop-fake","claude_code_version":"synthetic"}
-{"type":"assistant","message":{"content":[{"type":"tool_use","id":"synthetic-tool-use-1","name":"bash","input":{"cmd":"pwd"}}],"usage":{"input_tokens":10,"output_tokens":1}}}
-{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","isUsingOverage":false}}
-{"type":"user","message":{"content":[{"type":"tool_result","content":"/workspace","is_error":false,"tool_use_id":"synthetic-tool-use-1"}]}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"PWD_OK: synthetic agent loop round trip complete."}],"usage":{"input_tokens":12,"output_tokens":8}}}
-{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"PWD_OK: synthetic agent loop round trip complete.","total_cost_usd":0.00042}

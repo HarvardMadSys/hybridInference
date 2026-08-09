@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from serving.agent_jobs.visible_models import agent_model_resolvable, agent_visible_models
+from serving.model_catalog import agent_model_resolvable, agent_visible_models
 
 pytestmark = pytest.mark.asyncio
 

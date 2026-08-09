@@ -151,17 +151,19 @@ def test_materialize_refuses_when_an_overlay_source_is_missing(tmp_path: Path) -
         public_export.materialize([], overlay, target)
 
 
-def test_the_credential_patterns_come_from_the_agent_gate() -> None:
-    """One list, so the two scanners cannot drift apart.
+def test_the_credential_patterns_have_a_home_that_cannot_be_deleted_out_from_under() -> None:
+    """One list, and one that belongs to the scanner that uses it.
 
-    They already had: the release audit knew nothing about Slack tokens,
-    agent-worker tokens or PEM headers, and wanted a gateway key longer than a
-    real one.
+    These shapes used to live in the agent sandbox's patch gate, which
+    ``public_export.py`` loaded **by file path**. When the cloud agent moved to
+    its own repository (task H4) that file went with it, and the audit would
+    have been left loading patterns from nothing — a leak scanner that silently
+    stops scanning while its green check keeps arriving.
     """
-    gate = REPO / "apps" / "backend" / "serving" / "agent_jobs" / "patch_gate.py"
-    assert gate.exists(), "public_export.py loads its credential shapes from this file"
+    patterns = REPO / "ops" / "release" / "secret_patterns.py"
+    assert patterns.exists(), "public_export.py loads its credential shapes from this file"
 
-    source = gate.read_text()
+    source = patterns.read_text()
     assert "SECRET_PATTERNS" in source
 
     # public_export.py loads it by path, outside any package, so an import

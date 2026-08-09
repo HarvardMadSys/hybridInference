@@ -34,8 +34,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, status
 
-from serving.agent_jobs.visible_models import agent_visible_models
 from serving.model_access import get_disabled_models_from_preferences
+from serving.model_catalog import agent_visible_models
 from serving.servers.deps import (
     get_model_visibility_resolver,
     get_operational_store,

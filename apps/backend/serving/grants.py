@@ -119,8 +119,17 @@ def mint_grant_token(grant_id: str) -> str:
     return f"{_TOKEN_PREFIX}.{_b64encode(payload)}.{_b64encode(signature)}"
 
 
-def looks_like_grant_token(token: str) -> bool:
-    """Whether this is shaped like a grant token, before verifying it."""
+def looks_like_grant_token(token: str | None) -> bool:
+    """Whether this is shaped like a grant token, before verifying it.
+
+    Total on purpose. This is the predicate the HTTP layer routes on, and it is
+    reached with whatever a caller sent — including no credential at all, which
+    is a question ("is this a grant?") with an obvious answer rather than a
+    reason to raise from inside an auth dependency. It sat behind a wrapper
+    that did this check until H4 removed the wrapper.
+    """
+    if not token:
+        return False
     return token.startswith(f"{_TOKEN_PREFIX}.")
 
 

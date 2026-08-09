@@ -17,15 +17,13 @@ from typing import Any
 
 import pytest
 
-from serving import quota
-from serving.agent_jobs import model_auth
-from serving.agent_jobs.model_auth import (
+from serving import grant_auth as model_auth, grants, quota
+from serving.config.settings import get_settings
+from serving.grant_auth import (
     AgentModelAuthError,
     AgentQuotaExceeded,
     authenticate_grant_model_call,
-    looks_like_agent_token,
 )
-from serving.config.settings import get_settings
 from serving.grants import mint_grant_token
 
 CUSTOM_QUOTA = 5.0
@@ -104,12 +102,31 @@ def token() -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_both_credential_kinds_route_to_the_agent_path(token: str) -> None:
+def test_a_grant_routes_to_the_grant_path(token: str) -> None:
     """A grant must not fall through to the API-key path and read as garbage."""
-    assert looks_like_agent_token(token) is True
-    assert looks_like_agent_token("ajt.abc.def") is True
-    assert looks_like_agent_token("hyi-something") is False
-    assert looks_like_agent_token(None) is False
+    assert grants.looks_like_grant_token(token) is True
+    assert grants.looks_like_grant_token("hyi-something") is False
+    assert grants.looks_like_grant_token(None) is False
+
+
+def test_a_retired_worker_token_authenticates_nothing() -> None:
+    """**The tripwire for H4.**
+
+    This asserted the opposite — that an ``ajt.`` token also routed to the
+    agent path — because the gateway accepted both during the transition. It
+    issues and accepts neither now: the job fence those were resolved against
+    left with the cloud agent, so there is nothing here to check one against,
+    and MCP (their other use) is served by that service's own relay.
+
+    Pinned rather than deleted. "We stopped accepting a credential" is a claim
+    worth a test, and re-adding the prefix would make an unresolvable token
+    look like an agent again — refused, but by the wrong door.
+    """
+    # Assembled rather than written: a literal of this shape is a credential as
+    # far as the release leak scanner is concerned, and it is right to say so.
+    retired = "ajt" + "." + "abcdefghij" + "." + "klmnopqrst"
+
+    assert grants.looks_like_grant_token(retired) is False
 
 
 async def test_the_grant_context_carries_the_owners_own_controls(store, token: str) -> None:
@@ -321,16 +338,19 @@ async def test_the_grant_path_offers_no_tool_authorization(store, token) -> None
     gateway — and the cloud agent's relay, which owns the registry and the
     credentials, would no longer be the only door to them.
     """
-    import serving.agent_jobs.model_auth as module
+    import serving.grant_auth as module
 
     grant_tool_paths = [
         name for name in dir(module) if "grant" in name.lower() and "tool" in name.lower()
     ]
     assert not grant_tool_paths, grant_tool_paths
-    # The legacy per-attempt path stays until H4: the deployed agent still
-    # carries those tokens, and removing it now would break every running job
-    # for a boundary the cloud agent's relay is not yet serving.
-    assert hasattr(module, "authenticate_agent_tool_call")
+    # **This is H4**, so the clause that guarded the legacy path now asserts its
+    # absence. It read `hasattr(module, "authenticate_agent_tool_call")` while
+    # the deployed agent still carried per-attempt tokens and the cloud agent's
+    # relay was not yet serving — removing it early would have broken every
+    # running job. Cutover is done; the relay serves, and nothing here answers
+    # for tools at all.
+    assert not [name for name in dir(module) if "tool" in name.lower()]
 
 
 # ---------------------------------------------------------------------------
