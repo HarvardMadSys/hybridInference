@@ -3133,7 +3133,7 @@ def test_a_single_failed_probe_does_not_take_a_ready_backend_out_of_service(
     The probe returns 503 whenever the server has emitted nothing recently, and a
     long chunked prefill legitimately does that for seconds at a time. One blip
     must not deregister a healthy replica; three consecutive ones must. On the
-    shipped units that is ~40-60 seconds rather than the ~30 the 10s tick suggests,
+    shipped units that is ~60-90 seconds rather than the ~30 the 10s tick suggests,
     because a backend in trouble does not refuse the probe, it swallows it for the
     whole HEALTH_PROBE_TIMEOUT — so the loop period during a wedge is the tick plus
     the timeout.
@@ -3332,8 +3332,9 @@ def test_a_request_arriving_during_the_probe_keeps_its_container(
 
     The watcher measures idleness at the top of the tick and only then runs the
     inspect and the probe — and the probe blocks for the whole
-    HEALTH_PROBE_TIMEOUT precisely when the backend is slow, which is ten seconds
-    on the shipped units. A request landing in that window is admitted by the ready
+    HEALTH_PROBE_TIMEOUT precisely when the backend is slow, which is twenty
+    seconds on the shipped units. A request landing in that window is admitted by
+    the ready
     fast path and forwarded, so tearing its container down on a measurement taken
     before it arrived kills a live request. The window existed before the probe did
     — it was one ``docker inspect`` wide — and the probe is what makes it worth

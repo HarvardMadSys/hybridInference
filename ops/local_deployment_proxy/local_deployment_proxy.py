@@ -224,7 +224,7 @@ MAX_START_FAILURES = int(os.environ.get("MAX_START_FAILURES", "20"))
 #   seconds, but a wedged backend does not *refuse* the probe, it swallows it: the
 #   call blocks for the whole HEALTH_PROBE_TIMEOUT before failing, so the loop
 #   period during the failure this exists to detect is the tick plus the timeout,
-#   ~20s on the shipped units, not ~10s. Three strikes is therefore a ~40-60s
+#   ~30s on the shipped units, not ~10s. Three strikes is therefore a ~60-90s
 #   grace, not the ~30s the tick alone suggests — long enough that one slow
 #   chunked prefill emitting nothing cannot deregister a replica, still inside
 #   sglang's own 300s watchdog kill. Recovery is a single good probe, matching the
@@ -244,8 +244,17 @@ MAX_START_FAILURES = int(os.environ.get("MAX_START_FAILURES", "20"))
 #   long may this backend take to become usable" (900s on the H200 units), and a
 #   backend that has had that budget twice over and still produced nothing is not
 #   loading.
+# HEALTH_PROBE_TIMEOUT — how long a probe may take before it counts as a strike.
+#   Measured on h200b against DeepSeek-V4-Flash on sglang v0.5.17, idle: 1.0, 1.0,
+#   1.0, 4.0, 2.1, 1.0 s — but 8.0 s on the first call after the backend reached
+#   ready. That last one is the number that sets this: it is a *healthy* backend,
+#   so a timeout tight enough to fail it manufactures strikes, and the shipped
+#   value has to clear the worst healthy case with room for a loaded server rather
+#   than the idle median. 20s is 2.5x the worst observed. Paid for out of detection
+#   latency, which stays cheap: worst case 3 x (10s tick + 20s timeout) = 90s to
+#   publish a verdict, still comfortably inside sglang's own 300s watchdog kill.
 HEALTH_PROBE_PATH = os.environ.get("HEALTH_PROBE_PATH", "/health_generate")
-HEALTH_PROBE_TIMEOUT = float(os.environ.get("HEALTH_PROBE_TIMEOUT", "10"))
+HEALTH_PROBE_TIMEOUT = float(os.environ.get("HEALTH_PROBE_TIMEOUT", "20"))
 HEALTH_PROBE_STRIKES = int(os.environ.get("HEALTH_PROBE_STRIKES", "3"))
 HEALTH_PROBE_WARMUP = float(os.environ.get("HEALTH_PROBE_WARMUP", str(HEALTH_TIMEOUT)))
 
