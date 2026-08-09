@@ -1243,6 +1243,20 @@ class OperationalStore(ABC):
     async def list_provider_env_key_min_roles(self, provider: str) -> dict[str, str]:
         """Return ``{key_hash: min_role}`` for reserved env keys of *provider*."""
 
+    @abstractmethod
+    async def list_provider_env_key_reservations(
+        self,
+        provider: str,
+    ) -> list[tuple[str, str, str]]:
+        """Return ``(key_hash, key_prefix, min_role)`` for reserved env keys.
+
+        The prefix is what makes a reservation *presentable* when its credential is
+        not currently configured anywhere — the raw value cannot be recovered then,
+        so the admin view has nothing else to show. Without it such a row is both
+        invisible and unclearable, while still applying the moment the credential
+        returns.
+        """
+
 
 # ---------------------------------------------------------------------------
 # LogStore — api_logs, api_stats_hourly

@@ -3639,6 +3639,19 @@ class PostgresOperationalStore(OperationalStore):
                 updated_by,
             )
 
+    async def list_provider_env_key_reservations(
+        self,
+        provider: str,
+    ) -> list[tuple[str, str, str]]:
+        """Return ``(key_hash, key_prefix, min_role)`` for reserved env keys."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key_hash, key_prefix, min_role FROM provider_env_key_min_roles "
+                "WHERE provider = $1 ORDER BY updated_at DESC",
+                provider,
+            )
+        return [(r["key_hash"], r["key_prefix"], r["min_role"]) for r in rows]
+
     async def list_provider_env_key_min_roles(self, provider: str) -> dict[str, str]:
         """Return ``{key_hash: min_role}`` for reserved env keys of *provider*."""
         async with self._pool.acquire() as conn:

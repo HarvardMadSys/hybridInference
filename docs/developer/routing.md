@@ -274,7 +274,10 @@ the same addressing `disable-env` already uses for env-key tombstones. Two
 consequences worth knowing:
 
 - The reservation outlives the key leaving rotation. Disable/enable it, or drop
-  and restore its env var, and it returns at the tier it was reserved for.
+  and restore its env var, and it returns at the tier it was reserved for. Because
+  it is durable, the admin list also shows a reservation whose credential is not
+  configured anywhere — as `status: absent` — and its id stays resolvable, so it can
+  be lifted rather than lying in wait for the key to come back.
 - Pools are seeded from adapter config at registry load, before any DB read, so
   `apply_db_keys_at_boot` re-applies stored env reservations (and re-applies
   again after any pool promotion, e.g. when a DB key is added to a route that

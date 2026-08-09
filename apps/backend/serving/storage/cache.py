@@ -1179,3 +1179,10 @@ class CachedOperationalStore(OperationalStore):
     async def list_provider_env_key_min_roles(self, provider: str) -> dict[str, str]:
         """Delegate to wrapped store."""
         return await self._store.list_provider_env_key_min_roles(provider)
+
+    async def list_provider_env_key_reservations(
+        self,
+        provider: str,
+    ) -> list[tuple[str, str, str]]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_env_key_reservations(provider)

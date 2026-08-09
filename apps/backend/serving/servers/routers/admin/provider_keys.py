@@ -151,6 +151,7 @@ async def list_provider_keys(
     env_min_roles: dict[str, dict[str, str]] = {}
     db_min_roles: dict[str, dict[str, str]] = {}
     db_key_values: dict[str, dict[str, str]] = {}
+    env_reservations: dict[str, list[tuple[str, str, str]]] = {}
     for prov in providers_to_inspect:
         try:
             disabled_hashes[prov] = set(await op_store.list_disabled_provider_env_key_hashes(prov))
@@ -165,6 +166,7 @@ async def list_provider_keys(
             # Which rows name the same credential — needed to report the tier the
             # pool enforces rather than each row's own declaration.
             db_key_values[prov] = dict(await op_store.list_provider_key_values(prov))
+            env_reservations[prov] = list(await op_store.list_provider_env_key_reservations(prov))
         except Exception as exc:
             raise HTTPException(503, f"Failed to load provider keys for {prov}: {exc}") from exc
 
@@ -285,6 +287,35 @@ async def list_provider_keys(
                 )
             )
 
+    # Finally, reservations whose credential is not configured anywhere right now.
+    # The row persists on purpose — a reservation outlives its key leaving rotation,
+    # so restoring the env var brings the tier back with it — but a row that no
+    # listed entry accounts for is a live constraint the admin can neither see nor
+    # lift. The stored prefix is all there is to show: the raw value cannot be
+    # recovered while nothing is configured with it.
+    listed_ids = {item.id for item in keys}
+    for prov in providers_to_inspect:
+        for key_hash, key_prefix, min_role in env_reservations.get(prov, []):
+            env_id = f"env:{key_hash[:32]}"
+            if env_id in listed_ids:
+                continue
+            keys.append(
+                ProviderApiKeyItem(
+                    id=env_id,
+                    provider=prov,
+                    key_prefix=key_prefix,
+                    label=None,
+                    source="env",
+                    # Neither active nor disabled: the credential is simply absent.
+                    status="absent",
+                    created_at=None,
+                    min_role=min_role,  # type: ignore[arg-type]
+                    declared_min_role=min_role,  # type: ignore[arg-type]
+                    # Nothing to enable or disable — only the reservation is actionable.
+                    reservation_only=True,
+                )
+            )
+
     return ListProviderApiKeysResponse(provider=provider, keys=keys)
 
 
@@ -398,7 +429,13 @@ async def add_provider_key(
             source="db",
             status=new_row.status,
             created_at=new_row.created_at,
-            min_role=new_row.min_role,  # type: ignore[arg-type]
+            # Same split the list view reports: what the pool now enforces, and what
+            # this row declares. The raw key is in hand, so the enforced value is
+            # exact — another record may declare something stricter for it.
+            min_role=dynamic_keys.resolve_key_min_role(  # type: ignore[arg-type]
+                payload.provider, api_key
+            ),
+            declared_min_role=new_row.min_role,  # type: ignore[arg-type]
         ),
         pools_updated=pools_updated,
     )
@@ -608,6 +645,18 @@ async def _resolve_env_key_id(
             # Disabled: the raw value may still be recoverable from adapter
             # config, but the reservation is stored either way and applies when
             # the key is re-enabled.
+            return (key_hash, key_prefix, dynamic_keys.find_env_key_by_hash(provider, key_hash))
+
+    # Last: a reservation whose credential is not configured anywhere. The row is
+    # durable on purpose — a reservation outlives its key leaving rotation — so it
+    # has to stay clearable while nothing holds the key, or the constraint silently
+    # applies again the moment the env var comes back.
+    try:
+        reservations = await op_store.list_provider_env_key_reservations(provider)
+    except Exception as exc:
+        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
+    for key_hash, key_prefix, _min_role in reservations:
+        if f"env:{key_hash[:32]}" == env_key_id:
             return (key_hash, key_prefix, dynamic_keys.find_env_key_by_hash(provider, key_hash))
 
     raise HTTPException(404, "Env provider key not found")

@@ -96,6 +96,7 @@ class _StubStore:
         self.disabled: dict[tuple[str, str], str] = {}
         # (provider, key_hash) -> min_role, for env-sourced key reservations
         self.env_min_roles: dict[tuple[str, str], str] = {}
+        self.env_min_role_prefixes: dict[tuple[str, str], str] = {}
         self.route_configs: list[dict] = []
         self.route_candidates: list[dict] = []
         self.audit: list[dict] = []
@@ -251,8 +252,20 @@ class _StubStore:
     ) -> None:
         if min_role == "free":
             self.env_min_roles.pop((provider, key_hash), None)
+            self.env_min_role_prefixes.pop((provider, key_hash), None)
             return
         self.env_min_roles[(provider, key_hash)] = min_role
+        self.env_min_role_prefixes[(provider, key_hash)] = key_prefix
+
+    async def list_provider_env_key_reservations(
+        self,
+        provider: str,
+    ) -> list[tuple[str, str, str]]:
+        return [
+            (key_hash, self.env_min_role_prefixes.get((prov, key_hash), "env...pref"), role)
+            for (prov, key_hash), role in self.env_min_roles.items()
+            if prov == provider
+        ]
 
     async def list_provider_env_key_min_roles(self, provider: str) -> dict[str, str]:
         return {
@@ -329,6 +342,7 @@ async def client(monkeypatch, store):
         "enable_provider_env_key",
         "set_provider_env_key_min_role",
         "list_provider_env_key_min_roles",
+        "list_provider_env_key_reservations",
         "log_admin_action",
     ):
         setattr(store_mock, attr, getattr(store, attr))
@@ -2717,3 +2731,78 @@ async def test_a_disabled_row_reports_its_own_declaration(client):
     assert row["status"] == "disabled"
     assert row["declared_min_role"] == "pro"
     assert row["min_role"] == "pro"
+
+
+@pytest.mark.asyncio
+async def test_add_response_reports_both_declared_and_enforced_tiers(client):
+    """The create response must not contradict itself, or the later list view."""
+    http, _store = client
+    shared = "env-zai-addresp-ppppqqqqrrrr"
+    adapter = _env_adapter("zai", [shared])
+    env_id = f"env:{dynamic_keys.env_key_hash(shared)[:32]}"
+
+    # A stricter env reservation already covers this credential.
+    await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "internal"},
+        headers=AUTH,
+    )
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared, "min_role": "pro"},
+        headers=AUTH,
+    )
+    assert add.status_code == 201, add.text
+    item = add.json()["key"]
+    assert item["declared_min_role"] == "pro", "the row declares what was asked for"
+    assert item["min_role"] == "internal", "the pool enforces the stricter one"
+    assert adapter._key_pool.snapshot_min_roles()[shared] == "internal"
+
+    # The list view agrees with the create response.
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    row = next(k for k in listing.json()["keys"] if k["id"] == item["id"])
+    assert (row["declared_min_role"], row["min_role"]) == ("pro", "internal")
+
+
+@pytest.mark.asyncio
+async def test_a_reservation_survives_its_credential_and_stays_manageable(client):
+    """A reservation whose key is gone must remain visible and clearable.
+
+    The row is durable by design — restoring the env var brings the tier back with
+    it — so leaving it off the list would make it a constraint nobody can see, and
+    404ing its id would make it one nobody can lift.
+    """
+    http, store = client
+    env_key = "env-zai-vanished-ssssttttuuuu"
+    adapter = _env_adapter("zai", [env_key])
+    env_id = f"env:{dynamic_keys.env_key_hash(env_key)[:32]}"
+
+    await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "pro"},
+        headers=AUTH,
+    )
+    assert adapter._key_pool.snapshot_min_roles()[env_key] == "pro"
+
+    # The credential leaves every live configuration (env var removed, route gone).
+    dynamic_keys.reset()
+    dynamic_keys.register_known_provider("zai")
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    entry = next((k for k in listing.json()["keys"] if k["id"] == env_id), None)
+    assert entry is not None, "a stored reservation must not vanish from the view"
+    assert entry["status"] == "absent"
+    assert entry["min_role"] == "pro"
+    assert entry["reservation_only"] is True
+
+    # ...and it can still be cleared, rather than waiting for the key to come back.
+    cleared = await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "free"},
+        headers=AUTH,
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert ("zai", dynamic_keys.env_key_hash(env_key)) not in store.env_min_roles
+
+    after = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    assert all(k["id"] != env_id for k in after.json()["keys"])

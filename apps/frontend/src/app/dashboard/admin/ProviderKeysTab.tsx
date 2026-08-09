@@ -321,12 +321,20 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                       <td className="px-3 py-2">
                         <span
                           className={
-                            disabled
-                              ? 'rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-500'
-                              : 'rounded bg-green-50 px-1.5 py-0.5 text-[11px] font-medium text-green-700'
+                            k.status === 'active'
+                              ? 'rounded bg-green-50 px-1.5 py-0.5 text-[11px] font-medium text-green-700'
+                              : 'rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-500'
+                          }
+                          title={
+                            k.status === 'absent'
+                              ? 'A reservation is stored for this credential, but nothing is configured with it right now. It applies again if the key returns.'
+                              : undefined
                           }
                         >
-                          {disabled ? 'disabled' : 'active'}
+                          {/* Rendered verbatim rather than as a disabled/active
+                              binary: a stored reservation whose credential is not
+                              configured anywhere is neither. */}
+                          {k.status}
                         </span>
                       </td>
                       <td className="px-3 py-2">
