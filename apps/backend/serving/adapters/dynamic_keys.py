@@ -150,6 +150,12 @@ def unregister_known_provider(provider: str) -> bool:
         _known_providers.discard(provider)
         _db_injected_keys.pop(provider, None)
         _disabled_env_key_hashes.pop(provider, None)
+        # Tier declarations go too. Deleting a custom provider deletes its rows, so
+        # a cache that outlived them would re-reserve a credential on the next
+        # registration — recreate the same slug with the same key and a freshly
+        # shared key would come back restricted until a restart.
+        _env_key_min_roles.pop(provider, None)
+        _db_key_min_roles.pop(provider, None)
         return before
 
 
@@ -790,8 +796,11 @@ async def load_min_role_declarations(operational_store: OperationalStore) -> Non
                 exc,
             )
         else:
+            # Load unconditionally, including an empty map: the loaders replace the
+            # provider's declarations, so skipping the empty case would keep a stale
+            # reservation alive after the last row for it was deleted.
+            load_env_key_min_roles(provider, env_min_roles)
             if env_min_roles:
-                load_env_key_min_roles(provider, env_min_roles)
                 logger.info(
                     "dynamic_keys: applied %d env key tier reservation(s) for provider=%s",
                     len(env_min_roles),
@@ -808,8 +817,8 @@ async def load_min_role_declarations(operational_store: OperationalStore) -> Non
             )
             continue
         reserved = {k: v for k, v in db_min_roles.items() if v and v != DEFAULT_MIN_ROLE}
+        load_db_key_min_roles(provider, reserved)
         if reserved:
-            load_db_key_min_roles(provider, reserved)
             logger.info(
                 "dynamic_keys: applied %d DB key tier reservation(s) for provider=%s",
                 len(reserved),

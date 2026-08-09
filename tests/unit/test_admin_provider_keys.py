@@ -2479,3 +2479,97 @@ async def test_declarations_load_for_a_provider_known_only_after_boot_seeding(cl
     await dynamic_keys.load_min_role_declarations(store)
 
     assert adapter._key_pool.snapshot_min_roles()[db_key] == "pro"
+
+
+@pytest.mark.asyncio
+async def test_unregistering_a_provider_drops_its_tier_declarations(client):
+    """Deleting a custom provider deletes its rows, so the caches must go too.
+
+    Otherwise recreating the same slug with the same credential re-applies a
+    reservation whose rows no longer exist, and a freshly shared key comes back
+    restricted until a restart.
+    """
+    _http, _store = client
+    raw = "sk-zai-recreate-yyyyyyyyyyyy"
+    dynamic_keys.load_db_key_min_roles("zai", {raw: "pro"})
+    dynamic_keys.load_env_key_min_roles("zai", {dynamic_keys.env_key_hash(raw): "internal"})
+    dynamic_keys.register_known_provider("zai")
+
+    assert dynamic_keys.unregister_known_provider("zai") is True
+    assert dynamic_keys.resolve_key_min_role("zai", raw) == "free"
+
+    # The recreated provider's key is shared, as configured.
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="recreated-model",
+            name="recreated-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[raw],
+            provider_model_id="recreated-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    assert adapter._key_pool.snapshot_min_roles()[raw] == "free"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_reload_clears_a_stale_reservation(client):
+    """Reloading declarations replaces them — including with nothing at all."""
+    _http, store = client
+    raw = "sk-zai-cleared-zzzzzzzzzzzz"
+    adapter = _env_adapter("zai", [raw])
+    dynamic_keys.load_db_key_min_roles("zai", {raw: "pro"})
+    assert adapter._key_pool.snapshot_min_roles()[raw] == "pro"
+
+    # The store now declares nothing for this provider (rows deleted elsewhere).
+    await dynamic_keys.load_min_role_declarations(store)
+
+    assert adapter._key_pool.snapshot_min_roles()[raw] == "free"
+
+
+@pytest.mark.asyncio
+async def test_env_reservation_stays_visible_and_clearable_when_a_db_row_shares_it(client):
+    """A shadowed env reservation is still enforced, so it must stay manageable.
+
+    The list normally hides an env key whose value an active DB row also holds, but
+    the env-side declaration is a separate record the resolver still combines —
+    hiding it left a live restriction the admin could neither see nor lift.
+    """
+    http, _store = client
+    shared = "env-zai-shadowed-aaaabbbbcccc"
+    adapter = _env_adapter("zai", [shared])
+    env_id = f"env:{dynamic_keys.env_key_hash(shared)[:32]}"
+
+    await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "pro"},
+        headers=AUTH,
+    )
+    # The same credential is then added as a DB key, declared shared.
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared, "min_role": "free"},
+        headers=AUTH,
+    )
+    assert add.status_code == 201, add.text
+    # The env reservation still wins, so it has to be visible.
+    assert adapter._key_pool.snapshot_min_roles()[shared] == "pro"
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    env_entry = next((k for k in listing.json()["keys"] if k["id"] == env_id), None)
+    assert env_entry is not None, "shadowed env reservation must remain listed"
+    assert env_entry["min_role"] == "pro"
+
+    # ...and clearable through the env endpoint without touching the DB row.
+    cleared = await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "free"},
+        headers=AUTH,
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert adapter._key_pool.snapshot_min_roles()[shared] == "free"
+
+    # With no reservation left, the env row goes back to being hidden by the DB row.
+    listing2 = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    assert all(k["id"] != env_id for k in listing2.json()["keys"])

@@ -163,9 +163,15 @@ async def list_provider_keys(
             if raw not in candidates:
                 candidates.append(raw)
         for raw in candidates:
-            if raw in db_raw_keys.get(prov, set()):
-                continue
             raw_hash = dynamic_keys.env_key_hash(raw)
+            # Normally an env key shadowed by a DB row is not listed twice — the DB
+            # row is the manageable record for that credential. An env *reservation*
+            # is the exception: it is a separate declaration the resolver still
+            # enforces, and it is cleared through the env endpoint, so hiding it
+            # would leave a live restriction with no way to see or lift it.
+            shadowed = raw in db_raw_keys.get(prov, set())
+            if shadowed and raw_hash not in env_min_roles.get(prov, {}):
+                continue
             if raw_hash in disabled_hashes.get(prov, set()) or dynamic_keys.is_env_key_disabled(
                 prov,
                 raw_hash,
@@ -518,18 +524,16 @@ async def _resolve_env_key_id(
     tombstone rows, in which case ``raw_key`` is None. Raises 404 when the id
     matches no env key of *provider*.
     """
-    try:
-        db_raw_keys = set(await op_store.list_provider_keys_full(provider))
-    except Exception as exc:
-        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
-
+    # Deliberately not filtered by the provider's DB key values. An env id is the
+    # key's hash, so it names one credential unambiguously, and the env-side
+    # declaration is a separate record from any DB row that happens to hold the
+    # same secret — both are combined by the resolver. Skipping shadowed values
+    # would make an env reservation unclearable while it was still enforced.
     candidates = list(_env_keys_for_provider(provider))
     for raw in dynamic_keys.list_candidate_env_keys(provider):
         if raw not in candidates:
             candidates.append(raw)
     for raw in candidates:
-        if raw in db_raw_keys:
-            continue
         if _env_key_id(raw) == env_key_id:
             return (dynamic_keys.env_key_hash(raw), _mask(raw), raw)
 
