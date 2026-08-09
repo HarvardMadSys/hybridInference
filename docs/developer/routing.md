@@ -214,8 +214,13 @@ to callers below it:
   `min_role`. Among the keys a caller *may* use, the most-reserved go first, so
   an entitled caller drains the capacity set aside for it before falling back to
   the keys every tier shares.
-- **Affinity.** A binding is dropped when the bound key is re-tiered above the
-  caller, so an entitlement change takes effect on the next request.
+- **Affinity.** A tier change drops every binding whose *preferred* key moved, not
+  only bindings pointing at the re-tiered key. Both directions matter: a caller no
+  longer entitled to its bound key must be re-picked, and a caller that should now
+  prefer a newly reserved key must stop draining the shared capacity that
+  reservation exists to protect — otherwise it would keep doing so for the rest of
+  the five-minute TTL. Only a declaration change triggers this, so ordinary traffic
+  never loses prompt-cache warmth to it.
 - **Mute / rotation.** The sole-remaining-key backoff is judged against the keys
   the *leaseholder* could rotate to. A pro-only key is not a fallback for a
   free-tier request, so it cannot cancel the free tier's blip protection.

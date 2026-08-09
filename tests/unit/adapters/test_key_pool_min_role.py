@@ -332,3 +332,63 @@ def test_can_serve_role_recovers_when_the_mute_expires(monkeypatch):
 
     fake_now[0] += 61.0
     assert pool.can_serve_role("free") is True
+
+
+# --- affinity follows a reservation change ----------------------------------
+
+
+def test_reserving_a_key_pulls_an_affine_entitled_caller_onto_it(monkeypatch):
+    """Reservation exists to move entitled traffic — a live binding must not block it.
+
+    Dropping only bindings that point at the re-tiered key left an already-affine
+    pro caller draining shared capacity for the rest of the affinity TTL, which is
+    the capacity the reservation was meant to protect.
+    """
+    pool = _pool(shared="free", spare="free")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    assert pool.acquire("pro-user", role="pro")[0] == "shared"
+    assert pool.affinity_count() == 1
+
+    # A second key becomes pro-reserved; the pro caller should prefer it at once.
+    assert pool.set_key_min_role("spare", "pro") is True
+    assert pool.acquire("pro-user", role="pro")[0] == "spare"
+
+
+def test_free_callers_keep_their_binding_when_another_key_is_reserved(monkeypatch):
+    """Only callers whose preferred key moved are re-picked."""
+    pool = _pool(shared="free", spare="free")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    assert pool.acquire("free-user", role="free")[0] == "shared"
+    pool.set_key_min_role("spare", "pro")
+
+    # 'shared' is still the free tier's preferred key, so the binding survives.
+    assert pool.affinity_count() == 1
+    assert pool.acquire("free-user", role="free")[0] == "shared"
+
+
+def test_releasing_a_reservation_returns_entitled_callers_to_order(monkeypatch):
+    """Clearing a tier is a declaration change too, so preference re-converges."""
+    pool = _pool(first="free", reserved="pro")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    assert pool.acquire("pro-user", role="pro")[0] == "reserved"
+    assert pool.set_key_min_role("reserved", "free") is True
+    # With nothing reserved, configuration order rules again.
+    assert pool.acquire("pro-user", role="pro")[0] == "first"
+
+
+def test_an_unchanged_re_tier_leaves_affinities_alone(monkeypatch):
+    """Re-applying the tier a key already has is a no-op, bindings included."""
+    pool = _pool(shared="free", reserved="pro")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    pool.acquire("free-user", role="free")
+    before = pool.affinity_count()
+    assert pool.set_key_min_role("reserved", "pro") is True
+    assert pool.affinity_count() == before

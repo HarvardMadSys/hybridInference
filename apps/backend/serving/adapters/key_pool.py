@@ -148,6 +148,11 @@ class _KeyState:
 class _Affinity:
     key_index: int
     expires_at: float  # monotonic timestamp
+    # The role this binding was created for. Kept so a tier change can tell whose
+    # *preferred* key moved: reserving a key is supposed to pull entitled traffic
+    # onto it, and a binding made before the change would otherwise hold that
+    # traffic on a shared key for the rest of the TTL.
+    role: str | None = None
 
 
 def _role_may_use(role: str | None, state: _KeyState) -> bool:
@@ -273,28 +278,49 @@ class KeyPool:
     def set_key_min_role(self, key: str, min_role: str | None) -> bool:
         """Re-tier an active key in place. Returns True when a key was updated.
 
-        Affinity entries bound to the key are dropped so a caller who no longer
-        qualifies is re-picked on its next request instead of riding a stale
-        binding to a key it may not be entitled to.
+        Every binding whose *preferred* key moved is dropped, so the next request
+        re-picks. That covers two cases, and the second is easy to miss: a caller no
+        longer entitled to the key it is bound to (correctness), and a caller that
+        should now prefer a key it is *not* bound to. Reserving a key exists to pull
+        entitled traffic onto it; without the second case an already-affine pro
+        caller would keep draining shared capacity for the rest of the affinity TTL,
+        which is exactly the capacity the reservation was meant to protect.
+
+        Bindings are only re-evaluated when a declaration actually changes — a rare
+        admin action — so prompt-cache warmth is not disturbed by ordinary traffic.
         """
         normalized = normalize_min_role(min_role)
         found = False
         with self._lock:
+            changed = False
             # Every matching slot, not just the first: the constructor dedupes, but
             # a slot tombstoned by ``remove_key`` keeps its value, so a re-add can
             # leave two slots for one credential. Updating one of them would leave
             # the other enforcing a tier nobody declared.
-            for idx, state in enumerate(self._keys):
+            for _idx, state in enumerate(self._keys):
                 if state.key != key or state.removed:
                     continue
                 found = True
                 if state.min_role == normalized:
                     continue
                 state.min_role = normalized
-                stale = [k for k, a in self._affinity.items() if a.key_index == idx]
-                for k in stale:
-                    del self._affinity[k]
+                changed = True
+            if changed:
+                self._drop_repointed_affinities_locked()
         return found
+
+    def _drop_repointed_affinities_locked(self) -> None:
+        """Drop bindings that no longer point at what selection would choose now."""
+        now = time.monotonic()
+        preferred_by_role: dict[str | None, int | None] = {}
+        stale: list[str] = []
+        for affinity_key, entry in self._affinity.items():
+            if entry.role not in preferred_by_role:
+                preferred_by_role[entry.role] = self._pick_first_available_locked(now, entry.role)
+            if preferred_by_role[entry.role] != entry.key_index:
+                stale.append(affinity_key)
+        for affinity_key in stale:
+            del self._affinity[affinity_key]
 
     def remove_key(self, key: str) -> bool:
         """Mark a key as removed and drop affinity entries pointing at it.
@@ -367,6 +393,7 @@ class KeyPool:
             self._affinity[affinity_key] = _Affinity(
                 key_index=idx,
                 expires_at=now + self.AFFINITY_TTL_SECONDS,
+                role=role,
             )
             self._keys[idx].request_count += 1
             return self._keys[idx].key, Lease(idx, affinity_key, role)
