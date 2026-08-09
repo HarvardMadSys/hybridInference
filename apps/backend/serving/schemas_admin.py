@@ -1977,7 +1977,14 @@ class SetProviderApiKeyMinRoleResponse(BaseModel):  # type: ignore[no-any-unimpo
     min_role: Literal["free", "pro", "internal", "admin"]
     pools_updated: int = Field(
         ...,
-        description="Number of in-process key pools whose copy of the key was re-tiered",
+        description=(
+            "Number of in-process key pools holding this key, each of which now "
+            "enforces the resolved tier. 0 means the key is not in rotation right "
+            "now (disabled, or its env var is gone) — the reservation is stored and "
+            "applies when it returns. Deliberately not a count of pools whose tier "
+            "*changed*: re-applying the tier a key already has is a no-op, and "
+            "reporting 0 for it would read as 'not in rotation'."
+        ),
     )
 
 
