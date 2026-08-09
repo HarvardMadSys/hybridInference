@@ -136,7 +136,7 @@ async def test_reset_keeps_keys_outside_the_request_scope() -> None:
 #: membership separately means a removal has to be made here too — deliberately,
 #: with the leak in view.
 _PINNED_REQUEST_SCOPED_KEYS = frozenset(
-    {"client_user_agent", "user_id", "user_name", "client_error_kind", "provider"}
+    {"client_user_agent", "user_id", "user_name", "user_role", "client_error_kind", "provider"}
 )
 
 
@@ -146,8 +146,10 @@ def test_request_scoped_key_set_is_pinned() -> None:
     Each key is there because some consumer reads "key present" as a fact about
     the current request: ``user_id``/``user_name`` for circuit-breaker
     attribution, ``client_error_kind`` for the 404 split, ``provider`` for the
-    401 split. Dropping one un-clears it and makes the next request inherit it,
-    so the set is not something to shrink as a side effect of another change.
+    401 split, ``user_role`` for access to tier-reserved provider keys (absent
+    means "internal caller, unrestricted"). Dropping one un-clears it and makes
+    the next request inherit it, so the set is not something to shrink as a side
+    effect of another change.
     """
     assert set(req_ctx.REQUEST_SCOPED_KEYS) == _PINNED_REQUEST_SCOPED_KEYS
 

@@ -222,6 +222,20 @@ to callers below it:
 - **Exhaustion.** A caller whose usable keys are all muted (or who has none)
   gets `KeyPoolExhausted`, which the router treats as an upstream failure and
   fails over to the next provider in the chain.
+- **Health accounting.** When the pool could still serve an unrestricted caller,
+  the refusal is a `KeyPoolRoleRestricted` (a `KeyPoolExhausted` subclass) and
+  `EndpointHealthRegistry.record_failure` skips it — logged as
+  `role_restricted_skip_breaker`. Nothing was sent upstream and the endpoint is
+  still serving the tiers that own those keys; counting it would let a burst of
+  lower-tier traffic open the circuit, strip reserved capacity from the callers
+  it was reserved for, and re-trip on every half-open probe. A pool usable by
+  *nobody* stays a plain `KeyPoolExhausted` and still counts.
+- **Single-adapter surfaces.** `/v1/messages` commits to one adapter up front
+  instead of walking the fallback chain, so `_pick_adapter_for_role` picks the
+  first adapter holding a key the caller may spend (falling back to
+  `adapters[0]` when none can, to keep the error unchanged). Without it, a
+  reserved first adapter would hard-fail a request another provider on the same
+  route could serve.
 
 The caller's role reaches the pool through `req_ctx["user_role"]`, published by
 the API-key auth dependency. Requests with no user identity — health probes,
@@ -257,6 +271,14 @@ Reservation is declared through the admin API rather than an env var: pool
 membership comes from each route's `api_keys` in `models.yaml`, which need not be
 one of the `<PROVIDER>_API_KEY` vars, so an env-var-per-key convention would not
 cover every configured key.
+
+**Duplicate raw values.** A pool holds one entry per raw key, so a value
+configured twice (env credential plus a DB row, or two DB rows) shares one
+`min_role`. Adding a row applies that row's tier — an explicit admin choice — but
+disabling or deleting one source re-derives the tier from the sources that
+survive, most permissive winning, since they all name the same secret. Otherwise
+dropping a `pro` duplicate of a shared env key would leave the env credential
+`pro`-only until the next restart.
 
 One remaining limit: **route-bound keys ignore `min_role`.** A key pinned to a
 provider route via `api_key_id` is handed to that route's adapter directly rather

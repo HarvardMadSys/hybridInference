@@ -107,7 +107,24 @@ class KeyPoolExhausted(Exception):
     """Raised by ``KeyPool.acquire`` when no key is usable by the caller.
 
     Either every key is in cooldown, or the ones still usable are all reserved
-    for a higher tier than the caller holds.
+    for a higher tier than the caller holds (see ``KeyPoolRoleRestricted``).
+    """
+
+
+class KeyPoolRoleRestricted(KeyPoolExhausted):
+    """No key for *this caller*, though the pool can still serve someone else.
+
+    Split out from plain ``KeyPoolExhausted`` because the two mean opposite
+    things to endpoint health. A pool with nothing usable by anyone is an
+    endpoint problem worth counting against it; a pool that simply holds no key
+    this caller's tier may spend is not — the request never reached the upstream,
+    and the endpoint is happily serving the tiers that own those keys. Counting
+    it would let a burst of lower-tier traffic open the circuit and take reserved
+    capacity away from the callers it was reserved for.
+
+    Subclasses ``KeyPoolExhausted`` so existing handlers (the 429 mapping on the
+    Anthropic surface, the router's fallback chain) keep their behavior without
+    change; only health accounting looks for the distinction.
     """
 
 
@@ -305,7 +322,12 @@ class KeyPool:
 
             idx = self._pick_first_available_locked(now, role)
             if idx is None:
-                raise KeyPoolExhausted(
+                # Distinguish "this endpoint is down" from "this endpoint has
+                # nothing for your tier": if an unrestricted caller could still be
+                # served, the pool is healthy and only this caller is shut out.
+                serves_someone = self._pick_first_available_locked(now, None) is not None
+                error = KeyPoolRoleRestricted if serves_someone else KeyPoolExhausted
+                raise error(
                     f"No usable API key for provider {self._provider_label!r} "
                     f"(role={role or 'unrestricted'}, {len(self._keys)} configured): "
                     "every key the caller may use is muted or reserved for a higher tier"

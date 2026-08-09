@@ -2048,3 +2048,90 @@ async def test_reservation_survives_promotion_by_a_db_key(client):
     roles = adapter._key_pool.snapshot_min_roles()
     assert roles[env_key] == "pro"  # not demoted by the promotion
     assert roles["sk-zai-promote-jjjjjjjjjjjj"] == "free"
+
+
+@pytest.mark.asyncio
+async def test_removing_a_reserved_duplicate_restores_the_env_tier(client):
+    """A pool holds one entry per raw value — a dropped row's tier must not stick.
+
+    Adding a ``pro`` DB row that duplicates a shared env credential re-tiers the
+    single pool entry. Disabling or deleting that row has to hand the value back
+    at the tier its surviving source (the env key) justifies, not leave it
+    ``pro``-only until the next restart.
+    """
+    http, store = client
+    shared = "env-zai-dup-kkkkkkkkkkkk"
+    adapter = _env_adapter("zai", [shared])
+    assert adapter._key_pool.snapshot_min_roles()[shared] == "free"
+
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared, "min_role": "pro"},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+    assert adapter._key_pool.snapshot_min_roles()[shared] == "pro"
+
+    dis = await http.post(f"/admin/provider-keys/{key_id}/disable", headers=AUTH)
+    assert dis.status_code == 200, dis.text
+    # The value survives via the env key, so it stays in the pool...
+    assert shared in adapter._key_pool.snapshot_keys()
+    # ...at the env key's tier, not the disabled row's.
+    assert adapter._key_pool.snapshot_min_roles()[shared] == "free"
+
+    entry = next(e for e in store.audit if e.get("action") == "disable_provider_key")
+    assert entry["details"]["reconciled_min_role"] == "free"
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_duplicate_keeps_the_surviving_rows_tier(client):
+    """With two DB rows on one value, deleting one leaves the survivor's tier."""
+    http, _store = client
+    shared = "sk-zai-dup-llllllllllll"
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    first = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared, "min_role": "internal"},
+        headers=AUTH,
+    )
+    second = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared, "min_role": "pro"},
+        headers=AUTH,
+    )
+    assert pool.snapshot_min_roles()[shared] == "pro"
+
+    # Delete the pro row: the internal row still owns the value.
+    dele = await http.delete(f"/admin/provider-keys/{second.json()['key']['id']}", headers=AUTH)
+    assert dele.status_code == 200, dele.text
+    assert shared in pool.snapshot_keys()
+    assert pool.snapshot_min_roles()[shared] == "internal"
+    assert first.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_removing_a_sole_source_key_does_not_reconcile(client):
+    """No surviving source → the key leaves the pool; nothing to re-tier."""
+    http, store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": "sk-zai-solo-mmmmmmmmmmmm", "min_role": "pro"},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+
+    dis = await http.post(f"/admin/provider-keys/{key_id}/disable", headers=AUTH)
+    assert dis.json()["pools_updated"] == 1
+    assert "sk-zai-solo-mmmmmmmmmmmm" not in pool.snapshot_keys()
+
+    entry = next(e for e in store.audit if e.get("action") == "disable_provider_key")
+    assert entry["details"]["reconciled_min_role"] is None

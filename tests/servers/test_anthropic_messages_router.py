@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -2232,3 +2233,56 @@ async def test_inline_system_is_normalized_before_native_passthrough(
     system_text = " ".join(b.get("text", "") for b in captured["system"])
     assert "You are Claude Code." in system_text
     assert "Available agent types" in system_text
+
+
+# --- adapter selection under tier-reserved keys -----------------------------
+#
+# This surface commits to one adapter up front rather than walking the router's
+# fallback chain, so an adapter whose keys are all reserved above the caller
+# would otherwise turn a routable request into a hard 429.
+
+
+def _reserved_adapter(keys_min_roles: dict[str, str]):
+    from serving.adapters.base import ModelConfig
+    from serving.adapters.openai_compat import OpenAICompatAdapter
+
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="tiered-model",
+            name="tiered-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=list(keys_min_roles),
+            provider_model_id="tiered-model",
+        )
+    )
+    for key, role in keys_min_roles.items():
+        adapter._key_pool.set_key_min_role(key, role)
+    return adapter
+
+
+def test_pick_adapter_skips_one_with_no_key_for_the_role():
+    reserved = _reserved_adapter({"pro-only-key": "pro"})
+    shared = _reserved_adapter({"shared-key": "free"})
+    route = SimpleNamespace(adapters=[(reserved, 1.0), (shared, 1.0)])
+
+    assert anthropic_messages._pick_adapter_for_role(route, "free")[0] is shared
+    # An entitled caller still gets the first (reserved) adapter.
+    assert anthropic_messages._pick_adapter_for_role(route, "pro")[0] is reserved
+
+
+def test_pick_adapter_falls_back_to_the_first_when_none_can_serve():
+    """No serviceable adapter → keep adapters[0] so the error is the usual 429."""
+    reserved = _reserved_adapter({"pro-only-key": "pro"})
+    other = _reserved_adapter({"internal-only-key": "internal"})
+    route = SimpleNamespace(adapters=[(reserved, 1.0), (other, 1.0)])
+
+    assert anthropic_messages._pick_adapter_for_role(route, "free")[0] is reserved
+
+
+def test_pick_adapter_treats_a_pool_less_adapter_as_eligible():
+    """A single-``api_key`` adapter carries no reservation, so it always qualifies."""
+    legacy = SimpleNamespace()  # no has_capacity_for_role at all
+    route = SimpleNamespace(adapters=[(legacy, 1.0)])
+
+    assert anthropic_messages._pick_adapter_for_role(route, "free")[0] is legacy

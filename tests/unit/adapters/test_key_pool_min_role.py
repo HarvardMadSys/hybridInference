@@ -12,7 +12,12 @@ from __future__ import annotations
 
 import pytest
 
-from serving.adapters.key_pool import KeyPool, KeyPoolExhausted, normalize_min_role
+from serving.adapters.key_pool import (
+    KeyPool,
+    KeyPoolExhausted,
+    KeyPoolRoleRestricted,
+    normalize_min_role,
+)
 
 
 def _pool(**min_roles: str) -> KeyPool:
@@ -169,3 +174,53 @@ def test_muting_a_reserved_key_leaves_the_shared_key_serving(monkeypatch):
 
     assert pool.acquire("user-A", role="pro")[0] == "shared"
     assert pool.acquire("user-B", role="free")[0] == "shared"
+
+
+# --- role restriction vs a dead pool ---------------------------------------
+
+
+def test_role_restriction_raises_the_health_neutral_subclass():
+    """A tier-only shutout is not an endpoint failure — it has its own type."""
+    pool = _pool(reserved="pro")
+    with pytest.raises(KeyPoolRoleRestricted):
+        pool.acquire("user-A", role="free")
+
+
+def test_a_pool_usable_by_nobody_raises_plain_exhausted(monkeypatch):
+    """When no key can serve anyone, the endpoint really is in trouble."""
+    pool = _pool(shared="free")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A", role="pro")
+    for _ in range(pool.SOLE_KEY_BACKOFF_THRESHOLD + 1):
+        _, lease = pool.acquire("user-A", role="pro")
+        pool.release(lease, status_code=429)
+
+    with pytest.raises(KeyPoolExhausted) as excinfo:
+        pool.acquire("user-B", role="free")
+    assert not isinstance(excinfo.value, KeyPoolRoleRestricted)
+
+
+def test_shared_key_muted_but_reserved_healthy_is_role_restricted(monkeypatch):
+    """The distinction is "can anyone be served", not "is any key reserved".
+
+    A free caller whose only shared key is cooling down while a reserved key is
+    healthy must not count against the endpoint: it is still serving pro traffic.
+    """
+    pool = _pool(shared="free", reserved="pro")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A", role="pro")  # takes 'reserved'
+    assert lease.key_index == 1
+    _, shared_lease = pool.acquire("user-B", role="free")
+    assert pool.release(shared_lease, status_code=429) is False  # sole key for free
+    # Force the shared key into cooldown from an unrestricted caller's lease,
+    # which does have somewhere to rotate to.
+    _, any_lease = pool.acquire("probe", role=None)
+    pool._keys[0].cooldown_until = fake_now[0] + 60.0
+
+    with pytest.raises(KeyPoolRoleRestricted):
+        pool.acquire("user-C", role="free")
+    assert any_lease is not None

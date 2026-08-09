@@ -12,6 +12,7 @@ from serving.admin.provider_key_probe import (
     ProviderKeyProbeError,
     probe_provider_key_with_existing_route,
 )
+from serving.config.settings import ROLE_RANK
 from serving.schemas_admin import (
     AddProviderApiKeyRequest,
     AddProviderApiKeyResponse,
@@ -445,15 +446,43 @@ async def enable_provider_env_key(
     )
 
 
-<<<<<<< HEAD
-async def _clear_env_tombstone_for_key(
-    op_store,
-    provider: str,
-    raw_key: str,
-    admin_id: str,
-) -> bool:
-    """Clear the tombstone for *raw_key* if it carries one. Returns True if so.
-=======
+async def _reconcile_shared_key_tier(op_store, provider: str, raw_key: str) -> str | None:
+    """Re-derive a shared raw key's tier from whichever sources still own it.
+
+    A raw value can be configured twice — an env credential plus a DB row, or two
+    DB rows — and the pool holds it once, so all of them share a single
+    ``min_role``. Disabling or deleting one source therefore leaves that source's
+    reservation behind: dropping a ``pro`` DB duplicate of a shared env key would
+    otherwise keep the env credential ``pro``-only until the next restart.
+
+    The surviving sources decide, and the most permissive one wins: they all name
+    the same secret, so a source that says "every tier may spend this" is a source
+    that makes it spendable. Returns the tier applied, or None when no source
+    survives (the caller is removing the key from the pool anyway).
+    """
+    tiers: list[str] = []
+    try:
+        db_tiers = await op_store.list_provider_key_min_roles(provider)
+    except Exception as exc:
+        # Leave the tier as-is rather than guessing from half the picture: a
+        # wrong reconciliation here either leaks reserved capacity or strands it.
+        logger.warning(
+            "failed to reload provider key tiers for %r while reconciling a shared key: %s",
+            provider,
+            exc,
+        )
+        return None
+    if raw_key in db_tiers:
+        tiers.append(db_tiers[raw_key])
+    if dynamic_keys.is_active_env_static_key(provider, raw_key):
+        tiers.append(dynamic_keys.env_key_min_role(provider, dynamic_keys.env_key_hash(raw_key)))
+    if not tiers:
+        return None
+    effective = min(tiers, key=lambda role: ROLE_RANK.get(role, 0))
+    dynamic_keys.set_key_min_role_for_provider(provider, raw_key, effective)
+    return effective
+
+
 async def _resolve_env_key_id(
     op_store,
     provider: str,
@@ -556,9 +585,13 @@ async def set_provider_env_key_min_role(
     )
 
 
-async def _resolve_key_ref(op_store, provider: str, key_ref: str) -> tuple[str, str, str]:
-    """Resolve an opaque ``key_ref`` to ``(source, id, status)``.
->>>>>>> c1e64609 (feat(keys): reserve env-sourced provider keys for a tier too)
+async def _clear_env_tombstone_for_key(
+    op_store,
+    provider: str,
+    raw_key: str,
+    admin_id: str,
+) -> bool:
+    """Clear the tombstone for *raw_key* if it carries one. Returns True if so.
 
     Unlike :func:`_clear_env_tombstone` this is a no-op — no store write, no
     audit entry — when the key was never disabled, so it is safe to call on
@@ -847,6 +880,12 @@ async def disable_provider_key(
         active_after = set()
     shared = raw_key in active_after or dynamic_keys.is_active_env_static_key(provider, raw_key)
     pools_updated = 0 if shared else dynamic_keys.remove_key_from_pools(provider, raw_key)
+    # The pool keeps one entry per raw value, so this row's reservation outlives
+    # it when another source shares the value — re-derive the tier from what is
+    # left instead of stranding a restriction nobody owns any more.
+    reconciled_min_role = (
+        await _reconcile_shared_key_tier(op_store, provider, raw_key) if shared else None
+    )
 
     await log_admin_action(
         op_store,
@@ -858,6 +897,7 @@ async def disable_provider_key(
             "provider": provider,
             "key_prefix": _mask(raw_key),
             "pools_updated": pools_updated,
+            "reconciled_min_role": reconciled_min_role,
         },
     )
 
@@ -1009,8 +1049,12 @@ async def delete_provider_key(
     shared = raw_key in active_after or dynamic_keys.is_active_env_static_key(provider, raw_key)
     # When shared, leave both the pool entry and the ``_db_injected_keys``
     # bookkeeping intact: the surviving source still owns the value, and a later
-    # delete of *that* row re-runs this same guard.
+    # delete of *that* row re-runs this same guard. The tier is re-derived from
+    # the surviving sources, so this row's reservation leaves with the row.
     pools_updated = 0 if shared else dynamic_keys.remove_key_from_provider(provider, raw_key)
+    reconciled_min_role = (
+        await _reconcile_shared_key_tier(op_store, provider, raw_key) if shared else None
+    )
 
     await log_admin_action(
         op_store,
@@ -1022,6 +1066,7 @@ async def delete_provider_key(
             "provider": provider,
             "key_prefix": _mask(raw_key),
             "pools_updated": pools_updated,
+            "reconciled_min_role": reconciled_min_role,
         },
     )
 

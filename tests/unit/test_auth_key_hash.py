@@ -190,21 +190,20 @@ async def test_verify_api_key_publishes_free_for_a_roleless_identity(
     assert req_ctx.get().get("user_role") == "free"
 
 
-def test_request_id_middleware_clears_a_stale_caller_role():
-    """Each request resets ``user_role`` so entitlement never leaks between callers."""
+def test_request_scope_reset_clears_a_stale_caller_role():
+    """A new request drops ``user_role`` so entitlement never leaks between callers.
+
+    Removal (not ``None``) is what the key pool relies on: an absent role means
+    "internal caller, unrestricted", so ``user_role`` has to be in
+    ``REQUEST_SCOPED_KEYS`` for that reading to be safe.
+    """
     from serving.utils import context as req_ctx
 
-    req_ctx.set({"user_role": "admin"})
-    # Mirror the middleware's reset block (servers/middleware/request_id.py).
-    req_ctx.update(
-        {
-            "request_id": "abc",
-            "client_user_agent": None,
-            "user_id": None,
-            "user_name": None,
-            "user_role": None,
-            req_ctx.CLIENT_ERROR_KIND: None,
-        }
-    )
+    assert req_ctx.USER_ROLE in req_ctx.REQUEST_SCOPED_KEYS
 
-    assert req_ctx.get().get("user_role") is None
+    req_ctx.set({req_ctx.USER_ROLE: "admin", "durable": "keep"})
+    req_ctx.reset_request_scope(request_id="abc", client_user_agent=None)
+
+    ctx = req_ctx.get()
+    assert req_ctx.USER_ROLE not in ctx
+    assert ctx["durable"] == "keep"

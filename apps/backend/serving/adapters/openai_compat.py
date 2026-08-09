@@ -19,7 +19,7 @@ from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
-from .key_pool import KeyPool, KeyPoolExhausted
+from .key_pool import KeyPool, KeyPoolExhausted, KeyPoolRoleRestricted
 from .processors import get_processor
 from .profiles import (
     ProviderProfile,
@@ -96,7 +96,7 @@ def _caller_role() -> str | None:
     """
     from serving.utils import context as req_ctx
 
-    role = req_ctx.get().get("user_role")
+    role = req_ctx.get().get(req_ctx.USER_ROLE)
     return role if isinstance(role, str) and role else None
 
 
@@ -181,6 +181,35 @@ class OpenAICompatAdapter(BaseAdapter):
         except ValueError:
             self._usage_profile = ProviderProfile.DEFAULT
         self._usage_normalizer = get_usage_normalizer(self._usage_profile)
+
+    def _no_usable_key_error(self, provider: str, role: str | None) -> KeyPoolExhausted:
+        """Build the pre-flight "no key for this caller" error, typed by cause.
+
+        Mirrors ``KeyPool.acquire``: when the pool could still serve an
+        unrestricted caller, only this tier is shut out, which must not count
+        against the endpoint's health (see ``KeyPoolRoleRestricted``).
+        """
+        message = (
+            f"No active API keys for provider {provider!r} available to "
+            f"role={role or 'unrestricted'}"
+        )
+        pool = self._key_pool
+        if pool is not None and role is not None and pool.size() > 0:
+            return KeyPoolRoleRestricted(message)
+        return KeyPoolExhausted(message)
+
+    def has_capacity_for_role(self, role: str | None) -> bool:
+        """Whether this adapter holds a key *role* is allowed to spend.
+
+        Used by surfaces that pick one adapter up front instead of walking the
+        router's fallback chain (``/v1/messages``), so tier reservation cannot
+        turn an otherwise routable request into a hard failure. A pool-less
+        single-``api_key`` adapter carries no reservation and always qualifies.
+        """
+        pool = self._key_pool
+        if pool is None:
+            return True
+        return pool.size(role) > 0
 
     def ensure_key_pool(self) -> KeyPool | None:
         """Create a pool from the adapter's static keys if it has none yet.
@@ -389,10 +418,7 @@ class OpenAICompatAdapter(BaseAdapter):
         # shouldn't reacquire the same just-muted one.
         max_attempts = self._key_pool.size(role)
         if max_attempts <= 0:
-            raise KeyPoolExhausted(
-                f"No active API keys for provider {provider!r} available to "
-                f"role={role or 'unrestricted'}"
-            )
+            raise self._no_usable_key_error(provider, role)
         last_error: BaseException | None = None
 
         for _ in range(max_attempts):
@@ -517,10 +543,7 @@ class OpenAICompatAdapter(BaseAdapter):
         role = _caller_role()
         max_attempts = self._key_pool.size(role)
         if max_attempts <= 0:
-            raise KeyPoolExhausted(
-                f"No active API keys for provider {provider!r} available to "
-                f"role={role or 'unrestricted'}"
-            )
+            raise self._no_usable_key_error(provider, role)
         last_error: BaseException | None = None
 
         for _ in range(max_attempts):

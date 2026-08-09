@@ -438,7 +438,7 @@ def _publish_caller_role(user_ctx: dict[str, Any]) -> dict[str, Any]:
     ``/v1/messages``, responses, embeddings — is covered by one hop. Returns
     *user_ctx* unchanged so call sites can wrap their ``return``.
     """
-    req_ctx.update({"user_role": user_ctx.get("role") or "free"})
+    req_ctx.update({req_ctx.USER_ROLE: user_ctx.get("role") or "free"})
     return user_ctx
 
 
