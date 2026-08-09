@@ -1852,9 +1852,20 @@ class ProviderApiKeyItem(BaseModel):  # type: ignore[no-any-unimported]
     min_role: Literal["free", "pro", "internal", "admin"] = Field(
         "free",
         description=(
-            "Lowest user role allowed to spend this key. 'free' means every tier "
-            "shares it; anything higher reserves it for that tier and above. "
-            "Env-sourced keys are always 'free'."
+            "Lowest user role allowed to spend this key, as currently enforced. "
+            "'free' means every tier shares it; anything higher reserves it for that "
+            "tier and above. When two sources declare tiers for the same credential "
+            "the strictest one is reported, because that is the one in force."
+        ),
+    )
+    reservation_only: bool = Field(
+        False,
+        description=(
+            "True for an env entry listed solely to expose its tier reservation, "
+            "because an active DB row holds the same credential. Only 'min_role' is "
+            "editable on such an entry: the DB row is what enables, disables or "
+            "deletes the key, and disabling the env side would tombstone a hash "
+            "while the key kept serving from that row."
         ),
     )
 

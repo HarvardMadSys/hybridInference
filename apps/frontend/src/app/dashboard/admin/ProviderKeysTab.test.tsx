@@ -163,4 +163,21 @@ describe('ProviderKeysTab tier reservation', () => {
       );
     });
   });
+  it('offers only the tier control for a reservation-only env row', async () => {
+    // An active DB row holds the same credential, so this entry exists purely to
+    // carry the reservation — the Disable endpoint rejects it by design.
+    vi.mocked(listProviderKeys).mockResolvedValue({
+      provider: 'zai',
+      keys: [{ ...envKey, min_role: 'pro', reservation_only: true }],
+    });
+    render(<ProviderKeysTab />);
+
+    await screen.findByText(envKey.key_prefix);
+    const row = keyRow(envKey.key_prefix);
+    expect(
+      within(row).getByLabelText(`Reserved tier for key ${envKey.key_prefix}`),
+    ).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /disable/i })).not.toBeInTheDocument();
+    expect(within(row).getByText('reservation only')).toBeInTheDocument();
+  });
 });

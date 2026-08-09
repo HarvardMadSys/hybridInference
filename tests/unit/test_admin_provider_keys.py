@@ -2560,6 +2560,15 @@ async def test_env_reservation_stays_visible_and_clearable_when_a_db_row_shares_
     env_entry = next((k for k in listing.json()["keys"] if k["id"] == env_id), None)
     assert env_entry is not None, "shadowed env reservation must remain listed"
     assert env_entry["min_role"] == "pro"
+    # Flagged so the dashboard offers only the tier control: the DB row owns
+    # enable/disable/delete, and disabling this env side is rejected by design.
+    assert env_entry["reservation_only"] is True
+    dis = await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert dis.status_code == 404, dis.text
 
     # ...and clearable through the env endpoint without touching the DB row.
     cleared = await http.post(

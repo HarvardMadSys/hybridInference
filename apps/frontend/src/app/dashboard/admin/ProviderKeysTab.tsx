@@ -355,7 +355,19 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                       <td className="px-3 py-2 text-gray-500">{formatRelative(k.created_at)}</td>
                       <td className="px-3 py-2 text-right">
                         <div className="flex justify-end gap-1">
-                          {k.source === 'env' ? (
+                          {k.reservation_only ? (
+                            // Listed only to expose its reservation: an active DB row
+                            // holds this same credential and owns enable/disable/
+                            // delete. Disabling the env side would tombstone a hash
+                            // while the key kept serving from that row, which the
+                            // endpoint rejects — so offer no action here.
+                            <span
+                              className="px-2 py-1 text-[12px] text-gray-400"
+                              title="A DB key holds this same credential — manage it on that row. This entry only carries the reservation."
+                            >
+                              reservation only
+                            </span>
+                          ) : k.source === 'env' ? (
                             disabled ? (
                               <button
                                 type="button"

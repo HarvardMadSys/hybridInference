@@ -2242,6 +2242,12 @@ export interface ProviderApiKeyItem {
   status: string;
   created_at: string | null;
   min_role: ProviderKeyMinRole;
+  /**
+   * True for an env entry listed only to expose its tier reservation, because an
+   * active DB row holds the same credential. Only the tier is editable: the DB row
+   * is what enables, disables or deletes the key.
+   */
+  reservation_only?: boolean;
 }
 
 export interface ListProviderApiKeysResponse {

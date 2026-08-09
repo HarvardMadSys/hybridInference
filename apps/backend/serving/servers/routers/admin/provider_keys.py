@@ -227,6 +227,9 @@ async def list_provider_keys(
                         env_min_roles.get(prov, {}),
                         db_min_roles.get(prov, {}),
                     ),
+                    # Surfaced only so its reservation can be seen and lifted; the
+                    # DB row holding the same credential owns enable/disable/delete.
+                    reservation_only=shadowed,
                 )
             )
 
