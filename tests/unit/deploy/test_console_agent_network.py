@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
@@ -75,7 +76,10 @@ def test_the_makefile_adds_the_overlay_only_when_asked() -> None:
     assert "COMPOSE_FILE_ARGS += -f deploy/docker/docker-compose.cloud-agent.yml" in makefile
 
 
-def test_the_network_name_is_read_the_way_compose_reads_it() -> None:
+@pytest.mark.parametrize(
+    "script", [DEPLOY_STAGING, DEPLOY_PRODUCTION], ids=["staging", "production"]
+)
+def test_the_network_name_is_read_the_way_compose_reads_it(script: Path) -> None:
     """Quoting is valid dotenv, and Compose strips it.
 
     A reader that does not inspects a network named ``"cloud-agent"`` — quotes
@@ -83,11 +87,17 @@ def test_the_network_name_is_read_the_way_compose_reads_it() -> None:
     is present, the overlay is omitted anyway, and the symptom is the 500 this
     whole change removes.
 
+    Parametrized over both deploy scripts because each carries its own copy of
+    the detection block (deliberately duplicated, not sourced — the scripts
+    ``git reset --hard`` themselves mid-run), so each can regress alone.
+    #1229 copied the block into production before this fix landed, which is
+    exactly that regression happening in the gap between two PRs.
+
     Runs the real function rather than asserting on its text: extracting the
     definition and calling it is the only way to know the normalisation
     actually happens.
     """
-    source = DEPLOY_STAGING.read_text()
+    source = script.read_text()
     start = source.index("read_env_value() {")
     body = source[start : source.index("\n}\n", start) + 3]
 
