@@ -331,8 +331,17 @@ Two ordering details the declarations depend on:
 Because promotion closes that hole, **route-bound keys now honor `min_role` too**:
 a key pinned via `api_key_id` holds the same secret as any other, and opting a
 route out of global DB *key injection* is not opting it out of tiering. The admin
-list reports the resolved tier for env keys, so what is displayed is what is
-enforced even when a duplicate row declares something else.
+list reports the resolved tier from the persisted declarations, so what is
+displayed is what is enforced — even for a credential a duplicate row declares
+differently, and even before this process has cached that provider's declarations.
+
+**Remaining limit: a provider with no key pool cannot carry a reservation.**
+`min_role` is enforced by `KeyPool`, so it reaches `openai_compat` routes (which
+include local vLLM/SGLang/Ollama) and any single-`api_key` route promoted on
+demand. The dedicated `anthropic`, `claude` and `gemini` adapters hold their
+credential directly and are never registered with `dynamic_keys`, so a reservation
+recorded against one of those providers is stored and never applied. Gate those
+models with the catalog's `required_role` instead.
 
 ## Migration Notes
 
