@@ -3,6 +3,15 @@
 Each adapter that supports multi-key rotation registers itself here at boot
 so the admin endpoints can look up every ``KeyPool`` for a given upstream
 provider and add or remove keys at runtime without restarting the process.
+
+This module is also the single authority on which *tier* each pooled key is
+reserved for. Pools are built from adapter config, which carries no tier, and are
+rebuilt whenever a route is installed or a single-key adapter is promoted — so a
+reservation attached at one call site is a reservation that silently disappears at
+the next. Instead the declarations live here (``_env_key_min_roles`` /
+``_db_key_min_roles``), ``_resolve_min_role_locked`` derives the tier a pool entry
+must enforce, and ``_apply_min_roles_locked`` reconciles the live pools. Every
+path that can create a pool or change a declaration ends in that sweep.
 """
 
 from __future__ import annotations
@@ -13,6 +22,8 @@ import os
 import threading
 from typing import TYPE_CHECKING
 
+from serving.adapters.key_pool import DEFAULT_MIN_ROLE
+from serving.config.settings import ROLE_RANK
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -30,12 +41,15 @@ _known_providers: set[str] = set()
 # env-configured key that happens to share its raw value with a deleted DB row.
 _db_injected_keys: dict[str, set[str]] = {}
 _disabled_env_key_hashes: dict[str, set[str]] = {}
-# Tier reservations for env-sourced keys, per provider: {key_hash: min_role}.
-# Env credentials have no DB row of their own, so — like the disable tombstones
-# above — the reservation is addressed by hash and mirrored in memory here.
-# Absent means unreserved. Applied to pools by ``apply_env_key_min_roles``,
-# which runs at boot and after any path that (re)seeds a static key.
+# Tier declarations, mirrored in memory so a pool can be tiered without a DB read
+# (pools are created inside locks, and runtime route installs create them from a
+# provider's whole key set). Env keys have no row of their own, so — like the
+# disable tombstones above — theirs are addressed by hash; DB rows are addressed
+# by raw value, because that is what a pool entry is keyed on. Absent means "no
+# reservation declared". ``_resolve_min_role_locked`` combines them into the one
+# tier a pool entry enforces; ``_apply_min_roles_locked`` writes it.
 _env_key_min_roles: dict[str, dict[str, str]] = {}
+_db_key_min_roles: dict[str, dict[str, str]] = {}
 _MAX_NUMBERED_ENV_KEYS = 20
 _PROVIDER_ENV_KEY_VARS: dict[str, tuple[str, str]] = {
     "chutes": ("CHUTES_API_KEY", "CHUTES_API_KEY"),
@@ -62,6 +76,7 @@ def reset() -> None:
         _db_injected_keys.clear()
         _disabled_env_key_hashes.clear()
         _env_key_min_roles.clear()
+        _db_key_min_roles.clear()
 
 
 def register_adapter_for_provider(
@@ -74,6 +89,14 @@ def register_adapter_for_provider(
 
     Adapters without a key pool (single-key configurations) may still be
     registered: the admin endpoint will skip them when no pool is present.
+
+    Registration is where stored tier reservations are applied, because it is the
+    one point every adapter passes through — the boot registry load and each
+    runtime route install (``_install_route_update``, ``_install_route_candidate``,
+    ``_install_provider_route_model``). A runtime route with no pinned key builds
+    its pool from the provider's whole key set, all of it untiered, so without this
+    a newly created or replaced route would serve every reserved key to every tier
+    until the next restart.
     """
     with _lock:
         bucket = _adapters_by_provider.setdefault(provider, [])
@@ -84,6 +107,10 @@ def register_adapter_for_provider(
             disabled.discard(id(adapter))
         else:
             disabled.add(id(adapter))
+        # Route-bound adapters are excluded from global DB *key injection*, not
+        # from tiering: the credential they hold is the same secret, and skipping
+        # it would leave a reserved key spendable by anyone on that route.
+        _apply_min_roles_locked(provider)
         _known_providers.add(provider)
 
 
@@ -182,7 +209,7 @@ def is_env_key_disabled(provider: str, key_hash: str) -> bool:
 def env_key_min_role(provider: str, key_hash: str) -> str:
     """Return the tier an env key is reserved for (``"free"`` when unreserved)."""
     with _lock:
-        return _env_key_min_roles.get(provider, {}).get(key_hash, "free")
+        return _env_key_min_roles.get(provider, {}).get(key_hash, DEFAULT_MIN_ROLE)
 
 
 def get_env_key_min_roles(provider: str) -> dict[str, str]:
@@ -191,56 +218,140 @@ def get_env_key_min_roles(provider: str) -> dict[str, str]:
         return dict(_env_key_min_roles.get(provider, {}))
 
 
-def _apply_env_key_min_roles_locked(provider: str) -> int:
-    """Re-tier every live pool key of *provider* to its stored env reservation.
+def _resolve_min_role_locked(provider: str, raw_key: str) -> str:
+    """Return the tier the pool must enforce for *raw_key*.
 
-    Pools are seeded from adapter config at registry load, and re-seeded on every
-    promotion, so the reservation cannot be attached once and forgotten: this
-    sweep is the single place that reconciles pools with the stored map. Keys
-    with no reservation are left alone rather than forced to ``"free"`` — a
-    DB-sourced key in the same pool carries its own tier from its row.
+    A pool holds one ``_KeyState`` per raw value, but the same credential can be
+    declared twice — an env var plus a DB row, or two DB rows — so the tier has to
+    be *derived* from every declaration rather than written by whichever code path
+    touched the pool last. This is that single derivation.
+
+    ``"free"`` is the absence of a declaration, not an assertion that everyone may
+    spend the key, so unreserved sources contribute nothing. Among real
+    declarations the most restrictive wins: reservation exists to hold capacity
+    back, so a conflict resolves in favor of protecting it, and the answer does not
+    depend on the order the sources were configured. Releasing a key back to every
+    tier means clearing its declaration, which is exactly what the min-role
+    endpoints do.
     """
-    roles = _env_key_min_roles.get(provider)
-    if not roles:
-        return 0
+    declared = [
+        role
+        for role in (
+            _db_key_min_roles.get(provider, {}).get(raw_key),
+            _env_key_min_roles.get(provider, {}).get(env_key_hash(raw_key)),
+        )
+        if role is not None and role != DEFAULT_MIN_ROLE
+    ]
+    if not declared:
+        return DEFAULT_MIN_ROLE
+    return max(declared, key=lambda role: ROLE_RANK.get(role, 0))
+
+
+def resolve_key_min_role(provider: str, raw_key: str) -> str:
+    """Return the tier the live pools enforce for *raw_key* (``"free"`` if none).
+
+    The admin list view reports this for env keys so the displayed tier is the one
+    actually enforced, even when a duplicate DB row declares something else.
+    """
+    with _lock:
+        return _resolve_min_role_locked(provider, raw_key)
+
+
+def _apply_min_roles_locked(provider: str) -> int:
+    """Reconcile every live pool of *provider* with the resolved tiers.
+
+    Called from every path that can create a pool or change a declaration —
+    adapter registration, key add/remove, a re-tier, boot seeding — because a pool
+    is seeded from adapter config (which carries no tier) and re-seeded on every
+    promotion. Anything that attaches a key and forgets to reconcile leaves a
+    reserved credential serving every tier until the next restart.
+
+    A pool-less single-``api_key`` adapter is promoted first when a reservation
+    applies to its static key: it otherwise serves that credential through the
+    legacy request path, which never consults a pool, so the reservation would be
+    silently ignored. Promotion is skipped when nothing is reserved, leaving the
+    cheaper legacy path in place for the overwhelmingly common case. (Same move
+    the disable-env path makes for tombstoned keys.)
+
+    Returns the number of pool entries whose tier changed.
+    """
     updated = 0
-    for pool in _pools_for_provider_locked(provider):
-        for raw in pool.snapshot_keys():
-            role = roles.get(env_key_hash(raw))
-            if role is not None and pool.set_key_min_role(raw, role):
+    for adapter in _adapters_by_provider.get(provider, []):
+        pool = getattr(adapter, "_key_pool", None)
+        if pool is None:
+            statics = _gather_static_keys(adapter)
+            if not any(_resolve_min_role_locked(provider, k) != DEFAULT_MIN_ROLE for k in statics):
+                continue
+            ensure = getattr(adapter, "ensure_key_pool", None)
+            if not callable(ensure):
+                logger.warning(
+                    "dynamic_keys: provider=%s has a reserved static key on an adapter that "
+                    "cannot be promoted to a key pool; the reservation is NOT enforced there",
+                    provider,
+                )
+                continue
+            pool = ensure()
+            if pool is None:
+                continue
+        current = pool.snapshot_min_roles()
+        for raw, role in current.items():
+            resolved = _resolve_min_role_locked(provider, raw)
+            if resolved != role and pool.set_key_min_role(raw, resolved):
                 updated += 1
     return updated
 
 
-def apply_env_key_min_roles(provider: str) -> int:
-    """Public wrapper for the env reservation sweep. Returns keys re-tiered."""
+def apply_min_roles(provider: str) -> int:
+    """Public wrapper for the tier reconciliation sweep. Returns entries changed."""
     with _lock:
-        return _apply_env_key_min_roles_locked(provider)
+        return _apply_min_roles_locked(provider)
+
+
+def _pools_holding_hash_locked(provider: str, key_hash: str) -> int:
+    """Count live pools holding a key whose hash is *key_hash*."""
+    return sum(
+        1
+        for pool in _pools_for_provider_locked(provider)
+        if any(env_key_hash(raw) == key_hash for raw in pool.snapshot_keys())
+    )
 
 
 def set_env_key_min_role(provider: str, key_hash: str, min_role: str) -> int:
-    """Record an env key's reservation and apply it to the live pools.
+    """Record an env key's reservation and reconcile the live pools.
 
     Tracked by hash so the reservation survives the raw key leaving the pool
     (disabled, or its env var removed) and is re-applied when it comes back.
-    Returns the number of live pool entries re-tiered — 0 is normal for a key
-    that is currently disabled.
+    Returns the number of live pools holding that key — 0 is normal for a key that
+    is currently disabled or served by an adapter that has no pool yet.
     """
     with _lock:
-        bucket = _env_key_min_roles.setdefault(provider, {})
-        if min_role == "free":
-            bucket.pop(key_hash, None)
-        else:
-            bucket[key_hash] = min_role
-        if not bucket:
-            _env_key_min_roles.pop(provider, None)
+        _record_declaration_locked(_env_key_min_roles, provider, key_hash, min_role)
+        _apply_min_roles_locked(provider)
+        return _pools_holding_hash_locked(provider, key_hash)
 
-        updated = 0
-        for pool in _pools_for_provider_locked(provider):
-            for raw in pool.snapshot_keys():
-                if env_key_hash(raw) == key_hash and pool.set_key_min_role(raw, min_role):
-                    updated += 1
-        return updated
+
+def pools_holding_key(provider: str, raw_key: str) -> int:
+    """Count live pools of *provider* holding *raw_key*."""
+    with _lock:
+        return sum(
+            1 for pool in _pools_for_provider_locked(provider) if raw_key in pool.snapshot_keys()
+        )
+
+
+def _record_declaration_locked(
+    store: dict[str, dict[str, str]],
+    provider: str,
+    key: str,
+    min_role: str,
+) -> None:
+    """Set or clear one tier declaration. ``"free"`` clears it (see the resolver)."""
+    bucket = store.setdefault(provider, {})
+    if min_role == DEFAULT_MIN_ROLE:
+        bucket.pop(key, None)
+    else:
+        bucket[key] = min_role
+    if not bucket:
+        store.pop(provider, None)
 
 
 def load_env_key_min_roles(provider: str, roles: dict[str, str]) -> None:
@@ -250,7 +361,30 @@ def load_env_key_min_roles(provider: str, roles: dict[str, str]) -> None:
             _env_key_min_roles[provider] = dict(roles)
         else:
             _env_key_min_roles.pop(provider, None)
-        _apply_env_key_min_roles_locked(provider)
+        _apply_min_roles_locked(provider)
+
+
+def load_db_key_min_roles(provider: str, roles: dict[str, str]) -> None:
+    """Replace the cached DB-row declarations (``{raw_key: min_role}``) and reconcile.
+
+    The ``provider_api_keys`` table is the authority; this is its in-process cache,
+    refreshed from ``list_provider_key_min_roles`` at boot and after every admin
+    mutation. Caching matters because a pool can be created without a DB read in
+    reach — a runtime route install builds one from the provider's whole key set
+    inside the registry lock — and because two rows can declare tiers for the same
+    raw value, which only the store can collapse correctly.
+
+    Whole-map replacement, not a merge: a row that stopped declaring a tier (or
+    stopped existing) has to disappear from the cache, or its reservation would
+    outlive it.
+    """
+    with _lock:
+        declared = {k: v for k, v in roles.items() if v and v != DEFAULT_MIN_ROLE}
+        if declared:
+            _db_key_min_roles[provider] = declared
+        else:
+            _db_key_min_roles.pop(provider, None)
+        _apply_min_roles_locked(provider)
 
 
 def list_candidate_env_keys(provider: str) -> list[str]:
@@ -347,7 +481,7 @@ def disable_env_key_for_provider(provider: str, key: str, key_hash: str) -> int:
             if pool.remove_key(key):
                 updated += 1
         # Promotion above re-seeds the adapter's other statics as unreserved.
-        _apply_env_key_min_roles_locked(provider)
+        _apply_min_roles_locked(provider)
         return updated
 
 
@@ -355,7 +489,6 @@ def _attach_key_to_adapter_locked(
     adapter: object,
     key: str,
     disabled_hashes: set[str],
-    min_role: str | None = None,
 ) -> bool:
     """Attach *key* to a single adapter, promoting it to a pool if needed.
 
@@ -365,9 +498,12 @@ def _attach_key_to_adapter_locked(
     expose a pool but predate ``add_runtime_key`` fall back to ``add_key``.
     Returns True when the key was attached.
 
-    ``min_role`` carries the key's tier reservation (None = shared by every
-    tier), so a key added or re-enabled at runtime lands in the pool at the tier
-    it was persisted with instead of being silently demoted to shared.
+    Deliberately tier-blind: the key lands unreserved and the caller's
+    ``_apply_min_roles_locked`` sweep sets the resolved tier. Writing a tier here
+    as well made the outcome depend on write order — attaching a DB key whose
+    value duplicates a reserved env key applied the row's tier and then had the
+    env reservation overwrite it, so the API reported one tier while the pool
+    enforced another.
 
     Promotion re-seeds the adapter's static ``api_key`` into the new pool. If
     an admin has disabled that env key (tracked by hash), it must not silently
@@ -376,13 +512,13 @@ def _attach_key_to_adapter_locked(
     """
     pool = getattr(adapter, "_key_pool", None)
     if pool is not None:
-        pool.add_key(key, min_role=min_role)
+        pool.add_key(key)
         attached = True
     else:
         attach = getattr(adapter, "add_runtime_key", None)
         if not callable(attach):
             return False
-        attached = bool(attach(key, min_role=min_role))
+        attached = bool(attach(key))
         pool = getattr(adapter, "_key_pool", None)
     if attached and pool is not None and disabled_hashes:
         for existing in pool.snapshot_keys():
@@ -472,7 +608,7 @@ def enforce_disabled_static_keys(provider: str, disabled_hashes: set[str]) -> No
                 if env_key_hash(existing) in disabled_hashes:
                     pool.remove_key(existing)
         # Any pool created above starts unreserved; restore stored reservations.
-        _apply_env_key_min_roles_locked(provider)
+        _apply_min_roles_locked(provider)
 
 
 def enable_env_key_for_provider(provider: str, key_hash: str) -> int:
@@ -493,9 +629,6 @@ def enable_env_key_for_provider(provider: str, key_hash: str) -> int:
         raw = _find_env_key_by_hash_locked(provider, key_hash)
         if raw is None:
             return 0
-        # Re-enter at the tier the key was reserved for — the reservation is
-        # tracked by hash precisely so a disable/enable cycle cannot demote it.
-        min_role = _env_key_min_roles.get(provider, {}).get(key_hash, "free")
         updated = 0
         for adapter in _adapters_by_provider.get(provider, []):
             if raw not in _gather_static_keys(adapter):
@@ -508,9 +641,11 @@ def enable_env_key_for_provider(provider: str, key_hash: str) -> int:
                 pool = ensure()
                 if pool is None:
                     continue
-            pool.add_key(raw, min_role=min_role)
+            pool.add_key(raw)
             updated += 1
-        _apply_env_key_min_roles_locked(provider)
+        # The sweep restores the tier this key was reserved for: the reservation is
+        # tracked by hash precisely so a disable/enable cycle cannot demote it.
+        _apply_min_roles_locked(provider)
         return updated
 
 
@@ -526,15 +661,18 @@ def add_key_to_provider(provider: str, key: str, min_role: str | None = None) ->
     first runtime key (seeded with the original key), so dashboard-added keys
     are used without requiring the route to pre-declare ``api_keys``.
 
-    ``min_role`` reserves the key for that role and above; None (the default)
-    leaves it shared by every tier, and on a re-add leaves an existing slot's
-    reservation untouched.
+    ``min_role`` records the DB row's tier declaration for *key*; None leaves any
+    existing declaration alone (a re-add). The tier the pool ends up enforcing is
+    always the resolved one — another source declaring a stricter tier for the same
+    raw value wins, so a duplicate cannot be quietly widened.
 
     The key is tracked as DB-injected so a future ``remove_key_from_provider``
     call can distinguish it from env-configured keys that happen to share
     the same raw value.
     """
     with _lock:
+        if min_role is not None:
+            _record_declaration_locked(_db_key_min_roles, provider, key, min_role)
         adapters = _adapters_by_provider.get(provider, [])
         # Route-bound adapters opt out of global DB-key injection — a DB key
         # added for the whole provider must not land on a route reserved for a
@@ -545,26 +683,14 @@ def add_key_to_provider(provider: str, key: str, min_role: str | None = None) ->
             1
             for adapter in adapters
             if id(adapter) not in disabled_ids
-            and _attach_key_to_adapter_locked(adapter, key, disabled, min_role)
+            and _attach_key_to_adapter_locked(adapter, key, disabled)
         )
         _db_injected_keys.setdefault(provider, set()).add(key)
-        # Attaching may have promoted a single-``api_key`` adapter to a pool,
-        # re-seeding its env static as unreserved — re-apply the stored env
-        # reservations so a promotion cannot silently un-reserve a key.
-        _apply_env_key_min_roles_locked(provider)
+        # Attaching leaves keys untiered and may have promoted a single-``api_key``
+        # adapter to a pool, re-seeding its static as untiered too. One sweep sets
+        # every entry to its resolved tier.
+        _apply_min_roles_locked(provider)
         return attached
-
-
-def set_key_min_role_for_provider(provider: str, key: str, min_role: str) -> int:
-    """Re-tier a live key in every pool for *provider*, returning pools updated.
-
-    Applies an admin's reservation change without a restart. A pool that does
-    not hold the key is skipped, so this is safe to call for a key that is
-    currently disabled (it picks up the new tier when re-enabled).
-    """
-    with _lock:
-        pools = _pools_for_provider_locked(provider)
-        return sum(1 for pool in pools if pool.set_key_min_role(key, min_role))
 
 
 def mark_db_key_for_provider(provider: str, key: str) -> None:
@@ -621,11 +747,12 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
     with _lock:
         providers = list(_known_providers)
 
-    # Env-key tier reservations first, and outside the route-bound guard below:
-    # pools were already seeded with env keys at registry load, so a DB fault
-    # that skips DB-key seeding must not also leave a reserved env key serving
-    # every tier. ``load_env_key_min_roles`` applies them to the live pools; the
-    # later seeding paths re-apply after any pool promotion.
+    # Tier declarations first, and outside the route-bound guard below: pools were
+    # already seeded from adapter config at registry load, so a DB fault that skips
+    # DB-key seeding must not also leave a reserved key serving every tier. Loading
+    # them here also means a route installed later — which builds its pool from the
+    # provider's whole key set — can be tiered from memory, with no DB read inside
+    # the registry lock.
     for provider in providers:
         try:
             env_min_roles = await operational_store.list_provider_env_key_min_roles(provider)
@@ -636,12 +763,30 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
                 provider,
                 exc,
             )
+        else:
+            if env_min_roles:
+                load_env_key_min_roles(provider, env_min_roles)
+                logger.info(
+                    "dynamic_keys: applied %d env key tier reservation(s) for provider=%s",
+                    len(env_min_roles),
+                    provider,
+                )
+        try:
+            db_min_roles = await operational_store.list_provider_key_min_roles(provider)
+        except Exception as exc:
+            logger.warning(
+                "dynamic_keys: failed to load DB key tier reservations for provider=%s; "
+                "those keys stay unreserved: %s",
+                provider,
+                exc,
+            )
             continue
-        if env_min_roles:
-            load_env_key_min_roles(provider, env_min_roles)
+        reserved = {k: v for k, v in db_min_roles.items() if v and v != DEFAULT_MIN_ROLE}
+        if reserved:
+            load_db_key_min_roles(provider, reserved)
             logger.info(
-                "dynamic_keys: applied %d env key tier reservation(s) for provider=%s",
-                len(env_min_roles),
+                "dynamic_keys: applied %d DB key tier reservation(s) for provider=%s",
+                len(reserved),
                 provider,
             )
 
@@ -689,25 +834,11 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
             continue
         if not keys:
             continue
-        # Tier reservations are looked up alongside the raw keys. A failure here
-        # is not fatal: seeding the keys as shared keeps inference working, which
-        # matters more than honoring a reservation the DB would not hand over.
-        try:
-            min_roles = await operational_store.list_provider_key_min_roles(
-                provider,
-                exclude_ids=route_bound_key_ids,
-            )
-        except Exception as exc:
-            logger.warning(
-                "dynamic_keys: failed to load key tier reservations for provider=%s; "
-                "seeding keys as unreserved: %s",
-                provider,
-                exc,
-            )
-            min_roles = {}
+        # No tier argument: the declarations were loaded above, and every
+        # ``add_key_to_provider`` ends in the reconciliation sweep that applies them.
         added = 0
         for key in keys:
-            added += add_key_to_provider(provider, key, min_roles.get(key))
+            added += add_key_to_provider(provider, key)
         if added:
             logger.info(
                 "dynamic_keys: seeded %d DB key(s) into provider=%s pools",

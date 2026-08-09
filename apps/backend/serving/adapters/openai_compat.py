@@ -232,7 +232,7 @@ class OpenAICompatAdapter(BaseAdapter):
         self._key_pool = KeyPool(keys=seed, provider_label=self._key_pool_provider_label)
         return self._key_pool
 
-    def add_runtime_key(self, key: str, *, min_role: str | None = None) -> bool:
+    def add_runtime_key(self, key: str) -> bool:
         """Attach a runtime-managed API key, creating the pool if needed.
 
         Single-key adapters are constructed without a ``KeyPool`` (the legacy
@@ -243,9 +243,9 @@ class OpenAICompatAdapter(BaseAdapter):
         request path reads ``self._key_pool`` per request, so the promotion is
         picked up without a restart.
 
-        ``min_role`` reserves the new key for that tier and above; the adapter's
-        own static key is always seeded unreserved, since a route configured
-        with a single env credential must keep serving every tier.
+        Keys land untiered: ``dynamic_keys`` owns tier reservations and sweeps the
+        pool right after attaching, so a tier written here would only be a second
+        writer racing that one.
 
         Returns True once the key is attached (always, for pool-capable
         adapters).
@@ -260,13 +260,9 @@ class OpenAICompatAdapter(BaseAdapter):
                 seed.append(static.strip())
             if normalized not in seed:
                 seed.append(normalized)
-            self._key_pool = KeyPool(
-                keys=seed,
-                provider_label=self._key_pool_provider_label,
-                min_roles={normalized: min_role} if min_role else None,
-            )
+            self._key_pool = KeyPool(keys=seed, provider_label=self._key_pool_provider_label)
             return True
-        self._key_pool.add_key(normalized, min_role=min_role)
+        self._key_pool.add_key(normalized)
         return True
 
     def _apply_supported_passthrough_params(

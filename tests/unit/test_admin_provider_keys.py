@@ -20,6 +20,7 @@ from serving.admin.provider_key_probe import (
     probe_error_detail,
     probe_error_reason,
 )
+from serving.config.settings import ROLE_RANK
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
 from serving.storage.base import ProviderKeyRow
@@ -158,12 +159,18 @@ class _StubStore:
         *,
         exclude_ids: set[str] | None = None,
     ) -> dict[str, str]:
+        # Mirrors the store contract: keyed by raw value, most restrictive tier
+        # wins when two rows declare different tiers for the same credential.
         excluded = exclude_ids or set()
-        return {
-            raw: self.rows[kid].min_role
-            for kid, raw in self.raw.get(provider, [])
-            if kid not in excluded and kid in self.rows and self.rows[kid].status == "active"
-        }
+        strictest: dict[str, str] = {}
+        for kid, raw in self.raw.get(provider, []):
+            if kid in excluded or kid not in self.rows or self.rows[kid].status != "active":
+                continue
+            role = self.rows[kid].min_role
+            current = strictest.get(raw)
+            if current is None or ROLE_RANK.get(role, 0) > ROLE_RANK.get(current, 0):
+                strictest[raw] = role
+        return strictest
 
     async def get_provider_key_min_role(self, key_id: str) -> str | None:
         row = self.rows.get(key_id)
@@ -2084,8 +2091,13 @@ async def test_removing_a_reserved_duplicate_restores_the_env_tier(client):
 
 
 @pytest.mark.asyncio
-async def test_deleting_a_duplicate_keeps_the_surviving_rows_tier(client):
-    """With two DB rows on one value, deleting one leaves the survivor's tier."""
+async def test_two_rows_on_one_value_enforce_the_strictest_tier(client):
+    """The pool holds one entry per value, so duplicate rows resolve, not race.
+
+    Most restrictive wins while both rows are active — a second row must not be
+    able to widen access to a credential the first one reserved — and removing a
+    row drops only that row's declaration.
+    """
     http, _store = client
     shared = "sk-zai-dup-llllllllllll"
     pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
@@ -2093,24 +2105,33 @@ async def test_deleting_a_duplicate_keeps_the_surviving_rows_tier(client):
     adapter._key_pool = pool
     dynamic_keys.register_adapter_for_provider("zai", adapter)
 
-    first = await http.post(
+    strict = await http.post(
         "/admin/provider-keys",
         json={"provider": "zai", "api_key": shared, "min_role": "internal"},
         headers=AUTH,
     )
-    second = await http.post(
+    assert strict.status_code == 201, strict.text
+    assert pool.snapshot_min_roles()[shared] == "internal"
+
+    # Adding a laxer duplicate does not widen the credential.
+    lax = await http.post(
         "/admin/provider-keys",
         json={"provider": "zai", "api_key": shared, "min_role": "pro"},
         headers=AUTH,
     )
-    assert pool.snapshot_min_roles()[shared] == "pro"
+    assert lax.status_code == 201, lax.text
+    assert pool.snapshot_min_roles()[shared] == "internal"
 
-    # Delete the pro row: the internal row still owns the value.
-    dele = await http.delete(f"/admin/provider-keys/{second.json()['key']['id']}", headers=AUTH)
+    # Dropping the strict row leaves the laxer survivor's tier.
+    dele = await http.delete(f"/admin/provider-keys/{strict.json()['key']['id']}", headers=AUTH)
     assert dele.status_code == 200, dele.text
     assert shared in pool.snapshot_keys()
-    assert pool.snapshot_min_roles()[shared] == "internal"
-    assert first.status_code == 201
+    assert pool.snapshot_min_roles()[shared] == "pro"
+
+    # Dropping the last row takes the key out of rotation entirely.
+    dele2 = await http.delete(f"/admin/provider-keys/{lax.json()['key']['id']}", headers=AUTH)
+    assert dele2.status_code == 200, dele2.text
+    assert shared not in pool.snapshot_keys()
 
 
 @pytest.mark.asyncio
@@ -2135,3 +2156,184 @@ async def test_removing_a_sole_source_key_does_not_reconcile(client):
 
     entry = next(e for e in store.audit if e.get("action") == "disable_provider_key")
     assert entry["details"]["reconciled_min_role"] is None
+
+
+@pytest.mark.asyncio
+async def test_reserving_an_env_key_promotes_a_pool_less_adapter(client):
+    """A single-``api_key`` route must not keep serving a reserved key to everyone.
+
+    Such an adapter has no pool at all and serves ``config.api_key`` through the
+    legacy request path, which never consults one — so the reservation would
+    persist, report success, and change nothing.
+    """
+    http, store = client
+    env_key = "env-zai-legacy-nnnnnnnnnnnn"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="legacy-tier-model",
+            name="legacy-tier-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_key=env_key,  # single static key: no pool
+            provider_model_id="legacy-tier-model",
+        )
+    )
+    assert adapter._key_pool is None
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    env_id = f"env:{dynamic_keys.env_key_hash(env_key)[:32]}"
+    resp = await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "pro"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    # Promoted to a pool so the tier is actually enforced.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool.snapshot_min_roles()[env_key] == "pro"
+    assert resp.json()["pools_updated"] == 1
+    assert store.env_min_roles[("zai", dynamic_keys.env_key_hash(env_key))] == "pro"
+
+
+@pytest.mark.asyncio
+async def test_unreserved_env_key_leaves_the_legacy_path_alone(client):
+    """Promotion is only for keys that are actually reserved."""
+    http, _store = client
+    env_key = "env-zai-plain-oooooooooooo"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="plain-model",
+            name="plain-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_key=env_key,
+            provider_model_id="plain-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    env_id = f"env:{dynamic_keys.env_key_hash(env_key)[:32]}"
+    # Setting (and clearing) "free" declares nothing, so nothing is promoted.
+    resp = await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "free"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert adapter._key_pool is None
+
+
+@pytest.mark.asyncio
+async def test_boot_reservation_promotes_a_pool_less_adapter(client):
+    """Same gap at boot: a reservation stored earlier must reach the legacy path."""
+    _http, store = client
+    env_key = "env-zai-bootlegacy-pppppppppppp"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="boot-legacy-model",
+            name="boot-legacy-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_key=env_key,
+            provider_model_id="boot-legacy-model",
+        )
+    )
+    assert adapter._key_pool is None
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    store.env_min_roles[("zai", dynamic_keys.env_key_hash(env_key))] = "pro"
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    assert adapter._key_pool is not None
+    assert adapter._key_pool.snapshot_min_roles()[env_key] == "pro"
+
+
+@pytest.mark.asyncio
+async def test_a_route_registered_later_inherits_stored_reservations(client):
+    """A runtime route builds its pool from untiered key material.
+
+    Installing one registers the adapter, which is where reservations are applied;
+    without that the new route would serve every reserved key to every tier until
+    the process restarted.
+    """
+    _http, _store = client
+    env_key = "env-zai-newroute-qqqqqqqqqqqq"
+    db_key = "sk-zai-newroute-rrrrrrrrrrrr"
+
+    # Reservations already known to this process — the state boot leaves behind.
+    dynamic_keys.load_env_key_min_roles("zai", {dynamic_keys.env_key_hash(env_key): "pro"})
+    dynamic_keys.load_db_key_min_roles("zai", {db_key: "internal"})
+
+    # An admin creates a route with no pinned key: the pool is built from the
+    # provider's whole key set, all of it untiered.
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="new-route-model",
+            name="new-route-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[env_key, db_key],
+            provider_model_id="new-route-model",
+        )
+    )
+    assert adapter._key_pool.snapshot_min_roles() == {env_key: "free", db_key: "free"}
+
+    dynamic_keys.register_adapter_for_provider("zai", adapter, allow_db_key_injection=True)
+
+    assert adapter._key_pool.snapshot_min_roles() == {env_key: "pro", db_key: "internal"}
+
+
+@pytest.mark.asyncio
+async def test_route_bound_adapter_still_honors_a_reservation(client):
+    """Opting out of DB *key injection* is not opting out of tiering.
+
+    A route pinned to one key holds the same secret as everyone else; leaving it
+    untiered would be a way to spend a reserved credential from any tier.
+    """
+    _http, _store = client
+    db_key = "sk-zai-pinned-ssssssssssss"
+    dynamic_keys.load_db_key_min_roles("zai", {db_key: "pro"})
+
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="pinned-model",
+            name="pinned-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[db_key],
+            provider_model_id="pinned-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter, allow_db_key_injection=False)
+
+    assert adapter._key_pool.snapshot_min_roles()[db_key] == "pro"
+
+
+@pytest.mark.asyncio
+async def test_adding_a_duplicate_does_not_overwrite_a_stricter_env_reservation(client):
+    """Regression: the post-attach sweep used to clobber the tier the row declared.
+
+    Reported symptom was the mirror of it — the API reporting one tier while the
+    pool enforced another. Both directions now resolve to the same answer.
+    """
+    http, _store = client
+    shared = "env-zai-both-tttttttttttt"
+    adapter = _env_adapter("zai", [shared])
+    env_id = f"env:{dynamic_keys.env_key_hash(shared)[:32]}"
+
+    await http.post(
+        "/admin/provider-keys/min-role-env",
+        json={"provider": "zai", "env_key_id": env_id, "min_role": "internal"},
+        headers=AUTH,
+    )
+    assert adapter._key_pool.snapshot_min_roles()[shared] == "internal"
+
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared, "min_role": "pro"},
+        headers=AUTH,
+    )
+    assert add.status_code == 201, add.text
+    # The stricter env reservation wins, and the list view reports what is enforced.
+    assert adapter._key_pool.snapshot_min_roles()[shared] == "internal"
+    assert dynamic_keys.resolve_key_min_role("zai", shared) == "internal"

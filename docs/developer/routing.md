@@ -272,18 +272,52 @@ membership comes from each route's `api_keys` in `models.yaml`, which need not b
 one of the `<PROVIDER>_API_KEY` vars, so an env-var-per-key convention would not
 cover every configured key.
 
-**Duplicate raw values.** A pool holds one entry per raw key, so a value
-configured twice (env credential plus a DB row, or two DB rows) shares one
-`min_role`. Adding a row applies that row's tier — an explicit admin choice — but
-disabling or deleting one source re-derives the tier from the sources that
-survive, most permissive winning, since they all name the same secret. Otherwise
-dropping a `pro` duplicate of a shared env key would leave the env credential
-`pro`-only until the next restart.
+### One authority for the enforced tier
 
-One remaining limit: **route-bound keys ignore `min_role`.** A key pinned to a
-provider route via `api_key_id` is handed to that route's adapter directly rather
-than through the shared pool, so access is governed by the model's
-`required_role` instead.
+Pools are built from adapter config, which carries no tier, and are rebuilt often —
+a route install, a single-key adapter promoted by a runtime key, a re-enabled env
+key. A tier written at one of those call sites is a tier that silently disappears
+at the next, so `dynamic_keys` owns the whole question instead:
+
+- **Declarations** are cached per provider — `_env_key_min_roles` (by key hash,
+  from `provider_env_key_min_roles`) and `_db_key_min_roles` (by raw value, from
+  `provider_api_keys.min_role`). Both are refreshed from the DB, which stays the
+  authority: at boot, and after every admin mutation.
+- **`_resolve_min_role_locked`** derives the tier a pool entry must enforce. A pool
+  holds one entry per raw value, so a credential configured twice (env var plus a
+  DB row, or two DB rows) has to resolve rather than race. `free` is the *absence*
+  of a declaration, not an assertion that everyone may spend the key, so
+  unreserved sources contribute nothing; among real declarations the **most
+  restrictive wins**. Adding a laxer duplicate therefore cannot widen access to a
+  reserved credential, and the result does not depend on configuration order.
+  Releasing a key means clearing its declaration, which is what the min-role
+  endpoints do.
+- **`_apply_min_roles_locked`** reconciles the live pools, and every path that can
+  create a pool or change a declaration ends in it — including
+  `register_adapter_for_provider`, the one point both the boot registry load and
+  each runtime route install pass through. Without that, a route created with no
+  pinned key builds its pool from the provider's whole (untiered) key set and
+  serves every reserved key to every tier until the next restart.
+- **Pool-less adapters are promoted** when — and only when — a reservation applies
+  to their static key. A single-`api_key` route otherwise serves that credential
+  through the legacy request path, which never consults a pool, so the reservation
+  would persist, report success, and change nothing. Unreserved keys keep the
+  cheaper legacy path, which is why the trigger is narrow: promotion moves that
+  route onto the pooled path, where failures mute the key and rotate (5-minute
+  cooldown, sole-key backoff) instead of returning the provider's error directly.
+
+Reserving a key is therefore a decision to *withhold* capacity, and it is now
+visible rather than silent: a lower-tier caller on a route whose keys are all
+reserved gets a `KeyPoolRoleRestricted` and fails over to the next provider
+instead of quietly spending the reserved credential. Boot order supports this —
+`apply_db_keys_at_boot` loads the declaration caches before persisted routes are
+restored, so a restored route registers into an already-populated cache.
+
+Because promotion closes that hole, **route-bound keys now honor `min_role` too**:
+a key pinned via `api_key_id` holds the same secret as any other, and opting a
+route out of global DB *key injection* is not opting it out of tiering. The admin
+list reports the resolved tier for env keys, so what is displayed is what is
+enforced even when a duplicate row declares something else.
 
 ## Migration Notes
 

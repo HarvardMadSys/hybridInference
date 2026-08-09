@@ -12,7 +12,7 @@ import os
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving import grants
-from serving.config.settings import VALID_ROLES
+from serving.config.settings import ROLE_RANK, VALID_ROLES
 from serving.exceptions import DuplicateAPIKeyError
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 from serving.utils.logging import get_logger
@@ -3451,7 +3451,13 @@ class PostgresOperationalStore(OperationalStore):
         *,
         exclude_ids: set[str] | None = None,
     ) -> dict[str, str]:
-        """Return ``{raw_key: min_role}`` for active keys of *provider*."""
+        """Return ``{raw_key: min_role}`` for active keys of *provider*.
+
+        Keyed by raw value because that is what a live pool entry is keyed on, and
+        two rows may hold the same credential. When they disagree the most
+        restrictive tier is returned: the pool can only enforce one, and a
+        reservation is a constraint to honor rather than one to average away.
+        """
         excluded = sorted(exclude_ids or set())
         async with self._pool.acquire() as conn:
             if excluded:
@@ -3470,7 +3476,14 @@ class PostgresOperationalStore(OperationalStore):
                     "ORDER BY created_at ASC",
                     provider,
                 )
-        return {r["api_key"]: (r["min_role"] or "free") for r in rows}
+        strictest: dict[str, str] = {}
+        for row in rows:
+            raw = row["api_key"]
+            role = row["min_role"] or "free"
+            current = strictest.get(raw)
+            if current is None or ROLE_RANK.get(role, 0) > ROLE_RANK.get(current, 0):
+                strictest[raw] = role
+        return strictest
 
     async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
         """Return ``(provider, raw_key)`` for *key_id*, or None if absent."""

@@ -12,7 +12,6 @@ from serving.admin.provider_key_probe import (
     ProviderKeyProbeError,
     probe_provider_key_with_existing_route,
 )
-from serving.config.settings import ROLE_RANK
 from serving.schemas_admin import (
     AddProviderApiKeyRequest,
     AddProviderApiKeyResponse,
@@ -184,7 +183,10 @@ async def list_provider_keys(
                     source="env",
                     status="active",
                     created_at=None,
-                    min_role=env_min_roles.get(prov, {}).get(raw_hash, "free"),  # type: ignore[arg-type]
+                    # The tier the pool actually enforces, which is the resolved
+                    # one — a duplicate DB row declaring something stricter for the
+                    # same credential must not be reported as the shared value.
+                    min_role=dynamic_keys.resolve_key_min_role(prov, raw),  # type: ignore[arg-type]
                 )
             )
 
@@ -280,11 +282,11 @@ async def add_provider_key(
         min_role=payload.min_role,
     )
 
-    pools_updated = dynamic_keys.add_key_to_provider(
-        payload.provider,
-        api_key,
-        payload.min_role,
-    )
+    # Refresh the tier cache from the row just written, then attach: the attach
+    # ends in the reconciliation sweep, so the key enters the pools already at its
+    # resolved tier rather than untiered for a window.
+    await _refresh_db_key_tiers(op_store, payload.provider)
+    pools_updated = dynamic_keys.add_key_to_provider(payload.provider, api_key)
     if pools_updated == 0:
         # The key is persisted but no live adapter accepted it, so it will not
         # be used for inference. Surface it loudly instead of reporting success.
@@ -446,41 +448,27 @@ async def enable_provider_env_key(
     )
 
 
-async def _reconcile_shared_key_tier(op_store, provider: str, raw_key: str) -> str | None:
-    """Re-derive a shared raw key's tier from whichever sources still own it.
+async def _refresh_db_key_tiers(op_store, provider: str) -> None:
+    """Re-read the provider's DB-declared tiers and reconcile the live pools.
 
-    A raw value can be configured twice — an env credential plus a DB row, or two
-    DB rows — and the pool holds it once, so all of them share a single
-    ``min_role``. Disabling or deleting one source therefore leaves that source's
-    reservation behind: dropping a ``pro`` DB duplicate of a shared env key would
-    otherwise keep the env credential ``pro``-only until the next restart.
-
-    The surviving sources decide, and the most permissive one wins: they all name
-    the same secret, so a source that says "every tier may spend this" is a source
-    that makes it spendable. Returns the tier applied, or None when no source
-    survives (the caller is removing the key from the pool anyway).
+    Called after every mutation that can change them (add, re-tier, disable,
+    enable, delete). The table is the authority — reading it back is what makes two
+    rows declaring tiers for one raw value resolve correctly, and what stops a
+    departing row's reservation from outliving it. A failure here leaves the pools
+    on their previous tiers, which is the safe direction: the persisted state is
+    already correct and the next mutation or restart re-applies it.
     """
-    tiers: list[str] = []
     try:
-        db_tiers = await op_store.list_provider_key_min_roles(provider)
+        tiers = await op_store.list_provider_key_min_roles(provider)
     except Exception as exc:
-        # Leave the tier as-is rather than guessing from half the picture: a
-        # wrong reconciliation here either leaks reserved capacity or strands it.
         logger.warning(
-            "failed to reload provider key tiers for %r while reconciling a shared key: %s",
+            "failed to refresh DB key tier reservations for provider=%r; "
+            "live pools keep their current tiers: %s",
             provider,
             exc,
         )
-        return None
-    if raw_key in db_tiers:
-        tiers.append(db_tiers[raw_key])
-    if dynamic_keys.is_active_env_static_key(provider, raw_key):
-        tiers.append(dynamic_keys.env_key_min_role(provider, dynamic_keys.env_key_hash(raw_key)))
-    if not tiers:
-        return None
-    effective = min(tiers, key=lambda role: ROLE_RANK.get(role, 0))
-    dynamic_keys.set_key_min_role_for_provider(provider, raw_key, effective)
-    return effective
+        return
+    dynamic_keys.load_db_key_min_roles(provider, tiers)
 
 
 async def _resolve_env_key_id(
@@ -883,9 +871,11 @@ async def disable_provider_key(
     # The pool keeps one entry per raw value, so this row's reservation outlives
     # it when another source shares the value — re-derive the tier from what is
     # left instead of stranding a restriction nobody owns any more.
-    reconciled_min_role = (
-        await _reconcile_shared_key_tier(op_store, provider, raw_key) if shared else None
-    )
+    # Drop this row's tier declaration either way: a stale one would re-apply if the
+    # same credential is added back later. Only report it when the value survives
+    # through another source, where the resolved tier is what the pool now enforces.
+    await _refresh_db_key_tiers(op_store, provider)
+    reconciled_min_role = dynamic_keys.resolve_key_min_role(provider, raw_key) if shared else None
 
     await log_admin_action(
         op_store,
@@ -928,10 +918,11 @@ async def enable_provider_key(
     if not updated:
         raise HTTPException(404, f"Provider key {key_id!r} not found")
 
-    # Re-inject at the tier the row was reserved for — re-enabling a pro-only key
-    # must not quietly hand it back to every tier.
-    min_role = await op_store.get_provider_key_min_role(key_id)
-    pools_updated = dynamic_keys.add_key_to_provider(provider, raw_key, min_role)
+    # Re-enter at the tier the row was reserved for — re-enabling a pro-only key
+    # must not quietly hand it back to every tier. The row counts as active again,
+    # so refreshing before the attach is what makes its tier visible to the sweep.
+    await _refresh_db_key_tiers(op_store, provider)
+    pools_updated = dynamic_keys.add_key_to_provider(provider, raw_key)
     if pools_updated == 0:
         logger.warning(
             "provider key %r re-enabled but attached to 0 pools for provider %r",
@@ -988,11 +979,8 @@ async def set_provider_key_min_role(
     if not updated:
         raise HTTPException(404, f"Provider key {key_id!r} not found")
 
-    pools_updated = dynamic_keys.set_key_min_role_for_provider(
-        provider,
-        raw_key,
-        payload.min_role,
-    )
+    await _refresh_db_key_tiers(op_store, provider)
+    pools_updated = dynamic_keys.pools_holding_key(provider, raw_key)
 
     await log_admin_action(
         op_store,
@@ -1052,9 +1040,11 @@ async def delete_provider_key(
     # delete of *that* row re-runs this same guard. The tier is re-derived from
     # the surviving sources, so this row's reservation leaves with the row.
     pools_updated = 0 if shared else dynamic_keys.remove_key_from_provider(provider, raw_key)
-    reconciled_min_role = (
-        await _reconcile_shared_key_tier(op_store, provider, raw_key) if shared else None
-    )
+    # Drop this row's tier declaration either way: a stale one would re-apply if the
+    # same credential is added back later. Only report it when the value survives
+    # through another source, where the resolved tier is what the pool now enforces.
+    await _refresh_db_key_tiers(op_store, provider)
+    reconciled_min_role = dynamic_keys.resolve_key_min_role(provider, raw_key) if shared else None
 
     await log_admin_action(
         op_store,

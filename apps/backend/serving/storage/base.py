@@ -1142,9 +1142,14 @@ class OperationalStore(ABC):
     ) -> dict[str, str]:
         """Return ``{raw_key: min_role}`` for active keys of *provider*.
 
-        Companion to ``list_provider_keys_full`` for the boot-time loader, which
-        needs each key's tier reservation to seed the pool with it. Same
-        filtering (active only, ``exclude_ids`` omitted).
+        The authority on DB-declared tiers: ``dynamic_keys`` caches this in memory
+        and reconciles the live pools against it. Same filtering as
+        ``list_provider_keys_full`` (active only, ``exclude_ids`` omitted).
+
+        Keyed by raw value, because that is what a pool entry is keyed on and two
+        rows may hold the same credential. Implementations must return the *most
+        restrictive* tier when rows disagree — the pool enforces one tier, and
+        widening it would hand reserved capacity to tiers it was withheld from.
         """
 
     @abstractmethod
