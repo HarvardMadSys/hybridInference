@@ -361,12 +361,24 @@ class KeyPool:
             existing = self._affinity.get(affinity_key)
             if existing is not None:
                 bound = self._keys[existing.key_index]
-                # Affinity is honored only when it is still valid AND the bound
-                # key is not cooled down, removed, or reserved above the caller
-                # (a role can change, or the key can be re-tiered, under a live
-                # binding).
+                # Affinity is honored only when it is still valid AND the bound key
+                # is not cooled down, removed, or reserved above the caller (a role
+                # can change, or the key can be re-tiered, under a live binding) AND
+                # it was created for this same role.
+                #
+                # The role match is what keeps reservation working on surfaces where
+                # an affinity key is shared: ``/v1/messages`` and ``/v1/embeddings``
+                # publish no ``auth_key_hash``, so every caller there lands on the
+                # single ``_anon`` entry. Without it, one free request binds that
+                # entry to a shared key and every later pro request inherits it —
+                # entitled traffic keeps draining shared capacity, and because the
+                # entry still records ``free`` even a re-tier cannot repoint it. The
+                # unsafe direction is already covered by ``_role_may_use`` (a free
+                # caller can never inherit a binding to a reserved key); this is the
+                # preference direction.
                 if (
                     now < existing.expires_at
+                    and existing.role == role
                     and not bound.removed
                     and bound.cooldown_until <= now
                     and _role_may_use(role, bound)

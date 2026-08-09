@@ -392,3 +392,45 @@ def test_an_unchanged_re_tier_leaves_affinities_alone(monkeypatch):
     before = pool.affinity_count()
     assert pool.set_key_min_role("reserved", "pro") is True
     assert pool.affinity_count() == before
+
+
+def test_a_shared_affinity_key_does_not_leak_preference_across_roles(monkeypatch):
+    """Surfaces without a per-caller affinity key all land on one entry.
+
+    ``/v1/messages`` and ``/v1/embeddings`` publish no ``auth_key_hash``, so every
+    caller shares ``_anon``. A free request binding that entry to a shared key must
+    not make later pro requests inherit it — that is the reserved capacity going
+    unused, and the entry's recorded role would keep a re-tier from repointing it.
+    """
+    pool = _pool(shared="free", reserved="pro")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    assert pool.acquire("_anon", role="free")[0] == "shared"
+    assert pool.acquire("_anon", role="pro")[0] == "reserved"
+    # ...and back, so neither role is stuck with the other's choice.
+    assert pool.acquire("_anon", role="free")[0] == "shared"
+
+
+def test_a_shared_affinity_key_still_refuses_a_reserved_binding_to_free(monkeypatch):
+    """The unsafe direction stays closed: entitlement is never inherited."""
+    pool = _pool(reserved="pro")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    assert pool.acquire("_anon", role="pro")[0] == "reserved"
+    with pytest.raises(KeyPoolRoleRestricted):
+        pool.acquire("_anon", role="free")
+
+
+def test_same_role_still_reuses_its_binding(monkeypatch):
+    """The role match must not defeat affinity for the ordinary same-role case."""
+    pool = _pool(k0="free", k1="free")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    first, _ = pool.acquire("user-A", role="pro")
+    fake_now[0] += 10.0
+    second, _ = pool.acquire("user-A", role="pro")
+    assert first == second
+    assert pool.affinity_count() == 1

@@ -214,13 +214,22 @@ to callers below it:
   `min_role`. Among the keys a caller *may* use, the most-reserved go first, so
   an entitled caller drains the capacity set aside for it before falling back to
   the keys every tier shares.
-- **Affinity.** A tier change drops every binding whose *preferred* key moved, not
-  only bindings pointing at the re-tiered key. Both directions matter: a caller no
+- **Affinity.** A binding is honored only for the role that created it, and a tier
+  change drops every binding whose *preferred* key moved — not only bindings
+  pointing at the re-tiered key. Both directions matter: a caller no
   longer entitled to its bound key must be re-picked, and a caller that should now
   prefer a newly reserved key must stop draining the shared capacity that
   reservation exists to protect — otherwise it would keep doing so for the rest of
   the five-minute TTL. Only a declaration change triggers this, so ordinary traffic
   never loses prompt-cache warmth to it.
+
+  The role match matters most where an affinity key is *shared*: `/v1/messages` and
+  `/v1/embeddings` publish no `auth_key_hash`, so every caller on those surfaces
+  lands on the single `_anon` entry. Without the match, one free request would bind
+  it to a shared key and later pro requests would inherit that binding — reserved
+  capacity sitting idle, and the entry recording `free` so no re-tier could repoint
+  it. Giving those surfaces a per-caller affinity key (as chat completions has)
+  would restore stickiness there and is tracked separately.
 - **Mute / rotation.** The sole-remaining-key backoff is judged against the keys
   the *leaseholder* could rotate to. A pro-only key is not a fallback for a
   free-tier request, so it cannot cancel the free tier's blip protection.
