@@ -786,44 +786,59 @@ async def load_min_role_declarations(operational_store: OperationalStore) -> Non
         providers = list(_known_providers)
 
     for provider in providers:
-        try:
-            env_min_roles = await operational_store.list_provider_env_key_min_roles(provider)
-        except Exception as exc:
-            logger.warning(
-                "dynamic_keys: failed to load env key tier reservations for provider=%s; "
-                "env keys stay unreserved: %s",
-                provider,
-                exc,
-            )
-        else:
-            # Load unconditionally, including an empty map: the loaders replace the
-            # provider's declarations, so skipping the empty case would keep a stale
-            # reservation alive after the last row for it was deleted.
-            load_env_key_min_roles(provider, env_min_roles)
-            if env_min_roles:
-                logger.info(
-                    "dynamic_keys: applied %d env key tier reservation(s) for provider=%s",
-                    len(env_min_roles),
-                    provider,
-                )
-        try:
-            db_min_roles = await operational_store.list_provider_key_min_roles(provider)
-        except Exception as exc:
-            logger.warning(
-                "dynamic_keys: failed to load DB key tier reservations for provider=%s; "
-                "those keys stay unreserved: %s",
-                provider,
-                exc,
-            )
-            continue
-        reserved = {k: v for k, v in db_min_roles.items() if v and v != DEFAULT_MIN_ROLE}
-        load_db_key_min_roles(provider, reserved)
-        if reserved:
+        await load_min_role_declarations_for_provider(operational_store, provider)
+
+
+async def load_min_role_declarations_for_provider(
+    operational_store: OperationalStore,
+    provider: str,
+) -> None:
+    """Load one provider's tier declarations and reconcile its live pools.
+
+    Called for a provider that is about to become known — a live admin route
+    install can be the first time the gateway ever hears of it, long after boot,
+    and registration can only reconcile against what is cached. Without this, a
+    built-in provider with reserved DB keys but no YAML or persisted route would
+    hand those keys to every tier until the next restart.
+    """
+    try:
+        env_min_roles = await operational_store.list_provider_env_key_min_roles(provider)
+    except Exception as exc:
+        logger.warning(
+            "dynamic_keys: failed to load env key tier reservations for provider=%s; "
+            "env keys stay unreserved: %s",
+            provider,
+            exc,
+        )
+    else:
+        # Load unconditionally, including an empty map: the loaders replace the
+        # provider's declarations, so skipping the empty case would keep a stale
+        # reservation alive after the last row for it was deleted.
+        load_env_key_min_roles(provider, env_min_roles)
+        if env_min_roles:
             logger.info(
-                "dynamic_keys: applied %d DB key tier reservation(s) for provider=%s",
-                len(reserved),
+                "dynamic_keys: applied %d env key tier reservation(s) for provider=%s",
+                len(env_min_roles),
                 provider,
             )
+    try:
+        db_min_roles = await operational_store.list_provider_key_min_roles(provider)
+    except Exception as exc:
+        logger.warning(
+            "dynamic_keys: failed to load DB key tier reservations for provider=%s; "
+            "those keys stay unreserved: %s",
+            provider,
+            exc,
+        )
+        return
+    reserved = {k: v for k, v in db_min_roles.items() if v and v != DEFAULT_MIN_ROLE}
+    load_db_key_min_roles(provider, reserved)
+    if reserved:
+        logger.info(
+            "dynamic_keys: applied %d DB key tier reservation(s) for provider=%s",
+            len(reserved),
+            provider,
+        )
 
 
 async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:

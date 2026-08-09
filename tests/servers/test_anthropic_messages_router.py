@@ -2286,3 +2286,24 @@ def test_pick_adapter_treats_a_pool_less_adapter_as_eligible():
     route = SimpleNamespace(adapters=[(legacy, 1.0)])
 
     assert anthropic_messages._pick_adapter_for_role(route, "free")[0] is legacy
+
+
+def test_pick_adapter_skips_one_whose_eligible_key_is_muted(monkeypatch):
+    """A muted key must not win the preselection just because it exists.
+
+    This surface has no rotation loop, so choosing the muted adapter turns into the
+    terminal 429 the fallback was supposed to avoid — reachable for a free caller
+    whose shared key is cooling down while a reserved key stays healthy.
+    """
+    muted = _reserved_adapter({"shared-key": "free"})
+    healthy = _reserved_adapter({"other-key": "free"})
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+    muted._key_pool._keys[0].cooldown_until = fake_now[0] + 60.0
+
+    route = SimpleNamespace(adapters=[(muted, 1.0), (healthy, 1.0)])
+    assert anthropic_messages._pick_adapter_for_role(route, "free")[0] is healthy
+
+    # Once the mute expires it is eligible again, and order is restored.
+    fake_now[0] += 61.0
+    assert anthropic_messages._pick_adapter_for_role(route, "free")[0] is muted

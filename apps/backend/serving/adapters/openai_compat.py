@@ -199,17 +199,24 @@ class OpenAICompatAdapter(BaseAdapter):
         return KeyPoolExhausted(message)
 
     def has_capacity_for_role(self, role: str | None) -> bool:
-        """Whether this adapter holds a key *role* is allowed to spend.
+        """Whether this adapter can serve *role* right now.
 
         Used by surfaces that pick one adapter up front instead of walking the
         router's fallback chain (``/v1/messages``), so tier reservation cannot
         turn an otherwise routable request into a hard failure. A pool-less
         single-``api_key`` adapter carries no reservation and always qualifies.
+
+        Cooldown counts here, unlike in the rotation-bounding ``size`` checks: the
+        caller commits to this adapter and has nowhere to rotate, so an adapter
+        whose only key for this tier is muted must not be preselected while another
+        adapter can serve. Free callers made that newly reachable — a muted shared
+        key alongside a healthy reserved one is a pool that ``size`` calls usable
+        and ``acquire`` does not.
         """
         pool = self._key_pool
         if pool is None:
             return True
-        return pool.size(role) > 0
+        return pool.can_serve_role(role)
 
     def ensure_key_pool(self) -> KeyPool | None:
         """Create a pool from the adapter's static keys if it has none yet.

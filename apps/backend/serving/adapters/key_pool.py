@@ -223,10 +223,24 @@ class KeyPool:
         """Return how many active (non-removed) keys *role* is allowed to use.
 
         ``role=None`` counts every active key (unrestricted internal caller).
-        Muted keys still count — this bounds the caller's rotation attempts.
+        Muted keys still count — this bounds the caller's rotation attempts, and a
+        key that recovers mid-loop should be reachable. Callers asking "could this
+        pool serve a request *right now*" want ``can_serve_role`` instead.
         """
         with self._lock:
             return sum(1 for s in self._keys if not s.removed and _role_may_use(role, s))
+
+    def can_serve_role(self, role: str | None = None) -> bool:
+        """Whether ``acquire`` could hand *role* a key at this moment.
+
+        Same question ``acquire`` answers, so cooldown counts: a pool whose only
+        key for this caller is muted cannot serve it now, even though ``size``
+        counts that key. Used where a caller is committed to one pool up front and
+        has no rotation loop to recover in — picking a muted pool there turns into a
+        hard failure instead of a fallback.
+        """
+        with self._lock:
+            return self._pick_first_available_locked(time.monotonic(), role) is not None
 
     def snapshot_keys(self) -> list[str]:
         """Return a snapshot of every active key currently in the pool."""

@@ -298,3 +298,37 @@ def test_re_tiering_updates_every_live_slot_for_a_key(monkeypatch):
 
     live = [s for s in pool._keys if not s.removed and s.key == "k0"]
     assert live and all(s.min_role == "internal" for s in live)
+
+
+# --- "can serve now" vs "counts toward rotation" -----------------------------
+
+
+def test_can_serve_role_is_false_once_the_callers_only_key_is_muted(monkeypatch):
+    """``size`` counts muted keys on purpose; ``can_serve_role`` must not.
+
+    A caller committed to one pool with no rotation loop needs the question
+    ``acquire`` answers, or it preselects a pool that immediately fails.
+    """
+    pool = _pool(shared="free", reserved="pro")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    pool._keys[0].cooldown_until = fake_now[0] + 60.0  # shared muted
+
+    assert pool.size("free") == 1  # still counted for rotation bounds
+    assert pool.can_serve_role("free") is False
+    # The reserved key is healthy, so the pool still serves pro and unrestricted.
+    assert pool.can_serve_role("pro") is True
+    assert pool.can_serve_role() is True
+
+
+def test_can_serve_role_recovers_when_the_mute_expires(monkeypatch):
+    pool = _pool(shared="free")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    pool._keys[0].cooldown_until = fake_now[0] + 60.0
+    assert pool.can_serve_role("free") is False
+
+    fake_now[0] += 61.0
+    assert pool.can_serve_role("free") is True

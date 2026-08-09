@@ -1350,6 +1350,14 @@ async def _resolve_key_material(
     key_provider: str,
     api_key_id: str | None,
 ) -> tuple[str | None, list[str] | None]:
+    # Every route/candidate/model install resolves its key material here, so this is
+    # where a provider's tier declarations get loaded before its adapter registers.
+    # A live install can be the first time this process hears of a provider — it
+    # need not appear in models.yaml or in a persisted route — and registration can
+    # only reconcile against what is cached, so without this the new pool would hand
+    # that provider's reserved keys to every tier until the next restart.
+    await dynamic_keys.load_min_role_declarations_for_provider(op_store, key_provider)
+
     if api_key_id is None:
         keys = await _active_env_keys_for_provider(op_store, key_provider)
         try:

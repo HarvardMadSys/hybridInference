@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from serving.adapters import ModelConfig, OpenAICompatAdapter, OpenRouterAdapter, dynamic_keys
-from serving.adapters.key_pool import KeyPool
+from serving.adapters.key_pool import KeyPool, KeyPoolRoleRestricted
 from serving.admin.provider_key_probe import (
     FEATHERLESS_PLAN_API_DISABLED_MESSAGE,
     find_verification_adapter,
@@ -2573,3 +2573,46 @@ async def test_env_reservation_stays_visible_and_clearable_when_a_db_row_shares_
     # With no reservation left, the env row goes back to being hidden by the DB row.
     listing2 = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
     assert all(k["id"] != env_id for k in listing2.json()["keys"])
+
+
+@pytest.mark.asyncio
+async def test_declarations_load_for_a_provider_first_known_at_runtime(client):
+    """A live route install can be the first time this process hears of a provider.
+
+    Boot loads declarations for the providers it knows, and bootstrap reloads after
+    persisted routes are restored — but neither covers a provider that only becomes
+    known when an admin creates a route for it later. Its reserved DB keys would go
+    into that new pool untiered until the next restart.
+    """
+    _http, store = client
+    db_key = "sk-zai-runtimeknown-ddddeeeeffff"
+    await store.add_provider_key(
+        provider="zai",
+        api_key=db_key,
+        label=None,
+        created_by="admin",
+        min_role="pro",
+    )
+
+    # Boot happens while nothing is registered for this provider.
+    await dynamic_keys.apply_db_keys_at_boot(store)
+    assert dynamic_keys.resolve_key_min_role("zai", db_key) == "free"
+
+    # The install path loads the provider's declarations before its adapter
+    # registers, so the pool is tiered on arrival.
+    await dynamic_keys.load_min_role_declarations_for_provider(store, "zai")
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="runtime-known-model",
+            name="runtime-known-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[db_key],
+            provider_model_id="runtime-known-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    assert adapter._key_pool.snapshot_min_roles()[db_key] == "pro"
+    with pytest.raises(KeyPoolRoleRestricted):
+        adapter._key_pool.acquire("free-user", role="free")
