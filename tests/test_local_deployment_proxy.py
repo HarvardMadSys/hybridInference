@@ -3,9 +3,11 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+import socket
 import sys
 import threading
 from contextlib import contextmanager, suppress
+from http.client import IncompleteRead, RemoteDisconnected
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -104,6 +106,12 @@ def _load_proxy(monkeypatch: Any, tmp_path: Path, *, backend_port: int = 18080) 
     monkeypatch.setenv("LOCAL_API_KEY", "manual-secret")
     monkeypatch.setenv("HEALTH_TIMEOUT", "0.2")
     monkeypatch.setenv("HEALTH_INTERVAL", "0.01")
+    # HEALTH_PROBE_WARMUP defaults to HEALTH_TIMEOUT, which is squeezed to 0.2s
+    # here so start-path tests do not sleep. Left to default, every backend in this
+    # file would be out of warmup before its first tick and the cold-load grace
+    # would never be exercised at all. Stated explicitly instead, so a test that
+    # wants the grace *expired* says so by overriding the module constant.
+    monkeypatch.setenv("HEALTH_PROBE_WARMUP", "3600")
 
     sys.modules.pop("ops.local_deployment_proxy.local_deployment_proxy", None)
     return importlib.import_module("ops.local_deployment_proxy.local_deployment_proxy")
@@ -2915,16 +2923,603 @@ def test_vllm_generation_default_enables_prefix_cache_reporting(
 
 
 def test_health_endpoint_returns_200_without_api_key(monkeypatch: Any, tmp_path: Path) -> None:
-    # The routing HealthMonitor probes GET /health with no API key and expects
-    # 200; a 401 there marks every local model unhealthy.
+    """Both phases a lazy proxy spends most of its life in answer 200, unauthenticated.
+
+    The routing HealthMonitor probes GET /health with no API key and expects 200;
+    a 401 there marks every local model unhealthy. Idle-stopped is the resting
+    state of every backend here and is not "down" — lazy start is the design — and
+    ``starting`` must not be reported down either: a DeepSeek-class cold start runs
+    6-14 minutes, and the warmup SSE stream needs requests to keep arriving to
+    finish it, so deregistering the replica would strand the load it started.
+
+    The body of a 200 is pinned exactly. It has always been ``{"status": "ok"}``
+    and other callers parse it.
+    """
     proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+    assert backend.state == "stopped"
 
     with _serve(proxy.ProxyHandler) as proxy_port:
         status, headers, body = _request(f"http://127.0.0.1:{proxy_port}/health")
+        assert status == 200
+        assert headers["Content-Type"] == "application/json"
+        assert json.loads(body) == {"status": "ok"}
+
+        with backend._lock:
+            backend._state = "starting"
+        status, _, body = _request(f"http://127.0.0.1:{proxy_port}/health")
 
     assert status == 200
-    assert headers["Content-Type"] == "application/json"
     assert json.loads(body) == {"status": "ok"}
+
+
+# ── /health reflects the backend, not just the proxy ───────────────────────
+#
+# 2026-08-09: the sglang scheduler on h200b wedged mid-serving. For eight minutes
+# every inference request hung and then failed on the proxy's 300s forward
+# timeout, while `_handle_health` — unconditional — kept answering
+# `"GET /health HTTP/1.1" 200`. The gateway polls that endpoint and nothing else,
+# so the one signal it had said the replica was fine. sglang's own watchdog then
+# SIGQUIT'd the process tree, the container exited, and for a further 73 seconds
+# the proxy still reported `state == "ready"` over the corpse.
+#
+# These cover both sub-cases and the fact that they are answered differently. A
+# ready belief over an *exited* container is repairable from the watcher, so it is
+# repaired — demoted to `stopped`, which is a 200, because the next request starts
+# it; 503-ing it instead would drain away the traffic that was going to fix it. A
+# ready belief over a container that is up and producing nothing is not repairable
+# from here, and that is the one 503 is for. At least as important are the cases
+# that must stay 200 regardless, so no cold start ever deregisters its own replica.
+
+
+class _ProbeResponse:
+    """The shape ``_probe_forward_progress`` reads back from ``urlopen``."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+    def __enter__(self) -> _ProbeResponse:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+
+class _ScriptedProbe:
+    """Answer the forward-progress probe from a script, and record what was asked.
+
+    A raising stub rather than a backend that really blocks: the probe treats a
+    timeout, a connection error and a 503 identically (all "no forward progress"),
+    so a real hanging server would only buy the test a multi-second wait and a
+    source of flakiness. The URLs are recorded because *which* endpoint is probed
+    is half the fix — ``/v1/models`` answered 200 for the whole wedge.
+
+    The last scripted answer repeats, so a test says "one good tick then wedged"
+    without counting the ticks that follow.
+    """
+
+    def __init__(self, *answers: int | Exception) -> None:
+        self.answers = list(answers)
+        self.urls: list[str] = []
+
+    def __call__(self, request: Any, **_: Any) -> Any:
+        self.urls.append(request.full_url)
+        answer = self.answers[0] if len(self.answers) == 1 else self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return _ProbeResponse(answer)
+
+
+def _health_of(proxy: Any) -> tuple[int, dict[str, Any]]:
+    """Serve ``GET /health`` once, unauthenticated, and decode the JSON body."""
+    with _serve(proxy.ProxyHandler) as proxy_port:
+        status, headers, body = _request(f"http://127.0.0.1:{proxy_port}/health")
+    assert headers["Content-Type"] == "application/json"
+    return status, json.loads(body)
+
+
+def _watched_backend(proxy: Any, tmp_path: Path, fake: _FakeDocker) -> Any:
+    """A ``ready`` backend the health handler can see, over ``fake``'s container.
+
+    Registered into the module-global ``_backends`` because that is what
+    ``_handle_health`` iterates, and stamped with this proxy's own labels and id so
+    the ownership re-check sharing the tick's inspect finds nothing to disown —
+    otherwise the demotion, not the serving verdict, would be what the test saw.
+    """
+    backend = _labelled_backend(proxy, tmp_path)
+    fake.labels = _labels_from_run(["docker", "run", *backend._ownership_label_args()])
+    proxy._backends = {MODEL_NAME: backend}
+    _make_ready(proxy, backend, fake.container_id)
+    return backend
+
+
+def test_health_stays_200_while_a_ready_backend_is_serving(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The steady state, and the endpoint the verdict is formed from.
+
+    Pinned because the endpoint choice is the whole of sub-case (b): sglang's
+    ``/v1/models`` handler reads in-process tokenizer attributes and never touches
+    the scheduler, so it answered 200 for every second of the wedge. Probing it
+    would detect nothing at all.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    fake = _FakeDocker(running=True, container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    backend = _watched_backend(proxy, tmp_path, fake)
+    probe = _ScriptedProbe(200)
+    monkeypatch.setattr(proxy, "urlopen", probe)
+
+    _run_idle_watcher(proxy, backend, ticks=4)
+
+    assert probe.urls, "the forward-progress probe never ran"
+    assert all(u.endswith("/health_generate") for u in probe.urls), probe.urls
+    assert _health_of(proxy) == (200, {"status": "ok"})
+
+
+def test_a_ready_backend_whose_container_exited_is_released_not_reported(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Sub-case (a): the 73 seconds the proxy advertised a corpse.
+
+    The container exited 0 at 15:39:42 and nothing demoted the backend, because a
+    container that dies outside this proxy's control demotes nothing until a
+    request trips over it. The watcher can see that in the inspect it already
+    pays for, and — uniquely among the incident's failure modes — it can also fix
+    it, so it does: ``mark_stopped``, and ``/health`` goes on answering 200,
+    because ``stopped`` means "startable on demand", which is what a lazy proxy
+    is.
+
+    Reporting it as unhealthy instead would be self-defeating. A 503 asks the
+    gateway to stop sending traffic, and traffic is the only thing that repairs a
+    stale ``ready`` — the reconcile lives on the request path. With the replica
+    drained, nothing would clear the verdict until the idle timer expired against
+    activity that had already stopped: IDLE_TIMEOUT is 1440s on the shipped units,
+    so 24 minutes out of rotation over a backend the next request would have
+    relaunched in seconds.
+
+    Nothing is removed. The corpse's own name and labels are what
+    ``_start_container`` reclaims from, and this thread has no business racing it.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    fake = _FakeDocker(running=False, status="exited", container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    backend = _watched_backend(proxy, tmp_path, fake)
+
+    _run_idle_watcher(proxy, backend, ticks=1)
+
+    assert backend.state == "stopped", "the proxy went on believing in a dead container"
+    assert _health_of(proxy) == (200, {"status": "ok"})
+    assert fake.mutations == []
+
+
+def test_health_503s_when_a_ready_backend_stops_making_forward_progress(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Sub-case (b): the eight minutes every request hung on a live container.
+
+    ``state == "ready"``, the container up, the scheduler producing nothing. The
+    body has to name the backend and say how long it has been that way: during the
+    incident the journal recorded only 200s next to timeouts, so reconstructing
+    what the proxy believed, and since when, meant reading the container's own
+    logs.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    fake = _FakeDocker(running=True, container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    backend = _watched_backend(proxy, tmp_path, fake)
+    monkeypatch.setattr(proxy, "urlopen", _ScriptedProbe(200, TimeoutError("timed out")))
+
+    _run_idle_watcher(proxy, backend, ticks=4)
+
+    status, body = _health_of(proxy)
+    assert status == 503
+    (report,) = body["backends"]
+    assert report["reason"] == "no_forward_progress"
+    assert report["model"] == MODEL_NAME
+    assert report["unhealthy_for_seconds"] >= 0
+    # Nothing was stopped or removed: the wedge is sglang's to resolve (its own
+    # watchdog SIGQUITs at 300s), and this proxy's job is to stop claiming the
+    # replica is fine.
+    assert backend.state == "ready"
+    assert fake.mutations == []
+
+
+def test_a_single_failed_probe_does_not_take_a_ready_backend_out_of_service(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The grace period, which is the difference between a fix and an outage source.
+
+    The probe returns 503 whenever the server has emitted nothing recently, and a
+    long chunked prefill legitimately does that for seconds at a time. One blip
+    must not deregister a healthy replica; three consecutive ones must. On the
+    shipped units that is ~40-60 seconds rather than the ~30 the 10s tick suggests,
+    because a backend in trouble does not refuse the probe, it swallows it for the
+    whole HEALTH_PROBE_TIMEOUT — so the loop period during a wedge is the tick plus
+    the timeout.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    fake = _FakeDocker(running=True, container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    backend = _watched_backend(proxy, tmp_path, fake)
+    blip = _ScriptedProbe(200, proxy.URLError("connection refused"), 200, 200)
+    monkeypatch.setattr(proxy, "urlopen", blip)
+
+    _run_idle_watcher(proxy, backend, ticks=2)
+    assert _health_of(proxy) == (200, {"status": "ok"})
+
+    _run_idle_watcher(proxy, backend, ticks=2)
+    assert _health_of(proxy) == (200, {"status": "ok"})
+
+
+def test_a_backend_that_has_never_answered_the_probe_stays_200(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A cold start reaches ``ready`` before it can answer this probe. Do not fail it.
+
+    ``_wait_healthy`` promotes on ``/v1/models``, which sglang answers as soon as
+    uvicorn binds; the forward-progress endpoint keeps returning 503 until the
+    warmup forward completes, which on a DeepGEMM-JIT MoE model is minutes. Without
+    the "has succeeded at least once" latch every cold start would 503 on its third
+    tick and deregister the replica for the rest of a 6-14 minute load — the one
+    outcome the agreed contract rules out.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    fake = _FakeDocker(running=True, container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    backend = _watched_backend(proxy, tmp_path, fake)
+    warming = _ScriptedProbe(HTTPError("http://backend/health_generate", 503, "warming", {}, None))
+    monkeypatch.setattr(proxy, "urlopen", warming)
+
+    _run_idle_watcher(proxy, backend, ticks=8)
+
+    assert len(warming.urls) >= 4, "the probe stopped running"
+    assert _health_of(proxy) == (200, {"status": "ok"})
+
+
+def test_a_wedge_the_proxy_was_restarted_into_is_reported_once_warmup_is_spent(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The cold-load excuse expires, or a restart mid-incident hides the incident.
+
+    "The probe has never succeeded here, so this is a start, not a wedge" is only
+    true of a container this process launched. ``ensure_running`` promotes an
+    *adopted* container on ``_backend_healthy`` — ``/v1/models``, the endpoint a
+    wedged sglang answers all the way to its watchdog kill — so restarting this
+    proxy during the 2026-08-09 wedge, which is exactly what an operator does
+    while a node is misbehaving, produces a ``ready`` backend that has never
+    answered the probe and never will. With an unbounded grace every strike after
+    that is discarded and the wedge is invisible for the life of the process.
+
+    Past HEALTH_PROBE_WARMUP the silence is no longer warmup. The budget is
+    stubbed to zero rather than waited out; that it is *some* finite number is the
+    property under test, and the shipped value keeps a real cold start under it
+    (see the test above).
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    monkeypatch.setattr(proxy, "HEALTH_PROBE_WARMUP", 0.0)
+    fake = _FakeDocker(running=True, container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    backend = _watched_backend(proxy, tmp_path, fake)
+    monkeypatch.setattr(proxy, "urlopen", _ScriptedProbe(TimeoutError("timed out")))
+
+    _run_idle_watcher(proxy, backend, ticks=4)
+
+    status, body = _health_of(proxy)
+    assert status == 503
+    (report,) = body["backends"]
+    assert report["reason"] == "no_forward_progress"
+    assert "never answered" in report["detail"]
+
+
+def test_a_relaunched_backend_does_not_inherit_the_dead_ones_verdict(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """A fresh container starts from no verdict, or it is 503'd for its whole load.
+
+    ``_stop_container`` releases ``_state`` on the idle path but deliberately says
+    nothing about the health verdict, so a backend that was wedged, drained and
+    then idle-stopped still carries ``no_forward_progress`` and a *satisfied*
+    ``_health_probed_ok`` when the next request relaunches it. Without the reset at
+    the ``ready`` transition, that relaunch would answer 503 from its first tick,
+    and the earned latch means its own warmup 503s would keep it there — the
+    corpse's verdict reported against a healthy replacement for the length of a
+    6-14 minute load.
+
+    ``_wait_healthy`` is stubbed out the way ``test_idle_watcher_relaunch`` does
+    it: what happens in between the two states is not what this is about.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    fake = _FakeDocker(running=True, container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    backend = _watched_backend(proxy, tmp_path, fake)
+    monkeypatch.setattr(proxy, "urlopen", _ScriptedProbe(200, TimeoutError("timed out")))
+    _run_idle_watcher(proxy, backend, ticks=4)
+    assert _health_of(proxy)[0] == 503
+
+    backend._stop_container()
+    assert backend.state == "stopped"
+    assert backend._health_reason == "no_forward_progress", "the idle stop cleared it by itself"
+    monkeypatch.setattr(backend, "_wait_healthy", lambda: None)
+    backend.ensure_running()
+
+    assert backend.state == "ready"
+    assert _health_of(proxy) == (200, {"status": "ok"})
+
+
+def test_health_recovers_on_a_single_good_probe(monkeypatch: Any, tmp_path: Path) -> None:
+    """Recovery is asymmetric with demotion on purpose.
+
+    The gateway samples /health on a 300-second timer, so a verdict that took three
+    more ticks to clear could be held for most of an interval after the backend came
+    back. One good probe is also what the gateway's own monitor needs to re-mark an
+    endpoint healthy, so matching it keeps the two from disagreeing.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    fake = _FakeDocker(running=True, container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    backend = _watched_backend(proxy, tmp_path, fake)
+    monkeypatch.setattr(proxy, "urlopen", _ScriptedProbe(200, TimeoutError("timed out")))
+    _run_idle_watcher(proxy, backend, ticks=4)
+    assert _health_of(proxy)[0] == 503
+
+    monkeypatch.setattr(proxy, "urlopen", _ScriptedProbe(200))
+    _run_idle_watcher(proxy, backend, ticks=1)
+
+    assert _health_of(proxy) == (200, {"status": "ok"})
+
+
+def test_a_backend_without_the_probe_endpoint_is_never_reported_unhealthy(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """ "The probe does not apply here" must not read as "the backend is wedged".
+
+    A vLLM or Ollama container answers 404 for sglang's generation health endpoint.
+    Counting that would 503 the whole deployment for every non-sglang model it
+    fronts, forever, on the third tick after startup.
+
+    The script answers once before the 404s so this really tests the 404 arm.
+    Starting straight from 404 proves nothing: the cold-load suppression would
+    swallow the verdict on its own, and the test would pass identically if the
+    handler counted a 404 as a failed probe — which is the bug it exists to
+    exclude. It is reachable in practice, too: an sglang backend that has answered
+    the probe and is later replaced under the same name by a vLLM one would
+    otherwise be reported wedged three ticks later, while serving.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    fake = _FakeDocker(running=True, container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    backend = _watched_backend(proxy, tmp_path, fake)
+    absent = _ScriptedProbe(200, HTTPError("http://backend/health_generate", 404, "nope", {}, None))
+    monkeypatch.setattr(proxy, "urlopen", absent)
+
+    _run_idle_watcher(proxy, backend, ticks=8)
+
+    assert _health_of(proxy) == (200, {"status": "ok"})
+
+
+def test_the_health_handler_itself_runs_no_docker_and_no_backend_probe(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The verdict is cached, and the handler must only read it.
+
+    The gateway allows this handler two seconds and scores a slow answer exactly as
+    it scores a 503, so a ``docker inspect`` or an HTTP probe per request would fail
+    the check on its own latency — most reliably during the wedge it exists to
+    report, when every other thread in this process is parked in a 300s ``urlopen``.
+    Asserted on the 503 path, where the temptation to go and re-confirm is greatest.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    fake = _FakeDocker(running=True, container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    backend = _watched_backend(proxy, tmp_path, fake)
+    probe = _ScriptedProbe(200, TimeoutError("timed out"))
+    monkeypatch.setattr(proxy, "urlopen", probe)
+    _run_idle_watcher(proxy, backend, ticks=4)
+
+    commands_before = len(fake.commands)
+    probes_before = len(probe.urls)
+    assert _health_of(proxy)[0] == 503
+
+    assert len(fake.commands) == commands_before, fake.commands[commands_before:]
+    assert len(probe.urls) == probes_before
+
+
+def test_a_request_arriving_during_the_probe_keeps_its_container(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The idle timer must be read after the probe, not before it.
+
+    The watcher measures idleness at the top of the tick and only then runs the
+    inspect and the probe — and the probe blocks for the whole
+    HEALTH_PROBE_TIMEOUT precisely when the backend is slow, which is ten seconds
+    on the shipped units. A request landing in that window is admitted by the ready
+    fast path and forwarded, so tearing its container down on a measurement taken
+    before it arrived kills a live request. The window existed before the probe did
+    — it was one ``docker inspect`` wide — and the probe is what makes it worth
+    closing.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    fake = _FakeDocker(running=True, container_id="cid-mine")
+    monkeypatch.setattr(proxy.subprocess, "run", fake.run)
+    backend = _watched_backend(proxy, tmp_path, fake)
+    with backend._lock:
+        backend._last_activity = proxy.time.monotonic() - proxy.IDLE_TIMEOUT - 1
+
+    def answer_after_a_request_arrives(request: Any, **_: Any) -> Any:
+        backend.touch()
+        return _ProbeResponse(200)
+
+    monkeypatch.setattr(proxy, "urlopen", answer_after_a_request_arrives)
+
+    _run_idle_watcher(proxy, backend, ticks=1)
+
+    assert backend.state == "ready", "the idle timer stopped a backend that had just been used"
+    assert fake.mutations == []
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TimeoutError("timed out"),
+        RemoteDisconnected("Remote end closed connection without response"),
+    ],
+    ids=["read-timeout", "remote-close"],
+)
+def test_a_forward_that_dies_reading_reconciles_the_backend(
+    monkeypatch: Any, tmp_path: Path, failure: Exception
+) -> None:
+    """The reactive reconcile that never ran during the incident.
+
+    urllib wraps only the ``OSError`` raised by ``h.request()``; anything raised
+    by ``h.getresponse()`` or by a body read propagates unwrapped, so neither of
+    these two is a ``URLError`` and both used to fall through to the generic 500
+    handler. That is why the journal for that hour reads ``code 500, message timed
+    out`` and ``code 500, message Remote end closed connection without response``
+    rather than the 502 this branch emits — and why ``mark_stopped`` was never
+    called for the 73 seconds the proxy advertised a corpse.
+
+    Both incident messages are used verbatim: they are the evidence that these are
+    the exception types the failures really arrive as.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+    with backend._lock:
+        backend._state = "ready"
+
+    def die(*_: Any, **__: Any) -> None:
+        raise failure
+
+    restarted: list[str] = []
+    monkeypatch.setattr(proxy, "urlopen", die)
+    monkeypatch.setattr(backend, "alive", lambda: False)
+    monkeypatch.setattr(backend, "ensure_running", lambda: restarted.append("start"))
+
+    with _serve(proxy.ProxyHandler) as proxy_port:
+        status, _, _ = _request(
+            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            method="POST",
+            headers={"Authorization": "Bearer manual-secret"},
+            body={"model": MODEL_NAME, "messages": [{"role": "user", "content": "ping"}]},
+        )
+
+    assert backend.state == "stopped", "the dead backend was left believed-ready"
+    assert restarted == ["start"], "the reconcile never tried to relaunch"
+    # The retry fails the same way; what matters is that the client is told the
+    # upstream is at fault (502) rather than being handed the generic 500 that
+    # made this look like a proxy bug in the journal.
+    assert status == 502
+
+
+class _StreamingBackendHandler(BaseHTTPRequestHandler):
+    """A backend that answers ``text/event-stream``, the shape the wedge hit."""
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        if length:
+            self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(b'data: {"choices":[]}\n\n')
+        self.wfile.flush()
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+def _raw_post(port: int, path: str, payload: dict[str, Any]) -> bytes:
+    """Send one request and return every byte the proxy wrote back.
+
+    A raw socket, not ``urlopen``: the failure under test is a *second* HTTP
+    response glued onto the end of the first, and a parsing client stops at the
+    first one and reports success. Only the wire shows it.
+    """
+    body = json.dumps(payload).encode()
+    request = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{port}\r\n"
+        "Authorization: Bearer manual-secret\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode() + body
+    received = b""
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        sock.sendall(request)
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            received += chunk
+    return received
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TimeoutError("timed out"),
+        RemoteDisconnected("Remote end closed connection without response"),
+        IncompleteRead(b""),
+    ],
+    ids=["read-timeout", "remote-close", "truncated-body"],
+)
+def test_a_forward_that_dies_after_the_headers_went_out_sends_one_response(
+    monkeypatch: Any, tmp_path: Path, failure: Exception
+) -> None:
+    """The cost of widening the reconcile: it can now fire mid-stream.
+
+    Catching ``TimeoutError`` and ``RemoteDisconnected`` is what makes the
+    incident's failures reach the reconcile at all, but it also drags a branch that
+    was only ever reached before any bytes were written into a place where the
+    status line, the headers and part of an SSE body are already on the wire.
+    Retrying there concatenates a whole second response onto the first, and
+    ``send_error`` — which the stdlib documents as callable only before any output
+    — writes a second status line into the middle of the stream. Either way the
+    client is handed a response no HTTP parser can make sense of, in exchange for a
+    reconcile it will get from the next request anyway.
+
+    A real backend serves the headers, so ``committed`` is set by the code under
+    test rather than by the test. Only the body read is stubbed, because that is
+    where a stream dies and because the alternative — a backend that hangs for the
+    300s forward timeout — is not a unit test.
+
+    All three failures are ones a dying sglang container really produces: a read
+    that times out, a connection closed as the process exits, and a body cut short
+    mid-frame. The first two take the widened branch, the third the generic one,
+    and both guards have to hold.
+    """
+    with _serve(_StreamingBackendHandler) as backend_port:
+        proxy = _load_proxy(monkeypatch, tmp_path, backend_port=backend_port)
+        backend = proxy._backends[MODEL_NAME]
+        with backend._lock:
+            backend._state = "ready"
+
+        def die_mid_stream(_resp: Any, wfile: Any) -> None:
+            wfile.write(b'data: {"delta":"partial"}\n\n')
+            wfile.flush()
+            raise failure
+
+        restarted: list[str] = []
+        monkeypatch.setattr(proxy, "_copy_stream", die_mid_stream)
+        monkeypatch.setattr(backend, "alive", lambda: False)
+        monkeypatch.setattr(backend, "ensure_running", lambda: restarted.append("start"))
+
+        with _serve(proxy.ProxyHandler) as proxy_port:
+            raw = _raw_post(
+                proxy_port,
+                "/v1/chat/completions",
+                {"model": MODEL_NAME, "messages": [{"role": "user", "content": "ping"}]},
+            )
+
+    assert raw.count(b"HTTP/1.") == 1, f"more than one response on the wire: {raw!r}"
+    assert b'data: {"delta":"partial"}' in raw, raw
+    # The truncated stream is the client's problem and it is already unfixable;
+    # what must not happen is this thread deciding the backend is dead on the
+    # strength of a read that failed after the backend answered.
+    assert backend.state == "ready", "a committed stream reconciled the backend anyway"
+    assert restarted == []
 
 
 # ── Hardware profile selection + tensor parallelism ────────────────────────

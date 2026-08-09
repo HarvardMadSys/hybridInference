@@ -153,6 +153,7 @@ import re
 import subprocess
 import threading
 import time
+from http.client import RemoteDisconnected
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -192,6 +193,61 @@ HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
 #
 # Set to 0 to disable the limit and keep retrying forever.
 MAX_START_FAILURES = int(os.environ.get("MAX_START_FAILURES", "20"))
+
+# ── Forward-progress probe (GET /health answers from this) ─────────────────
+# On 2026-08-09 the sglang scheduler on h200b wedged mid-serving. For eight
+# minutes every inference request hung and then failed on the 300s `urlopen`
+# timeout below, and throughout that window this proxy answered `GET /health`
+# with an unconditional 200 — so the gateway kept the replica registered and
+# kept feeding it requests that could only time out. sglang's own watchdog then
+# SIGQUIT'd the process tree, the container exited, and for another 73 seconds
+# the proxy still believed `state == "ready"` because nothing demotes a backend
+# that dies out of band until a request discovers the corpse.
+#
+# `/health` now reports whether the proxy's belief matches reality (see
+# `BackendManager.health_report`). Three knobs, all about *not flapping*:
+#
+# HEALTH_PROBE_PATH — sglang's own health handler, which is the only endpoint
+#   that answers the question that matters. It submits a one-token generate and
+#   waits for any inbound message from the detokenizer, so its verdict is
+#   literally "has this server produced anything recently" — the definition of
+#   forward progress, and the thing that stops during a wedge. `/v1/models`
+#   (what `_backend_healthy` polls) reads in-process tokenizer attributes and
+#   never touches the scheduler: it answered 200 for the whole eight minutes and
+#   would have detected nothing. `/health_generate` rather than `/health`
+#   because sglang's `/health` degrades to a static 200 when
+#   SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION is turned off, and a wedge detector
+#   an env var can silently disable is not a detector. Both are exempt from
+#   sglang's API-key middleware, so no credential is needed here.
+# HEALTH_PROBE_STRIKES — consecutive failed probes before the verdict flips. The
+#   probe runs on the idle watcher's existing tick, `min(10, IDLE_TIMEOUT / 2)`
+#   seconds, but a wedged backend does not *refuse* the probe, it swallows it: the
+#   call blocks for the whole HEALTH_PROBE_TIMEOUT before failing, so the loop
+#   period during the failure this exists to detect is the tick plus the timeout,
+#   ~20s on the shipped units, not ~10s. Three strikes is therefore a ~40-60s
+#   grace, not the ~30s the tick alone suggests — long enough that one slow
+#   chunked prefill emitting nothing cannot deregister a replica, still inside
+#   sglang's own 300s watchdog kill. Recovery is a single good probe, matching the
+#   gateway's own asymmetry (one probe down, one probe up) so a stale verdict
+#   cannot outlive the condition.
+# HEALTH_PROBE_WARMUP — how long a backend may go without ever answering the probe
+#   before silence starts counting as a fault. There has to be some window: the
+#   backend reaches `ready` on `/v1/models`, which sglang answers as soon as
+#   uvicorn binds, while the forward-progress endpoint keeps failing until warmup
+#   completes, so without a grace every cold start would deregister its own
+#   replica. But the grace cannot be open-ended, which is what "has the probe ever
+#   succeeded?" alone amounts to: `_adopt_running_container` promotes on
+#   `/v1/models` too, so a proxy restarted *during* a wedge — by systemd, or by
+#   hand mid-incident — adopts the wedged container into `ready` with the latch
+#   unearned, and an unbounded grace would then hide that wedge forever. Defaults
+#   to HEALTH_TIMEOUT because that is already this deployment's answer to "how
+#   long may this backend take to become usable" (900s on the H200 units), and a
+#   backend that has had that budget twice over and still produced nothing is not
+#   loading.
+HEALTH_PROBE_PATH = os.environ.get("HEALTH_PROBE_PATH", "/health_generate")
+HEALTH_PROBE_TIMEOUT = float(os.environ.get("HEALTH_PROBE_TIMEOUT", "10"))
+HEALTH_PROBE_STRIKES = int(os.environ.get("HEALTH_PROBE_STRIKES", "3"))
+HEALTH_PROBE_WARMUP = float(os.environ.get("HEALTH_PROBE_WARMUP", str(HEALTH_TIMEOUT)))
 
 # ── Container ownership ────────────────────────────────────────────────────
 # A container *name* is not proof of ownership. Several units run this same
@@ -669,6 +725,23 @@ class BackendManager:
         # once they reached MAX_START_FAILURES. Any successful start clears both.
         self._start_failures = 0
         self._giveup_error: RuntimeError | None = None
+        # What `GET /health` answers from, refreshed once per idle-watcher tick and
+        # read — never computed — by the handler. `_health_reason` is None while the
+        # proxy's belief about this backend matches reality; the rest are the working
+        # state behind it (see `_recheck_serving`). `_health_probed_ok` is the latch
+        # that keeps a cold start from being read as a wedge: `_wait_healthy` promotes
+        # to `ready` on `/v1/models`, which sglang answers as soon as uvicorn binds,
+        # while the forward-progress probe keeps returning 503 until warmup finishes —
+        # minutes, on the MoE models this proxy fronts. Until the probe has succeeded
+        # once, a failure is "not up yet", not "wedged" — but only for
+        # HEALTH_PROBE_WARMUP after `_health_grace_since`, or a backend adopted into
+        # `ready` while already wedged would sit behind that excuse forever.
+        self._health_reason: str | None = None
+        self._health_detail: str | None = None
+        self._health_since: float | None = None
+        self._health_grace_since = time.monotonic()
+        self._health_strikes = 0
+        self._health_probed_ok = False
 
     @property
     def state(self) -> str:
@@ -695,11 +768,70 @@ class BackendManager:
         restart (state ``starting``) back to ``stopped``.
         """
         with self._lock:
+            self._reset_health_verdict()
             if self._state == "ready":
                 self._state = "stopped"
                 self._current_gpu = None
                 self._container_id = None
                 self._ready_event.clear()
+
+    def _reset_health_verdict(self) -> None:
+        """Forget everything ``/health`` reports about this backend.
+
+        Caller must hold ``self._lock``.
+
+        Called wherever this manager stops holding the container it formed the
+        verdict over — a demotion, and the ``ready`` transition of a fresh start.
+        The verdict describes one container's behaviour, so carrying it across a
+        relaunch would report the corpse's wedge against its replacement, and the
+        ``_health_probed_ok`` latch has to be re-earned or the replacement's own
+        multi-minute warmup would read as a wedge on its third tick.
+
+        Re-earning that latch is what restarts the warmup clock, so this is also
+        where ``_health_grace_since`` is stamped: the excuse "it has never answered,
+        so it must still be loading" is only good for HEALTH_PROBE_WARMUP from the
+        moment this manager began believing in the container, and every call site
+        here is exactly such a moment.
+        """
+        self._health_reason = None
+        self._health_detail = None
+        self._health_since = None
+        self._health_grace_since = time.monotonic()
+        self._health_strikes = 0
+        self._health_probed_ok = False
+
+    def health_report(self) -> dict[str, Any] | None:
+        """Return why this backend is not serving, or None if nothing is wrong.
+
+        The whole of what ``GET /health`` does per backend, and deliberately so:
+        the gateway probes that endpoint on a timer with a two-second timeout
+        (``timeout: 2`` in ``distributions/freeinference/config/routing.yaml``), and
+        a handler that ran a ``docker inspect`` or an HTTP probe per request would
+        score itself unhealthy on its own latency — most reliably during a wedge,
+        when every other thread is parked in a 300s ``urlopen``. So this reads
+        cached state under the lock (held for microseconds here, never across a
+        docker or HTTP call) and computes nothing; the verdict is produced once per
+        tick by ``_recheck_serving`` on the idle watcher, a thread that already
+        wakes at that cadence and already pays a ``docker inspect``.
+
+        None for every phase except ``ready``. A backend that is idle-stopped or
+        cold-loading is not down — lazy start is the design, and a DeepSeek-class
+        cold start runs 6-14 minutes with the warmup SSE stream depending on
+        requests still arriving, so reporting it as unhealthy would deregister the
+        replica for the entire load and there would be nothing left to finish it.
+        """
+        with self._lock:
+            if self._state != "ready" or self._health_reason is None:
+                return None
+            since = self._health_since if self._health_since is not None else time.monotonic()
+            return {
+                "model": self.model_name,
+                "container": self.container,
+                "state": self._state,
+                "reason": self._health_reason,
+                "detail": self._health_detail,
+                "unhealthy_for_seconds": round(time.monotonic() - since, 1),
+            }
 
     def giveup_error(self) -> RuntimeError | None:
         """Return the error this backend was given up on, if it has been.
@@ -793,6 +925,10 @@ class BackendManager:
                     # Consecutive failures only: a start that worked says the
                     # backend is startable, whatever went wrong before it.
                     self._start_failures = 0
+                    # This is a different container from whatever the last verdict
+                    # was about, including on the adoption path — an adopted backend
+                    # is one this process has never watched.
+                    self._reset_health_verdict()
                     if self._watcher_thread is None or not self._watcher_thread.is_alive():
                         self._watcher_thread = threading.Thread(
                             target=self._idle_watcher, daemon=True
@@ -1958,7 +2094,198 @@ class BackendManager:
             )
         return None
 
-    def _disown_if_replaced(self) -> bool:
+    def _watch_inspect(self) -> _ContainerState | None:
+        """Read identity, liveness and labels once for a whole idle-watcher tick.
+
+        Both re-checks the watcher runs — the ownership one below and the
+        "is this backend still serving?" one in ``_recheck_serving`` — ask about
+        the same container at the same instant, so they share one ``docker
+        inspect``. A second round trip per tick would buy nothing and this loop's
+        cost is precisely what two earlier review rounds on this code pushed back
+        on.
+
+        ``None`` means the inspect could not be *run* at all, which is evidence of
+        nothing: neither re-check may act on it. Note that this is narrower than
+        "no answer" — ``_inspect_state`` deliberately degrades an unreachable
+        daemon to ``_ABSENT_CONTAINER``, so an absent reading still arrives here as
+        a state, and callers have to decide for themselves whether absence is
+        evidence (see ``_recheck_serving``, where it is not).
+        """
+        try:
+            state = self._inspect_state()
+        except Exception as exc:  # docker unreachable: not evidence of a takeover
+            self._log_inspect_failure(exc)
+            return None
+        self._inspect_failure = None
+        return state
+
+    def _probe_forward_progress(self) -> bool | None:
+        """Ask the backend whether it has produced anything recently.
+
+        ``True``/``False``, or ``None`` when this backend has no such endpoint — a
+        vLLM or Ollama container answers 404/405 here, and "the probe does not
+        apply" must not read as "the backend is wedged". The caller leaves the
+        verdict untouched on ``None``.
+
+        Deliberately *not* ``_backend_healthy``. That polls ``/v1/models``, whose
+        sglang handler reads in-process tokenizer attributes and never touches the
+        scheduler, so it returned 200 for every second of the 2026-08-09 wedge and
+        right up until the process died. This path submits a one-token generate
+        and returns 200 as soon as *any* inbound detokenizer message lands, which
+        means it costs nothing on a busy server (another request's tokens satisfy
+        it) and answers precisely the question a wedge changes.
+
+        Two limits worth knowing. Aborting the probe client-side does not cancel
+        the queued generate on the sglang side, so a wedged backend accumulates
+        roughly one orphaned one-token request per tick — bounded by sglang's own
+        300s watchdog kill and negligible at that size. And with ``dp_size > 1``
+        the "anything recently" test is satisfied by any DP rank, so a single
+        wedged rank among several would still read healthy; not the case on the
+        current TP-only H200 units, but it bounds what this signal proves.
+        """
+        url = f"http://localhost:{self.backend_port}{HEALTH_PROBE_PATH}"
+        try:
+            req = Request(url, method="GET")
+            with urlopen(req, timeout=HEALTH_PROBE_TIMEOUT) as resp:
+                return resp.status == 200
+        except HTTPError as exc:
+            if exc.code in (404, 405, 501):
+                return None
+            return False
+        except Exception:
+            return False
+
+    def _recheck_serving(self, state: _ContainerState | None) -> None:
+        """Reconcile this manager's belief with the backend, once per watcher tick.
+
+        The 2026-08-09 incident had two sub-cases and this covers both — but they
+        want opposite treatments, and the difference is whether this thread can do
+        anything about what it just found.
+
+        (a) The container is gone. ``docker inspect`` says it exists and is not
+        running while this manager still says ``ready`` — the 73 seconds at the end
+        of the incident, when the proxy went on advertising a corpse until a request
+        tripped over it. The belief is simply wrong, and here, uniquely, this thread
+        can repair it: ``mark_stopped``. What it must *not* do is report the corpse
+        as unhealthy and leave the belief standing. ``/health`` answering 503 is a
+        request to the gateway to stop sending traffic, and traffic is the only
+        thing that was going to repair a stale ``ready`` — the reconcile in
+        ``_forward_with_body`` runs on the request path. A 503 here would therefore
+        cut its own repair path and hold the replica out of rotation until the idle
+        timer fired on activity that had already stopped: up to IDLE_TIMEOUT, 24
+        minutes on the shipped units, over a backend the very next request would
+        have restarted in seconds. ``stopped`` is the honest answer and the contract
+        already gives it a 200: not down, startable on demand.
+
+        An *absent* container is not this finding and is not acted on:
+        ``_inspect_state`` degrades an unreachable daemon to the same reading, and a
+        docker hiccup must not demote a serving replica. The probe below still
+        catches a genuinely dead one.
+
+        (b) The container runs but the backend is not serving. The eight minutes
+        where every request hung: ``state == "ready"``, container up, scheduler
+        making no forward progress. Nothing here can repair that — the wedge is
+        sglang's, and its own watchdog resolves it by SIGQUIT at 300s — so this is
+        the sub-case ``/health`` exists to report, and the only one that 503s.
+        ``HEALTH_PROBE_STRIKES`` consecutive failures are required, and either the
+        probe has already succeeded once for this container or its warmup budget is
+        spent (see ``_health_probed_ok`` and HEALTH_PROBE_WARMUP), so neither a
+        single blip nor a cold start can deregister a replica.
+
+        Recovery is one good probe, so the verdict can never outlive the condition
+        it describes. That matters more than it looks: the gateway samples
+        ``/health`` on a 300-second timer, and unlike sub-case (a) this one really
+        does clear itself without traffic — ``/health_generate`` submits its own
+        one-token generate, so a wedge that lifts is observed on the next tick even
+        with the replica fully drained.
+        """
+        if state is not None and state.exists and not state.running:
+            log.warning(
+                "[%s] Container %s is %s while this proxy still reported the backend "
+                "ready; releasing that belief so the next request launches a fresh "
+                "container instead of forwarding into a corpse.",
+                self.model_name,
+                self.container,
+                state.status or "not running",
+            )
+            self.mark_stopped()
+            return
+
+        probe = self._probe_forward_progress()
+        if probe is None:
+            return
+        if probe:
+            with self._lock:
+                self._health_probed_ok = True
+                if self._health_reason is not None:
+                    log.info(
+                        "[%s] Backend %s is answering again; clearing the %s verdict.",
+                        self.model_name,
+                        self.container,
+                        self._health_reason,
+                    )
+                self._health_reason = None
+                self._health_detail = None
+                self._health_since = None
+                self._health_strikes = 0
+            return
+        with self._lock:
+            answered_once = self._health_probed_ok
+        if answered_once:
+            detail = (
+                f"{HEALTH_PROBE_PATH} on port {self.backend_port} answered earlier and has "
+                f"now failed {HEALTH_PROBE_STRIKES} consecutive checks; the container is up "
+                f"but is producing nothing"
+            )
+        else:
+            detail = (
+                f"{HEALTH_PROBE_PATH} on port {self.backend_port} has never answered, and the "
+                f"{HEALTH_PROBE_WARMUP:.0f}s warmup budget is spent; the container is up but "
+                f"has produced nothing since this proxy took it over"
+            )
+        self._latch_unserving("no_forward_progress", detail)
+
+    def _latch_unserving(self, reason: str, detail: str) -> None:
+        """Count one failed probe and, at the threshold, publish the verdict.
+
+        Timed from the *first* bad observation rather than from the threshold, so
+        ``unhealthy_for_seconds`` in the response body tells a postmortem when the
+        backend stopped serving, not when this proxy got around to saying so.
+
+        The cold-load suppression below is what keeps a 6-14 minute start from
+        deregistering its own replica, and it is bounded on purpose. "The probe has
+        never succeeded here" is a fair reading of a container this proxy just
+        launched and a false one for a container it *adopted*: ``ensure_running``
+        promotes an adopted backend to ``ready`` on ``_backend_healthy``, i.e.
+        ``/v1/models``, which is precisely the endpoint a wedged sglang keeps
+        answering. So a proxy restarted mid-wedge inherits the wedge with the latch
+        unearned, and an unbounded excuse would hide it for as long as the process
+        lived. Past HEALTH_PROBE_WARMUP from ``_health_grace_since`` the silence
+        stops being warmup.
+        """
+        with self._lock:
+            if self._health_strikes == 0:
+                self._health_since = time.monotonic()
+            self._health_strikes += 1
+            if (
+                not self._health_probed_ok
+                and time.monotonic() - self._health_grace_since < HEALTH_PROBE_WARMUP
+            ):
+                return
+            if self._health_strikes < HEALTH_PROBE_STRIKES or self._health_reason == reason:
+                return
+            self._health_reason = reason
+            self._health_detail = detail
+        log.warning(
+            "[%s] Backend %s is ready but not serving (%s): %s. GET /health now reports "
+            "this deployment unhealthy so the gateway can drain it.",
+            self.model_name,
+            self.container,
+            reason,
+            detail,
+        )
+
+    def _disown_if_replaced(self, state: _ContainerState) -> bool:
         """Drop a ``ready`` state that refers to a container someone else replaced.
 
         The gap this closes. ``_proxy`` forwards a request straight to
@@ -1997,13 +2324,10 @@ class BackendManager:
         discards ``_container_id``, and the start path refuses on it. What the next
         request then does depends on which reading fired: a foreign label 502s naming
         both owners, an id mismatch 502s naming the two containers.
+
+        ``state`` is the tick's one inspect, read by ``_watch_inspect`` and shared
+        with the serving re-check rather than paid for twice.
         """
-        try:
-            state = self._inspect_state()
-        except Exception as exc:  # docker unreachable: not evidence of a takeover
-            self._log_inspect_failure(exc)
-            return False
-        self._inspect_failure = None
         reason = self._stale_ownership_reason(state)
         if reason is None:
             return False
@@ -2190,6 +2514,14 @@ class BackendManager:
         )
 
     def _idle_watcher(self) -> None:
+        """Poll a ``ready`` backend: whose container is it, is it serving, is it idle.
+
+        Also where ``GET /health``'s verdict is computed, because this thread is
+        already awake every ``min(10, IDLE_TIMEOUT / 2)`` seconds, already runs only
+        while a backend is ``ready``, and already pays a ``docker inspect`` per tick —
+        so the health signal costs one sub-second HTTP call and nothing at all on the
+        request path. The handler then reads a cached answer (``health_report``).
+        """
         while True:
             time.sleep(min(10, IDLE_TIMEOUT / 2))
             with self._lock:
@@ -2198,15 +2530,26 @@ class BackendManager:
                         return
                     continue
                 idle_for = time.monotonic() - self._last_activity
-            # Outside the lock: this issues a `docker inspect`, and holding the lock
-            # across it would stall every request thread reading `.state` for the
-            # length of a daemon round trip. Before the idle check, because a backend
-            # whose container someone else replaced has nothing left to idle-stop.
-            if self._disown_if_replaced():
+            # Outside the lock: this issues a `docker inspect` and an HTTP probe, and
+            # holding the lock across either would stall every request thread reading
+            # `.state` for the length of the round trip. Before the idle check,
+            # because a backend whose container someone else replaced has nothing
+            # left to idle-stop.
+            state = self._watch_inspect()
+            if state is not None and self._disown_if_replaced(state):
                 return
+            self._recheck_serving(state)
             if idle_for >= IDLE_TIMEOUT:
                 with self._lock:
                     if self._state != "ready":
+                        continue
+                    # Re-read rather than trust `idle_for`: it was measured before
+                    # the inspect and the forward-progress probe, and the probe
+                    # blocks for the whole HEALTH_PROBE_TIMEOUT exactly when the
+                    # backend is slow. A request that arrived in that window has
+                    # already been forwarded, and tearing its container down under
+                    # it is the one thing the ready fast path cannot survive.
+                    if time.monotonic() - self._last_activity < IDLE_TIMEOUT:
                         continue
                 self._stop_container()
                 return
@@ -2300,12 +2643,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._handle_models_list()
             return
 
-        # The routing layer's HealthMonitor probes the origin root at GET
-        # /health with no API key and expects 200 (see apps/backend/routing/
-        # health.py). The proxy lazily starts backends on demand, so liveness of
-        # the proxy itself means the deployment is available — a backend that is
-        # idle-stopped is not "down". Answer 200 here without auth; otherwise the
-        # health check 401s and the gateway marks every local model unhealthy.
+        # The routing layer's HealthMonitor probes the origin root at GET /health
+        # with no API key and expects 200 (see apps/backend/routing/health.py), so
+        # this stays before `_check_api_key`: a 401 here marks every local model
+        # unhealthy.
+        #
+        # It used to answer 200 unconditionally, on the reasoning that the proxy
+        # starts backends on demand so its own liveness is what the gateway is
+        # asking about. On 2026-08-09 that reasoning cost eight minutes of an
+        # outage: the sglang scheduler on h200b wedged, every request hung until
+        # the 300s forward timeout, and this endpoint went on answering 200
+        # throughout — the one signal the gateway polls said the replica was fine
+        # while nothing it sent there could ever return.
+        #
+        # So the answer is now about the backends, but only in the one direction
+        # that is honest. Idle-stopped and cold-loading stay 200: lazy start is the
+        # design, a DeepSeek-class cold start takes 6-14 minutes, and the warmup
+        # SSE stream needs requests to keep arriving to finish it — reporting those
+        # as down would deregister the replica for the whole load. 503 is reserved
+        # for the case nothing here can repair: a backend this proxy calls ready,
+        # whose container is up, that has stopped producing anything. A ready
+        # belief over a container that has *exited* is not reported but fixed —
+        # `_recheck_serving` demotes it, and `stopped` is a 200 because the next
+        # request starts it. See `_recheck_serving`, which forms the verdict on the
+        # idle watcher's tick, and `_handle_health`, which only reads it.
         if self.path == "/health" and self.command == "GET":
             self._handle_health()
             return
@@ -2356,13 +2717,56 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self._forward_with_body(backend, body)
 
     def _handle_health(self) -> None:
-        """Return 200 while the proxy is alive (unauthenticated liveness probe).
+        """Answer the gateway's unauthenticated probe from cached backend verdicts.
 
-        Reports the proxy's own liveness, not any backend's, because backends
-        start on demand — an idle-stopped backend is healthy, just not loaded.
+        200 unless some backend this proxy calls ``ready`` is demonstrably not
+        serving; a backend that is idle-stopped or still cold-loading is not
+        "down", it is exactly what a lazy proxy is for. The 200 body is left as
+        the bare ``{"status": "ok"}`` it has always been, because other callers
+        parse it.
+
+        The 503 body is the part worth having: which backend, what it is doing
+        instead of serving, and how long it has been doing it. During the incident
+        the journal recorded only that ``/health`` returned 200 while requests
+        timed out, so reconstructing what the proxy believed and when took the
+        container's own logs. Whatever answers this next time should not need them.
+
+        Runs no docker command and issues no HTTP call. The gateway allows this
+        handler two seconds (``timeout: 2`` in
+        ``distributions/freeinference/config/routing.yaml``) and scores a slow
+        answer exactly as it scores a 503, so a probe that did any I/O would fail
+        itself first during the very wedge it exists to report — every other thread
+        is parked in a 300s ``urlopen`` by then.
+
+        One verdict covers every backend this proxy fronts, which is not a
+        simplification but the only shape the caller can consume: ``HealthMonitor``
+        rewrites whatever endpoint it was given to ``scheme://netloc/health``
+        (``_check_once`` in apps/backend/routing/health.py) and stores one boolean
+        per origin, so a proxy serving two models — ``ops/local_deployment_proxy/
+        models.json`` fronts a chat model and an embedding model on one listener —
+        has no channel to say which of them is unwell. The cost is real: a wedged
+        chat model deregisters the local route of the embedding model beside it,
+        which is then served from whatever other route it has. What bounds that
+        cost is how narrow the 503 is. It needs a backend this proxy calls
+        ``ready``, whose container is running, which answered the probe (or has
+        outlived its warmup budget) and has since failed HEALTH_PROBE_STRIKES in a
+        row — a live wedge, nothing else. In particular a dead container no longer
+        reaches here at all: ``_recheck_serving`` demotes it to ``stopped``, which
+        is a 200. Narrowing this further means giving the gateway a per-model health
+        signal, which is a change to the gateway, not to this file.
         """
-        payload = _json.dumps({"status": "ok"}).encode()
-        self.send_response(200)
+        unhealthy = [
+            report for mgr in _backends.values() if (report := mgr.health_report()) is not None
+        ]
+        if unhealthy:
+            payload = _json.dumps({"status": "unhealthy", "backends": unhealthy}).encode()
+            status = 503
+        else:
+            payload = _json.dumps({"status": "ok"}).encode()
+            status = 200
+        # Hand-built rather than `send_error`, which answers text/html: the gateway
+        # and the operator both read this as JSON.
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -2428,6 +2832,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
         target = f"http://localhost:{backend.backend_port}{self.path}"
         headers = {k: v for k, v in self.headers.items() if k.lower() != "host"}
         req = Request(target, data=body if body else None, headers=headers, method=self.command)
+        # Whether a status line has gone out yet. A failure after that point cannot
+        # be retried (the client would get two responses concatenated) and cannot be
+        # reported with `send_error`, which the stdlib documents as callable only
+        # before any output — and both are now reachable, because the reconcile
+        # below catches read-side failures that used to fall through untouched.
+        committed = False
         try:
             with urlopen(req, timeout=300) as resp:
                 is_streaming = resp.headers.get("Content-type", "").startswith("text/event-stream")
@@ -2437,6 +2847,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         continue
                     self.send_header(key, val)
                 self.end_headers()
+                committed = True
                 if is_streaming:
                     _copy_stream(resp, self.wfile)
                 else:
@@ -2460,14 +2871,39 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body_bytes)))
             self.end_headers()
             self.wfile.write(body_bytes)
-        except URLError as exc:
+        except (URLError, TimeoutError, RemoteDisconnected) as exc:
             # A connection error here means the backend port is dead. A backend
             # can die outside the proxy's control (crash, OOM, the sglang
             # scheduler exiting on an internal error) while the proxy still
             # believes it is "ready" — so it would 502 forever. Reconcile: if
             # the container really is gone, reset state, relaunch, and retry the
-            # request once. urlopen fails before any client bytes are written,
-            # so a single retry is safe (no partially-sent response).
+            # request once.
+            #
+            # `TimeoutError` and `RemoteDisconnected` are here because on
+            # 2026-08-09 this reconcile never ran at all. urllib wraps only the
+            # `OSError` raised by `h.request()`; anything raised by
+            # `h.getresponse()` or by a body read propagates unwrapped, so a
+            # forward that timed out or that died as the container exited landed
+            # in the generic handler below instead — which is exactly why the
+            # journal for that hour reads `code 500, message timed out` and
+            # `code 500, message Remote end closed connection without response`
+            # rather than the 502 this branch emits. The proxy therefore went on
+            # believing a dead backend was ready for 73 seconds.
+            #
+            # The retry is gated on nothing having been sent yet. `urlopen` fails
+            # before any client bytes are written, but a read timeout mid-SSE does
+            # not: the status line is already out, so a second response would be
+            # concatenated onto the first.
+            if committed:
+                log.warning(
+                    "[%s] Forward failed after the response was committed (%s); "
+                    "the client sees a truncated stream. Leaving reconciliation to "
+                    "the next request.",
+                    backend.model_name,
+                    exc,
+                )
+                self.close_connection = True
+                return
             if allow_restart and not backend.alive():
                 log.warning(
                     "[%s] Backend unreachable (%s) and container is not running; "
@@ -2485,6 +2921,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
             self.send_error(502, f"Backend error: {exc}")
         except Exception as exc:
+            if committed:
+                # Same reason as above, and the commonest cause here is the client
+                # hanging up mid-stream, which is not the backend's fault and has
+                # no one left to report it to.
+                log.info("[%s] Stream ended early: %s", backend.model_name, exc)
+                self.close_connection = True
+                return
             self.send_error(500, str(exc))
 
     def do_GET(self) -> None:
