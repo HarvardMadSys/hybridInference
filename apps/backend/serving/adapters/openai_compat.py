@@ -86,6 +86,20 @@ def _normalize_text_content(content: Any) -> Any:
     return "\n".join(p for p in parts if p)
 
 
+def _caller_role() -> str | None:
+    """Return the requesting user's role, or None for an unrestricted caller.
+
+    Set by the API-key auth dependency on the request context. Absent for
+    internal callers with no user identity (health probes, warmups, the admin
+    playground), which the key pool treats as unrestricted — a reserved key is
+    kept away from lower *tiers*, not from the gateway's own machinery.
+    """
+    from serving.utils import context as req_ctx
+
+    role = req_ctx.get().get("user_role")
+    return role if isinstance(role, str) and role else None
+
+
 def _key_pool_provider_label(config: Any) -> str:
     """Return a stable operator-facing provider label for key-pool errors/logs."""
     provider = getattr(config, "provider", None)
@@ -189,7 +203,7 @@ class OpenAICompatAdapter(BaseAdapter):
         self._key_pool = KeyPool(keys=seed, provider_label=self._key_pool_provider_label)
         return self._key_pool
 
-    def add_runtime_key(self, key: str) -> bool:
+    def add_runtime_key(self, key: str, *, min_role: str | None = None) -> bool:
         """Attach a runtime-managed API key, creating the pool if needed.
 
         Single-key adapters are constructed without a ``KeyPool`` (the legacy
@@ -199,6 +213,10 @@ class OpenAICompatAdapter(BaseAdapter):
         the env-configured key and the new key keep serving traffic. The
         request path reads ``self._key_pool`` per request, so the promotion is
         picked up without a restart.
+
+        ``min_role`` reserves the new key for that tier and above; the adapter's
+        own static key is always seeded unreserved, since a route configured
+        with a single env credential must keep serving every tier.
 
         Returns True once the key is attached (always, for pool-capable
         adapters).
@@ -213,9 +231,13 @@ class OpenAICompatAdapter(BaseAdapter):
                 seed.append(static.strip())
             if normalized not in seed:
                 seed.append(normalized)
-            self._key_pool = KeyPool(keys=seed, provider_label=self._key_pool_provider_label)
+            self._key_pool = KeyPool(
+                keys=seed,
+                provider_label=self._key_pool_provider_label,
+                min_roles={normalized: min_role} if min_role else None,
+            )
             return True
-        self._key_pool.add_key(normalized)
+        self._key_pool.add_key(normalized, min_role=min_role)
         return True
 
     def _apply_supported_passthrough_params(
@@ -360,17 +382,22 @@ class OpenAICompatAdapter(BaseAdapter):
 
         affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
         provider = self._key_pool_provider_label
+        role = _caller_role()
 
-        # Bound the loop to pool size — defensive; acquire already filters
-        # muted keys, so we shouldn't reacquire the same just-muted one.
-        max_attempts = self._key_pool.size()
+        # Bound the loop to the number of keys this caller may use — defensive;
+        # acquire already filters muted and higher-tier-reserved keys, so we
+        # shouldn't reacquire the same just-muted one.
+        max_attempts = self._key_pool.size(role)
         if max_attempts <= 0:
-            raise KeyPoolExhausted(f"No active API keys for provider {provider!r}")
+            raise KeyPoolExhausted(
+                f"No active API keys for provider {provider!r} available to "
+                f"role={role or 'unrestricted'}"
+            )
         last_error: BaseException | None = None
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key)
+                api_key, lease = self._key_pool.acquire(affinity_key, role=role)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",
@@ -487,14 +514,18 @@ class OpenAICompatAdapter(BaseAdapter):
 
         affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
         provider = self._key_pool_provider_label
-        max_attempts = self._key_pool.size()
+        role = _caller_role()
+        max_attempts = self._key_pool.size(role)
         if max_attempts <= 0:
-            raise KeyPoolExhausted(f"No active API keys for provider {provider!r}")
+            raise KeyPoolExhausted(
+                f"No active API keys for provider {provider!r} available to "
+                f"role={role or 'unrestricted'}"
+            )
         last_error: BaseException | None = None
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key)
+                api_key, lease = self._key_pool.acquire(affinity_key, role=role)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",

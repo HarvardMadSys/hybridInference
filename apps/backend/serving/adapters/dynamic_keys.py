@@ -268,7 +268,12 @@ def disable_env_key_for_provider(provider: str, key: str, key_hash: str) -> int:
         return updated
 
 
-def _attach_key_to_adapter_locked(adapter: object, key: str, disabled_hashes: set[str]) -> bool:
+def _attach_key_to_adapter_locked(
+    adapter: object,
+    key: str,
+    disabled_hashes: set[str],
+    min_role: str | None = None,
+) -> bool:
     """Attach *key* to a single adapter, promoting it to a pool if needed.
 
     Pool-capable adapters (``add_runtime_key``) lazily create a ``KeyPool``
@@ -277,6 +282,10 @@ def _attach_key_to_adapter_locked(adapter: object, key: str, disabled_hashes: se
     expose a pool but predate ``add_runtime_key`` fall back to ``add_key``.
     Returns True when the key was attached.
 
+    ``min_role`` carries the key's tier reservation (None = shared by every
+    tier), so a key added or re-enabled at runtime lands in the pool at the tier
+    it was persisted with instead of being silently demoted to shared.
+
     Promotion re-seeds the adapter's static ``api_key`` into the new pool. If
     an admin has disabled that env key (tracked by hash), it must not silently
     come back into rotation — so any disabled env key is dropped from the pool
@@ -284,13 +293,13 @@ def _attach_key_to_adapter_locked(adapter: object, key: str, disabled_hashes: se
     """
     pool = getattr(adapter, "_key_pool", None)
     if pool is not None:
-        pool.add_key(key)
+        pool.add_key(key, min_role=min_role)
         attached = True
     else:
         attach = getattr(adapter, "add_runtime_key", None)
         if not callable(attach):
             return False
-        attached = bool(attach(key))
+        attached = bool(attach(key, min_role=min_role))
         pool = getattr(adapter, "_key_pool", None)
     if attached and pool is not None and disabled_hashes:
         for existing in pool.snapshot_keys():
@@ -405,7 +414,7 @@ def enable_env_key_for_provider(provider: str, key_hash: str) -> int:
         return updated
 
 
-def add_key_to_provider(provider: str, key: str) -> int:
+def add_key_to_provider(provider: str, key: str, min_role: str | None = None) -> int:
     """Attach *key* to every pool-capable adapter registered for *provider*.
 
     Returns the number of adapters the key was attached to. A return value of
@@ -416,6 +425,10 @@ def add_key_to_provider(provider: str, key: str) -> int:
     Adapters configured with a single ``api_key`` are promoted to a pool on
     first runtime key (seeded with the original key), so dashboard-added keys
     are used without requiring the route to pre-declare ``api_keys``.
+
+    ``min_role`` reserves the key for that role and above; None (the default)
+    leaves it shared by every tier, and on a re-add leaves an existing slot's
+    reservation untouched.
 
     The key is tracked as DB-injected so a future ``remove_key_from_provider``
     call can distinguish it from env-configured keys that happen to share
@@ -432,10 +445,22 @@ def add_key_to_provider(provider: str, key: str) -> int:
             1
             for adapter in adapters
             if id(adapter) not in disabled_ids
-            and _attach_key_to_adapter_locked(adapter, key, disabled)
+            and _attach_key_to_adapter_locked(adapter, key, disabled, min_role)
         )
         _db_injected_keys.setdefault(provider, set()).add(key)
         return attached
+
+
+def set_key_min_role_for_provider(provider: str, key: str, min_role: str) -> int:
+    """Re-tier a live key in every pool for *provider*, returning pools updated.
+
+    Applies an admin's reservation change without a restart. A pool that does
+    not hold the key is skipped, so this is safe to call for a key that is
+    currently disabled (it picks up the new tier when re-enabled).
+    """
+    with _lock:
+        pools = _pools_for_provider_locked(provider)
+        return sum(1 for pool in pools if pool.set_key_min_role(key, min_role))
 
 
 def mark_db_key_for_provider(provider: str, key: str) -> None:
@@ -536,9 +561,25 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
             continue
         if not keys:
             continue
+        # Tier reservations are looked up alongside the raw keys. A failure here
+        # is not fatal: seeding the keys as shared keeps inference working, which
+        # matters more than honoring a reservation the DB would not hand over.
+        try:
+            min_roles = await operational_store.list_provider_key_min_roles(
+                provider,
+                exclude_ids=route_bound_key_ids,
+            )
+        except Exception as exc:
+            logger.warning(
+                "dynamic_keys: failed to load key tier reservations for provider=%s; "
+                "seeding keys as unreserved: %s",
+                provider,
+                exc,
+            )
+            min_roles = {}
         added = 0
         for key in keys:
-            added += add_key_to_provider(provider, key)
+            added += add_key_to_provider(provider, key, min_roles.get(key))
         if added:
             logger.info(
                 "dynamic_keys: seeded %d DB key(s) into provider=%s pools",

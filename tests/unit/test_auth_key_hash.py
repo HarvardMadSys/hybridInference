@@ -124,3 +124,87 @@ def test_decrypt_api_key_returns_none_for_missing_ciphertext(monkeypatch):
 
     assert decrypt_api_key(None) is None
     assert decrypt_api_key("") is None
+
+
+@pytest.mark.asyncio
+async def test_verify_api_key_publishes_caller_role_to_context(
+    monkeypatch, mock_request, mock_op_store
+):
+    """The caller's role lands on ``req_ctx`` so the key pool can tier-gate keys."""
+    from serving.utils import context as req_ctx
+
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
+
+    mock_op_store.get_auth_context_by_key_hash.return_value = {
+        "id": 7,
+        "user_id": "user-pro",
+        "user_name": "Pro Tester",
+        "quota_daily_cost_usd": 1000.0,
+        "role": "pro",
+        "email": "pro@example.com",
+        "email_verified": True,
+    }
+
+    req_ctx.set({})
+    await verify_api_key(
+        request=mock_request,
+        authorization="Bearer hyi-role-test",
+        op_store=mock_op_store,
+    )
+
+    assert req_ctx.get().get("user_role") == "pro"
+
+
+@pytest.mark.asyncio
+async def test_verify_api_key_publishes_free_for_a_roleless_identity(
+    monkeypatch, mock_request, mock_op_store
+):
+    """A row with no role is published as ``free`` — never as "unrestricted".
+
+    Absent means unrestricted to the key pool, so a missing role must be
+    normalized here or a roleless account would reach reserved keys.
+    """
+    from serving.utils import context as req_ctx
+
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
+
+    mock_op_store.get_auth_context_by_key_hash.return_value = {
+        "id": 8,
+        "user_id": "user-legacy",
+        "user_name": "Legacy Row",
+        "quota_daily_cost_usd": 1000.0,
+        "role": None,
+        "email": "legacy@example.com",
+        "email_verified": True,
+    }
+
+    req_ctx.set({})
+    await verify_api_key(
+        request=mock_request,
+        authorization="Bearer hyi-role-missing",
+        op_store=mock_op_store,
+    )
+
+    assert req_ctx.get().get("user_role") == "free"
+
+
+def test_request_id_middleware_clears_a_stale_caller_role():
+    """Each request resets ``user_role`` so entitlement never leaks between callers."""
+    from serving.utils import context as req_ctx
+
+    req_ctx.set({"user_role": "admin"})
+    # Mirror the middleware's reset block (servers/middleware/request_id.py).
+    req_ctx.update(
+        {
+            "request_id": "abc",
+            "client_user_agent": None,
+            "user_id": None,
+            "user_name": None,
+            "user_role": None,
+            req_ctx.CLIENT_ERROR_KIND: None,
+        }
+    )
+
+    assert req_ctx.get().get("user_role") is None

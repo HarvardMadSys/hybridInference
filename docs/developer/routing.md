@@ -199,6 +199,49 @@ five minutes (sliding TTL). Goals:
 **Metrics:** `routing_affinity_events_total{event,model}` with events
 `hit | miss | created | expired | dropped_error | dropped_unavailable`.
 
+## Reserving upstream keys for a tier
+
+A provider key can be reserved for a user role and above, so premium upstream
+capacity is not spent by the free tier. Reservation lives on the key, not on the
+model: the model catalog's `required_role` decides *what* a user may call, while
+a key's `min_role` decides *whose* requests may spend that credential.
+
+Each key in a `KeyPool` carries a `min_role`, defaulting to `free` — no
+reservation. Anything higher (`pro`, `internal`, `admin`) makes the key invisible
+to callers below it:
+
+- **Selection.** Reserved keys are filtered out for callers that do not meet
+  `min_role`. Among the keys a caller *may* use, the most-reserved go first, so
+  an entitled caller drains the capacity set aside for it before falling back to
+  the keys every tier shares.
+- **Affinity.** A binding is dropped when the bound key is re-tiered above the
+  caller, so an entitlement change takes effect on the next request.
+- **Mute / rotation.** The sole-remaining-key backoff is judged against the keys
+  the *leaseholder* could rotate to. A pro-only key is not a fallback for a
+  free-tier request, so it cannot cancel the free tier's blip protection.
+- **Exhaustion.** A caller whose usable keys are all muted (or who has none)
+  gets `KeyPoolExhausted`, which the router treats as an upstream failure and
+  fails over to the next provider in the chain.
+
+The caller's role reaches the pool through `req_ctx["user_role"]`, published by
+the API-key auth dependency. Requests with no user identity — health probes,
+warmups, the admin playground — carry no role and are treated as unrestricted:
+reservation withholds capacity from lower *tiers*, not from the gateway's own
+machinery (a probe blocked by a reservation would mark the endpoint unhealthy and
+take the route down for the entitled users too).
+
+**Managing it:** the admin dashboard's *Provider Keys* tab has a "Reserved for"
+column, backed by `POST /admin/provider-keys/{id}/min-role`; new keys accept
+`min_role` on `POST /admin/provider-keys`. Changes apply to the live pools
+immediately — no restart. Two limits worth knowing:
+
+- **Env-sourced keys are always shared.** The reservation lives on the
+  `provider_api_keys` row, so a key configured through `<PROVIDER>_API_KEY` has
+  nowhere to carry one. Add it as a DB key to reserve it.
+- **Route-bound keys ignore `min_role`.** A key pinned to a provider route via
+  `api_key_id` is handed to that route's adapter directly rather than through the
+  shared pool, so access is governed by the model's `required_role` instead.
+
 ## Migration Notes
 
 For users migrating from older versions:

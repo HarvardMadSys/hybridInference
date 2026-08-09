@@ -685,12 +685,22 @@ class PostgresOperationalStore(OperationalStore):
                 status TEXT NOT NULL DEFAULT 'active'
                     CHECK (status IN ('active', 'disabled')),
                 created_by TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                min_role TEXT NOT NULL DEFAULT 'free'
             )
         """)
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_provider_api_keys_provider_status "
             "ON provider_api_keys(provider, status)"
+        )
+        # Tier reservation: the lowest role allowed to spend the key. Added
+        # after the table shipped, so migrate rather than assume. No CHECK
+        # constraint — the role vocabulary lives in ``VALID_ROLES`` and is
+        # enforced at the admin API; a future role must not require a DDL lock
+        # on a table the request path reads at boot.
+        await conn.execute(
+            "ALTER TABLE provider_api_keys "
+            "ADD COLUMN IF NOT EXISTS min_role TEXT NOT NULL DEFAULT 'free'"
         )
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS provider_definitions (
@@ -3216,6 +3226,7 @@ class PostgresOperationalStore(OperationalStore):
         label: str | None,
         created_by: str | None,
         key_id: str | None = None,
+        min_role: str = "free",
     ) -> str:
         """Insert a new provider API key row. Returns the row uuid."""
         import uuid
@@ -3226,14 +3237,15 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO provider_api_keys "
-                "(id, provider, api_key, key_prefix, label, created_by) "
-                "VALUES ($1, $2, $3, $4, $5, $6)",
+                "(id, provider, api_key, key_prefix, label, created_by, min_role) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 key_id,
                 provider,
                 api_key,
                 prefix,
                 label,
                 created_by,
+                _validated_min_role(min_role),
             )
         return key_id
 
@@ -3355,13 +3367,13 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             if provider is None:
                 rows = await conn.fetch(
-                    "SELECT id, provider, key_prefix, label, status, created_at "
+                    "SELECT id, provider, key_prefix, label, status, created_at, min_role "
                     "FROM provider_api_keys "
                     "ORDER BY created_at DESC"
                 )
             else:
                 rows = await conn.fetch(
-                    "SELECT id, provider, key_prefix, label, status, created_at "
+                    "SELECT id, provider, key_prefix, label, status, created_at, min_role "
                     "FROM provider_api_keys WHERE provider = $1 "
                     "ORDER BY created_at DESC",
                     provider,
@@ -3374,6 +3386,7 @@ class PostgresOperationalStore(OperationalStore):
                 label=r["label"],
                 status=r["status"],
                 created_at=r["created_at"],
+                min_role=r["min_role"] or "free",
             )
             for r in rows
         ]
@@ -3405,6 +3418,33 @@ class PostgresOperationalStore(OperationalStore):
                 )
         return [r["api_key"] for r in rows]
 
+    async def list_provider_key_min_roles(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> dict[str, str]:
+        """Return ``{raw_key: min_role}`` for active keys of *provider*."""
+        excluded = sorted(exclude_ids or set())
+        async with self._pool.acquire() as conn:
+            if excluded:
+                rows = await conn.fetch(
+                    "SELECT api_key, min_role FROM provider_api_keys "
+                    "WHERE provider = $1 AND status = 'active' "
+                    "AND NOT (id = ANY($2::text[])) "
+                    "ORDER BY created_at ASC",
+                    provider,
+                    excluded,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT api_key, min_role FROM provider_api_keys "
+                    "WHERE provider = $1 AND status = 'active' "
+                    "ORDER BY created_at ASC",
+                    provider,
+                )
+        return {r["api_key"]: (r["min_role"] or "free") for r in rows}
+
     async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
         """Return ``(provider, raw_key)`` for *key_id*, or None if absent."""
         async with self._pool.acquire() as conn:
@@ -3415,6 +3455,27 @@ class PostgresOperationalStore(OperationalStore):
         if row is None:
             return None
         return (row["provider"], row["api_key"])
+
+    async def get_provider_key_min_role(self, key_id: str) -> str | None:
+        """Return the row's ``min_role``, or None when the row is absent."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT min_role FROM provider_api_keys WHERE id = $1",
+                key_id,
+            )
+        if row is None:
+            return None
+        return row["min_role"] or "free"
+
+    async def set_provider_key_min_role(self, key_id: str, min_role: str) -> bool:
+        """Re-tier a provider key row. Returns True when a row was updated."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "UPDATE provider_api_keys SET min_role = $2 WHERE id = $1",
+                key_id,
+                _validated_min_role(min_role),
+            )
+        return _parse_command_tag_count(tag) > 0
 
     async def set_provider_key_status(self, key_id: str, status: str) -> bool:
         """Set a provider key row's status. Returns True when a row was updated."""
@@ -3500,3 +3561,17 @@ def _mask_provider_key(api_key: str) -> str:
     if len(api_key) >= 16:
         return f"{api_key[:8]}...{api_key[-4:]}"
     return "***configured***"
+
+
+def _validated_min_role(min_role: str | None) -> str:
+    """Return a valid provider-key ``min_role``, rejecting unknown roles.
+
+    Fail-closed on writes: persisting a role the gateway cannot interpret would
+    silently reserve a key for nobody (``has_role`` never passes an unknown
+    requirement), taking upstream capacity offline.
+    """
+    if min_role is None:
+        return "free"
+    if min_role not in VALID_ROLES:
+        raise ValueError(f"invalid provider key min_role: {min_role!r}")
+    return min_role

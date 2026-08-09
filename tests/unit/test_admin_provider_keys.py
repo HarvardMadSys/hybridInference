@@ -107,6 +107,7 @@ class _StubStore:
         label: str | None,
         created_by: str | None,
         key_id: str | None = None,
+        min_role: str = "free",
     ) -> str:
         if key_id is None:
             key_id = f"id-{len(self.rows) + 1}"
@@ -118,6 +119,7 @@ class _StubStore:
             label=label,
             status="active",
             created_at=_NOW,
+            min_role=min_role,
         )
         self.raw.setdefault(provider, []).append((key_id, api_key))
         return key_id
@@ -146,6 +148,30 @@ class _StubStore:
         if row is None:
             return False
         row.status = status
+        return True
+
+    async def list_provider_key_min_roles(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> dict[str, str]:
+        excluded = exclude_ids or set()
+        return {
+            raw: self.rows[kid].min_role
+            for kid, raw in self.raw.get(provider, [])
+            if kid not in excluded and kid in self.rows and self.rows[kid].status == "active"
+        }
+
+    async def get_provider_key_min_role(self, key_id: str) -> str | None:
+        row = self.rows.get(key_id)
+        return None if row is None else row.min_role
+
+    async def set_provider_key_min_role(self, key_id: str, min_role: str) -> bool:
+        row = self.rows.get(key_id)
+        if row is None:
+            return False
+        row.min_role = min_role
         return True
 
     async def list_all_provider_route_configs(self) -> list[dict]:
@@ -257,6 +283,9 @@ async def client(monkeypatch, store):
         "get_provider_key_full",
         "delete_provider_key",
         "set_provider_key_status",
+        "list_provider_key_min_roles",
+        "get_provider_key_min_role",
+        "set_provider_key_min_role",
         "disable_provider_env_key",
         "list_disabled_provider_env_key_hashes",
         "list_disabled_provider_env_keys",
@@ -1619,3 +1648,174 @@ async def test_by_ref_unknown_provider_rejected(client):
         headers=AUTH,
     )
     assert resp.status_code == 400, resp.text
+
+
+@pytest.mark.asyncio
+async def test_add_key_with_min_role_reserves_it_in_the_pool(client):
+    """A key added as pro-only lands in the pool reserved, and reads back so."""
+    http, store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    api_key = "sk-zai-reserved-ffffffffffff"
+    resp = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": api_key, "min_role": "pro"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["key"]["min_role"] == "pro"
+    assert pool.snapshot_min_roles()[api_key] == "pro"
+    # The env key it joined stays shared.
+    assert pool.snapshot_min_roles()["env-key-original-1234567890"] == "free"
+    assert store.rows[resp.json()["key"]["id"]].min_role == "pro"
+
+
+@pytest.mark.asyncio
+async def test_add_key_defaults_to_shared(client):
+    """Omitting min_role keeps the key usable by every tier."""
+    http, _store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    api_key = "sk-zai-shared-gggggggggggg"
+    resp = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": api_key},
+        headers=AUTH,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["key"]["min_role"] == "free"
+    assert pool.snapshot_min_roles()[api_key] == "free"
+
+
+@pytest.mark.asyncio
+async def test_set_min_role_retiers_live_pool_and_row(client):
+    """The min-role endpoint updates the DB row and every live pool."""
+    http, store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    api_key = "sk-zai-retier-hhhhhhhhhhhh"
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": api_key},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+
+    resp = await http.post(
+        f"/admin/provider-keys/{key_id}/min-role",
+        json={"min_role": "pro"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["min_role"] == "pro"
+    assert body["pools_updated"] == 1
+    assert pool.snapshot_min_roles()[api_key] == "pro"
+    assert store.rows[key_id].min_role == "pro"
+
+    # Releasing it back to every tier works the same way.
+    back = await http.post(
+        f"/admin/provider-keys/{key_id}/min-role",
+        json={"min_role": "free"},
+        headers=AUTH,
+    )
+    assert back.status_code == 200, back.text
+    assert pool.snapshot_min_roles()[api_key] == "free"
+    assert store.rows[key_id].min_role == "free"
+
+    # The change is auditable.
+    actions = [entry.get("action") for entry in store.audit]
+    assert actions.count("set_provider_key_min_role") == 2
+
+
+@pytest.mark.asyncio
+async def test_set_min_role_rejects_unknown_role(client):
+    """The role vocabulary is closed — an unknown tier is a 422, not a silent no-op."""
+    http, _store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": "sk-zai-badrole-iiiiiiiiiiii"},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+
+    resp = await http.post(
+        f"/admin/provider-keys/{key_id}/min-role",
+        json={"min_role": "superuser"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_set_min_role_unknown_key_is_404(client):
+    http, _store = client
+    resp = await http.post(
+        "/admin/provider-keys/nope/min-role",
+        json={"min_role": "pro"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_re_enabling_a_reserved_key_keeps_its_reservation(client):
+    """Disable/enable must not silently demote a pro-only key to shared."""
+    http, _store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    api_key = "sk-zai-cycle-jjjjjjjjjjjj"
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": api_key, "min_role": "internal"},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+
+    await http.post(f"/admin/provider-keys/{key_id}/disable", headers=AUTH)
+    assert api_key not in pool.snapshot_keys()
+
+    en = await http.post(f"/admin/provider-keys/{key_id}/enable", headers=AUTH)
+    assert en.status_code == 200, en.text
+    assert pool.snapshot_min_roles()[api_key] == "internal"
+
+
+@pytest.mark.asyncio
+async def test_env_keys_are_listed_as_shared(client):
+    """Env-sourced keys carry no reservation — they surface as 'free'."""
+    http, _store = client
+    env_key = "env-zai-shared-cccccccccccc"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="env-shared-model",
+            name="env-shared-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[env_key],
+            provider_model_id="env-shared-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    resp = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    assert resp.status_code == 200, resp.text
+    env_entries = [k for k in resp.json()["keys"] if k["source"] == "env"]
+    assert env_entries
+    assert all(k["min_role"] == "free" for k in env_entries)

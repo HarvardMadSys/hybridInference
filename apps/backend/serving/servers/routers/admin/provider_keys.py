@@ -25,6 +25,8 @@ from serving.schemas_admin import (
     ProviderApiKeyItem,
     ProviderKeyByRefRequest,
     ProviderKeyByRefResponse,
+    SetProviderApiKeyMinRoleRequest,
+    SetProviderApiKeyMinRoleResponse,
     SetProviderApiKeyStatusResponse,
     VerifyProviderApiKeyRequest,
     VerifyProviderApiKeyResponse,
@@ -140,6 +142,7 @@ async def list_provider_keys(
                 source="db",
                 status=row.status,
                 created_at=row.created_at,
+                min_role=row.min_role,  # type: ignore[arg-type]
             )
         )
 
@@ -266,9 +269,14 @@ async def add_provider_key(
         api_key=api_key,
         label=payload.label,
         created_by=admin_id,
+        min_role=payload.min_role,
     )
 
-    pools_updated = dynamic_keys.add_key_to_provider(payload.provider, api_key)
+    pools_updated = dynamic_keys.add_key_to_provider(
+        payload.provider,
+        api_key,
+        payload.min_role,
+    )
     if pools_updated == 0:
         # The key is persisted but no live adapter accepted it, so it will not
         # be used for inference. Surface it loudly instead of reporting success.
@@ -289,6 +297,7 @@ async def add_provider_key(
             "provider": payload.provider,
             "key_prefix": _mask(api_key),
             "label": payload.label,
+            "min_role": payload.min_role,
             "pools_updated": pools_updated,
         },
     )
@@ -307,6 +316,7 @@ async def add_provider_key(
             source="db",
             status=new_row.status,
             created_at=new_row.created_at,
+            min_role=new_row.min_role,  # type: ignore[arg-type]
         ),
         pools_updated=pools_updated,
     )
@@ -764,7 +774,10 @@ async def enable_provider_key(
     if not updated:
         raise HTTPException(404, f"Provider key {key_id!r} not found")
 
-    pools_updated = dynamic_keys.add_key_to_provider(provider, raw_key)
+    # Re-inject at the tier the row was reserved for — re-enabling a pro-only key
+    # must not quietly hand it back to every tier.
+    min_role = await op_store.get_provider_key_min_role(key_id)
+    pools_updated = dynamic_keys.add_key_to_provider(provider, raw_key, min_role)
     if pools_updated == 0:
         logger.warning(
             "provider key %r re-enabled but attached to 0 pools for provider %r",
@@ -789,6 +802,61 @@ async def enable_provider_key(
         id=key_id,
         provider=provider,
         status="active",
+        pools_updated=pools_updated,
+    )
+
+
+@router.post("/provider-keys/{key_id}/min-role", response_model=SetProviderApiKeyMinRoleResponse)
+async def set_provider_key_min_role(
+    key_id: str,
+    payload: SetProviderApiKeyMinRoleRequest,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> SetProviderApiKeyMinRoleResponse:
+    """Reserve a DB-sourced provider key for a tier (or release it back to all).
+
+    ``min_role="free"`` un-reserves the key. Anything higher makes it invisible
+    to callers below that role: they neither select it nor fall back to it, and a
+    key reserved above every live user simply sits idle. Applied to the live
+    pools immediately — no restart. Env-sourced keys cannot be re-tiered (they
+    have no row to carry the reservation); add them as DB keys instead.
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    target = await op_store.get_provider_key_full(key_id)
+    if target is None:
+        raise HTTPException(404, f"Provider key {key_id!r} not found")
+    provider, raw_key = target
+
+    updated = await op_store.set_provider_key_min_role(key_id, payload.min_role)
+    if not updated:
+        raise HTTPException(404, f"Provider key {key_id!r} not found")
+
+    pools_updated = dynamic_keys.set_key_min_role_for_provider(
+        provider,
+        raw_key,
+        payload.min_role,
+    )
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "set_provider_key_min_role",
+        None,
+        {
+            "id": key_id,
+            "provider": provider,
+            "key_prefix": _mask(raw_key),
+            "min_role": payload.min_role,
+            "pools_updated": pools_updated,
+        },
+    )
+
+    return SetProviderApiKeyMinRoleResponse(
+        id=key_id,
+        provider=provider,
+        min_role=payload.min_role,
         pools_updated=pools_updated,
     )
 

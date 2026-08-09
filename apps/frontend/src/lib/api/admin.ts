@@ -2230,6 +2230,9 @@ export async function deleteProviderDefinition(
 
 export type ProviderKeySource = 'env' | 'db';
 
+/** Lowest user role allowed to spend a provider key. 'free' = shared by all tiers. */
+export type ProviderKeyMinRole = 'free' | 'pro' | 'internal' | 'admin';
+
 export interface ProviderApiKeyItem {
   id: string | null;
   provider: string;
@@ -2238,6 +2241,7 @@ export interface ProviderApiKeyItem {
   source: ProviderKeySource;
   status: string;
   created_at: string | null;
+  min_role: ProviderKeyMinRole;
 }
 
 export interface ListProviderApiKeysResponse {
@@ -2279,6 +2283,13 @@ export interface SetProviderApiKeyStatusResponse {
   pools_updated: number;
 }
 
+export interface SetProviderApiKeyMinRoleResponse {
+  id: string;
+  provider: string;
+  min_role: ProviderKeyMinRole;
+  pools_updated: number;
+}
+
 export interface VerifyProviderApiKeyResponse {
   ok: boolean;
 }
@@ -2301,6 +2312,7 @@ export async function addProviderKey(
   provider: string,
   apiKey: string,
   label?: string,
+  minRole?: ProviderKeyMinRole,
 ): Promise<AddProviderApiKeyResponse> {
   const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys', {
     method: 'POST',
@@ -2309,9 +2321,27 @@ export async function addProviderKey(
       provider,
       api_key: apiKey,
       ...(label ? { label } : {}),
+      ...(minRole ? { min_role: minRole } : {}),
     }),
   });
   return jsonOrThrow<AddProviderApiKeyResponse>(resp);
+}
+
+/** Reserve a DB-sourced key for a tier ('free' releases it back to every tier). */
+export async function setProviderKeyMinRole(
+  id: string,
+  minRole: ProviderKeyMinRole,
+): Promise<SetProviderApiKeyMinRoleResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/provider-keys/${encodeURIComponent(id)}/min-role`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ min_role: minRole }),
+    },
+  );
+  return jsonOrThrow<SetProviderApiKeyMinRoleResponse>(resp);
 }
 
 export async function verifyProviderKey(

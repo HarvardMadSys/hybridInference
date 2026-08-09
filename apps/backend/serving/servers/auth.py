@@ -35,6 +35,7 @@ from serving.servers.deps import (
     get_log_store,
     get_operational_store,
 )
+from serving.utils import context as req_ctx
 from serving.utils.auth_failure_blocklist import is_ip_blocked, record_auth_failure
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip, get_client_ip_info
@@ -428,6 +429,19 @@ def _is_inference_path(request: Request) -> bool:
     return request.url.path.rstrip("/") in _AGENT_TOKEN_PATHS
 
 
+def _publish_caller_role(user_ctx: dict[str, Any]) -> dict[str, Any]:
+    """Expose the authenticated caller's role on the request context.
+
+    The multi-key pool reads it to skip upstream provider keys reserved for a
+    higher tier (see ``serving.adapters.key_pool``). Published here rather than
+    per-router so every authenticated inference surface — chat completions,
+    ``/v1/messages``, responses, embeddings — is covered by one hop. Returns
+    *user_ctx* unchanged so call sites can wrap their ``return``.
+    """
+    req_ctx.update({"user_role": user_ctx.get("role") or "free"})
+    return user_ctx
+
+
 async def verify_api_key(
     request: Request,
     authorization: str | None = Header(None),
@@ -473,7 +487,9 @@ async def verify_api_key(
             if grants.looks_like_grant_token(presented_key):
                 # The grant path meters against the account's daily quota,
                 # which the legacy branch below this return never reached.
-                return await authenticate_grant_model_call(presented_key, op_store=op_store)
+                return _publish_caller_role(
+                    await authenticate_grant_model_call(presented_key, op_store=op_store)
+                )
         except AgentQuotaExceeded as exc:
             # Same body and headers as the direct path's 429, from the same
             # builder: a caller must not be able to tell which door it used.
@@ -492,12 +508,14 @@ async def verify_api_key(
     # Check if auth is enabled
     if not is_user_auth_enabled():
         # Auth disabled - allow all, mark as anonymous
-        return {
-            "user_id": "anonymous",
-            "role": "admin",
-            "authenticated": False,
-            "is_admin": True,
-        }
+        return _publish_caller_role(
+            {
+                "user_id": "anonymous",
+                "role": "admin",
+                "authenticated": False,
+                "is_admin": True,
+            }
+        )
 
     caller, key_hash = await _authenticate_by_api_key(request, authorization, x_api_key, op_store)
     # The presented key is always the one whose last_used we touch, even when the
@@ -568,22 +586,24 @@ async def verify_api_key(
 
     # Return user context for the attributed identity.
     user_role = identity.get("role") or "free"
-    return {
-        "user_id": effective_user_id,
-        "user_name": identity.get("user_name"),
-        "role": user_role,
-        "authenticated": True,
-        "quota_daily_cost_usd": quota_daily_cost_usd,
-        "spent_today_usd": cost_spent,
-        "quota_remaining_cost_usd": quota_daily_cost_usd - cost_spent,
-        "is_admin": user_role == "admin",
-        "disabled_models": get_disabled_models_from_preferences(identity.get("preferences")),
-        "max_concurrent_requests": identity.get("max_concurrent_requests"),
-        # key_hash identifies the specific hyi-xxx key in use (a user may
-        # have multiple). Used as the affinity key for multi-key API rotation;
-        # stays the presented key even when acting on behalf of another user.
-        "auth_key_hash": key_hash,
-    }
+    return _publish_caller_role(
+        {
+            "user_id": effective_user_id,
+            "user_name": identity.get("user_name"),
+            "role": user_role,
+            "authenticated": True,
+            "quota_daily_cost_usd": quota_daily_cost_usd,
+            "spent_today_usd": cost_spent,
+            "quota_remaining_cost_usd": quota_daily_cost_usd - cost_spent,
+            "is_admin": user_role == "admin",
+            "disabled_models": get_disabled_models_from_preferences(identity.get("preferences")),
+            "max_concurrent_requests": identity.get("max_concurrent_requests"),
+            # key_hash identifies the specific hyi-xxx key in use (a user may
+            # have multiple). Used as the affinity key for multi-key API rotation;
+            # stays the presented key even when acting on behalf of another user.
+            "auth_key_hash": key_hash,
+        }
+    )
 
 
 async def verify_api_key_for_balance(

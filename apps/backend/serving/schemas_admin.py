@@ -1849,6 +1849,14 @@ class ProviderApiKeyItem(BaseModel):  # type: ignore[no-any-unimported]
     source: Literal["env", "db"]
     status: str = "active"
     created_at: datetime | None = None
+    min_role: Literal["free", "pro", "internal", "admin"] = Field(
+        "free",
+        description=(
+            "Lowest user role allowed to spend this key. 'free' means every tier "
+            "shares it; anything higher reserves it for that tier and above. "
+            "Env-sourced keys are always 'free'."
+        ),
+    )
 
 
 class ListProviderApiKeysResponse(BaseModel):  # type: ignore[no-any-unimported]
@@ -1870,6 +1878,13 @@ class AddProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     provider: str = Field(..., min_length=1, max_length=64)
     api_key: str = Field(..., min_length=1, max_length=4096)
     label: str | None = Field(None, max_length=255)
+    min_role: Literal["free", "pro", "internal", "admin"] = Field(
+        "free",
+        description=(
+            "Reserve this key for the given role and above. Default 'free' keeps "
+            "it shared by every tier."
+        ),
+    )
 
 
 class VerifyProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
@@ -1934,6 +1949,24 @@ class SetProviderApiKeyStatusResponse(BaseModel):  # type: ignore[no-any-unimpor
     provider: str
     status: Literal["active", "disabled"]
     pools_updated: int
+
+
+class SetProviderApiKeyMinRoleRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for ``POST /admin/provider-keys/{id}/min-role``."""
+
+    min_role: Literal["free", "pro", "internal", "admin"]
+
+
+class SetProviderApiKeyMinRoleResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for re-tiering a DB-sourced provider API key."""
+
+    id: str
+    provider: str
+    min_role: Literal["free", "pro", "internal", "admin"]
+    pools_updated: int = Field(
+        ...,
+        description="Number of in-process key pools whose copy of the key was re-tiered",
+    )
 
 
 class ProviderKeyByRefRequest(BaseModel):  # type: ignore[no-any-unimported]

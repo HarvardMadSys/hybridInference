@@ -29,6 +29,9 @@ class ProviderKeyRow:
     label: str | None
     status: str
     created_at: datetime
+    # Lowest user role allowed to spend this key. ``"free"`` (the default) means
+    # every tier shares it; anything higher reserves the key for that tier and up.
+    min_role: str = "free"
 
 
 @dataclass
@@ -1088,11 +1091,13 @@ class OperationalStore(ABC):
         label: str | None,
         created_by: str | None,
         key_id: str | None = None,
+        min_role: str = "free",
     ) -> str:
         """Insert a new upstream provider API key row.
 
         When ``key_id`` is supplied the caller-provided UUID is used instead
-        of generating a new one. Returns the row id.
+        of generating a new one. ``min_role`` reserves the key for that role and
+        above (``"free"`` = shared by every tier). Returns the row id.
         """
 
     @abstractmethod
@@ -1126,6 +1131,36 @@ class OperationalStore(ABC):
         live pool at boot. ``exclude_ids`` omits DB rows that are bound to
         explicit provider-route configs/candidates, so route-scoped keys are not
         injected into a provider's global pool during boot.
+        """
+
+    @abstractmethod
+    async def list_provider_key_min_roles(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> dict[str, str]:
+        """Return ``{raw_key: min_role}`` for active keys of *provider*.
+
+        Companion to ``list_provider_keys_full`` for the boot-time loader, which
+        needs each key's tier reservation to seed the pool with it. Same
+        filtering (active only, ``exclude_ids`` omitted).
+        """
+
+    @abstractmethod
+    async def get_provider_key_min_role(self, key_id: str) -> str | None:
+        """Return the row's ``min_role``, or None when the row is absent.
+
+        Used by the admin enable path, which must re-inject a key at the tier it
+        was reserved for rather than silently demoting it to shared.
+        """
+
+    @abstractmethod
+    async def set_provider_key_min_role(self, key_id: str, min_role: str) -> bool:
+        """Re-tier a provider key row. Returns True when a row was updated.
+
+        Used by the admin min-role endpoint; the caller syncs the live key pools
+        separately.
         """
 
     @abstractmethod
