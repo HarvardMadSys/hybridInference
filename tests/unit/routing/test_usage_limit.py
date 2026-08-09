@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from routing.usage_limit import detect_usage_limit
+from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 
 NOW = datetime(2026, 7, 30, 20, 0, 0, tzinfo=timezone.utc)
 
@@ -46,6 +46,8 @@ def test_reset_phrase_without_rate_limit_is_a_usage_limit():
     limit = detect_usage_limit("Your limit will reset at 2026-07-30 22:45:10", now=NOW)
     assert limit is not None
     assert limit.reset_at == datetime(2026, 7, 30, 22, 45, 10, tzinfo=timezone.utc)
+    # Declared 2h45m out, so the 4h floor governs how long we stay quiet.
+    assert limit.suppress_until == NOW + MIN_ALERT_GAP
 
 
 def test_explicit_reset_timestamp_wins_over_window():
@@ -58,6 +60,7 @@ def test_explicit_reset_timestamp_wins_over_window():
     assert limit.reset_at == datetime(2026, 7, 30, 22, 45, 10, tzinfo=timezone.utc)
     # The named window still supplies a human label.
     assert limit.window == "5 hour"
+    assert limit.suppress_until == NOW + MIN_ALERT_GAP
 
 
 def test_explicit_reset_timestamp_with_zone_normalized_to_utc():
@@ -65,6 +68,7 @@ def test_explicit_reset_timestamp_with_zone_normalized_to_utc():
     limit = detect_usage_limit(detail, now=NOW)
     assert limit is not None
     assert limit.reset_at == datetime(2026, 7, 30, 20, 45, 10, tzinfo=timezone.utc)
+    assert limit.suppress_until == NOW + MIN_ALERT_GAP
 
 
 def test_weekly_window_without_timestamp():
@@ -76,20 +80,25 @@ def test_weekly_window_without_timestamp():
     assert limit is not None
     assert limit.window == "weekly"
     assert limit.reset_at == NOW + timedelta(weeks=1)
+    # Comfortably past the floor, so the window itself drives the mute.
+    assert limit.suppress_until == NOW + timedelta(weeks=1)
 
 
 def test_hour_window_count_without_timestamp():
     limit = detect_usage_limit("Usage limit reached for 5 hours.", now=NOW)
     assert limit is not None
     assert limit.reset_at == NOW + timedelta(hours=5)
+    assert limit.suppress_until == NOW + timedelta(hours=5)
     assert limit.window == "5 hour"
 
 
-def test_usage_limit_without_window_uses_default():
+def test_usage_limit_without_window_claims_no_reset_and_holds_the_floor():
     limit = detect_usage_limit("Your subscription limit has been reached.", now=NOW)
     assert limit is not None
     assert limit.window == "unspecified"
-    assert limit.reset_at == NOW + timedelta(hours=1)
+    # Nothing to report as the provider's own reset — we do not invent one.
+    assert limit.reset_at is None
+    assert limit.suppress_until == NOW + MIN_ALERT_GAP
 
 
 def test_past_explicit_timestamp_falls_back_to_named_window():
@@ -99,21 +108,26 @@ def test_past_explicit_timestamp_falls_back_to_named_window():
     limit = detect_usage_limit(detail, now=NOW)
     assert limit is not None
     assert limit.reset_at == NOW + timedelta(hours=5)
+    assert limit.suppress_until == NOW + timedelta(hours=5)
 
 
-def test_reset_clamped_to_max_window():
-    # A monthly window (~31d) is capped to the 8-day suppression ceiling.
+def test_suppression_capped_to_max_window():
+    # A monthly window (~31d) is capped to the 8-day suppression ceiling, while
+    # the reported reset stays the raw estimate rather than a capped fiction.
     limit = detect_usage_limit("reached your monthly usage limit", now=NOW)
     assert limit is not None
-    assert limit.reset_at == NOW + timedelta(days=8)
+    assert limit.suppress_until == NOW + timedelta(days=8)
+    assert limit.reset_at == NOW + timedelta(days=31)
 
 
-def test_reset_floored_to_min_window():
+def test_suppression_floored_to_min_alert_gap():
     soon = (NOW + timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S")
     limit = detect_usage_limit(f"usage limit reached; limit will reset at {soon}", now=NOW)
     assert limit is not None
-    # A near-immediate reset is floored so re-alerts don't thrash.
-    assert limit.reset_at == NOW + timedelta(minutes=5)
+    # A near-immediate reset is floored so re-alerts don't thrash, but the
+    # provider's own claim is still reported unfloored.
+    assert limit.suppress_until == NOW + MIN_ALERT_GAP
+    assert limit.reset_at == NOW + timedelta(seconds=30)
 
 
 def test_today_is_not_parsed_as_a_daily_window():
@@ -121,4 +135,22 @@ def test_today_is_not_parsed_as_a_daily_window():
     limit = detect_usage_limit("usage limit reached, try again today", now=NOW)
     assert limit is not None
     assert limit.window == "unspecified"
-    assert limit.reset_at == NOW + timedelta(hours=1)
+    assert limit.reset_at is None
+    assert limit.suppress_until == NOW + MIN_ALERT_GAP
+
+
+def test_minimax_token_plan_names_no_window_and_holds_the_floor():
+    # The production text behind the alert storm this floor exists for: a plan
+    # exhaustion naming neither a reset timestamp nor a window, which used to
+    # fall back to one hour and re-page ~5x across MiniMax's real 5h window.
+    detail = (
+        '{"type":"error","error":{"type":"rate_limit_error","message":'
+        '"Token Plan usage limit reached: Upgrade your Token Plan or purchase '
+        'Credits for more usage. (2056)","http_code":"429"}}'
+    )
+    limit = detect_usage_limit(detail, now=NOW)
+    assert limit is not None
+    # "rate_limit_error" must not disqualify it — the usage marker wins.
+    assert limit.window == "unspecified"
+    assert limit.reset_at is None
+    assert limit.suppress_until == NOW + MIN_ALERT_GAP
