@@ -264,15 +264,31 @@ class KeyPool:
         existing slot is reactivated and returned. Otherwise a new slot is
         appended. ``min_role`` reserves the key for that tier and above; passing
         None on a re-add leaves an existing slot's reservation untouched.
+
+        Bindings are re-evaluated whenever this changes what the pool holds, not
+        only when a tier moves. Re-enabling a reserved key restores its slot with
+        the tier it already had, so a tier-only check sees nothing to do — while an
+        entitled caller that fell back to a shared key during the outage would keep
+        draining it for the rest of the affinity TTL, with its reserved key sitting
+        available again.
         """
+        now = time.monotonic()
         with self._lock:
             for idx, state in enumerate(self._keys):
-                if state.key == key:
-                    state.removed = False
-                    if min_role is not None:
-                        state.min_role = normalize_min_role(min_role)
-                    return idx
+                if state.key != key:
+                    continue
+                reactivated = state.removed
+                state.removed = False
+                retiered = False
+                if min_role is not None:
+                    normalized = normalize_min_role(min_role)
+                    retiered = state.min_role != normalized
+                    state.min_role = normalized
+                if reactivated or retiered:
+                    self._drop_repointed_affinities_locked(now)
+                return idx
             self._keys.append(_KeyState(key=key, min_role=normalize_min_role(min_role)))
+            self._drop_repointed_affinities_locked(now)
             return len(self._keys) - 1
 
     def set_key_min_role(self, key: str, min_role: str | None) -> bool:
@@ -319,27 +335,45 @@ class KeyPool:
         preferred_by_role: dict[str | None, int | None] = {}
         stale: list[str] = []
         for affinity_key, entry in self._affinity.items():
+            bound = self._keys[entry.key_index]
+            # Gone for good: the slot is tombstoned, so this binding can never be
+            # honored again. Distinct from *muted*, which is transient — a binding to
+            # a cooling-down key is merely inert, since ``acquire`` re-picks around it
+            # without consulting it, and keeping it preserves the caller's return to
+            # that key once the mute lifts.
+            if bound.removed or not _role_may_use(entry.role, bound):
+                stale.append(affinity_key)
+                continue
             if entry.role not in preferred_by_role:
                 preferred_by_role[entry.role] = self._pick_first_available_locked(now, entry.role)
-            if preferred_by_role[entry.role] != entry.key_index:
+            preferred = preferred_by_role[entry.role]
+            # Nothing usable for this role right now: leave the binding be rather
+            # than churn it for a choice that does not exist.
+            if preferred is None:
+                continue
+            if preferred != entry.key_index:
                 stale.append(affinity_key)
         for affinity_key in stale:
             del self._affinity[affinity_key]
 
     def remove_key(self, key: str) -> bool:
-        """Mark a key as removed and drop affinity entries pointing at it.
+        """Mark a key as removed and re-evaluate bindings.
 
         Returns True if the key was present and removed, False otherwise.
         Slots are tombstoned (not popped) so existing key indices remain
         stable for in-flight leases.
+
+        Bindings pointing at the departing key obviously have to go, but so do any
+        whose *preferred* key it was standing in front of — removing a key shifts
+        selection for every role that could use it, the mirror of what re-adding one
+        does.
         """
+        now = time.monotonic()
         with self._lock:
-            for idx, state in enumerate(self._keys):
+            for _idx, state in enumerate(self._keys):
                 if state.key == key and not state.removed:
                     state.removed = True
-                    stale = [k for k, a in self._affinity.items() if a.key_index == idx]
-                    for k in stale:
-                        del self._affinity[k]
+                    self._drop_repointed_affinities_locked(now)
                     return True
             return False
 

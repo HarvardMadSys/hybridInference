@@ -434,3 +434,57 @@ def test_same_role_still_reuses_its_binding(monkeypatch):
     second, _ = pool.acquire("user-A", role="pro")
     assert first == second
     assert pool.affinity_count() == 1
+
+
+def test_re_enabling_a_reserved_key_reclaims_its_entitled_callers(monkeypatch):
+    """Reactivation restores the tier unchanged, so a tier-only check sees nothing.
+
+    Meanwhile the pro caller that fell back to a shared key during the outage would
+    keep draining it for the rest of the affinity TTL, with its reserved key
+    available again.
+    """
+    pool = _pool(shared="free", reserved="pro")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    assert pool.acquire("pro-user", role="pro")[0] == "reserved"
+    assert pool.remove_key("reserved") is True
+    assert pool.acquire("pro-user", role="pro")[0] == "shared"
+
+    # Same tier it had; only membership changed.
+    pool.add_key("reserved")
+    assert pool.acquire("pro-user", role="pro")[0] == "reserved"
+
+
+def test_adding_a_new_reserved_key_reclaims_entitled_callers(monkeypatch):
+    """A brand-new slot moves preference too, not only a reactivated one."""
+    pool = _pool(shared="free")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    assert pool.acquire("pro-user", role="pro")[0] == "shared"
+    pool.add_key("fresh-reserved", min_role="pro")
+    assert pool.acquire("pro-user", role="pro")[0] == "fresh-reserved"
+
+
+def test_a_binding_to_a_muted_key_survives_an_unrelated_removal(monkeypatch):
+    """Muted is transient, removed is not — only the latter invalidates a binding.
+
+    Dropping a binding to a cooling-down key would cost the caller its return to
+    that key once the mute lifts, and buys nothing: acquire re-picks around a muted
+    key without consulting the binding.
+    """
+    pool = _pool(k0="free", k1="free")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429)  # mute k0, user-A still bound to it
+    assert pool.acquire("user-B")[0] == "k1"
+
+    assert pool.remove_key("k1") is True
+    # user-A keeps its binding (k0 is only muted); user-B's pointed at k1 and goes.
+    assert pool.affinity_count() == 1
+
+    fake_now[0] += KeyPool.MUTE_SECONDS + 1
+    assert pool.acquire("user-A")[0] == "k0"

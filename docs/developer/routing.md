@@ -214,9 +214,12 @@ to callers below it:
   `min_role`. Among the keys a caller *may* use, the most-reserved go first, so
   an entitled caller drains the capacity set aside for it before falling back to
   the keys every tier shares.
-- **Affinity.** A binding is honored only for the role that created it, and a tier
-  change drops every binding whose *preferred* key moved — not only bindings
-  pointing at the re-tiered key. Both directions matter: a caller no
+- **Affinity.** A binding is honored only for the role that created it, and any
+  change to what the pool holds — a tier moving, a key added, re-enabled or removed
+  — drops every binding whose *preferred* key moved, not only bindings pointing at
+  the key that changed. A binding to a merely *muted* key survives, because that
+  state is transient and `acquire` re-picks around it without consulting the
+  binding; a binding to a *removed* one always goes. Both directions matter: a caller no
   longer entitled to its bound key must be re-picked, and a caller that should now
   prefer a newly reserved key must stop draining the shared capacity that
   reservation exists to protect — otherwise it would keep doing so for the rest of
