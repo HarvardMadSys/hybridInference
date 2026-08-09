@@ -59,3 +59,27 @@ def test_no_contract_variable_ships_a_value() -> None:
         if name in CONTRACT_VARS and value.strip():
             populated.append(name)
     assert not populated, f"these ship a value in .env.example: {populated}"
+
+
+def test_the_moved_half_is_not_still_offered() -> None:
+    """No `AGENT_*` entry survives here — nothing in this repository reads one.
+
+    H4 removed the cloud agent from the gateway, and with it every reader of
+    the dispatcher token, the egress tiers, and the GitHub App and GitLab
+    OAuth credentials. Leaving those entries in `.env.example` would have an
+    operator provisioning a GitHub App for a service this repository no longer
+    runs, and reading the silence afterwards as a broken integration.
+
+    Assignments only. The section that replaced them names the variables in
+    prose, so that an upgrading deployment knows what to carry across rather
+    than concluding the feature was withdrawn.
+    """
+    offered = sorted(
+        line.partition("=")[0]
+        for line in ENV_EXAMPLE.read_text().splitlines()
+        if line.startswith("AGENT_") and "=" in line
+    )
+    assert not offered, (
+        "these are still offered in .env.example, but nothing in this "
+        f"repository reads them after H4: {offered}"
+    )

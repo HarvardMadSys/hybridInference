@@ -33,23 +33,30 @@ MANIFEST = Path(__file__).resolve().parent / "public_export_manifest.yaml"
 # waiting forever turns a release check into a hung terminal.
 GIT_TIMEOUT_SEC = 60
 
-_PATCH_GATE = REPO / "apps" / "backend" / "serving" / "agent_jobs" / "patch_gate.py"
+_SECRET_PATTERNS = REPO / "ops" / "release" / "secret_patterns.py"
 
 
 def _shared_credential_patterns() -> dict[str, re.Pattern[str]]:
-    """Reuse the agent sandbox's credential shapes instead of restating them.
+    """Load the credential shapes this audit refuses to publish.
 
-    Two scanners with two hand-written lists drift, and the drift is invisible
-    until the one that matters misses something: this audit had no Slack token,
-    no agent-worker token, no PEM header, and required a longer key than a real
-    one has. Loading the module by path keeps this script standalone — it is
-    run as `python ops/release/public_export.py`, with no PYTHONPATH and no
-    installed package — and patch_gate.py imports nothing outside the standard
-    library, which is a condition a test pins.
+    One hand-written list, not two: the drift between two is invisible until
+    the one that matters misses something. This audit once had no Slack token,
+    no PEM header, and wanted a longer key than a real one has.
+
+    These lived in the agent sandbox's patch gate until that moved to its own
+    repository (task H4) — which is exactly why they now have a home of their
+    own here rather than being loaded from whatever file happens to hold them.
+    A scanner whose pattern source can be deleted by an unrelated change is a
+    scanner that silently stops scanning while the green check keeps arriving.
+
+    Loading by path keeps this script standalone: it runs as
+    `python ops/release/public_export.py`, with no PYTHONPATH and no installed
+    package, so the module it loads may import nothing beyond the standard
+    library. A test pins that.
     """
-    spec = importlib.util.spec_from_file_location("_hi_patch_gate", _PATCH_GATE)
+    spec = importlib.util.spec_from_file_location("_hi_secret_patterns", _SECRET_PATTERNS)
     if spec is None or spec.loader is None:  # pragma: no cover - unreachable in-tree
-        raise SystemExit(f"cannot load credential patterns from {_PATCH_GATE}")
+        raise SystemExit(f"cannot load credential patterns from {_SECRET_PATTERNS}")
     module = importlib.util.module_from_spec(spec)
     # `@dataclass` resolves annotations through sys.modules[cls.__module__], so
     # a module executed without being registered there raises on its first
@@ -111,7 +118,6 @@ FIXTURES = {
 # is a scanner test.
 SCANNER_TEST_FILES = frozenset(
     {
-        "tests/unit/test_agent_patch_gate.py",
         "tests/unit/test_no_committed_credentials.py",
     }
 )
