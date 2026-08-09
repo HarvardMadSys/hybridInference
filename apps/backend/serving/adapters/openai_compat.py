@@ -19,7 +19,7 @@ from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
-from .key_pool import KeyPool, KeyPoolExhausted
+from .key_pool import KeyPool, KeyPoolExhausted, KeyPoolRoleRestricted
 from .processors import get_processor
 from .profiles import (
     ProviderProfile,
@@ -84,6 +84,20 @@ def _normalize_text_content(content: Any) -> Any:
         if isinstance(text, str):
             parts.append(text)
     return "\n".join(p for p in parts if p)
+
+
+def _caller_role() -> str | None:
+    """Return the requesting user's role, or None for an unrestricted caller.
+
+    Set by the API-key auth dependency on the request context. Absent for
+    internal callers with no user identity (health probes, warmups, the admin
+    playground), which the key pool treats as unrestricted — a reserved key is
+    kept away from lower *tiers*, not from the gateway's own machinery.
+    """
+    from serving.utils import context as req_ctx
+
+    role = req_ctx.get().get(req_ctx.USER_ROLE)
+    return role if isinstance(role, str) and role else None
 
 
 def _key_pool_provider_label(config: Any) -> str:
@@ -168,6 +182,46 @@ class OpenAICompatAdapter(BaseAdapter):
             self._usage_profile = ProviderProfile.DEFAULT
         self._usage_normalizer = get_usage_normalizer(self._usage_profile)
 
+    def _no_usable_key_error(self, provider: str, role: str | None) -> KeyPoolExhausted:
+        """Build the pre-flight "no key for this caller" error, typed by cause.
+
+        Must classify the same way ``KeyPool.acquire`` does — "could this pool serve
+        an unrestricted caller right now" — because the two errors are accounted for
+        differently: a role-restricted refusal is exempt from endpoint health, a
+        genuine exhaustion is not. ``acquire`` asks its cooldown-aware selector, so
+        asking the cooldown-blind ``size`` here would mislabel the case where every
+        key is muted (an endpoint problem) as a tier problem, and quietly excuse it
+        from the breaker.
+        """
+        message = (
+            f"No active API keys for provider {provider!r} available to "
+            f"role={role or 'unrestricted'}"
+        )
+        pool = self._key_pool
+        if pool is not None and role is not None and pool.can_serve_role(None):
+            return KeyPoolRoleRestricted(message)
+        return KeyPoolExhausted(message)
+
+    def has_capacity_for_role(self, role: str | None) -> bool:
+        """Whether this adapter can serve *role* right now.
+
+        Used by surfaces that pick one adapter up front instead of walking the
+        router's fallback chain (``/v1/messages``), so tier reservation cannot
+        turn an otherwise routable request into a hard failure. A pool-less
+        single-``api_key`` adapter carries no reservation and always qualifies.
+
+        Cooldown counts here, unlike in the rotation-bounding ``size`` checks: the
+        caller commits to this adapter and has nowhere to rotate, so an adapter
+        whose only key for this tier is muted must not be preselected while another
+        adapter can serve. Free callers made that newly reachable — a muted shared
+        key alongside a healthy reserved one is a pool that ``size`` calls usable
+        and ``acquire`` does not.
+        """
+        pool = self._key_pool
+        if pool is None:
+            return True
+        return pool.can_serve_role(role)
+
     def ensure_key_pool(self) -> KeyPool | None:
         """Create a pool from the adapter's static keys if it has none yet.
 
@@ -199,6 +253,10 @@ class OpenAICompatAdapter(BaseAdapter):
         the env-configured key and the new key keep serving traffic. The
         request path reads ``self._key_pool`` per request, so the promotion is
         picked up without a restart.
+
+        Keys land untiered: ``dynamic_keys`` owns tier reservations and sweeps the
+        pool right after attaching, so a tier written here would only be a second
+        writer racing that one.
 
         Returns True once the key is attached (always, for pool-capable
         adapters).
@@ -360,17 +418,19 @@ class OpenAICompatAdapter(BaseAdapter):
 
         affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
         provider = self._key_pool_provider_label
+        role = _caller_role()
 
-        # Bound the loop to pool size — defensive; acquire already filters
-        # muted keys, so we shouldn't reacquire the same just-muted one.
-        max_attempts = self._key_pool.size()
+        # Bound the loop to the number of keys this caller may use — defensive;
+        # acquire already filters muted and higher-tier-reserved keys, so we
+        # shouldn't reacquire the same just-muted one.
+        max_attempts = self._key_pool.size(role)
         if max_attempts <= 0:
-            raise KeyPoolExhausted(f"No active API keys for provider {provider!r}")
+            raise self._no_usable_key_error(provider, role)
         last_error: BaseException | None = None
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key)
+                api_key, lease = self._key_pool.acquire(affinity_key, role=role)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",
@@ -487,14 +547,15 @@ class OpenAICompatAdapter(BaseAdapter):
 
         affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
         provider = self._key_pool_provider_label
-        max_attempts = self._key_pool.size()
+        role = _caller_role()
+        max_attempts = self._key_pool.size(role)
         if max_attempts <= 0:
-            raise KeyPoolExhausted(f"No active API keys for provider {provider!r}")
+            raise self._no_usable_key_error(provider, role)
         last_error: BaseException | None = None
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key)
+                api_key, lease = self._key_pool.acquire(affinity_key, role=role)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",

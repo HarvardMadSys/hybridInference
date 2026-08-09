@@ -1849,6 +1849,35 @@ class ProviderApiKeyItem(BaseModel):  # type: ignore[no-any-unimported]
     source: Literal["env", "db"]
     status: str = "active"
     created_at: datetime | None = None
+    min_role: Literal["free", "pro", "internal", "admin"] = Field(
+        "free",
+        description=(
+            "Lowest user role allowed to spend this key, as currently enforced. "
+            "'free' means every tier shares it; anything higher reserves it for that "
+            "tier and above. When two sources declare tiers for the same credential "
+            "the strictest one is reported, because that is the one in force."
+        ),
+    )
+    declared_min_role: Literal["free", "pro", "internal", "admin"] = Field(
+        "free",
+        description=(
+            "The tier *this record* declares, which is what editing it changes. "
+            "Differs from 'min_role' only when another record declares a stricter "
+            "tier for the same credential — another row with the same key, or an env "
+            "reservation for it — since the pool holds one entry per credential and "
+            "enforces the strictest declaration."
+        ),
+    )
+    reservation_only: bool = Field(
+        False,
+        description=(
+            "True for an env entry listed solely to expose its tier reservation, "
+            "because an active DB row holds the same credential. Only the tier is "
+            "editable on such an entry: the DB row is what enables, disables or "
+            "deletes the key, and disabling the env side would tombstone a hash "
+            "while the key kept serving from that row."
+        ),
+    )
 
 
 class ListProviderApiKeysResponse(BaseModel):  # type: ignore[no-any-unimported]
@@ -1870,6 +1899,13 @@ class AddProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     provider: str = Field(..., min_length=1, max_length=64)
     api_key: str = Field(..., min_length=1, max_length=4096)
     label: str | None = Field(None, max_length=255)
+    min_role: Literal["free", "pro", "internal", "admin"] = Field(
+        "free",
+        description=(
+            "Reserve this key for the given role and above. Default 'free' keeps "
+            "it shared by every tier."
+        ),
+    )
 
 
 class VerifyProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
@@ -1934,6 +1970,43 @@ class SetProviderApiKeyStatusResponse(BaseModel):  # type: ignore[no-any-unimpor
     provider: str
     status: Literal["active", "disabled"]
     pools_updated: int
+
+
+class SetProviderApiKeyMinRoleRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for ``POST /admin/provider-keys/{id}/min-role``."""
+
+    min_role: Literal["free", "pro", "internal", "admin"]
+
+
+class SetProviderEnvKeyMinRoleRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for ``POST /admin/provider-keys/min-role-env``.
+
+    Env keys are addressed by ``provider`` + ``env_key_id`` (as with the
+    disable/enable-env endpoints) because they have no row id of their own.
+    """
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    env_key_id: str = Field(..., min_length=1, max_length=128)
+    min_role: Literal["free", "pro", "internal", "admin"]
+
+
+class SetProviderApiKeyMinRoleResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for re-tiering a DB-sourced provider API key."""
+
+    id: str
+    provider: str
+    min_role: Literal["free", "pro", "internal", "admin"]
+    pools_updated: int = Field(
+        ...,
+        description=(
+            "Number of in-process key pools holding this key, each of which now "
+            "enforces the resolved tier. 0 means the key is not in rotation right "
+            "now (disabled, or its env var is gone) — the reservation is stored and "
+            "applies when it returns. Deliberately not a count of pools whose tier "
+            "*changed*: re-applying the tier a key already has is a no-op, and "
+            "reporting 0 for it would read as 'not in rotation'."
+        ),
+    )
 
 
 class ProviderKeyByRefRequest(BaseModel):  # type: ignore[no-any-unimported]

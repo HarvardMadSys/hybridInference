@@ -237,8 +237,31 @@ async def _resolve(
         raise HTTPException(404, f"Model '{model_id}' not found")
     if not route.adapters:
         raise HTTPException(404, f"Model '{model_id}' has no adapters")
-    adapter, _ = route.adapters[0]
+    adapter, _ = _pick_adapter_for_role(route, user_role)
     return canonical, route, adapter
+
+
+def _pick_adapter_for_role(route, user_role: str):
+    """Return the first route adapter that holds a key *user_role* may spend.
+
+    This surface commits to one adapter up front instead of walking the router's
+    fallback chain, so a first adapter whose keys are all reserved above the
+    caller would turn an otherwise routable request into a hard 429 — even with a
+    perfectly usable second provider on the route. Preferring a serviceable
+    adapter keeps tier reservation from costing availability here.
+
+    Falls back to ``adapters[0]`` when no adapter can serve the role, so the
+    resulting error is the same one the caller would have seen before: the
+    request is genuinely unservable, and the adapter raises the 429 the handler
+    already maps.
+    """
+    for entry in route.adapters:
+        candidate = entry[0]
+        has_capacity = getattr(candidate, "has_capacity_for_role", None)
+        # Adapters without a key pool (or predating the check) are always eligible.
+        if not callable(has_capacity) or has_capacity(user_role):
+            return entry
+    return route.adapters[0]
 
 
 # --- Small-budget reasoning-call reroute -----------------------------------

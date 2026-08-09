@@ -19,6 +19,14 @@ CLIENT_ERROR_KIND = "client_error_kind"
 # ourselves, not an upstream provider 404).
 MODEL_NOT_FOUND = "model_not_found"
 
+# req_ctx key holding the authenticated caller's role, published by the API-key
+# auth dependency. Read by the multi-key pool to skip upstream provider keys
+# reserved for a higher tier. Absent means "no user identity" — an internal
+# caller such as a health probe or warmup, which is unrestricted; entitlement is
+# withheld from lower *tiers*, not from the gateway's own machinery. Being in
+# REQUEST_SCOPED_KEYS is what makes "absent" trustworthy.
+USER_ROLE = "user_role"
+
 # req_ctx key naming the upstream that served (or refused) this request.
 PROVIDER = "provider"
 #: Provider label meaning "no upstream was ever selected" — a pre-routing failure.
@@ -41,6 +49,7 @@ REQUEST_SCOPED_KEYS = (
     "client_user_agent",
     "user_id",
     "user_name",
+    USER_ROLE,
     CLIENT_ERROR_KIND,
     PROVIDER,
 )
@@ -139,6 +148,7 @@ __all__ = [
     "PROVIDER",
     "REQUEST_SCOPED_KEYS",
     "ROUTER_PROVIDER_SENTINEL",
+    "USER_ROLE",
     "get",
     "mark_model_not_found",
     "publish_upstream_provider",

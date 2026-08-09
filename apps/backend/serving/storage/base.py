@@ -29,6 +29,9 @@ class ProviderKeyRow:
     label: str | None
     status: str
     created_at: datetime
+    # Lowest user role allowed to spend this key. ``"free"`` (the default) means
+    # every tier shares it; anything higher reserves the key for that tier and up.
+    min_role: str = "free"
 
 
 @dataclass
@@ -1088,11 +1091,13 @@ class OperationalStore(ABC):
         label: str | None,
         created_by: str | None,
         key_id: str | None = None,
+        min_role: str = "free",
     ) -> str:
         """Insert a new upstream provider API key row.
 
         When ``key_id`` is supplied the caller-provided UUID is used instead
-        of generating a new one. Returns the row id.
+        of generating a new one. ``min_role`` reserves the key for that role and
+        above (``"free"`` = shared by every tier). Returns the row id.
         """
 
     @abstractmethod
@@ -1126,6 +1131,52 @@ class OperationalStore(ABC):
         live pool at boot. ``exclude_ids`` omits DB rows that are bound to
         explicit provider-route configs/candidates, so route-scoped keys are not
         injected into a provider's global pool during boot.
+        """
+
+    @abstractmethod
+    async def list_provider_key_values(self, provider: str) -> dict[str, str]:
+        """Return ``{row_id: raw_key}`` for every provider key row, any status.
+
+        Lets a caller holding masked rows work out which of them name the *same*
+        credential — two rows can, and then the tier the pool enforces is the
+        strictest of their declarations, not each row's own. Matching on the masked
+        prefix instead would be ambiguous: keys shorter than 16 characters all mask
+        to the same placeholder.
+        """
+
+    @abstractmethod
+    async def list_provider_key_min_roles(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> dict[str, str]:
+        """Return ``{raw_key: min_role}`` for active keys of *provider*.
+
+        The authority on DB-declared tiers: ``dynamic_keys`` caches this in memory
+        and reconciles the live pools against it. Same filtering as
+        ``list_provider_keys_full`` (active only, ``exclude_ids`` omitted).
+
+        Keyed by raw value, because that is what a pool entry is keyed on and two
+        rows may hold the same credential. Implementations must return the *most
+        restrictive* tier when rows disagree — the pool enforces one tier, and
+        widening it would hand reserved capacity to tiers it was withheld from.
+        """
+
+    @abstractmethod
+    async def get_provider_key_min_role(self, key_id: str) -> str | None:
+        """Return the row's ``min_role``, or None when the row is absent.
+
+        Used by the admin enable path, which must re-inject a key at the tier it
+        was reserved for rather than silently demoting it to shared.
+        """
+
+    @abstractmethod
+    async def set_provider_key_min_role(self, key_id: str, min_role: str) -> bool:
+        """Re-tier a provider key row. Returns True when a row was updated.
+
+        Used by the admin min-role endpoint; the caller syncs the live key pools
+        separately.
         """
 
     @abstractmethod
@@ -1169,6 +1220,41 @@ class OperationalStore(ABC):
         """Remove an env-key tombstone so the key is used again.
 
         Returns True when a tombstone row was deleted.
+        """
+
+    @abstractmethod
+    async def set_provider_env_key_min_role(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        min_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Persist the tier reservation for an env-sourced provider key.
+
+        Keyed by hash because an env credential has no row of its own — the same
+        addressing the disable tombstone uses. ``min_role="free"`` clears the
+        reservation.
+        """
+
+    @abstractmethod
+    async def list_provider_env_key_min_roles(self, provider: str) -> dict[str, str]:
+        """Return ``{key_hash: min_role}`` for reserved env keys of *provider*."""
+
+    @abstractmethod
+    async def list_provider_env_key_reservations(
+        self,
+        provider: str,
+    ) -> list[tuple[str, str, str]]:
+        """Return ``(key_hash, key_prefix, min_role)`` for reserved env keys.
+
+        The prefix is what makes a reservation *presentable* when its credential is
+        not currently configured anywhere — the raw value cannot be recovered then,
+        so the admin view has nothing else to show. Without it such a row is both
+        invisible and unclearable, while still applying the moment the credential
+        returns.
         """
 
 

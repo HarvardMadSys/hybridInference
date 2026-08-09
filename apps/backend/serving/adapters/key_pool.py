@@ -24,6 +24,15 @@ remaining key instead gets a couple of free passes
 exponentially from ``SOLE_KEY_BACKOFF_BASE_SECONDS`` up to the same
 ``MUTE_SECONDS`` ceiling as a sustained failure streak continues.
 
+**Tier reservation.** Each key carries a ``min_role`` (default ``"free"`` — no
+reservation). A caller whose role does not meet a key's ``min_role`` never sees
+that key: it is filtered out of ``acquire``, out ``size``, and out of the
+sole-key bookkeeping in ``release``. Among the keys a caller *can* use,
+reserved keys are preferred over shared ones (highest ``min_role`` first, then
+configuration order), so an entitled caller drains the capacity set aside for
+it before touching the pool every tier shares. ``role=None`` means an
+unrestricted internal caller (health probes, warmups) and sees every key.
+
 See docs/agents/specs/archive/2026-04-30-multi-key-rotation-design.md for the
 original (least-loaded) design this supersedes.
 """
@@ -33,6 +42,8 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+
+from serving.config.settings import ROLE_RANK, has_role
 
 # 4xx statuses that are key-specific (not request-scoped) and so should mute the
 # key and trigger rotation: auth/permission, payment, request-timeout/too-early,
@@ -77,8 +88,44 @@ def is_key_specific_status(status_code: int) -> bool:
     return status_code in _KEY_SPECIFIC_STATUSES
 
 
+DEFAULT_MIN_ROLE = "free"
+
+
+def normalize_min_role(min_role: str | None) -> str:
+    """Return a validated per-key ``min_role``, defaulting to no reservation.
+
+    Unknown or empty values fall back to ``"free"`` (unreserved) rather than
+    raising: a key that cannot be interpreted must keep serving traffic, and the
+    admin API validates the value before it is ever persisted.
+    """
+    if isinstance(min_role, str) and min_role in ROLE_RANK:
+        return min_role
+    return DEFAULT_MIN_ROLE
+
+
 class KeyPoolExhausted(Exception):
-    """Raised by ``KeyPool.acquire`` when every key is in cooldown."""
+    """Raised by ``KeyPool.acquire`` when no key is usable by the caller.
+
+    Either every key is in cooldown, or the ones still usable are all reserved
+    for a higher tier than the caller holds (see ``KeyPoolRoleRestricted``).
+    """
+
+
+class KeyPoolRoleRestricted(KeyPoolExhausted):
+    """No key for *this caller*, though the pool can still serve someone else.
+
+    Split out from plain ``KeyPoolExhausted`` because the two mean opposite
+    things to endpoint health. A pool with nothing usable by anyone is an
+    endpoint problem worth counting against it; a pool that simply holds no key
+    this caller's tier may spend is not — the request never reached the upstream,
+    and the endpoint is happily serving the tiers that own those keys. Counting
+    it would let a burst of lower-tier traffic open the circuit and take reserved
+    capacity away from the callers it was reserved for.
+
+    Subclasses ``KeyPoolExhausted`` so existing handlers (the 429 mapping on the
+    Anthropic surface, the router's fallback chain) keep their behavior without
+    change; only health accounting looks for the distinction.
+    """
 
 
 @dataclass
@@ -87,6 +134,9 @@ class _KeyState:
     request_count: int = 0
     cooldown_until: float = 0.0  # monotonic timestamp
     removed: bool = False
+    # Lowest role allowed to use this key. ``"free"`` (the default) means the
+    # key is shared by every tier; anything higher reserves it.
+    min_role: str = DEFAULT_MIN_ROLE
     # Consecutive mute-worthy failures since the last 2xx, used to back off
     # the sole-remaining-key mute duration (see release()). Reset on success;
     # request-scoped 4xx (never mute-worthy either way) leaves it untouched
@@ -98,14 +148,39 @@ class _KeyState:
 class _Affinity:
     key_index: int
     expires_at: float  # monotonic timestamp
+    # The role this binding was created for. Kept so a tier change can tell whose
+    # *preferred* key moved: reserving a key is supposed to pull entitled traffic
+    # onto it, and a binding made before the change would otherwise hold that
+    # traffic on a shared key for the rest of the TTL.
+    role: str | None = None
+
+
+def _role_may_use(role: str | None, state: _KeyState) -> bool:
+    """Whether a caller holding *role* is entitled to this key.
+
+    ``role=None`` is an unrestricted internal caller (health probe, warmup) and
+    may use any key. Everyone else must meet the key's ``min_role``.
+    """
+    if state.min_role == DEFAULT_MIN_ROLE:
+        return True
+    if role is None:
+        return True
+    return has_role(role, state.min_role)
 
 
 @dataclass
 class Lease:
-    """Round-trip token returned by ``KeyPool.acquire`` and consumed by ``release``."""
+    """Round-trip token returned by ``KeyPool.acquire`` and consumed by ``release``.
+
+    ``role`` is the caller's role at acquire time (None for an unrestricted
+    internal caller). ``release`` replays it so the sole-remaining-key backoff is
+    judged against the keys *this* caller could have rotated to — a key reserved
+    for a higher tier is not a fallback for a free-tier request.
+    """
 
     key_index: int
     affinity_key: str
+    role: str | None = None
 
 
 class KeyPool:
@@ -122,53 +197,183 @@ class KeyPool:
     SOLE_KEY_BACKOFF_THRESHOLD: int = 2
     SOLE_KEY_BACKOFF_BASE_SECONDS: float = 15.0
 
-    def __init__(self, keys: list[str], provider_label: str) -> None:
+    def __init__(
+        self,
+        keys: list[str],
+        provider_label: str,
+        min_roles: dict[str, str] | None = None,
+    ) -> None:
         if not keys:
             raise ValueError("KeyPool requires at least one key")
-        self._keys: list[_KeyState] = [_KeyState(key=k) for k in keys]
+        roles = min_roles or {}
+        # One slot per raw value. Two slots for the same credential would be two
+        # independent tiers and cooldowns for one secret: re-tiering updates the
+        # first, ``snapshot_min_roles`` reports the last, and selection can hand the
+        # still-unreserved duplicate to a caller the reservation excludes. Nothing
+        # upstream guarantees uniqueness — a route's ``api_keys`` in models.yaml can
+        # name two env vars holding the same key — so dedupe here, where the
+        # invariant belongs. First occurrence wins, preserving configured order.
+        deduped: list[str] = []
+        for key in keys:
+            if key not in deduped:
+                deduped.append(key)
+        self._keys: list[_KeyState] = [
+            _KeyState(key=k, min_role=normalize_min_role(roles.get(k))) for k in deduped
+        ]
         self._affinity: dict[str, _Affinity] = {}
         self._lock = threading.Lock()
         self._provider_label = provider_label
 
-    def size(self) -> int:
-        """Return the number of active (non-removed) keys in the pool."""
+    def size(self, role: str | None = None) -> int:
+        """Return how many active (non-removed) keys *role* is allowed to use.
+
+        ``role=None`` counts every active key (unrestricted internal caller).
+        Muted keys still count — this bounds the caller's rotation attempts, and a
+        key that recovers mid-loop should be reachable. Callers asking "could this
+        pool serve a request *right now*" want ``can_serve_role`` instead.
+        """
         with self._lock:
-            return sum(1 for s in self._keys if not s.removed)
+            return sum(1 for s in self._keys if not s.removed and _role_may_use(role, s))
+
+    def can_serve_role(self, role: str | None = None) -> bool:
+        """Whether ``acquire`` could hand *role* a key at this moment.
+
+        Same question ``acquire`` answers, so cooldown counts: a pool whose only
+        key for this caller is muted cannot serve it now, even though ``size``
+        counts that key. Used where a caller is committed to one pool up front and
+        has no rotation loop to recover in — picking a muted pool there turns into a
+        hard failure instead of a fallback.
+        """
+        with self._lock:
+            return self._pick_first_available_locked(time.monotonic(), role) is not None
 
     def snapshot_keys(self) -> list[str]:
         """Return a snapshot of every active key currently in the pool."""
         with self._lock:
             return [s.key for s in self._keys if not s.removed]
 
-    def add_key(self, key: str) -> int:
+    def snapshot_min_roles(self) -> dict[str, str]:
+        """Return ``{key: min_role}`` for every active key in the pool."""
+        with self._lock:
+            return {s.key: s.min_role for s in self._keys if not s.removed}
+
+    def add_key(self, key: str, *, min_role: str | None = None) -> int:
         """Add a key to the pool, returning its slot index.
 
         Idempotent: if ``key`` is already present (active or removed), the
         existing slot is reactivated and returned. Otherwise a new slot is
-        appended.
+        appended. ``min_role`` reserves the key for that tier and above; passing
+        None on a re-add leaves an existing slot's reservation untouched.
+
+        Bindings are re-evaluated whenever this changes what the pool holds, not
+        only when a tier moves. Re-enabling a reserved key restores its slot with
+        the tier it already had, so a tier-only check sees nothing to do — while an
+        entitled caller that fell back to a shared key during the outage would keep
+        draining it for the rest of the affinity TTL, with its reserved key sitting
+        available again.
         """
+        now = time.monotonic()
         with self._lock:
             for idx, state in enumerate(self._keys):
-                if state.key == key:
-                    state.removed = False
-                    return idx
-            self._keys.append(_KeyState(key=key))
+                if state.key != key:
+                    continue
+                reactivated = state.removed
+                state.removed = False
+                retiered = False
+                if min_role is not None:
+                    normalized = normalize_min_role(min_role)
+                    retiered = state.min_role != normalized
+                    state.min_role = normalized
+                if reactivated or retiered:
+                    self._drop_repointed_affinities_locked(now)
+                return idx
+            self._keys.append(_KeyState(key=key, min_role=normalize_min_role(min_role)))
+            self._drop_repointed_affinities_locked(now)
             return len(self._keys) - 1
 
+    def set_key_min_role(self, key: str, min_role: str | None) -> bool:
+        """Re-tier an active key in place. Returns True when a key was updated.
+
+        Every binding whose *preferred* key moved is dropped, so the next request
+        re-picks. That covers two cases, and the second is easy to miss: a caller no
+        longer entitled to the key it is bound to (correctness), and a caller that
+        should now prefer a key it is *not* bound to. Reserving a key exists to pull
+        entitled traffic onto it; without the second case an already-affine pro
+        caller would keep draining shared capacity for the rest of the affinity TTL,
+        which is exactly the capacity the reservation was meant to protect.
+
+        Bindings are only re-evaluated when a declaration actually changes — a rare
+        admin action — so prompt-cache warmth is not disturbed by ordinary traffic.
+        """
+        normalized = normalize_min_role(min_role)
+        found = False
+        now = time.monotonic()
+        with self._lock:
+            changed = False
+            # Every matching slot, not just the first: the constructor dedupes, but
+            # a slot tombstoned by ``remove_key`` keeps its value, so a re-add can
+            # leave two slots for one credential. Updating one of them would leave
+            # the other enforcing a tier nobody declared.
+            for _idx, state in enumerate(self._keys):
+                if state.key != key or state.removed:
+                    continue
+                found = True
+                if state.min_role == normalized:
+                    continue
+                state.min_role = normalized
+                changed = True
+            if changed:
+                self._drop_repointed_affinities_locked(now)
+        return found
+
+    def _drop_repointed_affinities_locked(self, now: float) -> None:
+        """Drop bindings that no longer point at what selection would choose now.
+
+        Takes *now* from the caller so one clock read decides both the re-tier and
+        the re-evaluation, as ``acquire`` does for its own selection.
+        """
+        preferred_by_role: dict[str | None, int | None] = {}
+        stale: list[str] = []
+        for affinity_key, entry in self._affinity.items():
+            bound = self._keys[entry.key_index]
+            # Gone for good: the slot is tombstoned, so this binding can never be
+            # honored again. Distinct from *muted*, which is transient — a binding to
+            # a cooling-down key is merely inert, since ``acquire`` re-picks around it
+            # without consulting it, and keeping it preserves the caller's return to
+            # that key once the mute lifts.
+            if bound.removed or not _role_may_use(entry.role, bound):
+                stale.append(affinity_key)
+                continue
+            if entry.role not in preferred_by_role:
+                preferred_by_role[entry.role] = self._pick_first_available_locked(now, entry.role)
+            preferred = preferred_by_role[entry.role]
+            # Nothing usable for this role right now: leave the binding be rather
+            # than churn it for a choice that does not exist.
+            if preferred is None:
+                continue
+            if preferred != entry.key_index:
+                stale.append(affinity_key)
+        for affinity_key in stale:
+            del self._affinity[affinity_key]
+
     def remove_key(self, key: str) -> bool:
-        """Mark a key as removed and drop affinity entries pointing at it.
+        """Mark a key as removed and re-evaluate bindings.
 
         Returns True if the key was present and removed, False otherwise.
         Slots are tombstoned (not popped) so existing key indices remain
         stable for in-flight leases.
+
+        Bindings pointing at the departing key obviously have to go, but so do any
+        whose *preferred* key it was standing in front of — removing a key shifts
+        selection for every role that could use it, the mirror of what re-adding one
+        does.
         """
+        now = time.monotonic()
         with self._lock:
-            for idx, state in enumerate(self._keys):
+            for _idx, state in enumerate(self._keys):
                 if state.key == key and not state.removed:
                     state.removed = True
-                    stale = [k for k, a in self._affinity.items() if a.key_index == idx]
-                    for k in stale:
-                        del self._affinity[k]
+                    self._drop_repointed_affinities_locked(now)
                     return True
             return False
 
@@ -176,11 +381,16 @@ class KeyPool:
         """Return the number of active per-user affinity entries."""
         return len(self._affinity)
 
-    def acquire(self, affinity_key: str) -> tuple[str, Lease]:
+    def acquire(self, affinity_key: str, *, role: str | None = None) -> tuple[str, Lease]:
         """Return (api_key, lease) for the caller, creating affinity as needed.
 
+        Keys reserved above *role* are invisible to this call — they are neither
+        selected nor honored through an existing affinity binding. ``role=None``
+        is an unrestricted internal caller.
+
         Raises:
-            KeyPoolExhausted: if every key is currently in cooldown.
+            KeyPoolExhausted: if every key the caller may use is in cooldown
+                (or the caller may use none at all).
         """
         now = time.monotonic()
         with self._lock:
@@ -189,43 +399,77 @@ class KeyPool:
             existing = self._affinity.get(affinity_key)
             if existing is not None:
                 bound = self._keys[existing.key_index]
-                # Affinity is honored only when it is still valid AND the
-                # bound key is not cooled down or removed.
-                if now < existing.expires_at and not bound.removed and bound.cooldown_until <= now:
+                # Affinity is honored only when it is still valid AND the bound key
+                # is not cooled down, removed, or reserved above the caller (a role
+                # can change, or the key can be re-tiered, under a live binding) AND
+                # it was created for this same role.
+                #
+                # The role match is what keeps reservation working on surfaces where
+                # an affinity key is shared: ``/v1/messages`` and ``/v1/embeddings``
+                # publish no ``auth_key_hash``, so every caller there lands on the
+                # single ``_anon`` entry. Without it, one free request binds that
+                # entry to a shared key and every later pro request inherits it —
+                # entitled traffic keeps draining shared capacity, and because the
+                # entry still records ``free`` even a re-tier cannot repoint it. The
+                # unsafe direction is already covered by ``_role_may_use`` (a free
+                # caller can never inherit a binding to a reserved key); this is the
+                # preference direction.
+                if (
+                    now < existing.expires_at
+                    and existing.role == role
+                    and not bound.removed
+                    and bound.cooldown_until <= now
+                    and _role_may_use(role, bound)
+                ):
                     idx = existing.key_index
                     self._keys[idx].request_count += 1
-                    return self._keys[idx].key, Lease(idx, affinity_key)
+                    return self._keys[idx].key, Lease(idx, affinity_key, role)
                 # Drop stale or unusable affinity; we'll re-pick below.
                 del self._affinity[affinity_key]
 
-            idx = self._pick_first_available_locked(now)
+            idx = self._pick_first_available_locked(now, role)
             if idx is None:
-                raise KeyPoolExhausted(
-                    f"All {len(self._keys)} keys for provider {self._provider_label!r} are muted"
+                # Distinguish "this endpoint is down" from "this endpoint has
+                # nothing for your tier": if an unrestricted caller could still be
+                # served, the pool is healthy and only this caller is shut out.
+                serves_someone = self._pick_first_available_locked(now, None) is not None
+                error = KeyPoolRoleRestricted if serves_someone else KeyPoolExhausted
+                raise error(
+                    f"No usable API key for provider {self._provider_label!r} "
+                    f"(role={role or 'unrestricted'}, {len(self._keys)} configured): "
+                    "every key the caller may use is muted or reserved for a higher tier"
                 )
 
             self._affinity[affinity_key] = _Affinity(
                 key_index=idx,
                 expires_at=now + self.AFFINITY_TTL_SECONDS,
+                role=role,
             )
             self._keys[idx].request_count += 1
-            return self._keys[idx].key, Lease(idx, affinity_key)
+            return self._keys[idx].key, Lease(idx, affinity_key, role)
 
-    def _pick_first_available_locked(self, now: float) -> int | None:
-        """Return the index of the lowest-index key that is usable, or None.
+    def _pick_first_available_locked(self, now: float, role: str | None = None) -> int | None:
+        """Return the index of the best key *role* may use, or None.
 
         Sequential selection: traffic concentrates on the earliest key that is
         neither removed nor muted, and only advances to a later key once the
         earlier ones are muted. ``request_count`` is no longer a selection
         signal — it is retained purely for telemetry.
+
+        Reservation reorders that scan rather than replacing it: keys reserved
+        for the highest tier the caller still qualifies for come first, then
+        configuration order within a tier. An entitled caller therefore spends
+        the capacity set aside for it before falling back to the shared keys the
+        lower tiers depend on.
         """
-        for i, state in enumerate(self._keys):
-            if state.removed:
-                continue
-            if state.cooldown_until > now:
-                continue
-            return i
-        return None
+        candidates = [
+            (-ROLE_RANK.get(state.min_role, 0), i)
+            for i, state in enumerate(self._keys)
+            if not state.removed and state.cooldown_until <= now and _role_may_use(role, state)
+        ]
+        if not candidates:
+            return None
+        return min(candidates)[1]
 
     def _maybe_sweep_locked(self, now: float) -> None:
         """Drop expired affinity entries when the dict grows past threshold."""
@@ -287,7 +531,7 @@ class KeyPool:
             now = time.monotonic()
             state = self._keys[lease.key_index]
             state.consecutive_failures += 1
-            is_sole_key = not self._has_other_usable_key_locked(lease.key_index, now)
+            is_sole_key = not self._has_other_usable_key_locked(lease.key_index, now, lease.role)
 
             if not is_key_specific_status(status_code):
                 if is_sole_key:
@@ -315,12 +559,21 @@ class KeyPool:
             state.cooldown_until = now + self.MUTE_SECONDS
             return True
 
-    def _has_other_usable_key_locked(self, exclude_idx: int, now: float) -> bool:
-        """Whether any key other than ``exclude_idx`` is active and not muted."""
+    def _has_other_usable_key_locked(
+        self, exclude_idx: int, now: float, role: str | None = None
+    ) -> bool:
+        """Whether another key *role* may use is active and not muted.
+
+        Judged from the leaseholder's perspective: a key reserved above *role*
+        is not somewhere this caller can rotate to, so it must not cancel the
+        sole-key protection that keeps the caller's last key in service.
+        """
         for i, state in enumerate(self._keys):
             if i == exclude_idx or state.removed:
                 continue
             if state.cooldown_until > now:
+                continue
+            if not _role_may_use(role, state):
                 continue
             return True
         return False

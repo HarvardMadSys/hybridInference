@@ -1036,6 +1036,7 @@ class CachedOperationalStore(OperationalStore):
         label: str | None,
         created_by: str | None,
         key_id: str | None = None,
+        min_role: str = "free",
     ) -> str:
         """Delegate to wrapped store."""
         return await self._store.add_provider_key(
@@ -1044,6 +1045,7 @@ class CachedOperationalStore(OperationalStore):
             label=label,
             created_by=created_by,
             key_id=key_id,
+            min_role=min_role,
         )
 
     async def list_provider_definitions(self) -> list[ProviderDefinitionRow]:
@@ -1095,9 +1097,30 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_provider_keys_full(provider, exclude_ids=exclude_ids)
 
+    async def list_provider_key_values(self, provider: str) -> dict[str, str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_key_values(provider)
+
+    async def list_provider_key_min_roles(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> dict[str, str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_key_min_roles(provider, exclude_ids=exclude_ids)
+
     async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
         """Delegate to wrapped store."""
         return await self._store.get_provider_key_full(key_id)
+
+    async def get_provider_key_min_role(self, key_id: str) -> str | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_provider_key_min_role(key_id)
+
+    async def set_provider_key_min_role(self, key_id: str, min_role: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.set_provider_key_min_role(key_id, min_role)
 
     async def set_provider_key_status(self, key_id: str, status: str) -> bool:
         """Delegate to wrapped store."""
@@ -1134,3 +1157,32 @@ class CachedOperationalStore(OperationalStore):
     async def enable_provider_env_key(self, provider: str, key_hash: str) -> bool:
         """Delegate to wrapped store."""
         return await self._store.enable_provider_env_key(provider, key_hash)
+
+    async def set_provider_env_key_min_role(
+        self,
+        *,
+        provider: str,
+        key_hash: str,
+        key_prefix: str,
+        min_role: str,
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_provider_env_key_min_role(
+            provider=provider,
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            min_role=min_role,
+            updated_by=updated_by,
+        )
+
+    async def list_provider_env_key_min_roles(self, provider: str) -> dict[str, str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_env_key_min_roles(provider)
+
+    async def list_provider_env_key_reservations(
+        self,
+        provider: str,
+    ) -> list[tuple[str, str, str]]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_env_key_reservations(provider)

@@ -962,6 +962,20 @@ async def initialize() -> AppServices:
         except Exception as exc:
             logger.warning(f"Failed to apply DB-backed provider route configs at boot: {exc}")
 
+        # Restoring the routes above can make a provider known for the first time —
+        # a built-in provider with no YAML route and no provider-definition row is
+        # reached only through its persisted route. Key tier reservations were
+        # loaded before that, so load them again now or every key on such a route
+        # would serve every tier until the next restart (and then again). The call
+        # replaces each provider's declarations and re-derives every pool entry, so
+        # repeating it is free of side effects.
+        try:
+            from serving.adapters.dynamic_keys import load_min_role_declarations
+
+            await load_min_role_declarations(operational_store)
+        except Exception as exc:
+            logger.warning(f"Failed to re-apply provider key tier reservations at boot: {exc}")
+
     # DB-backed strategies and route overrides can replace routers or endpoint
     # identities. Collect and warm the final graph exactly once so envelope
     # samples are neither double-counted nor applied to stale endpoints.

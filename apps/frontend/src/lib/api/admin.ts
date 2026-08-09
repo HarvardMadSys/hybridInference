@@ -2230,6 +2230,9 @@ export async function deleteProviderDefinition(
 
 export type ProviderKeySource = 'env' | 'db';
 
+/** Lowest user role allowed to spend a provider key. 'free' = shared by all tiers. */
+export type ProviderKeyMinRole = 'free' | 'pro' | 'internal' | 'admin';
+
 export interface ProviderApiKeyItem {
   id: string | null;
   provider: string;
@@ -2238,6 +2241,20 @@ export interface ProviderApiKeyItem {
   source: ProviderKeySource;
   status: string;
   created_at: string | null;
+  /** The tier currently enforced for this credential (strictest declaration wins). */
+  min_role: ProviderKeyMinRole;
+  /**
+   * The tier this record itself declares — what editing this row changes. Lower
+   * than `min_role` when another record (a row with the same key, or an env
+   * reservation for it) declares something stricter.
+   */
+  declared_min_role?: ProviderKeyMinRole;
+  /**
+   * True for an env entry listed only to expose its tier reservation, because an
+   * active DB row holds the same credential. Only the tier is editable: the DB row
+   * is what enables, disables or deletes the key.
+   */
+  reservation_only?: boolean;
 }
 
 export interface ListProviderApiKeysResponse {
@@ -2279,6 +2296,13 @@ export interface SetProviderApiKeyStatusResponse {
   pools_updated: number;
 }
 
+export interface SetProviderApiKeyMinRoleResponse {
+  id: string;
+  provider: string;
+  min_role: ProviderKeyMinRole;
+  pools_updated: number;
+}
+
 export interface VerifyProviderApiKeyResponse {
   ok: boolean;
 }
@@ -2301,6 +2325,7 @@ export async function addProviderKey(
   provider: string,
   apiKey: string,
   label?: string,
+  minRole?: ProviderKeyMinRole,
 ): Promise<AddProviderApiKeyResponse> {
   const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys', {
     method: 'POST',
@@ -2309,9 +2334,44 @@ export async function addProviderKey(
       provider,
       api_key: apiKey,
       ...(label ? { label } : {}),
+      ...(minRole ? { min_role: minRole } : {}),
     }),
   });
   return jsonOrThrow<AddProviderApiKeyResponse>(resp);
+}
+
+/** Reserve a DB-sourced key for a tier ('free' releases it back to every tier). */
+export async function setProviderKeyMinRole(
+  id: string,
+  minRole: ProviderKeyMinRole,
+): Promise<SetProviderApiKeyMinRoleResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/provider-keys/${encodeURIComponent(id)}/min-role`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ min_role: minRole }),
+    },
+  );
+  return jsonOrThrow<SetProviderApiKeyMinRoleResponse>(resp);
+}
+
+/**
+ * Reserve an env-sourced key for a tier. Env keys have no row id, so they are
+ * addressed by provider + env key id (as with disable/enable-env).
+ */
+export async function setProviderEnvKeyMinRole(
+  provider: string,
+  envKeyId: string,
+  minRole: ProviderKeyMinRole,
+): Promise<SetProviderApiKeyMinRoleResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys/min-role-env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, env_key_id: envKeyId, min_role: minRole }),
+  });
+  return jsonOrThrow<SetProviderApiKeyMinRoleResponse>(resp);
 }
 
 export async function verifyProviderKey(

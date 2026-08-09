@@ -115,6 +115,7 @@ const providerKeysResponse = (provider?: string): ListProviderApiKeysResponse =>
       source: 'db',
       status: 'active',
       created_at: null,
+      min_role: 'free',
     });
   }
   return { provider: provider ?? null, keys };
@@ -727,6 +728,7 @@ describe('ProviderRoutesTab', () => {
           source: 'db',
           status: 'active',
           created_at: null,
+          min_role: 'free',
         },
       ],
     });
@@ -805,6 +807,7 @@ describe('ProviderRoutesTab', () => {
           source: 'db',
           status: 'active',
           created_at: null,
+          min_role: 'free',
         },
       ],
     });
@@ -1622,6 +1625,7 @@ describe('ProviderRoutesTab', () => {
           source: 'db',
           status: 'active',
           created_at: null,
+          min_role: 'free',
         },
       ],
     });

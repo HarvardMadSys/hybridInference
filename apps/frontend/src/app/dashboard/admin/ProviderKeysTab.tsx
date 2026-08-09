@@ -4,12 +4,15 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
   ProviderApiKeyItem,
+  ProviderKeyMinRole,
   addProviderKey,
   deleteProviderKey,
   disableProviderEnvKey,
   enableProviderEnvKey,
   listProviderKeyProviders,
   listProviderKeys,
+  setProviderEnvKeyMinRole,
+  setProviderKeyMinRole,
   setProviderKeyStatus,
   verifyProviderKey,
 } from '@/lib/api/admin';
@@ -17,6 +20,14 @@ import { getErrorMessage } from '@/lib/utils/errors';
 
 interface Props {
   refreshKey?: number;
+}
+
+const MIN_ROLES: ProviderKeyMinRole[] = ['free', 'pro', 'internal', 'admin'];
+
+// Label for the reservation column. 'free' is the absence of a reservation, so
+// it reads as "shared" rather than as a tier name.
+function minRoleLabel(minRole: ProviderKeyMinRole): string {
+  return minRole === 'free' ? 'shared' : `${minRole}+`;
 }
 
 function formatRelative(s: string | null): string {
@@ -40,12 +51,14 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
   const [formProvider, setFormProvider] = useState<string>('');
   const [formApiKey, setFormApiKey] = useState('');
   const [formLabel, setFormLabel] = useState('');
+  const [formMinRole, setFormMinRole] = useState<ProviderKeyMinRole>('free');
   const [submittingKey, setSubmittingKey] = useState(false);
   const [verifyingKey, setVerifyingKey] = useState(false);
   const [verifiedKeySignature, setVerifiedKeySignature] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [disablingEnvId, setDisablingEnvId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [retieringId, setRetieringId] = useState<string | null>(null);
 
   const loadProviders = useCallback(async () => {
     try {
@@ -94,6 +107,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
         formProvider,
         formApiKey.trim(),
         formLabel.trim() || undefined,
+        formMinRole,
       );
       if (resp.pools_updated === 0) {
         toast.error(
@@ -105,6 +119,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
       }
       setFormApiKey('');
       setFormLabel('');
+      setFormMinRole('free');
       setVerifiedKeySignature(null);
       if (formProvider === selectedProvider) {
         await loadKeys(selectedProvider);
@@ -201,6 +216,33 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
     }
   };
 
+  const onChangeMinRole = async (key: ProviderApiKeyItem, minRole: ProviderKeyMinRole) => {
+    const id = key.id;
+    if (!id) return;
+    setRetieringId(id);
+    try {
+      // Env keys carry no row id, so they are addressed by provider + env id.
+      const resp =
+        key.source === 'env'
+          ? await setProviderEnvKeyMinRole(key.provider, id, minRole)
+          : await setProviderKeyMinRole(id, minRole);
+      toast.success(
+        minRole === 'free' ? 'Key shared with every tier' : `Key reserved for ${minRole} and above`,
+      );
+      if (resp.pools_updated === 0) {
+        toast.error(
+          'Saved, but no live pool holds this key right now — the new tier ' +
+            'applies once it is back in rotation.',
+        );
+      }
+      await loadKeys(selectedProvider);
+    } catch (err) {
+      toast.error(`Tier change failed: ${getErrorMessage(err)}`);
+    } finally {
+      setRetieringId(null);
+    }
+  };
+
   const sortedKeys = useMemo(
     () => [...keys].sort((a, b) => (a.source === b.source ? 0 : a.source === 'db' ? -1 : 1)),
     [keys],
@@ -247,6 +289,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                   <th className="px-3 py-2">Label</th>
                   <th className="px-3 py-2">Source</th>
                   <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Reserved for</th>
                   <th className="px-3 py-2">Created</th>
                   <th className="px-3 py-2 text-right">Actions</th>
                 </tr>
@@ -278,18 +321,74 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                       <td className="px-3 py-2">
                         <span
                           className={
-                            disabled
-                              ? 'rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-500'
-                              : 'rounded bg-green-50 px-1.5 py-0.5 text-[11px] font-medium text-green-700'
+                            k.status === 'active'
+                              ? 'rounded bg-green-50 px-1.5 py-0.5 text-[11px] font-medium text-green-700'
+                              : 'rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-500'
+                          }
+                          title={
+                            k.status === 'absent'
+                              ? 'A reservation is stored for this credential, but nothing is configured with it right now. It applies again if the key returns.'
+                              : undefined
                           }
                         >
-                          {disabled ? 'disabled' : 'active'}
+                          {/* Rendered verbatim rather than as a disabled/active
+                              binary: a stored reservation whose credential is not
+                              configured anywhere is neither. */}
+                          {k.status}
                         </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        {k.id ? (
+                          <div className="flex items-center gap-1.5">
+                            <select
+                              aria-label={`Reserved tier for key ${k.key_prefix}`}
+                              value={k.declared_min_role ?? k.min_role}
+                              onChange={(e) =>
+                                onChangeMinRole(k, e.target.value as ProviderKeyMinRole)
+                              }
+                              disabled={retieringId === k.id}
+                              className="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[12px] focus:border-gray-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {MIN_ROLES.map((r) => (
+                                <option key={r} value={r}>
+                                  {minRoleLabel(r)}
+                                </option>
+                              ))}
+                            </select>
+                            {(k.declared_min_role ?? k.min_role) !== k.min_role && (
+                              // Another record declares something stricter for this
+                              // same credential, and the pool enforces that one — say
+                              // so, or editing this row looks like it did nothing.
+                              <span
+                                className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700"
+                                title="Another record declares a stricter tier for this same credential, so that is what is enforced."
+                              >
+                                {minRoleLabel(k.min_role)} enforced
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[12px] text-gray-400">
+                            {minRoleLabel(k.min_role)}
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-gray-500">{formatRelative(k.created_at)}</td>
                       <td className="px-3 py-2 text-right">
                         <div className="flex justify-end gap-1">
-                          {k.source === 'env' ? (
+                          {k.reservation_only ? (
+                            // Listed only to expose its reservation: an active DB row
+                            // holds this same credential and owns enable/disable/
+                            // delete. Disabling the env side would tombstone a hash
+                            // while the key kept serving from that row, which the
+                            // endpoint rejects — so offer no action here.
+                            <span
+                              className="px-2 py-1 text-[12px] text-gray-400"
+                              title="A DB key holds this same credential — manage it on that row. This entry only carries the reservation."
+                            >
+                              reservation only
+                            </span>
+                          ) : k.source === 'env' ? (
                             disabled ? (
                               <button
                                 type="button"
@@ -391,6 +490,31 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                 className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
               />
             </div>
+          </div>
+          <div>
+            <label
+              className="block text-[12px] font-medium text-gray-500"
+              htmlFor="provider-keys-form-min-role"
+            >
+              Reserved for
+            </label>
+            <select
+              id="provider-keys-form-min-role"
+              value={formMinRole}
+              onChange={(e) => setFormMinRole(e.target.value as ProviderKeyMinRole)}
+              className="mt-1 w-full max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+            >
+              {MIN_ROLES.map((r) => (
+                <option key={r} value={r}>
+                  {minRoleLabel(r)}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[12px] text-gray-400">
+              &quot;shared&quot; lets every tier spend this key. Anything higher hides it from lower
+              tiers, and entitled users spend it before the shared keys. Existing keys — env-sourced
+              ones included — can be re-tiered from the table above.
+            </p>
           </div>
           <div>
             <label

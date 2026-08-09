@@ -557,3 +557,80 @@ async def test_streaming_client_disconnect_does_not_mute_key():
     # A client-side cancellation is not an upstream error — k1 stays usable.
     assert adapter._key_pool is not None
     assert adapter._key_pool._keys[0].cooldown_until == 0
+
+
+async def test_reserved_key_is_spent_only_by_an_entitled_caller():
+    """A pro-reserved key serves pro traffic and stays invisible to free traffic.
+
+    Exercises the whole adapter path: the caller's role reaches the pool from
+    ``req_ctx``, which the API-key auth dependency populates in production.
+    """
+    from serving.utils import context as req_ctx
+
+    adapter = OpenAICompatAdapter(_make_config(["shared", "reserved"]))
+    assert adapter._key_pool is not None
+    adapter._key_pool.set_key_min_role("reserved", "pro")
+
+    success_payload = {
+        "id": "x",
+        "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+        "usage": {},
+    }
+    used: list[str] = []
+
+    async def capture(url, json, headers, timeout):
+        used.append(headers["Authorization"].removeprefix("Bearer "))
+        return success_payload
+
+    with patch.object(adapter.http, "json_post", side_effect=capture):
+        with req_ctx.push(user_role="free", auth_key_hash="free-user"):
+            await adapter.chat_completion([{"role": "user", "content": "hi"}])
+        with req_ctx.push(user_role="pro", auth_key_hash="pro-user"):
+            await adapter.chat_completion([{"role": "user", "content": "hi"}])
+        # No role at all — an internal caller (probe/warmup) is unrestricted and
+        # follows the same reserved-first preference as an entitled user.
+        with req_ctx.push(auth_key_hash="probe"):
+            await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+    assert used == ["shared", "reserved", "reserved"]
+
+
+async def test_free_caller_fails_over_when_only_reserved_keys_remain():
+    """With every shared key muted, a free caller cannot borrow the reserved one.
+
+    The adapter raises instead, which the router surfaces as an upstream failure
+    and fails over to the next provider — rather than quietly spending premium
+    capacity on a free-tier request.
+    """
+    from serving.adapters.key_pool import KeyPoolExhausted
+    from serving.utils import context as req_ctx
+
+    adapter = OpenAICompatAdapter(_make_config(["shared", "reserved"]))
+    assert adapter._key_pool is not None
+    adapter._key_pool.set_key_min_role("reserved", "pro")
+
+    async def always_429(url, json, headers, timeout):
+        raise _make_response_error(429, retry_after="1")
+
+    # Burn both keys with a pro caller. Its first attempt takes the reserved key
+    # (reserved-first), which mutes at once since the shared key can take over;
+    # the shared key is then its sole key, so it costs one call per free pass
+    # before it mutes too.
+    with patch.object(adapter.http, "json_post", side_effect=always_429):
+        for _ in range(adapter._key_pool.SOLE_KEY_BACKOFF_THRESHOLD + 1):
+            with (
+                pytest.raises(aiohttp.ClientResponseError),
+                req_ctx.push(user_role="pro", auth_key_hash="pro-user"),
+            ):
+                await adapter.chat_completion([{"role": "user", "content": "hi"}])
+    assert adapter._key_pool._keys[0].cooldown_until > 0  # shared
+    assert adapter._key_pool._keys[1].cooldown_until > 0  # reserved
+
+    # The free caller now has nothing usable at all.
+    with (
+        patch.object(adapter.http, "json_post", side_effect=always_429) as mock_post,
+        pytest.raises(KeyPoolExhausted),
+        req_ctx.push(user_role="free", auth_key_hash="free-user"),
+    ):
+        await adapter.chat_completion([{"role": "user", "content": "hi"}])
+    assert mock_post.await_count == 0

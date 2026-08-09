@@ -199,6 +199,170 @@ five minutes (sliding TTL). Goals:
 **Metrics:** `routing_affinity_events_total{event,model}` with events
 `hit | miss | created | expired | dropped_error | dropped_unavailable`.
 
+## Reserving upstream keys for a tier
+
+A provider key can be reserved for a user role and above, so premium upstream
+capacity is not spent by the free tier. Reservation lives on the key, not on the
+model: the model catalog's `required_role` decides *what* a user may call, while
+a key's `min_role` decides *whose* requests may spend that credential.
+
+Each key in a `KeyPool` carries a `min_role`, defaulting to `free` — no
+reservation. Anything higher (`pro`, `internal`, `admin`) makes the key invisible
+to callers below it:
+
+- **Selection.** Reserved keys are filtered out for callers that do not meet
+  `min_role`. Among the keys a caller *may* use, the most-reserved go first, so
+  an entitled caller drains the capacity set aside for it before falling back to
+  the keys every tier shares.
+- **Affinity.** A binding is honored only for the role that created it, and any
+  change to what the pool holds — a tier moving, a key added, re-enabled or removed
+  — drops every binding whose *preferred* key moved, not only bindings pointing at
+  the key that changed. A binding to a merely *muted* key survives, because that
+  state is transient and `acquire` re-picks around it without consulting the
+  binding; a binding to a *removed* one always goes. Both directions matter: a caller no
+  longer entitled to its bound key must be re-picked, and a caller that should now
+  prefer a newly reserved key must stop draining the shared capacity that
+  reservation exists to protect — otherwise it would keep doing so for the rest of
+  the five-minute TTL. Only a declaration change triggers this, so ordinary traffic
+  never loses prompt-cache warmth to it.
+
+  The role match matters most where an affinity key is *shared*: `/v1/messages` and
+  `/v1/embeddings` publish no `auth_key_hash`, so every caller on those surfaces
+  lands on the single `_anon` entry. Without the match, one free request would bind
+  it to a shared key and later pro requests would inherit that binding — reserved
+  capacity sitting idle, and the entry recording `free` so no re-tier could repoint
+  it. Giving those surfaces a per-caller affinity key (as chat completions has)
+  would restore stickiness there and is tracked separately.
+- **Mute / rotation.** The sole-remaining-key backoff is judged against the keys
+  the *leaseholder* could rotate to. A pro-only key is not a fallback for a
+  free-tier request, so it cannot cancel the free tier's blip protection.
+- **Exhaustion.** A caller whose usable keys are all muted (or who has none)
+  gets `KeyPoolExhausted`, which the router treats as an upstream failure and
+  fails over to the next provider in the chain.
+- **Health accounting.** When the pool could still serve an unrestricted caller,
+  the refusal is a `KeyPoolRoleRestricted` (a `KeyPoolExhausted` subclass) and
+  `EndpointHealthRegistry.record_failure` skips it — logged as
+  `role_restricted_skip_breaker`. Nothing was sent upstream and the endpoint is
+  still serving the tiers that own those keys; counting it would let a burst of
+  lower-tier traffic open the circuit, strip reserved capacity from the callers
+  it was reserved for, and re-trip on every half-open probe. A pool usable by
+  *nobody* stays a plain `KeyPoolExhausted` and still counts.
+- **Single-adapter surfaces.** `/v1/messages` commits to one adapter up front
+  instead of walking the fallback chain, so `_pick_adapter_for_role` picks the
+  first adapter holding a key the caller may spend (falling back to
+  `adapters[0]` when none can, to keep the error unchanged). Without it, a
+  reserved first adapter would hard-fail a request another provider on the same
+  route could serve.
+
+The caller's role reaches the pool through `req_ctx["user_role"]`, published by
+the API-key auth dependency. Requests with no user identity — health probes,
+warmups, the admin playground — carry no role and are treated as unrestricted:
+reservation withholds capacity from lower *tiers*, not from the gateway's own
+machinery (a probe blocked by a reservation would mark the endpoint unhealthy and
+take the route down for the entitled users too).
+
+**Managing it:** the admin dashboard's *Provider Keys* tab has a "Reserved for"
+column covering both key sources, and new keys accept `min_role` on
+`POST /admin/provider-keys`. Changes apply to the live pools immediately — no
+restart. The endpoint differs by source, because the two are addressed
+differently:
+
+| Source | Endpoint | Where the reservation lives |
+|---|---|---|
+| DB (dashboard-added) | `POST /admin/provider-keys/{id}/min-role` | `provider_api_keys.min_role` |
+| Env (`<PROVIDER>_API_KEY`, YAML `api_keys`) | `POST /admin/provider-keys/min-role-env` | `provider_env_key_min_roles`, keyed by the key's hash |
+
+An env credential has no row of its own, so its reservation is keyed by hash —
+the same addressing `disable-env` already uses for env-key tombstones. Two
+consequences worth knowing:
+
+- The reservation outlives the key leaving rotation. Disable/enable it, or drop
+  and restore its env var, and it returns at the tier it was reserved for. Because
+  it is durable, the admin list also shows a reservation whose credential is not
+  configured anywhere — as `status: absent` — and its id stays resolvable, so it can
+  be lifted rather than lying in wait for the key to come back.
+- Pools are seeded from adapter config at registry load, before any DB read, so
+  `apply_db_keys_at_boot` re-applies stored env reservations (and re-applies
+  again after any pool promotion, e.g. when a DB key is added to a route that
+  had a single static `api_key`). A DB read failure there logs and leaves env
+  keys unreserved rather than failing the boot.
+
+Reservation is declared through the admin API rather than an env var: pool
+membership comes from each route's `api_keys` in `models.yaml`, which need not be
+one of the `<PROVIDER>_API_KEY` vars, so an env-var-per-key convention would not
+cover every configured key.
+
+### One authority for the enforced tier
+
+Pools are built from adapter config, which carries no tier, and are rebuilt often —
+a route install, a single-key adapter promoted by a runtime key, a re-enabled env
+key. A tier written at one of those call sites is a tier that silently disappears
+at the next, so `dynamic_keys` owns the whole question instead:
+
+- **Declarations** are cached per provider — `_env_key_min_roles` (by key hash,
+  from `provider_env_key_min_roles`) and `_db_key_min_roles` (by raw value, from
+  `provider_api_keys.min_role`). Both are refreshed from the DB, which stays the
+  authority: at boot, and after every admin mutation.
+- **`_resolve_min_role_locked`** derives the tier a pool entry must enforce. A pool
+  holds one entry per raw value, so a credential configured twice (env var plus a
+  DB row, or two DB rows) has to resolve rather than race. `free` is the *absence*
+  of a declaration, not an assertion that everyone may spend the key, so
+  unreserved sources contribute nothing; among real declarations the **most
+  restrictive wins**. Adding a laxer duplicate therefore cannot widen access to a
+  reserved credential, and the result does not depend on configuration order.
+  Releasing a key means clearing its declaration, which is what the min-role
+  endpoints do.
+- **`_apply_min_roles_locked`** reconciles the live pools, and every path that can
+  create a pool or change a declaration ends in it — including
+  `register_adapter_for_provider`, the one point both the boot registry load and
+  each runtime route install pass through. Without that, a route created with no
+  pinned key builds its pool from the provider's whole (untiered) key set and
+  serves every reserved key to every tier until the next restart.
+- **Pool-less adapters are promoted** when — and only when — a reservation applies
+  to their static key. A single-`api_key` route otherwise serves that credential
+  through the legacy request path, which never consults a pool, so the reservation
+  would persist, report success, and change nothing. Unreserved keys keep the
+  cheaper legacy path, which is why the trigger is narrow: promotion moves that
+  route onto the pooled path, where failures mute the key and rotate (5-minute
+  cooldown, sole-key backoff) instead of returning the provider's error directly.
+
+Reserving a key is therefore a decision to *withhold* capacity, and it is now
+visible rather than silent: a lower-tier caller on a route whose keys are all
+reserved gets a `KeyPoolRoleRestricted` and fails over to the next provider
+instead of quietly spending the reserved credential.
+
+Two ordering details the declarations depend on:
+
+- **Boot loads them twice.** `apply_db_keys_at_boot` loads declarations before
+  persisted routes are restored, but a provider can first become *known* during
+  that restore — a built-in provider with no YAML route and no provider-definition
+  row is reached only through its persisted route. Bootstrap therefore calls
+  `load_min_role_declarations` again afterwards. The loader replaces each
+  provider's map and re-derives every pool entry, so repeating it is free.
+- **A failed re-read never widens access.** Every admin mutation re-reads the
+  table, and when that read fails the tier just written is applied directly —
+  "keep the previous tiers" is not uniformly safe, since a `free`→`pro` re-tier
+  would keep serving the key to free callers and a newly added reserved key enters
+  rotation immediately. The direct path only ever *tightens*: the cache holds one
+  entry per raw value and so cannot represent a second row declaring something
+  stricter, so a release waits for a successful read rather than risk relaxing a
+  reservation another row still holds.
+
+Because promotion closes that hole, **route-bound keys now honor `min_role` too**:
+a key pinned via `api_key_id` holds the same secret as any other, and opting a
+route out of global DB *key injection* is not opting it out of tiering. The admin
+list reports the resolved tier from the persisted declarations, so what is
+displayed is what is enforced — even for a credential a duplicate row declares
+differently, and even before this process has cached that provider's declarations.
+
+**Remaining limit: a provider with no key pool cannot carry a reservation.**
+`min_role` is enforced by `KeyPool`, so it reaches `openai_compat` routes (which
+include local vLLM/SGLang/Ollama) and any single-`api_key` route promoted on
+demand. The dedicated `anthropic`, `claude` and `gemini` adapters hold their
+credential directly and are never registered with `dynamic_keys`, so a reservation
+recorded against one of those providers is stored and never applied. Gate those
+models with the catalog's `required_role` instead.
+
 ## Migration Notes
 
 For users migrating from older versions:

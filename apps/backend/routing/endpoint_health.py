@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
+from serving.adapters.key_pool import KeyPoolRoleRestricted
 from serving.exceptions import operator_safe_error
 from serving.observability.alerts import AlertSeverity, alert_on_transition, escape_slack_text
 from serving.utils import context as req_ctx
@@ -675,6 +676,23 @@ class EndpointHealthRegistry:
         exc: BaseException | None = None,
     ) -> None:
         """Record a failed endpoint request unless it is a client error."""
+        if exc is not None and isinstance(exc, KeyPoolRoleRestricted):
+            # The endpoint holds no key this caller's *tier* may spend, but it is
+            # still serving the tiers that own those keys — nothing was even sent
+            # upstream. Counting it would let a burst of lower-tier traffic open
+            # the circuit and strip reserved capacity from the callers it was
+            # reserved for, re-tripping on every half-open probe. Filtered here
+            # rather than per-router so the FixedRouter, RouteWise and hedging
+            # paths all inherit it.
+            logger.info(
+                "role_restricted_skip_breaker",
+                extra={
+                    "event": "role_restricted_skip_breaker",
+                    "endpoint_id": endpoint_id,
+                    "detail": _detail_str(detail or operator_safe_error(exc)),
+                },
+            )
+            return
         status = _http_status_of(exc) if exc is not None else None
         # Checked before the client-error exemption: an auth rejection sits in the
         # 4xx range but is a deployment fault, so it must not be exempted.
