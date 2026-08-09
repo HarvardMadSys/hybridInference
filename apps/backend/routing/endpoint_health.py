@@ -10,7 +10,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from routing.usage_limit import detect_usage_limit
+from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 from serving.exceptions import operator_safe_error
 from serving.observability.alerts import AlertSeverity, alert_on_transition, escape_slack_text
 from serving.utils import context as req_ctx
@@ -71,6 +71,11 @@ _AUTH_MISCONFIG_STATUSES = frozenset({401, 407})
 # Cooldown for the upstream-auth page. Matches the circuit-open alert so a
 # persistent misconfiguration re-pages on the same cadence.
 _AUTH_ALERT_COOLDOWN_SEC = 300
+
+# Minimum spacing between an endpoint's plan-usage pages, in seconds. Same floor
+# the parser applies to its suppression deadlines, held here as the epoch-clock
+# comparison the breaker needs.
+_MIN_ALERT_GAP_SEC = MIN_ALERT_GAP.total_seconds()
 
 # Title of the upstream-auth page. Shared by the firing and resolving edges so
 # the recovery card reads as the same incident ("Recovered: <title>").
@@ -329,6 +334,19 @@ class _CircuitBreaker:
         # subscription usage-limit outage (0.0 = not muted). Committed only once a
         # page is delivered (_send_circuit_alert) and cleared on recovery.
         self._alert_suppressed_until: float = 0.0
+        # ``time.monotonic()`` instant of the last *delivered* usage-limit page for
+        # this endpoint (None = never), enforcing ``_MIN_ALERT_GAP_SEC`` between
+        # them. Monotonic, not wall-clock: this only ever measures elapsed time and
+        # is never rendered or compared against a provider timestamp, so it must
+        # not be steppable by NTP — a backward step would otherwise mute plan pages
+        # for the step plus four hours, with no escape short of a restart. None
+        # rather than 0.0 because monotonic zero is host boot, so a 0.0 sentinel
+        # would suppress the first page on any host up for less than four hours.
+        # Deliberately NOT cleared by ``on_success``: it caps how often a plan
+        # exhaustion may page, and is not state about the current outage, so a
+        # recovery — including one served by a different key in the same pool —
+        # must not hand back the right to page again immediately.
+        self._usage_limit_alerted_at: float | None = None
         # Recovery generation of the usage-limit page currently being delivered
         # (None when none). A re-trip of the *same* generation is a duplicate and
         # is suppressed while the page sends; once recovery bumps the generation
@@ -360,7 +378,10 @@ class _CircuitBreaker:
             self._offenders.clear()
             # Recovery re-arms alerting: clear the mute and bump the generation so
             # a page still in flight for the ended outage can't restore a stale
-            # deadline, and a later usage-limit outage is free to page again.
+            # deadline, and a later outage is free to page again. ``_usage_limit_
+            # alerted_at`` is deliberately left alone — a plan-usage page still
+            # owes the rest of its ``_MIN_ALERT_GAP_SEC``, precisely because a
+            # single success is what a flapping key pool produces.
             self._alert_suppressed_until = 0.0
             self._recovery_generation += 1
             if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
@@ -426,10 +447,10 @@ class _CircuitBreaker:
 
             # A subscription usage-limit outage re-trips on every half-open probe
             # until the provider's window resets. Fire one alert per outage and
-            # stay quiet until the parsed reset time, instead of re-paging every
-            # few minutes for hours. The deadline is committed only once the page
-            # is delivered (see _send_circuit_alert) and cleared on recovery, so a
-            # dropped page never mutes an outage that was never announced.
+            # stay quiet until then, instead of re-paging every few minutes for
+            # hours. The deadline is committed only once the page is delivered
+            # (see _send_circuit_alert) and cleared on recovery, so a dropped page
+            # never mutes an outage that was never announced.
             now_dt = datetime.now(timezone.utc)
             usage_limit = detect_usage_limit(detail, now=now_dt)
             # While the endpoint is inside a known usage-limit outage — a page for
@@ -442,19 +463,54 @@ class _CircuitBreaker:
             # bumps it) does not let a stale in-flight page mute the *next* outage;
             # recovery also clears the deadline, re-arming the endpoint.
             in_flight_current = self._alert_in_flight_generation == self._recovery_generation
-            if in_flight_current or now_dt.timestamp() < self._alert_suppressed_until:
+            muted = in_flight_current or now_dt.timestamp() < self._alert_suppressed_until
+            # A recovery clears that deadline, which is right for an endpoint that
+            # came back — but any pooled key with quota left also reads as a
+            # recovery, so a plan exhaustion behind a key pool can clear its own
+            # mute and re-page on the next streak. Rate-limit the *plan usage* page
+            # itself on a clock no recovery touches, so the cap holds however the
+            # outage flaps. Scoped to usage-limit trips: an endpoint that breaks
+            # for some other reason minutes later is a different incident that
+            # still pages immediately.
+            rate_limited = usage_limit is not None and (
+                self._usage_limit_alerted_at is not None
+                and (time.monotonic() - self._usage_limit_alerted_at) < _MIN_ALERT_GAP_SEC
+            )
+            if muted or rate_limited:
+                if usage_limit is not None:
+                    # We recognized a plan exhaustion and are holding its page
+                    # back. Re-arm the reason-agnostic mute anyway, because the
+                    # same outage keeps re-tripping in *other* shapes: once every
+                    # pooled key sits in its 429 backoff, ``KeyPool.acquire``
+                    # raises ``KeyPoolExhausted`` before a request is even sent,
+                    # and that text carries no usage marker, so it is neither
+                    # ``muted`` (a recovery cleared the deadline) nor
+                    # ``rate_limited`` (it does not parse as a usage limit). Held
+                    # back and un-muted, those probes would page at the 300s alert
+                    # cooldown — worse than what this floor exists to fix. ``max``
+                    # so a deadline already further out is never shortened.
+                    self._alert_suppressed_until = max(
+                        self._alert_suppressed_until,
+                        usage_limit.suppress_until.timestamp(),
+                    )
                 logger.info(
                     "circuit_open_alert_suppressed",
                     extra={
                         "event": "circuit_open_alert_suppressed",
                         "provider": self.provider,
                         "reason": reason or "unknown",
-                        "quota_reset_at": (
+                        # The mute deadline, named as such: it is what this
+                        # endpoint is waiting on, not a provider quota claim (the
+                        # alert card carries the same value under the same name).
+                        "alert_muted_until": (
                             _iso_utc(self._alert_suppressed_until)
                             if self._alert_suppressed_until
                             else None
                         ),
                         "window": usage_limit.window if usage_limit is not None else "active",
+                        # Which gate held: this outage's own mute, or the floor
+                        # under plan-usage pages that a recovery cannot reset.
+                        "gate": "muted" if muted else "min_alert_gap",
                     },
                 )
                 return
@@ -467,10 +523,15 @@ class _CircuitBreaker:
             }
             if detail:
                 context["upstream_error"] = detail
-            reset_epoch: float | None = None
+            suppress_epoch: float | None = None
             if usage_limit is not None:
-                reset_epoch = usage_limit.reset_at.timestamp()
-                context["quota_reset_at"] = usage_limit.reset_at.isoformat()
+                suppress_epoch = usage_limit.suppress_until.timestamp()
+                # Two different facts, so two fields: when the provider says its
+                # quota turns over (omitted when it said nothing rather than
+                # guessed at), and when this page can repeat.
+                if usage_limit.reset_at is not None:
+                    context["quota_reset_at"] = usage_limit.reset_at.isoformat()
+                context["alert_muted_until"] = usage_limit.suppress_until.isoformat()
             offenders = self._format_offenders()
             if offenders:
                 context["offending_users"] = offenders
@@ -487,23 +548,25 @@ class _CircuitBreaker:
                 },
             )
             generation = self._recovery_generation
-            if reset_epoch is not None:
+            if suppress_epoch is not None:
                 self._alert_in_flight_generation = generation
             # Scheduling goes through the shared helper so that when there is no
             # running loop (sync caller / test) the unscheduled coroutine is closed
             # rather than surfacing later as a never-awaited RuntimeWarning.
-            scheduled = _fire_and_forget(self._send_circuit_alert(context, reset_epoch, generation))
+            scheduled = _fire_and_forget(
+                self._send_circuit_alert(context, suppress_epoch, generation)
+            )
             # Nothing was scheduled, so release the in-flight guard we
             # optimistically set — unless a newer generation already claimed it.
             if not scheduled and self._alert_in_flight_generation == generation:
                 self._alert_in_flight_generation = None
 
     async def _send_circuit_alert(
-        self, context: dict[str, Any], reset_epoch: float | None, generation: int
+        self, context: dict[str, Any], suppress_epoch: float | None, generation: int
     ) -> bool:
         """Deliver a circuit-open page; commit usage-limit suppression on success.
 
-        For a usage-limit trip (``reset_epoch`` set) the suppression deadline is
+        For a usage-limit trip (``suppress_epoch`` set) the suppression deadline is
         recorded only after the page is actually delivered, so a dropped page —
         relay/webhook failure, a global snooze, or the alert cooldown — leaves the
         outage un-muted and it re-pages on the next failing probe. The deadline is
@@ -511,6 +574,11 @@ class _CircuitBreaker:
         (``generation`` no longer current), so a stale mute can't silence a later
         outage. The in-flight guard is released in ``finally`` so a raising send
         never wedges the breaker muted.
+
+        The plan-usage rate limiter is committed on the same delivered-page
+        evidence but *without* the generation check: it caps how often this
+        endpoint's plan exhaustion may page, and a page that went out went out
+        whether or not the endpoint has recovered since.
         """
         delivered = False
         try:
@@ -527,14 +595,16 @@ class _CircuitBreaker:
                 kind="state",
             )
         finally:
-            if reset_epoch is not None:
+            if suppress_epoch is not None:
                 with self._lock:
                     # Only clear the guard if this page still owns it; after a
                     # recovery a newer generation's page may have claimed it.
                     if self._alert_in_flight_generation == generation:
                         self._alert_in_flight_generation = None
-                    if delivered and generation == self._recovery_generation:
-                        self._alert_suppressed_until = reset_epoch
+                    if delivered:
+                        self._usage_limit_alerted_at = time.monotonic()
+                        if generation == self._recovery_generation:
+                            self._alert_suppressed_until = suppress_epoch
         return delivered
 
     def _format_offenders(self, *, top: int = _OFFENDERS_IN_ALERT) -> str | None:

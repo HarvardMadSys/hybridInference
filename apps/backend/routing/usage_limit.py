@@ -10,15 +10,23 @@ window is spent, for example::
 
 These are *expected* exhaustions that only clear when the window resets, so the
 circuit breaker uses this module to fire a single "Provider circuit opened"
-alert per outage and stay quiet until the reset time (see
-``routing.endpoint_health``) rather than re-paging every half-open probe for
-hours.
+alert per outage and stay quiet until the reset time — or for ``MIN_ALERT_GAP``,
+whichever is longer (see ``routing.endpoint_health``) — rather than re-paging
+every half-open probe for hours.
 
 The parser is intentionally conservative. It classifies only clear
 "usage limit" phrasing — never a transient per-minute ``rate limit``, which
 recovers on its own and must keep alerting normally — and prefers the
 provider-declared reset timestamp, falling back to the named window
 ("weekly", "5 hour", ...) when no timestamp is given.
+
+A provider that gives neither — MiniMax answers a bare "Token Plan usage limit
+reached: Upgrade your Token Plan or purchase Credits for more usage." — used to
+fall back to a one-hour guess and so re-paged about five times across its actual
+(5-hour) window. What the upstream *claims* and how long we stay quiet are
+therefore two separate values now: every suppression deadline is floored to
+``MIN_ALERT_GAP``, while ``UsageLimit.reset_at`` still reports the provider's own
+claim unfloored, or None when it made none.
 """
 
 from __future__ import annotations
@@ -27,7 +35,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-__all__ = ["UsageLimit", "detect_usage_limit"]
+__all__ = ["MIN_ALERT_GAP", "UsageLimit", "detect_usage_limit"]
 
 # A usage-limit error must clearly name a *usage/subscription* limit. "usage
 # limit" / "subscription limit" are unambiguous. A bare reset phrase counts only
@@ -56,15 +64,20 @@ def _is_usage_limit(low: str) -> bool:
     return False
 
 
-# Suppression-window guards. A parsed reset is clamped into this range so a
-# mis-parsed or clock-skewed timestamp can neither thrash (re-alert at once) nor
-# mute an endpoint for an unbounded stretch. ``_MAX_SUPPRESS`` comfortably
-# covers a weekly window; a monthly limit is capped to it (it re-alerts at most
-# a few times per month rather than staying muted on a single parse).
-_MIN_SUPPRESS = timedelta(minutes=5)
+# Floor on every suppression deadline, and so the minimum spacing between an
+# endpoint's plan-usage pages. A spent subscription window is expected and stays
+# spent: one page tells an operator the model is degraded, and repeating it
+# before the window turns over adds nothing they can act on. Four hours is the
+# operator-set cadence — long enough that a provider naming no window cannot page
+# hourly for the rest of its window, short enough that a limit which really does
+# reset sooner is still reported several times a day.
+MIN_ALERT_GAP = timedelta(hours=4)
+
+# Ceiling on the suppression deadline, so a mis-parsed or clock-skewed timestamp
+# cannot mute an endpoint for an unbounded stretch. Comfortably covers a weekly
+# window; a monthly limit is capped to it (it re-alerts at most a few times per
+# month rather than staying muted on a single parse).
 _MAX_SUPPRESS = timedelta(days=8)
-# Used when the text is a usage limit but names neither a reset time nor a window.
-_DEFAULT_SUPPRESS = timedelta(hours=1)
 
 # "... reset at 2026-07-30 22:45:10", "resets at 2026-07-30T22:45:10Z",
 # "will reset on 2026-07-30 22:45:10+08:00". Captures an ISO-8601-ish timestamp.
@@ -93,18 +106,26 @@ _UNIT_LENGTH = {
 
 @dataclass(frozen=True)
 class UsageLimit:
-    """A detected subscription usage-limit error and when it resets.
+    """A detected subscription usage-limit error, when it resets, and how long to stay quiet.
 
     Attributes:
-        reset_at: Timezone-aware UTC deadline until which repeat circuit-open
-            alerts for the endpoint are suppressed. Already clamped to a sane
-            window, so callers can use it directly.
+        suppress_until: Timezone-aware UTC deadline until which repeat
+            circuit-open alerts for the endpoint are suppressed. Always at least
+            ``MIN_ALERT_GAP`` out and never beyond ``_MAX_SUPPRESS``, so callers
+            can use it directly.
         window: Human label for the limit period (``"5 hour"``, ``"weekly"``,
             ``"explicit"``, or ``"unspecified"``) for logs and alert context.
+        reset_at: When the provider said — or its named window implies — the limit
+            turns over, or None when the error named neither. Reported to
+            operators as the upstream's own claim, so it is deliberately *not*
+            floored to ``MIN_ALERT_GAP``: a card that reads "resets in 30 min"
+            while we stay quiet for four hours is telling the truth about the
+            provider, and ``suppress_until`` says the rest.
     """
 
-    reset_at: datetime
+    suppress_until: datetime
     window: str
+    reset_at: datetime | None = None
 
 
 def _parse_reset_timestamp(raw: str) -> datetime | None:
@@ -148,24 +169,29 @@ def _estimate_window(detail: str) -> tuple[timedelta, str] | None:
     return _UNIT_LENGTH[unit], f"{unit}{suffix.lower()}"
 
 
-def _clamp(reset_at: datetime, now: datetime) -> datetime:
-    """Clamp ``reset_at`` to ``[now + _MIN_SUPPRESS, now + _MAX_SUPPRESS]``."""
-    low = now + _MIN_SUPPRESS
-    high = now + _MAX_SUPPRESS
-    if reset_at < low:
-        return low
-    if reset_at > high:
-        return high
-    return reset_at
+def _suppression_deadline(reset_at: datetime | None, now: datetime) -> datetime:
+    """Return when repeat alerts may resume: ``reset_at``, floored and capped.
+
+    Floored to ``now + MIN_ALERT_GAP`` so a limit that resets in minutes — or one
+    that names no reset at all — still cannot page more often than the operator
+    cadence, and capped to ``now + _MAX_SUPPRESS`` so a mis-parsed or
+    clock-skewed timestamp cannot mute an endpoint indefinitely.
+    """
+    floor = now + MIN_ALERT_GAP
+    if reset_at is None or reset_at < floor:
+        return floor
+    ceiling = now + _MAX_SUPPRESS
+    return ceiling if reset_at > ceiling else reset_at
 
 
 def detect_usage_limit(detail: str | None, *, now: datetime) -> UsageLimit | None:
     """Classify ``detail`` as a subscription usage-limit error with a reset time.
 
     Returns ``None`` when the text is not a usage-limit error, so the caller
-    alerts normally. Otherwise returns the reset deadline (clamped, UTC) and a
-    window label, preferring a provider-declared timestamp over the named
-    window over a conservative default.
+    alerts normally. Otherwise returns how long to stay quiet
+    (``suppress_until``, floored and capped, UTC), a window label, and the
+    provider's own reset claim (``reset_at``, or None when it made none),
+    preferring a declared timestamp over the named window.
 
     Args:
         detail: Operator-facing upstream error text (already secret-scrubbed).
@@ -193,7 +219,12 @@ def detect_usage_limit(detail: str | None, *, now: datetime) -> UsageLimit | Non
         length, window = window_est
         reset_at = now + length
     else:
-        reset_at = now + _DEFAULT_SUPPRESS
+        # Neither a timestamp nor a window: the limit is real but we cannot say
+        # when it turns over, so claim nothing and let the floor decide.
         window = "unspecified"
 
-    return UsageLimit(reset_at=_clamp(reset_at, now), window=window)
+    return UsageLimit(
+        suppress_until=_suppression_deadline(reset_at, now),
+        window=window,
+        reset_at=reset_at,
+    )
