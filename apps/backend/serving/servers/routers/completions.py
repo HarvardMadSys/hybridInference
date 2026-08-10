@@ -724,9 +724,14 @@ async def chat_completions(
     user_id: str = user_ctx.get("user_id") or "anonymous"
 
     # Affinity key for multi-key API rotation — pinned to the specific
-    # hyi-xxx key in use (not user_id, since a user may have multiple keys).
+    # hyi-xxx key in use (not user_id, since a user may have multiple keys),
+    # or to the grant for a sandbox, which presents no key hash.
     auth_key_hash = user_ctx.get("auth_key_hash")
-    affinity_key = derive_affinity_key(auth_key_hash, get_client_ip(request))
+    affinity_key = derive_affinity_key(
+        auth_key_hash,
+        get_client_ip(request),
+        grant_id=user_ctx.get("agent_grant_id"),
+    )
     req_ctx.update(
         {
             "request_id": request_id,

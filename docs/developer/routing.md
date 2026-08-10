@@ -176,6 +176,9 @@ five minutes (sliding TTL). Goals:
 **Affinity key:** derived by `derive_affinity_key()` in
 `serving/utils/request_ip.py`:
 - Authenticated requests: the user's `auth_key_hash`.
+- Inference-grant (sandbox) requests, which present no key hash:
+  `f"grant:{grant_id}"` — sandboxes share NAT/relay addresses, so an IP key
+  would put every concurrent job on one binding.
 - Anonymous requests: `f"ip:{client_ip}"` (IPv6 folded to its `/64`).
 
 Every request surface that dispatches to an adapter publishes it on `req_ctx`

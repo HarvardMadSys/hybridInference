@@ -7,16 +7,39 @@ import pytest
 from serving.utils import context as req_ctx
 
 
-def _derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
+def _derive_affinity_key(
+    auth_key_hash: str | None,
+    client_ip: str,
+    *,
+    grant_id: str | None = None,
+) -> str:
     """Thin wrapper over the shared helper every request surface derives its key with."""
     from serving.utils.request_ip import derive_affinity_key
 
-    return derive_affinity_key(auth_key_hash, client_ip)
+    return derive_affinity_key(auth_key_hash, client_ip, grant_id=grant_id)
 
 
 @pytest.mark.unit
 def test_authenticated_uses_auth_key_hash():
     assert _derive_affinity_key("abc123", "1.2.3.4") == "abc123"
+
+
+@pytest.mark.unit
+def test_grant_token_keys_on_the_grant_not_the_sandbox_ip():
+    """An inference grant carries no key hash; without this every sandbox behind
+    one NAT or relay address would share a binding."""
+    assert _derive_affinity_key(None, "1.2.3.4", grant_id="grn_7") == "grant:grn_7"
+
+
+@pytest.mark.unit
+def test_grant_id_never_outranks_a_presented_key():
+    assert _derive_affinity_key("abc123", "1.2.3.4", grant_id="grn_7") == "abc123"
+
+
+@pytest.mark.unit
+def test_two_sandboxes_on_one_ip_get_distinct_keys():
+    keys = {_derive_affinity_key(None, "1.2.3.4", grant_id=g) for g in ("grn_a", "grn_b")}
+    assert len(keys) == 2
 
 
 @pytest.mark.unit

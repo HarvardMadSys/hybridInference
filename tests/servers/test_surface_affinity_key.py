@@ -168,6 +168,30 @@ async def test_v1_messages_publishes_the_callers_key_hash(
     assert ctx["auth_key_hash"] == "hash-a"
 
 
+async def test_v1_messages_keys_a_sandbox_on_its_grant(
+    anthropic_test_app, anthropic_test_client, anthropic_captures
+):
+    """Grant tokens carry no key hash, and sandboxes share NAT/relay addresses.
+
+    Keying them on the IP would put every concurrent job on one binding — the
+    same collapse this change exists to undo.
+    """
+    for grant_id in ("grn_a", "grn_b"):
+        await _message_as(
+            anthropic_test_app,
+            anthropic_test_client,
+            {
+                "authenticated": True,
+                "user_id": "u-owner",
+                "role": "internal",
+                "agent_grant_id": grant_id,
+                "agent_job_id": f"job-{grant_id}",
+            },
+        )
+
+    assert [c["affinity_key"] for c in anthropic_captures] == ["grant:grn_a", "grant:grn_b"]
+
+
 async def test_v1_messages_falls_back_to_an_ip_key_when_unauthenticated(
     anthropic_test_app, anthropic_test_client, anthropic_captures
 ):

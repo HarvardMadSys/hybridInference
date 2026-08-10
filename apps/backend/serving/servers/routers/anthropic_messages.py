@@ -991,16 +991,21 @@ async def anthropic_messages(
 
     # Per-caller identity for multi-key rotation, published before any dispatch.
     # Pinned to the specific hyi-xxx key in use (not user_id — a user may hold
-    # several), or the caller's IP bucket when unauthenticated. Without it every
-    # caller on this surface shared one process-wide ``_anon`` binding, so nobody
-    # kept a stable upstream key and provider-side prompt-cache locality was lost
-    # — worst here, where the traffic is prefill-dominated Claude Code sessions.
+    # several), to the grant for a sandbox, or to the caller's IP bucket with no
+    # credential at all. Without it every caller on this surface shared one
+    # process-wide ``_anon`` binding, so nobody kept a stable upstream key and
+    # provider-side prompt-cache locality was lost — worst here, where the
+    # traffic is prefill-dominated Claude Code sessions.
     ip_info = get_client_ip_info(request)
     auth_key_hash = user_ctx.get("auth_key_hash")
     req_ctx.update(
         {
             "auth_key_hash": auth_key_hash or "_anon",
-            "affinity_key": derive_affinity_key(auth_key_hash, ip_info.client_ip),
+            "affinity_key": derive_affinity_key(
+                auth_key_hash,
+                ip_info.client_ip,
+                grant_id=user_ctx.get("agent_grant_id"),
+            ),
         }
     )
 

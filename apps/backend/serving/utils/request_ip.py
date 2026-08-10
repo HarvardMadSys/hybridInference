@@ -145,8 +145,22 @@ def normalize_ip_bucket(ip: str) -> str:
     return str(network)
 
 
-def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
+def derive_affinity_key(
+    auth_key_hash: str | None,
+    client_ip: str,
+    *,
+    grant_id: str | None = None,
+) -> str:
     """Compute the affinity key used for sticky multi-key routing.
+
+    Falls through the caller identities in order of how precisely each names one
+    caller:
+
+    1. ``auth_key_hash`` — the hyi-xxx key presented. The ordinary case.
+    2. ``grant_id`` — an inference-grant token carries no key hash, so without
+       this a sandbox would key on its IP and every sandbox behind one NAT or
+       relay address would collapse onto a single binding.
+    3. The client IP bucket, for traffic with no credential at all.
 
     Anonymous IPv6 clients key on their ``/64`` so rotating privacy addresses
     within the delegated prefix keeps landing on the same backend.
@@ -157,6 +171,8 @@ def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
     """
     if auth_key_hash:
         return auth_key_hash
+    if grant_id:
+        return f"grant:{grant_id}"
     return f"ip:{normalize_ip_bucket(client_ip)}"
 
 
