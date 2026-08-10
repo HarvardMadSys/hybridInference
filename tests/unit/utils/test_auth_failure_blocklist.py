@@ -51,6 +51,8 @@ def test_default_config_encodes_the_spec():
     assert fields["auth_failure_block_threshold"].default == 200
     assert fields["auth_failure_block_window_sec"].default == 86400
     assert fields["auth_failure_block_duration_sec"].default == 86400
+    # No source is exempt unless an operator lists it.
+    assert fields["auth_failure_block_exempt_ips"].default == ""
 
 
 @pytest.mark.asyncio
@@ -150,6 +152,92 @@ async def test_disabled_is_a_noop(monkeypatch, clock):
     # Even at threshold 1, a disabled feature never blocks.
     assert await record_auth_failure(ip) is False
     assert await is_ip_blocked(ip) == (False, 0)
+
+
+@pytest.fixture
+def exempt(monkeypatch):
+    """Set the exemption list for a test."""
+
+    def _set(value: str) -> None:
+        monkeypatch.setattr(settings, "auth_failure_block_exempt_ips", value)
+
+    return _set
+
+
+@pytest.mark.asyncio
+async def test_exempt_ip_never_blocks(small_limits, clock, exempt):
+    exempt("203.0.113.60")
+    ip = "203.0.113.60"
+    # Far past the threshold: failures are not even counted, so no transition.
+    for _ in range(10):
+        assert await record_auth_failure(ip) is False
+    assert await is_ip_blocked(ip) == (False, 0)
+
+
+@pytest.mark.asyncio
+async def test_exempt_cidr_covers_the_range_but_nothing_else(small_limits, clock, exempt):
+    exempt("203.0.113.0/24")
+    for _ in range(5):
+        assert await record_auth_failure("203.0.113.61") is False
+    assert await is_ip_blocked("203.0.113.61") == (False, 0)
+
+    # A source outside the exempted range still blocks at the threshold.
+    outsider = "198.51.100.9"
+    await record_auth_failure(outsider)
+    await record_auth_failure(outsider)
+    assert await record_auth_failure(outsider) is True
+    assert (await is_ip_blocked(outsider))[0] is True
+
+
+@pytest.mark.asyncio
+async def test_exemption_overrides_an_existing_block(small_limits, clock, exempt):
+    """Adding an exemption unblocks the source on the next read."""
+    ip = "203.0.113.62"
+    for _ in range(3):
+        await record_auth_failure(ip)
+    assert (await is_ip_blocked(ip))[0] is True
+
+    exempt(ip)
+    assert await is_ip_blocked(ip) == (False, 0)
+
+
+@pytest.mark.asyncio
+async def test_exempt_host_survives_its_blocked_ipv6_bucket(small_limits, clock, exempt):
+    """A /128 exemption outranks a block on the surrounding /64 bucket."""
+    prefix = "2001:db8:abcd:1234::"
+    exempt(prefix + "5")
+    # Non-exempt rotation within the /64 blocks the shared bucket...
+    await record_auth_failure(prefix + "1")
+    await record_auth_failure(prefix + "2")
+    assert await record_auth_failure(prefix + "3") is True
+    assert (await is_ip_blocked(prefix + "dead"))[0] is True
+    # ...but the exempted address inside it stays reachable.
+    assert await is_ip_blocked(prefix + "5") == (False, 0)
+
+
+@pytest.mark.asyncio
+async def test_ipv4_mapped_literal_matches_an_ipv4_entry(small_limits, clock, exempt):
+    """A dual-stack listener's ::ffff: form is exempt via its embedded IPv4."""
+    exempt("203.0.113.70")
+    mapped = "::ffff:203.0.113.70"
+    for _ in range(5):
+        assert await record_auth_failure(mapped) is False
+    assert await is_ip_blocked(mapped) == (False, 0)
+
+
+@pytest.mark.asyncio
+async def test_invalid_exempt_entries_are_skipped(small_limits, clock, exempt):
+    """A malformed entry is ignored; the valid ones still apply."""
+    exempt("not-an-ip, ,203.0.113.80")
+    for _ in range(5):
+        assert await record_auth_failure("203.0.113.80") is False
+    assert await is_ip_blocked("203.0.113.80") == (False, 0)
+
+    # The malformed entry exempts nothing: other sources still block.
+    other = "198.51.100.10"
+    await record_auth_failure(other)
+    await record_auth_failure(other)
+    assert await record_auth_failure(other) is True
 
 
 def _make_request(client_ip: str) -> Request:
