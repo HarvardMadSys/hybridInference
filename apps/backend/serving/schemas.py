@@ -9,16 +9,25 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from serving.responses_translator import merge_leading_system_messages
 
 
 class ChatMessage(BaseModel):  # type: ignore[no-any-unimported]
     """Single chat message with role and content.
 
     Supports tool role for tool execution results in function calling flows.
+
+    ``developer`` is accepted on input: OpenAI added it for reasoning models,
+    and clients that follow that spec (pi, for one) send instructions under
+    it. :class:`ChatCompletionRequest` folds it to ``system`` for the whole
+    request — sglang answers a bare ``developer`` message with
+    ``Unexpected message role`` (probed against the local Qwen3.6 server), so
+    only the classic four roles may leave here.
     """
 
-    role: Literal["system", "user", "assistant", "tool"]
+    role: Literal["system", "developer", "user", "assistant", "tool"]
     # Allow either plain string (OpenAI style) or structured blocks (provider-specific)
     content: Any | None = None
     # For role="tool" messages, associates result back to a prior tool call
@@ -81,6 +90,37 @@ class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]
 
     # Pydantic v2 configuration: ignore extra fields in requests
     model_config = ConfigDict(extra="ignore")
+
+    @model_validator(mode="after")
+    def _fold_developer_messages(self) -> ChatCompletionRequest:
+        """Fold ``developer`` messages into a single leading ``system`` one.
+
+        Folding is not a formality: probed against the local sglang server,
+        ``developer`` comes back ``Unexpected message role``, and two system
+        messages — or one that is not first — come back ``System message must
+        be at the beginning``. So a request pairing ``system`` with
+        ``developer``, which the OpenAI spec allows, would trade one 400 for
+        another if it were only relabelled. The merge is the same one the
+        Responses path applies for the same shape and the same reason.
+
+        Scoped to requests that actually used ``developer``. A request that
+        already carries several system messages keeps them: it is a shape this
+        gateway forwards today, hoisting one out of the middle of a
+        conversation would change what the prompt means, and nothing about
+        accepting a new role justifies rewriting traffic that never used it.
+        """
+        if not any(message.role == "developer" for message in self.messages):
+            return self
+        folded = [
+            {**message.model_dump(), "role": "system"}
+            if message.role == "developer"
+            else message.model_dump()
+            for message in self.messages
+        ]
+        self.messages = [
+            ChatMessage.model_validate(message) for message in merge_leading_system_messages(folded)
+        ]
+        return self
 
 
 # Response models
