@@ -562,7 +562,7 @@ async def _refresh_db_key_tiers(
     provider: str,
     *,
     fallback: tuple[str, str] | None = None,
-) -> None:
+) -> str | None:
     """Re-read the provider's DB-declared tiers and reconcile the live pools.
 
     Called after every mutation that can change them (add, re-tier, disable,
@@ -583,6 +583,12 @@ async def _refresh_db_key_tiers(
     that remain, which only the read can say, and guessing could relax a reservation
     another row still holds. Those keep their stricter cached tier until the next
     successful read.
+
+    Returns None when the authoritative read succeeded — the normal case, and the
+    only one where the persisted state is fully in force. When it failed, returns the
+    tier now enforced for the fallback key, which equals what was written for a
+    tightening and *differs* for a relaxation the fallback refused to apply. Callers
+    that promised the caller a specific tier must check it.
     """
     try:
         tiers = await op_store.list_provider_key_min_roles(provider)
@@ -599,7 +605,7 @@ async def _refresh_db_key_tiers(
                 applied,
                 exc,
             )
-            return
+            return applied
         logger.warning(
             "failed to refresh DB key tier reservations for provider=%r; "
             "live pools keep their current tiers: %s",
@@ -1133,7 +1139,29 @@ async def set_provider_key_min_role(
     if not updated:
         raise HTTPException(404, f"Provider key {key_id!r} not found")
 
-    await _refresh_db_key_tiers(op_store, provider, fallback=(raw_key, payload.min_role))
+    enforced = await _refresh_db_key_tiers(
+        op_store,
+        provider,
+        fallback=(raw_key, payload.min_role),
+    )
+    if enforced is not None and enforced != payload.min_role:
+        # The row is written, but the authoritative re-read failed and the fallback
+        # refuses to relax a tier on a partial picture (another row may declare
+        # something stricter for this same credential). Reporting success here would
+        # tell the admin a key is released while the pool still excludes the tier
+        # they just admitted — the one direction where silence has no safety
+        # argument, since a tightening applies immediately and only a relaxation can
+        # be left unapplied.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Tier saved as {payload.min_role!r} but not applied: the live pools "
+                f"still enforce {enforced!r} because the provider's declarations could "
+                "not be re-read. The stored value is correct and takes effect on the "
+                "next successful reconcile (any later key mutation, or a restart) — "
+                "retry to apply it now."
+            ),
+        )
     pools_updated = dynamic_keys.pools_holding_key(provider, raw_key)
 
     await log_admin_action(

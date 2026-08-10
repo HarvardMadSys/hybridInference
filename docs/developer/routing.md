@@ -346,7 +346,11 @@ Two ordering details the declarations depend on:
   rotation immediately. The direct path only ever *tightens*: the cache holds one
   entry per raw value and so cannot represent a second row declaring something
   stricter, so a release waits for a successful read rather than risk relaxing a
-  reservation another row still holds.
+  reservation another row still holds. That wait is reported, not hidden: the
+  re-tier endpoint answers 503 when the release it just persisted is not in force,
+  because a tightening applies immediately and only a widening can be left
+  unapplied. The row is already correct, so a retry (or any later reconcile) applies
+  it.
 
 Because promotion closes that hole, **route-bound keys now honor `min_role` too**:
 a key pinned via `api_key_id` holds the same secret as any other, and opting a
