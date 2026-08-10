@@ -2443,7 +2443,11 @@ async def test_a_failed_read_never_relaxes_a_stricter_cached_tier(client):
         json={"min_role": "free"},
         headers=AUTH,
     )
-    assert resp.status_code == 200, resp.text
+    # The row is saved, but the release is not in force — say so rather than
+    # reporting success for a widening the pool has not accepted.
+    assert resp.status_code == 503, resp.text
+    assert "not applied" in resp.json()["detail"]
+    assert "internal" in resp.json()["detail"]
     assert pool.snapshot_min_roles()[api_key] == "internal"
 
     # A later successful read applies the release.
@@ -2806,3 +2810,72 @@ async def test_a_reservation_survives_its_credential_and_stays_manageable(client
 
     after = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
     assert all(k["id"] != env_id for k in after.json()["keys"])
+
+
+@pytest.mark.asyncio
+async def test_a_tightening_still_succeeds_on_a_degraded_read(client):
+    """Only an unapplied *relaxation* errors — a tightening is in force immediately.
+
+    The fallback applies the written tier directly, so the caller's reservation is
+    real and reporting success is truthful.
+    """
+    http, store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    api_key = "sk-zai-tightenok-vvvvwwwwxxxx"
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": api_key},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+
+    store.fail_min_roles_for.add("zai")
+    resp = await http.post(
+        f"/admin/provider-keys/{key_id}/min-role",
+        json={"min_role": "pro"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["min_role"] == "pro"
+    assert pool.snapshot_min_roles()[api_key] == "pro"
+
+
+@pytest.mark.asyncio
+async def test_a_relaxation_applies_once_the_read_recovers(client):
+    """The 503 is about enforcement lag, not a lost write — retrying applies it."""
+    http, store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    api_key = "sk-zai-retryrelax-yyyyzzzz0000"
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": api_key, "min_role": "pro"},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+
+    store.fail_min_roles_for.add("zai")
+    first = await http.post(
+        f"/admin/provider-keys/{key_id}/min-role",
+        json={"min_role": "free"},
+        headers=AUTH,
+    )
+    assert first.status_code == 503, first.text
+    # The row already carries the release, so the retry only has to reconcile.
+    assert store.rows[key_id].min_role == "free"
+
+    store.fail_min_roles_for.discard("zai")
+    retry = await http.post(
+        f"/admin/provider-keys/{key_id}/min-role",
+        json={"min_role": "free"},
+        headers=AUTH,
+    )
+    assert retry.status_code == 200, retry.text
+    assert pool.snapshot_min_roles()[api_key] == "free"
