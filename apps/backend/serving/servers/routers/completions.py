@@ -54,7 +54,7 @@ from serving.storage.utils import billable_output_tokens, json_safe
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip, normalize_ip_bucket
+from serving.utils.request_ip import derive_affinity_key, get_client_ip
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
@@ -467,17 +467,6 @@ async def _streaming_response_with_keepalive(
     yield json.dumps(sanitized).encode()
 
 
-def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
-    """Compute the affinity key used for sticky multi-key routing.
-
-    Anonymous IPv6 clients key on their ``/64`` so rotating privacy addresses
-    within the delegated prefix keeps landing on the same backend.
-    """
-    if auth_key_hash:
-        return auth_key_hash
-    return f"ip:{normalize_ip_bucket(client_ip)}"
-
-
 def _fallback_error_summary(routing: RoutingInfo) -> str | None:
     failed_attempts = routing.extra.get("failed_attempts")
     if not isinstance(failed_attempts, list) or not failed_attempts:
@@ -735,9 +724,14 @@ async def chat_completions(
     user_id: str = user_ctx.get("user_id") or "anonymous"
 
     # Affinity key for multi-key API rotation — pinned to the specific
-    # hyi-xxx key in use (not user_id, since a user may have multiple keys).
+    # hyi-xxx key in use (not user_id, since a user may have multiple keys),
+    # or to the grant for a sandbox, which presents no key hash.
     auth_key_hash = user_ctx.get("auth_key_hash")
-    affinity_key = derive_affinity_key(auth_key_hash, get_client_ip(request))
+    affinity_key = derive_affinity_key(
+        auth_key_hash,
+        get_client_ip(request),
+        grant_id=user_ctx.get("agent_grant_id"),
+    )
     req_ctx.update(
         {
             "request_id": request_id,

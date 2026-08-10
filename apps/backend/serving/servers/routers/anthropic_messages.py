@@ -53,7 +53,7 @@ from serving.servers.deps import (
 from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip_info
+from serving.utils.request_ip import derive_affinity_key, get_client_ip_info
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 logger = get_logger(__name__)
@@ -1067,6 +1067,26 @@ async def anthropic_messages(
     request_id = f"amsg_{int(time.time() * 1_000_000)}"
     start = time.time()
 
+    # Per-caller identity for multi-key rotation, published before any dispatch.
+    # Pinned to the specific hyi-xxx key in use (not user_id — a user may hold
+    # several), to the grant for a sandbox, or to the caller's IP bucket with no
+    # credential at all. Without it every caller on this surface shared one
+    # process-wide ``_anon`` binding, so nobody kept a stable upstream key and
+    # provider-side prompt-cache locality was lost — worst here, where the
+    # traffic is prefill-dominated Claude Code sessions.
+    ip_info = get_client_ip_info(request)
+    auth_key_hash = user_ctx.get("auth_key_hash")
+    req_ctx.update(
+        {
+            "auth_key_hash": auth_key_hash or "_anon",
+            "affinity_key": derive_affinity_key(
+                auth_key_hash,
+                ip_info.client_ip,
+                grant_id=user_ctx.get("agent_grant_id"),
+            ),
+        }
+    )
+
     try:
         body = await request.json()
     except Exception:
@@ -1179,7 +1199,6 @@ async def anthropic_messages(
                 f"[{request_id}] Dropped Anthropic-only fields for OpenAI backend: {dropped}"
             )
 
-    ip_info = get_client_ip_info(request)
     metadata = {
         "user_agent": request.headers.get("user-agent"),
         "referer": request.headers.get("referer"),

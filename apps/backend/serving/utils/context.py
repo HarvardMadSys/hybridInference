@@ -49,6 +49,12 @@ REQUEST_SCOPED_KEYS = (
     "client_user_agent",
     "user_id",
     "user_name",
+    # Caller identity for multi-key rotation. Held here for the same reason as
+    # USER_ROLE: the key pool reads "absent" as "no caller to keep sticky" and
+    # shares one binding for it, so a leftover value would bind an internal
+    # request (health probe, warmup) to the previous caller's upstream key.
+    "auth_key_hash",
+    "affinity_key",
     USER_ROLE,
     CLIENT_ERROR_KIND,
     PROVIDER,

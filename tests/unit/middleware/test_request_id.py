@@ -118,14 +118,14 @@ async def test_clearing_provider_preserves_reader_defaults() -> None:
 async def test_reset_keeps_keys_outside_the_request_scope() -> None:
     """Only per-request keys are cleared; unrelated context is left alone.
 
-    ``model``, affinity keys and similar are written by handlers and read back
-    within the same request, so a blanket wipe would break them.
+    ``model`` and similar are scoped by the self-unwinding ``req_ctx.push``
+    around the adapter call rather than by this reset, so a blanket wipe would
+    be clearing state the middleware has no business owning.
     """
-    req_ctx.update({"model": "kept-model", "affinity_key": "kept-key"})
+    req_ctx.update({"model": "kept-model"})
     captured: dict = {}
     await _drive([], captured)
     assert captured.get("model") == "kept-model"
-    assert captured.get("affinity_key") == "kept-key"
 
 
 #: The per-request keys as of this change, spelled out here rather than read from
@@ -136,7 +136,16 @@ async def test_reset_keeps_keys_outside_the_request_scope() -> None:
 #: membership separately means a removal has to be made here too — deliberately,
 #: with the leak in view.
 _PINNED_REQUEST_SCOPED_KEYS = frozenset(
-    {"client_user_agent", "user_id", "user_name", "user_role", "client_error_kind", "provider"}
+    {
+        "client_user_agent",
+        "user_id",
+        "user_name",
+        "user_role",
+        "auth_key_hash",
+        "affinity_key",
+        "client_error_kind",
+        "provider",
+    }
 )
 
 
@@ -147,7 +156,9 @@ def test_request_scoped_key_set_is_pinned() -> None:
     the current request: ``user_id``/``user_name`` for circuit-breaker
     attribution, ``client_error_kind`` for the 404 split, ``provider`` for the
     401 split, ``user_role`` for access to tier-reserved provider keys (absent
-    means "internal caller, unrestricted"). Dropping one un-clears it and makes
+    means "internal caller, unrestricted"), ``auth_key_hash``/``affinity_key``
+    for which upstream key and provider a caller sticks to (absent means "no
+    caller identity", which shares one binding). Dropping one un-clears it and makes
     the next request inherit it, so the set is not something to shrink as a side
     effect of another change.
     """
