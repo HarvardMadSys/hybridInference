@@ -1,6 +1,6 @@
 # local-deployment-proxy
 
-A lightweight reverse proxy that lazily starts and stops sglang Docker containers for multiple models. The proxy port stays open permanently; GPU-heavy containers are only running when there is active traffic. The least-used GPU is auto-selected.
+A lightweight reverse proxy that lazily starts and stops sglang Docker containers for multiple models. The proxy port stays open permanently; GPU-heavy containers are only running when there is active traffic. A vacant GPU is auto-selected (or the request fails fast when there is none).
 
 Serves both **chat** and **embedding** models from one proxy/port. Supports
 **Qwen3.6-35B-A3B-FP8** and the **bge-m3** embedding model out of the box (both
@@ -19,7 +19,7 @@ Client → spark2:8001 ──SSH tunnel──→ GPU box :8001 (proxy)
 1. The proxy listens on port 8001 and accepts all incoming HTTP requests.
 2. Requests are routed to the correct backend based on the `model` field in the request body.
 3. If an `hf_repo` model is not installed, the first request downloads it from Hugging Face.
-4. It picks the configured/least-used GPU and launches the container (sglang by default, or vLLM when `engine: vllm`).
+4. It picks the configured GPU — or auto-selects a vacant one — and launches the container (sglang by default, or vLLM when `engine: vllm`). If auto-selection finds no vacant GPU, the request fails fast with a 502 instead of launching onto a busy device (see [GPU auto-selection](#gpu-auto-selection)).
 5. It waits for the container's `/v1/models` health endpoint, then proxies all traffic.
 6. After **24 minutes** with no incoming requests for a model, that container is stopped.
 7. The proxy keeps listening — the next request re-starts the container automatically.
@@ -241,6 +241,7 @@ To add a new model, append an entry to `models.json` and restart the proxy.
 | `HEALTH_TIMEOUT` | `600` | Max seconds to wait for a container to become healthy |
 | `HEALTH_INTERVAL` | `10` | Seconds between health-check polls |
 | `MAX_START_FAILURES` | `20` | Consecutive failed starts after which the proxy gives up on that model (see [Giving up on a crash-looping container](#giving-up-on-a-crash-looping-container)). `0` disables the limit |
+| `ALLOWED_GPUS` | unset (all) | Comma list of GPU indices auto-selection may use (e.g. `0,1` on a box whose other devices belong to another deployment). Pinned `gpu_index` values are not checked against it — a pin is an explicit operator decision |
 | `MODELS_CONFIG` | auto-detected | Path to the models config JSON. When unset, selected by GPU hardware (see [Hardware profiles](#hardware-profiles)); set explicitly to override. **Not settable from the environment under systemd** — see below |
 | `LOCAL_API_KEY` | `freeinference_api` | API key for request auth; accepts an `Authorization: Bearer` or `X-API-Key` header. A blank value falls back to the default rather than disabling auth — there is no way to turn auth off |
 | `PROXY_OWNER` | `port-$LISTEN_PORT` | Identity stamped on the containers this proxy starts, so it never destroys or adopts another proxy's backend of the same name (see [Container ownership](#container-ownership)). The default is unique per host and stable across restarts; override only to give a hand-run proxy an identity of its own |
@@ -289,7 +290,9 @@ unaffected: `MODELS_CONFIG` works normally there.
 
 ## GPU auto-selection
 
-When `gpu_index` is not set for a model, the proxy queries `nvidia-smi` at container start time and picks the GPU with the lowest memory utilization. It also excludes the GPU that each other starting/running backend actually resolved to (tracked at runtime, since auto-selected models have no `gpu_index` in config), so concurrent backends do not collide on the same device. Set `gpu_index` explicitly to pin a model to a specific device.
+When `gpu_index` is not set for a model, the proxy queries `nvidia-smi` at container start time and picks the most-vacant GPU under 20% memory utilization. It also excludes the GPU that each other starting/running backend actually resolved to (tracked at runtime, since auto-selected models have no `gpu_index` in config), so concurrent backends do not collide on the same device. Set `gpu_index` explicitly to pin a model to a specific device. Set `ALLOWED_GPUS` to fence auto-selection to a subset of devices when the rest of the box belongs to another deployment.
+
+**No vacant GPU is an error, not a fallback.** When every candidate device is above the 20% threshold, the start raises and the request fails fast with a 502 — including streaming chat, which gets the 502 *instead of* the warm-up banner, so the gateway can fail the model over instead of reading success-shaped answers forever. The proxy used to fall back to the least-used GPU here; on a busy box that bought an OOM after a full weight load and a hang in the health wait (once per request), not a working backend. The refusal happens before any docker command and before the Hugging Face download, and it does **not** count toward `MAX_START_FAILURES` — like a foreign-container refusal, it is a statement about *right now* that ends when another backend idles out.
 
 To intentionally **colocate** models on one GPU, give them a shared `colocate_group`. The first member to start auto-picks a free GPU; every other member of the group then follows it onto that same device instead of being excluded from it. Keep the group's combined `mem_fraction` at ~0.9 or below.
 

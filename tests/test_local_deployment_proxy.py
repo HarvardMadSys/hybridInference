@@ -144,11 +144,12 @@ class RecordingBackendHandler(BaseHTTPRequestHandler):
 class WarmupBackend:
     model_name = MODEL_NAME
 
-    def __init__(self, giveup: Exception | None = None) -> None:
+    def __init__(self, giveup: Exception | None = None, no_gpu: Exception | None = None) -> None:
         self._state = "stopped"
         self.touched = threading.Event()
         self.ensure_running_called = threading.Event()
         self.giveup = giveup
+        self.no_gpu = no_gpu
 
     @property
     def state(self) -> str:
@@ -164,6 +165,10 @@ class WarmupBackend:
     def giveup_error(self) -> Exception | None:
         """The error this backend was given up on, if it has been."""
         return self.giveup
+
+    def no_free_gpu_error(self) -> Exception | None:
+        """The diagnosis a start attempted now would raise, if any."""
+        return self.no_gpu
 
     def ensure_running(self) -> None:
         self.ensure_running_called.set()
@@ -3729,6 +3734,154 @@ def test_pick_free_gpus_returns_distinct_least_used(monkeypatch: Any, tmp_path: 
     monkeypatch.setattr(proxy.subprocess, "run", lambda *a, **k: _gpu_query_result(rows))
     assert proxy._pick_free_gpus(4) == "0,1,2,3"
     assert proxy._pick_free_gpus(2) == "0,1"
+
+
+# ── No vacant GPU: fail fast instead of launching onto a busy device ────────
+
+
+def test_pick_free_gpu_raises_when_no_gpu_is_vacant(monkeypatch: Any, tmp_path: Path) -> None:
+    """Every device above the threshold is somebody's — refuse, don't fall back.
+
+    The least-used fallback never produced a working backend on a busy box: the
+    launch OOM'd after a full weight load and sat in the health wait for
+    HEALTH_TIMEOUT once per request, which callers experienced as a hang.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    rows = "0, 95000, 100000\n1, 60000, 100000\n"
+    monkeypatch.setattr(proxy.subprocess, "run", lambda *a, **k: _gpu_query_result(rows))
+    with pytest.raises(proxy.NoFreeGPUError, match="No vacant GPU"):
+        proxy._pick_free_gpu()
+
+
+def test_pick_free_gpu_raises_when_the_only_vacant_gpu_is_excluded(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # The pre-change code fell out of its loop and returned GPU "0" — the very
+    # device the exclusion said another backend was starting on.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    rows = "0, 1000, 100000\n1, 95000, 100000\n"
+    monkeypatch.setattr(proxy.subprocess, "run", lambda *a, **k: _gpu_query_result(rows))
+    with pytest.raises(proxy.NoFreeGPUError):
+        proxy._pick_free_gpu(exclude={"0"})
+
+
+def test_pick_free_gpus_raises_when_not_enough_devices_are_vacant(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    rows = "0, 1000, 100000\n1, 95000, 100000\n"
+    monkeypatch.setattr(proxy.subprocess, "run", lambda *a, **k: _gpu_query_result(rows))
+    with pytest.raises(proxy.NoFreeGPUError):
+        proxy._pick_free_gpus(2)
+
+
+def test_allowed_gpus_fences_auto_selection(monkeypatch: Any, tmp_path: Path) -> None:
+    """ALLOWED_GPUS keeps auto-selection off devices another deployment owns.
+
+    On h200b GPUs 2,3 belong to the DeepSeek idle proxy; a proxy fenced to 0,1
+    must pick among those two even when a foreign device is the emptiest on the
+    box, and must refuse when both its own devices are busy rather than borrow.
+    """
+    monkeypatch.setenv("ALLOWED_GPUS", "0,1")
+    proxy = _load_proxy(monkeypatch, tmp_path)
+
+    # GPU 2 is the emptiest device on the box, but it is not ours to take.
+    rows = "0, 15000, 100000\n1, 10000, 100000\n2, 500, 100000\n3, 95000, 100000\n"
+    monkeypatch.setattr(proxy.subprocess, "run", lambda *a, **k: _gpu_query_result(rows))
+    assert proxy._pick_free_gpu() == "1"
+
+    # Both allowed devices busy → refuse, even with a vacant foreign device.
+    rows = "0, 90000, 100000\n1, 85000, 100000\n2, 500, 100000\n3, 500, 100000\n"
+    monkeypatch.setattr(proxy.subprocess, "run", lambda *a, **k: _gpu_query_result(rows))
+    with pytest.raises(proxy.NoFreeGPUError, match="allowed"):
+        proxy._pick_free_gpu()
+
+
+def test_no_free_gpu_does_not_count_toward_the_limit(monkeypatch: Any, tmp_path: Path) -> None:
+    """Busy GPUs are a condition that ends, not a broken backend.
+
+    The refusal happens before any docker command and before the weight
+    download, so it is already cheap; counting it would let a burst of traffic
+    during a busy stretch latch a perfectly startable model off until restart.
+    """
+    monkeypatch.setenv("MAX_START_FAILURES", "2")
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+    attempts = _failing_start(
+        monkeypatch,
+        backend,
+        lambda: proxy.NoFreeGPUError("No vacant GPU: every candidate is busy"),
+    )
+
+    for _ in range(6):
+        with pytest.raises(proxy.NoFreeGPUError):
+            backend.ensure_running()
+
+    assert len(attempts) == 6
+    assert backend.giveup_error() is None
+
+
+def test_no_free_gpu_error_diagnoses_only_backends_that_would_auto_select(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """The streaming pre-check answers exactly what the start path would do.
+
+    A pinned model never auto-selects, so busy devices are no reason to 502 it;
+    an unpinned one on an all-busy box is refused before the warmup banner
+    commits a 200 the background start can only betray.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+
+    busy_rows = "0, 95000, 100000\n1, 90000, 100000\n"
+
+    def dispatch(cmd: list[str], *a: Any, **k: Any) -> Any:
+        if "nvidia-smi" in cmd:
+            return _gpu_query_result(busy_rows)
+        return _no_such_container()  # docker inspect: no container of this name
+
+    monkeypatch.setattr(proxy.subprocess, "run", dispatch)
+
+    pinned = proxy._backends[MODEL_NAME]  # _load_proxy pins gpu_index "0"
+    assert pinned.no_free_gpu_error() is None
+
+    unpinned = proxy.BackendManager(
+        "auto-model",
+        {"container": "auto-model-sglang", "backend_port": 18081, "model_dir": "/tmp/auto"},
+    )
+    error = unpinned.no_free_gpu_error()
+    assert isinstance(error, proxy.NoFreeGPUError)
+
+    # Never raises out of the pre-check, and a ready backend is never re-judged.
+    unpinned._state = "ready"
+    assert unpinned.no_free_gpu_error() is None
+
+
+def test_streaming_chat_502s_when_no_gpu_is_vacant(monkeypatch: Any, tmp_path: Path) -> None:
+    """No banner for a start that would find every device busy.
+
+    The warmup SSE commits a success-shaped 200 before ensure_running raises on
+    a background thread that can only log — the gateway would keep seeing 200s
+    and never fail the model over, which is the hang this error exists to end.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = WarmupBackend(no_gpu=proxy.NoFreeGPUError("No vacant GPU"))
+    proxy._backends = {MODEL_NAME: backend}
+
+    with _serve(proxy.ProxyHandler) as proxy_port:
+        status, _, body = _request(
+            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            method="POST",
+            headers={"Authorization": "Bearer manual-secret"},
+            body={
+                "model": MODEL_NAME,
+                "stream": True,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+        )
+
+    assert status == 502
+    assert b"No vacant GPU" in body
+    assert not backend.ensure_running_called.is_set()
 
 
 def test_vllm_tensor_parallel_spans_multiple_gpus(monkeypatch: Any, tmp_path: Path) -> None:

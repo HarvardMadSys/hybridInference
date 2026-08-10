@@ -27,6 +27,9 @@ HEALTH_TIMEOUT : Max seconds to wait for backend startup  (default 600)
 HEALTH_INTERVAL: Seconds between health-check polls       (default 10)
 MAX_START_FAILURES : Consecutive failed starts after which the proxy stops
                  trying to start that backend (default 20; 0 = no limit)
+ALLOWED_GPUS   : Comma list of GPU indices auto-selection may use (e.g. "0,1").
+                 Unset = all GPUs. Pinned ``gpu_index`` values are not checked
+                 against it — a pin is an explicit operator decision.
 MODELS_CONFIG  : Path to a JSON config file               (see below)
 PROXY_OWNER    : Identity stamped on containers this proxy starts, so it never
                  destroys or adopts a sibling proxy's backend of the same name
@@ -193,6 +196,15 @@ HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
 #
 # Set to 0 to disable the limit and keep retrying forever.
 MAX_START_FAILURES = int(os.environ.get("MAX_START_FAILURES", "20"))
+
+# GPU indices auto-selection may hand out, e.g. "0,1" on a box whose other
+# devices belong to a different deployment (h200b runs DeepSeek on GPUs 2,3
+# under ops/h200_idle_proxy). Empty/unset means every GPU nvidia-smi reports.
+# Only auto-selection consults this; an explicit per-model ``gpu_index`` pin is
+# an operator decision and is deliberately not validated against it.
+ALLOWED_GPUS = frozenset(
+    part.strip() for part in os.environ.get("ALLOWED_GPUS", "").split(",") if part.strip()
+)
 
 # ── Forward-progress probe (GET /health answers from this) ─────────────────
 # On 2026-08-09 the sglang scheduler on h200b wedged mid-serving. For eight
@@ -581,10 +593,36 @@ def _load_models_config() -> dict[str, dict[str, Any]]:
 MODELS_CONFIG_DATA = _load_models_config()
 
 
-def _pick_free_gpu(exclude: set[str] | None = None) -> str:
-    """Return the index of the GPU with the lowest memory utilization.
+# A GPU is "vacant" below this fraction of memory in use. Above it, the device
+# is somebody's — another backend loading or serving — and launching onto it
+# anyway buys an OOM after a long weight load, not a working backend.
+_GPU_FREE_THRESHOLD = 0.20
 
-    Prefers GPUs with memory utilization < 20%; falls back to the least-used.
+
+class NoFreeGPUError(RuntimeError):
+    """Raised when auto-selection finds no vacant GPU to launch on.
+
+    Deliberately fails the request instead of falling back to the least-used
+    device. The fallback never produced a working backend on a busy box: the
+    launch landed on a GPU another process was using, OOM'd after the weight
+    load, and sat in the health wait for ``HEALTH_TIMEOUT`` — once per request,
+    for as long as traffic kept arriving — while the caller saw a hang rather
+    than an error it could act on.
+
+    Like ``ForeignContainerError`` this is a statement about *right now*: it
+    ends when another backend idles out and releases its device. It is refused
+    before any docker command and before the weight download, so it is cheap,
+    and it does not count toward ``MAX_START_FAILURES`` (see
+    ``_record_start_failure``).
+    """
+
+
+def _pick_free_gpu(exclude: set[str] | None = None) -> str:
+    """Return the index of a vacant GPU (memory utilization < 20%).
+
+    Considers only ``ALLOWED_GPUS`` when that is set, and never a device in
+    ``exclude``. Raises ``NoFreeGPUError`` when no candidate is vacant — a busy
+    device is not a fallback, it is an OOM after a full weight load.
     """
     exclude = exclude or set()
     try:
@@ -601,47 +639,50 @@ def _pick_free_gpu(exclude: set[str] | None = None) -> str:
     except FileNotFoundError:
         log.warning("nvidia-smi not found — defaulting to GPU 0.")
         return "0"
-    best_idx = "0"
-    best_usage = 1.0
-    free_idx = "0"
+    candidates: list[str] = []
+    free_idx: str | None = None
     free_usage = 1.0
     for line in result.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
         if len(parts) != 3:
             continue
         idx, used, total = parts[0], float(parts[1]), float(parts[2])
+        if ALLOWED_GPUS and idx not in ALLOWED_GPUS:
+            continue
         if idx in exclude:
             continue
+        candidates.append(idx)
         usage = used / total if total > 0 else 1.0
         log.info("GPU %s: %.0f / %.0f MiB (%.0f%%)", idx, used, total, usage * 100)
-        if usage < best_usage:
-            best_usage = usage
-            best_idx = idx
-        if usage < 0.20 and usage < free_usage:
+        if usage < _GPU_FREE_THRESHOLD and usage < free_usage:
             free_usage = usage
             free_idx = idx
-    if free_usage < 1.0:
+    if free_idx is not None:
         log.info(
-            "Auto-picked GPU %s (%.0f%% mem used — under 20%% threshold).",
+            "Auto-picked GPU %s (%.0f%% mem used — under %.0f%% threshold).",
             free_idx,
             free_usage * 100,
+            _GPU_FREE_THRESHOLD * 100,
         )
         return free_idx
-    log.warning(
-        "No GPU under 20%% memory utilization — falling back to least-used GPU %s (%.0f%% mem used).",
-        best_idx,
-        best_usage * 100,
+    allowed_note = f" among allowed GPUs {sorted(ALLOWED_GPUS)}" if ALLOWED_GPUS else ""
+    excluded_note = f" (excluding {sorted(exclude)})" if exclude else ""
+    raise NoFreeGPUError(
+        f"No vacant GPU{allowed_note}{excluded_note}: every candidate "
+        f"{sorted(candidates)} is above {_GPU_FREE_THRESHOLD:.0%} memory utilization. "
+        "Not launching onto a busy device — retry when a backend has idled out, "
+        "or free a GPU."
     )
-    return best_idx
 
 
 def _pick_free_gpus(count: int, exclude: set[str] | None = None) -> str:
-    """Return a comma-joined list of the ``count`` least-used GPU indices.
+    """Return a comma-joined list of ``count`` vacant GPU indices.
 
     Used for backends sharded across several devices by tensor and/or pipeline
-    parallelism. Picks greedily — least-used first, excluding each chosen
+    parallelism. Picks greedily — most-vacant first, excluding each chosen
     device from the next pick — and returns a string like ``"0,1,2,3"`` suitable
-    for a Docker ``--gpus device=...`` request.
+    for a Docker ``--gpus device=...`` request. Raises ``NoFreeGPUError`` when
+    fewer than ``count`` vacant devices exist.
     """
     exclude = set(exclude or set())
     chosen: list[str] = []
@@ -870,6 +911,13 @@ class BackendManager:
         """
         if isinstance(exc, ForeignContainerError):
             return
+        # NoFreeGPUError is transient in the same way: it means "every device is
+        # busy right now", which ends when a backend idles out. It is raised
+        # before any docker command and before the weight download, so refusing
+        # is cheap — and counting it would let a burst of traffic during a busy
+        # stretch latch a perfectly startable model off until a proxy restart.
+        if isinstance(exc, NoFreeGPUError):
+            return
         self._start_failures += 1
         if MAX_START_FAILURES <= 0 or self._start_failures < MAX_START_FAILURES:
             log.warning(
@@ -966,20 +1014,32 @@ class BackendManager:
             )
 
     def _resolve_gpu(self, replacing_gpu: str | None = None) -> str:
+        """Select and *commit* the device list this backend launches on.
+
+        The selection itself lives in ``_select_gpu`` so the streaming warmup
+        path can ask "would a device be found right now?" (``no_free_gpu_error``)
+        without recording an answer the backend is not going to launch on.
+        """
+        self._current_gpu = self._select_gpu(replacing_gpu=replacing_gpu)
+        return self._current_gpu
+
+    def _select_gpu(self, replacing_gpu: str | None = None) -> str:
         """Return the ``--gpus`` device list this backend should launch on.
 
         ``replacing_gpu`` is the device list currently held by a still-running
         container of this name that the caller is about to replace (see
         ``_start_container``). It is used only where the choice would otherwise be
         auto-selected, and only when it still fits the requested shape.
+
+        Raises ``NoFreeGPUError`` when auto-selection is needed and no vacant
+        device exists. Side-effect free — commitment is ``_resolve_gpu``'s job.
         """
         # An explicit gpu_index pins the model to that device (lets several
         # models share one GPU); only auto-pick when it is unset.
         pinned = self.config.get("gpu_index")
         if pinned not in (None, ""):
             log.info("[%s] Using pinned GPU %s", self.model_name, pinned)
-            self._current_gpu = str(pinned)
-            return self._current_gpu
+            return str(pinned)
         # Colocation: if another backend sharing this model's colocate_group is
         # already starting or running, land on the same GPU it resolved to.
         # Whichever group member starts first auto-picks a free GPU; the rest
@@ -1002,8 +1062,7 @@ class BackendManager:
                         mgr.model_name,
                         group,
                     )
-                    self._current_gpu = mgr._current_gpu
-                    return self._current_gpu
+                    return mgr._current_gpu
         tp = int(self.config.get("tensor_parallel_size", 1))
         pp = int(self.config.get("pipeline_parallel_size", 1))
         # A model sharded by both tensor and pipeline parallelism needs one GPU
@@ -1023,8 +1082,7 @@ class BackendManager:
                 self.model_name,
                 replacing_gpu,
             )
-            self._current_gpu = replacing_gpu
-            return self._current_gpu
+            return replacing_gpu
         # Exclude GPUs already claimed by other backends that are starting or
         # running. Auto-selected backends carry no gpu_index in their config, so
         # rely on the runtime GPU each one actually resolved to.
@@ -1044,13 +1102,11 @@ class BackendManager:
             pp,
             sorted(used_gpus) if used_gpus else "none",
         )
-        gpu = (
+        return (
             _pick_free_gpus(n_gpus, exclude=used_gpus)
             if n_gpus > 1
             else _pick_free_gpu(exclude=used_gpus)
         )
-        self._current_gpu = gpu
-        return gpu
 
     def _docker_env_args(self) -> list[str]:
         """Build ``-e VAR=val`` flags for the ``docker run`` invocation.
@@ -2048,6 +2104,49 @@ class BackendManager:
             ),
         )
 
+    def no_free_gpu_error(self) -> NoFreeGPUError | None:
+        """Return the diagnosis if a start attempted now would find no vacant GPU.
+
+        Companion to ``contention_error`` and ``giveup_error``, for the same
+        streaming-warmup reason: the 200 and the "starting up…" banner are
+        committed before ``ensure_running`` runs, so a ``NoFreeGPUError`` raised
+        on the background thread reaches the journal and nothing else. Every
+        streaming request during a busy stretch would then be answered
+        success-shaped, the gateway would never open a circuit, and the model
+        would never fail over — the hang this error exists to end.
+
+        Never raises, and answers "no problem" whenever the start path would not
+        auto-select at all: a pinned ``gpu_index``, a backend already starting or
+        ready, or a still-running container of this name (the start path adopts
+        it, or replaces it onto the device it already holds, so no fresh pick
+        happens). A docker inspect that cannot run is read the same way — an
+        unreachable daemon is not evidence that the GPUs are busy.
+
+        Racy by nature, like ``contention_error``: a device that is vacant here
+        can be claimed before the background start reaches it. That start then
+        fails into ``_start_error`` and the *next* request reports it, so the
+        exposure is one banner, not silent success forever.
+        """
+        with self._lock:
+            if self._state in ("ready", "starting"):
+                return None
+        if self.config.get("gpu_index") not in (None, ""):
+            return None
+        try:
+            if self._inspect_state().running:
+                return None
+        except Exception as exc:  # docker unreachable: not evidence about GPUs
+            self._log_inspect_failure(exc)
+        try:
+            self._select_gpu()
+        except NoFreeGPUError as exc:
+            return exc
+        except Exception:
+            # Any other selection failure (nvidia-smi hiccup, …) is the start
+            # path's to raise and report; this method only answers one question.
+            return None
+        return None
+
     def _stale_ownership_reason(self, state: _ContainerState) -> str | None:
         """Say why the container of this name is no longer the one we became ready over.
 
@@ -2712,6 +2811,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 giveup = backend.giveup_error()
                 if giveup is not None:
                     self.send_error(502, str(giveup))
+                    return
+                # And for a start that would find every GPU busy: the banner
+                # promises a start that could only fail on a background thread,
+                # request after request, while the gateway keeps seeing 200s.
+                no_gpu = backend.no_free_gpu_error()
+                if no_gpu is not None:
+                    self.send_error(502, str(no_gpu))
                     return
                 self._handle_warmup_stream(backend)
                 return

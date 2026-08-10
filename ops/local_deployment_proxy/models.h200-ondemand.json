@@ -1,0 +1,96 @@
+{
+    "meta-llama/Llama-3.1-8B-Instruct": {
+        "container": "ondemand-llama31-8b-vllm",
+        "engine": "vllm",
+        "backend_port": 18021,
+        "model_dir": "/scratch/yiyu/models/Llama-3.1-8B-Instruct",
+        "hf_repo": "meta-llama/Llama-3.1-8B-Instruct",
+        "hf_ignore_patterns": ["original/*"],
+        "served_name": "meta-llama/Llama-3.1-8B-Instruct",
+        "max_model_len": 131072,
+        "mem_fraction": "0.35",
+        "vllm_tool_call_parser": "llama3_json",
+        "startup_estimate_seconds": 120
+    },
+    "mistralai/Ministral-3-8B-Instruct-2512": {
+        "container": "ondemand-ministral3-8b-vllm",
+        "engine": "vllm",
+        "backend_port": 18022,
+        "model_dir": "/scratch/yiyu/models/Ministral-3-8B-Instruct-2512",
+        "hf_repo": "mistralai/Ministral-3-8B-Instruct-2512",
+        "hf_ignore_patterns": ["consolidated*", "*.pt"],
+        "served_name": "mistralai/Ministral-3-8B-Instruct-2512",
+        "max_model_len": 131072,
+        "mem_fraction": "0.35",
+        "startup_estimate_seconds": 120
+    },
+    "google/gemma-3-12b-it": {
+        "container": "ondemand-gemma3-12b-vllm",
+        "engine": "vllm",
+        "backend_port": 18023,
+        "model_dir": "/scratch/yiyu/models/gemma-3-12b-it",
+        "hf_repo": "google/gemma-3-12b-it",
+        "served_name": "google/gemma-3-12b-it",
+        "max_model_len": 131072,
+        "mem_fraction": "0.35",
+        "startup_estimate_seconds": 150
+    },
+    "Qwen/Qwen3-8B": {
+        "container": "ondemand-qwen3-8b-vllm",
+        "engine": "vllm",
+        "backend_port": 18024,
+        "model_dir": "/scratch/yiyu/models/Qwen3-8B",
+        "hf_repo": "Qwen/Qwen3-8B",
+        "served_name": "Qwen/Qwen3-8B",
+        "max_model_len": 40960,
+        "mem_fraction": "0.35",
+        "reasoning_parser": "qwen3",
+        "vllm_tool_call_parser": "hermes",
+        "startup_estimate_seconds": 120
+    },
+    "humain-ai/ALLaM-7B-Instruct-preview": {
+        "container": "ondemand-allam-7b-vllm",
+        "engine": "vllm",
+        "backend_port": 18025,
+        "model_dir": "/scratch/yiyu/models/ALLaM-7B-Instruct-preview",
+        "hf_repo": "humain-ai/ALLaM-7B-Instruct-preview",
+        "served_name": "humain-ai/ALLaM-7B-Instruct-preview",
+        "max_model_len": 4096,
+        "mem_fraction": "0.35",
+        "startup_estimate_seconds": 120
+    },
+    "swiss-ai/Apertus-v1.5-8B": {
+        "container": "ondemand-apertus-8b-vllm",
+        "engine": "vllm",
+        "backend_port": 18026,
+        "model_dir": "/scratch/yiyu/models/Apertus-v1.5-8B",
+        "hf_repo": "swiss-ai/Apertus-v1.5-8B",
+        "served_name": "swiss-ai/Apertus-v1.5-8B",
+        "max_model_len": 65536,
+        "mem_fraction": "0.35",
+        "startup_estimate_seconds": 120
+    },
+    "BSC-LT/ALIA-40b": {
+        "container": "ondemand-alia-40b-vllm",
+        "engine": "vllm",
+        "backend_port": 18027,
+        "model_dir": "/scratch/yiyu/models/ALIA-40b",
+        "hf_repo": "BSC-LT/ALIA-40b",
+        "served_name": "BSC-LT/ALIA-40b",
+        "max_model_len": 32768,
+        "mem_fraction": "0.75",
+        "startup_estimate_seconds": 300
+    },
+    "latam-gpt/Llama-3.1-70B-LatamGPT-SFT-1.0": {
+        "container": "ondemand-latamgpt-70b-vllm",
+        "engine": "vllm",
+        "backend_port": 18028,
+        "model_dir": "/scratch/yiyu/models/Llama-3.1-70B-LatamGPT-SFT-1.0",
+        "hf_repo": "latam-gpt/Llama-3.1-70B-LatamGPT-SFT-1.0",
+        "served_name": "latam-gpt/Llama-3.1-70B-LatamGPT-SFT-1.0",
+        "tensor_parallel_size": 2,
+        "max_model_len": 4096,
+        "mem_fraction": "0.85",
+        "startup_estimate_seconds": 480
+    }
+}

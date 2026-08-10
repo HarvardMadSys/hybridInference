@@ -756,6 +756,260 @@ models:
         provider_model_id: "deepseek-v4-pro"
 
 
+  # ── H200b on-demand models (internal only) ─────────────────
+  # Served on h200b GPUs 0,1 by a second ops/local_deployment_proxy instance
+  # (port 8006, ALLOWED_GPUS=0,1, config: ops/local_deployment_proxy/
+  # models.h200-ondemand.json), reverse-tunnelled to the router as
+  # ${H200B_ONDEMAND_DEPLOYMENT_URL}. Every model loads on demand and is
+  # stopped when idle: a cold request blocks ~2–8 minutes depending on model
+  # size, and when both GPUs are already claimed the proxy fails fast with a
+  # 502 rather than queueing (see the proxy README, "GPU auto-selection").
+  #
+  # required_role: internal — visible to and usable by internal-role users
+  # only, deliberately not public. Routes are optional so a gateway without
+  # H200B_ONDEMAND_DEPLOYMENT_URL in its .env simply does not serve them.
+  # Pricing is 0: these run on our own idle GPUs for internal use.
+
+  - id: llama-3.1-8b
+    name: Llama 3.1 8B Instruct (on-demand)
+    provider: vllm
+    required_role: internal
+    provider_model_id: "meta-llama/Llama-3.1-8B-Instruct"
+    quantization: "bf16"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 131072
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        optional: true
+        base_url: ${H200B_ONDEMAND_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "meta-llama/Llama-3.1-8B-Instruct"
+
+  - id: ministral-3-8b
+    name: Ministral 3 8B Instruct (on-demand)
+    provider: vllm
+    required_role: internal
+    provider_model_id: "mistralai/Ministral-3-8B-Instruct-2512"
+    quantization: "bf16"
+    input_modalities: ["text", "image"]
+    output_modalities: ["text"]
+    context_length: 131072
+    max_output_length: 8192
+    supports_tools: false
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        optional: true
+        base_url: ${H200B_ONDEMAND_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "mistralai/Ministral-3-8B-Instruct-2512"
+
+  - id: gemma-3-12b
+    name: Gemma 3 12B IT (on-demand)
+    provider: vllm
+    required_role: internal
+    provider_model_id: "google/gemma-3-12b-it"
+    quantization: "bf16"
+    input_modalities: ["text", "image"]
+    output_modalities: ["text"]
+    context_length: 131072
+    max_output_length: 8192
+    supports_tools: false
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        optional: true
+        base_url: ${H200B_ONDEMAND_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "google/gemma-3-12b-it"
+
+  - id: qwen3-8b
+    name: Qwen3 8B (on-demand)
+    provider: vllm
+    required_role: internal
+    provider_model_id: "Qwen/Qwen3-8B"
+    quantization: "bf16"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 40960
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, thinking]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        optional: true
+        base_url: ${H200B_ONDEMAND_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "Qwen/Qwen3-8B"
+
+  - id: allam-7b
+    name: ALLaM 7B Instruct Preview (on-demand)
+    provider: vllm
+    required_role: internal
+    provider_model_id: "humain-ai/ALLaM-7B-Instruct-preview"
+    quantization: "bf16"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 4096
+    max_output_length: 4096
+    supports_tools: false
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        optional: true
+        base_url: ${H200B_ONDEMAND_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "humain-ai/ALLaM-7B-Instruct-preview"
+
+  - id: apertus-v1.5-8b
+    name: Apertus v1.5 8B (on-demand)
+    provider: vllm
+    required_role: internal
+    provider_model_id: "swiss-ai/Apertus-v1.5-8B"
+    quantization: "bf16"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 65536
+    max_output_length: 8192
+    supports_tools: false
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        optional: true
+        base_url: ${H200B_ONDEMAND_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "swiss-ai/Apertus-v1.5-8B"
+
+  # ALIA-40b is a *base* model (no instruction tuning, no chat template):
+  # use /v1/completions; /v1/chat/completions will fail on the missing
+  # chat template, which is the model, not the deployment.
+  - id: alia-40b
+    name: ALIA 40B (base model, on-demand)
+    provider: vllm
+    required_role: internal
+    provider_model_id: "BSC-LT/ALIA-40b"
+    quantization: "bf16"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 32768
+    max_output_length: 8192
+    supports_tools: false
+    supports_structured_output: false
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        optional: true
+        base_url: ${H200B_ONDEMAND_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "BSC-LT/ALIA-40b"
+
+  # Claims both GPUs (TP=2): while this one is loaded nothing else on the
+  # on-demand proxy can start, and vice versa — requests then 502 fast until
+  # the other backends idle out (24 min). max_position_embeddings in the SFT
+  # checkpoint's config is 4096, so that is the honest context length.
+  - id: llama-3.1-70b-latamgpt
+    name: LatamGPT Llama 3.1 70B SFT (on-demand)
+    provider: vllm
+    required_role: internal
+    provider_model_id: "latam-gpt/Llama-3.1-70B-LatamGPT-SFT-1.0"
+    quantization: "bf16"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 4096
+    max_output_length: 4096
+    supports_tools: false
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        optional: true
+        base_url: ${H200B_ONDEMAND_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "latam-gpt/Llama-3.1-70B-LatamGPT-SFT-1.0"
+
+
   # ── OpenRouter examples ────────────────────────────────────
   # Bare `kind: openrouter` lets OpenRouter pick the upstream provider
   # freely; `kind: openrouter[<provider_slug>]` pins to one OpenRouter
