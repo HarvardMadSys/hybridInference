@@ -1056,6 +1056,47 @@ def test_pin_to_disabled_provider_returns_none():
     assert exe._select_adapter("m", pin_provider="ollama") is not None  # type: ignore[attr-defined]
 
 
+@pytest.mark.unit
+def test_eligible_adapters_reports_route_order_admissions():
+    """Callers that pick their own adapter get the router's admission rules."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    b = _EchoAdapter(_cfg("m", provider="B"))
+    exe.register_route("m", [(a, 0.9), (b, 0.1)])
+
+    assert [ad for ad, _w in exe.eligible_adapters("m")] == [a, b]
+
+    for _ in range(3):
+        exe._on_failure("A", reason="test_failure")
+    assert [ad for ad, _w in exe.eligible_adapters("m")] == [b]
+
+
+@pytest.mark.unit
+def test_eligible_adapters_excludes_disabled_and_reports_empty_on_full_outage():
+    """A disabled provider is not eligible; disabling all of them empties the list."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    b = _EchoAdapter(_cfg("m", provider="B"))
+    exe.register_route("m", [(a, 0.5), (b, 0.5)])
+
+    exe.disabled_provider_resolver = _StaticDisabledResolver({"A"})
+    assert [ad for ad, _w in exe.eligible_adapters("m")] == [b]
+
+    exe.disabled_provider_resolver = _StaticDisabledResolver({"A", "B"})
+    assert exe.eligible_adapters("m") == []
+
+
+@pytest.mark.unit
+def test_eligible_adapters_is_empty_for_unknown_or_unpublished_routes():
+    """No route, or a staged one, offers nothing to dispatch to."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    exe.register_route("m", [(a, 1.0)], published=False)
+
+    assert exe.eligible_adapters("m") == []
+    assert exe.eligible_adapters("unknown") == []
+
+
 def _mcfg(provider: str, modalities: list[str]) -> ModelConfig:
     return ModelConfig(
         id="m",
