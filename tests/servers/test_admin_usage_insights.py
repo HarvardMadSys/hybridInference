@@ -502,6 +502,21 @@ class TestRenderSamples:
         assert len(rendered) <= usage_insights._MAX_PROMPT_CHARS + 5000
 
 
+class TestMessageText:
+    def test_content_blocks(self):
+        message = {"content": [{"type": "text", "text": "the verdict"}]}
+        assert usage_insights._message_text(message) == "the verdict"
+
+    def test_non_string_block_text_does_not_raise(self):
+        """The analysis model's reply is parsed with the same coercion as payloads."""
+        message = {"content": [{"type": "text", "text": 7}, {"text": "and words"}]}
+        assert usage_insights._message_text(message) == "7\nand words"
+
+    def test_falls_back_to_reasoning_content(self):
+        message = {"content": [], "reasoning_content": "thought out loud"}
+        assert usage_insights._message_text(message) == "thought out loud"
+
+
 class TestCallAnalysisModel:
     @pytest.fixture(autouse=True)
     def _deployment_knows_its_own_address(self, monkeypatch):

@@ -40,6 +40,7 @@ from serving.servers.deps import (
 from serving.utils.logging import get_logger
 from serving.utils.prompt_sampling import (
     as_payload_dict,
+    block_text,
     referer_from_metadata,
     system_opener,
     user_agent_from_metadata,
@@ -314,7 +315,7 @@ def _message_text(message: dict) -> str:
         return content
     if isinstance(content, list):
         parts = [
-            b.get("text", "")
+            block_text(b)
             for b in content
             if isinstance(b, dict) and b.get("type") in (None, "text")
         ]

@@ -105,6 +105,26 @@ class TestSystemOpener:
         prompt = json.dumps([{"role": "system", "content": "x" * 500}])
         assert system_opener({}, 10, prompt) == "x" * 10
 
+    def test_anthropic_system_block_with_non_string_text(self):
+        """A block whose ``text`` is not a string must not blow up the join."""
+        payload = {"system": [{"type": "text", "text": 123}, {"type": "text", "text": "ok"}]}
+        assert system_opener(payload, 200) == "123\nok"
+
+    def test_openai_system_block_with_non_string_text(self):
+        """Same coercion on the ``role: system`` message branch."""
+        prompt = json.dumps(
+            [
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "text", "text": 3.5},
+                        {"type": "text", "text": "opencode here"},
+                    ],
+                }
+            ]
+        )
+        assert system_opener({}, 200, prompt) == "3.5\nopencode here"
+
 
 class TestUserMessages:
     def test_old_shape_row(self):
@@ -145,6 +165,43 @@ class TestUserMessages:
     def test_truncates_each_turn(self):
         prompt = json.dumps([{"role": "user", "content": "y" * 500}])
         assert user_messages({}, 7, prompt) == ["y" * 7]
+
+    def test_content_block_with_non_string_text(self):
+        """A non-string ``text`` is rendered, not raised over.
+
+        Live rows carry blocks like ``{"type": "text", "text": 123}``; before the
+        value was coerced the join raised ``TypeError: sequence item 0: expected
+        str instance, int found``, which 500s the admin Usage Insights endpoint
+        that shares this helper.
+        """
+        prompt = json.dumps(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": 123},
+                        {"type": "text", "text": "after the number"},
+                    ],
+                }
+            ]
+        )
+        assert user_messages({}, 200, prompt) == ["123\nafter the number"]
+
+    def test_null_block_text_drops_out_and_structured_text_becomes_json(self):
+        prompt = json.dumps(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": None},
+                        {"type": "text", "text": {"nested": 1}},
+                        {"type": "text", "text": [1, 2]},
+                        {"type": "text", "text": True},
+                    ],
+                }
+            ]
+        )
+        assert user_messages({}, 200, prompt) == ['{"nested": 1}\n[1, 2]\ntrue']
 
 
 class TestPayloadAsStoredText:

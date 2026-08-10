@@ -71,6 +71,22 @@ def messages_of(payload: dict[str, Any], prompt: Any = None) -> list[Any]:
     return raw if isinstance(raw, list) else []
 
 
+def block_text(block: dict[str, Any]) -> str:
+    """Return a content block's ``text`` field as a string.
+
+    Stored payloads occasionally carry a non-string ``text`` (a bare number, a
+    nested object), which would break the ``str.join`` calls below. Anything
+    that isn't a string is rendered as JSON; a missing or null ``text`` becomes
+    the empty string so the caller drops it.
+    """
+    text = block.get("text")
+    if isinstance(text, str):
+        return text
+    if text is None:
+        return ""
+    return json.dumps(text, default=str)
+
+
 def system_opener(payload: dict[str, Any], max_chars: int, prompt: Any = None) -> str | None:
     """Return the start of the system prompt, or None if absent.
 
@@ -83,7 +99,7 @@ def system_opener(payload: dict[str, Any], max_chars: int, prompt: Any = None) -
     if isinstance(sysval, str) and sysval.strip():
         return sysval.strip()[:max_chars]
     if isinstance(sysval, list):
-        parts = [b.get("text", "") for b in sysval if isinstance(b, dict)]
+        parts = [block_text(b) for b in sysval if isinstance(b, dict)]
         joined = "\n".join(p for p in parts if p).strip()
         if joined:
             return joined[:max_chars]
@@ -94,7 +110,7 @@ def system_opener(payload: dict[str, Any], max_chars: int, prompt: Any = None) -
                 return content.strip()[:max_chars]
             if isinstance(content, list):
                 parts = [
-                    b.get("text", "")
+                    block_text(b)
                     for b in content
                     if isinstance(b, dict) and b.get("type") == "text"
                 ]
@@ -120,9 +136,7 @@ def user_messages(payload: dict[str, Any], max_chars: int, prompt: Any = None) -
             text = content
         elif isinstance(content, list):
             parts = [
-                b.get("text", "")
-                for b in content
-                if isinstance(b, dict) and b.get("type") == "text"
+                block_text(b) for b in content if isinstance(b, dict) and b.get("type") == "text"
             ]
             text = "\n".join(p for p in parts if p)
         else:
