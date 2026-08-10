@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     auth_failure_block_threshold: int = 200
     auth_failure_block_window_sec: int = 86400
     auth_failure_block_duration_sec: int = 86400
+    # Comma-separated IPs or CIDR ranges (e.g. "203.0.113.7,198.51.100.0/24")
+    # that are exempt from auth-failure blocking: their failures are never
+    # counted and an existing block never applies to them. For trusted shared
+    # egress points (campus NAT, office gateways) where one client's stale key
+    # would otherwise take every user behind the IP offline. Entries that fail
+    # to parse are logged and skipped.
+    auth_failure_block_exempt_ips: str = ""
 
     # Cloudflare Turnstile (signup captcha)
     turnstile_site_key: str = ""

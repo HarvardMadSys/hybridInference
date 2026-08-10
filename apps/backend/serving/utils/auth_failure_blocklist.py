@@ -15,11 +15,18 @@ sooner in aggregate and is acceptable for a shed-load defense.
 IPv6 sources bucket on their ``/64`` via :func:`normalize_ip_bucket`, so an
 attacker cannot dodge the block by rotating RFC 4941 privacy addresses within a
 delegated prefix. IPv4 keeps full-address buckets.
+
+Sources listed in ``auth_failure_block_exempt_ips`` (comma-separated IPs or
+CIDR ranges) are exempt: their failures are never counted and an existing
+block never applies to them. Exemption matches the raw client address, not the
+bucket, so an exempt ``/128`` stays reachable even when the rest of its ``/64``
+has blocked itself.
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import time
 from collections import deque
 
@@ -40,9 +47,60 @@ _blocked_until: dict[str, float] = {}
 _lock = asyncio.Lock()
 _sweep_counter = 0
 
+#: Parsed exemption networks, cached against the raw setting string so a
+#: changed value (tests, a future runtime reload) reparses instead of serving
+#: stale networks.
+_exempt_cache: tuple[str, tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]] | None = None
+
 
 def _now() -> float:
     return time.time()
+
+
+def _exempt_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Parse ``auth_failure_block_exempt_ips`` into networks, cached per value."""
+    global _exempt_cache
+    raw = settings.auth_failure_block_exempt_ips
+    if _exempt_cache is not None and _exempt_cache[0] == raw:
+        return _exempt_cache[1]
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            # strict=False so a host address with a prefix ("10.0.1.5/16")
+            # exempts its whole network rather than being rejected.
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            logger.warning(
+                "auth_exempt_ip_invalid",
+                extra={"event": "auth_exempt_ip_invalid", "entry": entry},
+            )
+    _exempt_cache = (raw, tuple(networks))
+    return _exempt_cache[1]
+
+
+def _is_exempt(ip: str) -> bool:
+    """True when *ip* falls inside a configured exemption entry.
+
+    Matches the raw client address — unwrapping IPv4-mapped IPv6 literals the
+    way :func:`normalize_ip_bucket` does — rather than the bucket, so an IPv4
+    exemption is never widened by IPv6 bucketing. An unparseable address is
+    never exempt: exemption is an operator grant to a known source, and a
+    source we cannot even parse is not one.
+    """
+    networks = _exempt_networks()
+    if not networks:
+        return False
+    try:
+        parsed = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if parsed.version == 6 and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
+    # Mixed-version containment is defined as False, so one loop covers both.
+    return any(parsed in net for net in networks)
 
 
 def _sweep_inactive(now: float, window_sec: int) -> None:
@@ -68,6 +126,10 @@ async def is_ip_blocked(ip: str) -> tuple[bool, int]:
     """
     if not settings.auth_failure_block_enabled:
         return False, 0
+    # Exemption outranks an existing block: an exempt address inside a blocked
+    # /64 bucket must stay reachable, so this is checked before the bucket.
+    if _is_exempt(ip):
+        return False, 0
     key = normalize_ip_bucket(ip)
     now = _now()
     async with _lock:
@@ -92,6 +154,10 @@ async def record_auth_failure(ip: str) -> bool:
     """
     global _sweep_counter
     if not settings.auth_failure_block_enabled:
+        return False
+    # An exempt source accrues no history at all: counting it would only
+    # produce a block that is_ip_blocked then has to override on every read.
+    if _is_exempt(ip):
         return False
 
     threshold = settings.auth_failure_block_threshold
@@ -146,8 +212,9 @@ async def record_auth_failure(ip: str) -> bool:
 
 
 def reset_auth_failure_block_state() -> None:
-    """Wipe all recorded failures and blocks. Test-only helper."""
-    global _sweep_counter
+    """Wipe all recorded failures, blocks and parsed exemptions. Test-only helper."""
+    global _sweep_counter, _exempt_cache
     _failures.clear()
     _blocked_until.clear()
     _sweep_counter = 0
+    _exempt_cache = None
