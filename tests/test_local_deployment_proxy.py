@@ -3749,8 +3749,11 @@ def test_pick_free_gpu_raises_when_no_gpu_is_vacant(monkeypatch: Any, tmp_path: 
     proxy = _load_proxy(monkeypatch, tmp_path)
     rows = "0, 95000, 100000\n1, 60000, 100000\n"
     monkeypatch.setattr(proxy.subprocess, "run", lambda *a, **k: _gpu_query_result(rows))
-    with pytest.raises(proxy.NoFreeGPUError, match="No vacant GPU"):
+    with pytest.raises(proxy.NoFreeGPUError, match="No vacant GPU") as excinfo:
         proxy._pick_free_gpu()
+    # send_error encodes the message as latin-1; a fancier character in it turns
+    # the 502 diagnosis into a dropped connection (observed live with U+2014).
+    str(excinfo.value).encode("latin-1")
 
 
 def test_pick_free_gpu_raises_when_the_only_vacant_gpu_is_excluded(

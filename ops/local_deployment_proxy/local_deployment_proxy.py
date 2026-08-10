@@ -667,10 +667,13 @@ def _pick_free_gpu(exclude: set[str] | None = None) -> str:
         return free_idx
     allowed_note = f" among allowed GPUs {sorted(ALLOWED_GPUS)}" if ALLOWED_GPUS else ""
     excluded_note = f" (excluding {sorted(exclude)})" if exclude else ""
+    # ASCII only: this string is handed to BaseHTTPRequestHandler.send_error,
+    # which encodes the message as latin-1 and dies on anything fancier -- the
+    # client then sees a dropped connection instead of the 502 diagnosis.
     raise NoFreeGPUError(
         f"No vacant GPU{allowed_note}{excluded_note}: every candidate "
         f"{sorted(candidates)} is above {_GPU_FREE_THRESHOLD:.0%} memory utilization. "
-        "Not launching onto a busy device — retry when a backend has idled out, "
+        "Not launching onto a busy device - retry when a backend has idled out, "
         "or free a GPU."
     )
 
