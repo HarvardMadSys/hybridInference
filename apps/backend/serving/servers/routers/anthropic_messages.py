@@ -210,10 +210,52 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
 # --- Model resolution ------------------------------------------------------
 
 
+def _pick_dispatch_adapter(model_id: str, canonical: str, router_exec, user_role: str):
+    """Return the route adapter this request may actually be dispatched to.
+
+    This surface forwards an Anthropic-native body, which FixedRouter has no
+    method for, so it picks its own adapter rather than calling into the router.
+    Picking blind meant it ignored both of the router's admission rules: an
+    admin-disabled provider still served traffic here, and an open circuit was
+    still chosen while a healthy sibling on the same route sat idle. There is no
+    fallback on this handler -- a dispatch failure is what the client gets -- so
+    a bad pick is terminal.
+
+    ``eligible_adapters`` applies those rules, in route order; the key-tier
+    preference then chooses among the survivors. Admission comes first because it
+    is a hard rule -- a disabled or tripped provider is not a candidate no matter
+    whose keys it holds -- while the tier check only expresses a preference.
+    Taking a survivor in route order also keeps the existing preference instead
+    of introducing the router's weighted selection, which would redistribute
+    traffic on this surface.
+    """
+    eligible = router_exec.eligible_adapters(canonical)
+    if not eligible:
+        # Every provider for this model is admin-disabled or has an open
+        # circuit. Same disposition the chat path gives AllCircuitsOpenError:
+        # 503, which this surface renders as overloaded_error so the client
+        # backs off instead of treating it as a permanent failure.
+        raise HTTPException(503, f"No provider is currently available for model '{model_id}'")
+    adapter, _weight = _pick_adapter_for_role(eligible, user_role)
+    return adapter
+
+
 async def _resolve(
-    model_id: str, router_exec, user_ctx: dict | None, model_visibility_resolver=None
+    model_id: str,
+    router_exec,
+    user_ctx: dict | None,
+    model_visibility_resolver=None,
+    *,
+    for_dispatch: bool = True,
 ):
-    """Return (canonical_model_id, route, adapter)."""
+    """Return (canonical_model_id, route, adapter).
+
+    With ``for_dispatch`` (the default) the returned adapter is one the request
+    may actually be sent to: admin-disabled providers and open circuits are
+    skipped, and a 503 is raised once none are left. Callers that only need the
+    visibility check pass ``for_dispatch=False`` -- count_tokens answers locally
+    and never reaches an upstream, so a provider outage must not stop it.
+    """
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
     if route is None or not route.published:
@@ -237,12 +279,14 @@ async def _resolve(
         raise HTTPException(404, f"Model '{model_id}' not found")
     if not route.adapters:
         raise HTTPException(404, f"Model '{model_id}' has no adapters")
-    adapter, _ = _pick_adapter_for_role(route, user_role)
-    return canonical, route, adapter
+    if not for_dispatch:
+        adapter, _ = route.adapters[0]
+        return canonical, route, adapter
+    return canonical, route, _pick_dispatch_adapter(model_id, canonical, router_exec, user_role)
 
 
-def _pick_adapter_for_role(route, user_role: str):
-    """Return the first route adapter that holds a key *user_role* may spend.
+def _pick_adapter_for_role(adapters, user_role: str):
+    """Return the first of ``adapters`` that holds a key *user_role* may spend.
 
     This surface commits to one adapter up front instead of walking the router's
     fallback chain, so a first adapter whose keys are all reserved above the
@@ -250,18 +294,22 @@ def _pick_adapter_for_role(route, user_role: str):
     perfectly usable second provider on the route. Preferring a serviceable
     adapter keeps tier reservation from costing availability here.
 
-    Falls back to ``adapters[0]`` when no adapter can serve the role, so the
+    ``adapters`` is the already-admitted candidate list (see
+    ``_pick_dispatch_adapter``), so key tiers only ever reorder providers this
+    request was allowed to use in the first place.
+
+    Falls back to the first candidate when none can serve the role, so the
     resulting error is the same one the caller would have seen before: the
     request is genuinely unservable, and the adapter raises the 429 the handler
     already maps.
     """
-    for entry in route.adapters:
+    for entry in adapters:
         candidate = entry[0]
         has_capacity = getattr(candidate, "has_capacity_for_role", None)
         # Adapters without a key pool (or predating the check) are always eligible.
         if not callable(has_capacity) or has_capacity(user_role):
             return entry
-    return route.adapters[0]
+    return adapters[0]
 
 
 # --- Small-budget reasoning-call reroute -----------------------------------
@@ -395,7 +443,8 @@ async def _maybe_reroute_small_reasoning_call(
             _SMALL_MAXTOK_REROUTE_TARGET, router_exec, user_ctx, model_visibility_resolver
         )
     except HTTPException:
-        # Target not configured or not visible to this caller -- leave the
+        # Target not configured, not visible to this caller, or currently
+        # unservable (every provider disabled / circuit open) -- leave the
         # request on its original model rather than failing it.
         return canonical, route, adapter
     body["model"] = new_canonical
@@ -1021,7 +1070,13 @@ async def anthropic_messages(
             log_rejection(
                 request=request,
                 status_code=exc.status_code,
-                error_code="model_not_found",
+                # _resolve rejects for two different reasons now: the model is
+                # not visible to this caller (404), or none of its providers can
+                # currently serve (503). Logging both as model_not_found would
+                # hide a provider outage inside the not-found counters.
+                error_code=(
+                    "model_not_found" if exc.status_code == 404 else "no_provider_available"
+                ),
                 reason=str(exc.detail),
                 user={
                     "user_id": user_ctx.get("user_id"),
@@ -1502,8 +1557,12 @@ async def anthropic_count_tokens(
     # Enforce the same model visibility as /v1/messages: an unknown, admin-only,
     # or per-user-disabled model must 404 here too, so token counting can't be
     # used to probe hidden models or make an unusable model look available.
+    # Visibility only: the count is computed locally, so a provider outage must
+    # not blind the client's context tracking.
     try:
-        await _resolve(model_id, router_exec, user_ctx, model_visibility_resolver)
+        await _resolve(
+            model_id, router_exec, user_ctx, model_visibility_resolver, for_dispatch=False
+        )
     except HTTPException as exc:
         return _anthropic_error(exc.status_code, str(exc.detail))
 

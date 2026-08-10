@@ -397,6 +397,32 @@ class FixedRouter:
             for alias in aliases or []:
                 self.routes[alias] = route_cfg  # shared reference, not a copy
 
+    def eligible_adapters(self, model_id: str) -> list[tuple[BaseAdapter, float]]:
+        """Return the adapters automatic routing may dispatch to, in route order.
+
+        Applies the same two admission rules ``_select_adapter`` uses: an
+        adapter whose provider is admin-disabled carries a runtime weight of 0,
+        and an adapter whose circuit is open is not admitted. Exposed for
+        surfaces that pick an adapter themselves instead of calling into the
+        router -- ``/v1/messages`` forwards an Anthropic-native body this router
+        has no method for -- so their pick honors the same rules.
+
+        Returns an empty list when the model has no route, the route is
+        unpublished, or nothing is admitted; that last case is what
+        ``_select_adapter`` reports as ``AllCircuitsOpenError``.
+        """
+        route = self.routes.get(model_id)
+        if not route or not route.published or not route.adapters:
+            return []
+        effective = self._get_effective_adapters(model_id, route)
+        with self._lock:
+            snapshot = list(effective)
+        return [
+            (adapter, weight)
+            for adapter, weight in snapshot
+            if weight > 0 and self._health_registry.allow_request(endpoint_id_for_adapter(adapter))
+        ]
+
     def _select_adapter(
         self,
         model_id: str,

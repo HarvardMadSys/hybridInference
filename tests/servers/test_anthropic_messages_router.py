@@ -2264,28 +2264,28 @@ def _reserved_adapter(keys_min_roles: dict[str, str]):
 def test_pick_adapter_skips_one_with_no_key_for_the_role():
     reserved = _reserved_adapter({"pro-only-key": "pro"})
     shared = _reserved_adapter({"shared-key": "free"})
-    route = SimpleNamespace(adapters=[(reserved, 1.0), (shared, 1.0)])
+    candidates = [(reserved, 1.0), (shared, 1.0)]
 
-    assert anthropic_messages._pick_adapter_for_role(route, "free")[0] is shared
+    assert anthropic_messages._pick_adapter_for_role(candidates, "free")[0] is shared
     # An entitled caller still gets the first (reserved) adapter.
-    assert anthropic_messages._pick_adapter_for_role(route, "pro")[0] is reserved
+    assert anthropic_messages._pick_adapter_for_role(candidates, "pro")[0] is reserved
 
 
 def test_pick_adapter_falls_back_to_the_first_when_none_can_serve():
     """No serviceable adapter → keep adapters[0] so the error is the usual 429."""
     reserved = _reserved_adapter({"pro-only-key": "pro"})
     other = _reserved_adapter({"internal-only-key": "internal"})
-    route = SimpleNamespace(adapters=[(reserved, 1.0), (other, 1.0)])
+    candidates = [(reserved, 1.0), (other, 1.0)]
 
-    assert anthropic_messages._pick_adapter_for_role(route, "free")[0] is reserved
+    assert anthropic_messages._pick_adapter_for_role(candidates, "free")[0] is reserved
 
 
 def test_pick_adapter_treats_a_pool_less_adapter_as_eligible():
     """A single-``api_key`` adapter carries no reservation, so it always qualifies."""
     legacy = SimpleNamespace()  # no has_capacity_for_role at all
-    route = SimpleNamespace(adapters=[(legacy, 1.0)])
+    candidates = [(legacy, 1.0)]
 
-    assert anthropic_messages._pick_adapter_for_role(route, "free")[0] is legacy
+    assert anthropic_messages._pick_adapter_for_role(candidates, "free")[0] is legacy
 
 
 def test_pick_adapter_skips_one_whose_eligible_key_is_muted(monkeypatch):
@@ -2301,9 +2301,9 @@ def test_pick_adapter_skips_one_whose_eligible_key_is_muted(monkeypatch):
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
     muted._key_pool._keys[0].cooldown_until = fake_now[0] + 60.0
 
-    route = SimpleNamespace(adapters=[(muted, 1.0), (healthy, 1.0)])
-    assert anthropic_messages._pick_adapter_for_role(route, "free")[0] is healthy
+    candidates = [(muted, 1.0), (healthy, 1.0)]
+    assert anthropic_messages._pick_adapter_for_role(candidates, "free")[0] is healthy
 
     # Once the mute expires it is eligible again, and order is restored.
     fake_now[0] += 61.0
-    assert anthropic_messages._pick_adapter_for_role(route, "free")[0] is muted
+    assert anthropic_messages._pick_adapter_for_role(candidates, "free")[0] is muted
