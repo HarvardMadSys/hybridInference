@@ -29,6 +29,7 @@ import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from routing.endpoints import endpoint_id_for_adapter
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
@@ -673,6 +674,34 @@ def _schedule_log_store_task(
         _schedule_messages_cost_increment(op_store, user_id, usage_for_cost, pricing)
 
 
+# --- Endpoint health recording ---------------------------------------------
+
+
+def _is_non_empty_content_event(event_type: str, data: str) -> bool:
+    """Return whether one Anthropic SSE event carries generated content.
+
+    The Anthropic-native equivalent of ``routing.streaming.has_non_empty_content``,
+    which the chat path uses as its stream success signal: a delta that actually
+    produced text, thinking, or tool-call JSON proves the upstream is generating,
+    where ``message_start`` and keepalive pings prove only that it answered.
+
+    Best-effort like the accumulator beside it -- a malformed event is not
+    content, and never raises into the forwarded stream.
+    """
+    if event_type != "content_block_delta":
+        return False
+    try:
+        payload = json.loads(data)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    delta = payload.get("delta")
+    if not isinstance(delta, dict):
+        return False
+    return any(delta.get(key) for key in ("text", "thinking", "partial_json"))
+
+
 # --- Anthropic SSE accumulator ---------------------------------------------
 
 
@@ -1121,6 +1150,18 @@ async def anthropic_messages(
 
     forwarded_headers = _extract_forwarded_headers(request)
 
+    # Endpoint health is read on the way in (adapter admission) but, until this
+    # surface recorded its own outcomes, was written only by the chat path. An
+    # endpoint served exclusively through /v1/messages -- which is the bulk of
+    # Claude Code traffic -- could therefore fail every request without ever
+    # opening its breaker. Resolved after the reroute, so the outcome lands on
+    # the endpoint that actually served the request.
+    health_registry = router_exec.endpoint_health_registry
+    dispatch_endpoint_id = endpoint_id_for_adapter(adapter)
+    # Register before dispatch so the endpoint appears in the health snapshot
+    # even while its first request is still in flight (mirrors FixedRouter).
+    health_registry.ensure(dispatch_endpoint_id)
+
     # Snapshot messages before _sanitize_for_openai_backend mutates them in-place
     # (strips cache_control blocks). The log must preserve the original client payload.
     messages_for_log = copy.deepcopy(body.get("messages"))
@@ -1190,6 +1231,9 @@ async def anthropic_messages(
             stream_status_code: int = 200
             stream_error_message: str | None = None
             stream_error_operator: str | None = None
+            # Whether this stream's success has already been reported to the
+            # health registry. Recorded once, on the first content delta.
+            health_success_recorded = False
             ttft_ms: int | None = None
             ttft_buffer = b""
             response_acc: dict | None = None
@@ -1241,6 +1285,16 @@ async def anthropic_messages(
                                     f"[{request_id}] Stream idle timeout after "
                                     f"{_MAX_STREAM_IDLE}s; aborting"
                                 )
+                                # An upstream that went silent for the whole
+                                # ceiling is a genuine fault, even though it
+                                # arrives as a timer rather than an exception.
+                                # No ``exc``: there is no HTTP status, so the
+                                # registry's client-error exemption is moot.
+                                health_registry.record_failure(
+                                    dispatch_endpoint_id,
+                                    reason="messages_stream_idle",
+                                    detail=stream_error_operator,
+                                )
                                 err = {
                                     "type": "error",
                                     "error": {
@@ -1275,6 +1329,15 @@ async def anthropic_messages(
                         events, sse_buffer = _parse_sse_chunk(sse_buffer, chunk)
                         for event_type, data in events:
                             response_acc = _apply_sse_event(response_acc, event_type, data)
+                            if not health_success_recorded and _is_non_empty_content_event(
+                                event_type, data
+                            ):
+                                # Same success signal as
+                                # FixedRouter.stream_chat_completion: the first
+                                # delta that carries content, not the mere fact
+                                # that the upstream accepted the connection.
+                                health_success_recorded = True
+                                health_registry.record_success(dispatch_endpoint_id)
                         yield chunk
                 finally:
                     reader_task.cancel()
@@ -1296,6 +1359,15 @@ async def anthropic_messages(
                 stream_error_message = scrub_error_for_user(scrub_exc, request_id, client_status)
                 stream_error_operator = operator_safe_error(exc)
                 logger.exception(f"[{request_id}] Streaming dispatch failed")
+                # ``exc=`` so the registry can apply its client-error exemption:
+                # a 400 from a malformed request is one caller's mistake and
+                # must not open the circuit for everyone.
+                health_registry.record_failure(
+                    dispatch_endpoint_id,
+                    reason="messages_stream_exception",
+                    detail=stream_error_operator,
+                    exc=exc,
+                )
                 err = {
                     "type": "error",
                     "error": {
@@ -1310,6 +1382,14 @@ async def anthropic_messages(
                 stream_error_message = scrub_error_for_user(None, request_id, 429)
                 stream_error_operator = operator_safe_error(exc)
                 logger.warning(f"[{request_id}] Streaming dispatch failed: key pool exhausted")
+                # Carries no HTTP status, so it is never exempt: every key for
+                # this endpoint is muted and nothing it is sent can succeed.
+                health_registry.record_failure(
+                    dispatch_endpoint_id,
+                    reason="messages_stream_exception",
+                    detail=stream_error_operator,
+                    exc=exc,
+                )
                 err = {
                     "type": "error",
                     "error": {
@@ -1319,11 +1399,21 @@ async def anthropic_messages(
                 }
                 yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
             except Exception as exc:
+                # Deliberately not BaseException: a client disconnect arrives as
+                # CancelledError and must pass straight through. The client gave
+                # up, the upstream did not fail, and counting it would let a
+                # flaky network open the circuit for every other caller.
                 stream_failed = True
                 stream_status_code = 502
                 stream_error_message = scrub_error_for_user(exc, request_id, 502)
                 stream_error_operator = operator_safe_error(exc)
                 logger.exception(f"[{request_id}] Streaming dispatch failed")
+                health_registry.record_failure(
+                    dispatch_endpoint_id,
+                    reason="messages_stream_exception",
+                    detail=stream_error_operator,
+                    exc=exc,
+                )
                 err = {
                     "type": "error",
                     "error": {
@@ -1391,6 +1481,16 @@ async def anthropic_messages(
         resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
     except HTTPException as exc:
         error_message = str(exc.detail)
+        # ``exc=`` throughout: HTTPException/ClientResponseError carry a status,
+        # and the registry drops 4xx client errors on that basis so one caller's
+        # malformed request cannot open the circuit for everyone. The
+        # status-less failures below (key pool, timeout) are never exempt.
+        health_registry.record_failure(
+            dispatch_endpoint_id,
+            reason="messages_exception",
+            detail=operator_safe_error(exc),
+            exc=exc,
+        )
         _log_failure(
             log_store,
             request_id=request_id,
@@ -1414,6 +1514,12 @@ async def anthropic_messages(
         scrub_exc = exc if client_status == exc.status else None
         error_message = scrub_error_for_user(scrub_exc, request_id, client_status)
         logger.exception(f"[{request_id}] Adapter messages() failed")
+        health_registry.record_failure(
+            dispatch_endpoint_id,
+            reason="messages_exception",
+            detail=operator_safe_error(exc),
+            exc=exc,
+        )
         _log_failure(
             log_store,
             request_id=request_id,
@@ -1438,6 +1544,12 @@ async def anthropic_messages(
         # hammering with immediate retries for the whole mute window.
         error_message = scrub_error_for_user(None, request_id, 429)
         logger.warning(f"[{request_id}] Adapter messages() failed: key pool exhausted")
+        health_registry.record_failure(
+            dispatch_endpoint_id,
+            reason="messages_exception",
+            detail=operator_safe_error(exc),
+            exc=exc,
+        )
         _log_failure(
             log_store,
             request_id=request_id,
@@ -1461,6 +1573,12 @@ async def anthropic_messages(
         # the client can tell a slow upstream from a real server fault.
         error_message = scrub_error_for_user(None, request_id, 504)
         logger.warning(f"[{request_id}] Adapter messages() timed out")
+        health_registry.record_failure(
+            dispatch_endpoint_id,
+            reason="messages_exception",
+            detail=operator_safe_error(exc),
+            exc=exc,
+        )
         _log_failure(
             log_store,
             request_id=request_id,
@@ -1477,8 +1595,16 @@ async def anthropic_messages(
         )
         return _anthropic_error(504, error_message)
     except Exception as exc:
+        # Not BaseException: a client disconnect cancels this coroutine, and
+        # CancelledError must propagate uncounted -- the upstream did not fail.
         error_message = scrub_error_for_user(exc, request_id, 502)
         logger.exception(f"[{request_id}] Adapter messages() failed")
+        health_registry.record_failure(
+            dispatch_endpoint_id,
+            reason="messages_exception",
+            detail=operator_safe_error(exc),
+            exc=exc,
+        )
         _log_failure(
             log_store,
             request_id=request_id,
@@ -1494,6 +1620,11 @@ async def anthropic_messages(
             operator_error=operator_safe_error(exc),
         )
         return _anthropic_error(502, error_message)
+
+    # Every branch above returns, so reaching here means the adapter produced a
+    # response. Recorded before logging so a slow log store can't delay the
+    # recovery signal that closes an open circuit.
+    health_registry.record_success(dispatch_endpoint_id)
 
     usage = (resp.get("usage") or {}) if isinstance(resp, dict) else {}
     usage_for_log = {
