@@ -404,16 +404,17 @@ class KeyPool:
                 # can change, or the key can be re-tiered, under a live binding) AND
                 # it was created for this same role.
                 #
-                # The role match is what keeps reservation working on surfaces where
-                # an affinity key is shared: ``/v1/messages`` and ``/v1/embeddings``
-                # publish no ``auth_key_hash``, so every caller there lands on the
-                # single ``_anon`` entry. Without it, one free request binds that
-                # entry to a shared key and every later pro request inherits it —
-                # entitled traffic keeps draining shared capacity, and because the
-                # entry still records ``free`` even a re-tier cannot repoint it. The
-                # unsafe direction is already covered by ``_role_may_use`` (a free
-                # caller can never inherit a binding to a reserved key); this is the
-                # preference direction.
+                # The role match is what keeps reservation working whenever an
+                # affinity key is shared by callers of different tiers — internal
+                # traffic with no caller identity all lands on the single ``_anon``
+                # entry, and one credential can be issued to users of two roles.
+                # Without it, one free request binds that entry to a shared key and
+                # every later pro request inherits it — entitled traffic keeps
+                # draining shared capacity, and because the entry still records
+                # ``free`` even a re-tier cannot repoint it. The unsafe direction is
+                # already covered by ``_role_may_use`` (a free caller can never
+                # inherit a binding to a reserved key); this is the preference
+                # direction.
                 if (
                     now < existing.expires_at
                     and existing.role == role

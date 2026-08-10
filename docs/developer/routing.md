@@ -173,9 +173,16 @@ five minutes (sliding TTL). Goals:
 - Drop the pin the moment that backend errors, so users don't get stuck on a
   failing provider.
 
-**Affinity key:**
+**Affinity key:** derived by `derive_affinity_key()` in
+`serving/utils/request_ip.py`:
 - Authenticated requests: the user's `auth_key_hash`.
-- Anonymous requests: `f"ip:{client_ip}"`.
+- Anonymous requests: `f"ip:{client_ip}"` (IPv6 folded to its `/64`).
+
+Every request surface that dispatches to an adapter publishes it on `req_ctx`
+as `affinity_key` — `/v1/chat/completions`, `/v1/messages` and `/v1/embeddings`
+— so both `FixedRouter`'s provider pin and `KeyPool`'s upstream-key binding see
+the same caller. Internal traffic with no caller identity (health probes,
+warmups, the admin playground) publishes nothing and shares the `_anon` binding.
 
 **Pin lifecycle:**
 1. First request from `(key, model)` → weighted random pick → entry stored.
@@ -226,13 +233,12 @@ to callers below it:
   the five-minute TTL. Only a declaration change triggers this, so ordinary traffic
   never loses prompt-cache warmth to it.
 
-  The role match matters most where an affinity key is *shared*: `/v1/messages` and
-  `/v1/embeddings` publish no `auth_key_hash`, so every caller on those surfaces
-  lands on the single `_anon` entry. Without the match, one free request would bind
-  it to a shared key and later pro requests would inherit that binding — reserved
-  capacity sitting idle, and the entry recording `free` so no re-tier could repoint
-  it. Giving those surfaces a per-caller affinity key (as chat completions has)
-  would restore stickiness there and is tracked separately.
+  The role match matters most where an affinity key is *shared*: internal traffic
+  with no caller identity (health probes, warmups, the admin playground) all lands
+  on the single `_anon` entry, and one credential can be issued to users of two
+  roles. Without the match, one free request would bind such an entry to a shared
+  key and later pro requests would inherit that binding — reserved capacity sitting
+  idle, and the entry recording `free` so no re-tier could repoint it.
 - **Mute / rotation.** The sole-remaining-key backoff is judged against the keys
   the *leaseholder* could rotate to. A pro-only key is not a fallback for a
   free-tier request, so it cannot cancel the free tier's blip protection.

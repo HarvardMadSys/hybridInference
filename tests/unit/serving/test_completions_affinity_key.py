@@ -8,8 +8,8 @@ from serving.utils import context as req_ctx
 
 
 def _derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
-    """Mirror of the production helper. If completions.py exports one, import it instead."""
-    from serving.servers.routers.completions import derive_affinity_key
+    """Thin wrapper over the shared helper every request surface derives its key with."""
+    from serving.utils.request_ip import derive_affinity_key
 
     return derive_affinity_key(auth_key_hash, client_ip)
 
@@ -54,7 +54,7 @@ def test_handler_propagates_affinity_key_to_context_authenticated():
     user_ctx: dict[str, Any] = {"user_id": "u-1", "auth_key_hash": "deadbeef"}
     client_ip = "1.2.3.4"
 
-    from serving.servers.routers.completions import derive_affinity_key
+    from serving.utils.request_ip import derive_affinity_key
 
     req_ctx.set({})
     affinity_key = derive_affinity_key(user_ctx.get("auth_key_hash"), client_ip)
@@ -74,7 +74,7 @@ def test_handler_propagates_affinity_key_to_context_anonymous():
     user_ctx: dict[str, Any] = {"user_id": "u-2"}
     client_ip = "10.0.0.1"
 
-    from serving.servers.routers.completions import derive_affinity_key
+    from serving.utils.request_ip import derive_affinity_key
 
     req_ctx.set({})
     affinity_key = derive_affinity_key(user_ctx.get("auth_key_hash"), client_ip)

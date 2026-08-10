@@ -145,6 +145,21 @@ def normalize_ip_bucket(ip: str) -> str:
     return str(network)
 
 
+def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
+    """Compute the affinity key used for sticky multi-key routing.
+
+    Anonymous IPv6 clients key on their ``/64`` so rotating privacy addresses
+    within the delegated prefix keeps landing on the same backend.
+
+    Lives here rather than on a router so every request surface that dispatches
+    to a pooled adapter (``/v1/chat/completions``, ``/v1/messages``,
+    ``/v1/embeddings``) derives the caller identity the same way.
+    """
+    if auth_key_hash:
+        return auth_key_hash
+    return f"ip:{normalize_ip_bucket(client_ip)}"
+
+
 def get_client_ip_info(request: Request) -> ClientIpInfo:
     """Return the originating client IP and the socket/proxy peer that supplied it.
 

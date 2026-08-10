@@ -25,7 +25,7 @@ from serving.servers.deps import (
 from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import derive_affinity_key, get_client_ip
 from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
@@ -160,11 +160,25 @@ async def create_embeddings(
             log_synthetic_probes = False
     suppress_synthetic_logging = is_synthetic_probe and not log_synthetic_probes
 
+    # Per-caller identity for multi-key rotation, published before any dispatch.
+    # Pinned to the specific hyi-xxx key in use (not user_id — a user may hold
+    # several), or the caller's IP bucket when unauthenticated. Without it every
+    # caller on this surface shared one process-wide ``_anon`` binding, so nobody
+    # kept a stable upstream key.
+    client_ip = get_client_ip(http_request)
+    auth_key_hash = user_ctx.get("auth_key_hash")
+    req_ctx.update(
+        {
+            "auth_key_hash": auth_key_hash or "_anon",
+            "affinity_key": derive_affinity_key(auth_key_hash, client_ip),
+        }
+    )
+
     metadata: dict[str, Any] = {
         "request_type": "embedding",
         "user_agent": http_request.headers.get("user-agent"),
         "referer": http_request.headers.get("referer"),
-        "ip": get_client_ip(http_request),
+        "ip": client_ip,
         "authorization": bool(authorization) or is_authenticated,
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),

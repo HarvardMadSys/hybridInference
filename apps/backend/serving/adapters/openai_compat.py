@@ -100,6 +100,22 @@ def _caller_role() -> str | None:
     return role if isinstance(role, str) and role else None
 
 
+def _pool_affinity_key() -> str:
+    """Return the caller identity the key pool binds an upstream key to.
+
+    Prefers ``affinity_key`` — the per-caller value every request surface
+    publishes (the API-key hash when authenticated, an IP bucket otherwise) —
+    and falls back to ``auth_key_hash`` for any producer that still writes only
+    that. ``_anon`` is the last resort for internal traffic with no caller
+    identity at all (health probes, warmups, the admin playground); sharing one
+    binding is correct there, since there is no caller to keep sticky.
+    """
+    from serving.utils import context as req_ctx
+
+    ctx = req_ctx.get()
+    return ctx.get("affinity_key") or ctx.get("auth_key_hash") or "_anon"
+
+
 def _key_pool_provider_label(config: Any) -> str:
     """Return a stable operator-facing provider label for key-pool errors/logs."""
     provider = getattr(config, "provider", None)
@@ -414,9 +430,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 retries=1,
             )
 
-        from serving.utils import context as req_ctx
-
-        affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
+        affinity_key = _pool_affinity_key()
         provider = self._key_pool_provider_label
         role = _caller_role()
 
@@ -543,9 +557,7 @@ class OpenAICompatAdapter(BaseAdapter):
             yield stream_iter, None, first
             return
 
-        from serving.utils import context as req_ctx
-
-        affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
+        affinity_key = _pool_affinity_key()
         provider = self._key_pool_provider_label
         role = _caller_role()
         max_attempts = self._key_pool.size(role)
