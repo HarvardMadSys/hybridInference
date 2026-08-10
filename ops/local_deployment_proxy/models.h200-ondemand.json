@@ -70,14 +70,14 @@
         "mem_fraction": "0.35",
         "startup_estimate_seconds": 120
     },
-    "BSC-LT/ALIA-40b": {
-        "container": "ondemand-alia-40b-vllm",
+    "BSC-LT/ALIA-40b-instruct-2601": {
+        "container": "ondemand-alia-40b-instruct-vllm",
         "engine": "vllm",
         "backend_port": 18027,
-        "model_dir": "/scratch/yiyu/models/ALIA-40b",
-        "hf_repo": "BSC-LT/ALIA-40b",
-        "served_name": "BSC-LT/ALIA-40b",
-        "max_model_len": 32768,
+        "model_dir": "/scratch/yiyu/models/ALIA-40b-instruct-2601",
+        "hf_repo": "BSC-LT/ALIA-40b-instruct-2601",
+        "served_name": "BSC-LT/ALIA-40b-instruct-2601",
+        "max_model_len": 65536,
         "mem_fraction": "0.75",
         "startup_estimate_seconds": 300
     },
