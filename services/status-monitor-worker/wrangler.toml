@@ -13,8 +13,10 @@ crons = ["*/20 * * * *"]
 [vars]
 # Gateway the probes go through (no trailing slash). The Worker discovers its
 # probe targets from `${GATEWAY_BASE_URL}/models`, which is already role-filtered
-# for the PROBER_API_KEY account.
-GATEWAY_BASE_URL = "https://staging.freeinference.org"
+# for the PROBER_API_KEY account. Production is the target because the dashboard
+# reports what users actually reach; staging and production have separate user
+# databases, so PROBER_API_KEY must be a key issued on production.
+GATEWAY_BASE_URL = "https://freeinference.org"
 # A prompt that elicits a moderate, bounded response so both TTFT and decode
 # throughput are measurable (capped by PROBE_MAX_TOKENS).
 PROBE_PROMPT = "Write a Python function that implements binary search over a sorted list. Include a docstring, type hints, and a short example of calling it."

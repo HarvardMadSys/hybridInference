@@ -2,8 +2,10 @@ name: Deploy Status Monitor
 
 # Builds, tests, and deploys the Cloudflare freeinference-monitor Worker
 # (services/status-monitor-worker) whenever its source lands on dev. The Worker
-# probes the staging gateway, which also deploys from dev, so dev is the source
-# of truth for it. Runs on manual dispatch too.
+# probes the production gateway but its own code still ships from dev: it is a
+# standalone observer that touches no gateway code path, and the same dev-first
+# flow keeps a probe change reviewable on the live dashboard before it can be
+# promoted anywhere else. Runs on manual dispatch too.
 on:
   push:
     branches: [dev]

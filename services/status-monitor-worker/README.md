@@ -128,6 +128,14 @@ model incidents; set to `legacy` to roll back new ownership).
 bindings. The latter targets the Control Plane's
 `StatusMonitorProducerEntrypoint`; it does not add a public URL or bearer token.
 
+`GATEWAY_BASE_URL` points at production (`https://freeinference.org`), so the
+dashboard reports what users actually reach. It is the one var that is not
+self-contained: staging and production run separate user databases, so
+`PROBER_API_KEY` must be a key issued on **whichever deployment this URL names**
+— a staging key against production (or vice versa) fails account-wide and pages
+a "Monitoring cycle failing" alert rather than any per-model one. Re-set the
+secret whenever this URL moves.
+
 `PROBER_API_KEY` is a **secret**, not a var. `CODEX_ONCALL_RELAY_URL`,
 `CODEX_ONCALL_RELAY_TOKEN`, and `SLACK_WEBHOOK_URL` are optional secrets. Both
 relay values are required to enable on-call analysis; retain the Slack webhook as its
