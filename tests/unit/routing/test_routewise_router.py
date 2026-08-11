@@ -64,6 +64,7 @@ def _make_model_config(
     quota_pool: str | None = None,
     concurrency_pool: str | None = None,
     route_metadata: dict[str, object] | None = None,
+    on_demand: bool = False,
 ) -> MagicMock:
     """Create a mock ModelConfig.
 
@@ -101,6 +102,10 @@ def _make_model_config(
     cfg.quota_pool = quota_pool
     cfg.concurrency_pool = concurrency_pool
     cfg.route_metadata = route_metadata or {}
+    # Explicit False, not a Mock attribute: the probe path skips on the literal
+    # True, and a bare MagicMock attribute must not read as "flagged on-demand"
+    # to any future truthiness check either.
+    cfg.on_demand = on_demand
     return cfg
 
 
@@ -117,6 +122,7 @@ def _make_adapter(
     quota_pool: str | None = None,
     concurrency_pool: str | None = None,
     route_metadata: dict[str, object] | None = None,
+    on_demand: bool = False,
 ) -> MagicMock:
     """Create a mock adapter with a mock ModelConfig."""
     adapter = MagicMock()
@@ -133,6 +139,7 @@ def _make_adapter(
         quota_pool=quota_pool,
         concurrency_pool=concurrency_pool,
         route_metadata=route_metadata,
+        on_demand=on_demand,
     )
     return adapter
 
@@ -1360,6 +1367,68 @@ class TestRouteWiseLayer2:
         assert results[0].ok is False
         assert results[0].error == "probe timed out"
         assert router._mean_ttft_sec("test-model:api-a", time.time()) == pytest.approx(60.0)
+
+    # A catalog-`on_demand` endpoint (lazily loaded on shared GPUs) idles by
+    # construction, so idle_only selects it every cycle: the probe traffic
+    # itself pins the GPUs and books error penalties for the losers of the GPU
+    # race. The prober must leave these endpoints alone entirely.
+    async def test_probe_skips_catalog_on_demand_endpoint(self):
+        """Background probing never targets an endpoint flagged on_demand."""
+        router, api_a, api_b = _make_router_with_two_api()
+
+        async def stream(_messages, **_params):
+            yield 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+
+        api_a.stream_chat_completion = stream
+        api_b.config.on_demand = True
+        api_b.stream_chat_completion = AsyncMock(side_effect=AssertionError("should not probe"))
+        router._endpoint_adapter = {
+            "test-model:api-a": api_a,
+            "test-model:api-b": api_b,
+        }
+        router._endpoint_models = {
+            "test-model:api-a": {"test-model"},
+            "test-model:api-b": {"test-model"},
+        }
+
+        results = await router.run_probe_once(idle_only=False)
+
+        assert [result.endpoint_id for result in results] == ["test-model:api-a"]
+        api_b.stream_chat_completion.assert_not_called()
+
+    # A manual probe cold-starts real GPUs all the same, so naming the endpoint
+    # explicitly is not an override.
+    async def test_probe_skips_on_demand_even_when_explicitly_targeted(self):
+        """run_probe_once(endpoint_id=...) still refuses an on_demand endpoint."""
+        router, api_a, _api_b = _make_router_with_two_api()
+        api_a.config.on_demand = True
+        api_a.stream_chat_completion = AsyncMock(side_effect=AssertionError("should not probe"))
+        router._endpoint_adapter = {"test-model:api-a": api_a}
+        router._endpoint_models = {"test-model:api-a": {"test-model"}}
+
+        results = await router.run_probe_once(endpoint_id="test-model:api-a", idle_only=False)
+
+        assert results == []
+        api_a.stream_chat_completion.assert_not_called()
+
+    # Strict identity: the flag crosses config boundaries, and anything but the
+    # literal True (a string, a Mock attribute) must leave the endpoint probed.
+    async def test_probe_keeps_endpoint_when_on_demand_flag_not_literal_true(self):
+        """A non-boolean on_demand value does not silently disable probing."""
+        router, api_a, _api_b = _make_router_with_two_api()
+
+        async def stream(_messages, **_params):
+            yield 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+
+        api_a.config.on_demand = "true"
+        api_a.stream_chat_completion = stream
+        router._endpoint_adapter = {"test-model:api-a": api_a}
+        router._endpoint_models = {"test-model:api-a": {"test-model"}}
+
+        results = await router.run_probe_once(idle_only=False)
+
+        assert [result.endpoint_id for result in results] == ["test-model:api-a"]
+        assert results[0].ok is True
 
     async def test_probe_cycle_without_lease_syncs_shared_samples_only(self):
         """A non-leader worker should consume DB probe samples without probing upstream."""
