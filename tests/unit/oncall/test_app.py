@@ -70,6 +70,42 @@ def test_alert_endpoint_requires_bearer_token(tmp_path):
     assert len(service.events) == 1
 
 
+def test_build_service_wires_the_selected_backend(tmp_path):
+    """The env switch actually changes what runs — wired, not just written."""
+    from serving.oncall.agent_backend import CloudAgentClient, CloudAgentDispatcher
+    from serving.oncall.app import build_service
+    from serving.oncall.dispatcher import GitHubDispatcher
+
+    common = {
+        "relay_token": SecretStr("relay"),
+        "slack_bot_token": SecretStr("slack"),
+        "slack_channel_id": "C0123456789",
+        "state_dir": tmp_path,
+    }
+    github = build_service(
+        OnCallSettings(
+            **common,
+            github_token=SecretStr("github"),
+            github_repository="example-org/example-repo",
+            model_base_url="https://gateway.example.com/v1",
+        )
+    )
+    assert isinstance(github._dispatcher, GitHubDispatcher)
+    assert github._agent_poller is None
+
+    agent = build_service(
+        OnCallSettings(
+            **common,
+            dispatch_backend="cloud-agent",
+            agent_base_url="https://agent.example.org",
+            agent_dispatch_token=SecretStr("dispatch"),
+            github_repository="example-org/example-repo",
+        )
+    )
+    assert isinstance(agent._dispatcher, CloudAgentDispatcher)
+    assert isinstance(agent._agent_poller, CloudAgentClient)
+
+
 def test_configured_relay_protects_process_before_starting_worker(tmp_path):
     settings = OnCallSettings(
         relay_token=SecretStr("relay-secret"),
