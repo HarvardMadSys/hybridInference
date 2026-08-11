@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -56,6 +57,40 @@ if not _ALLOW_DOTENV:
     _bootstrap = sys.modules.get("serving.servers.bootstrap")
     if _bootstrap is not None and hasattr(_bootstrap, "load_dotenv"):  # pragma: no cover
         _bootstrap.load_dotenv = _no_dotenv
+
+
+# --- Child interpreters must import *this* checkout --------------------------
+#
+# ``pythonpath = ["apps/backend", "."]`` in pyproject.toml is relative, so it
+# resolves against the rootdir and in-process imports always come from the
+# checkout pytest was started in. A subprocess inherits none of that: it resolves
+# first-party packages through the editable install, whose ``.pth`` names one
+# fixed checkout. AGENTS.md mandates developing in a git worktree, so that is
+# routinely a *different* tree than the one under test — and the failure is
+# quiet. A module missing there is a loud ``ModuleNotFoundError``; a module
+# present in both is worse, because the child then exercises the other
+# checkout's code and the assertions pass.
+#
+# CI never sees it: one checkout, so the editable path and the tree under test
+# coincide. Only developers hit it, which is why it survives.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def subprocess_env(**overrides: str) -> dict[str, str]:
+    """``os.environ`` plus a ``PYTHONPATH`` pointing at the checkout under test.
+
+    Use for any test that spawns a Python child which imports first-party code.
+    The entries mirror pyproject's ``pythonpath`` and are derived from this
+    file's own location — never from the working directory, and never from an
+    installed package's ``__file__``, either of which can point outside the tree
+    being tested. Prepended, not appended: the editable install's entry is
+    already on the child's ``sys.path``.
+    """
+    inherited = os.environ.get("PYTHONPATH", "")
+    entries = [str(REPO_ROOT / "apps" / "backend"), str(REPO_ROOT)]
+    if inherited:
+        entries.append(inherited)
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(entries), **overrides}
 
 
 @pytest.fixture(autouse=True)

@@ -22,6 +22,7 @@ import json
 import math
 import os
 import random
+import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,6 +30,20 @@ from typing import Any
 
 import asyncpg
 import dotenv
+
+# The country tables and the resolver live in the serving package so the exporter
+# and the gateway agree on one mapping. Make ``apps/backend`` importable when this
+# script is run directly, which is how its own docstring documents it
+# (python ops/db/analysis/geo_hourly_export.py --demo). Its siblings
+# (``user_automation_score.py``, ``user_prompt_sample.py``) already do this; without
+# it the only thing that resolves ``serving`` is whatever an editable install points
+# at, which under the mandated worktree workflow is a *different checkout* --
+# silently the wrong code when the module exists in both, and an outright
+# ``ModuleNotFoundError`` when it does not.
+_BACKEND = Path(__file__).resolve().parents[3] / "apps" / "backend"
+if str(_BACKEND) not in sys.path:
+    # insert, not append: the editable install's path entry is already on sys.path.
+    sys.path.insert(0, str(_BACKEND))
 
 from serving.utils.geo_resolver import ALPHA2_TO_ALPHA3, GeoResolver
 

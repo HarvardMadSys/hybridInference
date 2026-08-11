@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from ops.db.analysis.geo_hourly_export import BUCKET_COLS, ROWS_QUERY
+from tests.conftest import subprocess_env
 
 
 def test_exporter_demo_command(tmp_path) -> None:
@@ -23,10 +24,17 @@ def test_exporter_demo_command(tmp_path) -> None:
             str(output),
         ],
         cwd=Path(__file__).resolve().parents[3],
-        check=True,
+        # This child gets none of pytest's import path, so without an explicit
+        # PYTHONPATH it resolves ``serving`` through the editable install -- a
+        # different checkout than the one under test whenever this runs from a
+        # worktree, which AGENTS.md mandates. See ``subprocess_env``.
+        env=subprocess_env(),
         capture_output=True,
         text=True,
     )
+    # Not check=True: with capture_output that raises a bare CalledProcessError and
+    # throws the child's traceback away, which is the whole diagnosis.
+    assert result.returncode == 0, f"exporter failed:\n{result.stderr}"
     payload = json.loads(output.read_text())
     assert payload["meta"]["source"] == "synthetic-demo"
     assert payload["meta"]["geoip"] == {
