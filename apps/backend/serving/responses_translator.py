@@ -166,8 +166,9 @@ def responses_input_to_messages(
         if itype in (None, "message"):
             role = item.get("role", "user")
             # The Responses API allows a "developer" role (high-priority app
-            # instructions). The chat-completions schema only knows
-            # system/user/assistant/tool, so fold developer → system.
+            # instructions). ChatCompletionRequest folds it to system on
+            # validation; do it here too so the dicts this builds are already
+            # normalized.
             if role == "developer":
                 role = "system"
             content = _content_parts_to_text_or_blocks(item.get("content"))

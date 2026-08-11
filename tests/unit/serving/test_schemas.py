@@ -55,6 +55,97 @@ def test_chat_completion_request_preserves_assistant_reasoning_content():
 
 
 @pytest.mark.unit
+def test_chat_completion_request_accepts_developer_role_as_system():
+    """OpenAI's developer role is accepted and folded to system.
+
+    Clients written against the reasoning-model spec (pi, for one) put their
+    instructions under ``developer``; sglang answers the role itself with
+    "Unexpected message role", so only ``system`` may leave the gateway.
+    """
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "m",
+            "messages": [
+                {"role": "developer", "content": "instructions"},
+                {"role": "user", "content": "u"},
+            ],
+        }
+    )
+
+    assert req.messages[0].role == "system"
+    assert [m.model_dump()["role"] for m in req.messages] == ["system", "user"]
+
+
+@pytest.mark.unit
+def test_developer_message_merges_with_an_existing_system_message():
+    """system + developer becomes one leading system message, not two.
+
+    Relabelling alone would trade "Unexpected message role" for "System
+    message must be at the beginning" — both 400s from the same local server.
+    """
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": "be terse"},
+                {"role": "developer", "content": "prefer tables"},
+                {"role": "user", "content": "u"},
+            ],
+        }
+    )
+
+    assert [m.role for m in req.messages] == ["system", "user"]
+    assert req.messages[0].content == "be terse\n\nprefer tables"
+
+
+@pytest.mark.unit
+def test_developer_message_after_a_turn_is_hoisted_to_the_front():
+    """A developer message mid-conversation still leaves as a leading system."""
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "reply"},
+                {"role": "developer", "content": "now be terse"},
+                {"role": "user", "content": "second"},
+            ],
+        }
+    )
+
+    assert [m.role for m in req.messages] == ["system", "user", "assistant", "user"]
+    assert req.messages[0].content == "now be terse"
+
+
+@pytest.mark.unit
+def test_requests_without_a_developer_role_are_left_alone():
+    """Several system messages are forwarded as-is when nobody said developer.
+
+    That shape is what this gateway already sends today, and hoisting one out
+    of the middle of a conversation would change what the prompt means. The
+    new role is no reason to rewrite traffic that never used it.
+    """
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "system", "content": "mid-conversation instruction"},
+        {"role": "system", "content": "another"},
+        {"role": "user", "content": "second"},
+    ]
+
+    req = ChatCompletionRequest.model_validate({"model": "m", "messages": messages})
+
+    assert [m.role for m in req.messages] == ["user", "system", "system", "user"]
+
+
+@pytest.mark.unit
+def test_chat_completion_request_rejects_unknown_role():
+    with pytest.raises(ValidationError):
+        ChatCompletionRequest.model_validate(
+            {"model": "m", "messages": [{"role": "moderator", "content": "u"}]}
+        )
+
+
+@pytest.mark.unit
 def test_chat_completion_request_invalid_ranges():
     with pytest.raises(ValidationError):
         ChatCompletionRequest.model_validate(
