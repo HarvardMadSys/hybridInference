@@ -386,7 +386,7 @@ curl -N -s -X POST http://localhost:8080/v1/chat/completions \
 | `context_length` | int | No | Maximum context window (default: 8192) |
 | `max_output_length` | int | No | Maximum output tokens (default: 4096) |
 | `supports_tools` | bool | No | Function calling support (default: false) |
-| `on_demand` | bool | No | Model is lazily loaded on shared GPUs (started on first request, stopped when idle). Exposed in `/v1/models`; synthetic monitors skip chat-probing such models (default: false) |
+| `on_demand` | bool | No | Model is lazily loaded on shared GPUs (started on first request, stopped when idle). Exposed in `/v1/models`; synthetic monitors skip chat-probing such models, and the RouteWise background latency prober skips their endpoints (default: false) |
 | `supports_structured_output` | bool | No | JSON mode support (default: false) |
 | `supported_params` | list[string] | No | Allowed parameter names |
 | `pricing` | dict | No | Cost information per token/request |

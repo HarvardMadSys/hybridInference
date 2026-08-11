@@ -729,6 +729,9 @@ class RouteWiseRouter:
         concurrency reservations; they only warm the latency layer used by the
         LP. Provider failures are recorded as failed latency outcomes so they
         receive the normal RouteWise 60s error penalty.
+
+        Endpoints whose catalog entry is ``on_demand: true`` are never probed,
+        even when named explicitly via ``endpoint_id`` — see ``_probe_targets``.
         """
         endpoints = self._probe_targets(
             model_id=model_id,
@@ -764,6 +767,25 @@ class RouteWiseRouter:
             if endpoint_id and current_endpoint != endpoint_id:
                 continue
             if model_id and model_id not in self._endpoint_models.get(current_endpoint, set()):
+                continue
+            # A catalog-`on_demand` backend (ModelConfig.on_demand — a lazily
+            # loaded model on shared GPUs, distinct from RouteWise's
+            # `provider_type == "on_demand"` pricing class) is started by its
+            # first request, stopped when idle, and refused fast when no GPU is
+            # vacant. An active latency probe is exactly the traffic that
+            # defeats that design: such an endpoint idles by construction, so
+            # `idle_only` selects it on *every* cycle — each probe cold-starts
+            # or keeps resident whichever backends win the GPU race (the idle
+            # timer never fires) and books the 60s error penalty against the
+            # rest for "no vacant GPU" failures the probing itself caused.
+            # Liveness for these comes from the gateway's /health polling of
+            # the deployment proxy, not per-endpoint generation. Skipped even
+            # for an explicit `endpoint_id` request, because a manual probe
+            # cold-starts real GPUs all the same. `is True` for the same reason
+            # the status monitor checks `=== true`: the flag crosses config
+            # boundaries, and anything but the literal True must leave the
+            # endpoint probeable.
+            if getattr(self._endpoint_adapter[current_endpoint].config, "on_demand", None) is True:
                 continue
             if idle_only:
                 profile = self._latency_profiles.get(current_endpoint)
