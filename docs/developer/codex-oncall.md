@@ -2,10 +2,20 @@
 
 The Codex On-Call pipeline turns structured gateway and status-monitor alerts
 into read-only Codex investigations. A small always-on relay receives alerts,
-posts the original message to Slack immediately, and hands the analysis to a
-GitHub Actions workflow; the workflow checks out the current `dev` branch,
-runs `codex exec` against the relay-configured Responses API endpoint (the
-gateway), and replies in the same Slack thread.
+posts the original message to Slack immediately, and hands the analysis to
+one of two backends (`CODEX_ONCALL_DISPATCH_BACKEND`):
+
+- **`github`** — a GitHub Actions workflow checks out the current `dev`
+  branch, runs `codex exec` against the relay-configured Responses API
+  endpoint (the gateway), and replies in the same Slack thread itself.
+- **`cloud-agent`** — the relay creates a job on the FreeInference cloud
+  agent control plane; the platform's own runner host executes Codex in a
+  sandbox with a per-attempt inference grant, and the relay polls the job,
+  validates the result, and posts it into the thread itself. No GitHub-hosted
+  minutes (the 2026-08-05 Actions billing outage took the analysis path down
+  with it), no long-lived model key in Actions secrets, spend attributed in
+  `api_logs.agent_job_id`, and the checkout pinned to the commit `dev` named
+  at creation.
 
 ```text
 Cloudflare status-monitor ── restricted HTTPS ─┐
@@ -13,16 +23,18 @@ Cloudflare status-monitor ── restricted HTTPS ─┐
 Docker Compose network                         ▼
 gateway backend ───────────────────────► codex-oncall relay ──► Slack alert
                                                │                    ▲
-                                               │ repository_dispatch│ thread reply
-                                               ▼                    │
-                                  GitHub Actions: codex-oncall ─────┘
-                                    checkout dev → codex exec
-                                               │ Responses API
-                                               ▼
-                                   https://freeinference.org/v1
-                                               │
-                                               ▼
-                                glm-5.2 (CODEX_ONCALL_CODEX_MODEL)
+                     backend = github          │      backend = cloud-agent
+                   ┌───────────────────────────┴─────────────────┐  │
+                   │ repository_dispatch                         │  │ thread reply
+                   ▼                                             ▼  │ (relay posts)
+      GitHub Actions: codex-oncall ──► thread reply   cloud agent control plane
+        checkout dev → codex exec                        job create + poll
+                   │ Responses API                               │ claim + grant
+                   ▼                                             ▼
+       https://freeinference.org/v1                    runner host: codex sandbox
+                   │                                             │ Responses API
+                   ▼                                             ▼
+        glm-5.2 (CODEX_ONCALL_CODEX_MODEL)              gateway /v1/responses
 ```
 
 Split of responsibilities:
@@ -140,6 +152,56 @@ verified.
 The Slack app needs `chat:write` and must be added to the target channel. The
 relay uses `chat.postMessage` so the workflow can reply in the original alert
 thread.
+
+## Backend: cloud agent
+
+The `cloud-agent` backend replaces the whole GitHub half above — no Actions
+secrets, no `repository_dispatch` PAT, no workflow. Instead:
+
+1. **On the gateway** create (or reuse) a service account for on-call
+   analyses. Its role decides which models the job's grant may carry —
+   `glm-5.2` and `deepseek-v4-flash` are internal-only, so role `internal` or
+   `admin` — and its daily quota is what the analyses spend.
+2. **On the cloud agent control plane** (see `ENVIRONMENT.md` in
+   [freeinference-cloud-agent](https://github.com/HarvardMadSys/freeinference-cloud-agent)):
+
+   ```text
+   AGENT_ONCALL_DISPATCH_TOKEN=<random 32 bytes, shared with the relay>
+   AGENT_ONCALL_USER_ID=<the service account's user id>
+   AGENT_REPO_ALLOWLIST=<must cover the repo below, e.g. HarvardMadSys/*>
+   ```
+
+   The GitHub App the platform holds must be installed on the target
+   repository — the runner clones with a read-only installation token.
+3. **In `.env.oncall`**:
+
+   ```text
+   CODEX_ONCALL_DISPATCH_BACKEND=cloud-agent
+   CODEX_ONCALL_AGENT_BASE_URL=<control plane origin>
+   CODEX_ONCALL_AGENT_DISPATCH_TOKEN=<same token as the control plane>
+   CODEX_ONCALL_AGENT_BASE_REF=dev
+   CODEX_ONCALL_AGENT_CONSOLE_URL=https://freeinference.org/agents/{job_id}
+   ```
+
+   `CODEX_ONCALL_CODEX_MODEL` keeps meaning what it meant; the model must
+   resolve for the service account. `CODEX_ONCALL_GITHUB_*` and
+   `CODEX_ONCALL_MODEL_BASE_URL` are unused on this backend — the platform
+   injects its own gateway address into the sandbox.
+
+Runtime behaviour: the relay's worker parks each dispatched analysis in an
+`await_result` stage (SQLite, restart-safe), polls the platform every
+`CODEX_ONCALL_AGENT_POLL_SECONDS`, and cancels jobs that outlive
+`CODEX_ONCALL_AGENT_TIMEOUT_SECONDS`. A result is posted only if the
+normalized event log contains at least one successful command execution and
+the final message parses as exactly one schema-valid analysis — the same
+groundedness rule the workflow's posting step enforces. Only one analysis per
+incident fingerprint is in flight at a time; re-fires during it update the
+incident but do not enqueue another job.
+
+Rollback is one edit: set `CODEX_ONCALL_DISPATCH_BACKEND=github` (with the
+GitHub values still present) and restart the relay. Jobs parked in
+`await_result` at that moment fail closed with a notice in their thread — the
+GitHub backend cannot poll them.
 
 ## Enable the Compose profile
 

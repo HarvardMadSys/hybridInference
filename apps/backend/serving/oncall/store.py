@@ -30,7 +30,13 @@ class Incident:
 
 @dataclass(frozen=True)
 class OnCallJob:
-    """Persisted unit of GitHub Actions hand-off work."""
+    """Persisted unit of analysis hand-off work.
+
+    ``stage`` is ``dispatch`` until the hand-off succeeds. The GitHub backend
+    ends there — the workflow owns the outcome. The cloud-agent backend moves
+    the job to ``await_result``, where ``agent_job_id`` names the platform job
+    the worker polls and ``deadline`` bounds how long it will keep polling.
+    """
 
     id: int
     fingerprint: str
@@ -38,6 +44,8 @@ class OnCallJob:
     stage: str
     attempts: int
     slack_thread_ts: str
+    agent_job_id: str | None = None
+    deadline: float | None = None
 
 
 class OnCallStore:
@@ -75,6 +83,9 @@ class OnCallStore:
                     status TEXT NOT NULL DEFAULT 'queued',
                     attempts INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT,
+                    agent_job_id TEXT,
+                    not_before REAL NOT NULL DEFAULT 0,
+                    deadline REAL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
@@ -83,10 +94,32 @@ class OnCallStore:
                     ON oncall_jobs(status, id);
                 """
             )
+            self._ensure_columns(connection)
             connection.execute(
                 "UPDATE oncall_jobs SET status = 'queued', updated_at = ? WHERE status = 'running'",
                 (time.time(),),
             )
+
+    @staticmethod
+    def _ensure_columns(connection: sqlite3.Connection) -> None:
+        """Add the await-stage columns to a database created before them.
+
+        SQLite has no ``ADD COLUMN IF NOT EXISTS``, and the relay's state
+        survives container rebuilds by design — the volume is the whole point
+        — so an upgrade has to migrate in place rather than assume a fresh
+        file.
+        """
+        existing = {
+            row["name"] for row in connection.execute("PRAGMA table_info(oncall_jobs)").fetchall()
+        }
+        additions = {
+            "agent_job_id": "ALTER TABLE oncall_jobs ADD COLUMN agent_job_id TEXT",
+            "not_before": "ALTER TABLE oncall_jobs ADD COLUMN not_before REAL NOT NULL DEFAULT 0",
+            "deadline": "ALTER TABLE oncall_jobs ADD COLUMN deadline REAL",
+        }
+        for column, statement in additions.items():
+            if column not in existing:
+                connection.execute(statement)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -157,15 +190,31 @@ class OnCallStore:
                     now,
                 ),
             )
-            connection.execute(
+            # One analysis in flight per fingerprint. The Actions backend got
+            # this from its concurrency group — duplicates queued behind the
+            # running analysis and then ran anyway, each re-answering the same
+            # incident (nine near-identical analyses for one flapping circuit
+            # on 2026-08-05). Skipping the enqueue is strictly better: the
+            # alert itself was already posted above, and the analysis of the
+            # first firing answers the burst.
+            active = connection.execute(
                 """
-                INSERT INTO oncall_jobs (
-                    fingerprint, event_json, slack_thread_ts, stage, status,
-                    attempts, created_at, updated_at
-                ) VALUES (?, ?, ?, 'dispatch', 'queued', 0, ?, ?)
+                SELECT 1 FROM oncall_jobs
+                WHERE fingerprint = ? AND status IN ('queued', 'running')
+                LIMIT 1
                 """,
-                (event.fingerprint, event_json, slack_thread_ts, now, now),
-            )
+                (event.fingerprint,),
+            ).fetchone()
+            if active is None:
+                connection.execute(
+                    """
+                    INSERT INTO oncall_jobs (
+                        fingerprint, event_json, slack_thread_ts, stage, status,
+                        attempts, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'dispatch', 'queued', 0, ?, ?)
+                    """,
+                    (event.fingerprint, event_json, slack_thread_ts, now, now),
+                )
 
     async def mark_resolved(self, fingerprint: str, event: AlertEvent) -> None:
         """Close an active incident after its recovery message is delivered."""
@@ -221,12 +270,14 @@ class OnCallStore:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT id, fingerprint, event_json, slack_thread_ts, stage, attempts
+                SELECT id, fingerprint, event_json, slack_thread_ts, stage, attempts,
+                       agent_job_id, deadline
                 FROM oncall_jobs
-                WHERE status = 'queued'
+                WHERE status = 'queued' AND not_before <= ?
                 ORDER BY id
                 LIMIT 1
-                """
+                """,
+                (time.time(),),
             ).fetchone()
             if row is None:
                 return None
@@ -246,7 +297,59 @@ class OnCallStore:
             stage=row["stage"],
             attempts=attempts,
             slack_thread_ts=row["slack_thread_ts"],
+            agent_job_id=row["agent_job_id"],
+            deadline=float(row["deadline"]) if row["deadline"] is not None else None,
         )
+
+    async def mark_awaiting(
+        self,
+        job_id: int,
+        agent_job_id: str,
+        *,
+        not_before: float,
+        deadline: float,
+    ) -> None:
+        """Park a dispatched job in the poll stage for its platform result.
+
+        Attempts reset to zero: the dispatch stage spent its error budget
+        getting the job created, and the await stage's budget is the
+        ``deadline`` — transient poll failures reschedule rather than count.
+        """
+        await asyncio.to_thread(self._mark_awaiting, job_id, agent_job_id, not_before, deadline)
+
+    def _mark_awaiting(
+        self, job_id: int, agent_job_id: str, not_before: float, deadline: float
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE oncall_jobs
+                SET stage = 'await_result', status = 'queued', attempts = 0,
+                    agent_job_id = ?, not_before = ?, deadline = ?,
+                    last_error = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (agent_job_id, not_before, deadline, time.time(), job_id),
+            )
+
+    async def defer_poll(self, job_id: int, *, not_before: float) -> None:
+        """Requeue an awaiting job for its next poll without spending attempts."""
+        await asyncio.to_thread(self._defer_poll, job_id, not_before)
+
+    def _defer_poll(self, job_id: int, not_before: float) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE oncall_jobs
+                SET status = 'queued', attempts = 0, not_before = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (not_before, time.time(), job_id),
+            )
+
+    async def fail_job(self, job_id: int, error: str) -> None:
+        """Mark a job finally failed, recording why."""
+        await asyncio.to_thread(self._retry_or_fail, job_id, error, True)
 
     async def complete_job(self, job_id: int) -> None:
         """Mark a hand-off as delivered."""

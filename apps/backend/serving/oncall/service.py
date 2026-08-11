@@ -1,4 +1,4 @@
-"""Incident orchestration: Slack delivery and GitHub Actions hand-off."""
+"""Incident orchestration: Slack delivery and the analysis hand-off."""
 
 from __future__ import annotations
 
@@ -6,8 +6,13 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
+from serving.oncall.analysis import (
+    final_message_text,
+    parse_analysis_output,
+    validate_agent_events,
+)
 from serving.oncall.models import (
     AlertEvent,
     OnCallAnalysis,
@@ -33,10 +38,29 @@ class SlackPoster(Protocol):
 
 
 class AnalysisDispatcher(Protocol):
-    """GitHub Actions hand-off capability required by the orchestrator."""
+    """Analysis hand-off capability required by the orchestrator.
 
-    async def dispatch(self, event: AlertEvent, slack_thread_ts: str) -> None:
-        """Trigger the analysis workflow for one firing alert."""
+    Returns ``None`` when the receiving platform owns everything after the
+    hand-off (the GitHub Actions workflow posts its own result), or an opaque
+    job id when the relay must poll the result back itself (the cloud-agent
+    backend) — the id parks the relay job in its ``await_result`` stage.
+    """
+
+    async def dispatch(self, event: AlertEvent, slack_thread_ts: str) -> str | None:
+        """Trigger the analysis for one firing alert."""
+
+
+class AnalysisPoller(Protocol):
+    """Cloud-agent polling capability, present only on that backend."""
+
+    async def get_job_state(self, job_id: str) -> str:
+        """Return the platform job's current state string."""
+
+    async def list_events(self, job_id: str) -> list[dict[str, Any]]:
+        """Return the job's full normalized event log."""
+
+    async def cancel_job(self, job_id: str) -> bool:
+        """Request cancellation; best-effort."""
 
 
 class OnCallService:
@@ -51,6 +75,10 @@ class OnCallService:
         poll_seconds: float = 1.0,
         max_attempts: int = 2,
         max_pending_jobs: int = 100,
+        agent_poller: AnalysisPoller | None = None,
+        agent_poll_seconds: float = 10.0,
+        agent_timeout_seconds: float = 1_500.0,
+        agent_console_url: str = "",
     ) -> None:
         self.store = store
         self._slack = slack
@@ -58,6 +86,10 @@ class OnCallService:
         self._poll_seconds = poll_seconds
         self._max_attempts = max_attempts
         self._max_pending_jobs = max_pending_jobs
+        self._agent_poller = agent_poller
+        self._agent_poll_seconds = agent_poll_seconds
+        self._agent_timeout_seconds = agent_timeout_seconds
+        self._agent_console_url = agent_console_url.strip()
         self._submit_lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
@@ -155,20 +187,36 @@ class OnCallService:
             )
 
     async def process_one(self) -> bool:
-        """Hand one queued job to GitHub Actions; return False when idle.
+        """Advance one queued job a stage; return False when idle.
 
-        The workflow owns everything after a successful dispatch: it runs the
-        Codex analysis and replies (or posts its own failure notice) in the
-        original Slack thread. The relay only retries the hand-off itself.
+        ``dispatch`` hands the analysis off. On the GitHub backend the
+        workflow owns everything after a successful dispatch — it runs Codex
+        and replies (or posts its own failure notice) in the original Slack
+        thread, and the relay only retries the hand-off itself. On the
+        cloud-agent backend the dispatcher returns a platform job id, the
+        relay job parks in ``await_result``, and each later claim of it is one
+        poll of that platform job.
         """
         job = await self.store.claim_next_job()
         if job is None:
             return False
+        if job.stage == "await_result":
+            await self._poll_agent_result(job)
+            return True
         try:
             if job.stage != "dispatch":
                 raise RuntimeError(f"invalid oncall job stage: {job.stage}")
-            await self._dispatcher.dispatch(job.event, job.slack_thread_ts)
-            await self.store.complete_job(job.id)
+            handle = await self._dispatcher.dispatch(job.event, job.slack_thread_ts)
+            if handle:
+                now = time.time()
+                await self.store.mark_awaiting(
+                    job.id,
+                    handle,
+                    not_before=now + self._agent_poll_seconds,
+                    deadline=now + self._agent_timeout_seconds,
+                )
+            else:
+                await self.store.complete_job(job.id)
         except Exception as exc:
             log.exception("oncall job %s failed during %s", job.id, job.stage)
             final = await self.store.retry_or_fail(job, str(exc), self._max_attempts)
@@ -178,14 +226,111 @@ class OnCallService:
                 self._wake.set()
         return True
 
-    async def _post_failure_notice(self, job: OnCallJob) -> None:
+    async def _poll_agent_result(self, job: OnCallJob) -> None:
+        """Poll one awaiting job's platform result and settle or reschedule.
+
+        The deadline is the stage's whole error budget: a transient poll
+        failure reschedules rather than counting attempts, because a control
+        plane that is briefly unreachable says nothing about the analysis —
+        while a poll loop that gave up after two blips would discard a
+        finished, paid-for result.
+        """
+        poller = self._agent_poller
+        if poller is None or not job.agent_job_id:
+            # A cloud-agent job restarted into a relay now configured for the
+            # GitHub backend (or a row corrupted past use). Unanswerable, and
+            # polling again will not make it answerable.
+            await self.store.fail_job(job.id, "await_result job without a poller or job id")
+            await self._post_failure_notice(job, reason="the analysis job can no longer be polled")
+            return
         try:
-            await self._slack.post(
-                "*Codex on-call unavailable*\n"
-                f"Hand-off to the GitHub Actions analysis workflow failed after "
-                f"{job.attempts} attempts. Check the oncall relay logs.",
-                thread_ts=job.slack_thread_ts,
+            state = await poller.get_job_state(job.agent_job_id)
+        except Exception as exc:
+            log.warning("oncall job %s poll failed: %s", job.id, exc)
+            await self._defer_or_expire(job, why=f"unreachable control plane: {exc}")
+            return
+        if state == "succeeded":
+            await self._publish_agent_analysis(job, poller)
+        elif state in ("failed", "cancelled"):
+            await self.store.fail_job(job.id, f"agent job ended {state}")
+            await self._post_failure_notice(job, reason=f"the analysis job ended '{state}'")
+        else:
+            # queued / running / publishing / anything the platform grows
+            # later: keep polling until the deadline says stop.
+            await self._defer_or_expire(job, why=f"agent job still {state}")
+
+    async def _defer_or_expire(self, job: OnCallJob, *, why: str) -> None:
+        now = time.time()
+        if job.deadline is not None and now >= job.deadline:
+            if self._agent_poller is not None and job.agent_job_id:
+                await self._agent_poller.cancel_job(job.agent_job_id)
+            await self.store.fail_job(job.id, f"deadline exceeded ({why})")
+            await self._post_failure_notice(
+                job,
+                reason=(
+                    "the analysis did not finish within "
+                    f"{int(self._agent_timeout_seconds)}s and was cancelled"
+                ),
             )
+            return
+        await self.store.defer_poll(job.id, not_before=now + self._agent_poll_seconds)
+
+    async def _publish_agent_analysis(self, job: OnCallJob, poller: AnalysisPoller) -> None:
+        """Validate a succeeded platform job and post its analysis to the thread."""
+        try:
+            events = await poller.list_events(job.agent_job_id or "")
+        except Exception as exc:
+            log.warning("oncall job %s event fetch failed: %s", job.id, exc)
+            await self._defer_or_expire(job, why=f"event fetch failed: {exc}")
+            return
+        try:
+            validate_agent_events(events)
+            analysis = parse_analysis_output(final_message_text(events))
+        except ValueError as exc:
+            # The platform says succeeded but the output is not one grounded,
+            # schema-valid analysis. Publishing it anyway is how a model that
+            # answered from its priors gets dressed up as an investigation —
+            # the same refusal the workflow's posting step makes.
+            await self.store.fail_job(job.id, f"unusable analysis: {exc}")
+            await self._post_failure_notice(job, reason=f"the analysis result was unusable ({exc})")
+            return
+        text = format_analysis(analysis, None)
+        reference = self._agent_job_reference(job.agent_job_id)
+        if reference:
+            text = f"{text}\n{reference}"
+        try:
+            await self._slack.post(text, thread_ts=job.slack_thread_ts)
+        except Exception as exc:
+            log.warning("oncall job %s result post failed: %s", job.id, exc)
+            await self._defer_or_expire(job, why=f"Slack post failed: {exc}")
+            return
+        await self.store.complete_job(job.id)
+
+    def _agent_job_reference(self, agent_job_id: str | None) -> str:
+        if not agent_job_id:
+            return ""
+        if self._agent_console_url:
+            with suppress(KeyError, IndexError, ValueError):
+                return f"• *Agent job:* {self._agent_console_url.format(job_id=agent_job_id)}"
+        return f"• *Agent job:* `{agent_job_id}`"
+
+    async def _post_failure_notice(self, job: OnCallJob, *, reason: str | None = None) -> None:
+        detail = (
+            reason
+            if reason is not None
+            else (
+                "Hand-off to the analysis backend failed after "
+                f"{job.attempts} attempts. Check the oncall relay logs."
+            )
+        )
+        text = f"*Codex on-call unavailable*\n{detail}"
+        if reason is not None:
+            text += "\nThe original alert above still stands."
+        reference = self._agent_job_reference(job.agent_job_id)
+        if reference:
+            text += f"\n{reference}"
+        try:
+            await self._slack.post(text, thread_ts=job.slack_thread_ts)
         except Exception:
             log.exception("failed to post final oncall failure notice for job %s", job.id)
 
