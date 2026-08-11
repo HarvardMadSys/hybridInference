@@ -392,6 +392,27 @@ def test_no_webhook_configured_degrades_instead_of_crashing(tmp_path: Path) -> N
     assert not run.commands("curl")
 
 
+def test_an_env_file_without_a_slack_key_warns_instead_of_aborting(tmp_path: Path) -> None:
+    """The keyless-but-readable .env is the path a rotated-out secret leaves behind.
+
+    Under `set -e` this is one bad return away from swallowing the alert *and*
+    the warning about not sending it, which is the worst of both.
+    """
+    env_file = tmp_path / "keyless.env"
+    env_file.write_text("DB_NAME=x\nUNRELATED=1\n")
+
+    run = _run(
+        tmp_path,
+        objects=[_object_line(hours_ago=44, size=FULL_SIZE)],
+        env_overrides={"MONITOR_ALERT_WEBHOOK_URL": "", "MONITOR_ENV_FILE": str(env_file)},
+    )
+
+    assert run.returncode != 0
+    assert "STALE" in run.output, "the condition itself must still be reported to the log"
+    assert "no webhook configured" in run.output
+    assert not run.commands("curl")
+
+
 def test_the_webhook_is_read_from_the_env_file_when_unset(tmp_path: Path) -> None:
     """Same fallback backup.sh uses, so the monitor needs no secret of its own."""
     env_file = tmp_path / "deployment.env"
