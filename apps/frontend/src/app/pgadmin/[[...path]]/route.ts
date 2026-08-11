@@ -106,17 +106,35 @@ function requestHeaders(request: NextRequest): Headers {
   const host = request.headers.get('host');
   if (host) headers.set('x-forwarded-host', host);
 
+  // Next fills `x-forwarded-port` in with its own listening port whenever the
+  // incoming request carries none, and pgAdmin's ProxyFix trusts that header
+  // (PROXY_X_PORT_COUNT is 1 by default) while ignoring x-forwarded-host
+  // (PROXY_X_HOST_COUNT is 0). It therefore grafts the console's port onto the
+  // Host of this fetch and believes it is serving from `pgadmin:3001` — an
+  // address that resolves nowhere in a browser, and one that reaches the
+  // client the moment Werkzeug builds an absolute URL. Dropping it leaves the
+  // Host we dial as pgAdmin's only clue, which is the one foldUpstreamRedirect
+  // recognises.
+  headers.delete('x-forwarded-port');
+
   return headers;
 }
 
 /**
  * Fold a redirect that points at the upstream itself back to a bare path.
  *
- * pgAdmin should emit relative redirects, but Werkzeug can be configured to
- * build absolute ones from the Host header it saw — which here is the
- * container name, and resolves nowhere in a browser. Derived from the
- * configured upstream rather than a literal so it still holds when
- * PGADMIN_INTERNAL_URL is overridden. Returns null to leave the value alone.
+ * pgAdmin's own redirects are relative, but Werkzeug builds an absolute one of
+ * its own when a request arrives without the trailing slash a route requires —
+ * from the Host header it saw, which here is the container name and resolves
+ * nowhere in a browser. Derived from the configured upstream rather than a
+ * literal so it still holds when PGADMIN_INTERNAL_URL is overridden. Returns
+ * null to leave the value alone.
+ *
+ * Matched on hostname rather than origin: the port pgAdmin names is not
+ * necessarily the one we dial, because ProxyFix rebuilds its idea of the Host
+ * from any x-forwarded-port it is given. Whatever port is on it, a URL naming
+ * the upstream's own hostname is unreachable from a browser, so folding it is
+ * always the right answer.
  */
 function foldUpstreamRedirect(location: string): string | null {
   let parsed: URL;
@@ -125,7 +143,7 @@ function foldUpstreamRedirect(location: string): string | null {
   } catch {
     return null;
   }
-  if (parsed.origin !== new URL(PGADMIN_INTERNAL_URL).origin) return null;
+  if (parsed.hostname !== new URL(PGADMIN_INTERNAL_URL).hostname) return null;
   return `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 

@@ -34,8 +34,11 @@ function stubFetch(handlers: { verify?: () => Response | Promise<Response>; upst
   return { verify, upstream };
 }
 
-function request(path = '/pgadmin/browser/', init: { method?: string; cookie?: string } = {}) {
-  const headers = new Headers({ host: 'freeinference.org' });
+function request(
+  path = '/pgadmin/browser/',
+  init: { method?: string; cookie?: string; headers?: Record<string, string> } = {},
+) {
+  const headers = new Headers({ host: 'freeinference.org', ...init.headers });
   if (init.cookie) headers.set('cookie', init.cookie);
   return new NextRequest(`https://freeinference.org${path}`, {
     method: init.method ?? 'GET',
@@ -165,6 +168,37 @@ describe('pgAdmin proxy — forwarding', () => {
     const response = await GET(request('/pgadmin/', admin));
 
     expect(response.headers.get('location')).toBe('/pgadmin/browser/?x=1');
+  });
+
+  it('folds a redirect that names the container on some other port', async () => {
+    // What production actually served: pgAdmin's ProxyFix had taken the port
+    // out of x-forwarded-port, so the container it named was `pgadmin:3001`,
+    // and matching the upstream by origin let it straight through.
+    stubFetch({
+      verify: () => new Response(null, { status: 200 }),
+      upstream: () =>
+        new Response(null, {
+          status: 308,
+          headers: { location: 'http://pgadmin:3001/pgadmin/' },
+        }),
+    });
+
+    const response = await GET(request('/pgadmin', admin));
+
+    expect(response.headers.get('location')).toBe('/pgadmin/');
+  });
+
+  it('withholds the port Next fills in for itself, which pgAdmin would trust', async () => {
+    // Left in place, pgAdmin answers a slash-less path with a 308 to
+    // `http://pgadmin:3001/…` — the console's own port on a name only Docker
+    // can resolve.
+    const { upstream } = stubFetch({ verify: () => new Response(null, { status: 200 }) });
+
+    await GET(request('/pgadmin', { ...admin, headers: { 'x-forwarded-port': '3001' } }));
+
+    const sent = new Headers(upstream.mock.calls[0][1].headers as HeadersInit);
+    expect(sent.get('x-forwarded-port')).toBeNull();
+    expect(sent.get('x-forwarded-host')).toBe('freeinference.org');
   });
 
   it('leaves a redirect that already is a path alone', async () => {
