@@ -85,6 +85,77 @@ def _container_mutations(run: Mock) -> list[list[str]]:
     return mutating
 
 
+def _live_idle_watchers() -> list[threading.Thread]:
+    """Every ``_idle_watcher`` still running in this worker process.
+
+    Matched on the thread name rather than on ``Thread._target``, which CPython
+    deletes once the thread body returns: the name is public, is derived from the
+    target's ``__name__`` since 3.10, and survives the thread it names.
+    """
+    return [thread for thread in threading.enumerate() if "_idle_watcher" in thread.name]
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_idle_watcher() -> Iterator[None]:
+    """Fail the test that leaks a watcher thread, not the test it lands on.
+
+    A leaked ``_idle_watcher`` does not idle quietly. It wakes every
+    ``min(10, IDLE_TIMEOUT / 2)`` seconds -- ten, on this file's settings -- and
+    issues a ``docker inspect``, and ``monkeypatch.setattr(proxy.subprocess, "run",
+    …)`` patches the *stdlib* ``subprocess`` module that every re-imported copy of
+    the proxy shares. So the call is recorded into whichever unrelated test's
+    ``_FakeDocker`` happens to be installed when it fires, reddening a test that did
+    nothing wrong with an inspect of a container it never configured. Attributing
+    that to its source is nearly impossible after the fact: see CI run
+    31390992421, where a ``manual-test-sglang`` inspect landed inside
+    ``test_the_health_handler_itself_runs_no_docker_and_no_backend_probe``, whose own
+    backend is ``contended-sglang``.
+
+    Scoped to the watchers this test started, so one leak fails one test. Asserting
+    against "none alive at all" would redden every test that ran after the culprit
+    too, which is the same needle-in-a-haystack the guard exists to remove.
+    """
+    already_running = {id(thread) for thread in _live_idle_watchers()}
+    yield
+    leaked = [thread for thread in _live_idle_watchers() if id(thread) not in already_running]
+    # A neutered watcher returns the moment it is scheduled, so this grace is for
+    # the scheduler and costs nothing; only a genuinely live loop can spend it.
+    for thread in leaked:
+        thread.join(timeout=5)
+    still_ticking = [thread.name for thread in leaked if thread.is_alive()]
+    assert not still_ticking, (
+        "this test left a live _idle_watcher behind; it will tick every "
+        "min(10, IDLE_TIMEOUT / 2) seconds for the rest of this worker process and "
+        f"record its docker inspect into another test's _FakeDocker: {still_ticking}"
+    )
+
+
+def _keep_the_idle_watcher_in_the_test_thread(proxy: Any, monkeypatch: Any) -> None:
+    """Neuter the watcher thread the start path arms, and only that copy.
+
+    ``ensure_running`` arms ``_idle_watcher`` as a daemon thread, and nothing a test
+    does drives it to one of its three exits, so every start-path test used to leave
+    one ticking for the rest of the worker process -- a cross-test hazard the
+    ``_no_leaked_idle_watcher`` guard above describes in full.
+
+    Silenced by thread identity rather than by removing the loop, because both
+    claims have to survive: the start path still constructs and starts a real thread
+    over the real method (see ``test_ensure_running_arms_the_idle_watcher``), and the
+    loop's own behaviour is still exercised by every test that drives it through
+    ``_run_idle_watcher`` -- inline, in the calling thread, where a faked ``sleep``
+    can bound its ticks. Only the background copy, which no test ever asserts on, is
+    a no-op.
+    """
+    watch = proxy.BackendManager._idle_watcher
+
+    def _idle_watcher(self: Any) -> None:
+        if threading.current_thread() is self._watcher_thread:
+            return
+        watch(self)
+
+    monkeypatch.setattr(proxy.BackendManager, "_idle_watcher", _idle_watcher)
+
+
 def _load_proxy(monkeypatch: Any, tmp_path: Path, *, backend_port: int = 18080) -> Any:
     config_path = tmp_path / "models.json"
     config_path.write_text(
@@ -114,7 +185,9 @@ def _load_proxy(monkeypatch: Any, tmp_path: Path, *, backend_port: int = 18080) 
     monkeypatch.setenv("HEALTH_PROBE_WARMUP", "3600")
 
     sys.modules.pop("ops.local_deployment_proxy.local_deployment_proxy", None)
-    return importlib.import_module("ops.local_deployment_proxy.local_deployment_proxy")
+    proxy = importlib.import_module("ops.local_deployment_proxy.local_deployment_proxy")
+    _keep_the_idle_watcher_in_the_test_thread(proxy, monkeypatch)
+    return proxy
 
 
 class RecordingBackendHandler(BaseHTTPRequestHandler):
@@ -690,6 +763,31 @@ def test_ensure_running_adopts_healthy_running_container(monkeypatch: Any, tmp_p
     assert backend.state == "ready"
     assert backend._current_gpu == "3"
     assert backend._container_id == "cid-adopted"
+
+
+def test_ensure_running_arms_the_idle_watcher(monkeypatch: Any, tmp_path: Path) -> None:
+    """A backend that reached ``ready`` must be left with something watching it.
+
+    The one place this file asserts the *thread* rather than the loop, because
+    ``_keep_the_idle_watcher_in_the_test_thread`` makes its body a no-op everywhere
+    else: without this, the start path could stop arming a watcher entirely and only
+    production would notice. An unwatched ``ready`` backend is never disowned when a
+    sibling takes its container over, never idle-stopped, and never forms the
+    ``/health`` verdict the handler serves -- the last of which fails open, so the
+    deployment would report itself healthy through any wedge.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+    monkeypatch.setattr(backend, "_adopt_running_container", lambda: True)
+    monkeypatch.setattr(backend, "_wait_healthy", lambda: None)
+
+    backend.ensure_running()
+
+    assert backend.state == "ready"
+    assert backend._watcher_thread is not None, "a ready backend was left unwatched"
+    assert "_idle_watcher" in backend._watcher_thread.name
+    # Daemonic: a wedged watcher must not hold the proxy open on shutdown.
+    assert backend._watcher_thread.daemon is True
 
 
 # ── Container ownership ────────────────────────────────────────────────────
