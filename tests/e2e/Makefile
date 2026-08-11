@@ -43,6 +43,16 @@ help:
 GATEWAY_PORT ?= 10081
 GATEWAY_URL = http://localhost:$(GATEWAY_PORT)
 E2E_CONFIG = ../fixtures/e2e_config.yaml
+# The help text above has always advertised this default, but nothing supplied
+# it. That was inert only because MODELS_CONFIG pointed at a path that does not
+# exist, so the fixture -- and its ${CHUTES_BASE_URL} routes -- were never
+# loaded. With the path corrected, an unset value would reach the registry as a
+# blank env-backed base_url, which drops the route (see registry.py's
+# _BlankEnvValue guard) and fails test_hybrid_model_available for a caller who
+# set CHUTES_API_KEY exactly as the help text instructs. Assigned with ?= and
+# after the `-include ../../.env` above, so a real .env or a command-line
+# override still wins.
+CHUTES_BASE_URL ?= https://llm.chutes.ai
 UV_RUN ?= uv run
 PYTHON = $(UV_RUN) python
 PYTEST = $(UV_RUN) pytest
