@@ -784,10 +784,17 @@ def test_ensure_running_arms_the_idle_watcher(monkeypatch: Any, tmp_path: Path) 
     backend.ensure_running()
 
     assert backend.state == "ready"
-    assert backend._watcher_thread is not None, "a ready backend was left unwatched"
-    assert "_idle_watcher" in backend._watcher_thread.name
+    watcher = backend._watcher_thread
+    assert watcher is not None, "a ready backend was left unwatched"
+    assert "_idle_watcher" in watcher.name
     # Daemonic: a wedged watcher must not hold the proxy open on shutdown.
-    assert backend._watcher_thread.daemon is True
+    assert watcher.daemon is True
+    # And really started. A `Thread` that was constructed and then forgotten is
+    # non-null, already carries its target-derived name, and can be daemonized, so
+    # every assertion above holds for one -- while the backend goes unwatched.
+    # ``ident`` is what separates them: the interpreter sets it as the thread comes
+    # up and keeps it after the body returns, which the neutered body does at once.
+    assert watcher.ident is not None, "the watcher thread was constructed but never started"
 
 
 # ── Container ownership ────────────────────────────────────────────────────
