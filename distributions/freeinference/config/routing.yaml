@@ -27,6 +27,23 @@ local_deployment:
   - endpoint: ${RC_DEPLOYMENT_URL}
     models:
       - /n/netscratch/juncheng_lab/model/GLM-5.1-FP8-2
+  # h200b on-demand internal model set (port 8006, GPUs 0,1) — one
+  # local_deployment_proxy instance serving all eight models. Listing the
+  # endpoint here gives it gateway-side /health probing (HealthMonitor probes
+  # only endpoints in this list). Note the shared verdict: one wedged backend
+  # marks the endpoint — and with it all eight models — unhealthy until it
+  # recovers; with a single (local-only) route per model that trades a slow
+  # failure for a fast one, not availability.
+  - endpoint: ${H200B_ONDEMAND_DEPLOYMENT_URL}
+    models:
+      - llama-3.1-8b
+      - ministral-3-8b
+      - gemma-3-12b
+      - qwen3-8b
+      - allam-7b
+      - apertus-v1.5-8b
+      - alia-40b-instruct
+      - llama-3.1-70b-latamgpt
 remote_deployment:
   # List only the primary (coding-plan) endpoint. Listing the metered Moonshot
   # endpoint too would make FixedRatioStrategy split kimi-k2.7-code 0.5/0.5 across
