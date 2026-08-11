@@ -228,8 +228,8 @@ def test_a_partial_upload_does_not_count_as_a_backup(tmp_path: Path) -> None:
 # ── A backup that arrived but is not a backup ────────────────────────────
 
 
-def test_a_truncated_dump_that_reported_success_alerts(tmp_path: Path) -> None:
-    """4.3 GiB landed where 138 GiB should have, and the run logged SUCCESS."""
+def test_a_sharp_shrink_against_the_previous_backup_warns(tmp_path: Path) -> None:
+    """4 GiB landing where 129 GiB did is worth one look, either way."""
     run = _run(
         tmp_path,
         objects=[
@@ -240,29 +240,34 @@ def test_a_truncated_dump_that_reported_success_alerts(tmp_path: Path) -> None:
 
     assert run.returncode != 0
     assert len(run.alerts) == 1
-    assert "IMPLAUSIBLY SMALL" in run.alerts[0]
+    assert "SHRANK SHARPLY" in run.alerts[0]
+    assert ":warning:" in run.alerts[0], "a step change is not a page"
 
 
-def test_two_truncated_dumps_in_a_row_cannot_hide_each_other(tmp_path: Path) -> None:
-    """Why the baseline is the largest object present, not the previous one.
+def test_a_deliberate_archival_goes_quiet_once_the_new_size_is_the_norm(tmp_path: Path) -> None:
+    """The regression this replaced: a largest-object baseline never recovers.
 
-    Against its predecessor the second small dump looks like healthy growth,
-    which is exactly how a broken backup becomes the new normal.
+    Archiving api_logs rows out took the real dump from 129 GiB to 4 GiB on
+    2026-08-08, and GFS retention keeps the pre-archival copies for weeks as the
+    weekly and monthly. Measured against the largest object present, every
+    healthy backup after that reads as a critical failure until they age out,
+    which is how a monitor teaches its readers to ignore it.
     """
     run = _run(
         tmp_path,
         objects=[
-            _object_line(hours_ago=50, size=FULL_SIZE),
-            _object_line(hours_ago=26, size=4 * GIB),
-            _object_line(hours_ago=2, size=5 * GIB),
+            _object_line(hours_ago=99, size=FULL_SIZE),  # monthly, still retained
+            _object_line(hours_ago=75, size=FULL_SIZE),  # weekly, still retained
+            _object_line(hours_ago=26, size=4 * GIB),  # the archival happened here
+            _object_line(hours_ago=2, size=4 * GIB),  # steady at the new size
         ],
     )
 
-    assert run.returncode != 0
-    assert "IMPLAUSIBLY SMALL" in run.alerts[0]
+    assert run.returncode == 0, run.output
+    assert run.alerts == [], "a settled post-archival size must not keep alerting"
 
 
-def test_ordinary_growth_is_not_mistaken_for_truncation(tmp_path: Path) -> None:
+def test_ordinary_growth_is_not_mistaken_for_a_shrink(tmp_path: Path) -> None:
     run = _run(
         tmp_path,
         objects=[
@@ -273,6 +278,15 @@ def test_ordinary_growth_is_not_mistaken_for_truncation(tmp_path: Path) -> None:
 
     assert run.returncode == 0, run.output
     assert run.alerts == []
+
+
+def test_a_lone_first_backup_has_nothing_to_compare_against(tmp_path: Path) -> None:
+    """A fresh bucket must not read as a shrink from zero."""
+    run = _run(tmp_path, objects=[_object_line(hours_ago=2, size=4 * GIB)])
+
+    assert run.returncode == 0, run.output
+    assert run.alerts == []
+    assert "no previous backup" in run.output
 
 
 # ── Free space ───────────────────────────────────────────────────────────

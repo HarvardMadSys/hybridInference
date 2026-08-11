@@ -17,7 +17,7 @@
 #                         (default: 26 — the 04:00 job plus a 2h grace)
 #   --min-free-gib N      Alert if free space drops below this (default: 80)
 #   --min-size-pct N      Alert if the newest backup is smaller than this
-#                         percent of the largest backup present (default: 50)
+#                         percent of the one before it (default: 50)
 #   --mount PATH          Filesystem to check for free space (default: /)
 #   --cooldown-sec N      Minimum gap between repeat alerts for the same
 #                         condition (default: 21600 — 6h)
@@ -46,11 +46,23 @@
 #   uploaded object is the only artifact that matters for a restore, so its
 #   existence, age, and size are what get checked.
 #
-# Why the size baseline is the largest object, not the previous one:
-#   This database only grows. Comparing against the immediately-previous backup
-#   lets two consecutive truncated dumps hide each other — the second looks
-#   fine next to the first. Comparing against the largest object present has no
-#   such blind spot.
+# Why the size baseline is the previous object, not the largest:
+#   It was the largest, on the theory that this database only grows and that
+#   comparing against the immediately-previous backup lets two consecutive
+#   truncated dumps hide each other. The premise is false. Archiving api_logs
+#   rows to S3 and deleting them (ops/db/archive-old-logs.sh) is a normal
+#   maintenance operation, and it took the dump from 129 GiB to 4 GiB on
+#   2026-08-08. Because GFS retention keeps the pre-archival objects for weeks
+#   as the weekly and monthly copies, a largest-object baseline then reports
+#   every healthy backup as a critical failure until they age out — which is
+#   how a monitor teaches its readers to ignore it.
+#
+#   The blind spot that motivated it is covered where it belongs: backup.sh
+#   asserts pg_dump's own end-of-dump sentinel and a minimum object size before
+#   promoting the .partial key, so a truncated dump is rejected at write time
+#   and never becomes an object to compare against. What is left for this check
+#   is a step change worth a human look, which is a warning, not a page — and
+#   one that goes quiet on its own once the new size is the norm.
 #
 # Examples:
 #   ./ops/db/check-backup-health.sh
@@ -252,13 +264,16 @@ check_backup() {
         return 0
     fi
 
-    local newest newest_date newest_time newest_size newest_key max_size
+    local newest newest_date newest_time newest_size newest_key prev_size
     newest=$(printf '%s\n' "$objects" | tail -n 1)
     newest_date=$(awk '{print $1}' <<< "$newest")
     newest_time=$(awk '{print $2}' <<< "$newest")
     newest_size=$(awk '{print $3}' <<< "$newest")
     newest_key=$(awk '{print $4}' <<< "$newest")
-    max_size=$(awk '{print $3}' <<< "$objects" | sort -n | tail -n 1)
+    # Empty when this is the only backup, which the size check treats as
+    # nothing to compare rather than as a shrink from zero.
+    prev_size=$(printf '%s\n' "$objects" | tail -n 2 | head -n 1 | awk '{print $3}')
+    [[ "$newest_size" == "$prev_size" && $(printf '%s\n' "$objects" | wc -l) -eq 1 ]] && prev_size=""
 
     local newest_epoch now age_hours
     if ! newest_epoch=$(date -u -d "${newest_date} ${newest_time} UTC" +%s 2> /dev/null); then
@@ -271,7 +286,11 @@ check_backup() {
 
     log_info "  newest: ${newest_key}"
     log_info "  age:    ${age_hours}h (alert above ${MAX_AGE_HOURS}h)"
-    log_info "  size:   $((newest_size / GIB)) GiB (largest present: $((max_size / GIB)) GiB)"
+    if [[ -n "$prev_size" ]]; then
+        log_info "  size:   $((newest_size / GIB)) GiB (previous: $((prev_size / GIB)) GiB)"
+    else
+        log_info "  size:   $((newest_size / GIB)) GiB (no previous backup to compare)"
+    fi
 
     # Staleness covers both a run that failed and a run that never fired, which
     # is the case cron and notify_failure are both blind to.
@@ -282,12 +301,13 @@ check_backup() {
         clear_alert "backup_stale"
     fi
 
-    # A dump that uploads cleanly but holds a fraction of the data passes every
-    # check backup.sh makes, because a truncated stream is still a valid zstd
-    # frame of the right shape.
-    if ((newest_size * 100 < max_size * MIN_SIZE_PCT)); then
-        send_alert "backup_small" critical \
-            "DB backup is IMPLAUSIBLY SMALL: ${newest_key} is $((newest_size / GIB)) GiB, $((newest_size * 100 / max_size))% of the largest backup present ($((max_size / GIB)) GiB, threshold ${MIN_SIZE_PCT}%). It reported success but is probably truncated — do not rely on it."
+    # A step change, not a verdict: archiving api_logs rows out legitimately
+    # shrinks the dump, and a truncated one is already rejected at write time by
+    # backup.sh's sentinel check. Warn, name the likely cause, and let it go
+    # quiet once the new size is the norm.
+    if [[ -n "$prev_size" ]] && ((prev_size > 0)) && ((newest_size * 100 < prev_size * MIN_SIZE_PCT)); then
+        send_alert "backup_small" warning \
+            "DB backup SHRANK SHARPLY: ${newest_key} is $((newest_size / GIB)) GiB, $((newest_size * 100 / prev_size))% of the previous backup ($((prev_size / GIB)) GiB, threshold ${MIN_SIZE_PCT}%). Expected if api_logs rows were just archived out; otherwise check what happened to the data."
     else
         clear_alert "backup_small"
     fi

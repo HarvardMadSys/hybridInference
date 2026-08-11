@@ -67,17 +67,32 @@ deployed script.
   [backup-health-cron](backup-health-cron), watches the job from outside it and
   alerts on the two failures the above cannot see:
 
-  | Condition | Default | Catches |
-  |---|---|---|
-  | Newest backup older than `--max-age-hours` | 26h | The 04:00 job failed, or never fired at all |
-  | Newest backup under `--min-size-pct` of the largest present | 50% | A truncated dump that uploaded cleanly and logged SUCCESS |
-  | Free space under `--min-free-gib` | 80 GiB | The volume Postgres and the dump share filling up |
+  | Condition | Default | Severity | Catches |
+  |---|---|---|---|
+  | Newest backup older than `--max-age-hours` | 26h | critical | The 04:00 job failed, or never fired at all |
+  | Newest backup under `--min-size-pct` of the one before it | 50% | warning | A step change in how much data the dump holds |
+  | Free space under `--min-free-gib` | 80 GiB | critical | The volume Postgres and the dump share filling up |
 
   It reads the uploaded objects rather than `~freeinference/backup.log`, because
   a run that never fired writes nothing to that log and so is indistinguishable
-  there from a quiet success. The size baseline is the largest object present,
-  not the previous one: against its predecessor a second truncated dump looks
-  like healthy growth, which is how a broken backup becomes the new normal.
+  there from a quiet success.
+
+  **The size baseline is the previous object, not the largest.** It was the
+  largest at first, on the theory that this database only grows. That premise is
+  false: archiving `api_logs` rows out with
+  [archive-old-logs.sh](archive-old-logs.sh) is normal maintenance and took the
+  dump from 129 GiB to 4 GiB on 2026-08-08. Since GFS retention keeps the
+  pre-archival objects for weeks as the weekly and monthly copies, a
+  largest-object baseline reports every healthy backup after that as a critical
+  failure until they age out — which is how a monitor teaches its readers to
+  ignore it. Comparing against the previous object warns once on the step change
+  and then goes quiet when the new size becomes the norm.
+
+  The blind spot that motivated the old baseline — a truncated dump that
+  uploaded cleanly — is covered where it belongs: `backup.sh` asserts pg_dump's
+  end-of-dump sentinel and a minimum object size before promoting the `.partial`
+  key, so a short dump is rejected at write time and never becomes an object to
+  compare against.
 
   Repeat alerts for the same condition are suppressed for 6h so an hourly timer
   cannot post 24 identical messages a day; recovery clears the suppression.

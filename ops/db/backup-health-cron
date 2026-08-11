@@ -24,7 +24,9 @@
 #
 # Alert thresholds (override with flags on the command below):
 #   backup older than 26h        — the 04:00 job plus a 2h grace for a long dump
-#   backup under 50% of largest  — a truncated dump that still uploaded cleanly
+#   backup under 50% of previous — a step change in how much data it holds
+#                                  (warning; archiving api_logs rows out does
+#                                  this legitimately, so it is not a page)
 #   free space under 80 GiB      — Postgres and the dump share this volume
 #
 # Repeat alerts for the same condition are suppressed for 6h, so a days-long
