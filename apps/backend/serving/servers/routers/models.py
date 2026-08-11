@@ -224,6 +224,9 @@ def build_model_list(
             pricing=primary_cfg.pricing,
             supported_sampling_parameters=supported_sampling_parameters,
             supported_features=supported_features,
+            # Any adapter marking the model on-demand makes the whole model
+            # on-demand: a probe that hits the lazy route still pins its GPU.
+            on_demand=any(cfg.on_demand for cfg in configs),
         )
         # Optional OpenRouter-specific metadata
         if model_id != canonical_id:
@@ -252,6 +255,7 @@ def build_model_list(
                 context_length=cfg.context_length,
                 max_output_length=cfg.max_output_length,
                 pricing=cfg.pricing,
+                on_demand=cfg.on_demand,
             )
         )
 
@@ -322,6 +326,9 @@ async def _build_model_list_async(
             pricing=primary_cfg.pricing,
             supported_sampling_parameters=supported_sampling_parameters,
             supported_features=supported_features,
+            # Any adapter marking the model on-demand makes the whole model
+            # on-demand: a probe that hits the lazy route still pins its GPU.
+            on_demand=any(cfg.on_demand for cfg in configs),
         )
         if model_id != canonical_id:
             model_entry.openrouter = {"slug": model_id}
@@ -348,6 +355,7 @@ async def _build_model_list_async(
                 context_length=cfg.context_length,
                 max_output_length=cfg.max_output_length,
                 pricing=cfg.pricing,
+                on_demand=cfg.on_demand,
             )
         )
 

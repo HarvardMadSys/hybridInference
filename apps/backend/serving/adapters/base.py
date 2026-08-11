@@ -91,6 +91,13 @@ class ModelConfig:
     max_output_length: int = 4096
     supports_tools: bool = False
     supports_structured_output: bool = False
+    # Lazily loaded on shared GPUs (ops/local_deployment_proxy): started by the
+    # first request, stopped when idle, and refused fast when no GPU is vacant.
+    # Exposed through /v1/models so synthetic monitors can skip these models —
+    # a periodic probe is exactly the traffic that defeats on-demand serving:
+    # it pins whichever backends win the GPU race and reports the rest as
+    # outages on capacity the probe itself is consuming.
+    on_demand: bool = False
     supported_params: list[str] = field(
         default_factory=lambda: ["temperature", "top_p", "max_tokens"]
     )
