@@ -9,6 +9,7 @@ export interface TargetModel {
 interface RawModel {
   id?: unknown;
   output_modalities?: unknown;
+  on_demand?: unknown;
 }
 
 function kindOf(model: RawModel): "chat" | "embedding" {
@@ -24,6 +25,9 @@ function kindOf(model: RawModel): "chat" | "embedding" {
  *
  * The endpoint is already role-filtered for the prober's API key, so models the
  * account can't access simply don't appear (and won't be reported as outages).
+ * Models the catalog marks `on_demand: true` are skipped too — see the comment
+ * in the loop; a model dropped this way reads as departed on the next cycle,
+ * which resolves any incident that was open on it.
  * `/v1/models` (not `/models`) is used because the edge routes `/v1/*` to the
  * gateway; without Anthropic headers it returns the standard OpenAI list shape.
  *
@@ -48,6 +52,7 @@ export async function discoverModels(config: Config, apiKey: string): Promise<Ta
   const data = body.data as RawModel[];
   const targets: TargetModel[] = [];
   const seen = new Set<string>();
+  let excluded = 0;
   for (const model of data) {
     // A blank id is not a probe target. Kept, it would be requested as if it were
     // a real model, fail, and still count as a *present* model — enough to make
@@ -57,6 +62,26 @@ export async function discoverModels(config: Config, apiKey: string): Promise<Ta
       continue;
     }
     seen.add(model.id);
+    // On-demand models (catalog `on_demand: true`) load lazily on shared GPUs:
+    // started by the first request, stopped when idle, refused fast when no
+    // GPU is vacant. A synthetic probe is exactly the traffic that defeats
+    // that design — every cycle it cold-starts or keeps resident whichever
+    // models win the GPU race and reports the rest as outages ("no vacant
+    // GPU"), paging on capacity the probe itself is consuming. Their liveness
+    // signal is the gateway's own /health probing of the proxy that serves
+    // them (routing.yaml local_deployment), not a per-model generation.
+    //
+    // Strict `=== true`: the flag crosses a JSON boundary, and a string
+    // "false" must not silently drop a model from monitoring.
+    //
+    // Skipped *after* `seen` so a duplicate id cannot re-enter as probeable,
+    // and deliberately not counted as a usable target by the guard below — a
+    // catalog of only on-demand models leaves the monitor with nothing it may
+    // probe, which is a configuration to fail loudly on, not a quiet no-op.
+    if (model.on_demand === true) {
+      excluded += 1;
+      continue;
+    }
     targets.push({ id: model.id, kind: kindOf(model) });
   }
   // A catalog that yields no probe target is a gateway or authorization failure,
@@ -67,7 +92,14 @@ export async function discoverModels(config: Config, apiKey: string): Promise<Ta
   // total outage and re-arms each failure streak from zero. Failing discovery
   // instead keeps history, keeps incidents open, and pages the cycle alert.
   if (targets.length === 0) {
-    throw new Error("empty /models response: no usable probe targets");
+    throw new Error(
+      excluded > 0
+        ? `empty /models response: no usable probe targets (${excluded} on-demand model(s) excluded)`
+        : "empty /models response: no usable probe targets",
+    );
+  }
+  if (excluded > 0) {
+    console.log(`discovery: skipped ${excluded} on-demand model(s); probing ${targets.length}.`);
   }
   return targets;
 }

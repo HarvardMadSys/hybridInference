@@ -78,6 +78,63 @@ describe("discoverModels", () => {
     expect(await discoverModels(config, "k")).toEqual([{ id: "glm-4.7", kind: "chat" }]);
   });
 
+  // An on-demand model loads lazily on shared GPUs; a synthetic probe is the
+  // traffic that defeats that design (it pins the GPUs it probes and pages on
+  // the "no vacant GPU" failures of the rest). The catalog flags them and the
+  // prober leaves them alone.
+  it("skips models the catalog marks on_demand", async () => {
+    stubFetch(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "glm-4.7", output_modalities: ["text"] },
+            { id: "llama-3.1-8b", output_modalities: ["text"], on_demand: true },
+            { id: "alia-40b-instruct", on_demand: true },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    expect(await discoverModels(config, "k")).toEqual([{ id: "glm-4.7", kind: "chat" }]);
+  });
+
+  // Strict boolean: the flag crosses a JSON boundary, and a truthy string such
+  // as "false" must not silently drop a model from monitoring.
+  it("keeps probing a model whose on_demand flag is not literally true", async () => {
+    stubFetch(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "a", on_demand: "true" },
+            { id: "b", on_demand: 1 },
+            { id: "c", on_demand: false },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    expect((await discoverModels(config, "k")).map((t) => t.id)).toEqual(["a", "b", "c"]);
+  });
+
+  // A catalog with nothing the monitor may probe is a configuration to fail
+  // loudly on, not a successful zero-model cycle that wipes history.
+  it("throws when every model in the catalog is on-demand", async () => {
+    stubFetch(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "a", on_demand: true },
+            { id: "b", on_demand: true },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    await expect(discoverModels(config, "k")).rejects.toThrow(
+      /no usable probe targets \(2 on-demand model\(s\) excluded\)/,
+    );
+  });
+
   it("throws on a malformed catalog (non-array data) instead of returning empty", async () => {
     stubFetch(new Response(JSON.stringify({ models: "oops" }), { status: 200 }));
     await expect(discoverModels(config, "k")).rejects.toThrow(/malformed/);

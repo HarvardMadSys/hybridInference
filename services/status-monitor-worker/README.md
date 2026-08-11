@@ -15,7 +15,12 @@ HTTP  ─►  fetch()  ─►  /  (dashboard)  +  /api/status  +  /api/health
 
 Targets are discovered from the gateway's authenticated `/models` catalog, which
 already applies role and runtime visibility rules — so the Worker probes exactly
-what the prober key can actually call.
+what the prober key can actually call. Models the catalog marks `on_demand:
+true` (lazily loaded on shared GPUs, e.g. the h200 on-demand set) are **not**
+probed: a synthetic generation every cycle would pin the shared GPUs and page
+on the "no vacant GPU" failures of the rest of the set — capacity the probe
+itself is consuming. Their liveness is covered by the gateway's own `/health`
+probing of the proxy that serves them (`routing.yaml` `local_deployment`).
 
 ## Slack alerts and Codex on-call analysis
 

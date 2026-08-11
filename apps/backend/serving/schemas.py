@@ -146,6 +146,10 @@ class ModelItem(BaseModel):  # type: ignore[no-any-unimported]
     pricing: dict[str, str]
     supported_sampling_parameters: list[str] = []
     supported_features: list[str] = []
+    # True for models served lazily on shared GPUs (loaded on first request,
+    # stopped when idle). Synthetic monitors should not chat-probe these: the
+    # probe traffic itself pins the shared GPUs and fails the rest of the set.
+    on_demand: bool = False
     openrouter: dict[str, Any] | None = None
 
 

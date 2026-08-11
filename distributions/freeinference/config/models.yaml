@@ -766,7 +766,9 @@ models:
   # 502 rather than queueing (see the proxy README, "GPU auto-selection").
   #
   # required_role: internal — visible to and usable by internal-role users
-  # only, deliberately not public. Routes are optional so a gateway without
+  # only, deliberately not public. on_demand: true tells synthetic
+  # monitors (status-monitor-worker) not to chat-probe these: a periodic
+  # probe pins the shared GPUs and fails the rest of the set. Routes are optional so a gateway without
   # H200B_ONDEMAND_DEPLOYMENT_URL in its .env simply does not serve them.
   # Pricing is 0: these run on our own idle GPUs for internal use.
 
@@ -774,6 +776,7 @@ models:
     name: Llama 3.1 8B Instruct (on-demand)
     provider: vllm
     required_role: internal
+    on_demand: true
     provider_model_id: "meta-llama/Llama-3.1-8B-Instruct"
     quantization: "bf16"
     input_modalities: ["text"]
@@ -803,6 +806,7 @@ models:
     name: Ministral 3 8B Instruct (on-demand)
     provider: vllm
     required_role: internal
+    on_demand: true
     provider_model_id: "mistralai/Ministral-3-8B-Instruct-2512"
     quantization: "bf16"
     input_modalities: ["text", "image"]
@@ -832,6 +836,7 @@ models:
     name: Gemma 3 12B IT (on-demand)
     provider: vllm
     required_role: internal
+    on_demand: true
     provider_model_id: "google/gemma-3-12b-it"
     quantization: "bf16"
     input_modalities: ["text", "image"]
@@ -861,6 +866,7 @@ models:
     name: Qwen3 8B (on-demand)
     provider: vllm
     required_role: internal
+    on_demand: true
     provider_model_id: "Qwen/Qwen3-8B"
     quantization: "bf16"
     input_modalities: ["text"]
@@ -890,6 +896,7 @@ models:
     name: ALLaM 7B Instruct Preview (on-demand)
     provider: vllm
     required_role: internal
+    on_demand: true
     provider_model_id: "humain-ai/ALLaM-7B-Instruct-preview"
     quantization: "bf16"
     input_modalities: ["text"]
@@ -919,6 +926,7 @@ models:
     name: Apertus v1.5 8B (on-demand)
     provider: vllm
     required_role: internal
+    on_demand: true
     provider_model_id: "swiss-ai/Apertus-v1.5-8B"
     quantization: "bf16"
     input_modalities: ["text"]
@@ -951,6 +959,7 @@ models:
     name: ALIA 40B Instruct (on-demand)
     provider: vllm
     required_role: internal
+    on_demand: true
     provider_model_id: "BSC-LT/ALIA-40b-instruct-2601"
     quantization: "bf16"
     input_modalities: ["text"]
@@ -984,6 +993,7 @@ models:
     name: LatamGPT Llama 3.1 70B SFT (on-demand)
     provider: vllm
     required_role: internal
+    on_demand: true
     provider_model_id: "latam-gpt/Llama-3.1-70B-LatamGPT-SFT-1.0"
     quantization: "bf16"
     input_modalities: ["text"]

@@ -436,6 +436,7 @@ def register_from_models_yaml(
                     "max_output_length",
                     "supports_tools",
                     "supports_structured_output",
+                    "on_demand",
                     "supported_params",
                     "pricing",
                     "route_metadata",
