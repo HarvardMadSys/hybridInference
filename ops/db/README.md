@@ -46,17 +46,52 @@ turn into no backups at all.
 
 ### Alerting
 
-Nothing watched this job, and four consecutive nights failed unnoticed.
+Nothing watched this job, and four consecutive nights failed unnoticed. The
+webhook and `MAILTO` below were added in response — and then five more nights
+failed unnoticed in August 2026, because neither was ever actually live: the
+installed `/etc/cron.d/freeinference-backup` had drifted from
+[backup-cron](backup-cron) and set neither, and the host has no MTA, so `MAILTO`
+goes nowhere regardless. Hence the third bullet, which depends only on the
+deployed script.
 
-- `BACKUP_ALERT_WEBHOOK_URL` — if set, any failure POSTs a JSON body
-  (`service`, `status`, `host`, `stage`, `reason`, `timestamp`, `text`) to that
-  URL. Unset, it is a no-op.
+- `BACKUP_ALERT_WEBHOOK_URL` — any failure POSTs a JSON body (`service`,
+  `status`, `host`, `stage`, `reason`, `timestamp`, `text`) to that URL. When
+  unset it falls back to `SLACK_ALERTS_WEBHOOK_URL` / `SLACK_WEBHOOK_URL` from
+  the deployment's `.env` (override the file with `BACKUP_ALERT_ENV_FILE`), so
+  failures reach the same Slack channel as every other production alert without
+  a second secret to rotate. This covers a run that started and then broke.
 - `MAILTO` in [backup-cron](backup-cron), combined with the `|| tail` on the
   cron line, mails the tail of the log on a failing run and stays silent
-  otherwise.
+  otherwise. **Requires an MTA, which this host does not have.**
+- [check-backup-health.sh](check-backup-health.sh), run hourly by
+  [backup-health-cron](backup-health-cron), watches the job from outside it and
+  alerts on the two failures the above cannot see:
 
-Neither detects "cron never fired". Point an external dead-man's-switch at the
-job if you need that.
+  | Condition | Default | Catches |
+  |---|---|---|
+  | Newest backup older than `--max-age-hours` | 26h | The 04:00 job failed, or never fired at all |
+  | Newest backup under `--min-size-pct` of the largest present | 50% | A truncated dump that uploaded cleanly and logged SUCCESS |
+  | Free space under `--min-free-gib` | 80 GiB | The volume Postgres and the dump share filling up |
+
+  It reads the uploaded objects rather than `~freeinference/backup.log`, because
+  a run that never fired writes nothing to that log and so is indistinguishable
+  there from a quiet success. The size baseline is the largest object present,
+  not the previous one: against its predecessor a second truncated dump looks
+  like healthy growth, which is how a broken backup becomes the new normal.
+
+  Repeat alerts for the same condition are suppressed for 6h so an hourly timer
+  cannot post 24 identical messages a day; recovery clears the suppression.
+
+Verify the alert path end to end without waiting for a real failure:
+
+```bash
+sudo -u freeinference /srv/hybridInference/ops/db/check-backup-health.sh --test
+sudo -u freeinference /srv/hybridInference/ops/db/check-backup-health.sh --dry-run
+```
+
+Nothing here detects the monitor itself dying. Point an external
+dead-man's-switch (healthchecks.io or equivalent) at the hourly job if you need
+that.
 
 ### Restore the database
 

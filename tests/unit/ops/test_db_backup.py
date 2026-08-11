@@ -212,10 +212,13 @@ def _run(
     dump: str | None = None,
     listing: str | None = None,
     env_overrides: dict[str, str] | None = None,
+    env_file_extra: str = "",
 ) -> Run:
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
-    (project / ".env").write_text("DB_NAME=freeinference\nDB_USER=fi\nDB_PASSWORD=s3cret\n")
+    (project / ".env").write_text(
+        "DB_NAME=freeinference\nDB_USER=fi\nDB_PASSWORD=s3cret\n" + env_file_extra
+    )
     (tmp_path / "s3").mkdir(exist_ok=True)
 
     dump_file = tmp_path / "pg_dump.out"
@@ -442,6 +445,57 @@ def test_no_webhook_configured_is_not_itself_a_failure(tmp_path: Path) -> None:
     assert run.returncode == 0, run.output
     assert not run.find("curl")
     assert not (tmp_path / "webhook.json").exists()
+
+
+def test_a_failure_alert_falls_back_to_the_deployment_slack_webhook(tmp_path: Path) -> None:
+    """The env var the cron never exported must not be the only way to alert.
+
+    /etc/cron.d/freeinference-backup is installed by hand and drifted from
+    ops/db/backup-cron, so the MAILTO and BACKUP_ALERT_WEBHOOK_URL the template
+    grew after the last silent outage were never live and five more nights
+    failed unnoticed. Resolving the webhook from the deployed .env instead means
+    the alert path survives that drift.
+    """
+    run = _run(
+        tmp_path,
+        *PROD_ARGS,
+        dump=_dump_text(complete=False, padding=2 * MIN_OBJECT_BYTES),
+        env_file_extra='SLACK_WEBHOOK_URL="https://hooks.slack.test/fallback"\n',
+    )
+
+    assert run.returncode != 0
+    assert "https://hooks.slack.test/fallback" in run.find("curl")[0], run.output
+    assert '"status":"failed"' in (tmp_path / "webhook.json").read_text()
+
+
+def test_an_explicit_webhook_wins_over_the_env_file(tmp_path: Path) -> None:
+    """An operator override has to beat the deployment default, not race it."""
+    run = _run(
+        tmp_path,
+        *PROD_ARGS,
+        dump=_dump_text(complete=False, padding=2 * MIN_OBJECT_BYTES),
+        env_overrides={"BACKUP_ALERT_WEBHOOK_URL": "https://hooks.example.com/explicit"},
+        env_file_extra='SLACK_WEBHOOK_URL="https://hooks.slack.test/fallback"\n',
+    )
+
+    curl = run.find("curl")[0]
+    assert "https://hooks.example.com/explicit" in curl
+    assert "fallback" not in curl
+
+
+def test_the_quotes_around_an_env_file_value_are_not_sent_as_part_of_the_url(
+    tmp_path: Path,
+) -> None:
+    """.env values are conventionally quoted; curl would POST to a 404 with them."""
+    run = _run(
+        tmp_path,
+        *PROD_ARGS,
+        dump=_dump_text(complete=False, padding=2 * MIN_OBJECT_BYTES),
+        env_file_extra='SLACK_WEBHOOK_URL="https://hooks.slack.test/quoted"\n',
+    )
+
+    assert '"https://hooks.slack.test/quoted"' not in run.find("curl")[0]
+    assert "https://hooks.slack.test/quoted" in run.find("curl")[0]
 
 
 # ── Retention ────────────────────────────────────────────────────────────

@@ -1,0 +1,40 @@
+# Hourly backup + free-space monitor — alerts to Slack when either goes wrong.
+#
+# !! THIS FILE IS NOT DEPLOYED. !!
+# Deploys update /srv/hybridInference/ops/db/check-backup-health.sh but never
+# touch /etc/cron.d/freeinference-backup-health, which is installed by hand.
+# Editing the schedule or the thresholds here changes NOTHING in production
+# until someone re-runs the install command below. Anything that has to take
+# effect without that step belongs in check-backup-health.sh, not here.
+#
+# Install / update: sudo cp ops/db/backup-health-cron /etc/cron.d/freeinference-backup-health
+#                   sudo chmod 644 /etc/cron.d/freeinference-backup-health
+# Verify what is actually live: sudo cat /etc/cron.d/freeinference-backup-health
+#
+# Requires: AWS credentials in ~freeinference/.aws/credentials (to list the
+#           backup bucket) and read access to /srv/hybridInference/.env (to
+#           resolve the Slack webhook). The freeinference group has both.
+#
+# Why hourly, and why it watches S3 rather than the backup log:
+#   backup.sh reports a run that started and then broke. It cannot report a run
+#   that never fired, or one that "succeeded" with a truncated dump — both of
+#   which have happened and gone unnoticed for days. Only something outside the
+#   job can catch those, so this reads the uploaded objects instead: their age
+#   covers "never ran", their size covers "ran but wrote nothing".
+#
+# Alert thresholds (override with flags on the command below):
+#   backup older than 26h        — the 04:00 job plus a 2h grace for a long dump
+#   backup under 50% of largest  — a truncated dump that still uploaded cleanly
+#   free space under 80 GiB      — Postgres and the dump share this volume
+#
+# Repeat alerts for the same condition are suppressed for 6h, so a days-long
+# problem does not post 24 identical messages a day. Recovery clears it.
+#
+# Verify the alert path end to end (posts a test message to Slack):
+#   sudo -u freeinference /srv/hybridInference/ops/db/check-backup-health.sh --test
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+HOME=/home/freeinference
+
+20 * * * * freeinference /srv/hybridInference/ops/db/check-backup-health.sh >> /home/freeinference/backup-health.log 2>&1

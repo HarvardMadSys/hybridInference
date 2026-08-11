@@ -23,7 +23,11 @@
 #
 # Environment variables:
 #   DB_NAME, DB_USER, DB_PASSWORD   PostgreSQL credentials (read from .env)
-#   BACKUP_ALERT_WEBHOOK_URL        POST a JSON failure report here (optional)
+#   BACKUP_ALERT_WEBHOOK_URL        POST a JSON failure report here. Defaults to
+#                                   SLACK_ALERTS_WEBHOOK_URL / SLACK_WEBHOOK_URL
+#                                   from BACKUP_ALERT_ENV_FILE.
+#   BACKUP_ALERT_ENV_FILE           .env to read that fallback from
+#                                   (default: <project root>/.env)
 #   BACKUP_EXPECTED_SIZE            --expected-size for the S3 upload
 #   BACKUP_MIN_OBJECT_BYTES         Reject an uploaded object smaller than this
 #   BACKUP_PROJECT_ROOT             Override the detected project root
@@ -135,6 +139,14 @@ show_help() {
 # Four consecutive nights failed without anyone noticing, because nothing was
 # watching. cron's MAILTO covers the "script ran and printed to stderr" case;
 # this covers the "we want it in chat" case. Unset URL means no-op.
+#
+# The URL is resolved from the deployment's .env when BACKUP_ALERT_WEBHOOK_URL
+# is not exported, rather than from the cron environment alone. It had to work
+# that way: /etc/cron.d/freeinference-backup is installed by hand and drifted
+# from ops/db/backup-cron, so the MAILTO and webhook the template grew after
+# the last silent outage were never actually live. Five more nights then failed
+# unnoticed in August 2026. Resolving the webhook here means the alert path
+# depends only on the deployed script, which every deploy updates.
 # ============================================================================
 json_escape() {
     local s="$1"
@@ -146,15 +158,45 @@ json_escape() {
     printf '%s' "$s"
 }
 
+# Falls back to the Slack webhook the gateway already alerts through, so a
+# failure reaches the same channel as every other production alert without a
+# second secret to rotate. Never echoes the URL.
+resolve_alert_webhook() {
+    local url="${BACKUP_ALERT_WEBHOOK_URL:-}"
+    if [[ -n "$url" ]]; then
+        printf '%s' "$url"
+        return 0
+    fi
+
+    local env_file="${BACKUP_ALERT_ENV_FILE:-${PROJECT_ROOT}/.env}"
+    [[ -r "$env_file" ]] || return 0
+
+    local key
+    for key in SLACK_ALERTS_WEBHOOK_URL SLACK_WEBHOOK_URL; do
+        url=$(grep -E "^${key}=" "$env_file" 2> /dev/null | tail -n 1 | cut -d= -f2-) || true
+        # .env values may be quoted; curl would send the quotes as part of the URL.
+        url="${url%\"}"
+        url="${url#\"}"
+        url="${url%\'}"
+        url="${url#\'}"
+        if [[ -n "$url" ]]; then
+            printf '%s' "$url"
+            return 0
+        fi
+    done
+}
+
 notify_failure() {
     local reason="$1"
-    local url="${BACKUP_ALERT_WEBHOOK_URL:-}"
+    local url
+    url=$(resolve_alert_webhook)
 
     if [[ -z "$url" ]]; then
+        log_warning "no alert webhook configured (BACKUP_ALERT_WEBHOOK_URL or SLACK_WEBHOOK_URL in ${BACKUP_ALERT_ENV_FILE:-${PROJECT_ROOT}/.env}); this failure is unreported"
         return 0
     fi
     if ! command -v curl &> /dev/null; then
-        log_warning "BACKUP_ALERT_WEBHOOK_URL is set but curl is missing; no alert sent"
+        log_warning "an alert webhook is configured but curl is missing; no alert sent"
         return 0
     fi
 
@@ -177,9 +219,9 @@ notify_failure() {
     if http_code=$(curl -fsS -m 15 --retry 2 --retry-delay 2 \
         -X POST -H 'Content-Type: application/json' \
         -d "$payload" "$url" -o /dev/null -w '%{http_code}'); then
-        log_info "Failure alert delivered to BACKUP_ALERT_WEBHOOK_URL (HTTP ${http_code})"
+        log_info "Failure alert delivered (HTTP ${http_code})"
     else
-        log_error "Failure alert POST to BACKUP_ALERT_WEBHOOK_URL FAILED (HTTP ${http_code:-none}) — this failure is unreported"
+        log_error "Failure alert POST FAILED (HTTP ${http_code:-none}) — this failure is unreported"
     fi
 }
 
