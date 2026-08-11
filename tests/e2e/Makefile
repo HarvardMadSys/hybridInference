@@ -43,8 +43,19 @@ help:
 GATEWAY_PORT ?= 10081
 GATEWAY_URL = http://localhost:$(GATEWAY_PORT)
 E2E_CONFIG = ../fixtures/e2e_config.yaml
-PYTHON = uv run python
-PYTEST = uv run pytest
+# The help text above has always advertised this default, but nothing supplied
+# it. That was inert only because MODELS_CONFIG pointed at a path that does not
+# exist, so the fixture -- and its ${CHUTES_BASE_URL} routes -- were never
+# loaded. With the path corrected, an unset value would reach the registry as a
+# blank env-backed base_url, which drops the route (see registry.py's
+# _BlankEnvValue guard) and fails test_hybrid_model_available for a caller who
+# set CHUTES_API_KEY exactly as the help text instructs. Assigned with ?= and
+# after the `-include ../../.env` above, so a real .env or a command-line
+# override still wins.
+CHUTES_BASE_URL ?= https://llm.chutes.ai
+UV_RUN ?= uv run
+PYTHON = $(UV_RUN) python
+PYTEST = $(UV_RUN) pytest
 GATEWAY_PID_FILE = /tmp/hybridInference_gateway_$(GATEWAY_PORT).pid
 GATEWAY_LOG_FILE = /tmp/hybridInference_gateway_$(GATEWAY_PORT).log
 
@@ -155,10 +166,10 @@ _start-gateway-phase2-bg:
 	@# Stop any existing gateway first
 	@$(MAKE) --no-print-directory _stop-gateway-bg 2>/dev/null || true
 	@cd ../.. && \
-	MODELS_CONFIG=test/fixtures/e2e_config.yaml \
+	MODELS_CONFIG=tests/fixtures/e2e_config.yaml \
 	DB_ENABLED=false \
 	RATE_LIMIT_ENABLED=0 \
-	$(PYTHON) -m uvicorn serving.servers.app:app \
+	$(PYTHON) -m uvicorn --app-dir apps/backend serving.servers.app:app \
 		--port $(GATEWAY_PORT) \
 		--host 0.0.0.0 \
 		> $(GATEWAY_LOG_FILE) 2>&1 & \
@@ -172,12 +183,12 @@ _start-gateway-phase3-bg:
 	@# Stop any existing gateway first
 	@$(MAKE) --no-print-directory _stop-gateway-bg 2>/dev/null || true
 	@cd ../.. && \
-	MODELS_CONFIG=test/fixtures/e2e_config.yaml \
+	MODELS_CONFIG=tests/fixtures/e2e_config.yaml \
 	CHUTES_BASE_URL=$(CHUTES_BASE_URL) \
 	CHUTES_API_KEY=$(CHUTES_API_KEY) \
 	DB_ENABLED=false \
 	RATE_LIMIT_ENABLED=0 \
-	$(PYTHON) -m uvicorn serving.servers.app:app \
+	$(PYTHON) -m uvicorn --app-dir apps/backend serving.servers.app:app \
 		--port $(GATEWAY_PORT) \
 		--host 0.0.0.0 \
 		> $(GATEWAY_LOG_FILE) 2>&1 & \
@@ -201,10 +212,10 @@ _stop-gateway-bg:
 start-gateway-phase2:
 	@echo "Starting gateway for Phase 2..."
 	@cd ../.. && \
-	MODELS_CONFIG=test/fixtures/e2e_config.yaml \
+	MODELS_CONFIG=tests/fixtures/e2e_config.yaml \
 	DB_ENABLED=false \
 	RATE_LIMIT_ENABLED=0 \
-	$(PYTHON) -m uvicorn serving.servers.app:app \
+	$(PYTHON) -m uvicorn --app-dir apps/backend serving.servers.app:app \
 		--port $(GATEWAY_PORT) \
 		--host 0.0.0.0
 
@@ -216,12 +227,12 @@ start-gateway-phase3:
 	fi
 	@echo "Starting gateway for Phase 3..."
 	@cd ../.. && \
-	MODELS_CONFIG=test/fixtures/e2e_config.yaml \
+	MODELS_CONFIG=tests/fixtures/e2e_config.yaml \
 	CHUTES_BASE_URL=$(CHUTES_BASE_URL) \
 	CHUTES_API_KEY=$(CHUTES_API_KEY) \
 	DB_ENABLED=false \
 	RATE_LIMIT_ENABLED=0 \
-	$(PYTHON) -m uvicorn serving.servers.app:app \
+	$(PYTHON) -m uvicorn --app-dir apps/backend serving.servers.app:app \
 		--port $(GATEWAY_PORT) \
 		--host 0.0.0.0
 
