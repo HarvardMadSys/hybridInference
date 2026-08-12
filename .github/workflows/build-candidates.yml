@@ -80,6 +80,12 @@ jobs:
           platforms: ${{ inputs.platform }}
           push: true
           tags: ${{ steps.names.outputs.backend }}:dev-${{ steps.names.outputs.shortsha }}
+          # The digest deploy reads the revision label back and refuses to
+          # start an image whose source SHA differs from the host checkout
+          # that supplies its config mounts.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           # Same private-dependency token the staging deploy forwards to the
           # compose build (routewise git dependency).
           secrets: |
@@ -95,6 +101,9 @@ jobs:
           platforms: ${{ inputs.platform }}
           push: true
           tags: ${{ steps.names.outputs.frontend }}:dev-${{ steps.names.outputs.shortsha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Candidate summary
         env:

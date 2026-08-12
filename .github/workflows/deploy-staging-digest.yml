@@ -32,6 +32,10 @@ on:
         description: "Optional frontend reference (empty = leave the current frontend container untouched)"
         type: string
         default: ""
+      allow_sha_mismatch:
+        description: "Deploy even when the image's source revision differs from the host checkout supplying the config mounts (slice 1 default: refuse)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -49,23 +53,28 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # The image references get spliced into the remote SSH command below.
-      # This gate is what makes that splice safe: the character class admits
-      # no quotes, spaces, or shell metacharacters, so a crafted dispatch
-      # input cannot break out of its quoting on the staging host.
+      # Two gates in one. Injection: the references get spliced into the
+      # remote SSH command below, and this character class admits no quotes,
+      # spaces, or shell metacharacters, so a crafted input cannot break out
+      # of its quoting on the staging host. Allowlist: only the two packages
+      # this repository's Build Candidate Images run publishes — an arbitrary
+      # ghcr.io image would be handed staging's secrets, database and
+      # writable mounts. (Package names move with the repo owner; revisit
+      # when this workflow migrates to the freeInference repository.)
       - name: Validate dispatch inputs
         env:
           BACKEND_IMAGE: ${{ inputs.backend_image }}
           FRONTEND_IMAGE: ${{ inputs.frontend_image }}
         run: |
           set -euo pipefail
-          re='^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$'
-          if ! [[ "${BACKEND_IMAGE}" =~ ${re} ]]; then
-            echo "::error title=Bad input::backend_image must be a full ghcr.io reference pinned by @sha256 digest"
+          re_backend='^ghcr\.io/harvardmadsys/hybridinference-backend@sha256:[0-9a-f]{64}$'
+          re_frontend='^ghcr\.io/harvardmadsys/hybridinference-frontend@sha256:[0-9a-f]{64}$'
+          if ! [[ "${BACKEND_IMAGE}" =~ ${re_backend} ]]; then
+            echo "::error title=Bad input::backend_image must be ghcr.io/harvardmadsys/hybridinference-backend pinned by @sha256 digest"
             exit 1
           fi
-          if [ -n "${FRONTEND_IMAGE}" ] && ! [[ "${FRONTEND_IMAGE}" =~ ${re} ]]; then
-            echo "::error title=Bad input::frontend_image must be a full ghcr.io reference pinned by @sha256 digest"
+          if [ -n "${FRONTEND_IMAGE}" ] && ! [[ "${FRONTEND_IMAGE}" =~ ${re_frontend} ]]; then
+            echo "::error title=Bad input::frontend_image must be ghcr.io/harvardmadsys/hybridinference-frontend pinned by @sha256 digest"
             exit 1
           fi
 
@@ -107,6 +116,7 @@ jobs:
           # Repo-scoped token; grants read on packages published by this
           # repository's workflows (the Build Candidate Images run).
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ALLOW_SHA_MISMATCH: ${{ inputs.allow_sha_mismatch }}
           RUN_ID: ${{ github.run_id }}
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           STAGING_PORT: ${{ secrets.STAGING_PORT || '22' }}
@@ -122,7 +132,7 @@ jobs:
             -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
             -o GlobalKnownHostsFile=/dev/null \
             "${STAGING_USER}@${STAGING_HOST}" \
-            "BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' GHCR_USER='${GHCR_USER}' GHCR_TOKEN='${GHCR_TOKEN}' RUN_ID='${RUN_ID}' bash -s" <<'REMOTE'
+            "BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' GHCR_USER='${GHCR_USER}' GHCR_TOKEN='${GHCR_TOKEN}' ALLOW_SHA_MISMATCH='${ALLOW_SHA_MISMATCH}' RUN_ID='${RUN_ID}' bash -s" <<'REMOTE'
           set -Eeuo pipefail
           cd /srv/hybridInference
 
@@ -152,12 +162,40 @@ jobs:
             services="${services} frontend"
           fi
 
-          # Same env-file layering as the Makefile COMPOSE: distribution
-          # overlay files first, host .env last so it wins. Skipping the
-          # overlay here would recreate the backend without its distribution
-          # identity — a neutral gateway wearing staging's DNS. Like the
-          # Makefile's auto-discovery, this assumes the single-distribution
-          # host layout.
+          # The image carries the code; this checkout supplies the config
+          # mounts. Slice 1 exists to prove a packaging-only change, so the
+          # two must agree on the source revision unless the operator says
+          # otherwise (allow_sha_mismatch, for intentional drift only).
+          host_rev=$(git rev-parse HEAD)
+          check_revision() {
+            local image="$1" rev
+            rev=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${image}")
+            if [ -z "${rev}" ]; then
+              echo "[digest-deploy] ${image} carries no org.opencontainers.image.revision label; rebuild it with a current Build Candidate Images run"
+              exit 1
+            fi
+            if [ "${rev}" != "${host_rev}" ]; then
+              if [ "${ALLOW_SHA_MISMATCH}" = "true" ]; then
+                echo "[digest-deploy] WARNING: ${image} built from ${rev}, host checkout at ${host_rev} (allow_sha_mismatch)"
+              else
+                echo "[digest-deploy] ${image} built from ${rev} but the host checkout (config mounts) is at ${host_rev}; refusing"
+                exit 1
+              fi
+            fi
+          }
+          check_revision "${BACKEND_IMAGE}"
+          if [ -n "${FRONTEND_IMAGE}" ]; then
+            check_revision "${FRONTEND_IMAGE}"
+          fi
+
+          # Same env-file layering as the classic staging deploy: shared
+          # distribution layer, then the staging layer (deploy_staging.sh
+          # sets COMPOSE_EXTRA_ENV_FILES to it), host .env last so it wins.
+          # The shared layer alone says DEPLOYMENT_ENV=production — without
+          # the staging layer this deploy would label staging as production;
+          # without both, it would restart a neutral gateway on staging's
+          # DNS. Single-distribution host layout, like the Makefile's
+          # auto-discovery.
           overlay_envs=""
           for f in distributions/*/deploy/*.env; do
             [ -e "${f}" ] || continue
@@ -167,9 +205,18 @@ jobs:
             echo "[digest-deploy] no overlay env-files under distributions/*/deploy/ — refusing a neutral restart"
             exit 1
           fi
+          staging_envs=""
+          for f in distributions/*/deploy/staging/*.env; do
+            [ -e "${f}" ] || continue
+            staging_envs="${staging_envs} --env-file ${f}"
+          done
+          if [ -z "${staging_envs}" ]; then
+            echo "[digest-deploy] no staging env layer under distributions/*/deploy/staging/ — the shared layer would label staging as production; refusing"
+            exit 1
+          fi
 
           # shellcheck disable=SC2086
-          docker compose ${files} ${overlay_envs} --env-file .env up -d --no-build ${services}
+          docker compose ${files} ${overlay_envs} ${staging_envs} --env-file .env up -d --no-build ${services}
 
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
@@ -179,7 +226,7 @@ jobs:
             if [ "$i" = 30 ]; then
               echo "[digest-deploy] backend health check failed"
               # shellcheck disable=SC2086
-              docker compose ${files} ${overlay_envs} --env-file .env logs --tail=80 backend || true
+              docker compose ${files} ${overlay_envs} ${staging_envs} --env-file .env logs --tail=80 backend || true
               exit 1
             fi
             sleep 2
