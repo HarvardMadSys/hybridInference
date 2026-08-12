@@ -8,22 +8,24 @@
 > 开场第一项)。
 > 创建:2026-08-03,基于 Murphy 与 Claude 的对话,并吸收另一 agent 会话的
 > 交叉评审(symlink 挂载悬空、拉模式触发、digest 与计划文本的关系)。
+> 修订:2026-08-12,状态对账——W0 已完成、W1 GitHub 侧已完成、§7 行动项已随
+> H4 解决;详见 §0 与各工作项内的进展注记。
 
-## 0. 前提:Step 1 的收官状态(2026-08-03 快照)
+## 0. 前提:Step 1 的收官状态(2026-08-12 对账)
 
 - 拆分机制与代码已全部上 main(2026-07-31 sync,release `20260731`);staging
   以 `DISTRIBUTION_CONFIG_MODE=active` 从 overlay 读全部真值,持续部署多日。
-- **prod cutover 尚未发生**:prod 仍跑 `574bd272`。下一次手动 Deploy
-  Production 即 cutover,部署前 checklist 三条:`.env` 残留 grep(三个
-  `*_CONFIG_PATH` / `DISTRIBUTION_*`)、清零 open incident(告警标签
-  local→production 必翻)、可选补 `ZAI_API_KEY2`。工具:
-  `ops/release/check_production_env.sh`、`distributions/freeinference/smoke_dark_load.py`。
+- **prod cutover 已完成(2026-08-07)**:当日两班生产部署(release
+  `20260807.1`/`20260807.2`)即 manifest cutover 首飞,与 agent 线 H3 生产
+  切换同窗完成;08-09 又一班(release `20260809`,checkout `2eb07575`)带上
+  H4,四端点验收通过。原 checklist 三条与工具注记保留在 Step 1 计划中备查。
 - Step 1 判据④以 `ops/admin/brand_residue_sweep.py` 台账形式存在
   (0 unclaimed,15 个 pending work streams)——它是本文 W3 归属清单的底稿。
-- `HarvardMadSys/freeInference`:2026-07-27 创建,空、私有,信任链未起。
+- `HarvardMadSys/freeInference`:2026-07-27 创建,空、私有。**信任链
+  GitHub 侧已于 2026-08-11 建立**(进展见 W1 注记);主机侧未动。
 
-**W0(硬前置):先完成 prod cutover、收官 Step 1,再执行本文任何搬迁项。**
-(W1 信任链、W2 digest 旁路与 cutover 无冲突,可并行。)
+**W0(硬前置):已满足(2026-08-07)。**搬迁项(W4 起)仍等 §6 拍板;
+W1/W2 可先行,W1 已在进行。
 
 ## 1. 终态:形态与体验
 
@@ -120,6 +122,16 @@ staging=dev / prod=main 映射、release tag 节奏、回滚入口。
 - 主机:`/srv/freeInference` checkout + 只读 deploy key;迁移窗口内
   `/srv/hybridInference` 保留作回滚。
 
+**进展(2026-08-11)**:GitHub 侧已完成——`production`/`staging`
+Environments 已建;secrets 已迁(production 6/6;staging 6/8,缺
+`ALERT_CONTROL_PLANE_*` 两把,唯一消费者是 W5b 才搬的 lifecycle workflow,
+不阻塞;值不可从旧仓读回,届时复用原值或铸新值重放 provisioning)。两个
+GitHub App 均已 org 所有(production App 4436566 已自个人账户转移)且安装
+范围覆盖新仓;Murphy 已获 repo admin。Cloudflare 凭据为新铸的 **Account
+Token**(Workers Scripts/D1 Edit + `freeinference.org` Workers Routes;
+Murphy 的 CF 角色铸不出所需权限,由 Juncheng 创建)。待办:runner 双注册、
+主机 checkout + deploy key;GHCR 拉取凭据等 W2 发出首个镜像时一并办理。
+
 ### W2 同仓复活 #1044:backend digest 旁路(staging)
 
 分支 `murphy/claude/staging-digest-deploy` 尚在。按原设计复活:上游构建
@@ -177,7 +189,9 @@ prod 切换 → 拆除旧链路。必做演练:一次 bump 升级、一次 rever
 ### W8 欠账清理(开源前必须,不阻塞搬迁)
 
 #1078 泄漏 gateway key 吊销;staging 测试账号密码轮换;Slack 中 GitHub App
-key/secret 轮换。
+key/secret 轮换。Cloudflare 两笔(2026-08-12 增):吊销旧 user token
+(2026-06-15 铸,随旧仓部署链退役);轮换 2026-08-11 新铸的 Account Token
+——其值曾经 Slack 与 agent 会话两条聊天通道传递,与 pem 同性质的债。
 
 ## 4. 执行原则
 
@@ -212,6 +226,10 @@ key/secret 轮换。
 3. **bump 节奏**:每次上游 push(体验最接近今天)vs 每日汇总(噪音更小)。
 4. (不阻塞)Step 3 公开机制,owner:Juncheng。
 
+注(2026-08-12):执行侧对 1–3 的建议——接受豁免、裸 SHA、每次 push
+(bump 频率反向调整成本低,先保"体验守恒");待 Murphy 拍板,拍板后
+W4 即可动工。
+
 ## 7. 与 cloud-agent 拆仓的协调(2026-08-03 增补)
 
 cloud agent 同日启动了自己的拆仓(计划:
@@ -242,7 +260,9 @@ cloud agent 同日启动了自己的拆仓(计划:
    目前休眠)共用 auth 层——同一时间只允许一个 PR 动 `auth.py`,顺序:
    agent 契约先,IdP 抽象后。本文 W0–W6 均不触碰 auth.py,无冲突。
 
-**本线认领的行动项**:`ops/release/public_export.py:36` 硬引用
-`apps/backend/serving/agent_jobs/patch_gate.py`;agent 线 H4 删除该文件前,
-导出 manifest 必须先摘除或改指向该引用(export 工具链归本线/Step 3 资产)。
-H4 排在 agent H3 生产切换之后,不紧急,但列入 W8 同批清账。
+**本线认领的行动项——已解决(2026-08-09,随 H4)**:原
+`ops/release/public_export.py:36` 对 `patch_gate.py` 的硬引用已消除:
+credential patterns 独立成 `ops/release/secret_patterns.py`(单一来源,
+export 审计与泄漏测试共用),H4 删除 agent 代码未伤及导出工具链。顺带,
+H4 之后导出树不再含 agent 代码,08-06 勘察发现的"导出会连带公开整套
+agent 代码"问题自动消解。
