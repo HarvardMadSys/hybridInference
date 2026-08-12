@@ -9,9 +9,10 @@
 > 创建:2026-08-03,基于 Murphy 与 Claude 的对话,并吸收另一 agent 会话的
 > 交叉评审(symlink 挂载悬空、拉模式触发、digest 与计划文本的关系)。
 > 修订:2026-08-12,状态对账——W0 已完成、W1 GitHub 侧已完成、§7 行动项已随
-> H4 解决;详见 §0 与各工作项内的进展注记。同日并入交叉评审四条:W5 删除
-> 时序改判(不与搬迁同批)、W7 compose base 来源待设计、§5 W8 计数改五项、
-> 执行原则新增"生产周边显式化"。
+> H4 解决;详见 §0 与各工作项内的进展注记。同日并入两轮交叉评审:W5 删除
+> 时序改判(不与搬迁同批)、W6 增补 prod 观察窗、W7 compose base 来源待拍板
+> (§6-5)、判据②改以 public-export 树为对象、sweep 计数刷新为 18、§5 W8
+> 计数改五项、执行原则新增"生产周边显式化"。
 
 ## 0. 前提:Step 1 的收官状态(2026-08-12 对账)
 
@@ -22,7 +23,8 @@
   切换同窗完成;08-09 又一班(release `20260809`,checkout `2eb07575`)带上
   H4,四端点验收通过。原 checklist 三条与工具注记保留在 Step 1 计划中备查。
 - Step 1 判据④以 `ops/admin/brand_residue_sweep.py` 台账形式存在
-  (0 unclaimed,15 个 pending work streams)——它是本文 W3 归属清单的底稿。
+  (2026-08-12 复跑:0 unclaimed,**18** 个 pending work streams;08-03
+  快照为 15)——它是本文 W3 归属清单的底稿。
 - `HarvardMadSys/freeInference`:2026-07-27 创建,空、私有。**信任链
   GitHub 侧已于 2026-08-11 建立**(进展见 W1 注记);主机侧未动。
 
@@ -145,10 +147,11 @@ candidate 镜像推 GHCR(首个 candidate 钉 staging 当前 SHA——同代码�
 ### W3 归属清单重生成
 
 按 #1043 关闭时的处方,以当前 dev 重列:`路径 | 目标仓 | 代码还是内容 |
-生产影响 | 验证方式`。底稿 = sweep 台账 15 个 pending streams + overlay
-AGENTS.md 的宣示。必须裁定的灰区(不在本文预判):`ops/release/`(公开导出
-工具疑属上游)、`agent-job-runner.yml`、`freeinference-harness`(主设计倾向
-"上游 testkit + 站点 targets 拆开")、`docs/developer/`(内部站)。
+生产影响 | 验证方式`。底稿 = sweep 台账 18 个 pending streams(2026-08-12
+复跑)+ overlay AGENTS.md 的宣示。必须裁定的灰区(不在本文预判):
+`ops/release/`(公开导出工具疑属上游)、`freeinference-harness`(主设计
+倾向"上游 testkit + 站点 targets 拆开")、`docs/developer/`(内部站)。
+(`agent-job-runner.yml` 原列灰区,已随 H4 出仓,条目作废——见 §7。)
 
 ### W4 新仓骨架:lock + bump bot + 门测试
 
@@ -184,9 +187,11 @@ prod=release tag)始终可用;删除推迟到 W6 观察窗结束后,按逆批次
 
 ### W6 切换与演练
 
-staging 先整体改由 freeInference 仓部署(旧链路保留回滚)→ 观察窗口 →
-prod 切换 → 拆除旧链路。必做演练:一次 bump 升级、一次 revert bump 回滚、
-一次旧 release dispatch 回滚。
+staging 先整体改由 freeInference 仓部署(旧链路保留回滚)→ staging 观察窗
+→ prod 切换 → **prod 观察窗**(旧链路与旧仓内容在窗内原样保留,三项演练
+在此窗内完成)→ 拆除旧链路 → 之后才执行 W5 修订所述的上游侧删除批。
+必做演练:一次 bump 升级、一次 revert bump 回滚、一次旧 release dispatch
+回滚。
 
 ### W7 拆后:frontend 运行时品牌化 → 翻 digest
 
@@ -224,9 +229,11 @@ key/secret 轮换。Cloudflare 两笔(2026-08-12 增):吊销旧 user token
 
 1. 两个手势(sync-main、Deploy Production)在 freeInference 仓完成
    staging + prod 部署,主机不再依赖 hybridInference 的部署链路;
-2. hybridInference 树内 grep 不到 FreeInference 身份(E 门),
-  `distributions/` 只剩 example;上游 `make test` 全绿、无 overlay 中立启动
-   可用(Step 1 判据③保持);
+2. hybridInference 的 **public-export 树**(`ops/release/public_export.py
+   --list` 所出)grep 不到 FreeInference 身份——`docs/agents/`、
+   `docs/reviews/` 等历史文档不作为本判据对象,其去留(导出 manifest 排除,
+   或随 W5 迁走)Step 3 前拍板;`distributions/` 只剩 example;上游
+   `make test` 全绿、无 overlay 中立启动可用(Step 1 判据③保持);
 3. `upstream.lock` 为两仓唯一耦合点;bump 门红时 staging 停在旧 pin
    (演练证实);
 4. 升级与两种回滚演练通过;
@@ -244,6 +251,8 @@ key/secret 轮换。Cloudflare 两笔(2026-08-12 增):吊销旧 user token
    节奏)。
 3. **bump 节奏**:每次上游 push(体验最接近今天)vs 每日汇总(噪音更小)。
 4. (不阻塞)Step 3 公开机制,owner:Juncheng。
+5. (不阻塞 W4–W6,W7 动工前必拍)W7 拆除上游 checkout 后 compose base
+   的来源——候选见 W7 注记。
 
 注(2026-08-12):执行侧对 1–3 的建议——接受豁免、裸 SHA、每次 push
 (bump 频率反向调整成本低,先保"体验守恒");待 Murphy 拍板,拍板后
