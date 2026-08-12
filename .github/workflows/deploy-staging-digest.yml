@@ -49,6 +49,26 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # The image references get spliced into the remote SSH command below.
+      # This gate is what makes that splice safe: the character class admits
+      # no quotes, spaces, or shell metacharacters, so a crafted dispatch
+      # input cannot break out of its quoting on the staging host.
+      - name: Validate dispatch inputs
+        env:
+          BACKEND_IMAGE: ${{ inputs.backend_image }}
+          FRONTEND_IMAGE: ${{ inputs.frontend_image }}
+        run: |
+          set -euo pipefail
+          re='^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$'
+          if ! [[ "${BACKEND_IMAGE}" =~ ${re} ]]; then
+            echo "::error title=Bad input::backend_image must be a full ghcr.io reference pinned by @sha256 digest"
+            exit 1
+          fi
+          if [ -n "${FRONTEND_IMAGE}" ] && ! [[ "${FRONTEND_IMAGE}" =~ ${re} ]]; then
+            echo "::error title=Bad input::frontend_image must be a full ghcr.io reference pinned by @sha256 digest"
+            exit 1
+          fi
+
       - name: Configure SSH
         env:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
@@ -132,8 +152,24 @@ jobs:
             services="${services} frontend"
           fi
 
+          # Same env-file layering as the Makefile COMPOSE: distribution
+          # overlay files first, host .env last so it wins. Skipping the
+          # overlay here would recreate the backend without its distribution
+          # identity — a neutral gateway wearing staging's DNS. Like the
+          # Makefile's auto-discovery, this assumes the single-distribution
+          # host layout.
+          overlay_envs=""
+          for f in distributions/*/deploy/*.env; do
+            [ -e "${f}" ] || continue
+            overlay_envs="${overlay_envs} --env-file ${f}"
+          done
+          if [ -z "${overlay_envs}" ]; then
+            echo "[digest-deploy] no overlay env-files under distributions/*/deploy/ — refusing a neutral restart"
+            exit 1
+          fi
+
           # shellcheck disable=SC2086
-          docker compose ${files} --env-file .env up -d --no-build ${services}
+          docker compose ${files} ${overlay_envs} --env-file .env up -d --no-build ${services}
 
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
@@ -143,7 +179,7 @@ jobs:
             if [ "$i" = 30 ]; then
               echo "[digest-deploy] backend health check failed"
               # shellcheck disable=SC2086
-              docker compose ${files} --env-file .env logs --tail=80 backend || true
+              docker compose ${files} ${overlay_envs} --env-file .env logs --tail=80 backend || true
               exit 1
             fi
             sleep 2
