@@ -9,7 +9,9 @@
 > 创建:2026-08-03,基于 Murphy 与 Claude 的对话,并吸收另一 agent 会话的
 > 交叉评审(symlink 挂载悬空、拉模式触发、digest 与计划文本的关系)。
 > 修订:2026-08-12,状态对账——W0 已完成、W1 GitHub 侧已完成、§7 行动项已随
-> H4 解决;详见 §0 与各工作项内的进展注记。
+> H4 解决;详见 §0 与各工作项内的进展注记。同日并入交叉评审四条:W5 删除
+> 时序改判(不与搬迁同批)、W7 compose base 来源待设计、§5 W8 计数改五项、
+> 执行原则新增"生产周边显式化"。
 
 ## 0. 前提:Step 1 的收官状态(2026-08-12 对账)
 
@@ -169,8 +171,16 @@ rag-index、codex-oncall、alert-control-plane-*;按 W3 裁定);
 (c) `services/` 三个 worker;(d) `ops/` 按 W3 裁定的部分;
 (e) doc 站 Pages 切仓;(f) rag-index 的跨仓依赖处理——ingest 依赖上游
 `chunker.py`/`ingest.py`,v1 在 pin 的上游 checkout 里执行,终态改用带工具的
-上游镜像。每批同时在上游侧删除对应内容,E 门(banned-strings、禁 import
-`distributions/`、中立启动)持续强制。
+上游镜像。
+
+**上游侧删除不与搬迁同批(2026-08-12 评审修订)**:原文"每批同时在上游侧
+删除对应内容"与 W6"旧链路保留作回滚"自相矛盾——classic staging 部署跟的
+是 dev,W5a 一删 overlay,旧链在 W6 之前就断了,等于边搬边拆自己的回滚梯。
+改为:W5 全程旧仓内容原位保留(搬=复制+接线),classic 部署链(staging=dev、
+prod=release tag)始终可用;删除推迟到 W6 观察窗结束后,按逆批次序独立 PR
+执行,E 门(banned-strings、禁 import `distributions/`、中立启动)在删除批
+上强制,Step 3 开源前完成即可。(备选:旧生产链钉死在迁移前 release tag、
+删除照旧同批——回滚面更窄,不推荐;二选一归 Murphy。)
 
 ### W6 切换与演练
 
@@ -186,6 +196,12 @@ prod 切换 → 拆除旧链路。必做演练:一次 bump 升级、一次 rever
 记录)。完成后 frontend 翻 digest、主机移除上游 checkout,§2-1 豁免自动失效,
 主设计 Phase 4 验收全量回归。
 
+**待设计(2026-08-12 评审指出)**:主机移除上游 checkout 后,compose base
+(`deploy/docker/docker-compose.yml`)的来源悬空——v1 靠 checkout 供给,
+W7 拆掉它却没安排接替。候选:freeInference vendor 一份、由 bump 门测试对照
+上游 diff;上游把 compose 作为 release artifact 随镜像发布;或 compose
+整体改判归 freeInference。W7 动工前拍板。
+
 ### W8 欠账清理(开源前必须,不阻塞搬迁)
 
 #1078 泄漏 gateway key 吊销;staging 测试账号密码轮换;Slack 中 GitHub App
@@ -198,6 +214,9 @@ key/secret 轮换。Cloudflare 两笔(2026-08-12 增):吊销旧 user token
 - **体验守恒**:staging 自动跟、prod 手动两下,任何批次不得破坏。
 - **行为冻结**:搬迁 PR 不混行为变化;判据仍是契约测试 + 生效路由快照。
 - **单变量**:消费方式变更(W2)与仓库搬迁(W5)不同窗。
+- **生产周边显式化**:"不碰生产"仅对网关生产部署成立;W1/W5 会触碰生产
+  周边(runner、doc 站 Pages、告警 worker、secrets、旧部署入口),每批 PR
+  body 必须列出自己的生产影响面。
 - **staging 先行**,prod 永远最后切。
 - **pin 不浮动**,无例外。
 
@@ -211,7 +230,7 @@ key/secret 轮换。Cloudflare 两笔(2026-08-12 增):吊销旧 user token
 3. `upstream.lock` 为两仓唯一耦合点;bump 门红时 staging 停在旧 pin
    (演练证实);
 4. 升级与两种回滚演练通过;
-5. W8 三项清零。
+5. W8 全部清零(2026-08-12 起为五项:原三项 + Cloudflare 两笔)。
 
 达成后,Step 3 只剩:公开机制拍板(Juncheng)→ 过滤导出
 (`ops/release/public_export.py` 工具链已就绪)→ hybridInference 公开。
