@@ -32,10 +32,6 @@ on:
         description: "Optional frontend reference (empty = leave the current frontend container untouched)"
         type: string
         default: ""
-      allow_sha_mismatch:
-        description: "Deploy even when the image's source revision differs from the host checkout supplying the config mounts (slice 1 default: refuse)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -116,7 +112,6 @@ jobs:
           # Repo-scoped token; grants read on packages published by this
           # repository's workflows (the Build Candidate Images run).
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ALLOW_SHA_MISMATCH: ${{ inputs.allow_sha_mismatch }}
           RUN_ID: ${{ github.run_id }}
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           STAGING_PORT: ${{ secrets.STAGING_PORT || '22' }}
@@ -132,12 +127,23 @@ jobs:
             -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
             -o GlobalKnownHostsFile=/dev/null \
             "${STAGING_USER}@${STAGING_HOST}" \
-            "BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' GHCR_USER='${GHCR_USER}' GHCR_TOKEN='${GHCR_TOKEN}' ALLOW_SHA_MISMATCH='${ALLOW_SHA_MISMATCH}' RUN_ID='${RUN_ID}' bash -s" <<'REMOTE'
+            "BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' GHCR_USER='${GHCR_USER}' GHCR_TOKEN='${GHCR_TOKEN}' RUN_ID='${RUN_ID}' bash -s" <<'REMOTE'
           set -Eeuo pipefail
           cd /srv/hybridInference
 
           echo "[digest-deploy] host arch: $(uname -m); $(docker --version)"
           [ -f .env ] || { echo "[digest-deploy] missing /srv/hybridInference/.env"; exit 1; }
+
+          # The classic deploy resets the checkout before composing; this
+          # path deliberately never resets, so it must refuse a dirty one
+          # instead — same HEAD with edited tracked files means the config
+          # mounts no longer match the revision the image was built from.
+          # Same guard as deploy_staging.sh.
+          if ! git diff --quiet HEAD --; then
+            echo "[digest-deploy] host checkout has uncommitted tracked changes; commit/stash them or run the classic Deploy Staging (which resets):"
+            git status --short | head -20
+            exit 1
+          fi
 
           case "${BACKEND_IMAGE}" in
             *@sha256:*) ;;
@@ -164,8 +170,9 @@ jobs:
 
           # The image carries the code; this checkout supplies the config
           # mounts. Slice 1 exists to prove a packaging-only change, so the
-          # two must agree on the source revision unless the operator says
-          # otherwise (allow_sha_mismatch, for intentional drift only).
+          # two must agree on the source revision — no override. (The
+          # two-repo era replaces this check entirely: there the mounts come
+          # from freeInference and the expectation lives in upstream.lock.)
           host_rev=$(git rev-parse HEAD)
           check_revision() {
             local image="$1" rev
@@ -175,12 +182,8 @@ jobs:
               exit 1
             fi
             if [ "${rev}" != "${host_rev}" ]; then
-              if [ "${ALLOW_SHA_MISMATCH}" = "true" ]; then
-                echo "[digest-deploy] WARNING: ${image} built from ${rev}, host checkout at ${host_rev} (allow_sha_mismatch)"
-              else
-                echo "[digest-deploy] ${image} built from ${rev} but the host checkout (config mounts) is at ${host_rev}; refusing"
-                exit 1
-              fi
+              echo "[digest-deploy] ${image} built from ${rev} but the host checkout (config mounts) is at ${host_rev}; refusing"
+              exit 1
             fi
           }
           check_revision "${BACKEND_IMAGE}"
@@ -247,6 +250,6 @@ jobs:
           fi
 
           mkdir -p var
-          echo "$(date -u +%FT%TZ) run=${RUN_ID} backend=${BACKEND_IMAGE} frontend=${FRONTEND_IMAGE:-unchanged}" >> var/deploy-digest.log
+          echo "$(date -u +%FT%TZ) run=${RUN_ID} source=${host_rev} backend=${BACKEND_IMAGE} frontend=${FRONTEND_IMAGE:-unchanged}" >> var/deploy-digest.log
           echo "[digest-deploy] recorded in var/deploy-digest.log"
           REMOTE
