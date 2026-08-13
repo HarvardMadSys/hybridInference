@@ -308,6 +308,28 @@ describe("trusted envelope and canonical digest", () => {
     expect(envelope.trusted.environment).toBe("staging");
   });
 
+  it("refuses a producer that names the environment its alert is about", () => {
+    // Rejected rather than ignored: silently dropping it would leave a producer
+    // believing it had set the label a responder reads.
+    expect(() =>
+      parseAlertEvent(
+        { ...validEvent(), target_environment: "production" },
+        { now: TEST_NOW },
+      ),
+    ).toThrow(/trusted or Slack-owned field: target_environment/);
+  });
+
+  it("requires trusted metadata to say what the alert is about", () => {
+    const { target_environment: _omitted, ...withoutTarget } = validTrusted();
+
+    expect(() => parseTrustedMetadata(withoutTarget)).toThrow(
+      /target_environment/,
+    );
+    expect(() =>
+      parseTrustedMetadata({ ...validTrusted(), target_environment: "local" }),
+    ).toThrow(/target_environment/);
+  });
+
   it("rejects malformed or incomplete trusted metadata", () => {
     expect(() => parseTrustedMetadata({ ...validTrusted(), environment: "local" })).toThrow(
       /environment/,

@@ -416,4 +416,20 @@ describe("DeploymentRegistry", () => {
     );
     expect(registry.version()).toBe(1);
   });
+
+  it("refuses to re-point an existing record at a different target", async () => {
+    const registry = new InMemoryDeploymentRegistry(verifier([]));
+    await registry.apply(activation());
+
+    // Accepting this would silently relabel every alert the deployment has
+    // already sent and move its incidents to a different Durable Object.
+    await expect(
+      registry.apply(activation({ targetEnvironment: "production" })),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<DeploymentRegistryWriteError>>({
+        code: "deployment_conflict",
+      }),
+    );
+    expect(registry.version()).toBe(1);
+  });
 });
