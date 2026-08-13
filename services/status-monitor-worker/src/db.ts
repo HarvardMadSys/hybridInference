@@ -40,12 +40,17 @@ export interface Snapshot {
 }
 
 /** Inserts the results of one probe cycle. */
-export async function recordResults(db: D1Database, results: ProbeResult[]): Promise<void> {
+export async function recordResults(
+  db: D1Database,
+  results: ProbeResult[],
+  targetEnvironment: string,
+): Promise<void> {
   if (results.length === 0) return;
   const stmt = db.prepare(
     `INSERT INTO probe_results
-       (model_id, ok, latency_ms, ttft_ms, completion_tokens, throughput_tps, error, checked_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (model_id, ok, latency_ms, ttft_ms, completion_tokens, throughput_tps, error,
+        checked_at, target_environment)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   await db.batch(
     results.map((r) =>
@@ -58,6 +63,7 @@ export async function recordResults(db: D1Database, results: ProbeResult[]): Pro
         r.throughputTps,
         r.error,
         r.checkedAt,
+        targetEnvironment,
       ),
     ),
   );
@@ -77,13 +83,23 @@ export async function modelsFailingStreak(
   db: D1Database,
   modelIds: string[],
   threshold: number,
+  targetEnvironment: string,
 ): Promise<Set<string>> {
   const failing = new Set<string>();
   if (modelIds.length === 0 || threshold < 1) return failing;
+  // Scoped to one deployment: this decides whether to page, and a streak that
+  // reached back across the 2026-08-11 cutover would count staging failures
+  // toward a production outage. The window is short, so the mixing only shows
+  // up for a model absent from the catalog long enough for its newest rows to
+  // predate the switch — which is exactly when nobody would think to check.
   const stmt = db.prepare(
-    `SELECT ok FROM probe_results WHERE model_id = ? ORDER BY id DESC LIMIT ?`,
+    `SELECT ok FROM probe_results
+      WHERE model_id = ? AND target_environment = ?
+      ORDER BY id DESC LIMIT ?`,
   );
-  const batched = await db.batch<{ ok: number }>(modelIds.map((id) => stmt.bind(id, threshold)));
+  const batched = await db.batch<{ ok: number }>(
+    modelIds.map((id) => stmt.bind(id, targetEnvironment, threshold)),
+  );
   for (let i = 0; i < modelIds.length; i++) {
     const rows = batched[i].results ?? [];
     if (rows.length >= threshold && rows.every((r) => r.ok === 0)) {
@@ -461,21 +477,30 @@ async function readModelIds(db: D1Database): Promise<string[]> {
  * Builds the dashboard snapshot: the most recent {@link HISTORY_LIMIT} rows per
  * model, with the latest result, a sparkline window, and an uptime ratio.
  */
-export async function getSnapshot(db: D1Database): Promise<Snapshot> {
+export async function getSnapshot(
+  db: D1Database,
+  targetEnvironment: string,
+): Promise<Snapshot> {
   const modelIds = await readModelIds(db);
 
   const byModel = new Map<string, ProbeRow[]>();
   if (modelIds.length > 0) {
-    // Fetch each model's newest HISTORY_LIMIT rows via the (model_id, id DESC)
-    // index — at most HISTORY_LIMIT rows read per model regardless of retention.
+    // Fetch each model's newest HISTORY_LIMIT rows via the
+    // (model_id, target_environment, id DESC) index — at most HISTORY_LIMIT rows
+    // read per model regardless of retention. Scoping to one deployment is what
+    // stops the retained pre-cutover history, which outnumbers the current
+    // deployment's rows many times over, from dominating every chart and uptime
+    // ratio on a page that presents itself as production.
     const stmt = db.prepare(
       `SELECT model_id, ok, latency_ms, ttft_ms, completion_tokens, throughput_tps, error, checked_at
        FROM probe_results
-       WHERE model_id = ?
+       WHERE model_id = ? AND target_environment = ?
        ORDER BY id DESC
        LIMIT ?`,
     );
-    const batched = await db.batch<RawRow>(modelIds.map((id) => stmt.bind(id, HISTORY_LIMIT)));
+    const batched = await db.batch<RawRow>(
+      modelIds.map((id) => stmt.bind(id, targetEnvironment, HISTORY_LIMIT)),
+    );
     for (let i = 0; i < modelIds.length; i++) {
       const rows = batched[i].results ?? [];
       // A model can be listed but have no rows — pruned or reconciled away

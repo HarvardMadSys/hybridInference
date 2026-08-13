@@ -39,27 +39,12 @@ import {
   stormAlertFingerprint,
 } from "./oncall";
 
-/** Local/dev gateway hosts that never indicate a real deployment. */
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
-
-/**
- * Best-effort deployment environment for the gateway the probes run against,
- * derived from its host (mirrors the backend's alert environment detection).
- */
-export function deriveEnvironment(gatewayBaseUrl: string): string {
-  let hostname: string;
-  try {
-    // `.hostname` (not `.host`) excludes the port and keeps IPv6 brackets intact,
-    // so `freeinference.org:8443` still matches and `[::1]` isn't truncated.
-    hostname = new URL(gatewayBaseUrl).hostname.toLowerCase();
-  } catch {
-    return "unknown";
-  }
-  if (!hostname || LOCAL_HOSTS.has(hostname)) return "local";
-  if (hostname.includes("staging")) return "staging";
-  if (hostname.endsWith("freeinference.org")) return "production";
-  return "unknown";
-}
+// Re-exported from `env` so the legacy Slack path and the probe-row label agree
+// on one derivation. Its home moved there when the probed deployment stopped
+// being a rendering detail and became something the Worker records and attests;
+// callers holding a Config should read `config.targetEnvironment` instead of
+// re-deriving it here.
+export { deriveEnvironment } from "./env";
 
 /**
  * Escape Slack mrkdwn control characters in untrusted text.
@@ -74,7 +59,7 @@ export function escapeSlackText(text: string): string {
 }
 
 function header(emoji: string, title: string, config: Config, checkedAt: string): string[] {
-  return [`${emoji} *${title}*`, `_${checkedAt} · ${deriveEnvironment(config.gatewayBaseUrl)}_`, ""];
+  return [`${emoji} *${title}*`, `_${checkedAt} · ${config.targetEnvironment}_`, ""];
 }
 
 /** Slack message for a model that has failed `threshold` consecutive probes. */
@@ -193,7 +178,7 @@ function workerAlertEvent(
 ): CodexAlertEvent {
   return createCodexAlertEvent({
     ...event,
-    environment: deriveEnvironment(config.gatewayBaseUrl),
+    environment: config.targetEnvironment,
   });
 }
 
@@ -469,7 +454,7 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   // Only a model that failed *this* cycle can newly cross the threshold; limiting
   // the streak lookup to those keeps D1 rows_read at threshold × (failed models).
   const failedNow = results.filter((r) => !r.ok).map((r) => r.modelId);
-  const failing = await modelsFailingStreak(env.DB, failedNow, threshold);
+  const failing = await modelsFailingStreak(env.DB, failedNow, threshold, config.targetEnvironment);
   const prevState = await readAlertState(env.DB);
   const { down: candidateDown, recovered: candidateRecovered, baseState } = decideAlerts(
     results,

@@ -38,9 +38,39 @@ export interface Env {
   ALERT_CYCLE_OWNER?: string;
 }
 
+/** Local/dev gateway hosts that never indicate a real deployment. */
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
+
+/**
+ * The deployment this Worker probes, derived from the gateway it is configured
+ * to call.
+ *
+ * This lives beside {@link Config} rather than beside the alerting that first
+ * needed it because it is now the single answer to "which deployment is this
+ * Worker about" — used to label probe rows, to scope health reads, and to prove
+ * the target at deploy time. Deriving it from the configured URL is what keeps
+ * those from drifting apart when the URL moves.
+ */
+export function deriveEnvironment(gatewayBaseUrl: string): string {
+  let hostname: string;
+  try {
+    // `.hostname` (not `.host`) excludes the port and keeps IPv6 brackets intact,
+    // so `freeinference.org:8443` still matches and `[::1]` isn't truncated.
+    hostname = new URL(gatewayBaseUrl).hostname.toLowerCase();
+  } catch {
+    return "unknown";
+  }
+  if (!hostname || LOCAL_HOSTS.has(hostname)) return "local";
+  if (hostname.includes("staging")) return "staging";
+  if (hostname.endsWith("freeinference.org")) return "production";
+  return "unknown";
+}
+
 /** Normalized configuration derived from {@link Env}. */
 export interface Config {
   gatewayBaseUrl: string;
+  /** Which deployment this Worker's probes measure. Never assumed — derived. */
+  targetEnvironment: string;
   probePrompt: string;
   probeMaxTokens: number;
   maxConcurrency: number;
@@ -58,8 +88,13 @@ function intOr(value: string | undefined, fallback: number): number {
 
 /** Builds {@link Config} from raw environment bindings. */
 export function loadConfig(env: Env): Config {
+  const gatewayBaseUrl = (env.GATEWAY_BASE_URL || "https://freeinference.org").replace(
+    /\/+$/,
+    "",
+  );
   return {
-    gatewayBaseUrl: (env.GATEWAY_BASE_URL || "https://freeinference.org").replace(/\/+$/, ""),
+    gatewayBaseUrl,
+    targetEnvironment: deriveEnvironment(gatewayBaseUrl),
     probePrompt:
       env.PROBE_PROMPT ||
       "Write a Python function that implements binary search over a sorted list. " +

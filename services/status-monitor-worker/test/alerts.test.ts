@@ -19,6 +19,7 @@ const VERSION_ID = "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908";
 
 const config = {
   gatewayBaseUrl: "https://staging.freeinference.org",
+  targetEnvironment: "staging",
   probePrompt: "hi",
   probeMaxTokens: 32,
   maxConcurrency: 3,
@@ -206,11 +207,18 @@ class FakeStmt {
     throw new Error(`unhandled run(): ${this.sql}`);
   }
   async all<T>(): Promise<{ results: T[] }> {
-    if (/SELECT ok FROM probe_results WHERE model_id = \? ORDER BY id DESC LIMIT \?/.test(this.sql)) {
+    if (
+      /SELECT ok FROM probe_results\s+WHERE model_id = \? AND target_environment = \?\s+ORDER BY id DESC LIMIT \?/.test(
+        this.sql,
+      )
+    ) {
       const modelId = this.args[0] as string;
-      const limit = this.args[1] as number;
+      const target = this.args[1] as string;
+      const limit = this.args[2] as number;
       const rows = this.db.probe
-        .filter((r) => r.model_id === modelId)
+        .filter(
+          (r) => r.model_id === modelId && (r.target_environment ?? "staging") === target,
+        )
         .sort((a, b) => b.id - a.id)
         .slice(0, limit)
         .map((r) => ({ ok: r.ok }));
@@ -233,7 +241,15 @@ class FakeStmt {
 }
 
 class FakeD1 {
-  probe: Array<{ id: number; model_id: string; ok: number }> = [];
+  // `target_environment` is optional here so seeds written before the column
+  // existed keep meaning what they did; the fake reads them as staging, exactly
+  // as the backfilled rows do.
+  probe: Array<{
+    id: number;
+    model_id: string;
+    ok: number;
+    target_environment?: string;
+  }> = [];
   meta = new Map<string, string>();
   failBatchAfter: number | null = null;
   private seq = 0;

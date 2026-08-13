@@ -145,7 +145,7 @@ async function runProbeCycle(env: Env): Promise<void> {
       return;
     }
 
-    await recordResults(env.DB, results);
+    await recordResults(env.DB, results, config.targetEnvironment);
     await reconcileModels(
       env.DB,
       results.map((r) => r.modelId),
@@ -215,9 +215,12 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
+    // Every read below is scoped to the deployment this Worker probes; the
+    // retained history from before it was repointed belongs to a different one.
+    const config = loadConfig(env);
 
     if (path === "/api/health") {
-      const snap = await getSnapshot(env.DB);
+      const snap = await getSnapshot(env.DB, config.targetEnvironment);
       // Control Plane transitions awaiting acceptance. A probe cycle in flight
       // can legitimately show a transient nonzero (rows exist between creation
       // and the post-delivery batch), so this never flips `ok` — but a value
@@ -242,13 +245,13 @@ export default {
       );
     }
     if (path === "/api/status") {
-      return json(await getSnapshot(env.DB));
+      return json(await getSnapshot(env.DB, config.targetEnvironment));
     }
     if (path === "/") {
-      const snap = await getSnapshot(env.DB);
+      const snap = await getSnapshot(env.DB, config.targetEnvironment);
       let gatewayHost: string | undefined;
       try {
-        gatewayHost = new URL(loadConfig(env).gatewayBaseUrl).host;
+        gatewayHost = new URL(config.gatewayBaseUrl).host;
       } catch {
         gatewayHost = undefined;
       }
