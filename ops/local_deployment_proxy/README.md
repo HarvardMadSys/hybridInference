@@ -229,6 +229,8 @@ Models are defined in `local_deployment_proxy/models.json`:
 |---|---|
 | `kv_cache_dtype` | `--kv-cache-dtype` (default `fp8`, matching FP8 weights) |
 | `vllm_tool_call_parser` | `--tool-call-parser` override when vLLM's parser name differs from sglang's; falls back to `tool_call_parser`. vLLM also gets `--enable-auto-tool-choice` automatically |
+| `vllm_image` | Docker image override (default `vllm/vllm-openai:latest`) — the vLLM twin of `sglang_image`, e.g. a nightly for an architecture the released image doesn't know |
+| `vllm_extra_args` | List of strings appended verbatim to the serve command, after everything else (so they can override an emitted default). E.g. Ministral 3: `["--tokenizer-mode", "mistral", "--limit-mm-per-prompt", "{\"image\": 0}"]`; Qwen3 thinking off by default: `["--default-chat-template-kwargs", "{\"enable_thinking\": false}"]` |
 
 To add a new model, append an entry to `models.json` and restart the proxy.
 

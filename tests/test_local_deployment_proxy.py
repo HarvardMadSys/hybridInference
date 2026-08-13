@@ -3032,6 +3032,70 @@ def test_vllm_generation_default_enables_prefix_cache_reporting(
     assert "--runner" not in cmd
 
 
+def test_vllm_image_override_and_extra_args_appended_last(monkeypatch: Any, tmp_path: Path) -> None:
+    """`vllm_image` swaps the image; `vllm_extra_args` lands verbatim at the end.
+
+    The tail position is load-bearing: vLLM's argparse keeps the final
+    occurrence of a repeated flag, so an extra arg can override a default the
+    builder already emitted.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "ministral-vllm",
+            "engine": "vllm",
+            "gpu_index": "0",
+            "backend_port": 18022,
+            "model_dir": "/tmp/ministral",
+            "served_name": MODEL_NAME,
+            "max_model_len": 32768,
+            "mem_fraction": "0.35",
+            "vllm_image": "vllm/vllm-openai:nightly",
+            "vllm_extra_args": [
+                "--tokenizer-mode",
+                "mistral",
+                "--limit-mm-per-prompt",
+                '{"image": 0}',
+            ],
+        },
+    )
+
+    cmd = backend._vllm_run_cmd("0")
+
+    assert "vllm/vllm-openai:nightly" in cmd
+    assert "vllm/vllm-openai:latest" not in cmd
+    assert cmd[-4:] == [
+        "--tokenizer-mode",
+        "mistral",
+        "--limit-mm-per-prompt",
+        '{"image": 0}',
+    ]
+
+
+def test_vllm_cmd_unchanged_without_image_or_extra_args(monkeypatch: Any, tmp_path: Path) -> None:
+    """Absent both options, the launch keeps the default image and no tail args."""
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "qwen-vllm",
+            "engine": "vllm",
+            "gpu_index": "0",
+            "backend_port": 18001,
+            "model_dir": "/tmp/qwen",
+            "served_name": MODEL_NAME,
+            "max_model_len": 4096,
+            "mem_fraction": "0.80",
+        },
+    )
+
+    cmd = backend._vllm_run_cmd("0")
+
+    assert "vllm/vllm-openai:latest" in cmd
+    assert cmd[-1] == "--enable-prompt-tokens-details"
+
+
 def test_health_endpoint_returns_200_without_api_key(monkeypatch: Any, tmp_path: Path) -> None:
     """Both phases a lazy proxy spends most of its life in answer 200, unauthenticated.
 

@@ -102,6 +102,17 @@ sglang-only knobs (``mtp``, ``mamba``, ``moe_runner_backend``,
 ``attention_backend``, …) are ignored for vLLM backends; see ``_vllm_run_cmd``
 for the vLLM-specific options.
 
+Set ``"vllm_image"`` to pin or swap the vLLM image (default
+``vllm/vllm-openai:latest``) — the vLLM twin of ``sglang_image`` — e.g. a
+nightly for an architecture the released image's transformers does not know.
+``"vllm_extra_args"`` (list of strings) is appended verbatim to the serve
+command, last, so it can also override an emitted default; use it for
+model-specific serving quirks with no dedicated option (Ministral 3 needs
+``["--tokenizer-mode", "mistral", "--limit-mm-per-prompt", "{\\"image\\": 0}"]``
+to serve text-only past a PixtralProcessor crash at startup, Qwen3 takes
+``["--default-chat-template-kwargs", "{\\"enable_thinking\\": false}"]`` to
+default thinking off while per-request opt-in still works).
+
 Set ``"mtp": true`` on a generative model that ships native Multi-Token
 Prediction layers (Qwen3.6 MoE, DeepSeek V3, …) to enable speculative decoding
 via sglang's ``NEXTN`` algorithm. The defaults (1 step, eagle-topk 1, 2 draft
@@ -1489,7 +1500,7 @@ class BackendManager:
             f"{self.backend_port}:8000",
             "-v",
             f"{self.config['model_dir']}:/model:ro",
-            "vllm/vllm-openai:latest",
+            str(self.config.get("vllm_image") or "vllm/vllm-openai:latest"),
             "--model",
             "/model",
             "--served-model-name",
@@ -1530,6 +1541,14 @@ class BackendManager:
             tcp = self.config.get("vllm_tool_call_parser", self.config.get("tool_call_parser"))
             if tcp:
                 cmd += ["--enable-auto-tool-choice", "--tool-call-parser", str(tcp)]
+        # Verbatim escape hatch for model-specific serving quirks that have no
+        # dedicated option (e.g. Ministral 3 needs `--tokenizer-mode mistral
+        # --limit-mm-per-prompt '{"image": 0}'` because the HF-format load path
+        # crashes in PixtralProcessor during startup profiling; Qwen3 takes
+        # `--default-chat-template-kwargs '{"enable_thinking": false}'`).
+        # Appended last so an entry can override an emitted default — vLLM
+        # keeps the final occurrence of a repeated flag.
+        cmd += [str(arg) for arg in self.config.get("vllm_extra_args") or []]
         return cmd
 
     def _hicache_args(self) -> list[str]:
