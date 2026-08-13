@@ -9,13 +9,14 @@
 > 创建:2026-08-03,基于 Murphy 与 Claude 的对话,并吸收另一 agent 会话的
 > 交叉评审(symlink 挂载悬空、拉模式触发、digest 与计划文本的关系)。
 > 修订:2026-08-12,状态对账——W0 已完成、W1 GitHub 侧已完成、§7 行动项已随
-> H4 解决;详见 §0 与各工作项内的进展注记。同日并入四轮交叉评审:W5 删除
+> H4 解决;详见 §0 与各工作项内的进展注记。同日并入五轮交叉评审:W5 删除
 > 时序改判(不与搬迁同批)、W6 增补 prod 观察窗、W7 compose base 来源待拍板
 > (§6-5)与 `/agents` 路由缺口(P1)、判据②改以 public-export **物化树**
 > 为对象、W2 同源硬门(脏检查含 untracked + 无旁路)、W2 砍除 frontend
 > 候选旁支(缺 `AGENT_*` build args 与 cloud-agent 网络,整条留待 W7)、
 > W5c services 表述修正(harness 非 worker,按 §7 拆)、sweep 计数刷新为
-> 18、§5 W8 计数改五项、执行原则新增"生产周边显式化"。
+> 18、§5 W8 计数改五项、执行原则新增"生产周边显式化"、GHCR 认证改判
+> (短期 token + 临时 DOCKER_CONFIG,取消主机持久凭据)。
 
 ## 0. 前提:Step 1 的收官状态(2026-08-12 对账)
 
@@ -119,10 +120,16 @@ staging=dev / prod=main 映射、release tag 节奏、回滚入口。
   (bump bot 与 agents 签 token 用);三组 self-hosted runner 标签
   (`deploy-production`/`deploy-staging`/`deploy-edge`)在新仓注册——runner
   可同机双注册,迁移窗口内两仓并行。
-- GHCR:上游 CI 推镜像用自身 `GITHUB_TOKEN`(packages:write);**部署主机
-  拉私有镜像的只读凭据是今天不存在的新信任链项**(deploy token 或 App 安装
-  令牌,主机 `docker login ghcr.io`)。镜像包 private;Step 3 后 backend 包
-  可转 public。
+- GHCR(2026-08-12 评审第五轮改判,取代原"主机持久只读凭据"方案):
+  上游 CI 推镜像用自身 `GITHUB_TOKEN`(packages:write)。**拉取侧不设任何
+  主机持久凭据**——deploy workflow 以短期 `GITHUB_TOKEN`
+  (`permissions: packages: read`)经 SSH 转发,主机侧在一次性 0700 临时
+  `DOCKER_CONFIG` 里 login+pull,部署毕即销毁(#1258 已按此实现),主机
+  默认 Docker config 全程不被触碰。前提:把 freeInference 加进各 package
+  的 Actions access(read)——package 随首个 candidate push 才存在,该授权
+  排在 W4(W2 期间同仓,`GITHUB_TOKEN` 天然有权,无此前提)。镜像包
+  private;Step 3 后 backend 包转 public,login 步骤整个删除。回滚兜底:
+  按 digest 回滚优先命中主机本地 daemon 缓存,不依赖 registry 可达。
 - Cloudflare:Pages 项目 `freeinference-doc` 的 Git 集成切到新仓
   (main=生产、dev=preview 不变;有 2026-07-27 双目录过渡的先例可循);
   workers 部署所需 CF token/OIDC 进新仓 Environments。
@@ -136,8 +143,12 @@ Environments 已建;secrets 已迁(production 6/6;staging 6/8,缺
 GitHub App 均已 org 所有(production App 4436566 已自个人账户转移)且安装
 范围覆盖新仓;Murphy 已获 repo admin。Cloudflare 凭据为新铸的 **Account
 Token**(Workers Scripts/D1 Edit + `freeinference.org` Workers Routes;
-Murphy 的 CF 角色铸不出所需权限,由 Juncheng 创建)。待办:runner 双注册、
-主机 checkout + deploy key;GHCR 拉取凭据等 W2 发出首个镜像时一并办理。
+Murphy 的 CF 角色铸不出所需权限,由 Juncheng 创建)。待办:runner 双注册;
+主机 checkout 及其认证——deploy key 现计 0 把,若 org 策略不允 deploy
+key,备选 = App installation token(App 安装已覆盖新仓)或 runner 侧
+rsync(主机彻底免 Git 凭据,与 GHCR 短期凭据同一哲学),主机侧 W1 动工时
+定。GHCR 拉取凭据一项按上条改判**取消**,代之以 W4 的 package Actions
+access 授权。
 
 ### W2 同仓复活 #1044:backend digest 旁路(staging)
 
@@ -147,12 +158,14 @@ candidate 镜像推 GHCR(首个 candidate 钉 staging 当前 SHA——同代码�
 源码部署链保留为回滚。验收 = smoke 通过 + 一次回滚演练。**在同仓完成,不与
 搬迁混窗**(单变量原则)。
 
-同源为硬门(2026-08-12 评审第三轮定稿):镜像的
+同源为硬门(2026-08-12 评审第三、四轮定稿):镜像的
 `org.opencontainers.image.revision` label 必须等于主机 checkout 的 HEAD,
-且 checkout 必须干净(`git diff --quiet HEAD --`,与 classic deploy 同款
-守卫)——两项均无旁路开关(评审后移除了 `allow_sha_mismatch`);部署日志
-记录 source 与 digest。复活 PR = #1258(build-candidates + digest deploy,
-双 workflow 均 dispatch-only)。
+且 checkout 必须干净——判据是 `git status --porcelain=v1
+--untracked-files=all` 为空,tracked 改动与 untracked 新文件都算脏;
+ignored 的 `.env`、`var/**` 属预期主机状态,不在拒脏范围。两项均无旁路
+开关(评审后移除了 `allow_sha_mismatch`);部署日志记录 source 与
+digest。复活 PR = #1258(build-candidates + digest deploy,双 workflow
+均 dispatch-only,backend-only)。
 
 ### W3 归属清单重生成
 
