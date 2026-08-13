@@ -24,7 +24,10 @@ on:
     inputs:
       platform:
         description: "Image platform; must match the staging host (the digest deploy logs its uname -m)"
-        type: string
+        type: choice
+        options:
+          - linux/amd64
+          - linux/arm64
         default: linux/amd64
 
 permissions:
@@ -44,6 +47,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      # The choice type constrains the UI and the dispatch API both, but the
+      # value still lands in shell via the summary step, so gate it in shell
+      # too — from an env var, never a ${{ }} splice into run:. This runs
+      # before checkout and login: nothing else may touch a bad input first.
+      - name: Validate platform input
+        env:
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          case "${PLATFORM}" in
+            linux/amd64|linux/arm64) ;;
+            *) echo "::error title=Bad input::platform must be linux/amd64 or linux/arm64"; exit 1 ;;
+          esac
+
       - uses: actions/checkout@v6
 
       - name: Compute image names
@@ -89,12 +106,13 @@ jobs:
       - name: Candidate summary
         env:
           BACKEND_DIGEST: ${{ steps.backend.outputs.digest }}
+          PLATFORM: ${{ inputs.platform }}
         run: |
           {
             echo "## Candidate images"
             echo ""
             echo "- source SHA: \`${GITHUB_SHA}\`"
-            echo "- platform: \`${{ inputs.platform }}\`"
+            echo "- platform: \`${PLATFORM}\`"
             echo "- backend: \`${{ steps.names.outputs.backend }}@${BACKEND_DIGEST}\`"
             echo ""
             echo "Deploy: Actions -> Deploy Staging by Digest -> paste the full image@sha256 reference."

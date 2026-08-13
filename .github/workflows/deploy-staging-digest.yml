@@ -118,7 +118,19 @@ jobs:
             "${STAGING_USER}@${STAGING_HOST}" \
             "BACKEND_IMAGE='${BACKEND_IMAGE}' GHCR_USER='${GHCR_USER}' GHCR_TOKEN='${GHCR_TOKEN}' RUN_ID='${RUN_ID}' bash -s" <<'REMOTE'
           set -Eeuo pipefail
+
+          # Self-heal the checkout's trust and ownership first, same as the
+          # classic deploy: a git or install command accidentally run as root
+          # leaves files another user owns, which fails every git command
+          # below and would wedge the digest path on `git status` forever.
+          # `sudo -n` never prompts; without passwordless sudo the reclaim is
+          # skipped and the real git error still surfaces, so it only helps.
+          git config --global --get-all safe.directory 2>/dev/null \
+            | grep -qxF /srv/hybridInference \
+            || git config --global --add safe.directory /srv/hybridInference
           cd /srv/hybridInference
+          sudo -n chown -R "$(id -un)" /srv/hybridInference 2>/dev/null \
+            || echo "[digest-deploy] ownership reclaim skipped (no passwordless sudo?); continuing"
 
           echo "[digest-deploy] host arch: $(uname -m); $(docker --version)"
           [ -f .env ] || { echo "[digest-deploy] missing /srv/hybridInference/.env"; exit 1; }
@@ -154,7 +166,7 @@ jobs:
           trap 'rm -rf "${docker_cfg}"' EXIT
           printf '%s' "${GHCR_TOKEN}" | DOCKER_CONFIG="${docker_cfg}" docker login ghcr.io -u "${GHCR_USER}" --password-stdin
           DOCKER_CONFIG="${docker_cfg}" docker pull "${BACKEND_IMAGE}"
-          files="-f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.digest-backend.yml"
+          files=(-f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.digest-backend.yml)
 
           # The image carries the code; this checkout supplies the config
           # mounts. Slice 1 exists to prove a packaging-only change, so the
@@ -162,6 +174,17 @@ jobs:
           # two-repo era replaces this check entirely: there the mounts come
           # from freeInference and the expectation lives in upstream.lock.)
           host_rev=$(git rev-parse HEAD)
+
+          # Classic staging only ever deploys dev; the digest path must not
+          # become a quiet bypass for shipping arbitrary refs. The image is
+          # pinned to HEAD by the revision gate below, so anchoring HEAD to
+          # origin/dev anchors the image too.
+          git fetch --quiet origin dev
+          if ! git merge-base --is-ancestor "${host_rev}" origin/dev; then
+            echo "[digest-deploy] host checkout ${host_rev} is not an ancestor of origin/dev; refusing"
+            exit 1
+          fi
+
           check_revision() {
             local image="$1" rev
             rev=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${image}")
@@ -184,27 +207,26 @@ jobs:
           # without both, it would restart a neutral gateway on staging's
           # DNS. Single-distribution host layout, like the Makefile's
           # auto-discovery.
-          overlay_envs=""
+          overlay_envs=()
           for f in distributions/*/deploy/*.env; do
             [ -e "${f}" ] || continue
-            overlay_envs="${overlay_envs} --env-file ${f}"
+            overlay_envs+=(--env-file "${f}")
           done
-          if [ -z "${overlay_envs}" ]; then
+          if [ "${#overlay_envs[@]}" -eq 0 ]; then
             echo "[digest-deploy] no overlay env-files under distributions/*/deploy/ — refusing a neutral restart"
             exit 1
           fi
-          staging_envs=""
+          staging_envs=()
           for f in distributions/*/deploy/staging/*.env; do
             [ -e "${f}" ] || continue
-            staging_envs="${staging_envs} --env-file ${f}"
+            staging_envs+=(--env-file "${f}")
           done
-          if [ -z "${staging_envs}" ]; then
+          if [ "${#staging_envs[@]}" -eq 0 ]; then
             echo "[digest-deploy] no staging env layer under distributions/*/deploy/staging/ — the shared layer would label staging as production; refusing"
             exit 1
           fi
 
-          # shellcheck disable=SC2086
-          docker compose ${files} ${overlay_envs} ${staging_envs} --env-file .env up -d --no-build backend
+          docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env up -d --no-build backend
 
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
@@ -213,8 +235,7 @@ jobs:
             fi
             if [ "$i" = 30 ]; then
               echo "[digest-deploy] backend health check failed"
-              # shellcheck disable=SC2086
-              docker compose ${files} ${overlay_envs} ${staging_envs} --env-file .env logs --tail=80 backend || true
+              docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env logs --tail=80 backend || true
               exit 1
             fi
             sleep 2
