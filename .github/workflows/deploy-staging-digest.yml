@@ -28,10 +28,6 @@ on:
         description: "Full reference: ghcr.io/<owner>/hybridinference-backend@sha256:..."
         type: string
         required: true
-      frontend_image:
-        description: "Optional frontend reference (empty = leave the current frontend container untouched)"
-        type: string
-        default: ""
 
 permissions:
   contents: read
@@ -49,28 +45,22 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # Two gates in one. Injection: the references get spliced into the
+      # Two gates in one. Injection: the reference gets spliced into the
       # remote SSH command below, and this character class admits no quotes,
       # spaces, or shell metacharacters, so a crafted input cannot break out
-      # of its quoting on the staging host. Allowlist: only the two packages
+      # of its quoting on the staging host. Allowlist: only the one package
       # this repository's Build Candidate Images run publishes — an arbitrary
       # ghcr.io image would be handed staging's secrets, database and
-      # writable mounts. (Package names move with the repo owner; revisit
+      # writable mounts. (The package name moves with the repo owner; revisit
       # when this workflow migrates to the freeInference repository.)
       - name: Validate dispatch inputs
         env:
           BACKEND_IMAGE: ${{ inputs.backend_image }}
-          FRONTEND_IMAGE: ${{ inputs.frontend_image }}
         run: |
           set -euo pipefail
           re_backend='^ghcr\.io/harvardmadsys/hybridinference-backend@sha256:[0-9a-f]{64}$'
-          re_frontend='^ghcr\.io/harvardmadsys/hybridinference-frontend@sha256:[0-9a-f]{64}$'
           if ! [[ "${BACKEND_IMAGE}" =~ ${re_backend} ]]; then
             echo "::error title=Bad input::backend_image must be ghcr.io/harvardmadsys/hybridinference-backend pinned by @sha256 digest"
-            exit 1
-          fi
-          if [ -n "${FRONTEND_IMAGE}" ] && ! [[ "${FRONTEND_IMAGE}" =~ ${re_frontend} ]]; then
-            echo "::error title=Bad input::frontend_image must be ghcr.io/harvardmadsys/hybridinference-frontend pinned by @sha256 digest"
             exit 1
           fi
 
@@ -107,7 +97,6 @@ jobs:
       - name: Deploy digests on staging host
         env:
           BACKEND_IMAGE: ${{ inputs.backend_image }}
-          FRONTEND_IMAGE: ${{ inputs.frontend_image }}
           GHCR_USER: ${{ github.actor }}
           # Repo-scoped token; grants read on packages published by this
           # repository's workflows (the Build Candidate Images run).
@@ -127,7 +116,7 @@ jobs:
             -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
             -o GlobalKnownHostsFile=/dev/null \
             "${STAGING_USER}@${STAGING_HOST}" \
-            "BACKEND_IMAGE='${BACKEND_IMAGE}' FRONTEND_IMAGE='${FRONTEND_IMAGE}' GHCR_USER='${GHCR_USER}' GHCR_TOKEN='${GHCR_TOKEN}' RUN_ID='${RUN_ID}' bash -s" <<'REMOTE'
+            "BACKEND_IMAGE='${BACKEND_IMAGE}' GHCR_USER='${GHCR_USER}' GHCR_TOKEN='${GHCR_TOKEN}' RUN_ID='${RUN_ID}' bash -s" <<'REMOTE'
           set -Eeuo pipefail
           cd /srv/hybridInference
 
@@ -136,12 +125,15 @@ jobs:
 
           # The classic deploy resets the checkout before composing; this
           # path deliberately never resets, so it must refuse a dirty one
-          # instead — same HEAD with edited tracked files means the config
+          # instead — same HEAD with edited or extra files means the config
           # mounts no longer match the revision the image was built from.
-          # Same guard as deploy_staging.sh.
-          if ! git diff --quiet HEAD --; then
-            echo "[digest-deploy] host checkout has uncommitted tracked changes; commit/stash them or run the classic Deploy Staging (which resets):"
-            git status --short | head -20
+          # Porcelain with untracked included (diff alone misses a stray
+          # file riding into the mounts); ignored files (.env, var/) stay
+          # exempt by construction.
+          dirty="$(git status --porcelain=v1 --untracked-files=all)"
+          if [ -n "${dirty}" ]; then
+            echo "[digest-deploy] host checkout is not clean; commit/stash/remove these or run the classic Deploy Staging (which resets):"
+            printf '%s\n' "${dirty}" | sed -n '1,20p'
             exit 1
           fi
 
@@ -149,24 +141,12 @@ jobs:
             *@sha256:*) ;;
             *) echo "[digest-deploy] backend_image must be pinned by @sha256 digest"; exit 1 ;;
           esac
-          if [ -n "${FRONTEND_IMAGE}" ]; then
-            case "${FRONTEND_IMAGE}" in
-              *@sha256:*) ;;
-              *) echo "[digest-deploy] frontend_image must be pinned by @sha256 digest"; exit 1 ;;
-            esac
-          fi
 
           printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
           trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
 
           docker pull "${BACKEND_IMAGE}"
           files="-f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.digest-backend.yml"
-          services="backend"
-          if [ -n "${FRONTEND_IMAGE}" ]; then
-            docker pull "${FRONTEND_IMAGE}"
-            files="${files} -f deploy/docker/docker-compose.digest-frontend.yml"
-            services="${services} frontend"
-          fi
 
           # The image carries the code; this checkout supplies the config
           # mounts. Slice 1 exists to prove a packaging-only change, so the
@@ -187,9 +167,6 @@ jobs:
             fi
           }
           check_revision "${BACKEND_IMAGE}"
-          if [ -n "${FRONTEND_IMAGE}" ]; then
-            check_revision "${FRONTEND_IMAGE}"
-          fi
 
           # Same env-file layering as the classic staging deploy: shared
           # distribution layer, then the staging layer (deploy_staging.sh
@@ -219,7 +196,7 @@ jobs:
           fi
 
           # shellcheck disable=SC2086
-          docker compose ${files} ${overlay_envs} ${staging_envs} --env-file .env up -d --no-build ${services}
+          docker compose ${files} ${overlay_envs} ${staging_envs} --env-file .env up -d --no-build backend
 
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
@@ -235,21 +212,7 @@ jobs:
             sleep 2
           done
 
-          if [ -n "${FRONTEND_IMAGE}" ]; then
-            for i in $(seq 1 30); do
-              if curl -fsS http://127.0.0.1:3001/ >/dev/null 2>&1; then
-                echo "[digest-deploy] frontend healthy"
-                break
-              fi
-              if [ "$i" = 30 ]; then
-                echo "[digest-deploy] frontend health check failed"
-                exit 1
-              fi
-              sleep 2
-            done
-          fi
-
           mkdir -p var
-          echo "$(date -u +%FT%TZ) run=${RUN_ID} source=${host_rev} backend=${BACKEND_IMAGE} frontend=${FRONTEND_IMAGE:-unchanged}" >> var/deploy-digest.log
+          echo "$(date -u +%FT%TZ) run=${RUN_ID} source=${host_rev} backend=${BACKEND_IMAGE}" >> var/deploy-digest.log
           echo "[digest-deploy] recorded in var/deploy-digest.log"
           REMOTE

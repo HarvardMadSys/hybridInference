@@ -1,9 +1,9 @@
 name: Build Candidate Images
 
 # Staging artifact-consumer chain, slice 1 (route (b)-minimal):
-# build backend (and optionally frontend) images from the current source
-# and push them to GHCR so staging can deploy by immutable digest instead
-# of building from a source checkout.
+# build the backend image from the current source and push it to GHCR so
+# staging can deploy by immutable digest instead of building from a
+# source checkout.
 #
 # Manual-only: nothing builds or publishes automatically. This slice
 # deliberately does NOT add a release manifest, signing, or attestation —
@@ -12,12 +12,12 @@ name: Build Candidate Images
 # First run: dispatch this at the exact SHA staging currently runs, so the
 # digest deploy that follows is provably a packaging-only change.
 #
-# Frontend parity caveat: the frontend Dockerfile takes ~25 NEXT_PUBLIC_*
-# build args whose staging values live in the staging host's .env and are
-# injected by compose at build time. A CI build cannot see them, so a
-# frontend candidate bakes the compose-file defaults and is NOT
-# parity-safe for staging until that is settled. It is therefore behind
-# an input flag and off by default; slice 1 is the backend chain.
+# Backend only. A frontend candidate is deliberately not offered: the
+# frontend bakes its identity at build time — ~25 NEXT_PUBLIC_* values,
+# and the /agents rewrites from AGENT_*_INTERNAL_URL — none of which a CI
+# build can see, and the digest deploy attaches no cloud-agent network for
+# those rewrites to resolve into. The frontend digest path arrives with W7
+# (runtime branding), not before.
 
 on:
   workflow_dispatch:
@@ -26,10 +26,6 @@ on:
         description: "Image platform; must match the staging host (the digest deploy logs its uname -m)"
         type: string
         default: linux/amd64
-      build_frontend:
-        description: "Also build a frontend candidate (bakes default NEXT_PUBLIC_* values; see header)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -55,7 +51,6 @@ jobs:
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           echo "backend=ghcr.io/${owner}/hybridinference-backend" >> "$GITHUB_OUTPUT"
-          echo "frontend=ghcr.io/${owner}/hybridinference-frontend" >> "$GITHUB_OUTPUT"
           echo "shortsha=${GITHUB_SHA:0:8}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
@@ -91,24 +86,9 @@ jobs:
           secrets: |
             github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
 
-      - name: Build and push frontend
-        if: ${{ inputs.build_frontend }}
-        id: frontend
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/docker/Dockerfile.frontend
-          platforms: ${{ inputs.platform }}
-          push: true
-          tags: ${{ steps.names.outputs.frontend }}:dev-${{ steps.names.outputs.shortsha }}
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-
       - name: Candidate summary
         env:
           BACKEND_DIGEST: ${{ steps.backend.outputs.digest }}
-          FRONTEND_DIGEST: ${{ steps.frontend.outputs.digest }}
         run: |
           {
             echo "## Candidate images"
@@ -116,9 +96,6 @@ jobs:
             echo "- source SHA: \`${GITHUB_SHA}\`"
             echo "- platform: \`${{ inputs.platform }}\`"
             echo "- backend: \`${{ steps.names.outputs.backend }}@${BACKEND_DIGEST}\`"
-            if [ -n "${FRONTEND_DIGEST}" ]; then
-              echo "- frontend: \`${{ steps.names.outputs.frontend }}@${FRONTEND_DIGEST}\`"
-            fi
             echo ""
             echo "Deploy: Actions -> Deploy Staging by Digest -> paste the full image@sha256 reference."
             echo "Record kept on the staging host in var/deploy-digest.log."
