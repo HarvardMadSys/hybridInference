@@ -10,6 +10,7 @@ import {
 const VERSION_ID = "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908";
 const deployment: TrustedDeploymentMetadata = {
   environment: "staging",
+  targetEnvironment: "staging",
   service: "status-monitor",
   deploymentId: VERSION_ID,
   artifactDigest: `sha256:${"b".repeat(64)}`,
@@ -127,8 +128,9 @@ describe("status-monitor role RPC", () => {
     expect(digest).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(envelope.trusted).toEqual({
       environment: "staging",
+      target_environment: "staging",
       source: "status-monitor",
-      principal: "staging-monitor",
+      principal: "status-monitor-staging",
       deployment_id: VERSION_ID,
       deployment_sha: deployment.deploymentSha,
       artifact_digest: deployment.artifactDigest,

@@ -142,6 +142,7 @@ describe("incident route HMAC", () => {
       },
       {
         environment: "staging",
+        target_environment: "staging",
         source: "gateway",
         principal: "staging-gateway",
         deployment_id: "gateway-1",

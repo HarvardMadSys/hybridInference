@@ -13,6 +13,7 @@ import type { StagingIngressConfig } from "../src/runtime-config";
 const NOW = Date.now();
 const deployment: TrustedDeploymentMetadata = {
   environment: "staging",
+  targetEnvironment: "staging",
   service: "synthetic-alert-producer",
   deploymentId: "run-123-attempt-1",
   artifactDigest: `sha256:${"a".repeat(64)}`,
@@ -87,6 +88,7 @@ function activateRequest(): Request {
           artifact_digest: deployment.artifactDigest,
         },
         deployment_sha: deployment.deploymentSha,
+        target_environment: "staging",
         activated_at: deployment.activatedAt,
         source: "gateway",
         principal: "staging-synthetic",
@@ -200,9 +202,10 @@ describe("deployment registry runtime", () => {
             artifact_digest: statusDeployment.artifactDigest,
           },
           deployment_sha: statusDeployment.deploymentSha,
+          target_environment: "staging",
           activated_at: statusDeployment.activatedAt,
           source: "status-monitor",
-          principal: "staging-monitor",
+          principal: "status-monitor-staging",
         }),
       }),
       config(registryNamespace),

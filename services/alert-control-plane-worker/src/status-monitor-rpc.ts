@@ -17,18 +17,22 @@ import type {
   AlertEvent,
   CanonicalAlertEnvelope,
   TrustedAlertMetadata,
+  TrustedEnvironment,
 } from "./types";
 import {
   canonicalEventDigest,
   createCanonicalEnvelope,
   ValidationError,
 } from "./validation";
+import {
+  isStatusMonitorTarget,
+  statusMonitorPrincipalFor,
+  STATUS_MONITOR_ENVIRONMENT,
+  STATUS_MONITOR_SERVICE,
+  STATUS_MONITOR_SOURCE,
+} from "./status-monitor-identity";
 
 const MAX_STATUS_MONITOR_BODY_BYTES = 64 * 1024;
-const STATUS_MONITOR_ENVIRONMENT = "staging";
-const STATUS_MONITOR_SERVICE = "status-monitor";
-const STATUS_MONITOR_SOURCE = "status-monitor";
-const STATUS_MONITOR_PRINCIPAL = "staging-monitor";
 /** The only alert types this role may open incidents for. */
 const STATUS_MONITOR_ALERT_TYPES: ReadonlySet<string> = new Set([
   "model_unavailable",
@@ -122,13 +126,40 @@ function parseEventBody(bodyJson: unknown): unknown {
   }
 }
 
+/**
+ * Resolve what a monitor deployment watches, tolerating records written before
+ * the field existed.
+ *
+ * A pre-split record can only be the single monitor that ran when the trust
+ * domain and the subject were the same field, so falling back to `environment`
+ * restores exactly what it used to report. That keeps alerts flowing — and
+ * incident identity stable — between deploying this control plane and the
+ * monitor's next attestation, which is when the label actually changes.
+ */
+function targetEnvironment(
+  deployment: TrustedDeploymentMetadata,
+): TrustedEnvironment {
+  const target = deployment.targetEnvironment ?? deployment.environment;
+  if (!isStatusMonitorTarget(target)) {
+    throw new DeploymentLookupError("deployment_mismatch");
+  }
+  return target;
+}
+
 function trustedMetadata(
   deployment: TrustedDeploymentMetadata,
 ): TrustedAlertMetadata {
+  const target = targetEnvironment(deployment);
   return {
-    environment: "staging",
+    // The producer's trust domain, fixed by which pipeline attested it. Not the
+    // environment a responder should read — that is `target_environment`.
+    environment: STATUS_MONITOR_ENVIRONMENT,
+    target_environment: target,
     source: STATUS_MONITOR_SOURCE,
-    principal: STATUS_MONITOR_PRINCIPAL,
+    // Derived, not stored: registration proves the target and this reproduces
+    // the same mapping it validated, so a record can never carry a principal
+    // that disagrees with what it watches.
+    principal: statusMonitorPrincipalFor(target),
     deployment_id: deployment.deploymentId,
     deployment_sha: deployment.deploymentSha,
     artifact_digest: deployment.artifactDigest,

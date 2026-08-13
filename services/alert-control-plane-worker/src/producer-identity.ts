@@ -169,8 +169,18 @@ export async function authenticateProducer(
   }
   if (deployment.registryVersion !== registryVersion) return null;
 
+  // Taken from the registry record, never from the capability token: the token
+  // is what the producer presents, and a producer may not choose the environment
+  // its alerts are attributed to. Records predating the field fall back to the
+  // trust domain, which is what this path has always reported.
+  const targetEnvironment = deployment.targetEnvironment ?? environment;
+  if (targetEnvironment !== "staging" && targetEnvironment !== "production") {
+    return null;
+  }
+
   return {
     environment,
+    target_environment: targetEnvironment,
     source,
     principal,
     deployment_id: deployment.deploymentId,

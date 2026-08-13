@@ -19,6 +19,17 @@ export type DeploymentIdentity = Pick<
 
 export interface TrustedDeploymentMetadata extends DeploymentKey {
   readonly deploymentSha: string;
+  /**
+   * The deployment this producer reports *about*, attested alongside the SHA at
+   * activation. Deliberately not part of {@link DeploymentKey}: the key is
+   * identity, and what a producer watches is an attribute of it.
+   *
+   * `null` on records written before the field existed. Callers that need a
+   * concrete environment fall back to `environment`, which reproduces the old
+   * behaviour exactly; registration refuses the omission for producers that
+   * require it, so `null` can only ever mean "predates the split".
+   */
+  readonly targetEnvironment: string | null;
   readonly activatedAt: number;
   readonly retiredAt: number | null;
   readonly registryVersion: number;
@@ -109,12 +120,26 @@ class SqlRegistryRepository implements RegistryRepository {
           deployment_id TEXT NOT NULL,
           artifact_digest TEXT NOT NULL,
           deployment_sha TEXT NOT NULL,
+          target_environment TEXT,
           activated_at INTEGER NOT NULL,
           retired_at INTEGER,
           registry_version INTEGER NOT NULL,
           PRIMARY KEY (environment, service, deployment_id, artifact_digest)
         ) WITHOUT ROWID
       `);
+      // `CREATE TABLE IF NOT EXISTS` is a no-op against an existing table, so a
+      // column added after the first release needs its own idempotent step.
+      // `target_environment` is outside the primary key, which is what makes
+      // this a plain ADD COLUMN rather than the rebuild a key change would
+      // force on a WITHOUT ROWID table.
+      const columns = storage.sql
+        .exec<{ name: string }>(`PRAGMA table_info(deployment_registry)`)
+        .toArray();
+      if (!columns.some((column) => column.name === "target_environment")) {
+        storage.sql.exec(
+          `ALTER TABLE deployment_registry ADD COLUMN target_environment TEXT`,
+        );
+      }
       storage.sql.exec(`
         CREATE INDEX IF NOT EXISTS deployment_registry_deployment_id
         ON deployment_registry (deployment_id)
@@ -140,7 +165,8 @@ class SqlRegistryRepository implements RegistryRepository {
     const rows = this.storage.sql
       .exec<Record<string, SqlValue>>(
         `SELECT environment, service, deployment_id, artifact_digest,
-                deployment_sha, activated_at, retired_at, registry_version
+                deployment_sha, target_environment, activated_at, retired_at,
+                registry_version
          FROM deployment_registry
          WHERE environment = ? AND service = ? AND deployment_id = ?
            AND artifact_digest = ?
@@ -160,7 +186,8 @@ class SqlRegistryRepository implements RegistryRepository {
     const rows = this.storage.sql
       .exec<Record<string, SqlValue>>(
         `SELECT environment, service, deployment_id, artifact_digest,
-                deployment_sha, activated_at, retired_at, registry_version
+                deployment_sha, target_environment, activated_at, retired_at,
+                registry_version
          FROM deployment_registry
          WHERE deployment_id = ?
          ORDER BY registry_version DESC
@@ -189,13 +216,14 @@ class SqlRegistryRepository implements RegistryRepository {
     this.storage.sql.exec(
       `INSERT INTO deployment_registry (
          environment, service, deployment_id, artifact_digest, deployment_sha,
-         activated_at, retired_at, registry_version
-       ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
+         target_environment, activated_at, retired_at, registry_version
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       record.environment,
       record.service,
       record.deploymentId,
       record.artifactDigest,
       record.deploymentSha,
+      record.targetEnvironment,
       record.activatedAt,
       record.registryVersion,
     );
@@ -464,8 +492,14 @@ class DeploymentRegistryCore<Attestation> {
       if (exact.retiredAt !== null) {
         throw new DeploymentRegistryWriteError("deployment_retired");
       }
+      // A record is immutable once written, so a retry may restate it but never
+      // revise it. `targetEnvironment` belongs in this check for the same reason
+      // the SHA does: the same deployment silently re-pointed at a different
+      // gateway would relabel every alert it has already sent and move its
+      // incidents to a different Durable Object.
       if (
         exact.deploymentSha !== deployment.deploymentSha ||
+        exact.targetEnvironment !== deployment.targetEnvironment ||
         exact.activatedAt !== deployment.activatedAt
       ) {
         throw new DeploymentRegistryWriteError("deployment_conflict");
@@ -639,6 +673,7 @@ function deploymentFromRow(
     deploymentId: stringColumn(row, "deployment_id"),
     artifactDigest: stringColumn(row, "artifact_digest"),
     deploymentSha: stringColumn(row, "deployment_sha"),
+    targetEnvironment: nullableStringColumn(row, "target_environment"),
     activatedAt: numberColumn(row, "activated_at"),
     retiredAt: nullableNumberColumn(row, "retired_at"),
     registryVersion: numberColumn(row, "registry_version"),
@@ -673,6 +708,17 @@ function nullableNumberColumn(
 ): number | null {
   const value = row[column];
   if (value !== null && typeof value !== "number") {
+    throw new Error(`invalid registry row: ${column}`);
+  }
+  return value;
+}
+
+function nullableStringColumn(
+  row: Record<string, SqlValue>,
+  column: string,
+): string | null {
+  const value = row[column];
+  if (value !== null && typeof value !== "string") {
     throw new Error(`invalid registry row: ${column}`);
   }
   return value;

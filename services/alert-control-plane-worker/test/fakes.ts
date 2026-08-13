@@ -39,6 +39,7 @@ export function envelope(
     },
     trusted: {
       environment: "staging",
+      target_environment: "staging",
       source: "gateway",
       principal: "staging-gateway",
       deployment_id: "deploy-1",

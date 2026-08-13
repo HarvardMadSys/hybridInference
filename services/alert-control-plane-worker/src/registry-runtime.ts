@@ -22,7 +22,13 @@ import {
   type RuntimeEnvironment,
   type StagingIngressConfig,
 } from "./runtime-config";
-import type { TrustedSource } from "./types";
+import {
+  isStatusMonitorTarget,
+  statusMonitorPrincipalFor,
+  STATUS_MONITOR_SERVICE,
+  STATUS_MONITOR_SOURCE,
+} from "./status-monitor-identity";
+import type { TrustedEnvironment, TrustedSource } from "./types";
 
 const MAX_ATTESTATION_BODY_BYTES = 32 * 1024;
 const SERVICE_RE = /^[a-z][a-z0-9-]{0,127}$/;
@@ -32,9 +38,13 @@ const FULL_SHA_RE = /^[a-f0-9]{40}$/;
 const STAGING_SYNTHETIC_SERVICE = "synthetic-alert-producer";
 const STAGING_SYNTHETIC_SOURCE: TrustedSource = "gateway";
 const STAGING_SYNTHETIC_PRINCIPAL = "staging-synthetic";
-const STATUS_MONITOR_SERVICE = "status-monitor";
-const STATUS_MONITOR_SOURCE: TrustedSource = "status-monitor";
-const STATUS_MONITOR_PRINCIPAL = "staging-monitor";
+/**
+ * The synthetic producer exercises the staging deployment against itself, so it
+ * is one of the producers whose trust domain and subject genuinely coincide. It
+ * still states its target explicitly rather than defaulting: an omission here
+ * would be indistinguishable from a producer that forgot.
+ */
+const STAGING_SYNTHETIC_TARGET: TrustedEnvironment = "staging";
 
 interface PublicActivateRequest {
   readonly action: "activate";
@@ -115,19 +125,33 @@ function parsePublicAttestation(value: unknown): PublicAttestationRequest {
       "action",
       "deployment",
       "deployment_sha",
+      "target_environment",
       "activated_at",
       "source",
       "principal",
     ]);
     const key = deploymentKey(input.deployment);
+    // `local` and `unknown` are what `deriveEnvironment` returns for a host it
+    // cannot place. Letting either through would register a deployment whose
+    // alerts name an environment nobody operates, so the attestation fails here
+    // rather than at page time.
+    if (!isStatusMonitorTarget(input.target_environment)) {
+      throw new DeploymentRegistryWriteError("invalid_attestation");
+    }
+    const target: TrustedEnvironment = input.target_environment;
     const synthetic =
       key.service === STAGING_SYNTHETIC_SERVICE &&
       input.source === STAGING_SYNTHETIC_SOURCE &&
-      input.principal === STAGING_SYNTHETIC_PRINCIPAL;
+      input.principal === STAGING_SYNTHETIC_PRINCIPAL &&
+      target === STAGING_SYNTHETIC_TARGET;
+    // The principal is a function of the target, so an activation that names one
+    // without the other is rejected instead of quietly picking a winner. This is
+    // what makes a monitor instance's quota bucket and incident namespace follow
+    // the gateway it actually watches.
     const statusMonitor =
       key.service === STATUS_MONITOR_SERVICE &&
       input.source === STATUS_MONITOR_SOURCE &&
-      input.principal === STATUS_MONITOR_PRINCIPAL;
+      input.principal === statusMonitorPrincipalFor(target);
     if (!synthetic && !statusMonitor) {
       throw new DeploymentRegistryWriteError("invalid_attestation");
     }
@@ -138,6 +162,7 @@ function parsePublicAttestation(value: unknown): PublicAttestationRequest {
         deployment: {
           ...key,
           deploymentSha: stringField(input.deployment_sha, FULL_SHA_RE),
+          targetEnvironment: target,
           activatedAt: timestamp(input.activated_at),
         },
       },
@@ -146,7 +171,7 @@ function parsePublicAttestation(value: unknown): PublicAttestationRequest {
         : STATUS_MONITOR_SOURCE,
       principal: synthetic
         ? STAGING_SYNTHETIC_PRINCIPAL
-        : STATUS_MONITOR_PRINCIPAL,
+        : statusMonitorPrincipalFor(target),
       issueProducerCapability: synthetic,
     };
   }

@@ -35,6 +35,7 @@ function validEvent(): Record<string, unknown> {
 function validTrusted(): Record<string, unknown> {
   return {
     environment: "staging",
+    target_environment: "staging",
     source: "gateway",
     principal: "staging-gateway",
     deployment_id: "gateway-20260719-1",
@@ -297,6 +298,7 @@ describe("trusted envelope and canonical digest", () => {
 
     expect(trusted).toMatchObject({
       environment: "staging",
+      target_environment: "staging",
       source: "gateway",
       deployment_sha: "a".repeat(40),
       artifact_digest: `sha256:${"b".repeat(64)}`,

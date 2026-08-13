@@ -1,3 +1,4 @@
+import { alertEnvironment } from "./alert-environment";
 import type { AlertEvent, TrustedAlertMetadata } from "./types";
 
 const ROUTE_DOMAIN = "alert-control-plane:route-key:v1";
@@ -120,13 +121,26 @@ export async function deriveDeploymentRegistryRouteName(
   );
 }
 
+/**
+ * An incident is identified by what it is *about*, not by who reported it, so
+ * this routes on {@link alertEnvironment} rather than the producer's trust
+ * domain. Fingerprints carry no environment of their own
+ * (`status-monitor:model:glm-5.2`), so two probers watching different gateways
+ * would otherwise collapse the same model's outages into one incident and let
+ * either one's recovery close the other.
+ *
+ * Changing this derivation moves every incident to a new Durable Object, which
+ * is why the deploy that introduces it must land while nothing is open — an
+ * in-flight incident's recovery would otherwise be routed away from the object
+ * holding it and never resolve.
+ */
 export async function routeNameForEnvelope(
   routeKey: string | Uint8Array,
   trusted: TrustedAlertMetadata,
   event: AlertEvent,
 ): Promise<string> {
   return deriveIncidentRouteName(routeKey, {
-    environment: trusted.environment,
+    environment: alertEnvironment(trusted),
     principal: trusted.principal,
     fingerprint: event.fingerprint,
   });

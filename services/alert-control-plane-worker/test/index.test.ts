@@ -31,6 +31,7 @@ const envelope: CanonicalAlertEnvelope = {
   },
   trusted: {
     environment: "staging",
+    target_environment: "staging",
     source: "gateway",
     principal: "staging-gateway",
     deployment_id: "deployment-1",
@@ -158,6 +159,7 @@ describe("Phase 1 runtime", () => {
   it("opens C2 ingress only for a capability backed by an active deployment", async () => {
     const deployment: TrustedDeploymentMetadata = {
       environment: "staging",
+      targetEnvironment: "staging",
       service: "synthetic-alert-producer",
       deploymentId: "run-123-attempt-1",
       artifactDigest: `sha256:${"b".repeat(64)}`,

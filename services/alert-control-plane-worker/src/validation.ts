@@ -30,6 +30,7 @@ const EVENT_KEYS = new Set([
 
 const TRUSTED_METADATA_KEYS = new Set([
   "environment",
+  "target_environment",
   "source",
   "principal",
   "deployment_id",
@@ -52,6 +53,7 @@ const PRODUCER_FORBIDDEN_KEYS = new Set([
   "slack_channel_id",
   "slack_text",
   "source",
+  "target_environment",
   "thread_ts",
   "trusted",
 ]);
@@ -543,6 +545,16 @@ export function parseTrustedMetadata(value: unknown): TrustedAlertMetadata {
       "staging",
       "production",
     ]),
+    // Required, not optional-with-a-default: a caller that cannot say what its
+    // alert is about has no business opening an incident, and defaulting here
+    // would silently reinstate the trust-domain label this split exists to
+    // remove. The tolerance for its absence lives in `alertEnvironment`, which
+    // covers envelopes persisted before the split and nothing else.
+    target_environment: enumValue<TrustedEnvironment>(
+      input.target_environment,
+      "target_environment",
+      ["staging", "production"],
+    ),
     source: enumValue<TrustedSource>(input.source, "source", ["gateway", "status-monitor"]),
     principal: stringValue(input.principal, "principal", 128, IDENTIFIER_RE),
     deployment_id: stringValue(input.deployment_id, "deployment_id", 128, IDENTIFIER_RE),

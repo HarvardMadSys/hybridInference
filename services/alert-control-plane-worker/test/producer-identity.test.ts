@@ -14,6 +14,7 @@ import type { StagingIngressConfig } from "../src/runtime-config";
 const NOW = Date.now();
 const deployment: TrustedDeploymentMetadata = {
   environment: "staging",
+  targetEnvironment: "staging",
   service: "synthetic-alert-producer",
   deploymentId: "run-123-attempt-1",
   artifactDigest: `sha256:${"a".repeat(64)}`,
@@ -109,6 +110,7 @@ describe("producer deployment capability", () => {
       authenticateProducer(`Bearer ${token}`, runtime, deployments),
     ).resolves.toEqual({
       environment: "staging",
+      target_environment: "staging",
       source: "gateway",
       principal: "staging-synthetic",
       deployment_id: deployment.deploymentId,

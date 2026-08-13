@@ -12,6 +12,7 @@ const NOW = Date.parse("2026-07-20T07:00:00Z");
 
 const trusted: TrustedAlertMetadata = {
   environment: "staging",
+  target_environment: "staging",
   source: "gateway",
   principal: "staging-gateway",
   deployment_id: "deploy-20260720-1",

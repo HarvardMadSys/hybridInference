@@ -41,6 +41,7 @@ function activation(
       supersedes,
       deployment: {
         environment: "staging",
+        targetEnvironment: "staging",
         service: "gateway",
         deploymentId: "deploy-123",
         artifactDigest: DIGEST,
@@ -68,6 +69,7 @@ describe("DeploymentRegistry", () => {
     expect(calls).toHaveLength(1);
     expect(resolved).toEqual({
       environment: "staging",
+      targetEnvironment: "staging",
       service: "gateway",
       deploymentId: "deploy-123",
       artifactDigest: DIGEST,

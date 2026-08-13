@@ -94,9 +94,24 @@ export type AlertEvent =
 export type TrustedEnvironment = "staging" | "production";
 export type TrustedSource = "gateway" | "status-monitor";
 
-/** Metadata derived from authenticated deployment identity, never from the producer body. */
+/**
+ * Metadata derived from authenticated deployment identity, never from the producer body.
+ *
+ * `environment` and `target_environment` answer different questions and are not
+ * interchangeable. `environment` is the *trust* domain: which GitHub Environment
+ * signed the deployment attestation, which registry shard holds the record, and
+ * which principal quota the producer spends. `target_environment` is the alert's
+ * *subject*: the deployment this alert is about. They coincide for a producer
+ * that alerts about itself (the gateway), and diverge for a prober — the status
+ * monitor ships from `dev` through the staging pipeline while probing whichever
+ * gateway its deployed config names.
+ *
+ * Both are fixed from the attested deployment record. Neither is ever read from
+ * the producer body.
+ */
 export interface TrustedAlertMetadata {
   readonly environment: TrustedEnvironment;
+  readonly target_environment: TrustedEnvironment;
   readonly source: TrustedSource;
   readonly principal: string;
   readonly deployment_id: string;

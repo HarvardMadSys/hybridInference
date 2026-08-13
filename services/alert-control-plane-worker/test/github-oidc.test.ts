@@ -56,6 +56,7 @@ function command(
     action: "activate",
     deployment: {
       environment: "staging",
+      targetEnvironment: "staging",
       service: "synthetic-alert-producer",
       deploymentId: "github-222-1",
       artifactDigest: `sha256:${"b".repeat(64)}`,

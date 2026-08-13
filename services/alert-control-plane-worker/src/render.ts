@@ -1,3 +1,4 @@
+import { alertEnvironment } from "./alert-environment";
 import type {
   CanonicalAlertEnvelope,
   ModelUnavailableContext,
@@ -49,8 +50,14 @@ function field(label: string, value: string): SlackTextObject {
   return mrkdwn(`*${label}*\n${truncate(value, 1_900)}`);
 }
 
+/**
+ * The banner a responder reads first, so it names the deployment that broke —
+ * not the trust domain that vouched for the reporter. Before these were split,
+ * a status monitor probing production paged with a `STAGING` banner and its
+ * outages were triaged as staging noise.
+ */
 function environmentLabel(envelope: CanonicalAlertEnvelope): string {
-  return envelope.trusted.environment.toUpperCase();
+  return alertEnvironment(envelope.trusted).toUpperCase();
 }
 
 function severityIcon(severity: CanonicalAlertEnvelope["event"]["severity"]): string {

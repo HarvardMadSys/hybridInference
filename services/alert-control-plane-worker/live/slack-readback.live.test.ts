@@ -159,6 +159,7 @@ function envelope(
     },
     trusted: {
       environment: "staging",
+      target_environment: "staging",
       source: "gateway",
       principal: "slack-live-gate",
       deployment_id: "slack-live-gate",

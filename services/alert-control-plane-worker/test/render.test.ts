@@ -15,6 +15,7 @@ const TEST_NOW = Date.parse("2026-07-20T00:00:00Z");
 function trusted(): Record<string, unknown> {
   return {
     environment: "staging",
+    target_environment: "staging",
     source: "gateway",
     principal: "staging-gateway",
     deployment_id: "gateway-20260719-1",
