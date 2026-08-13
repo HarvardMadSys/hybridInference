@@ -9,14 +9,16 @@
 > 创建:2026-08-03,基于 Murphy 与 Claude 的对话,并吸收另一 agent 会话的
 > 交叉评审(symlink 挂载悬空、拉模式触发、digest 与计划文本的关系)。
 > 修订:2026-08-12,状态对账——W0 已完成、W1 GitHub 侧已完成、§7 行动项已随
-> H4 解决;详见 §0 与各工作项内的进展注记。同日并入五轮交叉评审:W5 删除
+> H4 解决;详见 §0 与各工作项内的进展注记。同日并入六轮交叉评审:W5 删除
 > 时序改判(不与搬迁同批)、W6 增补 prod 观察窗、W7 compose base 来源待拍板
 > (§6-5)与 `/agents` 路由缺口(P1)、判据②改以 public-export **物化树**
 > 为对象、W2 同源硬门(脏检查含 untracked + 无旁路)、W2 砍除 frontend
 > 候选旁支(缺 `AGENT_*` build args 与 cloud-agent 网络,整条留待 W7)、
 > W5c services 表述修正(harness 非 worker,按 §7 拆)、sweep 计数刷新为
 > 18、§5 W8 计数改五项、执行原则新增"生产周边显式化"、GHCR 认证改判
-> (短期 token + 临时 DOCKER_CONFIG,取消主机持久凭据)。
+> (短期 token + 临时 DOCKER_CONFIG,取消主机持久凭据)、W4 增自动发布与
+> package 授权、lock 增 `source_commit`、判据"distributions/ 只剩
+> example"写实为清空。
 
 ## 0. 前提:Step 1 的收官状态(2026-08-12 对账)
 
@@ -46,7 +48,7 @@ hybridInference(Step 3 后公开)          freeInference(私有)
 ├── deploy/docker/(通用 compose)       │   ├── deploy/   backend.env·frontend.env·staging/
 ├── config/examples/(中立参考配置)     │   └── content/  docs·RAG·邮件模板·Terms
 ├── 通用 CI:测试 + 构建发布中立镜像    ├── ops/、services/(按 W3 清单裁定的部分)
-└── distributions/ 只剩 example         ├── tests/(overlay·契约·路由快照)
+└── distributions/ 清空                 ├── tests/(overlay·契约·路由快照)
                                         ├── upstream.lock   ◀── 两仓唯一耦合点
       树内无任何 FreeInference 身份     └── .github/workflows/
                                             sync-main·deploy-staging·deploy-prod·
@@ -58,10 +60,17 @@ hybridInference(Step 3 后公开)          freeInference(私有)
 ```yaml
 upstream:
   release: 20260812            # 溯源用的上游标识
+  source_commit: <sha>         # 本次 bump 的上游 SHA(provenance 锚,
+                               # 2026-08-12 评审第六轮增)
   backend:  ghcr.io/harvardmadsys/hybridinference-backend@sha256:…   # digest
-  frontend:                    # v1:源码 pin;W7 完成后翻 digest
+  frontend:                    # v1:源码 pin 用同一 source_commit;W7 后翻 digest
     source_commit: <sha>
 ```
+
+`digest` 与 `source_commit` 必须在**同一个 bump PR 内原子更新**;W4 的门
+测试与部署 workflow 都断言 `镜像 revision label == source_commit`——这是
+W2 同源门在两仓时代的形态(W2 期间的对照物是主机 checkout 的 HEAD,W4 起
+主机 HEAD 是 freeInference 的 commit,不再可比)。
 
 部署主机(终态):只有 `/srv/freeInference` 一个 checkout,不 checkout 上游
 源码、不现场编译;部署 = 按 digest 拉镜像 + 挂配置 + 重启。`.env` 与密钥照旧
@@ -163,7 +172,9 @@ candidate 镜像推 GHCR(首个 candidate 钉 staging 当前 SHA——同代码�
 且 checkout 必须干净——判据是 `git status --porcelain=v1
 --untracked-files=all` 为空,tracked 改动与 untracked 新文件都算脏;
 ignored 的 `.env`、`var/**` 属预期主机状态,不在拒脏范围。两项均无旁路
-开关(评审后移除了 `allow_sha_mismatch`);部署日志记录 source 与
+开关(评审后移除了 `allow_sha_mismatch`);另两道与 classic 对齐的守卫:
+HEAD 须为 `origin/dev` 的祖先(拒任意 ref 部署),checkout 信任/属主
+自愈同款复刻(safe.directory + `sudo -n chown`)。部署日志记录 source 与
 digest。复活 PR = #1258(build-candidates + digest deploy,双 workflow
 均 dispatch-only,backend-only)。
 
@@ -180,7 +191,14 @@ digest。复活 PR = #1258(build-candidates + digest deploy,双 workflow
 
 - 目录:`distributions/freeinference/` **保持原路径整体平移**,不做扁平化
   美化(行为冻结;挂载与脚本零路径改写)。
-- `upstream.lock` 落地(§1 格式)。
+- `upstream.lock` 落地(§1 格式,含 `source_commit` provenance 锚)。
+- 上游侧自动发布(2026-08-12 评审第六轮补):dev CI 绿后自动构建并发布
+  backend 镜像(带 `org.opencontainers.image.revision` label)——W2 的
+  build-candidates 是 dispatch-only 的验证切片,不承担这条自动链;没有
+  自动发布,bump bot 就没有新 digest 可 bump。发布 job 挂上游 ci.yml,
+  digest 经 packages API / run summary 可查。
+- package 授权:首个 candidate 发布后,把 freeInference 加进 backend
+  package 的 Actions access(read)——W1 GHCR 改判的前提项,落在这里。
 - bump workflow:cron 轮询上游 dev(节奏见 §6),生成 bump PR;门测试 =
   checkout freeInference → backend 按 digest 拉 / frontend 按 pin checkout
   上游 → 起栈 → overlay 测试 + 契约测试 + `iter_effective_routes` 生效路由
@@ -268,7 +286,8 @@ key/secret 轮换。Cloudflare 两笔(2026-08-12 增):吊销旧 user token
    `--list` 只扫路径、读不到 export 新增的 replacement 内容,不作判据;
    `docs/agents/`、`docs/reviews/` 等历史文档不作为本判据对象,其去留
    (导出 manifest 排除,或随 W5 迁走)Step 3 前拍板;`distributions/`
-   只剩 example;上游 `make test` 全绿、无 overlay 中立启动可用
+   为空(2026-08-12 写实:中立示例已在 `config/examples/`,并无也不新造
+   example overlay);上游 `make test` 全绿、无 overlay 中立启动可用
    (Step 1 判据③保持)。(门链可执行性 2026-08-12 已实测:物化 839 个
    上游文件 + 7 个 replacement,credential audit clean,物化树 strict
    brand sweep = 0 unclaimed / 8 pending streams——8 即 Step 2 未完成
