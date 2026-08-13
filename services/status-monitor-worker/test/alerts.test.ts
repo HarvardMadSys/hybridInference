@@ -277,8 +277,13 @@ class FakeD1 {
       throw error;
     }
   }
-  record(modelId: string, ok: boolean): void {
-    this.probe.push({ id: ++this.seq, model_id: modelId, ok: ok ? 1 : 0 });
+  record(modelId: string, ok: boolean, targetEnvironment = "staging"): void {
+    this.probe.push({
+      id: ++this.seq,
+      model_id: modelId,
+      ok: ok ? 1 : 0,
+      target_environment: targetEnvironment,
+    });
   }
 
   /** Mirrors reconcileModels: drops rows for models not probed this cycle. */
@@ -1064,6 +1069,22 @@ describe("runAlerts", () => {
 
     await cycle(db, env, { a: false }); // 3rd failure → still paged, no repeat
     expect(posts).toHaveLength(1);
+  });
+
+  it("does not count another deployment's failures toward the streak", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+
+    // A failure this Worker never observed: the row predates the cutover that
+    // repointed it, and belongs to the gateway it used to probe.
+    db.record("a", false, "production");
+
+    // With the retained row counted, this first observed failure would be the
+    // second in a row and would page immediately.
+    await cycle(db, env, { a: false });
+
+    expect(posts).toHaveLength(0);
   });
 
   it("posts a recovery notice and re-arms after the model comes back", async () => {

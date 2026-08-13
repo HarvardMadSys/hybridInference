@@ -34,3 +34,28 @@ describe("loadConfig alertStormThreshold", () => {
     expect(loadConfig(env({ ALERT_STORM_THRESHOLD: "nope" })).alertStormThreshold).toBe(5);
   });
 });
+
+describe("loadConfig targetEnvironment", () => {
+  it("derives the probed deployment from the configured gateway", () => {
+    const target = (url: string) =>
+      loadConfig(env({ GATEWAY_BASE_URL: url })).targetEnvironment;
+
+    expect(target("https://freeinference.org")).toBe("production");
+    expect(target("https://staging.freeinference.org")).toBe("staging");
+    // The port must not defeat the match, and a trailing slash is stripped
+    // before the URL is ever parsed.
+    expect(target("https://freeinference.org:8443/")).toBe("production");
+    expect(target("http://localhost:8787")).toBe("local");
+    expect(target("https://gw.example")).toBe("unknown");
+  });
+
+  it("cannot disagree with the gateway it is configured to probe", () => {
+    // The pairing is derived, not stated. #1252 moved the URL and left every
+    // page reading the old environment precisely because those were two
+    // independent edits; there is no second value here to forget.
+    const config = loadConfig(env({ GATEWAY_BASE_URL: "https://freeinference.org" }));
+
+    expect(config.gatewayBaseUrl).toBe("https://freeinference.org");
+    expect(config.targetEnvironment).toBe("production");
+  });
+});
