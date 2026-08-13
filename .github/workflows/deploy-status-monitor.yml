@@ -62,7 +62,52 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Deploy
+      # The environment a page names now comes from the deployment record, so it
+      # has to be proven against the config being shipped rather than restated
+      # beside it. #1252 moved GATEWAY_BASE_URL and left the label behind
+      # precisely because those were two independent edits; this makes the pair
+      # inseparable — a URL change with no matching target fails the deploy.
+      - name: Derive the probed environment from the config being deployed
+        id: target
+        run: |
+          set -euo pipefail
+          # Imports the Worker's own derivation rather than restating it: a
+          # second copy of these rules is the thing that drifts. `src/env.ts`
+          # has only type-only imports, so stripping types leaves it standalone.
+          node --experimental-strip-types --no-warnings \
+            --input-type=module <<'NODE' >> "${GITHUB_OUTPUT}"
+          import { readFileSync } from "node:fs";
+          import { deriveEnvironment } from "./src/env.ts";
+
+          const toml = readFileSync("wrangler.toml", "utf8");
+          const match = /^\s*GATEWAY_BASE_URL\s*=\s*"([^"]+)"/m.exec(toml);
+          if (match === null) {
+            throw new Error("wrangler.toml does not set GATEWAY_BASE_URL");
+          }
+          const target = deriveEnvironment(match[1].replace(/\/+$/, ""));
+          // `local` and `unknown` mean the host could not be placed. Registering
+          // one would attribute real pages to an environment nobody operates.
+          if (target !== "staging" && target !== "production") {
+            throw new Error(`GATEWAY_BASE_URL is not a deployment we alert on: ${match[1]}`);
+          }
+          console.log(`environment=${target}`);
+          console.log(`principal=status-monitor-${target}`);
+          NODE
+        working-directory: services/status-monitor-worker
+
+      # Applied before the new version can serve, so a version that reads a
+      # column is never live against a database without it.
+      - name: Apply D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npm run migrate:remote
+
+      # Upload without activating: attestation and the incident-state gate both
+      # have to pass while the currently-serving version is still the old one.
+      # The previous order deployed first and only then attested, so a rejected
+      # attestation left an unregistered version live — which is how a build
+      # carrying a stale prober key probed nothing for eleven hours on 08-11.
+      - name: Upload the Worker version without activating it
         id: deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -70,18 +115,22 @@ jobs:
           set -euo pipefail
           output="${RUNNER_TEMP}/status-monitor-wrangler-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.ndjson"
           rm -f "${output}"
-          WRANGLER_OUTPUT_FILE_PATH="${output}" npm run deploy
+          WRANGLER_OUTPUT_FILE_PATH="${output}" npx wrangler versions upload
           OUTPUT_PATH="${output}" node <<'NODE'
           const fs = require("node:fs");
           const output = process.env.OUTPUT_PATH;
           const lines = fs.readFileSync(output, "utf8").split(/\r?\n/).filter(Boolean);
-          const deploys = lines
+          const uploads = lines
             .map((line) => JSON.parse(line))
-            .filter((item) => item.type === "deploy" && item.worker_name === "freeinference-monitor");
-          if (deploys.length !== 1) throw new Error("expected one status-monitor deploy record");
-          const versionId = deploys[0].version_id;
+            .filter(
+              (item) =>
+                item.type === "version-upload" &&
+                item.worker_name === "freeinference-monitor",
+            );
+          if (uploads.length !== 1) throw new Error("expected one status-monitor version upload");
+          const versionId = uploads[0].version_id;
           if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(versionId)) {
-            throw new Error("deploy record did not contain a Cloudflare Worker version ID");
+            throw new Error("upload record did not contain a Cloudflare Worker version ID");
           }
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `version_id=${versionId}\n`);
           NODE
@@ -91,6 +140,8 @@ jobs:
         env:
           CONTROL_PLANE_URL: ${{ vars.ALERT_CONTROL_PLANE_STAGING_URL }}
           DEPLOYMENT_ID: ${{ steps.deploy.outputs.version_id }}
+          TARGET_ENVIRONMENT: ${{ steps.target.outputs.environment }}
+          TARGET_PRINCIPAL: ${{ steps.target.outputs.principal }}
         run: |
           set -euo pipefail
           if [ -z "${CONTROL_PLANE_URL:-}" ]; then
@@ -120,15 +171,18 @@ jobs:
             process.stdout.write(JSON.stringify({
               action: "activate",
               deployment: {
+                // The trust domain: which GitHub Environment signs this
+                // attestation. Unrelated to the gateway probed below.
                 environment: "staging",
                 service: "status-monitor",
                 deployment_id: deploymentId,
                 artifact_digest: `sha256:${digest}`,
               },
               deployment_sha: sha,
+              target_environment: process.env.TARGET_ENVIRONMENT,
               activated_at: Number(activatedAt),
               source: "status-monitor",
-              principal: "staging-monitor",
+              principal: process.env.TARGET_PRINCIPAL,
             }));
           ' "${DEPLOYMENT_ID}" "${artifact_hex}" "${GITHUB_SHA}" "${activated_at}")"
           activation_response="$(curl -fsS \
@@ -154,8 +208,9 @@ jobs:
             };
             if (Object.keys(value).length !== 1 || deployment === null ||
                 typeof deployment !== "object" ||
-                Object.keys(deployment).length !== 8 ||
+                Object.keys(deployment).length !== 9 ||
                 deployment.environment !== expected.environment ||
+                deployment.targetEnvironment !== process.env.TARGET_ENVIRONMENT ||
                 deployment.service !== expected.service ||
                 deployment.deploymentId !== expected.deploymentId ||
                 deployment.artifactDigest !== expected.artifactDigest ||
@@ -166,6 +221,106 @@ jobs:
               process.exit(1);
             }
           '
+
+      # `target_environment` and `principal` are both incident-route material, so
+      # activating a version that changes either moves every incident to a new
+      # Durable Object. An incident open across that move would have its recovery
+      # routed away from the object holding it and would never resolve — so the
+      # cutover only proceeds while nothing is in flight.
+      #
+      # The monitor's own state is the authority here: it is the only writer of
+      # status-monitor incidents, and it clears a model's entry only once that
+      # model's recovery is confirmed delivered.
+      - name: Require no incident in flight before cutting over
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        working-directory: services/status-monitor-worker
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute freeinference-monitor --remote --json --command "
+            SELECT COUNT(*) AS in_flight FROM meta
+             WHERE (key = 'alert_state' AND value NOT IN ('{}', ''))
+                OR key = 'cycle_alert'
+                OR key LIKE 'alert_delivery_owner:v1:%'
+                OR key LIKE 'alert_delivery_pending:v1:%'
+          " > "${RUNNER_TEMP}/in-flight.json"
+          IN_FLIGHT_PATH="${RUNNER_TEMP}/in-flight.json" node <<'NODE'
+          const fs = require("node:fs");
+          const payload = JSON.parse(fs.readFileSync(process.env.IN_FLIGHT_PATH, "utf8"));
+          const rows = (Array.isArray(payload) ? payload : [payload])
+            .flatMap((entry) => entry?.results ?? []);
+          if (rows.length !== 1 || !Number.isInteger(rows[0].in_flight)) {
+            throw new Error("could not read incident state; refusing to cut over blind");
+          }
+          if (rows[0].in_flight !== 0) {
+            throw new Error(
+              `${rows[0].in_flight} incident record(s) in flight — re-run once they resolve, ` +
+                "or their recovery will be routed to a different incident object",
+            );
+          }
+          NODE
+          rm -f "${RUNNER_TEMP}/in-flight.json"
+
+      # Only now does the uploaded version start serving. Pinned explicitly to
+      # the attested version at 100%: a bare `versions deploy` prompts, and CI
+      # must never resolve that by picking something for us.
+      - name: Activate the attested version
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.version_id }}
+        working-directory: services/status-monitor-worker
+        run: npx wrangler versions deploy "${DEPLOYMENT_ID}@100%" --yes
+
+      # Attested but never activated: the record would otherwise keep vouching
+      # for a version that is not serving, and the next run's attestation would
+      # collide with it.
+      - name: Retire the attested version if it never went live
+        if: failure() && steps.deploy.outputs.version_id != ''
+        env:
+          CONTROL_PLANE_URL: ${{ vars.ALERT_CONTROL_PLANE_STAGING_URL }}
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONTROL_PLANE_URL:-}" ]; then
+            echo "::warning title=Not retired::control plane URL unset; retire ${DEPLOYMENT_ID} by hand."
+            exit 0
+          fi
+          origin="${CONTROL_PLANE_URL%/}"
+          artifact_hex="$(git -C "${GITHUB_WORKSPACE}" archive "${GITHUB_SHA}" \
+            services/status-monitor-worker .github/workflows/deploy-status-monitor.yml \
+            | sha256sum | awk '{print $1}')"
+          oidc_response="$(curl -fsS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=alert-control-plane-deployment-attestation")"
+          oidc_token="$(printf '%s' "${oidc_response}" | node -e '
+            let body = "";
+            process.stdin.on("data", chunk => body += chunk);
+            process.stdin.on("end", () => {
+              const value = JSON.parse(body);
+              if (typeof value.value !== "string" || value.value.length === 0) process.exit(1);
+              process.stdout.write(value.value);
+            });
+          ')"
+          echo "::add-mask::${oidc_token}"
+          retire_body="$(node -e '
+            const [deploymentId, digest] = process.argv.slice(1);
+            process.stdout.write(JSON.stringify({
+              action: "retire",
+              deployment: {
+                environment: "staging",
+                service: "status-monitor",
+                deployment_id: deploymentId,
+                artifact_digest: `sha256:${digest}`,
+              },
+              retired_at: Date.now(),
+            }));
+          ' "${DEPLOYMENT_ID}" "${artifact_hex}")"
+          curl -fsS --retry 3 --retry-all-errors --retry-delay 2 \
+            -X POST \
+            -H "Authorization: Bearer ${oidc_token}" \
+            -H "Content-Type: application/json" \
+            --data "${retire_body}" \
+            "${origin}/v1/deployments/attest" > /dev/null
 
       - name: Run the non-public Service Binding RPC gate
         env:

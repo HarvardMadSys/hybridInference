@@ -202,6 +202,10 @@ jobs:
                 artifact_digest: `sha256:${digest}`,
               },
               deployment_sha: sha,
+              // Stated rather than defaulted, even though this producer
+              // exercises the deployment it runs in and the two coincide: an
+              // omission would be indistinguishable from having forgotten.
+              target_environment: "staging",
               activated_at: Number(activatedAt),
               source: "gateway",
               principal: "staging-synthetic",

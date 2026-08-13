@@ -141,6 +141,25 @@ self-contained: staging and production run separate user databases, so
 a "Monitoring cycle failing" alert rather than any per-model one. Re-set the
 secret whenever this URL moves.
 
+Everything else that depends on this URL is now derived from it, not restated
+beside it. The deploy workflow reads it, resolves the probed environment, and
+submits that as `target_environment` in the deployment attestation, so a URL
+change with no matching target fails the deploy rather than shipping. That value
+is what labels a page, scopes an incident's identity, and tags each
+`probe_results` row.
+
+Do not confuse it with the trust domain. This Worker is attested as
+`environment: staging` because that is what its pipeline is — it ships from
+`dev` on every push through the `staging` GitHub Environment, with no approval
+gate — regardless of which gateway it watches. The two were one field until
+2026-08-13, which is why production outages paged with a `STAGING` banner
+between the 08-11 cutover and that fix.
+
+Its principal follows the target (`status-monitor-production` /
+`status-monitor-staging`). Principal partitions both incident routing and quota,
+so a second instance watching the other environment gets its own of each without
+any further change.
+
 `PROBER_API_KEY` is a **secret**, not a var. `CODEX_ONCALL_RELAY_URL`,
 `CODEX_ONCALL_RELAY_TOKEN`, and `SLACK_WEBHOOK_URL` are optional secrets. Both
 relay values are required to enable on-call analysis; retain the Slack webhook as its
