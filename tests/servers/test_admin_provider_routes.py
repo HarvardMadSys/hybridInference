@@ -19,7 +19,7 @@ from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
 from serving.adapters.provider_registry import RuntimeProviderDefinition
 from serving.config.routewise_model_settings import model_routewise_setting_keys
-from serving.pricing import PricingSchedule
+from serving.pricing import PricingSchedule, effective_pricing
 from serving.servers.deps import AppServices
 from serving.servers.registry import _make_adapter
 from serving.servers.routers import admin as admin_router
@@ -32,6 +32,8 @@ from serving.storage.base import ProviderKeyRow
 
 AUTH = {"Authorization": "Bearer test-admin"}
 NOW = datetime(2026, 6, 16, tzinfo=timezone.utc)
+# Inside the scheduled peak window, after its activation timestamp.
+_PEAK_INSTANT = datetime(2026, 8, 17, 2, 0, tzinfo=timezone.utc)
 RUNTIME_PRICING = {
     "prompt": "0.14",
     "completion": "0.28",
@@ -1987,7 +1989,16 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
 
 
 @pytest.mark.asyncio
-async def test_post_provider_route_candidate_drops_template_pricing_schedule(admin_client):
+async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client):
+    """A runtime route on a scheduled YAML model prices the same before and after a restart.
+
+    ``upsert_provider_route_candidate`` persists no schedule, but restore for a
+    model the router already knows re-runs ``_prepare_route_candidate``, which
+    re-clones the YAML template. Inheriting the template schedule is therefore
+    what keeps the freshly created route and the rehydrated one in agreement —
+    dropping it at creation would make the live route ignore the provider's
+    time-of-day pricing that its YAML sibling still honors.
+    """
     client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
     op_store.list_provider_keys_full.return_value = ["minimax-db-key-1234567890"]
     schedule = PricingSchedule.from_raw(
@@ -1995,7 +2006,7 @@ async def test_post_provider_route_candidate_drops_template_pricing_schedule(adm
             "effective_at": "2026-08-16T16:00:00Z",
             "timezone": "UTC",
             "default": {"prompt": "0.22", "completion": "0.66"},
-            "windows": [],
+            "windows": [{"start": "01:00", "end": "04:00", "pricing": {"prompt": "0.44"}}],
         }
     )
     for entry in route_executor.routes["minimax-fast"].raw_adapters:
@@ -2012,14 +2023,47 @@ async def test_post_provider_route_candidate_drops_template_pricing_schedule(adm
         },
         headers=AUTH,
     )
-
     assert response.status_code == 200, response.text
-    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
-    # ``upsert_provider_route_candidate`` persists ``pricing`` and nothing else,
-    # so a runtime route that inherited the template's schedule would price one
-    # way in memory and another way once a restart rehydrates it from the store.
-    assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
-    assert runtime_adapter.config.pricing_schedule is None
+    created_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert created_adapter.config.route_metadata["runtime_candidate"] is True
+
+    persisted = op_store.upsert_provider_route_candidate.await_args.args
+    op_store.list_all_provider_route_candidates.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": persisted[1],
+            "route_type": persisted[2],
+            "provider": persisted[3],
+            "openrouter_sort": persisted[4],
+            "base_url": persisted[5],
+            "api_key_id": persisted[6],
+            "provider_model_id": persisted[7],
+            "quota_limit": persisted[8],
+            "concurrency_limit": persisted[9],
+            "weight": persisted[10],
+            "pricing": persisted[11],
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=MagicMock(),
+        operational_store=op_store,
+        db_logger=MagicMock(),
+        log_store=MagicMock(),
+    )
+
+    await apply_persisted_provider_route_candidates(services, op_store)
+
+    restored_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert restored_adapter.config.route_metadata["route_id"] == persisted[1]
+    assert restored_adapter.config.pricing == created_adapter.config.pricing
+    assert restored_adapter.config.pricing_schedule == created_adapter.config.pricing_schedule
+    assert restored_adapter.config.pricing_schedule == schedule
+    assert effective_pricing(restored_adapter.config, at=_PEAK_INSTANT) == effective_pricing(
+        created_adapter.config, at=_PEAK_INSTANT
+    )
 
 
 @pytest.mark.asyncio

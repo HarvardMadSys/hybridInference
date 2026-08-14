@@ -1811,13 +1811,6 @@ async def _prepare_route_candidate(
             "quota": None,
             "concurrency_pool": None,
             "concurrency": None,
-            # Only ``pricing`` is persisted for a runtime route (see
-            # ``upsert_provider_route_candidate``). Inheriting the template's
-            # schedule would price this route one way in memory and another way
-            # after the next restart rehydrates it from the store, so a runtime
-            # route carries the base price alone. A provider's time-of-day
-            # schedule belongs to the models.yaml route that declares it.
-            "pricing_schedule": None,
             "route_metadata": {
                 "route_id": candidate_route_id,
                 "route_provider": upstream_provider,
