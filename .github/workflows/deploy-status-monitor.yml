@@ -235,6 +235,12 @@ jobs:
       # and identify ourselves by token so the release can only ever drop our
       # own. The TTL is what makes a killed job self-healing — probing resumes
       # on its own rather than staying wedged behind a lock nobody will release.
+      #
+      # It must outlive `timeout-minutes`, or a slow cutover keeps running after
+      # its own lock expires and a cron takes it back mid-flight — the exclusion
+      # lapsing exactly when it is being relied on. 20 minutes clears the
+      # 15-minute job timeout, and costs at most one skipped cycle if a runner
+      # dies without running the release.
       - name: Acquire the cutover lock
         id: lock
         env:
@@ -242,7 +248,7 @@ jobs:
         run: |
           set -euo pipefail
           token="cutover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          expiry=$(( ($(date +%s) + 300) * 1000 ))
+          expiry=$(( ($(date +%s) + 1200) * 1000 ))
           now=$(( $(date +%s) * 1000 ))
           echo "token=${token}" >> "${GITHUB_OUTPUT}"
           npx wrangler d1 execute freeinference-monitor --remote --json --command "
@@ -311,6 +317,7 @@ jobs:
       # the attested version at 100%: a bare `versions deploy` prompts, and CI
       # must never resolve that by picking something for us.
       - name: Activate the attested version
+        id: activate
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           DEPLOYMENT_ID: ${{ steps.deploy.outputs.version_id }}
@@ -336,8 +343,17 @@ jobs:
       # Attested but never activated: the record would otherwise keep vouching
       # for a version that is not serving, and the next run's attestation would
       # collide with it.
+      #
+      # Conditioned on the activation's own outcome, not on `failure()` alone.
+      # `failure()` is true for anything that went wrong anywhere in the job, so
+      # a failure *after* a successful activation — releasing the lock, applying
+      # triggers, the binding gate — would deregister a version that is serving:
+      # the Worker keeps probing while the control plane stops trusting it, and
+      # alerting goes quiet. Ordering alone cannot fix that, because some of
+      # those steps have to run after activation. `outcome` is `skipped` when
+      # activation never ran, which is exactly when retiring is right.
       - name: Retire the attested version if it never went live
-        if: failure() && steps.deploy.outputs.version_id != ''
+        if: failure() && steps.activate.outcome != 'success' && steps.deploy.outputs.version_id != ''
         env:
           CONTROL_PLANE_URL: ${{ vars.ALERT_CONTROL_PLANE_STAGING_URL }}
           DEPLOYMENT_ID: ${{ steps.deploy.outputs.version_id }}

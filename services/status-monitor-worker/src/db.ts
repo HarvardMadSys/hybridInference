@@ -404,12 +404,22 @@ export async function releaseCycleLock(db: D1Database, token: string): Promise<v
 }
 
 /** Records whether the most recent cron cycle succeeded. */
-export async function setCycleStatus(db: D1Database, status: CycleStatus): Promise<void> {
+export async function setCycleStatus(
+  db: D1Database,
+  status: CycleStatus,
+  targetEnvironment: string,
+): Promise<void> {
   const stmt = db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`);
   await db.batch([
     stmt.bind("last_cycle_ok", status.ok ? "1" : "0"),
     stmt.bind("last_cycle_at", status.checkedAt ?? ""),
     stmt.bind("last_cycle_error", status.error ?? ""),
+    // Stamped so a reader can tell whether this result describes the deployment
+    // it is asking about. These three rows are a single latest-value slot, not
+    // history, so without it a repointed Worker keeps serving the previous
+    // gateway's verdict — a green `/api/health` for a deployment it has not yet
+    // probed once.
+    stmt.bind("last_cycle_target_environment", targetEnvironment),
   ]);
 }
 
@@ -417,12 +427,25 @@ export async function setCycleStatus(db: D1Database, status: CycleStatus): Promi
 // stopped/undeployed cron or a never-run monitor doesn't show stale green.
 const CYCLE_FRESHNESS_MS = 60 * 60 * 1000;
 
-async function getCycleStatus(db: D1Database): Promise<CycleStatus> {
+async function getCycleStatus(
+  db: D1Database,
+  targetEnvironment: string,
+): Promise<CycleStatus> {
   const result = await db.prepare(`SELECT key, value FROM meta`).all<{ key: string; value: string }>();
   const map = new Map((result.results ?? []).map((r) => [r.key, r.value]));
   const checkedAt = map.get("last_cycle_at") || null;
   if (!checkedAt) {
     return { ok: false, checkedAt: null, error: "no probe cycle has run yet" };
+  }
+  // A row left by the gateway this Worker used to probe says nothing about the
+  // one it probes now. Absent means it predates the stamp, which can only be
+  // the deployment before a repoint — so treat it the same way.
+  if (map.get("last_cycle_target_environment") !== targetEnvironment) {
+    return {
+      ok: false,
+      checkedAt: null,
+      error: "no probe cycle has run yet for this deployment",
+    };
   }
   const ageMs = Date.now() - Date.parse(checkedAt);
   if (Number.isFinite(ageMs) && ageMs > CYCLE_FRESHNESS_MS) {
@@ -472,7 +495,10 @@ function toRow(r: RawRow): ProbeRow {
  * bounded by table size but transient: the next successful cycle writes the keyed
  * list and reverts reads to O(1).
  */
-async function readModelIds(db: D1Database): Promise<string[]> {
+async function readModelIds(
+  db: D1Database,
+  targetEnvironment: string,
+): Promise<string[]> {
   const row = await db
     .prepare(`SELECT value FROM meta WHERE key = 'model_ids'`)
     .first<{ value: string }>();
@@ -486,8 +512,16 @@ async function readModelIds(db: D1Database): Promise<string[]> {
       // Corrupt value: fall through to the backfill scan.
     }
   }
+  // Scoped like every other read of this table: the retained pre-cutover rows
+  // name models of a deployment this Worker no longer probes, and listing them
+  // would put permanently blank cards on the dashboard.
   const scan = await db
-    .prepare(`SELECT DISTINCT model_id FROM probe_results ORDER BY model_id ASC`)
+    .prepare(
+      `SELECT DISTINCT model_id FROM probe_results
+        WHERE target_environment = ?
+        ORDER BY model_id ASC`,
+    )
+    .bind(targetEnvironment)
     .all<{ model_id: string }>();
   return (scan.results ?? []).map((r) => r.model_id);
 }
@@ -500,7 +534,7 @@ export async function getSnapshot(
   db: D1Database,
   targetEnvironment: string,
 ): Promise<Snapshot> {
-  const modelIds = await readModelIds(db);
+  const modelIds = await readModelIds(db, targetEnvironment);
 
   const byModel = new Map<string, ProbeRow[]>();
   if (modelIds.length > 0) {
@@ -545,6 +579,6 @@ export async function getSnapshot(
   }
 
   const healthy = models.filter((m) => m.latest.ok).length;
-  const cycle = await getCycleStatus(db);
+  const cycle = await getCycleStatus(db, targetEnvironment);
   return { models, total: models.length, healthy, unhealthy: models.length - healthy, cycle };
 }

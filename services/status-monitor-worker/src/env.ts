@@ -42,6 +42,21 @@ export interface Env {
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
 
 /**
+ * Exact hosts, not patterns.
+ *
+ * This started as a display detail, where a loose suffix match cost nothing.
+ * It is now the proof a deploy submits for what a Worker probes, so the same
+ * looseness would let `notfreeinference.org` attest as production and any host
+ * containing "staging" attest as staging. An allowlist has the property the
+ * matching never did: a host nobody has vouched for is `unknown`, and the
+ * deploy refuses it.
+ */
+const DEPLOYMENT_HOSTS: ReadonlyMap<string, string> = new Map([
+  ["freeinference.org", "production"],
+  ["staging.freeinference.org", "staging"],
+]);
+
+/**
  * The deployment this Worker probes, derived from the gateway it is configured
  * to call.
  *
@@ -52,18 +67,21 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"
  * those from drifting apart when the URL moves.
  */
 export function deriveEnvironment(gatewayBaseUrl: string): string {
-  let hostname: string;
+  let url: URL;
   try {
-    // `.hostname` (not `.host`) excludes the port and keeps IPv6 brackets intact,
-    // so `freeinference.org:8443` still matches and `[::1]` isn't truncated.
-    hostname = new URL(gatewayBaseUrl).hostname.toLowerCase();
+    url = new URL(gatewayBaseUrl);
   } catch {
     return "unknown";
   }
+  // `.hostname` (not `.host`) excludes the port and keeps IPv6 brackets intact,
+  // so `freeinference.org:8443` still matches and `[::1]` isn't truncated.
+  const hostname = url.hostname.toLowerCase();
   if (!hostname || LOCAL_HOSTS.has(hostname)) return "local";
-  if (hostname.includes("staging")) return "staging";
-  if (hostname.endsWith("freeinference.org")) return "production";
-  return "unknown";
+  // A deployment we page for is reached over TLS. Probing one over plaintext
+  // would be measuring something else, and attesting it as that deployment
+  // would put a name on the difference.
+  if (url.protocol !== "https:") return "unknown";
+  return DEPLOYMENT_HOSTS.get(hostname) ?? "unknown";
 }
 
 /** Normalized configuration derived from {@link Env}. */

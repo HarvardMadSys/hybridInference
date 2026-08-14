@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { MODEL_SWEEP_INTERVAL_MS, reconcileModels } from "../src/db";
+import { getSnapshot, MODEL_SWEEP_INTERVAL_MS, reconcileModels } from "../src/db";
 
 const NOW = Date.parse("2026-08-05T12:00:00Z");
 
@@ -29,11 +29,24 @@ class FakeStmt {
     if (/SELECT key, value FROM meta WHERE key IN/.test(this.sql)) {
       throw new Error("multi-key read must use all(), not first()");
     }
+    if (/^SELECT value FROM meta WHERE key = '[a-z_]+'$/.test(this.sql.trim())) {
+      const key = /key = '([a-z_]+)'/.exec(this.sql)![1];
+      const value = this.db.meta.get(key);
+      return (value === undefined ? null : { value }) as T | null;
+    }
     throw new Error(`unhandled first: ${this.sql}`);
   }
 
   async all<T>(): Promise<{ results: T[] }> {
     this.db.executed.push(this);
+    if (/^SELECT key, value FROM meta$/.test(this.sql.trim())) {
+      const rows = [...this.db.meta].map(([key, value]) => ({ key, value }));
+      return { results: rows as T[] };
+    }
+    if (/^SELECT key, value FROM meta$/.test(this.sql.trim())) {
+      const rows = [...this.db.meta].map(([key, value]) => ({ key, value }));
+      return { results: rows as T[] };
+    }
     if (/SELECT key, value FROM meta WHERE key IN/.test(this.sql)) {
       const rows = (this.args as string[])
         .filter((key) => this.db.meta.has(key))
@@ -276,5 +289,45 @@ describe("reconcileModels", () => {
     const reads = db.executed.filter((s) => /^SELECT/.test(s.sql));
     expect(reads).toHaveLength(1);
     expect(reads[0].args).toEqual(["model_ids", "model_ids_swept_at"]);
+  });
+});
+
+describe("cycle status", () => {
+  /** Seeds the three rows a finished cycle leaves, stamped for `target`. */
+  function withLastCycle(target: string | null): FakeD1 {
+    const db = new FakeD1();
+    db.meta.set("last_cycle_ok", "1");
+    db.meta.set("last_cycle_at", new Date().toISOString());
+    db.meta.set("last_cycle_error", "");
+    if (target !== null) db.meta.set("last_cycle_target_environment", target);
+    // An authoritative empty catalog, so the snapshot resolves models from the
+    // keyed row and the only remaining statement is the cycle status itself.
+    db.meta.set("model_ids", "[]");
+    return db;
+  }
+
+  it("reports a healthy cycle for the deployment it measured", async () => {
+    const snapshot = await getSnapshot(withLastCycle("production").as(), "production");
+
+    expect(snapshot.cycle.ok).toBe(true);
+  });
+
+  it("does not report another deployment's cycle as this one's", async () => {
+    // These three rows are a latest-value slot, not history. Without the stamp a
+    // Worker repointed at production would serve the staging gateway's verdict
+    // until its own first cycle finished — a green /api/health for something it
+    // has never probed.
+    const snapshot = await getSnapshot(withLastCycle("staging").as(), "production");
+
+    expect(snapshot.cycle.ok).toBe(false);
+    expect(snapshot.cycle.error).toMatch(/no probe cycle has run yet/);
+  });
+
+  it("treats an unstamped cycle as belonging to a previous deployment", async () => {
+    // Absent can only mean the row predates the stamp, which can only be the
+    // deployment before a repoint.
+    const snapshot = await getSnapshot(withLastCycle(null).as(), "production");
+
+    expect(snapshot.cycle.ok).toBe(false);
   });
 });

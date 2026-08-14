@@ -25,7 +25,7 @@ import { hasAlertDestination } from "./oncall";
  * so it can never break the cycle.
  */
 async function finalizeCycle(env: Env, config: Config, status: CycleStatus): Promise<void> {
-  await setCycleStatus(env.DB, status);
+  await setCycleStatus(env.DB, status, config.targetEnvironment);
   try {
     await runCycleAlert(env, config, status);
   } catch (err) {

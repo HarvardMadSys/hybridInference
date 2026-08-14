@@ -49,6 +49,24 @@ describe("loadConfig targetEnvironment", () => {
     expect(target("https://gw.example")).toBe("unknown");
   });
 
+  it("refuses a host that merely resembles a deployment", () => {
+    const target = (url: string) =>
+      loadConfig(env({ GATEWAY_BASE_URL: url })).targetEnvironment;
+
+    // Suffix and substring matching were harmless while this only chose a Slack
+    // banner. It is now the proof a deploy submits for what a Worker probes, so
+    // a lookalike host must not be able to attest as the real one.
+    expect(target("https://notfreeinference.org")).toBe("unknown");
+    expect(target("https://freeinference.org.example.com")).toBe("unknown");
+    expect(target("https://staging.example.com")).toBe("unknown");
+    expect(target("https://my-staging-clone.net")).toBe("unknown");
+
+    // A deployment we page for is reached over TLS; probing one over plaintext
+    // is measuring something else.
+    expect(target("http://freeinference.org")).toBe("unknown");
+    expect(target("http://staging.freeinference.org")).toBe("unknown");
+  });
+
   it("cannot disagree with the gateway it is configured to probe", () => {
     // The pairing is derived, not stated. #1252 moved the URL and left every
     // page reading the old environment precisely because those were two

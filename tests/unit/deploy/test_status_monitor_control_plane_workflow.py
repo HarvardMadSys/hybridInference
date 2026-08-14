@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import yaml
@@ -84,6 +85,13 @@ def test_status_monitor_cutover_is_ordered_and_mutually_exclusive():
     assert "CAST(meta.value AS INTEGER) <" in lock
     assert steps["Release the cutover lock"]["if"].startswith("always()")
 
+    # The lock has to outlive the job it protects. A TTL below `timeout-minutes`
+    # lets a slow cutover keep running after its own lock expires, so a cron
+    # takes it back mid-flight and the exclusion lapses exactly when it is being
+    # relied on.
+    ttl_seconds = int(re.search(r"\+ (\d+)\) \* 1000", lock).group(1))
+    assert ttl_seconds > _workflow()["jobs"]["deploy"]["timeout-minutes"] * 60
+
     gate = steps["Require no incident in flight before cutting over"]["run"]
     assert "alert_state" in gate
     assert "cycle_alert" in gate
@@ -95,11 +103,15 @@ def test_status_monitor_cutover_is_ordered_and_mutually_exclusive():
     # would retire the registration of a version that is serving — the Worker
     # keeps running while the control plane stops trusting it, and alerting goes
     # silent.
-    retire = order("Retire the attested version if it never went live")
-    assert "failure()" in steps["Retire the attested version if it never went live"]["if"]
-    assert order("Activate the attested version") < retire
-    assert retire < order("Apply trigger changes")
-    assert retire < order("Run the non-public Service Binding RPC gate")
+    # Conditioned on the activation's own outcome, not on `failure()` alone.
+    # Ordering cannot carry this by itself: releasing the lock, applying
+    # triggers and the binding gate all have to run after activation, and a
+    # failure in any of them makes `failure()` true. Retiring then would
+    # deregister a version that is serving.
+    retire = steps["Retire the attested version if it never went live"]["if"]
+    assert "failure()" in retire
+    assert "steps.activate.outcome != 'success'" in retire
+    assert steps["Activate the attested version"]["id"] == "activate"
 
     # Triggers are Worker-level settings and no part of a version, so the
     # versions flow does not carry them; without this step a cron change would
