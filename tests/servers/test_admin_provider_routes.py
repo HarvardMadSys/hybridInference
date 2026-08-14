@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -1989,7 +1990,7 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
 
 
 @pytest.mark.asyncio
-async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client):
+async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client, caplog):
     """A runtime route on a scheduled YAML model prices the same before and after a restart.
 
     ``upsert_provider_route_candidate`` persists no schedule, but restore for a
@@ -2028,10 +2029,11 @@ async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client)
     assert created_adapter.config.route_metadata["runtime_candidate"] is True
 
     persisted = op_store.upsert_provider_route_candidate.await_args.args
+    route_id = persisted[1]
     op_store.list_all_provider_route_candidates.return_value = [
         {
             "model_id": "minimax-fast",
-            "route_id": persisted[1],
+            "route_id": route_id,
             "route_type": persisted[2],
             "provider": persisted[3],
             "openrouter_sort": persisted[4],
@@ -2053,11 +2055,27 @@ async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client)
         db_logger=MagicMock(),
         log_store=MagicMock(),
     )
+    # Drop the live route so restore rebuilds it from the persisted row. Without
+    # this the route_id is still installed, restore raises 409, and
+    # apply_persisted_provider_route_candidates swallows it into a warning —
+    # leaving the assertions below comparing the created adapter with itself.
+    provider_routes._install_route_candidate_delete(
+        services,
+        route_executor.routes["minimax-fast"],
+        route_id,
+    )
+    assert all(entry[2] != route_id for entry in route_executor.routes["minimax-fast"].raw_adapters)
 
-    await apply_persisted_provider_route_candidates(services, op_store)
+    with caplog.at_level(logging.WARNING, logger=provider_routes.logger.name):
+        await apply_persisted_provider_route_candidates(services, op_store)
 
-    restored_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
-    assert restored_adapter.config.route_metadata["route_id"] == persisted[1]
+    assert "Failed to apply provider route candidate" not in caplog.text
+    restored_adapter = next(
+        entry[0]
+        for entry in route_executor.routes["minimax-fast"].raw_adapters
+        if entry[2] == route_id
+    )
+    assert restored_adapter is not created_adapter
     assert restored_adapter.config.pricing == created_adapter.config.pricing
     assert restored_adapter.config.pricing_schedule == created_adapter.config.pricing_schedule
     assert restored_adapter.config.pricing_schedule == schedule
