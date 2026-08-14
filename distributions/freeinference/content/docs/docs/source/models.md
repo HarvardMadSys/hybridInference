@@ -29,6 +29,37 @@ All listed models produce text. Context and output limits are deployment
 limits; an upstream provider may enforce a smaller limit for an individual
 request.
 
+## DeepSeek Upstream Reference Pricing
+
+The following prices are DeepSeek's upstream API reference rates in U.S.
+dollars per 1 million tokens. The gateway uses them for cost accounting and
+route selection; they are not fees charged by FreeInference to users. See the
+[official DeepSeek pricing page](https://api-docs.deepseek.com/quick_start/pricing/)
+for the latest rates.
+
+Before **2026-08-16 16:00 UTC**, the reference rates are:
+
+| Model | Input (cache hit) | Input (cache miss) | Output |
+|-------|------------------:|-------------------:|-------:|
+| V4 Flash (`deepseek-v4-flash`) | $0.0028 | $0.14 | $0.28 |
+| V4 Pro (`deepseek-v4-pro`) | $0.003625 | $0.435 | $0.87 |
+
+From **2026-08-16 16:00 UTC**, DeepSeek uses peak and off-peak rates. Peak
+hours are **01:00–04:00 UTC** and **06:00–10:00 UTC** each day; all other
+hours are off-peak.
+
+| Model | Period | Input (cache hit) | Input (cache miss) | Output |
+|-------|--------|------------------:|-------------------:|-------:|
+| V4 Flash (`deepseek-v4-flash`) | Off-peak | $0.007 | $0.22 | $0.66 |
+| V4 Flash (`deepseek-v4-flash`) | Peak | $0.014 | $0.44 | $1.32 |
+| V4 Pro (`deepseek-v4-pro`) | Off-peak | $0.022 | $0.66 | $1.98 |
+| V4 Pro (`deepseek-v4-pro`) | Peak | $0.044 | $1.32 | $3.96 |
+
+The V4 Pro rows document the upstream rate for completeness; they do not add
+`deepseek-v4-pro` to the generally available FreeInference catalog.
+Availability remains determined by the authenticated `GET /v1/models`
+response, and administrator-only models remain omitted from the overview.
+
 ## Embedding Model
 
 | Model ID | Access | Context | Input | Output |
