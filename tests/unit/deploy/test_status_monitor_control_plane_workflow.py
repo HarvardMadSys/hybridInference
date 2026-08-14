@@ -33,7 +33,7 @@ def test_status_monitor_deploy_identity_is_pinned_and_fail_closed():
     # attestation and the cutover gate run while the old version is still live.
     assert "wrangler versions upload" in upload
     assert 'item.type === "version-upload"' in upload
-    assert 'item.worker_name === "freeinference-monitor"' in upload
+    assert "item.worker_name === process.env.WORKER_NAME" in upload
     assert "version_id=${versionId}" in upload
 
     attest = steps["Attest the exact deployed Worker version"]["run"]
@@ -49,6 +49,45 @@ def test_status_monitor_deploy_identity_is_pinned_and_fail_closed():
     assert "target_environment: process.env.TARGET_ENVIRONMENT" in attest
     assert "principal: process.env.TARGET_PRINCIPAL" in attest
     assert '"staging-monitor"' not in attest
+
+
+def test_status_monitor_deploys_both_instances_from_resolved_config():
+    """Each instance's identity comes from the config it ships, not the matrix.
+
+    The matrix carries only which wrangler environment to read. Target,
+    principal, Worker name and database are all resolved from that
+    environment's own config, so the pair that #1252 let drift apart cannot.
+    """
+    job = _workflow()["jobs"]["deploy"]
+
+    # One failing must not cancel the other's cutover: they are separate
+    # deployments with separate databases and separate incident namespaces.
+    assert job["strategy"]["fail-fast"] is False
+    assert job["strategy"]["matrix"]["include"] == [
+        {"instance": "production", "wrangler_env": ""},
+        {"instance": "staging", "wrangler_env": "staging"},
+    ]
+
+    steps = {step["name"]: step for step in job["steps"]}
+    resolve = steps["Resolve this instance's deploy parameters"]["run"]
+    assert "scripts/deploy-parameters.ts" in resolve
+
+    attest = steps["Attest the exact deployed Worker version"]["env"]
+    assert attest["TARGET_ENVIRONMENT"] == "${{ steps.target.outputs.targetEnvironment }}"
+    assert attest["TARGET_PRINCIPAL"] == "${{ steps.target.outputs.principal }}"
+
+    # Each instance locks, gates and migrates its own database — a shared name
+    # here would have one instance's cutover block the other's probing.
+    for name in (
+        "Apply D1 migrations",
+        "Acquire the cutover lock",
+        "Require no incident in flight before cutting over",
+        "Release the cutover lock",
+    ):
+        assert (
+            steps[name]["env"]["DATABASE_NAME"]
+            == "${{ steps.target.outputs.databaseName }}"
+        ), name
 
 
 def test_status_monitor_cutover_is_ordered_and_mutually_exclusive():
