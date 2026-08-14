@@ -157,8 +157,54 @@ between the 08-11 cutover and that fix.
 
 Its principal follows the target (`status-monitor-production` /
 `status-monitor-staging`). Principal partitions both incident routing and quota,
-so a second instance watching the other environment gets its own of each without
-any further change.
+so each instance gets its own of each.
+
+## Two instances
+
+The same Worker is deployed twice, once per gateway:
+
+| | Worker | Probes | D1 | Principal |
+|---|---|---|---|---|
+| production | `freeinference-monitor` | `freeinference.org` | `freeinference-monitor` | `status-monitor-production` |
+| staging | `freeinference-monitor-staging` | `staging.freeinference.org` | `freeinference-monitor-staging` | `status-monitor-staging` |
+
+Two deployments rather than one Worker probing both, because a probe target is a
+property of a deployment: the gateways run separate user databases so each needs
+its own `PROBER_API_KEY`, and each gets its own probe history, failure counters,
+cycle alert, incident namespace and quota bucket. A staging outage cannot
+exhaust the production instance's quota, delay its probes, or land in its
+incidents.
+
+Both are attested in the **same** trust domain (`environment: staging`) and both
+talk to the **same** control plane. The control plane is an incident processor,
+not a per-environment stack; the instances are told apart by principal and
+target, not by having one each.
+
+`wrangler.toml` holds both: the top level is the production instance,
+`[env.staging]` is the staging one. wrangler inherits `main`,
+`compatibility_date`, `account_id` and `triggers` but **not** `vars`,
+`d1_databases`, `services` or `version_metadata`, so those are restated in full
+under `[env.staging]`. Everything the two must agree on is asserted by
+`test/wrangler-environments.test.ts` rather than left to whoever edits next.
+
+Deploy parameters — target, principal, Worker name, database name — are resolved
+from the config being shipped by `scripts/deploy-parameters.ts`, which the deploy
+workflow runs per instance. Nothing about an instance is written twice.
+
+### Adding the staging instance for the first time
+
+One-time setup, in this order:
+
+```bash
+cd services/status-monitor-worker
+npx wrangler d1 create freeinference-monitor-staging   # paste the id into [[env.staging.d1_databases]]
+npx wrangler d1 migrations apply freeinference-monitor-staging --remote --env staging
+npx wrangler secret put PROBER_API_KEY --env staging   # a key issued on STAGING
+```
+
+The prober key must belong to the gateway this instance names. A key from the
+wrong deployment is rejected account-wide and pages a single "Monitoring cycle
+failing" alert rather than any per-model one.
 
 `PROBER_API_KEY` is a **secret**, not a var. `CODEX_ONCALL_RELAY_URL`,
 `CODEX_ONCALL_RELAY_TOKEN`, and `SLACK_WEBHOOK_URL` are optional secrets. Both

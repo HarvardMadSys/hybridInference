@@ -1,11 +1,15 @@
 name: Deploy Status Monitor
 
-# Builds, tests, and deploys the Cloudflare freeinference-monitor Worker
-# (services/status-monitor-worker) whenever its source lands on dev. The Worker
-# probes the production gateway but its own code still ships from dev: it is a
-# standalone observer that touches no gateway code path, and the same dev-first
-# flow keeps a probe change reviewable on the live dashboard before it can be
-# promoted anywhere else. Runs on manual dispatch too.
+# Builds, tests, and deploys the Cloudflare status-monitor Workers
+# (services/status-monitor-worker) whenever their source lands on dev.
+#
+# Two instances share this pipeline: one probes production, one probes staging.
+# Both ship from dev through the `staging` GitHub Environment — they are
+# standalone observers that touch no gateway code path, and that is what their
+# `environment: staging` attestation describes. Which gateway each watches is a
+# separate fact, resolved per instance from the config being deployed.
+#
+# Runs on manual dispatch too.
 on:
   push:
     branches: [dev]
@@ -25,10 +29,20 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy freeinference-monitor Worker
+    name: Deploy status monitor (${{ matrix.instance }})
     runs-on: [self-hosted, Linux, deploy-edge]
     environment: staging
     timeout-minutes: 15
+    strategy:
+      # Each instance is a separate Worker with its own database and its own
+      # incident namespace, so one failing must not cancel the other's deploy.
+      fail-fast: false
+      matrix:
+        include:
+          - instance: production
+            wrangler_env: ""
+          - instance: staging
+            wrangler_env: "staging"
     defaults:
       run:
         working-directory: services/status-monitor-worker
@@ -62,45 +76,31 @@ jobs:
       - name: Test
         run: npm test
 
-      # The environment a page names now comes from the deployment record, so it
-      # has to be proven against the config being shipped rather than restated
-      # beside it. #1252 moved GATEWAY_BASE_URL and left the label behind
-      # precisely because those were two independent edits; this makes the pair
-      # inseparable — a URL change with no matching target fails the deploy.
-      - name: Derive the probed environment from the config being deployed
+      # Everything below reads these instead of carrying literals. #1252 moved
+      # GATEWAY_BASE_URL and left the label behind precisely because those were
+      # two independent edits; resolving target, principal and database from the
+      # config being shipped is what makes the pair inseparable — a URL with no
+      # placeable environment fails the deploy rather than mislabelling pages.
+      - name: Resolve this instance's deploy parameters
         id: target
+        env:
+          WRANGLER_ENV: ${{ matrix.wrangler_env }}
         run: |
           set -euo pipefail
-          # Imports the Worker's own derivation rather than restating it: a
-          # second copy of these rules is the thing that drifts. `src/env.ts`
-          # has only type-only imports, so stripping types leaves it standalone.
           node --experimental-strip-types --no-warnings \
-            --input-type=module <<'NODE' >> "${GITHUB_OUTPUT}"
-          import { readFileSync } from "node:fs";
-          import { deriveEnvironment } from "./src/env.ts";
-
-          const toml = readFileSync("wrangler.toml", "utf8");
-          const match = /^\s*GATEWAY_BASE_URL\s*=\s*"([^"]+)"/m.exec(toml);
-          if (match === null) {
-            throw new Error("wrangler.toml does not set GATEWAY_BASE_URL");
-          }
-          const target = deriveEnvironment(match[1].replace(/\/+$/, ""));
-          // `local` and `unknown` mean the host could not be placed. Registering
-          // one would attribute real pages to an environment nobody operates.
-          if (target !== "staging" && target !== "production") {
-            throw new Error(`GATEWAY_BASE_URL is not a deployment we alert on: ${match[1]}`);
-          }
-          console.log(`environment=${target}`);
-          console.log(`principal=status-monitor-${target}`);
-          NODE
-        working-directory: services/status-monitor-worker
+            scripts/deploy-parameters.ts "${WRANGLER_ENV}" >> "${GITHUB_OUTPUT}"
 
       # Applied before the new version can serve, so a version that reads a
       # column is never live against a database without it.
       - name: Apply D1 migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: npm run migrate:remote
+          DATABASE_NAME: ${{ steps.target.outputs.databaseName }}
+          WRANGLER_ENV: ${{ matrix.wrangler_env }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 migrations apply "${DATABASE_NAME}" --remote \
+            ${WRANGLER_ENV:+--env "${WRANGLER_ENV}"}
 
       # Upload without activating: attestation and the incident-state gate both
       # have to pass while the currently-serving version is still the old one.
@@ -111,12 +111,15 @@ jobs:
         id: deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WRANGLER_ENV: ${{ matrix.wrangler_env }}
+          WORKER_NAME: ${{ steps.target.outputs.workerName }}
         run: |
           set -euo pipefail
-          output="${RUNNER_TEMP}/status-monitor-wrangler-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.ndjson"
+          output="${RUNNER_TEMP}/status-monitor-${WORKER_NAME}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.ndjson"
           rm -f "${output}"
-          WRANGLER_OUTPUT_FILE_PATH="${output}" npx wrangler versions upload
-          OUTPUT_PATH="${output}" node <<'NODE'
+          WRANGLER_OUTPUT_FILE_PATH="${output}" npx wrangler versions upload \
+            ${WRANGLER_ENV:+--env "${WRANGLER_ENV}"}
+          OUTPUT_PATH="${output}" WORKER_NAME="${WORKER_NAME}" node <<'NODE'
           const fs = require("node:fs");
           const output = process.env.OUTPUT_PATH;
           const lines = fs.readFileSync(output, "utf8").split(/\r?\n/).filter(Boolean);
@@ -125,7 +128,7 @@ jobs:
             .filter(
               (item) =>
                 item.type === "version-upload" &&
-                item.worker_name === "freeinference-monitor",
+                item.worker_name === process.env.WORKER_NAME,
             );
           if (uploads.length !== 1) throw new Error("expected one status-monitor version upload");
           const versionId = uploads[0].version_id;
@@ -140,7 +143,7 @@ jobs:
         env:
           CONTROL_PLANE_URL: ${{ vars.ALERT_CONTROL_PLANE_STAGING_URL }}
           DEPLOYMENT_ID: ${{ steps.deploy.outputs.version_id }}
-          TARGET_ENVIRONMENT: ${{ steps.target.outputs.environment }}
+          TARGET_ENVIRONMENT: ${{ steps.target.outputs.targetEnvironment }}
           TARGET_PRINCIPAL: ${{ steps.target.outputs.principal }}
         run: |
           set -euo pipefail
@@ -245,13 +248,16 @@ jobs:
         id: lock
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DATABASE_NAME: ${{ steps.target.outputs.databaseName }}
+          WRANGLER_ENV: ${{ matrix.wrangler_env }}
         run: |
           set -euo pipefail
           token="cutover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           expiry=$(( ($(date +%s) + 1200) * 1000 ))
           now=$(( $(date +%s) * 1000 ))
           echo "token=${token}" >> "${GITHUB_OUTPUT}"
-          npx wrangler d1 execute freeinference-monitor --remote --json --command "
+          npx wrangler d1 execute "${DATABASE_NAME}" --remote --json \
+            ${WRANGLER_ENV:+--env "${WRANGLER_ENV}"} --command "
             INSERT INTO meta (key, value) VALUES ('cycle_lock', '${expiry}:${token}')
             ON CONFLICT(key) DO UPDATE SET value = '${expiry}:${token}'
              WHERE CAST(meta.value AS INTEGER) < ${now}
@@ -286,10 +292,13 @@ jobs:
       - name: Require no incident in flight before cutting over
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DATABASE_NAME: ${{ steps.target.outputs.databaseName }}
+          WRANGLER_ENV: ${{ matrix.wrangler_env }}
         working-directory: services/status-monitor-worker
         run: |
           set -euo pipefail
-          npx wrangler d1 execute freeinference-monitor --remote --json --command "
+          npx wrangler d1 execute "${DATABASE_NAME}" --remote --json \
+            ${WRANGLER_ENV:+--env "${WRANGLER_ENV}"} --command "
             SELECT COUNT(*) AS in_flight FROM meta
              WHERE (key = 'alert_state' AND value NOT IN ('{}', ''))
                 OR key = 'cycle_alert'
@@ -321,8 +330,12 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           DEPLOYMENT_ID: ${{ steps.deploy.outputs.version_id }}
+          WRANGLER_ENV: ${{ matrix.wrangler_env }}
         working-directory: services/status-monitor-worker
-        run: npx wrangler versions deploy "${DEPLOYMENT_ID}@100%" --yes
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy "${DEPLOYMENT_ID}@100%" --yes \
+            ${WRANGLER_ENV:+--env "${WRANGLER_ENV}"}
 
       # Always: a cutover that failed must not leave probing wedged behind a lock
       # nobody owns. Scoped to our own token, so a lock a live cycle has since
@@ -332,9 +345,13 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           LOCK_TOKEN: ${{ steps.lock.outputs.token }}
+          DATABASE_NAME: ${{ steps.target.outputs.databaseName }}
+          WRANGLER_ENV: ${{ matrix.wrangler_env }}
+        working-directory: services/status-monitor-worker
         run: |
           set -euo pipefail
-          npx wrangler d1 execute freeinference-monitor --remote --command "
+          npx wrangler d1 execute "${DATABASE_NAME}" --remote \
+            ${WRANGLER_ENV:+--env "${WRANGLER_ENV}"} --command "
             DELETE FROM meta
              WHERE key = 'cycle_lock'
                AND substr(value, instr(value, ':') + 1) = '${LOCK_TOKEN}'
@@ -407,8 +424,11 @@ jobs:
       - name: Apply trigger changes
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WRANGLER_ENV: ${{ matrix.wrangler_env }}
         working-directory: services/status-monitor-worker
-        run: npx wrangler triggers deploy
+        run: |
+          set -euo pipefail
+          npx wrangler triggers deploy ${WRANGLER_ENV:+--env "${WRANGLER_ENV}"}
 
       - name: Run the non-public Service Binding RPC gate
         env:
