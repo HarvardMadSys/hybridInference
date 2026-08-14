@@ -27,6 +27,11 @@ MODEL_NOT_FOUND = "model_not_found"
 # REQUEST_SCOPED_KEYS is what makes "absent" trustworthy.
 USER_ROLE = "user_role"
 
+# UTC datetime captured once at the HTTP request boundary. Scheduled pricing
+# consumers use it so routing, logs, and quota charging cannot disagree when a
+# long-running request crosses a price-window boundary.
+PRICING_TIME = "pricing_time"
+
 # req_ctx key naming the upstream that served (or refused) this request.
 PROVIDER = "provider"
 #: Provider label meaning "no upstream was ever selected" — a pre-routing failure.
@@ -56,6 +61,7 @@ REQUEST_SCOPED_KEYS = (
     "auth_key_hash",
     "affinity_key",
     USER_ROLE,
+    PRICING_TIME,
     CLIENT_ERROR_KIND,
     PROVIDER,
 )
@@ -151,6 +157,7 @@ def mark_model_not_found() -> None:
 __all__ = [
     "CLIENT_ERROR_KIND",
     "MODEL_NOT_FOUND",
+    "PRICING_TIME",
     "PROVIDER",
     "REQUEST_SCOPED_KEYS",
     "ROUTER_PROVIDER_SENTINEL",

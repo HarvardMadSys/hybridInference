@@ -38,6 +38,7 @@ from serving.exceptions import operator_safe_error, scrub_error_for_user
 from serving.model_access import is_model_disabled_for_user, is_model_outside_grant_scope
 from serving.observability.rejection_log import log_rejection
 from serving.observability.tracked_tasks import tracked_task
+from serving.pricing import effective_pricing
 from serving.servers.auth import (
     _next_utc_midnight,
     verify_api_key,
@@ -995,7 +996,7 @@ def _log_failure(
             usage={},
             latency_ms=latency_ms,
             status_code=status_code,
-            pricing=adapter.config.pricing,
+            pricing=effective_pricing(adapter.config) or {},
             metadata=metadata,
             params=params_for_log,
             prompt=messages_for_log,
@@ -1481,7 +1482,7 @@ async def anthropic_messages(
                         usage=resolved_usage,
                         latency_ms=latency_ms,
                         status_code=stream_status_code,
-                        pricing=adapter.config.pricing,
+                        pricing=effective_pricing(adapter.config) or {},
                         metadata=log_metadata,
                         params=params_for_log,
                         prompt=messages_for_log,
@@ -1663,7 +1664,7 @@ async def anthropic_messages(
             usage=usage_for_log,
             latency_ms=latency_ms,
             status_code=200,
-            pricing=adapter.config.pricing,
+            pricing=effective_pricing(adapter.config) or {},
             metadata=metadata,
             params=params_for_log,
             prompt=messages_for_log,

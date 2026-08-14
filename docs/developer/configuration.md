@@ -78,6 +78,7 @@ models:
 - `provider_model_id`: The actual model name sent to the backend provider (e.g. the path a vLLM server was launched with, `/models/...`). If omitted, uses `id`
 - `aliases`: Additional public aliases that are registered alongside `id` to point to the same adapter
 - `provider`: Determines adapter type. Supported kinds (dispatched in `serving/servers/registry.py:_make_adapter`): `openai_compat`, `staging`, `vllm`, `sglang`, `ollama`, `chutes`, `featherless`, `deepseek`, `zai`, `minimax`, `cliproxy`, `openrouter` (also `openrouter[<slug>]` to pin a sub-provider), `gemini`, `claude`, `anthropic`. See [adding-models.md](adding-models.md) for the full reference table.
+- `pricing`: Base prices in USD per 1M tokens. For a provider with time-of-day pricing, `pricing_schedule` can activate recurring UTC overrides at `effective_at`; `default` applies outside its half-open `[start, end)` windows. See [adding-models.md](adding-models.md) for the field reference.
 - `/v1/models` endpoint dynamically generates its response from registered adapters
 
 ## 3. routing.yaml (Optional)

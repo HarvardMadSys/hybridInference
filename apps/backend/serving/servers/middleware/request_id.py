@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import secrets
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,7 @@ class RequestIdMiddleware:
         req_ctx.reset_request_scope(
             request_id=req_id,
             client_user_agent=user_agent or None,
+            pricing_time=dt.datetime.now(dt.timezone.utc),
         )
 
         req_id_bytes = req_id.encode("latin-1")

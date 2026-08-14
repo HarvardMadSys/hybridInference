@@ -389,7 +389,8 @@ curl -N -s -X POST http://localhost:8080/v1/chat/completions \
 | `on_demand` | bool | No | Model is lazily loaded on shared GPUs (started on first request, stopped when idle). Exposed in `/v1/models`; synthetic monitors skip chat-probing such models, and the RouteWise background latency prober skips their endpoints (default: false) |
 | `supports_structured_output` | bool | No | JSON mode support (default: false) |
 | `supported_params` | list[string] | No | Allowed parameter names |
-| `pricing` | dict | No | Cost information per token/request |
+| `pricing` | dict | No | Base cost information per 1M tokens/request |
+| `pricing_schedule` | dict | No | Optional UTC activation time plus recurring daily price windows; `pricing` remains active before `effective_at`, `default` applies afterward outside each half-open `[start, end)` window, and each window's `pricing` overrides the base fields |
 
 ### Route Configuration
 

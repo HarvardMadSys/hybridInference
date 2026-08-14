@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from serving.http import AsyncHTTPClient
+from serving.pricing import PricingSchedule
 from serving.stream import make_stream_chunk
 
 
@@ -111,6 +112,7 @@ class ModelConfig:
             "input_cache_writes": "0",
         }
     )
+    pricing_schedule: PricingSchedule | dict[str, Any] | None = None
     # Output processor override for OpenAICompatAdapter.
     # When set, bypasses auto-detection based on model ID.
     # Values: "default", "glm", "qwen_coder", "think_block".
@@ -172,6 +174,12 @@ class ModelConfig:
         for _name in ("extra_body", "extra_headers", "extra_query", "route_metadata"):
             if getattr(self, _name) is None:
                 setattr(self, _name, {})
+        if isinstance(self.pricing_schedule, dict):
+            self.pricing_schedule = PricingSchedule.from_raw(self.pricing_schedule)
+        elif self.pricing_schedule is not None and not isinstance(
+            self.pricing_schedule, PricingSchedule
+        ):
+            raise ValueError("pricing_schedule must be a mapping or PricingSchedule")
 
 
 class BaseAdapter(ABC):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,6 +12,7 @@ import pytest
 from serving.servers.routers.completions_cost import CostTracker, PricingLookup
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
 from serving.storage.utils import calculate_cost
+from serving.utils import context as req_ctx
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -203,6 +205,42 @@ def test_pricing_lookup_raw_dict_prefers_embedded_extra_over_registry():
         extra={"pricing": embedded},
     )
     assert lookup.raw_dict_for_routing(routing) == embedded
+
+
+def test_pricing_lookup_does_not_cache_across_scheduled_price_windows():
+    adapter = _make_adapter(
+        provider="deepseek",
+        base_url="https://api.deepseek.com",
+        pricing={"prompt": "0.14", "completion": "0.28"},
+        endpoint_id="deepseek-v4-flash:deepseek-api",
+    )
+    adapter.config.pricing_schedule = {
+        "effective_at": "2026-08-16T16:00:00Z",
+        "timezone": "UTC",
+        "default": {"prompt": "0.22", "completion": "0.66"},
+        "windows": [
+            {
+                "start": "01:00",
+                "end": "04:00",
+                "pricing": {"prompt": "0.44", "completion": "1.32"},
+            }
+        ],
+    }
+    lookup = PricingLookup(router=_make_router({"deepseek-v4-flash": [adapter]}))
+    routing = RoutingInfo(
+        request_id="rid",
+        model="deepseek-v4-flash",
+        provider="deepseek",
+        endpoint_id="deepseek-v4-flash:deepseek-api",
+    )
+
+    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 2, tzinfo=dt.timezone.utc)):
+        peak = lookup.raw_dict_for_routing(routing)
+    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 12, tzinfo=dt.timezone.utc)):
+        off_peak = lookup.raw_dict_for_routing(routing)
+
+    assert peak == {"prompt": "0.44", "completion": "1.32"}
+    assert off_peak == {"prompt": "0.22", "completion": "0.66"}
 
 
 def test_pricing_lookup_for_routing_handles_invalid_dict_gracefully():

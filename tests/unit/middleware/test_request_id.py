@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 
 import pytest
@@ -145,6 +146,7 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         "affinity_key",
         "client_error_kind",
         "provider",
+        "pricing_time",
     }
 )
 
@@ -179,4 +181,10 @@ async def test_every_request_scoped_key_is_cleared() -> None:
     captured: dict = {}
     await _drive([], captured)
     for key in keys:
+        if key == req_ctx.PRICING_TIME:
+            pricing_time = captured.get(key)
+            assert isinstance(pricing_time, dt.datetime)
+            assert pricing_time.tzinfo is not None
+            assert pricing_time.utcoffset() == dt.timedelta(0)
+            continue
         assert captured.get(key) is None, f"{key} leaked from the previous request"

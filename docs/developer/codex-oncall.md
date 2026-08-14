@@ -130,7 +130,7 @@ instead and keep the workflow on the gateway.
 Model choice: `glm-5.2` is the launch default because it is verified working
 end-to-end through the Responses API today. The intended steady-state model is
 `deepseek-v4-flash` (local H200 sglang route with the official DeepSeek API as
-fallback, an order of magnitude cheaper per token than `deepseek-v4-pro` —
+fallback, roughly one-third the official per-token price of `deepseek-v4-pro` —
 each analysis run sends tens of thousands of prompt tokens through an agentic
 loop). It is blocked on the H200 V4 parser fix (PR #939): until that
 deployment is restarted and verified, the model returns empty `content` and

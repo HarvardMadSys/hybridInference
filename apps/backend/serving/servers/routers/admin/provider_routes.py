@@ -1137,11 +1137,19 @@ async def _apply_openrouter_endpoint_pricing(
         route_metadata = dict(cfg.get("route_metadata") or {})
         if route_metadata.get("pricing_source") == "openrouter_endpoint":
             cfg.pop("pricing", None)
+            # Drop the schedule alongside the price. Without ``pricing`` the
+            # route falls back to ModelConfig's all-zero default, and a schedule
+            # left behind would layer real per-token prices back on top of those
+            # zeros — billing a route whose price was deliberately withdrawn.
+            cfg.pop("pricing_schedule", None)
             route_metadata.pop("pricing_source", None)
             route_metadata.pop("pricing_provider", None)
             cfg["route_metadata"] = route_metadata
         return
     cfg["pricing"] = endpoint_pricing.pricing
+    # OpenRouter's endpoint-specific price is authoritative for this route; a
+    # model-level provider schedule must not overwrite it later.
+    cfg["pricing_schedule"] = None
     route_metadata = dict(cfg.get("route_metadata") or {})
     route_metadata["pricing_source"] = "openrouter_endpoint"
     route_metadata["pricing_provider"] = endpoint_pricing.provider
@@ -1298,7 +1306,11 @@ def _base_url_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> b
 
 def _config_to_dict(config: Any) -> dict[str, Any]:
     if is_dataclass(config):
-        return asdict(config)
+        values = asdict(config)
+        # ``asdict`` recursively converts PricingSchedule into its internal
+        # dataclass shape, which ModelConfig does not accept as config input.
+        values["pricing_schedule"] = getattr(config, "pricing_schedule", None)
+        return values
     values: dict[str, Any] = {}
     for field in fields(ModelConfig):
         if hasattr(config, field.name):
