@@ -43,10 +43,6 @@ class FakeStmt {
       const rows = [...this.db.meta].map(([key, value]) => ({ key, value }));
       return { results: rows as T[] };
     }
-    if (/^SELECT key, value FROM meta$/.test(this.sql.trim())) {
-      const rows = [...this.db.meta].map(([key, value]) => ({ key, value }));
-      return { results: rows as T[] };
-    }
     if (/SELECT key, value FROM meta WHERE key IN/.test(this.sql)) {
       const rows = (this.args as string[])
         .filter((key) => this.db.meta.has(key))
