@@ -26,20 +26,85 @@ def test_status_monitor_deploy_identity_is_pinned_and_fail_closed():
     steps = {step["name"]: step for step in job["steps"]}
     assert steps["Check out"]["with"]["persist-credentials"] is False
 
-    deploy = steps["Deploy"]["run"]
-    assert "WRANGLER_OUTPUT_FILE_PATH" in deploy
-    assert 'item.type === "deploy"' in deploy
-    assert 'item.worker_name === "freeinference-monitor"' in deploy
-    assert "version_id=${versionId}" in deploy
+    upload = steps["Upload the Worker version without activating it"]["run"]
+    assert "WRANGLER_OUTPUT_FILE_PATH" in upload
+    # `versions upload` creates a version without serving it, which is what lets
+    # attestation and the cutover gate run while the old version is still live.
+    assert "wrangler versions upload" in upload
+    assert 'item.type === "version-upload"' in upload
+    assert 'item.worker_name === "freeinference-monitor"' in upload
+    assert "version_id=${versionId}" in upload
 
     attest = steps["Attest the exact deployed Worker version"]["run"]
     assert "alert-control-plane-deployment-attestation" in attest
     assert 'service: "status-monitor"' in attest
     assert 'source: "status-monitor"' in attest
-    assert 'principal: "staging-monitor"' in attest
     assert "deployment_id: deploymentId" in attest
     assert "deployment_sha: sha" in attest
     assert "producer_token" not in attest
+    # Target and principal are resolved from the config being shipped, never
+    # written here: a literal is what let #1252 move the gateway and leave the
+    # environment every page reported behind.
+    assert "target_environment: process.env.TARGET_ENVIRONMENT" in attest
+    assert "principal: process.env.TARGET_PRINCIPAL" in attest
+    assert '"staging-monitor"' not in attest
+
+
+def test_status_monitor_cutover_is_ordered_and_mutually_exclusive():
+    """The activation sequence, pinned in order.
+
+    `target_environment` and `principal` are incident-route material, so
+    activating a version that changes either moves every incident to a new
+    Durable Object. Anything that lets a probe cycle run across that move splits
+    one outage between two objects and strands the first half open.
+    """
+    names = [step["name"] for step in _workflow()["jobs"]["deploy"]["steps"]]
+
+    def order(name: str) -> int:
+        assert name in names, f"missing step: {name}"
+        return names.index(name)
+
+    assert (
+        order("Apply D1 migrations")
+        < order("Upload the Worker version without activating it")
+        < order("Attest the exact deployed Worker version")
+        < order("Acquire the cutover lock")
+        < order("Require no incident in flight before cutting over")
+        < order("Activate the attested version")
+        < order("Release the cutover lock")
+    )
+
+    steps = {step["name"]: step for step in _workflow()["jobs"]["deploy"]["steps"]}
+
+    # Held across the gate and the activation, so no cycle can start between the
+    # answer and the change it authorises; released whatever happens, so a
+    # failed cutover cannot wedge probing behind a lock nobody owns.
+    lock = steps["Acquire the cutover lock"]["run"]
+    assert "cycle_lock" in lock
+    assert "CAST(meta.value AS INTEGER) <" in lock
+    assert steps["Release the cutover lock"]["if"].startswith("always()")
+
+    gate = steps["Require no incident in flight before cutting over"]["run"]
+    assert "alert_state" in gate
+    assert "cycle_alert" in gate
+    assert "alert_delivery_owner:v1:%" in gate
+    assert "alert_delivery_pending:v1:%" in gate
+
+    # The cleanup exists for a version that was attested but never went live, so
+    # it must precede every post-activation step. Below one, a failure there
+    # would retire the registration of a version that is serving — the Worker
+    # keeps running while the control plane stops trusting it, and alerting goes
+    # silent.
+    retire = order("Retire the attested version if it never went live")
+    assert "failure()" in steps["Retire the attested version if it never went live"]["if"]
+    assert order("Activate the attested version") < retire
+    assert retire < order("Apply trigger changes")
+    assert retire < order("Run the non-public Service Binding RPC gate")
+
+    # Triggers are Worker-level settings and no part of a version, so the
+    # versions flow does not carry them; without this step a cron change would
+    # upload, attest and activate cleanly while the schedule stayed put.
+    assert "wrangler triggers deploy" in steps["Apply trigger changes"]["run"]
 
 
 def test_status_monitor_service_binding_gate_is_local_and_non_public():

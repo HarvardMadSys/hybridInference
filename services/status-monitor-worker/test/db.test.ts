@@ -4,7 +4,7 @@ import { MODEL_SWEEP_INTERVAL_MS, reconcileModels } from "../src/db";
 
 const NOW = Date.parse("2026-08-05T12:00:00Z");
 
-type Row = { id: number; model_id: string };
+type Row = { id: number; model_id: string; target_environment: string };
 
 /**
  * In-memory D1 double that records every statement it executes, so tests can
@@ -52,16 +52,21 @@ class FakeStmt {
       this.db.meta.set(key as string, String(value));
       return { meta: { changes: 1 } };
     }
-    if (/^DELETE FROM probe_results WHERE model_id NOT IN \((\?,?)+\)$/.test(this.sql)) {
-      const keep = new Set(this.args as string[]);
-      return this.delete((row) => !keep.has(row.model_id));
+    // Every delete is scoped to one target, so the fake honours that binding
+    // too — otherwise a query that dropped the scope would still pass here.
+    if (/DELETE FROM probe_results\s+WHERE target_environment = \? AND model_id NOT IN \((\?,?)+\)/.test(this.sql)) {
+      const [target, ...ids] = this.args as string[];
+      const keep = new Set(ids);
+      return this.delete((row) => row.target_environment === target && !keep.has(row.model_id));
     }
-    if (/^DELETE FROM probe_results WHERE model_id IN \((\?,?)+\)$/.test(this.sql)) {
-      const drop = new Set(this.args as string[]);
-      return this.delete((row) => drop.has(row.model_id));
+    if (/DELETE FROM probe_results\s+WHERE target_environment = \? AND model_id IN \((\?,?)+\)/.test(this.sql)) {
+      const [target, ...ids] = this.args as string[];
+      const drop = new Set(ids);
+      return this.delete((row) => row.target_environment === target && drop.has(row.model_id));
     }
-    if (/^DELETE FROM probe_results$/.test(this.sql)) {
-      return this.delete(() => true);
+    if (/^DELETE FROM probe_results WHERE target_environment = \?$/.test(this.sql)) {
+      const [target] = this.args as string[];
+      return this.delete((row) => row.target_environment === target);
     }
     throw new Error(`unhandled run: ${this.sql}`);
   }
@@ -91,7 +96,14 @@ class FakeD1 {
 
   /** Seeds probe history for `modelId`, as a cycle's `recordResults` would. */
   record(...modelIds: string[]): this {
-    for (const modelId of modelIds) this.probe.push({ id: ++this.seq, model_id: modelId });
+    return this.recordFor("production", ...modelIds);
+  }
+
+  /** Seeds history belonging to a deployment other than the one under test. */
+  recordFor(targetEnvironment: string, ...modelIds: string[]): this {
+    for (const modelId of modelIds) {
+      this.probe.push({ id: ++this.seq, model_id: modelId, target_environment: targetEnvironment });
+    }
     return this;
   }
 
@@ -108,7 +120,12 @@ class FakeD1 {
 
   /** Every probe_results statement issued — the rows_read-bearing work. */
   get probeStatements(): string[] {
-    return this.executed.map((s) => s.sql).filter((sql) => /probe_results/.test(sql));
+    // Whitespace-normalised: these assertions exist to pin which predicate runs
+    // — an indexed `IN` seek versus a full-scanning `NOT IN` — not how the SQL
+    // happens to be wrapped.
+    return this.executed
+      .map((s) => s.sql.replace(/\s+/g, " ").trim())
+      .filter((sql) => /probe_results/.test(sql));
   }
 
   as(): D1Database {
@@ -123,21 +140,48 @@ describe("reconcileModels", () => {
     // cycle, to delete nothing.
     const db = new FakeD1().record("a", "b", "c").storeModelIds(["a", "b", "c"]);
 
-    await reconcileModels(db.as(), ["c", "a", "b"], NOW);
+    await reconcileModels(db.as(), ["c", "a", "b"], NOW, "production");
 
     expect(db.probeStatements).toEqual([]);
     expect(db.probe).toHaveLength(3);
   });
 
+  it("leaves another deployment's history alone", async () => {
+    // Both instances write to their own database today, but the production one
+    // still holds the pre-cutover staging rows migration 0003 labelled. An
+    // unscoped delete would evict them on the first catalog change — and, if a
+    // future instance ever shares a database, silently evict a live history.
+    const db = new FakeD1()
+      .record("a", "gone")
+      .recordFor("staging", "gone", "staging-only")
+      .storeModelIds(["a", "gone"]);
+
+    await reconcileModels(db.as(), ["a"], NOW, "production");
+
+    expect(
+      db.probe.map((r) => `${r.target_environment}:${r.model_id}`).sort(),
+    ).toEqual(["production:a", "staging:gone", "staging:staging-only"]);
+  });
+
+  it("scopes the empty-catalog wipe to the deployment it observed", async () => {
+    const db = new FakeD1().record("a").recordFor("staging", "b").storeModelIds(["a"]);
+
+    await reconcileModels(db.as(), [], NOW, "production");
+
+    expect(db.probe.map((r) => r.model_id)).toEqual(["b"]);
+  });
+
   it("deletes removed models by indexed IN rather than scanning with NOT IN", async () => {
     const db = new FakeD1().record("a", "b", "gone").storeModelIds(["a", "b", "gone"]);
 
-    await reconcileModels(db.as(), ["a", "b"], NOW);
+    await reconcileModels(db.as(), ["a", "b"], NOW, "production");
 
     // `model_id IN (...)` seeks idx_probe_results_model_id, so rows_read is
     // proportional to the rows actually deleted; `NOT IN` cannot use the index.
-    expect(db.probeStatements).toEqual(["DELETE FROM probe_results WHERE model_id IN (?)"]);
-    expect(db.executed.at(-2)?.args).toEqual(["gone"]);
+    expect(db.probeStatements).toEqual([
+      "DELETE FROM probe_results WHERE target_environment = ? AND model_id IN (?)",
+    ]);
+    expect(db.executed.at(-2)?.args).toEqual(["production", "gone"]);
     expect(db.probe.map((r) => r.model_id)).toEqual(["a", "b"]);
     expect(db.modelIds).toEqual(["a", "b"]);
   });
@@ -145,7 +189,7 @@ describe("reconcileModels", () => {
   it("records a newly added model without touching probe_results", async () => {
     const db = new FakeD1().record("a").storeModelIds(["a"]);
 
-    await reconcileModels(db.as(), ["a", "new"], NOW);
+    await reconcileModels(db.as(), ["a", "new"], NOW, "production");
 
     expect(db.probeStatements).toEqual([]);
     expect(db.modelIds).toEqual(["a", "new"]);
@@ -156,9 +200,9 @@ describe("reconcileModels", () => {
     // diff, so the one-off full sweep is the only way to evict stale history.
     const db = new FakeD1().record("a", "orphan");
 
-    await reconcileModels(db.as(), ["a"], NOW);
+    await reconcileModels(db.as(), ["a"], NOW, "production");
 
-    expect(db.probeStatements).toEqual(["DELETE FROM probe_results WHERE model_id NOT IN (?)"]);
+    expect(db.probeStatements).toEqual(["DELETE FROM probe_results WHERE target_environment = ? AND model_id NOT IN (?)"]);
     expect(db.probe.map((r) => r.model_id)).toEqual(["a"]);
     expect(db.modelIds).toEqual(["a"]);
   });
@@ -168,9 +212,9 @@ describe("reconcileModels", () => {
     db.meta.set("model_ids", "{not json");
     db.meta.set("model_ids_swept_at", String(NOW));
 
-    await reconcileModels(db.as(), ["a"], NOW);
+    await reconcileModels(db.as(), ["a"], NOW, "production");
 
-    expect(db.probeStatements).toEqual(["DELETE FROM probe_results WHERE model_id NOT IN (?)"]);
+    expect(db.probeStatements).toEqual(["DELETE FROM probe_results WHERE target_environment = ? AND model_id NOT IN (?)"]);
     expect(db.probe.map((r) => r.model_id)).toEqual(["a"]);
   });
 
@@ -180,9 +224,9 @@ describe("reconcileModels", () => {
     // name them. The periodic sweep is the backstop that bounds that leak.
     const db = new FakeD1().record("a", "orphan").storeModelIds(["a"], NOW - MODEL_SWEEP_INTERVAL_MS);
 
-    await reconcileModels(db.as(), ["a"], NOW);
+    await reconcileModels(db.as(), ["a"], NOW, "production");
 
-    expect(db.probeStatements).toEqual(["DELETE FROM probe_results WHERE model_id NOT IN (?)"]);
+    expect(db.probeStatements).toEqual(["DELETE FROM probe_results WHERE target_environment = ? AND model_id NOT IN (?)"]);
     expect(db.probe.map((r) => r.model_id)).toEqual(["a"]);
     expect(db.meta.get("model_ids_swept_at")).toBe(String(NOW));
   });
@@ -192,7 +236,7 @@ describe("reconcileModels", () => {
       .record("a", "orphan")
       .storeModelIds(["a"], NOW - MODEL_SWEEP_INTERVAL_MS + 1);
 
-    await reconcileModels(db.as(), ["a"], NOW);
+    await reconcileModels(db.as(), ["a"], NOW, "production");
 
     expect(db.probeStatements).toEqual([]);
     expect(db.meta.get("model_ids_swept_at")).toBe(String(NOW - MODEL_SWEEP_INTERVAL_MS + 1));
@@ -201,9 +245,11 @@ describe("reconcileModels", () => {
   it("clears all probe rows when the catalog is legitimately empty", async () => {
     const db = new FakeD1().record("a", "b").storeModelIds(["a", "b"]);
 
-    await reconcileModels(db.as(), [], NOW);
+    await reconcileModels(db.as(), [], NOW, "production");
 
-    expect(db.probeStatements).toEqual(["DELETE FROM probe_results"]);
+    expect(db.probeStatements).toEqual([
+      "DELETE FROM probe_results WHERE target_environment = ?",
+    ]);
     expect(db.probe).toEqual([]);
     expect(db.modelIds).toEqual([]);
   });
@@ -216,7 +262,7 @@ describe("reconcileModels", () => {
     db.meta.set("model_ids", JSON.stringify(["b", "a"]));
     db.meta.set("model_ids_swept_at", String(NOW));
 
-    await reconcileModels(db.as(), ["a", "b"], NOW);
+    await reconcileModels(db.as(), ["a", "b"], NOW, "production");
 
     expect(db.probeStatements).toEqual([]);
     expect(db.modelIds).toEqual(["a", "b"]);
@@ -225,7 +271,7 @@ describe("reconcileModels", () => {
   it("reads both meta keys in a single keyed statement", async () => {
     const db = new FakeD1().storeModelIds(["a"]);
 
-    await reconcileModels(db.as(), ["a"], NOW);
+    await reconcileModels(db.as(), ["a"], NOW, "production");
 
     const reads = db.executed.filter((s) => /^SELECT/.test(s.sql));
     expect(reads).toHaveLength(1);

@@ -26,7 +26,7 @@ import {
 } from "./validation";
 import {
   isStatusMonitorTarget,
-  statusMonitorPrincipalFor,
+  statusMonitorPrincipalForRecord,
   STATUS_MONITOR_ENVIRONMENT,
   STATUS_MONITOR_SERVICE,
   STATUS_MONITOR_SOURCE,
@@ -156,10 +156,10 @@ function trustedMetadata(
     environment: STATUS_MONITOR_ENVIRONMENT,
     target_environment: target,
     source: STATUS_MONITOR_SOURCE,
-    // Derived, not stored: registration proves the target and this reproduces
-    // the same mapping it validated, so a record can never carry a principal
-    // that disagrees with what it watches.
-    principal: statusMonitorPrincipalFor(target),
+    // Derived for new records, so one can never carry a principal that
+    // disagrees with what it watches; pinned for pre-split ones, whose open
+    // incidents are routed by the name they were opened under.
+    principal: statusMonitorPrincipalForRecord(deployment.targetEnvironment, target),
     deployment_id: deployment.deploymentId,
     deployment_sha: deployment.deploymentSha,
     artifact_digest: deployment.artifactDigest,

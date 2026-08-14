@@ -222,11 +222,57 @@ jobs:
             }
           '
 
+      # Take the probe cycle's own lock for the duration of the cutover.
+      #
+      # Checking for in-flight incidents and then activating is not enough on its
+      # own: the old version's cron can start a cycle in between, open an
+      # incident under the old principal, and leave the new version to resolve it
+      # under the new one — into a different Durable Object. Holding the lock the
+      # cycle itself takes means no cycle can start, which closes that window
+      # rather than narrowing it.
+      #
+      # Same semantics as `acquireCycleLock`: take it only if absent or expired,
+      # and identify ourselves by token so the release can only ever drop our
+      # own. The TTL is what makes a killed job self-healing — probing resumes
+      # on its own rather than staying wedged behind a lock nobody will release.
+      - name: Acquire the cutover lock
+        id: lock
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          token="cutover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          expiry=$(( ($(date +%s) + 300) * 1000 ))
+          now=$(( $(date +%s) * 1000 ))
+          echo "token=${token}" >> "${GITHUB_OUTPUT}"
+          npx wrangler d1 execute freeinference-monitor --remote --json --command "
+            INSERT INTO meta (key, value) VALUES ('cycle_lock', '${expiry}:${token}')
+            ON CONFLICT(key) DO UPDATE SET value = '${expiry}:${token}'
+             WHERE CAST(meta.value AS INTEGER) < ${now}
+          " > "${RUNNER_TEMP}/lock.json"
+          LOCK_PATH="${RUNNER_TEMP}/lock.json" node <<'NODE'
+          const fs = require("node:fs");
+          const payload = JSON.parse(fs.readFileSync(process.env.LOCK_PATH, "utf8"));
+          const changes = (Array.isArray(payload) ? payload : [payload])
+            .map((entry) => entry?.meta?.changes)
+            .find((value) => Number.isInteger(value));
+          if (changes !== 1) {
+            throw new Error(
+              "a probe cycle is running; re-run once it finishes — activating now " +
+                "would split one outage across two incident objects",
+            );
+          }
+          NODE
+          rm -f "${RUNNER_TEMP}/lock.json"
+
       # `target_environment` and `principal` are both incident-route material, so
       # activating a version that changes either moves every incident to a new
       # Durable Object. An incident open across that move would have its recovery
       # routed away from the object holding it and would never resolve — so the
       # cutover only proceeds while nothing is in flight.
+      #
+      # Read under the lock, so nothing can open an incident between this answer
+      # and the activation it authorises.
       #
       # The monitor's own state is the authority here: it is the only writer of
       # status-monitor incidents, and it clears a model's entry only once that
@@ -271,15 +317,21 @@ jobs:
         working-directory: services/status-monitor-worker
         run: npx wrangler versions deploy "${DEPLOYMENT_ID}@100%" --yes
 
-      # Triggers are Worker-level settings, not part of a version, and the
-      # versions flow does not touch them — `wrangler deploy` used to. Without
-      # this a change to the cron in wrangler.toml would upload, attest and
-      # activate cleanly while the Worker kept running on the old schedule.
-      - name: Apply trigger changes
+      # Always: a cutover that failed must not leave probing wedged behind a lock
+      # nobody owns. Scoped to our own token, so a lock a live cycle has since
+      # taken over is never dropped from under it.
+      - name: Release the cutover lock
+        if: always() && steps.lock.outputs.token != ''
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        working-directory: services/status-monitor-worker
-        run: npx wrangler triggers deploy
+          LOCK_TOKEN: ${{ steps.lock.outputs.token }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute freeinference-monitor --remote --command "
+            DELETE FROM meta
+             WHERE key = 'cycle_lock'
+               AND substr(value, instr(value, ':') + 1) = '${LOCK_TOKEN}'
+          "
 
       # Attested but never activated: the record would otherwise keep vouching
       # for a version that is not serving, and the next run's attestation would
@@ -331,6 +383,16 @@ jobs:
             -H "Content-Type: application/json" \
             --data "${retire_body}" \
             "${origin}/v1/deployments/attest" > /dev/null
+
+      # Triggers are Worker-level settings, not part of a version, and the
+      # versions flow does not touch them — `wrangler deploy` used to. Without
+      # this a change to the cron in wrangler.toml would upload, attest and
+      # activate cleanly while the Worker kept running on the old schedule.
+      - name: Apply trigger changes
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        working-directory: services/status-monitor-worker
+        run: npx wrangler triggers deploy
 
       - name: Run the non-public Service Binding RPC gate
         env:

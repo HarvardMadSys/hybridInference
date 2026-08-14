@@ -44,6 +44,36 @@ export function statusMonitorPrincipalFor(target: TrustedEnvironment): string {
   return PRINCIPAL_BY_TARGET[target];
 }
 
+/**
+ * What records written before the split were stamped with.
+ *
+ * Their open incidents are routed by it, and principal is route material, so a
+ * derived name would send a recovery to a Durable Object that holds nothing and
+ * leave the original incident open forever. The control plane can be deployed
+ * while a monitor incident is in flight — the cutover gate lives in the
+ * monitor's own deploy, which happens later — so this is not a case the gate
+ * can cover.
+ */
+export const LEGACY_STATUS_MONITOR_PRINCIPAL = "staging-monitor";
+
+/**
+ * The principal a monitor deployment runs as, preserving the pre-split name for
+ * records that predate the field.
+ *
+ * A legacy record can only be the single monitor that existed when trust domain
+ * and subject were one field, so pinning it to the old principal reproduces its
+ * route material exactly — which is the whole compatibility guarantee. New
+ * records always carry a target and always derive.
+ */
+export function statusMonitorPrincipalForRecord(
+  targetEnvironment: string | null,
+  resolvedTarget: TrustedEnvironment,
+): string {
+  return targetEnvironment === null
+    ? LEGACY_STATUS_MONITOR_PRINCIPAL
+    : statusMonitorPrincipalFor(resolvedTarget);
+}
+
 export function isStatusMonitorTarget(value: unknown): value is TrustedEnvironment {
   return (
     typeof value === "string" &&

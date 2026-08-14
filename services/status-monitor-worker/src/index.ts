@@ -150,6 +150,7 @@ async function runProbeCycle(env: Env): Promise<void> {
       env.DB,
       results.map((r) => r.modelId),
       Date.now(),
+      config.targetEnvironment,
     );
     await prune(env.DB, config.retentionDays);
     // finalizeCycle records health and, if the cycle was previously failing at

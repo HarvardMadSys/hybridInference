@@ -273,6 +273,7 @@ export async function reconcileModels(
   db: D1Database,
   activeIds: string[],
   nowMs: number,
+  targetEnvironment: string,
 ): Promise<void> {
   // Persist the active model list in a single meta row so getSnapshot can read it
   // with an O(1) keyed lookup. Deriving it from probe_results (e.g. SELECT
@@ -289,8 +290,16 @@ export async function reconcileModels(
     .bind(MODEL_SWEEP_KEY, String(nowMs));
 
   if (sortedIds.length === 0) {
-    // Unfiltered DELETE, so there is no predicate to index in the first place.
-    await db.batch([db.prepare(`DELETE FROM probe_results`), setModelIds, markSwept]);
+    // Scoped, not unfiltered: an empty catalog says nothing about a deployment
+    // this instance does not probe, and the retained pre-cutover history sits in
+    // the same table.
+    await db.batch([
+      db
+        .prepare(`DELETE FROM probe_results WHERE target_environment = ?`)
+        .bind(targetEnvironment),
+      setModelIds,
+      markSwept,
+    ]);
     return;
   }
 
@@ -300,7 +309,12 @@ export async function reconcileModels(
   if (previous === null || sweepDue) {
     const placeholders = sortedIds.map(() => "?").join(",");
     await db.batch([
-      db.prepare(`DELETE FROM probe_results WHERE model_id NOT IN (${placeholders})`).bind(...sortedIds),
+      db
+        .prepare(
+          `DELETE FROM probe_results
+            WHERE target_environment = ? AND model_id NOT IN (${placeholders})`,
+        )
+        .bind(targetEnvironment, ...sortedIds),
       setModelIds,
       markSwept,
     ]);
@@ -313,7 +327,12 @@ export async function reconcileModels(
   if (departed.length > 0) {
     const placeholders = departed.map(() => "?").join(",");
     statements.push(
-      db.prepare(`DELETE FROM probe_results WHERE model_id IN (${placeholders})`).bind(...departed),
+      db
+        .prepare(
+          `DELETE FROM probe_results
+            WHERE target_environment = ? AND model_id IN (${placeholders})`,
+        )
+        .bind(targetEnvironment, ...departed),
     );
   }
   // Exact string comparison, so any drift in the stored representation (legacy

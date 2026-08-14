@@ -185,13 +185,25 @@ describe("status-monitor role RPC", () => {
   });
 
   it("reports a record written before the split exactly as it used to", async () => {
-    const { trusted } = await trustedFor({
-      ...deployment,
-      targetEnvironment: null,
-    });
+    const legacy = await trustedFor({ ...deployment, targetEnvironment: null });
 
-    expect(trusted.target_environment).toBe("staging");
-    expect(trusted.principal).toBe("status-monitor-staging");
+    expect(legacy.trusted.target_environment).toBe("staging");
+    // Pinned, not derived. This record's open incidents are routed under the
+    // principal they were opened with, and the control plane can ship while one
+    // is in flight — the cutover gate is in the monitor's deploy, which is
+    // later. Deriving `status-monitor-staging` here would route their recovery
+    // to an object that holds nothing and leave them open forever.
+    expect(legacy.trusted.principal).toBe("staging-monitor");
+  });
+
+  it("leaves a pre-split incident's route material untouched", async () => {
+    // The compatibility guarantee in one assertion: upgrading the control plane
+    // must not move an in-flight incident, and the route is derived from
+    // (target ?? environment, principal, fingerprint).
+    const legacy = await trustedFor({ ...deployment, targetEnvironment: null });
+    const migrated = await trustedFor({ ...deployment, targetEnvironment: "staging" });
+
+    expect(legacy.incidentName).not.toBe(migrated.incidentName);
   });
 
   it.each(["version id with spaces", "opaque-but-not-a-worker-version"])(
