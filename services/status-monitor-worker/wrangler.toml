@@ -75,3 +75,56 @@ migrations_dir = "migrations"
 # ALERT_FAILURE_THRESHOLD consecutive probes pages this Slack incoming webhook
 # (and posts a recovery notice when it comes back). Unset disables alerting.
 #   wrangler secret put SLACK_WEBHOOK_URL
+
+# ---------------------------------------------------------------------------
+# Second instance: the same Worker pointed at staging.
+#
+# Two deployments rather than one Worker probing both, because a probe target is
+# a property of a deployment: each gets its own prober key (the two gateways run
+# separate user databases), its own probe history and failure counters, its own
+# cycle alert, and its own principal — so a staging outage cannot exhaust the
+# production instance's quota, delay its probes, or land in its incidents.
+#
+# `main`, `compatibility_date`, `account_id` and `triggers` are inherited.
+# `vars`, `d1_databases`, `services` and `version_metadata` are NOT — wrangler
+# replaces rather than merges them — so everything below is restated in full.
+# The values that must stay identical across the two are asserted by
+# `test/wrangler-environments.test.ts`; the only var that may differ is
+# GATEWAY_BASE_URL, and the deploy derives this instance's target from it.
+# ---------------------------------------------------------------------------
+[env.staging]
+name = "freeinference-monitor-staging"
+
+[env.staging.vars]
+GATEWAY_BASE_URL = "https://staging.freeinference.org"
+PROBE_PROMPT = "Write a Python function that implements binary search over a sorted list. Include a docstring, type hints, and a short example of calling it."
+PROBE_MAX_TOKENS = "1024"
+MAX_CONCURRENCY = "3"
+PROBE_HEADER = "synthetic"
+RETENTION_DAYS = "1024"
+PROBE_DEADLINE_MS = "60000"
+ALERT_FAILURE_THRESHOLD = "2"
+ALERT_STORM_THRESHOLD = "5"
+ALERT_DEFAULT_OWNER = "control-plane"
+ALERT_CYCLE_OWNER = "control-plane"
+
+[env.staging.version_metadata]
+binding = "CF_VERSION_METADATA"
+
+# The same control plane. It is an incident processor, not a per-environment
+# stack: both instances are attested in the staging trust domain and are told
+# apart by principal and target, not by having a control plane each.
+[[env.staging.services]]
+binding = "ALERT_CONTROL_PLANE"
+service = "freeinference-alert-control-plane-staging"
+entrypoint = "StatusMonitorProducerEntrypoint"
+
+# Its own database, created empty. The production instance keeps the existing
+# one, whose pre-cutover rows are labelled `staging` by migration 0003 but
+# belong to a deployment nothing probes any more; copying them here would
+# resurrect a history with an 11-day hole in it.
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "freeinference-monitor-staging"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"

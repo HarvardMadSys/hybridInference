@@ -11,7 +11,15 @@
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
+    // `scripts/` runs under `node --experimental-strip-types`, which needs the
+    // explicit .ts specifier that Bundler resolution also accepts.
+    "allowImportingTsExtensions": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "test"]
+  // `scripts/` and the config-drift test run under Node, not workerd, so they
+  // typecheck separately against Node types — see tsconfig.node.json. Keeping
+  // them out here is what stops `src/` from silently type-checking against Node
+  // globals this Worker does not have at runtime.
+  "include": ["src", "test"],
+  "exclude": ["test/wrangler-environments.test.ts"]
 }
