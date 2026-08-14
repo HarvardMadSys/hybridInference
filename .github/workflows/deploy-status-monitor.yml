@@ -271,6 +271,16 @@ jobs:
         working-directory: services/status-monitor-worker
         run: npx wrangler versions deploy "${DEPLOYMENT_ID}@100%" --yes
 
+      # Triggers are Worker-level settings, not part of a version, and the
+      # versions flow does not touch them — `wrangler deploy` used to. Without
+      # this a change to the cron in wrangler.toml would upload, attest and
+      # activate cleanly while the Worker kept running on the old schedule.
+      - name: Apply trigger changes
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        working-directory: services/status-monitor-worker
+        run: npx wrangler triggers deploy
+
       # Attested but never activated: the record would otherwise keep vouching
       # for a version that is not serving, and the next run's attestation would
       # collide with it.
