@@ -1137,6 +1137,11 @@ async def _apply_openrouter_endpoint_pricing(
         route_metadata = dict(cfg.get("route_metadata") or {})
         if route_metadata.get("pricing_source") == "openrouter_endpoint":
             cfg.pop("pricing", None)
+            # Drop the schedule alongside the price. Without ``pricing`` the
+            # route falls back to ModelConfig's all-zero default, and a schedule
+            # left behind would layer real per-token prices back on top of those
+            # zeros — billing a route whose price was deliberately withdrawn.
+            cfg.pop("pricing_schedule", None)
             route_metadata.pop("pricing_source", None)
             route_metadata.pop("pricing_provider", None)
             cfg["route_metadata"] = route_metadata
@@ -1806,6 +1811,13 @@ async def _prepare_route_candidate(
             "quota": None,
             "concurrency_pool": None,
             "concurrency": None,
+            # Only ``pricing`` is persisted for a runtime route (see
+            # ``upsert_provider_route_candidate``). Inheriting the template's
+            # schedule would price this route one way in memory and another way
+            # after the next restart rehydrates it from the store, so a runtime
+            # route carries the base price alone. A provider's time-of-day
+            # schedule belongs to the models.yaml route that declares it.
+            "pricing_schedule": None,
             "route_metadata": {
                 "route_id": candidate_route_id,
                 "route_provider": upstream_provider,

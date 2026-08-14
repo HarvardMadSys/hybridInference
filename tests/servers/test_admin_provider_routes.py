@@ -19,6 +19,7 @@ from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
 from serving.adapters.provider_registry import RuntimeProviderDefinition
 from serving.config.routewise_model_settings import model_routewise_setting_keys
+from serving.pricing import PricingSchedule
 from serving.servers.deps import AppServices
 from serving.servers.registry import _make_adapter
 from serving.servers.routers import admin as admin_router
@@ -564,6 +565,37 @@ async def test_openrouter_endpoint_price_clears_inherited_schedule(monkeypatch):
 
     assert cfg["pricing"] == OPENROUTER_DEEPINFRA_PRICING
     assert cfg["pricing_schedule"] is None
+
+
+@pytest.mark.asyncio
+async def test_openrouter_pricing_failure_drops_inherited_schedule(monkeypatch):
+    monkeypatch.setattr(
+        provider_routes,
+        "_openrouter_pricing_for_target",
+        AsyncMock(return_value=None),
+    )
+    cfg = {
+        "pricing": OPENROUTER_DEEPINFRA_PRICING,
+        "pricing_schedule": {"inherited": True},
+        "route_metadata": {
+            "pricing_source": "openrouter_endpoint",
+            "pricing_provider": "deepinfra/fp8",
+        },
+    }
+
+    await provider_routes._apply_openrouter_endpoint_pricing(
+        cfg,
+        provider_model_id="provider/model",
+        target=SimpleNamespace(kind="openrouter[deepinfra/fp8]"),
+        openrouter_sort=None,
+    )
+
+    # Withdrawing the price has to withdraw the schedule with it: without
+    # ``pricing`` the route falls back to ModelConfig's all-zero default, and a
+    # surviving schedule would layer real per-token prices back onto those zeros.
+    assert "pricing" not in cfg
+    assert "pricing_schedule" not in cfg
+    assert "pricing_source" not in cfg["route_metadata"]
 
 
 def test_openrouter_endpoints_url_preserves_model_slug_separator():
@@ -1952,6 +1984,42 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
     assert runtime_adapter.config.route_metadata["route_provider"] == "minimax"
     assert runtime_adapter.config.route_metadata["upstream_provider"] == "minimax"
     fake_routewise.refresh_route_table.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_candidate_drops_template_pricing_schedule(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.list_provider_keys_full.return_value = ["minimax-db-key-1234567890"]
+    schedule = PricingSchedule.from_raw(
+        {
+            "effective_at": "2026-08-16T16:00:00Z",
+            "timezone": "UTC",
+            "default": {"prompt": "0.22", "completion": "0.66"},
+            "windows": [],
+        }
+    )
+    for entry in route_executor.routes["minimax-fast"].raw_adapters:
+        entry[0].config.pricing_schedule = schedule
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "minimax",
+            "base_url": "https://api.minimax.io/v1",
+            "provider_model_id": "MiniMax-M2.5",
+            "weight": 2.0,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    # ``upsert_provider_route_candidate`` persists ``pricing`` and nothing else,
+    # so a runtime route that inherited the template's schedule would price one
+    # way in memory and another way once a restart rehydrates it from the store.
+    assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
+    assert runtime_adapter.config.pricing_schedule is None
 
 
 @pytest.mark.asyncio
