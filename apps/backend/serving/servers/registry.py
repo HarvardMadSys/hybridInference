@@ -439,6 +439,7 @@ def register_from_models_yaml(
                     "on_demand",
                     "supported_params",
                     "pricing",
+                    "pricing_schedule",
                     "route_metadata",
                     "extra_body",
                     "processor",
@@ -633,6 +634,8 @@ def register_from_models_yaml(
                 # Route-level pricing override (key for cost-aware routing in Phase 2)
                 if "pricing" in r:
                     adapter_cfg["pricing"] = r["pricing"]
+                if "pricing_schedule" in r:
+                    adapter_cfg["pricing_schedule"] = r["pricing_schedule"]
 
                 # Route-level processor override (bypasses model-ID auto-detection)
                 if "processor" in r:

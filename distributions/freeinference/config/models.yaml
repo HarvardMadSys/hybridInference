@@ -637,9 +637,10 @@ models:
     input_modalities: ["text"]
     output_modalities: ["text"]
     quantization: "none"
-    # Pricing (original): prompt $0.14/M, cache-hit $0.0028/M, completion $0.28/M
-    # Pricing (promo 75% off): prompt $0.035/M, cache-hit $0.0007/M, completion $0.07/M
-    # DeepSeek API https://api-docs.deepseek.com/quick_start/pricing
+    # DeepSeek API pricing: https://api-docs.deepseek.com/quick_start/pricing
+    # Current price remains active until 2026-08-16 16:00 UTC. Thereafter the
+    # daily peak windows are 01:00-04:00 and 06:00-10:00 UTC; all other hours
+    # use the off-peak price.
     pricing:
       prompt: "0.14"
       completion: "0.28"
@@ -647,6 +648,26 @@ models:
       request: "0"
       input_cache_reads: "0.0028"
       input_cache_writes: "0"
+    pricing_schedule:
+      effective_at: "2026-08-16T16:00:00Z"
+      timezone: UTC
+      default:
+        prompt: "0.22"
+        completion: "0.66"
+        input_cache_reads: "0.007"
+      windows:
+        - start: "01:00"
+          end: "04:00"
+          pricing:
+            prompt: "0.44"
+            completion: "1.32"
+            input_cache_reads: "0.014"
+        - start: "06:00"
+          end: "10:00"
+          pricing:
+            prompt: "0.44"
+            completion: "1.32"
+            input_cache_reads: "0.014"
     route:
       # H200 local sglang — one route per node, each running ops/h200_idle_proxy.
       # h200a keeps the unsuffixed H200_DEPLOYMENT_URL (tunnelled on port 8003) so
@@ -720,16 +741,37 @@ models:
     input_modalities: ["text"]
     output_modalities: ["text"]
     quantization: "none"
-    # Pricing (original): prompt $1.74/M, cache-hit $0.0145/M, completion $3.48/M
-    # Pricing (promo 75% off): prompt $0.435/M, cache-hit $0.0036/M, completion $0.87/M
-    # DeepSeek API https://api-docs.deepseek.com/quick_start/pricing
+    # DeepSeek API pricing: https://api-docs.deepseek.com/quick_start/pricing
+    # Current price remains active until 2026-08-16 16:00 UTC. Thereafter the
+    # daily peak windows are 01:00-04:00 and 06:00-10:00 UTC; all other hours
+    # use the off-peak price.
     pricing:
-      prompt: "1.74"
-      completion: "3.48"
+      prompt: "0.435"
+      completion: "0.87"
       image: "0"
       request: "0"
-      input_cache_reads: "0.0145"
+      input_cache_reads: "0.003625"
       input_cache_writes: "0"
+    pricing_schedule:
+      effective_at: "2026-08-16T16:00:00Z"
+      timezone: UTC
+      default:
+        prompt: "0.66"
+        completion: "1.98"
+        input_cache_reads: "0.022"
+      windows:
+        - start: "01:00"
+          end: "04:00"
+          pricing:
+            prompt: "1.32"
+            completion: "3.96"
+            input_cache_reads: "0.044"
+        - start: "06:00"
+          end: "10:00"
+          pricing:
+            prompt: "1.32"
+            completion: "3.96"
+            input_cache_reads: "0.044"
     route:
       - kind: deepseek
         weight: 1.0

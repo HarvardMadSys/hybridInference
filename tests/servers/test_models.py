@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import os
 import time
 from typing import TYPE_CHECKING, Any
@@ -16,6 +17,7 @@ from serving.servers import registry
 from serving.servers.auth import optional_verify_api_key
 from serving.servers.deps import AppServices, get_current_user
 from serving.servers.routers import models, user_routes
+from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -260,6 +262,38 @@ async def test_models_pricing_primary_config_behavior():
         data = resp.json()["data"]
         item = next(m for m in data if m["id"] == "price")
         assert item["pricing"] == p_primary
+
+
+@pytest.mark.asyncio
+async def test_models_pricing_resolves_current_schedule_window():
+    router = RouteExecutor()
+    adapter = _Adapter(_cfg(id="scheduled-price", provider="deepseek"))
+    adapter.config.pricing = {"prompt": "0.14", "completion": "0.28"}
+    adapter.config.pricing_schedule = {
+        "effective_at": "2026-08-16T16:00:00Z",
+        "timezone": "UTC",
+        "default": {"prompt": "0.22", "completion": "0.66"},
+        "windows": [
+            {
+                "start": "01:00",
+                "end": "04:00",
+                "pricing": {"prompt": "0.44", "completion": "1.32"},
+            }
+        ],
+    }
+    router.register_route("scheduled-price", [(adapter, 1.0)])
+    app = FastAPI()
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
+    app.include_router(models.router)
+    transport = ASGITransport(app=app)
+
+    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 2, tzinfo=dt.timezone.utc)):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/v1/models")
+
+    item = next(model for model in response.json()["data"] if model["id"] == "scheduled-price")
+    assert item["pricing"]["prompt"] == "0.44"
+    assert item["pricing"]["completion"] == "1.32"
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from serving.observability.tracked_tasks import tracked_task
+from serving.pricing import effective_pricing, has_scheduled_pricing
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
 from serving.storage.utils import billable_output_tokens
 from serving.utils.logging import get_logger
@@ -49,6 +50,7 @@ class PricingLookup:
                 config that matches the routing target.
         """
         self._router = router
+        self._config_cache: dict[tuple[str, str | None], Any | None] = {}
         self._dict_cache: dict[tuple[str, str | None], dict[str, str] | None] = {}
         self._typed_cache: dict[tuple[str, str | None], Pricing | None] = {}
 
@@ -69,12 +71,12 @@ class PricingLookup:
             return _pricing_from_dict(embedded)
 
         key = self._cache_key(routing)
-        if key is not None and key in self._typed_cache:
+        if key is not None and key in self._typed_cache and not self._is_scheduled(routing):
             return self._typed_cache[key]
 
         raw = self._lookup_raw_dict(routing)
         typed = _pricing_from_dict(raw) if raw is not None else None
-        if key is not None:
+        if key is not None and not self._is_scheduled(routing):
             self._typed_cache[key] = typed
         return typed
 
@@ -114,15 +116,31 @@ class PricingLookup:
         key = self._cache_key(routing)
         if key is None:
             return None
-        if key in self._dict_cache:
+        config = self._lookup_config(routing)
+        if config is None:
+            return None
+        if not has_scheduled_pricing(config) and key in self._dict_cache:
             return self._dict_cache[key]
 
-        raw = self._walk_routes_for_pricing_dict(routing)
-        self._dict_cache[key] = raw
+        raw = effective_pricing(config)
+        if not has_scheduled_pricing(config):
+            self._dict_cache[key] = raw
         return raw
 
-    def _walk_routes_for_pricing_dict(self, routing: RoutingInfo) -> dict[str, str] | None:
-        """Walk ``router.routes[model].adapters`` to find a matching pricing dict.
+    def _is_scheduled(self, routing: RoutingInfo) -> bool:
+        config = self._lookup_config(routing)
+        return config is not None and has_scheduled_pricing(config)
+
+    def _lookup_config(self, routing: RoutingInfo) -> Any | None:
+        key = self._cache_key(routing)
+        if key is None:
+            return None
+        if key not in self._config_cache:
+            self._config_cache[key] = self._walk_routes_for_pricing_config(routing)
+        return self._config_cache[key]
+
+    def _walk_routes_for_pricing_config(self, routing: RoutingInfo) -> Any | None:
+        """Walk ``router.routes[model].adapters`` to find a matching config.
 
         Mirrors the prior ``get_pricing_for_provider`` heuristic from
         completions.py: match by provider, optionally narrow by base_url,
@@ -142,7 +160,7 @@ class PricingLookup:
                 if getattr(config, "endpoint_id", None) == routing.endpoint_id:
                     pricing = getattr(config, "pricing", None)
                     if isinstance(pricing, dict) and pricing:
-                        return pricing
+                        return config
                     return None
 
         # Phase 2: fall back to provider (+ optional base_url narrowing).
@@ -160,7 +178,7 @@ class PricingLookup:
                 continue
             pricing = getattr(config, "pricing", None)
             if isinstance(pricing, dict) and pricing:
-                return pricing
+                return config
             return None
         return None
 

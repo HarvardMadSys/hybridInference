@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse
 
 from serving.config.settings import has_role
 from serving.model_access import is_model_disabled_for_user
+from serving.pricing import effective_pricing
 from serving.schemas import ModelItem, ModelList
 from serving.servers.auth import optional_verify_api_key
 from serving.servers.deps import get_embedding_adapters, get_model_visibility_resolver, get_router
@@ -221,7 +222,7 @@ def build_model_list(
             quantization=primary_cfg.quantization,
             context_length=context_length,
             max_output_length=max_output_length,
-            pricing=primary_cfg.pricing,
+            pricing=effective_pricing(primary_cfg) or {},
             supported_sampling_parameters=supported_sampling_parameters,
             supported_features=supported_features,
             # Any adapter marking the model on-demand makes the whole model
@@ -254,7 +255,7 @@ def build_model_list(
                 quantization=cfg.quantization,
                 context_length=cfg.context_length,
                 max_output_length=cfg.max_output_length,
-                pricing=cfg.pricing,
+                pricing=effective_pricing(cfg) or {},
                 on_demand=cfg.on_demand,
             )
         )
@@ -323,7 +324,7 @@ async def _build_model_list_async(
             quantization=primary_cfg.quantization,
             context_length=context_length,
             max_output_length=max_output_length,
-            pricing=primary_cfg.pricing,
+            pricing=effective_pricing(primary_cfg) or {},
             supported_sampling_parameters=supported_sampling_parameters,
             supported_features=supported_features,
             # Any adapter marking the model on-demand makes the whole model
@@ -354,7 +355,7 @@ async def _build_model_list_async(
                 quantization=cfg.quantization,
                 context_length=cfg.context_length,
                 max_output_length=cfg.max_output_length,
-                pricing=cfg.pricing,
+                pricing=effective_pricing(cfg) or {},
                 on_demand=cfg.on_demand,
             )
         )

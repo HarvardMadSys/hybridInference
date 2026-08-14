@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from routing.routewise.candidates import (
     endpoint_id_for_adapter,
 )
 from serving.adapters.base import ModelConfig
+from serving.utils import context as req_ctx
 
 
 class _Adapter:
@@ -160,6 +162,32 @@ def test_build_provider_candidates_uses_stable_defaults_and_skips_zero_weight():
     assert candidates[0].quota_pool == "glm-test:quota-shared"
     assert candidates[1].routewise_pool == "glm-test"
     assert candidates[1].quota_pool is None
+
+
+@pytest.mark.unit
+def test_provider_candidate_resolves_scheduled_pricing_per_request():
+    adapter = _adapter(provider="deepseek", endpoint_id="deepseek-api")
+    adapter.config.pricing_schedule = {
+        "effective_at": "2026-08-16T16:00:00Z",
+        "timezone": "UTC",
+        "default": {"prompt": "0.22", "completion": "0.66"},
+        "windows": [
+            {
+                "start": "06:00",
+                "end": "10:00",
+                "pricing": {"prompt": "0.44", "completion": "1.32"},
+            }
+        ],
+    }
+    candidate = build_provider_candidates("glm-test", [(adapter, 1.0)])[0]
+
+    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 7, tzinfo=dt.timezone.utc)):
+        peak = candidate.effective_pricing()
+    with req_ctx.push(pricing_time=dt.datetime(2026, 8, 17, 12, tzinfo=dt.timezone.utc)):
+        off_peak = candidate.effective_pricing()
+
+    assert (peak.prompt, peak.completion) == pytest.approx((0.44, 1.32))
+    assert (off_peak.prompt, off_peak.completion) == pytest.approx((0.22, 0.66))
 
 
 @pytest.mark.unit

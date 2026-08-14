@@ -517,6 +517,55 @@ def test_parse_openrouter_endpoint_pricing_from_endpoints():
     assert highspeed.pricing == OPENROUTER_HIGHSPEED_PRICING
 
 
+def test_config_clone_preserves_validated_pricing_schedule():
+    config = ModelConfig(
+        id="scheduled-model",
+        name="Scheduled model",
+        provider="deepseek",
+        base_url="https://api.deepseek.com",
+        pricing={"prompt": "0.14", "completion": "0.28"},
+        pricing_schedule={
+            "effective_at": "2026-08-16T16:00:00Z",
+            "timezone": "UTC",
+            "default": {"prompt": "0.22", "completion": "0.66"},
+            "windows": [],
+        },
+    )
+
+    cloned_values = provider_routes._config_to_dict(config)
+    cloned = ModelConfig(**cloned_values)
+
+    assert cloned.pricing_schedule is config.pricing_schedule
+
+
+@pytest.mark.asyncio
+async def test_openrouter_endpoint_price_clears_inherited_schedule(monkeypatch):
+    endpoint_pricing = provider_routes.OpenRouterEndpointPricing(
+        provider="deepinfra/fp8",
+        pricing=OPENROUTER_DEEPINFRA_PRICING,
+    )
+    monkeypatch.setattr(
+        provider_routes,
+        "_openrouter_pricing_for_target",
+        AsyncMock(return_value=endpoint_pricing),
+    )
+    cfg = {
+        "pricing": RUNTIME_PRICING,
+        "pricing_schedule": {"inherited": True},
+        "route_metadata": {},
+    }
+
+    await provider_routes._apply_openrouter_endpoint_pricing(
+        cfg,
+        provider_model_id="provider/model",
+        target=SimpleNamespace(kind="openrouter[deepinfra/fp8]"),
+        openrouter_sort=None,
+    )
+
+    assert cfg["pricing"] == OPENROUTER_DEEPINFRA_PRICING
+    assert cfg["pricing_schedule"] is None
+
+
 def test_openrouter_endpoints_url_preserves_model_slug_separator():
     assert provider_routes._openrouter_endpoints_url("minimax/minimax-m2.5") == (
         "https://openrouter.ai/api/v1/models/minimax/minimax-m2.5/endpoints"

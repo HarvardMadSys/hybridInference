@@ -56,6 +56,7 @@ from routing.routers import AllCircuitsOpenError, adapter_supports_modalities
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
+from serving.pricing import effective_pricing
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens
@@ -925,7 +926,7 @@ class RouteWiseRouter:
 
     @staticmethod
     def _pricing(adapter: BaseAdapter) -> tuple[float, float]:
-        pricing = adapter.config.pricing or {}
+        pricing = effective_pricing(adapter.config) or {}
         return float(pricing.get("prompt", "0")), float(pricing.get("completion", "0"))
 
     def _classify_all(self) -> None:
@@ -1280,7 +1281,7 @@ class RouteWiseRouter:
         entries = self.route_candidates.get(model_id, [])
         costs = [
             self._api_cost_for_pricing(
-                candidate.pricing,
+                candidate.effective_pricing(),
                 prompt_tokens=prompt_tokens,
                 output_tokens=output_tokens,
             )
@@ -1354,8 +1355,9 @@ class RouteWiseRouter:
             if not self._health_registry.allow_request(endpoint_id):
                 continue
 
+            pricing = route_candidate.effective_pricing()
             request_cost = self._api_cost_for_pricing(
-                route_candidate.pricing,
+                pricing,
                 prompt_tokens=prompt_tokens,
                 output_tokens=predicted_output_tokens,
             )
@@ -1377,6 +1379,7 @@ class RouteWiseRouter:
                     ) = self._apply_prefix_cache_cost_adjustment(
                         model_id=model_id,
                         route_candidate=route_candidate,
+                        pricing=pricing,
                         cold_cost=request_cost,
                         prefix_context=prefix_context,
                     )
@@ -1509,6 +1512,7 @@ class RouteWiseRouter:
         *,
         model_id: str,
         route_candidate: RouteProviderCandidate,
+        pricing: CandidatePricing,
         cold_cost: float,
         prefix_context: tuple[tuple[Any, ...], dict[str, Any]],
     ) -> tuple[float, float, float, bool]:
@@ -1517,8 +1521,8 @@ class RouteWiseRouter:
         if self._has_rotating_key_pool(adapter):
             return cold_cost, 0.0, 0.0, False
         delta = price_delta_per_token(
-            route_candidate.pricing.prompt,
-            route_candidate.pricing.cache_read,
+            pricing.prompt,
+            pricing.cache_read,
         )
         if delta <= 0.0:
             return cold_cost, 0.0, 0.0, False

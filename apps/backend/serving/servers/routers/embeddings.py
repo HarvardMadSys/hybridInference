@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from serving.config.runtime_settings import get_runtime_settings
 from serving.observability.tracked_tasks import tracked_task
+from serving.pricing import effective_pricing
 from serving.schemas import EmbeddingRequest, EmbeddingResponse, ErrorResponse
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
@@ -237,7 +238,7 @@ async def create_embeddings(
 
     adapter = embedding_adapters[model]
     provider = getattr(getattr(adapter, "config", None), "provider", None) or "unknown"
-    pricing = getattr(getattr(adapter, "config", None), "pricing", None)
+    pricing = effective_pricing(getattr(adapter, "config", None))
 
     params: dict[str, Any] = {}
     if request.encoding_format is not None:
@@ -254,7 +255,7 @@ async def create_embeddings(
         serving_cfg = getattr(adapter, "serving_config", None)
         if serving_cfg is not None:
             provider = getattr(serving_cfg, "provider", None) or provider
-            pricing = getattr(serving_cfg, "pricing", None)
+            pricing = effective_pricing(serving_cfg)
         # Validate against the response schema *before* recording any success
         # side effects. ``response_model=EmbeddingResponse`` is only enforced
         # after the handler returns, so a malformed (but non-raising) upstream
