@@ -175,6 +175,63 @@ HOME=/home/<user>
 > Note that `DELETE` frees space for reuse inside the table but does **not**
 > return disk to the OS (the script does not run `VACUUM FULL`).
 
+### Weekly JSONL export, then prune at 30 days
+
+`export_logs.py` writes `api_logs` as zstd-compressed JSONL. Pass `--since` /
+`--until` (YYYY-MM-DD, exclusive end) for a window; `-o -` streams to stdout.
+
+`export-weekly-logs.sh` wraps that for the previous complete UTC week
+(Sunday 00:00 through the next Sunday 00:00). It streams the archive over ssh
+into `api_logs_$startday_$endday.jsonl.zst` on the remote host (a `.partial`
+file is promoted only after a remote `zstd -t`), then streams the same file
+to `--s3-data`. A week of this table is large enough that writing it locally
+on the Postgres volume and then `scp`'ing it can fill the disk; the remote
+path is the one `scp` would have used.
+
+Rows older than 30 days are deleted **only after** all of these hold:
+
+1. The weekly file is on the remote host and verifies.
+2. The same file is on `--s3-data` and the object size matches.
+3. `check-backup-health.sh` reports a fresh S3 database backup.
+
+Prune then goes through `archive-old-logs.sh` (S3 CSV archive, verify, then
+`DELETE`). A stale backup or a failed copy leaves the rows in place.
+
+```bash
+# Preview the week and the remote path (no copy, no delete)
+./ops/db/export-weekly-logs.sh --dry-run \
+    --remote user@research-host --port 10021 --dest-dir /data/api-log-exports
+
+# Export last week, copy to the research host and S3, prune if backup is fresh
+./ops/db/export-weekly-logs.sh \
+    --remote user@research-host --port 10021 --dest-dir /data/api-log-exports \
+    --s3-data s3://your-bucket/weekly-jsonl \
+    --s3-archive s3://your-bucket/hybridinference/archive/api_logs \
+    --retention-days 30
+
+# Copy a specific window only
+./ops/db/export-weekly-logs.sh \
+    --since 2026-08-03 --until 2026-08-10 \
+    --remote user@research-host --dest-dir /data/api-log-exports --skip-prune
+```
+
+Schedule it weekly, after the nightly backup. Write the entry for the user
+that owns the ssh key to the research host (and docker + AWS, which the prune
+path needs):
+
+```cron
+# /etc/cron.d/hybridinference-export-weekly-logs — Sunday 06:00 UTC
+SHELL=/bin/bash
+HOME=/home/<user>
+MAILTO=<you@example.com>
+0 6 * * 0 <user> /path/to/hybridInference/ops/db/export-weekly-logs.sh \
+    --remote user@research-host --port 10021 --dest-dir /data/api-log-exports \
+    --s3-data s3://your-bucket/weekly-jsonl \
+    --s3-archive s3://your-bucket/hybridinference/archive/api_logs \
+    --retention-days 30 >> ~/export-weekly-logs.log 2>&1 \
+    || tail -n 40 ~/export-weekly-logs.log
+```
+
 ## Typical use cases
 
 ### Case 1: Backup before schema changes
@@ -329,6 +386,37 @@ default is deliberately generous.
 --table NAME          Table to prune (default: api_logs)
 --ts-column NAME      Timestamp column to compare (default: timestamp)
 --dry-run             Report counts/size only; write nothing, delete nothing
+--help                Show help and usage information
+```
+
+### `export_logs.py`
+
+```text
+-o, --output PATH     zstd JSONL path, or '-' for stdout
+                      (default: api_logs_export.jsonl.zst)
+--since DATE          Inclusive lower bound (YYYY-MM-DD or ISO datetime)
+--until DATE          Exclusive upper bound (YYYY-MM-DD or ISO datetime)
+--env-file PATH       .env to load (default: auto-detect)
+```
+
+### `export-weekly-logs.sh`
+
+```text
+--since DATE          Inclusive start day (default: previous week Sunday)
+--until DATE          Exclusive end day (default: this week's Sunday)
+--remote USER@HOST    ssh target (required unless --dry-run)
+--port N              ssh port (default: 22)
+--dest-dir PATH       Remote directory for api_logs_$start_$end.jsonl.zst
+--retention-days N    Prune rows older than N days (default: 30)
+--s3-data URI         S3 prefix for the weekly JSONL; uploaded after the copy
+--s3-archive URI      Passed to archive-old-logs.sh; required to prune
+--s3-backup URI       Backup location that must look fresh before prune
+--max-backup-age-hours N
+                      Backup older than this blocks prune (default: 26)
+--env-file PATH       .env for export_logs.py
+--force               Re-export even if this week's remote file exists
+--skip-prune          Copy only; do not delete old rows
+--dry-run             Print the week and dest; write nothing
 --help                Show help and usage information
 ```
 
