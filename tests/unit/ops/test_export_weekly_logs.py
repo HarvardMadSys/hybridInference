@@ -66,6 +66,11 @@ if [[ "$cmd" == cat\ \>* ]]; then
   cat > "$dest"
   exit "${FAKE_SSH_CAT_EXIT:-0}"
 fi
+if [[ "$cmd" == cat\ * ]]; then
+  src="$(map_path "${cmd#cat }")"
+  cat "$src"
+  exit "${FAKE_SSH_CAT_EXIT:-0}"
+fi
 if [[ "$cmd" == test\ -f* ]]; then
   # test -f 'final' && zstd -q -t 'final'
   rest="${cmd#test -f }"
@@ -128,6 +133,42 @@ printf 'archive-old-logs %s\n' "$*" >> "$CMD_LOG"
 exit "${FAKE_PRUNE_EXIT:-0}"
 """
 
+AWS_STUB = r"""#!/bin/sh
+printf 'aws %s\n' "$*" >> "$CMD_LOG"
+case "$1 $2" in
+  "s3api head-object")
+    key=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --key) key="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    obj="$S3_STORE/$(basename "$key")"
+    if [ -f "$obj" ]; then
+      wc -c < "$obj" | tr -d ' '
+      exit 0
+    fi
+    exit 254
+    ;;
+  "s3 cp")
+    dest="$4"
+    mkdir -p "$S3_STORE"
+    cat > "$S3_STORE/$(basename "$dest")"
+    exit "${FAKE_S3_CP_EXIT:-0}"
+    ;;
+  "s3 mv")
+    mv "$S3_STORE/$(basename "$3")" "$S3_STORE/$(basename "$4")"
+    exit "${FAKE_S3_MV_EXIT:-0}"
+    ;;
+  "s3 rm")
+    rm -f "$S3_STORE/$(basename "$3")"
+    exit 0
+    ;;
+esac
+exit 0
+"""
+
 
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(body)
@@ -159,6 +200,10 @@ class Run:
         root = self._tmp / "remote"
         return sorted(p.name for p in root.rglob("*") if p.is_file())
 
+    def s3_files(self) -> list[str]:
+        store = self._tmp / "s3"
+        return sorted(p.name for p in store.iterdir()) if store.exists() else []
+
 
 def _run(
     tmp_path: Path,
@@ -169,17 +214,20 @@ def _run(
     bin_dir.mkdir(exist_ok=True)
     _write_executable(bin_dir / "ssh", SSH_STUB)
     _write_executable(bin_dir / "python", PYTHON_STUB)
+    _write_executable(bin_dir / "aws", AWS_STUB)
     _write_executable(tmp_path / "check-backup-health.sh", BACKUP_STUB)
     _write_executable(tmp_path / "archive-old-logs.sh", ARCHIVE_STUB)
 
     (tmp_path / "remote").mkdir(exist_ok=True)
     (tmp_path / "project").mkdir(exist_ok=True)
+    (tmp_path / "s3").mkdir(exist_ok=True)
 
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "CMD_LOG": str(tmp_path / "commands.log"),
         "FAKE_REMOTE": str(tmp_path / "remote"),
+        "S3_STORE": str(tmp_path / "s3"),
         "EXPORT_PROJECT_ROOT": str(tmp_path / "project"),
         "EXPORT_PYTHON": str(bin_dir / "python"),
         "EXPORT_SSH": str(bin_dir / "ssh"),
@@ -203,6 +251,8 @@ def _run(
             "10021",
             "--dest-dir",
             DEST_DIR,
+            "--s3-data",
+            "s3://bucket/weekly-jsonl",
             "--s3-archive",
             "s3://bucket/archive/api_logs",
             *args,
@@ -221,8 +271,11 @@ def test_dry_run_writes_nothing_and_does_not_prune(tmp_path: Path) -> None:
 
     assert run.returncode == 0, run.output
     assert WEEK_START in run.output and WEEK_END in run.output
+    assert "s3://bucket/weekly-jsonl" in run.output
     assert run.remote_files() == []
+    assert run.s3_files() == []
     assert run.find("python ") == []
+    assert run.find("aws ") == []
     assert run.find("archive-old-logs") == []
 
 
@@ -232,6 +285,8 @@ def test_copy_then_backup_check_then_prune(tmp_path: Path) -> None:
     assert run.returncode == 0, run.output
     assert REMOTE_NAME in run.remote_files()
     assert f"{REMOTE_NAME}.partial" not in run.remote_files()
+    assert REMOTE_NAME in run.s3_files()
+    assert f"{REMOTE_NAME}.partial" not in run.s3_files()
 
     python = run.find("python ")
     assert python, run.commands
@@ -242,9 +297,16 @@ def test_copy_then_backup_check_then_prune(tmp_path: Path) -> None:
     ssh = run.find("ssh ")
     assert any(" -p 10021 " in c and REMOTE in c for c in ssh), ssh
 
+    uploads = run.find("aws s3 cp -")
+    assert len(uploads) == 1, uploads
+    assert "--expected-size" in uploads[0]
+    assert uploads[0].split()[4].endswith(".jsonl.zst.partial"), uploads[0]
+    assert run.find("aws s3 mv"), run.commands
+
     health = run.find("backup-health ")
     prune = run.find("archive-old-logs ")
     assert health and prune, run.commands
+    assert run.commands.index(uploads[0]) < run.commands.index(health[0])
     assert run.commands.index(health[0]) < run.commands.index(prune[0])
     assert "--retention-days 30" in prune[0]
     assert "--s3-archive s3://bucket/archive/api_logs" in prune[0]
@@ -255,6 +317,7 @@ def test_stale_backup_keeps_the_copy_and_does_not_prune(tmp_path: Path) -> None:
 
     assert run.returncode == 1, run.output
     assert REMOTE_NAME in run.remote_files()
+    assert REMOTE_NAME in run.s3_files()
     assert run.find("archive-old-logs") == []
     assert "leaving rows in place" in run.output
 
@@ -264,6 +327,16 @@ def test_failed_export_does_not_prune(tmp_path: Path) -> None:
 
     assert run.returncode == 1, run.output
     assert REMOTE_NAME not in run.remote_files()
+    assert run.find("aws s3 cp") == []
+    assert run.find("backup-health") == []
+    assert run.find("archive-old-logs") == []
+
+
+def test_failed_s3_upload_keeps_the_copy_and_does_not_prune(tmp_path: Path) -> None:
+    run = _run(tmp_path, env_overrides={"FAKE_S3_CP_EXIT": "1"})
+
+    assert run.returncode == 1, run.output
+    assert REMOTE_NAME in run.remote_files()
     assert run.find("backup-health") == []
     assert run.find("archive-old-logs") == []
 
@@ -293,6 +366,7 @@ def test_existing_verified_remote_file_skips_export_and_still_prunes(tmp_path: P
 
     assert run.returncode == 0, run.output
     assert run.find("python ") == []
+    assert run.find("aws s3 cp -")
     assert run.find("archive-old-logs")
 
 
@@ -301,12 +375,13 @@ def test_skip_prune_copies_only(tmp_path: Path) -> None:
 
     assert run.returncode == 0, run.output
     assert REMOTE_NAME in run.remote_files()
+    assert REMOTE_NAME in run.s3_files()
     assert run.find("backup-health") == []
     assert run.find("archive-old-logs") == []
 
 
 def test_default_week_is_the_previous_complete_iso_week(tmp_path: Path) -> None:
-    """Without --since/--until the script asks date(1) for last Mon-Sun UTC."""
+    """Without --since/--until the script asks date(1) for last Sun-Sat UTC."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     _write_executable(bin_dir / "ssh", SSH_STUB)

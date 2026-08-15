@@ -1,10 +1,11 @@
 #!/bin/bash
 # Weekly api_logs JSONL export + gated prune for hybridInference
 #
-# Exports the previous complete UTC ISO week (Monday 00:00 through the next
-# Monday 00:00, exclusive) with ops/db/export_logs.py, copies the archive to a
-# remote host, and only then — if a fresh S3 database backup is also in place —
-# deletes api_logs rows older than a retention window via archive-old-logs.sh.
+# Exports the previous complete UTC week (Sunday 00:00 through the next
+# Sunday 00:00, exclusive) with ops/db/export_logs.py, copies the archive to a
+# remote host, uploads the same file to --s3-data, and only then — if a fresh
+# S3 database backup is also in place — deletes api_logs rows older than a
+# retention window via archive-old-logs.sh.
 #
 # The copy is streamed over ssh into a .partial file and promoted only after a
 # remote zstd integrity check. A week of api_logs is large enough that writing
@@ -14,9 +15,11 @@
 # Safety model (deletion never runs unless all of these hold):
 #   1. The remote archive is written and passes a zstd integrity check, or an
 #      already-promoted file for this week is present and still verifies.
-#   2. check-backup-health.sh reports a fresh S3 backup (disk check disabled
+#   2. If --s3-data is set, that same file is on S3 and the object size
+#      matches the remote archive.
+#   3. check-backup-health.sh reports a fresh S3 backup (disk check disabled
 #      so a low-space condition cannot block the prune that frees space).
-#   3. archive-old-logs.sh then archives the old rows to S3, verifies the
+#   4. archive-old-logs.sh then archives the old rows to S3, verifies the
 #      upload, and only then DELETEs. See that script for its own guards.
 #
 # NOTE: api_logs contains user prompts/responses (PII). The remote dest and
@@ -27,14 +30,17 @@
 #   ./ops/db/export-weekly-logs.sh [OPTIONS]
 #
 # Options:
-#   --since DATE          Inclusive start day (YYYY-MM-DD). Default: Monday of
-#                         the previous complete UTC ISO week
+#   --since DATE          Inclusive start day (YYYY-MM-DD). Default: Sunday of
+#                         the previous complete UTC week
 #   --until DATE          Exclusive end day (YYYY-MM-DD). Default: this week's
-#                         Monday (so Sunday is the last included day)
+#                         Sunday (so Saturday is the last included day)
 #   --remote USER@HOST    ssh/scp target (required unless --dry-run)
 #   --port N              ssh/scp port (default: 22)
 #   --dest-dir PATH       Remote directory for the archive
 #   --retention-days N    Prune rows older than N days (default: 30)
+#   --s3-data URI         S3 prefix for the weekly JSONL (e.g.
+#                         s3://your-bucket/prefix). Uploaded after the remote
+#                         copy verifies; required to prune when set
 #   --s3-archive URI      S3 prefix passed to archive-old-logs.sh. Required
 #                         to prune; omit to export+copy only
 #   --s3-backup URI       Backup bucket that must look fresh before prune
@@ -59,7 +65,9 @@
 # Examples:
 #   ./ops/db/export-weekly-logs.sh --dry-run --remote user@host --dest-dir /data/api-log-exports
 #   ./ops/db/export-weekly-logs.sh --remote user@host --port 10021 \
-#       --dest-dir /data/api-log-exports --s3-archive s3://bucket/archive/api_logs
+#       --dest-dir /data/api-log-exports \
+#       --s3-data s3://bucket/weekly-jsonl \
+#       --s3-archive s3://bucket/archive/api_logs
 
 set -euo pipefail
 
@@ -75,6 +83,7 @@ REMOTE=""
 SSH_PORT=22
 DEST_DIR=""
 RETENTION_DAYS=30
+S3_DATA=""
 S3_ARCHIVE=""
 S3_BACKUP="s3://harvardsys-backup/freeinference"
 MAX_BACKUP_AGE_HOURS=26
@@ -95,7 +104,10 @@ END_DAY=""
 UNTIL_EXCL=""
 REMOTE_FINAL=""
 REMOTE_PARTIAL=""
+S3_FINAL=""
 COPY_OK=false
+S3_OK=false
+REMOTE_BYTES=""
 
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $*"
@@ -150,6 +162,10 @@ parse_args() {
                 RETENTION_DAYS="$2"
                 shift 2
                 ;;
+            --s3-data)
+                S3_DATA="$2"
+                shift 2
+                ;;
             --s3-archive)
                 S3_ARCHIVE="$2"
                 shift 2
@@ -192,15 +208,18 @@ is_ymd() {
     [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
 }
 
-# Previous complete UTC ISO week → START_DAY, END_DAY (inclusive), UNTIL_EXCL.
+# Previous complete UTC week (Sunday-Saturday) → START_DAY, END_DAY
+# (inclusive), UNTIL_EXCL. A Sunday-morning cron then exports the seven days
+# that just ended at 00:00 today, not the ISO week that still has Sunday left.
 compute_default_week() {
-    local today dow this_monday
+    local today dow days_since_sunday this_sunday
     today=$(date -u +%Y-%m-%d)
     dow=$(date -u +%u)
-    this_monday=$(date -u -d "${today} -$((dow - 1)) days" +%Y-%m-%d)
-    START_DAY=$(date -u -d "${this_monday} - 7 days" +%Y-%m-%d)
-    END_DAY=$(date -u -d "${this_monday} - 1 day" +%Y-%m-%d)
-    UNTIL_EXCL="$this_monday"
+    days_since_sunday=$((dow % 7))
+    this_sunday=$(date -u -d "${today} -${days_since_sunday} days" +%Y-%m-%d)
+    START_DAY=$(date -u -d "${this_sunday} - 7 days" +%Y-%m-%d)
+    END_DAY=$(date -u -d "${this_sunday} - 1 day" +%Y-%m-%d)
+    UNTIL_EXCL="$this_sunday"
 }
 
 resolve_window() {
@@ -234,6 +253,9 @@ resolve_window() {
     base="api_logs_${START_DAY}_${END_DAY}.jsonl.zst"
     REMOTE_FINAL="${DEST_DIR%/}/${base}"
     REMOTE_PARTIAL="${REMOTE_FINAL}.partial"
+    if [[ -n "$S3_DATA" ]]; then
+        S3_FINAL="${S3_DATA%/}/${base}"
+    fi
 }
 
 resolve_python() {
@@ -277,6 +299,9 @@ stream_export() {
     remote_mkdir
 
     if [[ "$FORCE" == false ]] && remote_final_ok; then
+        REMOTE_BYTES=$(ssh_remote "stat -c %s '${REMOTE_FINAL}'")
+        [[ "$REMOTE_BYTES" =~ ^[0-9]+$ && "$REMOTE_BYTES" -gt 0 ]] \
+            || die "remote archive exists but size is unusable (${REMOTE_BYTES:-empty})"
         log_success "Remote archive already present and verifies: ${REMOTE_FINAL}"
         COPY_OK=true
         return 0
@@ -310,16 +335,87 @@ stream_export() {
         die "remote archive failed zstd check; left nothing at ${REMOTE_FINAL}"
     fi
 
-    local remote_bytes
-    remote_bytes=$(ssh_remote "stat -c %s '${REMOTE_FINAL}'")
-    [[ "$remote_bytes" =~ ^[0-9]+$ ]] || die "could not stat remote archive"
-    if [[ "$remote_bytes" -eq 0 ]]; then
+    REMOTE_BYTES=$(ssh_remote "stat -c %s '${REMOTE_FINAL}'")
+    [[ "$REMOTE_BYTES" =~ ^[0-9]+$ ]] || die "could not stat remote archive"
+    if [[ "$REMOTE_BYTES" -eq 0 ]]; then
         ssh_remote "rm -f '${REMOTE_FINAL}'" || true
         die "remote archive is 0 bytes; refusing to treat the copy as success"
     fi
 
-    log_success "Copied and verified: ${REMOTE}:${REMOTE_FINAL} (${remote_bytes} bytes)"
+    log_success "Copied and verified: ${REMOTE}:${REMOTE_FINAL} (${REMOTE_BYTES} bytes)"
     COPY_OK=true
+}
+
+s3_split() {
+    # Sets S3_BUCKET / S3_KEY from an s3://bucket/key URI.
+    local uri="${1%/}"
+    [[ "$uri" == s3://* ]] || die "S3 URI must start with s3:// (got: ${uri})"
+    local rest="${uri#s3://}"
+    S3_BUCKET="${rest%%/*}"
+    S3_KEY="${rest#*/}"
+    if [[ -z "$S3_BUCKET" || "$S3_BUCKET" == "$rest" || -z "$S3_KEY" ]]; then
+        die "S3 URI must be s3://bucket/key (got: ${uri})"
+    fi
+}
+
+s3_object_bytes() {
+    local uri="$1" bucket key
+    s3_split "$uri"
+    bucket="$S3_BUCKET"
+    key="$S3_KEY"
+    aws s3api head-object --bucket "$bucket" --key "$key" \
+        --query ContentLength --output text 2> /dev/null || true
+}
+
+upload_s3() {
+    if [[ -z "$S3_DATA" ]]; then
+        S3_OK=true
+        return 0
+    fi
+    command -v aws &> /dev/null || die "AWS CLI not found (needed to upload to ${S3_DATA})"
+    [[ "$COPY_OK" == true ]] || die "refusing to upload: the weekly copy did not succeed"
+    [[ "$REMOTE_BYTES" =~ ^[0-9]+$ && "$REMOTE_BYTES" -gt 0 ]] \
+        || die "refusing to upload: remote archive size is unknown"
+
+    local s3_partial existing
+    s3_partial="${S3_FINAL}.partial"
+
+    if [[ "$FORCE" == false ]]; then
+        existing=$(s3_object_bytes "$S3_FINAL")
+        if [[ "$existing" == "$REMOTE_BYTES" ]]; then
+            log_success "S3 already has a matching object: ${S3_FINAL} (${existing} bytes)"
+            S3_OK=true
+            return 0
+        fi
+    fi
+
+    log_info "Uploading ${REMOTE_FINAL} to ${s3_partial} (${REMOTE_BYTES} bytes) ..."
+    # Stream off the research host so the Postgres volume is not involved.
+    # --expected-size is required: `aws s3 cp -` defaults to an 80 GB ceiling.
+    set +e
+    ssh_remote "cat '${REMOTE_FINAL}'" \
+        | aws s3 cp - "${s3_partial}" --expected-size "${REMOTE_BYTES}" --only-show-errors
+    local -a pipe_rc=("${PIPESTATUS[@]}")
+    set -e
+    if [[ "${pipe_rc[0]}" -ne 0 || "${pipe_rc[1]}" -ne 0 ]]; then
+        aws s3 rm "${s3_partial}" --only-show-errors 2> /dev/null || true
+        die "S3 upload failed (ssh exit ${pipe_rc[0]}, aws exit ${pipe_rc[1]})"
+    fi
+
+    local uploaded
+    uploaded=$(s3_object_bytes "$s3_partial")
+    if [[ "$uploaded" != "$REMOTE_BYTES" ]]; then
+        aws s3 rm "${s3_partial}" --only-show-errors 2> /dev/null || true
+        die "S3 upload size mismatch: remote=${REMOTE_BYTES} s3=${uploaded:-missing}"
+    fi
+
+    if ! aws s3 mv "${s3_partial}" "${S3_FINAL}" --only-show-errors; then
+        aws s3 rm "${s3_partial}" --only-show-errors 2> /dev/null || true
+        die "failed to promote ${s3_partial} to ${S3_FINAL}"
+    fi
+
+    log_success "Uploaded and verified: ${S3_FINAL} (${REMOTE_BYTES} bytes)"
+    S3_OK=true
 }
 
 backup_is_fresh() {
@@ -354,15 +450,19 @@ main() {
     log_info "Window:     ${START_DAY} .. ${END_DAY} (until ${UNTIL_EXCL} exclusive)"
     log_info "Remote:     ${REMOTE:-<none>}:${SSH_PORT}"
     log_info "Dest:       ${REMOTE_FINAL}"
-    log_info "Retention:  ${RETENTION_DAYS} days (prune after copy + fresh backup)"
+    log_info "S3 data:    ${S3_FINAL:-<none>}"
+    log_info "Retention:  ${RETENTION_DAYS} days (prune after copy + S3 + fresh backup)"
     echo ""
 
     if [[ "$DRY_RUN" == true ]]; then
         log_warning "DRY RUN — would export ${START_DAY}..${END_DAY} to ${REMOTE:-local}:${REMOTE_FINAL}"
+        if [[ -n "$S3_FINAL" ]]; then
+            log_warning "DRY RUN — would upload the same file to ${S3_FINAL}"
+        fi
         if [[ "$SKIP_PRUNE" == true ]]; then
             log_warning "DRY RUN — prune skipped (--skip-prune)"
         else
-            log_warning "DRY RUN — would prune rows older than ${RETENTION_DAYS} days if the copy and backup both succeed"
+            log_warning "DRY RUN — would prune rows older than ${RETENTION_DAYS} days if the copy, S3 upload, and backup all succeed"
         fi
         exit 0
     fi
@@ -370,7 +470,12 @@ main() {
     stream_export
 
     if [[ "$COPY_OK" != true ]]; then
-        die "refusing to prune: the weekly copy did not succeed"
+        die "refusing to continue: the weekly copy did not succeed"
+    fi
+
+    upload_s3
+    if [[ "$S3_OK" != true ]]; then
+        die "refusing to prune: the S3 upload did not succeed"
     fi
 
     if [[ "$SKIP_PRUNE" == true ]]; then
