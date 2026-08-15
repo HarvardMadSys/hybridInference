@@ -43,6 +43,10 @@ from ops.db.analysis.duplicate_accounts import (
 
 NOW = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
 
+# Split so the literals below do not match the personal-mailbox scan.
+GMAIL = "gmail" + ".com"
+GOOGLEMAIL = "googlemail" + ".com"
+
 
 def _account(uid: str, email: str, **kw) -> Account:
     return Account(
@@ -99,20 +103,19 @@ def test_known_egress_covers_warp_and_institutional() -> None:
 
 
 def test_canonical_gmail_collapses_dot_and_plus_aliases() -> None:
-    # Both observed on production as separate active accounts.
-    assert canonical_gmail("sisa.tmp@gmail.com") == canonical_gmail("si.sa.tmp@gmail.com")
-    assert canonical_gmail("loxloxov.ickyada@gmail.com") == canonical_gmail(
-        "l.oxloxovickyada@gmail.com"
-    )
-    assert canonical_gmail("someone+alt@gmail.com") == "someone@gmail.com"
-    assert canonical_gmail("user@googlemail.com") == "user@gmail.com"
-    assert canonical_gmail("someone@outlook.com") is None
+    # Addresses are split so this file does not itself trip the personal-mailbox
+    # scan in tests/unit/test_no_personal_data.py, which is the same convention
+    # its sibling test uses. The locals are invented; only their shape matters.
+    assert canonical_gmail("ab.cd@" + GMAIL) == canonical_gmail("a.b.c.d@" + GMAIL)
+    assert canonical_gmail("someone+alt@" + GMAIL) == "someone@" + GMAIL
+    assert canonical_gmail("user@" + GOOGLEMAIL) == "user@" + GMAIL
+    assert canonical_gmail("someone@" + "outlook.com") is None
     assert canonical_gmail("not-an-email") is None
 
 
 def test_normalize_handle_matches_punctuation_variants() -> None:
     assert normalize_handle("B-A-M-N") == normalize_handle("BAMN") == "bamn"
-    assert normalize_handle("Haoran Ni") == "haoranni"
+    assert normalize_handle("Ada L") == "adal"
     assert normalize_handle("") == ""
 
 
@@ -162,12 +165,12 @@ def test_personal_soul_file_with_no_user_turn_is_still_bespoke() -> None:
     # a *system* turn, and a blanket "system means vendor text" rule discards
     # the strongest content evidence the detector has.
     soul = (
-        "# Rabiu's Operating System\n\nYou are Hermes Agent working for Rabiu, the operator "
-        "of Knife Agency (GitHub rawbeew). You are not a generic assistant. You are the "
+        "# Ada's Operating System\n\nYou are an agent working for Ada, the operator of "
+        "Northwind Studio (GitHub adanw). You are not a generic assistant. You are the "
         "operating extension of a specific mind: someone who thinks in evidence, arithmetic, "
-        "and consequence. Learn how he thinks below, and apply it to every task. These are "
-        "his principles, written in his voice. When you default to one of them, you are "
-        "foreseeing the next thing he was going to say, and saying it first."
+        "and consequence. Learn how they think below, and apply it to every task. These are "
+        "their principles, written in their voice. When you default to one of them, you are "
+        "foreseeing the next thing they were going to say, and saying it first."
     )
     is_bespoke, reason = classify_shared_prompt(_msgs(("system", soul)))
     assert is_bespoke, reason
@@ -199,8 +202,8 @@ def test_bespoke_user_content_is_kept() -> None:
         ("system", "You are assisting a blockchain forensic investigation."),
         (
             "user",
-            "Do the records establish that address 0xe9e1a9003d945ea97db740c0e3f61d6161599188 "
-            "received USDT from address 0xd73060db77fe4dbc1d885666bdc10323d050c324?",
+            "Do the records establish that address 0x1111111111111111111111111111111111111111 "
+            "received USDT from address 0x2222222222222222222222222222222222222222?",
         ),
     )
     is_bespoke, reason = classify_shared_prompt(payload)
@@ -213,13 +216,13 @@ def test_personal_system_prompt_with_real_user_work_is_kept() -> None:
     payload = _msgs(
         (
             "system",
-            "# Rabiu's Operating System\nYou are Hermes Agent working for Rabiu, the operator "
-            "of Knife Agency (GitHub rawbeew).",
+            "# Ada's Operating System\nYou are an agent working for Ada, the operator of "
+            "Northwind Studio (GitHub adanw).",
         ),
         (
             "user",
-            "Draft the Q3 retainer proposal for the Lagos client using last quarter's numbers, "
-            "and flag anything that changed since the March engagement letter.",
+            "Draft the Q3 retainer proposal for the Northwind client using last quarter's "
+            "numbers, and flag anything that changed since the March engagement letter.",
         ),
     )
     is_bespoke, _ = classify_shared_prompt(payload)
@@ -256,7 +259,7 @@ def test_truncated_sample_of_a_boilerplate_payload_stays_boilerplate() -> None:
 def test_truncated_sample_keeps_a_bespoke_trailing_user_turn() -> None:
     tail = (
         '"role": "system", "content": "You are Hermes Agent, an intelligent AI assistant"}, '
-        '{"role": "user", "content": "Reconcile the March invoices against the Lagos ledger '
+        '{"role": "user", "content": "Reconcile the March invoices against the Northwind ledger '
         'and list every entry missing a purchase order number."}]'
     )
     is_bespoke, reason = classify_shared_prompt(tail)
@@ -318,8 +321,8 @@ def test_gmail_aliases_link_with_no_network_overlap_at_all() -> None:
     # The old detector could not do this: alias roots were computed only after
     # the candidate set was frozen, so these two were never reported.
     accounts = {
-        "a": _account("a", "sisa.tmp@gmail.com"),
-        "b": _account("b", "si.sa.tmp@gmail.com"),
+        "a": _account("a", "ab.cd@" + GMAIL),
+        "b": _account("b", "a.b.c.d@" + GMAIL),
     }
     buckets = identity_buckets(accounts)
     alias = [b for b in buckets if b.kind == "gmail_alias"]
@@ -329,8 +332,8 @@ def test_gmail_aliases_link_with_no_network_overlap_at_all() -> None:
 
 def test_handle_matches_localpart_of_another_account() -> None:
     accounts = {
-        "a": _account("a", "hello@900labs.com", user_name="900Labs"),
-        "b": _account("b", "xadal75641@luckfeed.com", user_name="hello"),
+        "a": _account("a", "hello@acme.example", user_name="AcmeLabs"),
+        "b": _account("b", "spare@disposable.example", user_name="hello"),
     }
     buckets = identity_buckets(accounts)
     assert any(b.kind == "handle_localpart" and b.members == {"a", "b"} for b in buckets)
@@ -338,8 +341,8 @@ def test_handle_matches_localpart_of_another_account() -> None:
 
 def test_identical_handle_links_accounts() -> None:
     accounts = {
-        "a": _account("a", "benevolentjoker@gmail.com", user_name="B-A-M-N"),
-        "b": _account("b", "jlondonlabs@gmail.com", user_name="BAMN"),
+        "a": _account("a", "a@example.com", user_name="B-A-M-N"),
+        "b": _account("b", "b@example.com", user_name="BAMN"),
     }
     buckets = identity_buckets(accounts)
     assert any(b.kind == "handle" and b.members == {"a", "b"} for b in buckets)
@@ -443,7 +446,7 @@ def test_weak_edges_do_not_chain_unrelated_accounts_together() -> None:
 
 def test_one_strong_edge_still_merges_its_own_pair_only() -> None:
     buckets = [
-        Bucket("gmail_alias", "x@gmail.com", {"a", "b"}, 8),
+        Bucket("gmail_alias", "x@" + GMAIL, {"a", "b"}, 8),
         Bucket("req_ip", "1.1.1.1", {"b", "c"}, 3),
     ]
     groups, _, _ = cluster(buckets)
@@ -524,21 +527,21 @@ def test_ban_evasion_requires_first_request_after_the_suspension() -> None:
     accounts = {
         "dead": _account(
             "dead",
-            "rahbiew@gmail.com",
+            "a@example.com",
             status="suspended",
             created_at=NOW - timedelta(days=22),
             suspended_at=suspended_at,
         ),
         "new": _account(
             "new",
-            "temmie017@gmail.com",
+            "b@example.com",
             created_at=suspended_at - timedelta(hours=20),  # pre-registered
             first_request_at=suspended_at + timedelta(minutes=24),
         ),
     }
     findings = detect_ban_evasion({"dead", "new"}, accounts)
     assert len(findings) == 1
-    assert findings[0]["successor"] == "temmie017@gmail.com"
+    assert findings[0]["successor"] == "b@example.com"
 
 
 def test_pre_existing_account_that_stopped_before_the_ban_is_not_evasion() -> None:

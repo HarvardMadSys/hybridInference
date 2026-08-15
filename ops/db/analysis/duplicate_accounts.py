@@ -348,7 +348,7 @@ def classify_shared_prompt(prompt: str | None) -> tuple[bool, str]:
 
     * a substantive **user** turn — someone's actual work;
     * a personal **system** prompt. A hand-written "soul file" naming its owner
-      ("# Rabiu's Operating System … the operator of Knife Agency") is the
+      ("# Ada's Operating System … the operator of Northwind Studio") is the
       single strongest content signal there is, and treating every system turn
       as vendor text discards it. Telling a personal system prompt from a
       vendor preamble is a fan-out question, not a structural one — a vendor
