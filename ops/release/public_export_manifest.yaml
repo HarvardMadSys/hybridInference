@@ -201,6 +201,9 @@ exclude:
   - path: ops/db/backup-health-cron
     reason: *deployment_cron
 
+  - path: ops/db/export-weekly-logs-cron
+    reason: *deployment_cron
+
 # Decisions this file cannot make. The export tool refuses to run while any
 # remain, so the list is short on purpose.
   # docs/developer/ is mixed, so it is split by name rather than dropped. The
