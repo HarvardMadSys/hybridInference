@@ -55,6 +55,22 @@
         ],
         "startup_estimate_seconds": 120
     },
+    "Qwen/Qwen3.8-27B-FP8": {
+        "container": "ondemand-qwen38-27b-vllm",
+        "engine": "vllm",
+        "backend_port": 18029,
+        "model_dir": "/scratch/yiyu/models/Qwen3.8-27B-FP8",
+        "hf_repo": "Qwen/Qwen3.8-27B-FP8",
+        "served_name": "Qwen/Qwen3.8-27B-FP8",
+        "max_model_len": 131072,
+        "mem_fraction": "0.45",
+        "reasoning_parser": "qwen3",
+        "vllm_tool_call_parser": "hermes",
+        "vllm_extra_args": [
+            "--default-chat-template-kwargs", "{\"enable_thinking\": false}"
+        ],
+        "startup_estimate_seconds": 240
+    },
     "humain-ai/ALLaM-7B-Instruct-preview": {
         "container": "ondemand-allam-7b-vllm",
         "engine": "vllm",

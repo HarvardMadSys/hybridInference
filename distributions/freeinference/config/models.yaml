@@ -934,6 +934,36 @@ models:
           - ${LOCAL_API_KEY}
         provider_model_id: "Qwen/Qwen3-8B"
 
+  - id: qwen3.8-27b
+    name: Qwen3.8 27B (on-demand)
+    provider: vllm
+    required_role: internal
+    on_demand: true
+    provider_model_id: "Qwen/Qwen3.8-27B-FP8"
+    quantization: "fp8"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 131072
+    max_output_length: 8192
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, thinking]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        optional: true
+        base_url: ${H200B_ONDEMAND_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "Qwen/Qwen3.8-27B-FP8"
+
   - id: allam-7b
     name: ALLaM 7B Instruct Preview (on-demand)
     provider: vllm

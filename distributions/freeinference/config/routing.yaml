@@ -40,6 +40,7 @@ local_deployment:
       - ministral-3-8b
       - gemma-3-12b
       - qwen3-8b
+      - qwen3.8-27b
       - allam-7b
       - apertus-v1.5-8b
       - alia-40b-instruct
