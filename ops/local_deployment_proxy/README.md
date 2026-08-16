@@ -211,6 +211,7 @@ Models are defined in `local_deployment_proxy/models.json`:
 | `served_name` | `--served-model-name` for sglang |
 | `max_model_len` | `--context-length` |
 | `mem_fraction` | `--mem-fraction-static` |
+| `chunked_prefill_size` | optional prefill tokens per forward pass — `--chunked-prefill-size` (sglang) / `--max-num-batched-tokens` (vLLM). Bounds how long a decode stalls behind a co-resident prefill; see [Chunked prefill size](#chunked-prefill-size). Unset → the engine's own default. Chat models only |
 | `tool_call_parser` | `--tool-call-parser` (omit to disable; chat models only) |
 | `is_embedding` | `true` → launch with `--is-embedding` (encode-only); serves `/v1/embeddings` |
 | `attention_backend` | optional `--attention-backend` (embedding models) |
@@ -233,6 +234,43 @@ Models are defined in `local_deployment_proxy/models.json`:
 | `vllm_extra_args` | List of strings appended verbatim to the serve command, after everything else (so they can override an emitted default). E.g. Ministral 3: `["--tokenizer-mode", "mistral", "--limit-mm-per-prompt", "{\"image\": 0}"]`; Qwen3 thinking off by default: `["--default-chat-template-kwargs", "{\"enable_thinking\": false}"]` |
 
 To add a new model, append an entry to `models.json` and restart the proxy.
+
+### Chunked prefill size
+
+`chunked_prefill_size` is the one knob here that trades one request's latency
+for another's. Both engines split a long prompt across several forward passes
+and run waiting decodes in between — vLLM spends each step's token budget on
+decode first and prefill with the remainder; sglang alternates prefill and
+decode batches — so the chunk size, not the prompt size, is what bounds how long
+a decode stalls behind a neighbour's prefill.
+
+On the H200 DeepSeek deployment prefill runs at ~14.6k tok/s
+([measured](../h200_idle_proxy/README.md#long-context)), so at the 8192-token
+default one chunk stalls a co-resident decode ~0.6 s — against a 1.9–3 ms
+baseline ITL — and a 1M-token prompt does that ~122 times. Halving the chunk
+halves the stall:
+
+| `chunked_prefill_size` | decode stall per chunk (~14.6k tok/s) |
+|---:|---:|
+| 8192 (default) | ~560 ms |
+| 4096 | ~280 ms |
+| 2048 | ~140 ms |
+
+What it does **not** do is make the big prompt cheaper: the same tokens still
+cost the same GPU seconds, and smaller chunks cost it a little more (smaller
+GEMMs, more kernel launches, the prefix re-read per chunk). It buys ITL with
+TTFT, so pick it per model from how the replica is used — a chat model sharing a
+GPU with long-context agent traffic wants a smaller chunk than a model that
+mostly serves one big prompt at a time.
+
+It is the per-replica half of a problem whose cross-replica half the gateway
+already handles: prefill-aware routing (#1267) keeps two mega-prefills off the
+same replica, but cannot help the requests already sharing one with an elephant.
+
+Leave it unset to keep each engine's own default (sglang resolves one from GPU
+memory at startup and prints it in the `server_args` line of the container log;
+vLLM uses 8192 for online serving). `-1` disables chunking entirely — sglang
+only, and it hands a long prompt the whole GPU until it finishes.
 
 ## Configuration
 
