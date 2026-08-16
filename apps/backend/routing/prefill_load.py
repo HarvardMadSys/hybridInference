@@ -37,6 +37,7 @@ worst it does is prefer a different endpoint that is already admissible.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import threading
 import time
@@ -136,11 +137,14 @@ _CHARS_PER_TOKEN: int = 4
 _IMAGE_TOKENS: int = 85
 _AUDIO_TOKENS: int = 200
 
-# How much of a prompt's head identifies the conversation it belongs to. Long
-# enough that two conversations from one caller diverge inside it (a shared
-# system prompt is nowhere near this), short enough that fingerprinting a
-# megabyte-scale prompt still hashes only a few KB.
-_FINGERPRINT_CHARS: int = 4096
+# How much of each message identifies the conversation it belongs to, and how
+# many messages deep to look for the opening turn. A per-message budget rather
+# than one budget over the whole head: a coding agent's system prompt runs well
+# past any single-slice bound, and a shared system prompt that swallowed the
+# budget would fingerprint every one of that agent's conversations identically
+# -- which is the collision this exists to prevent.
+_FINGERPRINT_CHARS_PER_MESSAGE: int = 2048
+_FINGERPRINT_MAX_MESSAGES: int = 4
 
 
 def _content_chars(content: Any) -> int:
@@ -179,7 +183,12 @@ def _content_chars(content: Any) -> int:
     return len(str(content))
 
 
-def estimate_prefill_tokens(messages: Sequence[dict[str, Any]] | None) -> int:
+def estimate_prefill_tokens(
+    messages: Sequence[dict[str, Any]] | None,
+    *,
+    tools: Any = None,
+    response_format: Any = None,
+) -> int:
     """Estimate prompt size in tokens, cheaply enough for the routing hot path.
 
     Uses a character heuristic rather than ``serving.utils.tokens``: real
@@ -188,20 +197,44 @@ def estimate_prefill_tokens(messages: Sequence[dict[str, Any]] | None) -> int:
     endpoints and recognize an elephant. Being off by 20% changes nothing about
     which endpoint wins; spending 100ms of CPU to route would.
 
+    Tool definitions and a structured-output schema count too. They are not in
+    ``messages``, but the adapter serializes them into the same upstream body
+    and the model prefills them like any other text -- an agent carrying a large
+    MCP tool catalog can impose far more prefill than its visible turn suggests,
+    and sizing on messages alone would rank it as though it had not.
+
     Args:
         messages: OpenAI-style messages, or None.
+        tools: Tool definitions from the request, if any.
+        response_format: Structured-output spec from the request, if any.
 
     Returns:
         Estimated prompt tokens (never negative).
     """
-    if not messages:
-        return 0
     chars = 0
-    for message in messages:
+    for message in messages or ():
         if not isinstance(message, dict):
             continue
         chars += _content_chars(message.get("content"))
+    chars += _serialized_chars(tools) + _serialized_chars(response_format)
     return chars // _CHARS_PER_TOKEN
+
+
+def _serialized_chars(value: Any) -> int:
+    """Return the char cost of a non-message prompt field (tools, schemas).
+
+    These reach the upstream as JSON, so their serialized length is what the
+    model prefills. Sized with ``json.dumps`` rather than walked structurally
+    because the shape is arbitrary and the objects are small next to the prompts
+    this module exists to measure; anything unserializable is skipped rather
+    than guessed at.
+    """
+    if not value:
+        return 0
+    try:
+        return len(json.dumps(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _content_text(content: Any, limit: int) -> str:
@@ -250,19 +283,23 @@ def conversation_fingerprint(messages: Sequence[dict[str, Any]] | None) -> str |
     hint, but as a *priority* it hands a genuinely cold mega-prefill the
     interactive tier, letting it jump the queue and retract a real elephant.
 
-    A head slice is enough to tell the two apart. A continuation contains the
-    previous turn as a prefix, so it hashes identically; a different
-    conversation diverges within the first few KB -- and one that does not has,
-    by definition, a multi-KB shared prefix that really is resident in the
-    endpoint's radix cache. Bounded at ``_FINGERPRINT_CHARS`` so this costs a
-    hash of a few KB rather than of a megabyte-scale prompt.
+    What identifies a conversation is its *opening*: the leading system messages
+    plus the first user turn. Both are fixed for the life of an append-only
+    conversation -- later turns are appended after them -- so a continuation
+    hashes identically from turn two onwards, while a different conversation
+    from the same caller differs in its first user message and does not.
 
-    Stability across turns therefore begins once a conversation's prompt exceeds
-    that bound: below it, each turn appends inside the slice and re-hashes
-    differently, so the discount does not apply. That window is harmless by
-    construction -- ``_FINGERPRINT_CHARS`` is about a thousand tokens, two
-    orders of magnitude below :data:`INTERVENE_TOKENS`, so every prompt in it is
-    interactive on its own size and needs no discount to be tiered correctly.
+    Each message contributes at most ``_FINGERPRINT_CHARS_PER_MESSAGE``, and at
+    most ``_FINGERPRINT_MAX_MESSAGES`` are read. The per-message budget is the
+    load-bearing part: one budget spread over the head would be swallowed whole
+    by a coding agent's system prompt, which runs to tens of KB, and every
+    conversation that agent ever sends would then fingerprint the same -- the
+    exact collision this exists to prevent. Roles are hashed alongside the text
+    so a message boundary cannot be forged by concatenation.
+
+    Two conversations that share both a system prompt *and* a first user turn
+    still collide, and that is the intended limit: they share a genuine prefix
+    of that length, which really is resident in the endpoint's radix cache.
 
     Args:
         messages: OpenAI-style messages, or None.
@@ -275,17 +312,21 @@ def conversation_fingerprint(messages: Sequence[dict[str, Any]] | None) -> str |
     if not messages:
         return None
     head: list[str] = []
-    remaining = _FINGERPRINT_CHARS
-    for message in messages:
-        if remaining <= 0:
-            break
+    seen_user = False
+    for message in messages[:_FINGERPRINT_MAX_MESSAGES]:
         if not isinstance(message, dict):
             continue
-        text = _content_text(message.get("content"), remaining)
-        if not text:
-            continue
-        head.append(text)
-        remaining -= len(text)
+        role = message.get("role")
+        text = _content_text(message.get("content"), _FINGERPRINT_CHARS_PER_MESSAGE)
+        if text:
+            head.append(f"{role}:{text}")
+        # The first user turn is the discriminator; nothing after it adds
+        # identity, and reading further would make the digest move as the
+        # conversation grows.
+        if role == "user":
+            seen_user = True
+        if seen_user:
+            break
     if not head:
         return None
     return hashlib.blake2b("\x00".join(head).encode("utf-8", "ignore"), digest_size=8).hexdigest()

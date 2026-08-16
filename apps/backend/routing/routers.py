@@ -631,7 +631,11 @@ class FixedRouter:
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
-        prefill_tokens = estimate_prefill_tokens(messages)
+        prefill_tokens = estimate_prefill_tokens(
+            messages,
+            tools=params.get("tools"),
+            response_format=params.get("response_format"),
+        )
         affinity_key = current_affinity_key()
         # Which conversation this is, so a caller's unrelated prompt cannot
         # inherit another's warm-prefix discount (see _dispatch_priority).
@@ -796,7 +800,11 @@ class FixedRouter:
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
-        prefill_tokens = estimate_prefill_tokens(messages)
+        prefill_tokens = estimate_prefill_tokens(
+            messages,
+            tools=params.get("tools"),
+            response_format=params.get("response_format"),
+        )
         affinity_key = current_affinity_key()
         # Which conversation this is, so a caller's unrelated prompt cannot
         # inherit another's warm-prefix discount (see _dispatch_priority).

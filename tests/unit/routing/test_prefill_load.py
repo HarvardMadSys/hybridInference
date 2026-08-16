@@ -863,34 +863,6 @@ def test_fingerprint_separates_conversations_sharing_a_system_prompt():
 
 
 @pytest.mark.unit
-def test_fingerprint_is_stable_once_the_prompt_exceeds_the_head_slice():
-    """Stability starts where the head slice saturates, and that is early enough.
-
-    Below ``_FINGERPRINT_CHARS`` each turn appends inside the slice and re-hashes
-    differently, so no discount is granted. That window is ~1k tokens -- two
-    orders of magnitude under INTERVENE_TOKENS -- so every prompt inside it is
-    interactive on its own size and is tiered correctly without any discount.
-    Past it, a continuation must keep hashing identically or a warm session
-    would be charged in full forever.
-    """
-    head = "x" * (2 * prefill_load._FINGERPRINT_CHARS)
-    turn1 = [{"role": "user", "content": head}]
-    turn2 = [*turn1, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "more"}]
-
-    assert prefill_load.conversation_fingerprint(turn1) == prefill_load.conversation_fingerprint(
-        turn2
-    )
-
-    # The unstable window really is inside the interactive tier.
-    small = [{"role": "user", "content": "x" * (prefill_load._FINGERPRINT_CHARS - 1)}]
-    assert prefill_load.estimate_prefill_tokens(small) < prefill_load.INTERVENE_TOKENS
-    assert (
-        prefill_load.priority_for_prefill(prefill_load.estimate_prefill_tokens(small))
-        == prefill_load.PRIORITY_INTERACTIVE
-    )
-
-
-@pytest.mark.unit
 def test_fingerprint_ignores_binary_blocks():
     # A base64 image would dominate the head slice, so two unrelated prompts
     # carrying the same attachment would fingerprint identically.
@@ -1021,3 +993,125 @@ async def test_streaming_confirms_the_prefix_at_first_token():
     await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
 
     assert adapter.seen == [prefill_load.PRIORITY_ELEPHANT, prefill_load.PRIORITY_INTERACTIVE]
+
+
+@pytest.mark.unit
+def test_fingerprint_survives_a_system_prompt_larger_than_the_budget():
+    """A coding agent's system prompt must not swallow the whole identity.
+
+    This is the population that matters here: agentic clients send tens of KB of
+    system prompt, identical across every conversation they open. A single
+    budget spread over the prompt head is consumed by it entirely, so every
+    conversation from that agent fingerprints the same -- and one completed
+    500k-token conversation would then make an unrelated cold 500k-token request
+    look warm and hand it interactive priority.
+    """
+    system = {"role": "system", "content": "You are a coding agent. " * 2_000}
+    one = [system, {"role": "user", "content": "find the bug in foo.py"}]
+    other = [system, {"role": "user", "content": "write a poem about hedgehogs"}]
+
+    assert len(system["content"]) > prefill_load._FINGERPRINT_CHARS_PER_MESSAGE
+    assert prefill_load.conversation_fingerprint(one) != prefill_load.conversation_fingerprint(
+        other
+    )
+
+
+@pytest.mark.unit
+def test_fingerprint_is_stable_from_the_second_turn():
+    # Identity is the opening (leading system messages plus the first user
+    # turn), which an append-only client never rewrites -- so a continuation
+    # matches without waiting for any budget to saturate.
+    system = {"role": "system", "content": "You are a coding agent. " * 2_000}
+    turn1 = [system, {"role": "user", "content": "find the bug in foo.py"}]
+    turn2 = [*turn1, {"role": "assistant", "content": "looking"}, {"role": "user", "content": "?"}]
+    turn3 = [
+        *turn2,
+        {"role": "assistant", "content": "found it"},
+        {"role": "user", "content": "fix"},
+    ]
+
+    assert (
+        prefill_load.conversation_fingerprint(turn1)
+        == prefill_load.conversation_fingerprint(turn2)
+        == prefill_load.conversation_fingerprint(turn3)
+    )
+
+
+@pytest.mark.unit
+def test_unrelated_conversations_sharing_a_huge_system_prompt_stay_cold():
+    # End to end: the collision above, priced. Both are cold mega-prefills and
+    # both must read elephant.
+    t = PrefillLoadTracker()
+    system = {"role": "system", "content": "You are a coding agent. " * 2_000}
+    first = [system, {"role": "user", "content": "a" * (4 * 300_000)}]
+    second = [system, {"role": "user", "content": "b" * (4 * 300_000)}]
+
+    t.release(
+        t.acquire(
+            "ep",
+            prefill_load.estimate_prefill_tokens(first),
+            affinity_key="u1",
+            fingerprint=prefill_load.conversation_fingerprint(first),
+        ),
+        prefill_confirmed=True,
+    )
+
+    charged = t.uncached_estimate(
+        "ep",
+        prefill_load.estimate_prefill_tokens(second),
+        "u1",
+        fingerprint=prefill_load.conversation_fingerprint(second),
+    )
+    assert prefill_load.priority_for_prefill(charged) == prefill_load.PRIORITY_ELEPHANT
+
+
+@pytest.mark.unit
+def test_tool_catalog_and_schema_count_toward_prefill():
+    """Tools are prompt-bearing: the adapter serializes them into the same body.
+
+    An agent with a large MCP tool catalog imposes that prefill on every request,
+    however short its visible turn. Sizing on messages alone would rank such a
+    request interactive and let it preempt a genuine elephant.
+    """
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": f"tool_{i}",
+                "description": "d" * 4_000,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        for i in range(60)
+    ]
+
+    bare = prefill_load.estimate_prefill_tokens(messages)
+    with_tools = prefill_load.estimate_prefill_tokens(messages, tools=tools)
+
+    assert bare < prefill_load.INTERVENE_TOKENS
+    assert with_tools > prefill_load.INTERVENE_TOKENS
+    assert prefill_load.priority_for_prefill(with_tools) != prefill_load.PRIORITY_INTERACTIVE
+    # A schema counts the same way, and unserializable input is skipped, not guessed.
+    assert prefill_load.estimate_prefill_tokens(
+        messages, response_format={"type": "json_schema", "schema": {"d": "x" * 40_000}}
+    ) > prefill_load.estimate_prefill_tokens(messages)
+    assert prefill_load.estimate_prefill_tokens(messages, tools=object()) == bare
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_prices_the_tool_catalog_it_forwards():
+    # The router reads tools out of params, which is where the serving path puts
+    # them, so what is priced is what the adapter will actually send.
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+    tools = [
+        {"type": "function", "function": {"name": f"t{i}", "description": "d" * 20_000}}
+        for i in range(60)
+    ]
+
+    await r.chat_completion("m", [{"role": "user", "content": "hi"}], tools=tools)
+
+    assert adapter.seen == [prefill_load.PRIORITY_ELEPHANT]

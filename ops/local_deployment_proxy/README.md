@@ -295,6 +295,10 @@ It takes both sides, and they are independent:
    hit, so ranking a warm 500k-token continuation on its total would queue the
    interactive case last:
 
+   Size counts everything the upstream will prefill, not just the visible turn:
+   tool definitions and a structured-output schema are serialized into the same
+   request body, so a large MCP tool catalog is priced as the prefill it is.
+
    | Un-cached prefill | Priority | Effect |
    |---|---:|---|
    | < 50k tokens (interactive) | 20 | scheduled first; retracts a running elephant |
