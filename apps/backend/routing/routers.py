@@ -668,6 +668,10 @@ class FixedRouter:
                 )
                 try:
                     resp = await primary.chat_completion(messages, **params)
+                    # A returned response proves this endpoint finished
+                    # prefilling this prompt, which is what makes its prefix
+                    # safe to remember.
+                    self._prefill_load.release(lease, prefill_confirmed=True)
                 finally:
                     self._prefill_load.release(lease)
                 self._on_success(endpoint_id)
@@ -741,6 +745,7 @@ class FixedRouter:
                         )
                         try:
                             resp = await adapter.chat_completion(messages, **params)
+                            self._prefill_load.release(lease, prefill_confirmed=True)
                         finally:
                             self._prefill_load.release(lease)
                         self._on_success(endpoint_id)
@@ -849,7 +854,7 @@ class FixedRouter:
                         # lease for the whole stream would let a long cheap
                         # decode read as prefill pressure and push traffic away
                         # from an endpoint that is no longer busy prefilling.
-                        self._prefill_load.release(lease)
+                        self._prefill_load.release(lease, prefill_confirmed=True)
                     yield chunk
                     chunks_yielded = True
             return
@@ -938,7 +943,7 @@ class FixedRouter:
                             if first and has_non_empty_content(chunk):
                                 first = False
                                 self._on_success(adapter_endpoint_id)
-                                self._prefill_load.release(lease)
+                                self._prefill_load.release(lease, prefill_confirmed=True)
                             yield chunk
                             chunks_yielded = True
                     return

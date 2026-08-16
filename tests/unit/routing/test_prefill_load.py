@@ -344,7 +344,9 @@ def test_warm_continuation_charges_only_the_growth():
     """The core fix: a warm 500k continuation must not read as 500k of prefill."""
     t = PrefillLoadTracker()
     lease = t.acquire("a", 490_000, affinity_key="caller")
-    t.release(lease)
+    # A completed prefill is what makes the prefix resident, and therefore what
+    # writes the hint; see test_in_flight_prefix_is_not_treated_as_cached.
+    t.release(lease, prefill_confirmed=True)
     # Next turn is the same conversation plus a tool result.
     assert t.uncached_estimate("a", 500_000, "caller") == 10_000
     warm = t.acquire("a", 500_000, affinity_key="caller")
@@ -356,7 +358,7 @@ def test_warm_continuation_charges_only_the_growth():
 def test_warm_prefix_is_per_endpoint():
     """Moving a warm session to another endpoint must cost a full prefill."""
     t = PrefillLoadTracker()
-    t.release(t.acquire("a", 490_000, affinity_key="caller"))
+    t.release(t.acquire("a", 490_000, affinity_key="caller"), prefill_confirmed=True)
     assert t.uncached_estimate("a", 500_000, "caller") == 10_000
     assert t.uncached_estimate("b", 500_000, "caller") == 500_000
 
@@ -364,7 +366,9 @@ def test_warm_prefix_is_per_endpoint():
 @pytest.mark.unit
 def test_warm_prefix_is_per_caller():
     t = PrefillLoadTracker()
-    t.release(t.acquire("a", 490_000, affinity_key="caller1"))
+    t.release(t.acquire("a", 490_000, affinity_key="caller1"), prefill_confirmed=True)
+    # caller1's hint exists (so this is not vacuous) and does not reach caller2.
+    assert t.uncached_estimate("a", 500_000, "caller1") == 10_000
     assert t.uncached_estimate("a", 500_000, "caller2") == 500_000
 
 
@@ -372,7 +376,7 @@ def test_warm_prefix_is_per_caller():
 def test_prefix_hint_expires():
     now = [1000.0]
     t = PrefillLoadTracker(clock=lambda: now[0])
-    t.release(t.acquire("a", 490_000, affinity_key="caller"))
+    t.release(t.acquire("a", 490_000, affinity_key="caller"), prefill_confirmed=True)
     assert t.uncached_estimate("a", 500_000, "caller") == 10_000
     now[0] += prefill_load._PREFIX_HINT_TTL_SEC + 1
     assert t.uncached_estimate("a", 500_000, "caller") == 500_000
@@ -381,7 +385,7 @@ def test_prefix_hint_expires():
 @pytest.mark.unit
 def test_shrinking_prompt_never_charges_negative():
     t = PrefillLoadTracker()
-    t.release(t.acquire("a", 500_000, affinity_key="caller"))
+    t.release(t.acquire("a", 500_000, affinity_key="caller"), prefill_confirmed=True)
     assert t.uncached_estimate("a", 1_000, "caller") == 0
 
 
@@ -389,7 +393,7 @@ def test_shrinking_prompt_never_charges_negative():
 def test_warm_continuation_not_barred_by_elephant_limit():
     """A warm continuation must still reach the endpoint holding its prefix."""
     t = PrefillLoadTracker(elephant_tokens=100_000, elephant_limit=1)
-    t.release(t.acquire("warm", 490_000, affinity_key="caller"))
+    t.release(t.acquire("warm", 490_000, affinity_key="caller"), prefill_confirmed=True)
     # Someone else's cold mega-prefill saturates 'warm'.
     t.acquire("warm", 400_000, affinity_key="other")
     assert t.elephants("warm") == 1
@@ -908,7 +912,10 @@ def test_routing_discount_is_unchanged_by_the_fingerprint_gate():
     the strictness.
     """
     tracker = PrefillLoadTracker()
-    tracker.acquire("ep", 300_000, affinity_key="u1", fingerprint="conv-a")
+    tracker.release(
+        tracker.acquire("ep", 300_000, affinity_key="u1", fingerprint="conv-a"),
+        prefill_confirmed=True,
+    )
 
     # No fingerprint supplied (routing): discounted, as before.
     assert tracker.uncached_estimate("ep", 300_000, "u1") == 0
@@ -923,7 +930,94 @@ def test_unfingerprintable_prompt_never_claims_a_match():
     # A prompt with no text (a pure-image turn) cannot be identified, so the
     # priority path must charge it in full rather than treat None as a match.
     tracker = PrefillLoadTracker()
-    tracker.acquire("ep", 300_000, affinity_key="u1", fingerprint=None)
+    tracker.release(
+        tracker.acquire("ep", 300_000, affinity_key="u1", fingerprint=None),
+        prefill_confirmed=True,
+    )
 
     assert tracker.uncached_estimate("ep", 300_000, "u1", fingerprint="conv-a") == 300_000
     assert tracker.uncached_estimate("ep", 300_000, "u1") == 0
+
+
+@pytest.mark.unit
+def test_in_flight_prefix_is_not_treated_as_cached():
+    """A prefix nobody has finished building must not discount anything.
+
+    Two large turns of one conversation can overlap -- a client retry, a
+    stop-and-resend, parallel agent branches. Writing the hint at dispatch
+    would let the second turn discount against a prefix the first is still
+    prefilling, and as a *priority* that is self-defeating: the second is
+    stamped interactive and can retract the very request that would have made
+    the prefix resident.
+    """
+    t = PrefillLoadTracker()
+    in_flight = t.acquire("a", 490_000, affinity_key="caller", fingerprint="conv")
+
+    # Still prefilling: the next turn is charged in full, either way it is read.
+    assert t.uncached_estimate("a", 500_000, "caller") == 500_000
+    assert t.uncached_estimate("a", 500_000, "caller", fingerprint="conv") == 500_000
+
+    t.release(in_flight, prefill_confirmed=True)
+
+    assert t.uncached_estimate("a", 500_000, "caller", fingerprint="conv") == 10_000
+
+
+@pytest.mark.unit
+def test_failed_dispatch_leaves_no_hint():
+    # An attempt that errored or was abandoned cached nothing. Its lease still
+    # unwinds through release() from a finally, which must not record a prefix.
+    t = PrefillLoadTracker()
+    failed = t.acquire("a", 490_000, affinity_key="caller", fingerprint="conv")
+    t.release(failed)
+
+    assert t.uncached_estimate("a", 500_000, "caller", fingerprint="conv") == 500_000
+    assert t.backlog("a") == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_overlapping_turns_do_not_preempt_the_request_warming_the_cache():
+    """End to end: the second of two overlapping turns must not read interactive.
+
+    ``_KeepAliveAdapter`` holds the lease open past the first (empty) chunk, so
+    the second dispatch is decided while the first is genuinely still prefilling.
+    """
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+    huge = "x" * (4 * 300_000)
+
+    # First turn is still in flight: acquire without releasing.
+    in_flight = r.prefill_load.acquire(
+        "OK",
+        prefill_load.estimate_prefill_tokens([{"role": "user", "content": huge}]),
+        affinity_key="u1",
+        fingerprint=prefill_load.conversation_fingerprint([{"role": "user", "content": huge}]),
+    )
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
+    assert adapter.seen == [prefill_load.PRIORITY_ELEPHANT]
+
+    # Once it completes, the continuation is the interactive delta it really is.
+    r.prefill_load.release(in_flight, prefill_confirmed=True)
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 800}])
+    assert adapter.seen[-1] == prefill_load.PRIORITY_INTERACTIVE
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_streaming_confirms_the_prefix_at_first_token():
+    # The streaming path releases on first content and again in a finally; the
+    # first of those is the completion signal, so a streamed turn must leave a
+    # usable hint behind exactly as a non-streamed one does.
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+    huge = "x" * (4 * 300_000)
+
+    async for _ in r.stream_chat_completion("m", [{"role": "user", "content": huge}]):
+        pass
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
+
+    assert adapter.seen == [prefill_load.PRIORITY_ELEPHANT, prefill_load.PRIORITY_INTERACTIVE]

@@ -307,7 +307,10 @@ It takes both sides, and they are independent:
    facing the cold prefill. It is also per *conversation*, not per caller — one
    API key sends many, and without that check a caller's unrelated cold
    mega-prefill would inherit the previous one's discount and be handed the
-   tier that retracts elephants.
+   tier that retracts elephants. And the prefix has to be *resident*, not merely
+   requested: the discount comes from a turn that finished prefilling, so two
+   overlapping turns of one conversation cannot have the second preempt the
+   first while it is still building the cache the second is counting on.
 
    The *spacing* is the policy, not the absolute values: interactive beats an
    elephant by 20 (≥ the threshold, so it preempts) and beats a large prompt by

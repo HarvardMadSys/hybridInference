@@ -12,7 +12,7 @@ actively harmful: the fleet runs above 90% prefix-cache hit, so a warm 500k
 continuation would report its endpoint as blocked when it is really about to
 prefill a few thousand delta tokens, and every diversion that followed would
 land on a cold endpoint and manufacture a real cache miss. The cached prefix is
-estimated from the caller's last prompt size on that endpoint -- agentic prompts
+estimated from the caller's last *completed* prompt on that endpoint -- agentic prompts
 grow monotonically, so the growth is the un-cached part -- which costs one dict
 lookup rather than the tokenization a true prefix match would need.
 
@@ -359,6 +359,10 @@ class PrefillLease:
         released: Set once the lease has been returned; makes release idempotent
             so the streaming path can release on first token and again in a
             ``finally`` without double-crediting.
+        prompt_tokens: This request's estimated *total* prompt size, written to
+            the prefix hint only once prefill is confirmed complete.
+        fingerprint: Which conversation the prompt belongs to, stored with that
+            hint so a later turn can prove it is the same one.
     """
 
     endpoint_id: str
@@ -366,6 +370,8 @@ class PrefillLease:
     elephant: bool
     affinity_key: str | None = None
     released: bool = False
+    prompt_tokens: int = 0
+    fingerprint: str | None = None
 
 
 class PrefillLoadTracker:
@@ -486,14 +492,20 @@ class PrefillLoadTracker:
         Never blocks or refuses: admission is decided during selection, and a
         request that reached dispatch must always be allowed to proceed.
 
-        Also records this prompt's size against ``(affinity_key, endpoint_id)``
-        so the caller's next turn on this endpoint is recognized as warm.
+        The prompt is *not* remembered here. A hint written at dispatch would
+        claim a prefix that no upstream has built yet: two overlapping turns of
+        one conversation would have the second discounted against the first
+        while the first is still prefilling, and a dispatch that fails would
+        leave behind a hint for a prefix that was never cached. It is written by
+        :meth:`release` instead, once prefill is confirmed complete.
 
         Args:
             endpoint_id: Endpoint about to receive the request.
             tokens: Estimated *total* prompt tokens; the cached prefix is
                 discounted here.
             affinity_key: Caller identity, when known.
+            fingerprint: Conversation identity, carried on the lease and stored
+                with the hint when prefill completes.
 
         Returns:
             The lease to hand back to :meth:`release`.
@@ -501,7 +513,6 @@ class PrefillLoadTracker:
         total = max(int(tokens), 0)
         charged = self.uncached_estimate(endpoint_id, total, affinity_key)
         elephant = self.is_elephant(charged)
-        now = self._clock()
         with self._lock:
             self._backlog[endpoint_id] = self._backlog.get(endpoint_id, 0) + charged
             if elephant:
@@ -509,12 +520,13 @@ class PrefillLoadTracker:
             if affinity_key is not None:
                 caller = (endpoint_id, affinity_key)
                 self._by_caller[caller] = self._by_caller.get(caller, 0) + charged
-                self._remember_prompt_locked(affinity_key, endpoint_id, total, now, fingerprint)
         return PrefillLease(
             endpoint_id=endpoint_id,
             tokens=charged,
             elephant=elephant,
             affinity_key=affinity_key,
+            prompt_tokens=total,
+            fingerprint=fingerprint,
         )
 
     def _remember_prompt_locked(
@@ -536,14 +548,24 @@ class PrefillLoadTracker:
         while len(self._prefix_hints) > _PREFIX_HINT_MAX_ENTRIES:
             self._prefix_hints.popitem(last=False)
 
-    def release(self, lease: PrefillLease | None) -> None:
+    def release(self, lease: PrefillLease | None, *, prefill_confirmed: bool = False) -> None:
         """Return a lease's tokens to an endpoint's budget.
 
         Idempotent and None-tolerant so callers can release at the natural point
         (first token) and again from a ``finally`` without special-casing.
 
+        ``prefill_confirmed`` is what writes the warm-prefix hint, and it means
+        exactly one thing: this endpoint has now finished prefilling this prompt,
+        so the prefix really is resident. Releases that unwind an error or a
+        client disconnect leave it False and write nothing -- a prefix nobody
+        built must not discount the next request, least of all into a priority
+        tier that preempts the request still building it.
+
         Args:
             lease: The lease from :meth:`acquire`, or None.
+            prefill_confirmed: True only where the upstream has demonstrably
+                finished prefill (a returned response, or the first content
+                token of a stream).
         """
         if lease is None or lease.released:
             return
@@ -551,6 +573,14 @@ class PrefillLoadTracker:
             if lease.released:
                 return
             lease.released = True
+            if prefill_confirmed and lease.affinity_key is not None:
+                self._remember_prompt_locked(
+                    lease.affinity_key,
+                    lease.endpoint_id,
+                    lease.prompt_tokens,
+                    self._clock(),
+                    lease.fingerprint,
+                )
             remaining = self._backlog.get(lease.endpoint_id, 0) - lease.tokens
             if remaining > 0:
                 self._backlog[lease.endpoint_id] = remaining
