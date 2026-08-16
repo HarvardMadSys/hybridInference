@@ -11,6 +11,7 @@ import aiohttp
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import ValidationError
 
+from routing.endpoints import endpoint_id_for_config
 from serving.config.runtime_settings import get_runtime_settings
 from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing
@@ -199,9 +200,18 @@ async def create_embeddings(
         usage: dict[str, Any] | None,
         pricing: dict[str, str] | None,
         error: str | None,
+        endpoint_id: str | None = None,
     ) -> None:
         if log_store is None or completions_logger is None or suppress_synthetic_logging:
             return
+        # ``LogStore.log_request`` recovers ``api_logs.served_endpoint_id`` from
+        # ``metadata["endpoint_id"]``. This surface dispatches to an adapter
+        # looked up by model id rather than through FixedRouter, so no
+        # ``_routing`` blob ever supplies it and the column would otherwise fall
+        # through to the bare provider label ("sglang") — indistinguishable
+        # across the endpoints serving the same embedding model. Left unset on
+        # the pre-dispatch 404, where no endpoint was ever selected.
+        log_metadata = {**metadata, "endpoint_id": endpoint_id} if endpoint_id else metadata
         completions_logger.schedule_log(
             request_id,
             {
@@ -218,7 +228,7 @@ async def create_embeddings(
                     "encoding_format": request.encoding_format,
                     "dimensions": request.dimensions,
                 },
-                "metadata": metadata,
+                "metadata": log_metadata,
                 "pricing": pricing,
                 "request_payload": request.model_dump(exclude_none=True),
             },
@@ -237,8 +247,10 @@ async def create_embeddings(
         raise HTTPException(404, f"Embedding model '{model}' not found")
 
     adapter = embedding_adapters[model]
-    provider = getattr(getattr(adapter, "config", None), "provider", None) or "unknown"
-    pricing = effective_pricing(getattr(adapter, "config", None))
+    adapter_config = getattr(adapter, "config", None)
+    provider = getattr(adapter_config, "provider", None) or "unknown"
+    endpoint_id = endpoint_id_for_config(adapter_config)
+    pricing = effective_pricing(adapter_config)
 
     params: dict[str, Any] = {}
     if request.encoding_format is not None:
@@ -255,6 +267,7 @@ async def create_embeddings(
         serving_cfg = getattr(adapter, "serving_config", None)
         if serving_cfg is not None:
             provider = getattr(serving_cfg, "provider", None) or provider
+            endpoint_id = endpoint_id_for_config(serving_cfg) or endpoint_id
             pricing = effective_pricing(serving_cfg)
         # Validate against the response schema *before* recording any success
         # side effects. ``response_model=EmbeddingResponse`` is only enforced
@@ -267,6 +280,7 @@ async def create_embeddings(
             logger.error(f"Malformed embedding response for model={model}: {exc}")
             _schedule_log(
                 provider=provider,
+                endpoint_id=endpoint_id,
                 status_code=500,
                 response=None,
                 usage=None,
@@ -284,6 +298,7 @@ async def create_embeddings(
         usage = validated.usage.model_dump()
         _schedule_log(
             provider=provider,
+            endpoint_id=endpoint_id,
             status_code=200,
             response=_response_summary(response, model),
             usage=usage,
@@ -313,6 +328,7 @@ async def create_embeddings(
         req_ctx.publish_upstream_provider(provider)
         _schedule_log(
             provider=provider,
+            endpoint_id=endpoint_id,
             status_code=exc.status,
             response=None,
             usage=None,
@@ -328,6 +344,7 @@ async def create_embeddings(
         req_ctx.publish_upstream_provider(provider)
         _schedule_log(
             provider=provider,
+            endpoint_id=endpoint_id,
             status_code=500,
             response=None,
             usage=None,

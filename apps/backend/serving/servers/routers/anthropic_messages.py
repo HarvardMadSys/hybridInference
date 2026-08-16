@@ -1213,6 +1213,21 @@ async def anthropic_messages(
         "surface": "anthropic_messages",
         "alias_input": model_id if model_id != canonical else None,
         "reroute": reroute_info,
+        # ``LogStore.log_request`` recovers ``api_logs.served_endpoint_id`` from
+        # ``metadata["endpoint_id"]``; without it the column falls through to the
+        # bare provider label ("sglang"), so every endpoint of a provider — and
+        # every alias pointing at one — collapses into a single cohort in the
+        # per-endpoint dashboards. The chat surface gets this for free because
+        # FixedRouter injects ``_routing.endpoint_id`` into the response and the
+        # handler merges that dict into metadata; this surface picks its own
+        # adapter via ``eligible_adapters`` and never sees a ``_routing`` blob.
+        # Recorded from the same value the health registry keys on, so a breaker
+        # event and the api_logs rows that produced it share one identifier. A
+        # route declaring no endpoint_id degrades both sides to the provider
+        # label together, which is what the log store would have written anyway:
+        # this surface supplies neither routewise metadata nor base_url, so no
+        # other rung of its fallback chain is reachable.
+        "endpoint_id": dispatch_endpoint_id,
     }
     # Agent-sandbox attribution (issue #1041). This surface is the one Claude
     # Code actually uses, so omitting it here would leave the flagship runtime's
