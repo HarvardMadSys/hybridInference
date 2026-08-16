@@ -311,6 +311,79 @@ def test_kill_switch_restores_single_weighted_draw(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Warm-continuation discounting
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_uncached_estimate_charges_full_prompt_when_cold():
+    t = PrefillLoadTracker()
+    assert t.uncached_estimate("a", 500_000, "caller") == 500_000
+    # No caller identity means no history to discount against.
+    assert t.uncached_estimate("a", 500_000, None) == 500_000
+
+
+@pytest.mark.unit
+def test_warm_continuation_charges_only_the_growth():
+    """The core fix: a warm 500k continuation must not read as 500k of prefill."""
+    t = PrefillLoadTracker()
+    lease = t.acquire("a", 490_000, affinity_key="caller")
+    t.release(lease)
+    # Next turn is the same conversation plus a tool result.
+    assert t.uncached_estimate("a", 500_000, "caller") == 10_000
+    warm = t.acquire("a", 500_000, affinity_key="caller")
+    assert t.backlog("a") == 10_000
+    assert warm.elephant is False
+
+
+@pytest.mark.unit
+def test_warm_prefix_is_per_endpoint():
+    """Moving a warm session to another endpoint must cost a full prefill."""
+    t = PrefillLoadTracker()
+    t.release(t.acquire("a", 490_000, affinity_key="caller"))
+    assert t.uncached_estimate("a", 500_000, "caller") == 10_000
+    assert t.uncached_estimate("b", 500_000, "caller") == 500_000
+
+
+@pytest.mark.unit
+def test_warm_prefix_is_per_caller():
+    t = PrefillLoadTracker()
+    t.release(t.acquire("a", 490_000, affinity_key="caller1"))
+    assert t.uncached_estimate("a", 500_000, "caller2") == 500_000
+
+
+@pytest.mark.unit
+def test_prefix_hint_expires():
+    now = [1000.0]
+    t = PrefillLoadTracker(clock=lambda: now[0])
+    t.release(t.acquire("a", 490_000, affinity_key="caller"))
+    assert t.uncached_estimate("a", 500_000, "caller") == 10_000
+    now[0] += prefill_load._PREFIX_HINT_TTL_SEC + 1
+    assert t.uncached_estimate("a", 500_000, "caller") == 500_000
+
+
+@pytest.mark.unit
+def test_shrinking_prompt_never_charges_negative():
+    t = PrefillLoadTracker()
+    t.release(t.acquire("a", 500_000, affinity_key="caller"))
+    assert t.uncached_estimate("a", 1_000, "caller") == 0
+
+
+@pytest.mark.unit
+def test_warm_continuation_not_barred_by_elephant_limit():
+    """A warm continuation must still reach the endpoint holding its prefix."""
+    t = PrefillLoadTracker(elephant_tokens=100_000, elephant_limit=1)
+    t.release(t.acquire("warm", 490_000, affinity_key="caller"))
+    # Someone else's cold mega-prefill saturates 'warm'.
+    t.acquire("warm", 400_000, affinity_key="other")
+    assert t.elephants("warm") == 1
+    # The continuation is only 10k un-cached here, so it is not an elephant
+    # on 'warm' and the saturation restriction does not exclude it.
+    assert t.uncached_estimate("warm", 500_000, "caller") == 10_000
+    assert t.select_index(["warm"], [1.0], 500_000, _fixed_rand(0.0), "caller") == 0
+
+
+# ---------------------------------------------------------------------------
 # Affinity ceiling
 # ---------------------------------------------------------------------------
 
@@ -334,6 +407,43 @@ def test_affinity_ceiling_ignored_when_disabled(monkeypatch):
     t = PrefillLoadTracker()
     t.acquire("e1", 5000)
     assert t.should_keep_affinity("e1", ceiling=1000) is True
+
+
+@pytest.mark.unit
+def test_caller_does_not_evict_itself_from_its_own_endpoint():
+    """A client issuing parallel turns must not break its own pin."""
+    t = PrefillLoadTracker()
+    t.acquire("e1", 500_000, affinity_key="caller")
+    assert t.backlog("e1") == 500_000
+    # All of that load is the caller's own, so the pin stands.
+    assert t.should_keep_affinity("e1", affinity_key="caller", ceiling=1000) is True
+
+
+@pytest.mark.unit
+def test_foreign_load_still_breaks_affinity():
+    """The ceiling must still protect a caller from someone else's mega-prefill."""
+    t = PrefillLoadTracker()
+    t.acquire("e1", 500_000, affinity_key="stranger")
+    assert t.should_keep_affinity("e1", affinity_key="caller", ceiling=1000) is False
+
+
+@pytest.mark.unit
+def test_own_load_discounted_but_foreign_load_counted():
+    t = PrefillLoadTracker()
+    t.acquire("e1", 500_000, affinity_key="caller")
+    t.acquire("e1", 5_000, affinity_key="stranger")
+    # Only the stranger's 5k counts against the ceiling.
+    assert t.should_keep_affinity("e1", affinity_key="caller", ceiling=10_000) is True
+    assert t.should_keep_affinity("e1", affinity_key="caller", ceiling=1_000) is False
+
+
+@pytest.mark.unit
+def test_caller_attribution_released_with_lease():
+    t = PrefillLoadTracker()
+    lease = t.acquire("e1", 500_000, affinity_key="caller")
+    t.release(lease)
+    assert t.should_keep_affinity("e1", affinity_key="caller", ceiling=1000) is True
+    assert t.backlog("e1") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +471,28 @@ def test_router_breaks_affinity_when_pinned_endpoint_backlogged():
 
 
 @pytest.mark.unit
-def test_router_keeps_affinity_when_pinned_endpoint_idle():
+@pytest.mark.asyncio
+async def test_router_warm_session_keeps_its_endpoint_under_parallel_turns():
+    """End-to-end guard for the regression: parallel turns of one warm
+    conversation must not evict themselves onto a cold replica."""
+    r = FixedRouter()
+    a = _KeepAliveAdapter(_cfg("m", provider="A", base_url="http://A"))
+    b = _KeepAliveAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(a, 0.5), (b, 0.5)])
+    req_ctx.set({"affinity_key": "whale"})
+
+    # Establish a warm, pinned session on A with a large prompt.
+    r._affinity[("whale", "m")] = _Affinity(endpoint_id="A", expires_at=time.monotonic() + 300)
+    big = [{"role": "user", "content": "x" * 2_000_000}]  # ~500k tokens
+    gen = r.stream_chat_completion("m", big)
+    await gen.__anext__()
+    await gen.__anext__()  # keep-alive: this turn is still prefilling on A
+    assert r.prefill_load.backlog("A") == 500_000
+
+    # A second turn arrives while the first is in flight. Its own load must not
+    # push it off A.
+    assert r._select_adapter("m", prefill_tokens=500_000) is a
+    await gen.aclose()
     r = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
     b = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))

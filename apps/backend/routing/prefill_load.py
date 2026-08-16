@@ -7,8 +7,17 @@ as "one request". The result is head-of-line blocking: small interactive
 requests queue behind a mega-prefill on the replica that happens to be holding
 it, while sibling replicas sit idle.
 
-This module tracks, per endpoint, how many prompt tokens are currently in
-prefill, and exposes that as a selection signal:
+What is tracked is *un-cached* prefill. Charging full prompt size would be
+actively harmful: the fleet runs above 90% prefix-cache hit, so a warm 500k
+continuation would report its endpoint as blocked when it is really about to
+prefill a few thousand delta tokens, and every diversion that followed would
+land on a cold endpoint and manufacture a real cache miss. The cached prefix is
+estimated from the caller's last prompt size on that endpoint -- agentic prompts
+grow monotonically, so the growth is the un-cached part -- which costs one dict
+lookup rather than the tokenization a true prefix match would need.
+
+This module tracks, per endpoint, how many un-cached prompt tokens are currently
+in prefill, and exposes that as a selection signal:
 
 - :func:`estimate_prefill_tokens` -- a deliberately cheap prompt-size estimate.
 - :class:`PrefillLoadTracker` -- in-flight token accounting per endpoint, plus
@@ -29,6 +38,8 @@ from __future__ import annotations
 
 import os
 import threading
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -88,6 +99,13 @@ INTERVENE_TOKENS: int = _env_int("ROUTING_PREFILL_INTERVENE_TOKENS", 50_000)
 # guarantee. Above this in-flight backlog the pin costs more (queueing behind a
 # mega-prefill) than the prefix-cache hit it buys, so selection is re-run.
 AFFINITY_BACKLOG_CEILING: int = _env_int("ROUTING_PREFILL_AFFINITY_CEILING", 150_000)
+
+# Bounds on the per-(caller, endpoint) prompt-size memory used to discount a
+# warm continuation. One small int per live conversation; TTL matches the
+# radix cache's useful lifetime closely enough that a stale hint just means we
+# briefly over-discount one request.
+_PREFIX_HINT_TTL_SEC: float = 2 * 3600.0
+_PREFIX_HINT_MAX_ENTRIES: int = 50_000
 
 # Chars per token for the cheap estimator. Deliberately coarse -- see
 # estimate_prefill_tokens for why precision is not worth the CPU here.
@@ -166,8 +184,10 @@ class PrefillLease:
 
     Attributes:
         endpoint_id: Endpoint the tokens were charged to.
-        tokens: Estimated prefill tokens charged.
+        tokens: Estimated *un-cached* prefill tokens charged.
         elephant: Whether this lease counted against the elephant limit.
+        affinity_key: Caller this load belongs to, so a caller's own in-flight
+            work can be excluded when testing its affinity ceiling.
         released: Set once the lease has been returned; makes release idempotent
             so the streaming path can release on first token and again in a
             ``finally`` without double-crediting.
@@ -176,6 +196,7 @@ class PrefillLease:
     endpoint_id: str
     tokens: int
     elephant: bool
+    affinity_key: str | None = None
     released: bool = False
 
 
@@ -186,9 +207,18 @@ class PrefillLoadTracker:
     sections do no I/O and hold no awaits, matching the router-owned lock
     pattern used elsewhere in ``routing/``.
 
+    What is counted is *un-cached* prefill, not prompt size. Nearly all large
+    prompts here are warm continuations -- the production fleet runs above 90%
+    prefix-cache hit -- so charging full prompt length would report an endpoint
+    as blocked when it is about to prefill a few thousand delta tokens, and the
+    diversions that followed would each land on a cold endpoint and manufacture
+    the very cache misses this exists to prevent.
+
     Args:
-        elephant_tokens: Prompt size at which a request counts as an elephant.
+        elephant_tokens: Un-cached prefill at which a request counts as an
+            elephant.
         elephant_limit: Concurrent elephants permitted per endpoint.
+        clock: Monotonic time source, injectable for tests.
     """
 
     def __init__(
@@ -196,12 +226,56 @@ class PrefillLoadTracker:
         *,
         elephant_tokens: int = ELEPHANT_TOKENS,
         elephant_limit: int = ELEPHANT_LIMIT,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._lock = threading.Lock()
         self._backlog: dict[str, int] = {}
         self._elephants: dict[str, int] = {}
+        # Load attributed to one caller on one endpoint, so a caller's own work
+        # never counts against its own affinity ceiling.
+        self._by_caller: dict[tuple[str, str], int] = {}
+        # (affinity_key, endpoint_id) -> (last prompt tokens, expiry).
+        self._prefix_hints: OrderedDict[tuple[str, str], tuple[int, float]] = OrderedDict()
         self._elephant_tokens = max(int(elephant_tokens), 1)
         self._elephant_limit = max(int(elephant_limit), 1)
+        self._clock = clock
+
+    def uncached_estimate(
+        self,
+        endpoint_id: str,
+        tokens: int,
+        affinity_key: str | None = None,
+    ) -> int:
+        """Estimate what this endpoint must actually prefill for this prompt.
+
+        Agentic prompts grow monotonically: turn N+1 is turn N plus a tool
+        result. So for a caller that already sent a prompt to this endpoint,
+        the un-cached remainder is roughly the growth since then, and the rest
+        is resident in the endpoint's radix cache. A caller with no history on
+        the endpoint gets charged in full, which is correct -- that is exactly
+        the cold prefill that blocks a replica, and it makes moving a warm
+        session look as expensive as it really is.
+
+        Deliberately a remembered integer rather than block hashing: this runs
+        on the routing path, and the tokenization a real prefix match needs is
+        the cost this whole module is written to avoid.
+
+        Args:
+            endpoint_id: Candidate endpoint.
+            tokens: Estimated total prompt tokens.
+            affinity_key: Caller identity, or None when unknown.
+
+        Returns:
+            Estimated un-cached prefill tokens, never negative.
+        """
+        total = max(int(tokens), 0)
+        if affinity_key is None:
+            return total
+        with self._lock:
+            hint = self._prefix_hints.get((affinity_key, endpoint_id))
+            if hint is None or hint[1] <= self._clock():
+                return total
+            return max(total - hint[0], 0)
 
     @property
     def elephant_tokens(self) -> int:
@@ -227,26 +301,62 @@ class PrefillLoadTracker:
         with self._lock:
             return self._elephants.get(endpoint_id, 0)
 
-    def acquire(self, endpoint_id: str, tokens: int) -> PrefillLease:
-        """Charge a request's estimated prefill to an endpoint.
+    def acquire(
+        self,
+        endpoint_id: str,
+        tokens: int,
+        *,
+        affinity_key: str | None = None,
+    ) -> PrefillLease:
+        """Charge a request's estimated un-cached prefill to an endpoint.
 
         Never blocks or refuses: admission is decided during selection, and a
         request that reached dispatch must always be allowed to proceed.
 
+        Also records this prompt's size against ``(affinity_key, endpoint_id)``
+        so the caller's next turn on this endpoint is recognized as warm.
+
         Args:
             endpoint_id: Endpoint about to receive the request.
-            tokens: Estimated prefill tokens.
+            tokens: Estimated *total* prompt tokens; the cached prefix is
+                discounted here.
+            affinity_key: Caller identity, when known.
 
         Returns:
             The lease to hand back to :meth:`release`.
         """
-        charged = max(int(tokens), 0)
+        total = max(int(tokens), 0)
+        charged = self.uncached_estimate(endpoint_id, total, affinity_key)
         elephant = self.is_elephant(charged)
+        now = self._clock()
         with self._lock:
             self._backlog[endpoint_id] = self._backlog.get(endpoint_id, 0) + charged
             if elephant:
                 self._elephants[endpoint_id] = self._elephants.get(endpoint_id, 0) + 1
-        return PrefillLease(endpoint_id=endpoint_id, tokens=charged, elephant=elephant)
+            if affinity_key is not None:
+                caller = (endpoint_id, affinity_key)
+                self._by_caller[caller] = self._by_caller.get(caller, 0) + charged
+                self._remember_prompt_locked(affinity_key, endpoint_id, total, now)
+        return PrefillLease(
+            endpoint_id=endpoint_id,
+            tokens=charged,
+            elephant=elephant,
+            affinity_key=affinity_key,
+        )
+
+    def _remember_prompt_locked(
+        self,
+        affinity_key: str,
+        endpoint_id: str,
+        tokens: int,
+        now: float,
+    ) -> None:
+        """Record a prompt size for warm-continuation discounting. Caller holds the lock."""
+        key = (affinity_key, endpoint_id)
+        self._prefix_hints[key] = (tokens, now + _PREFIX_HINT_TTL_SEC)
+        self._prefix_hints.move_to_end(key)
+        while len(self._prefix_hints) > _PREFIX_HINT_MAX_ENTRIES:
+            self._prefix_hints.popitem(last=False)
 
     def release(self, lease: PrefillLease | None) -> None:
         """Return a lease's tokens to an endpoint's budget.
@@ -274,18 +384,35 @@ class PrefillLoadTracker:
                     self._elephants[lease.endpoint_id] = left
                 else:
                     self._elephants.pop(lease.endpoint_id, None)
+            if lease.affinity_key is not None:
+                caller = (lease.endpoint_id, lease.affinity_key)
+                owed = self._by_caller.get(caller, 0) - lease.tokens
+                if owed > 0:
+                    self._by_caller[caller] = owed
+                else:
+                    self._by_caller.pop(caller, None)
 
     def should_keep_affinity(
         self,
         endpoint_id: str,
         *,
+        affinity_key: str | None = None,
         ceiling: int = AFFINITY_BACKLOG_CEILING,
     ) -> bool:
         """Return True when a pinned endpoint is idle enough to keep using.
 
+        The caller's own in-flight work is excluded from the comparison. The
+        ceiling exists to keep a caller out of *someone else's* queue; breaking
+        a pin because of load the caller itself put there just relocates that
+        work to a cold endpoint and pays a full prefill for nothing. Without
+        this, a client issuing parallel turns on one conversation would evict
+        itself from its own warm endpoint.
+
         Args:
             endpoint_id: The endpoint the caller is currently pinned to.
-            ceiling: Backlog above which the pin is dropped for this request.
+            affinity_key: Caller identity, whose own load is discounted.
+            ceiling: Foreign backlog above which the pin is dropped for this
+                request.
 
         Returns:
             False when the pin should be ignored and selection re-run. The pin
@@ -294,7 +421,14 @@ class PrefillLoadTracker:
         """
         if not PREFILL_AWARE_ENABLED:
             return True
-        return self.backlog(endpoint_id) <= ceiling
+        with self._lock:
+            total = self._backlog.get(endpoint_id, 0)
+            own = (
+                self._by_caller.get((endpoint_id, affinity_key), 0)
+                if affinity_key is not None
+                else 0
+            )
+        return (total - own) <= ceiling
 
     def select_index(
         self,
@@ -302,6 +436,7 @@ class PrefillLoadTracker:
         weights: Sequence[float],
         tokens: int,
         rand: Callable[[], float],
+        affinity_key: str | None = None,
     ) -> int:
         """Pick a candidate by weight, then break toward the lighter endpoint.
 
@@ -324,11 +459,18 @@ class PrefillLoadTracker:
         a no-op. It intervenes for the pathology it was built for (an endpoint
         genuinely buried in prefill) and not for ordinary jitter.
 
+        Elephant status is judged per candidate, not once for the request: the
+        same prompt can be a few thousand delta tokens on the endpoint holding
+        its prefix and a full cold prefill everywhere else. Judging it once
+        would bar a warm continuation from the one endpoint that could serve it
+        cheaply.
+
         Args:
             keys: Candidate endpoint ids, parallel to ``weights``.
             weights: Positive selection weights, parallel to ``keys``.
-            tokens: Estimated prefill tokens for this request.
+            tokens: Estimated *total* prompt tokens for this request.
             rand: Zero-argument callable returning a float in [0, 1).
+            affinity_key: Caller identity, used to discount a warm prefix.
 
         Returns:
             Index into ``keys`` of the selected candidate.
@@ -340,13 +482,22 @@ class PrefillLoadTracker:
             return 0
 
         eligible = list(range(count))
-        if PREFILL_AWARE_ENABLED and self.is_elephant(tokens):
-            with self._lock:
-                unsaturated = [
-                    i for i in eligible if self._elephants.get(keys[i], 0) < self._elephant_limit
-                ]
-            if unsaturated:
-                eligible = unsaturated
+        if PREFILL_AWARE_ENABLED:
+            # Computed before taking the lock; uncached_estimate locks too.
+            elephant_here = [
+                self.is_elephant(self.uncached_estimate(keys[i], tokens, affinity_key))
+                for i in eligible
+            ]
+            if any(elephant_here):
+                with self._lock:
+                    unsaturated = [
+                        i
+                        for i in eligible
+                        if not elephant_here[i]
+                        or self._elephants.get(keys[i], 0) < self._elephant_limit
+                    ]
+                if unsaturated:
+                    eligible = unsaturated
 
         first = _weighted_pick(eligible, weights, rand)
         if not PREFILL_AWARE_ENABLED:

@@ -115,6 +115,16 @@ class _Affinity:
 # ============================================================================
 
 
+def current_affinity_key() -> str | None:
+    """Return the caller identity for this request, or None.
+
+    Read independently of ``AFFINITY_ENABLED``: prefill accounting uses it to
+    recognize a warm continuation, which stays useful even where sticky routing
+    itself is switched off.
+    """
+    return req_ctx.get().get("affinity_key") or None
+
+
 AFFINITY_TTL_SECONDS: float = 300.0
 AFFINITY_SWEEP_THRESHOLD: int = 1000
 AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
@@ -516,7 +526,9 @@ class FixedRouter:
                             # Falling through re-runs selection and re-pins to
                             # whatever it picks, so the caller rebuilds locality
                             # on an endpoint that can actually serve it.
-                            if self._prefill_load.should_keep_affinity(entry.endpoint_id):
+                            if self._prefill_load.should_keep_affinity(
+                                entry.endpoint_id, affinity_key=affinity_key
+                            ):
                                 entry.expires_at = now + AFFINITY_TTL_SECONDS
                                 return adapter
                             break
@@ -538,6 +550,7 @@ class FixedRouter:
                 [weight for _a, weight in pool],
                 prefill_tokens,
                 random.random,
+                affinity_key,
             )
         ][0]
 
@@ -580,6 +593,7 @@ class FixedRouter:
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
         prefill_tokens = estimate_prefill_tokens(messages)
+        affinity_key = current_affinity_key()
         primary = self._select_adapter(
             model_id,
             pin_provider=pin_provider,
@@ -596,7 +610,9 @@ class FixedRouter:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
                 endpoint_id = endpoint_id_for_adapter(primary)
                 self._ensure_health(endpoint_id)
-                lease = self._prefill_load.acquire(endpoint_id, prefill_tokens)
+                lease = self._prefill_load.acquire(
+                    endpoint_id, prefill_tokens, affinity_key=affinity_key
+                )
                 try:
                     resp = await primary.chat_completion(messages, **params)
                 finally:
@@ -656,7 +672,9 @@ class FixedRouter:
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
                         self._ensure_health(endpoint_id)
-                        lease = self._prefill_load.acquire(endpoint_id, prefill_tokens)
+                        lease = self._prefill_load.acquire(
+                            endpoint_id, prefill_tokens, affinity_key=affinity_key
+                        )
                         try:
                             resp = await adapter.chat_completion(messages, **params)
                         finally:
@@ -710,6 +728,7 @@ class FixedRouter:
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
         prefill_tokens = estimate_prefill_tokens(messages)
+        affinity_key = current_affinity_key()
         primary = self._select_adapter(
             model_id,
             pin_provider=pin_provider,
@@ -737,7 +756,9 @@ class FixedRouter:
                 # Charged before the first yield so the lease brackets the whole
                 # upstream interaction: a generator abandoned after the routing
                 # chunk still unwinds through this method's finally.
-                lease = self._prefill_load.acquire(primary_endpoint_id, prefill_tokens)
+                lease = self._prefill_load.acquire(
+                    primary_endpoint_id, prefill_tokens, affinity_key=affinity_key
+                )
                 yield routing_chunk(primary)
                 async for chunk in primary.stream_chat_completion(messages, **params):
                     if first and has_non_empty_content(chunk):
@@ -821,7 +842,9 @@ class FixedRouter:
                             failed_attempts=failed_attempts,
                         )
                         first = True
-                        lease = self._prefill_load.acquire(adapter_endpoint_id, prefill_tokens)
+                        lease = self._prefill_load.acquire(
+                            adapter_endpoint_id, prefill_tokens, affinity_key=affinity_key
+                        )
                         async for chunk in adapter.stream_chat_completion(messages, **params):
                             if first and has_non_empty_content(chunk):
                                 first = False
