@@ -304,7 +304,10 @@ It takes both sides, and they are independent:
    The discount is per endpoint, and recomputed for each dispatch: a prefix
    resident on the replica a caller has been talking to is not resident on a
    fallback that has never seen the conversation, and that fallback really is
-   facing the cold prefill.
+   facing the cold prefill. It is also per *conversation*, not per caller — one
+   API key sends many, and without that check a caller's unrelated cold
+   mega-prefill would inherit the previous one's discount and be handed the
+   tier that retracts elephants.
 
    The *spacing* is the policy, not the absolute values: interactive beats an
    elephant by 20 (≥ the threshold, so it preempts) and beats a large prompt by

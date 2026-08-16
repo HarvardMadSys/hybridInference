@@ -810,3 +810,120 @@ async def test_priority_is_recomputed_per_endpoint_on_fallback():
 
     assert warm.seen == [prefill_load.PRIORITY_ELEPHANT, prefill_load.PRIORITY_INTERACTIVE]
     assert cold.seen == [prefill_load.PRIORITY_ELEPHANT]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unrelated_conversation_does_not_inherit_the_warm_discount():
+    """A caller is not a conversation, and priority must not confuse the two.
+
+    The hint keys on the caller (API key, grant, or NAT'd IP), so without a
+    conversation identity a caller who follows one 300k-token prompt with a
+    *different* 300k-token prompt would have the second discounted to nothing
+    and stamped interactive -- a genuinely cold mega-prefill handed the tier
+    that lets it retract a real elephant.
+    """
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+
+    first = "conversation one. " + "x" * (4 * 300_000)
+    second = "conversation two. " + "y" * (4 * 300_000)
+    await r.chat_completion("m", [{"role": "user", "content": first}])
+    await r.chat_completion("m", [{"role": "user", "content": second}])
+    # ...while the real continuation of the *second* one still gets the discount.
+    await r.chat_completion("m", [{"role": "user", "content": second + "z" * 400}])
+
+    assert adapter.seen == [
+        prefill_load.PRIORITY_ELEPHANT,
+        prefill_load.PRIORITY_ELEPHANT,
+        prefill_load.PRIORITY_INTERACTIVE,
+    ]
+
+
+@pytest.mark.unit
+def test_fingerprint_separates_conversations_sharing_a_system_prompt():
+    # Agentic clients send the same system prompt for every conversation, so
+    # identity has to come from what follows it. Divergence inside the head
+    # slice is what makes the discount safe to grant.
+    system = [{"role": "system", "content": "You are a helpful assistant. " * 100}]
+    one = [*system, {"role": "user", "content": "find the bug in foo.py"}]
+    other = [*system, {"role": "user", "content": "write a poem about hedgehogs"}]
+
+    assert prefill_load.conversation_fingerprint(one) != prefill_load.conversation_fingerprint(
+        other
+    )
+    assert prefill_load.conversation_fingerprint([]) is None
+    assert prefill_load.conversation_fingerprint(None) is None
+
+
+@pytest.mark.unit
+def test_fingerprint_is_stable_once_the_prompt_exceeds_the_head_slice():
+    """Stability starts where the head slice saturates, and that is early enough.
+
+    Below ``_FINGERPRINT_CHARS`` each turn appends inside the slice and re-hashes
+    differently, so no discount is granted. That window is ~1k tokens -- two
+    orders of magnitude under INTERVENE_TOKENS -- so every prompt inside it is
+    interactive on its own size and is tiered correctly without any discount.
+    Past it, a continuation must keep hashing identically or a warm session
+    would be charged in full forever.
+    """
+    head = "x" * (2 * prefill_load._FINGERPRINT_CHARS)
+    turn1 = [{"role": "user", "content": head}]
+    turn2 = [*turn1, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "more"}]
+
+    assert prefill_load.conversation_fingerprint(turn1) == prefill_load.conversation_fingerprint(
+        turn2
+    )
+
+    # The unstable window really is inside the interactive tier.
+    small = [{"role": "user", "content": "x" * (prefill_load._FINGERPRINT_CHARS - 1)}]
+    assert prefill_load.estimate_prefill_tokens(small) < prefill_load.INTERVENE_TOKENS
+    assert (
+        prefill_load.priority_for_prefill(prefill_load.estimate_prefill_tokens(small))
+        == prefill_load.PRIORITY_INTERACTIVE
+    )
+
+
+@pytest.mark.unit
+def test_fingerprint_ignores_binary_blocks():
+    # A base64 image would dominate the head slice, so two unrelated prompts
+    # carrying the same attachment would fingerprint identically.
+    payload = {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 5000}}
+    one = [{"role": "user", "content": [payload, {"type": "text", "text": "what is this?"}]}]
+    two = [{"role": "user", "content": [payload, {"type": "text", "text": "translate this"}]}]
+
+    assert prefill_load.conversation_fingerprint(one) != prefill_load.conversation_fingerprint(two)
+
+
+@pytest.mark.unit
+def test_routing_discount_is_unchanged_by_the_fingerprint_gate():
+    """Selection keeps the caller-scoped discount #1267 shipped.
+
+    The gate is opt-in per caller of ``uncached_estimate`` because the two
+    consumers differ in what a wrong discount costs: a mis-estimated *load*
+    skews one routing draw and self-corrects, while a mis-assigned *priority*
+    preempts work that was already running. Only the stricter consumer pays for
+    the strictness.
+    """
+    tracker = PrefillLoadTracker()
+    tracker.acquire("ep", 300_000, affinity_key="u1", fingerprint="conv-a")
+
+    # No fingerprint supplied (routing): discounted, as before.
+    assert tracker.uncached_estimate("ep", 300_000, "u1") == 0
+    # A different conversation, asking for the match (priority): not discounted.
+    assert tracker.uncached_estimate("ep", 300_000, "u1", fingerprint="conv-b") == 300_000
+    # The same conversation: discounted.
+    assert tracker.uncached_estimate("ep", 300_000, "u1", fingerprint="conv-a") == 0
+
+
+@pytest.mark.unit
+def test_unfingerprintable_prompt_never_claims_a_match():
+    # A prompt with no text (a pure-image turn) cannot be identified, so the
+    # priority path must charge it in full rather than treat None as a match.
+    tracker = PrefillLoadTracker()
+    tracker.acquire("ep", 300_000, affinity_key="u1", fingerprint=None)
+
+    assert tracker.uncached_estimate("ep", 300_000, "u1", fingerprint="conv-a") == 300_000
+    assert tracker.uncached_estimate("ep", 300_000, "u1") == 0

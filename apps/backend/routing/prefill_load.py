@@ -36,6 +36,7 @@ worst it does is prefer a different endpoint that is already admissible.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import time
@@ -135,6 +136,12 @@ _CHARS_PER_TOKEN: int = 4
 _IMAGE_TOKENS: int = 85
 _AUDIO_TOKENS: int = 200
 
+# How much of a prompt's head identifies the conversation it belongs to. Long
+# enough that two conversations from one caller diverge inside it (a shared
+# system prompt is nowhere near this), short enough that fingerprinting a
+# megabyte-scale prompt still hashes only a few KB.
+_FINGERPRINT_CHARS: int = 4096
+
 
 def _content_chars(content: Any) -> int:
     """Return an approximate character count for one message's content.
@@ -197,6 +204,93 @@ def estimate_prefill_tokens(messages: Sequence[dict[str, Any]] | None) -> int:
     return chars // _CHARS_PER_TOKEN
 
 
+def _content_text(content: Any, limit: int) -> str:
+    """Return up to ``limit`` chars of a message's text, ignoring binary blocks.
+
+    Only text identifies a conversation here: image and audio blocks are skipped
+    rather than summarized, because a base64 payload would dominate the slice
+    and two different prompts carrying the same attachment would collide.
+    """
+    if limit <= 0:
+        return ""
+    if isinstance(content, str):
+        return content[:limit]
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    remaining = limit
+    for block in content:
+        if remaining <= 0:
+            break
+        text = ""
+        if isinstance(block, str):
+            text = block
+        elif isinstance(block, dict) and block.get("type") not in (
+            "image",
+            "image_url",
+            "audio",
+            "input_audio",
+        ):
+            value = block.get("text")
+            text = value if isinstance(value, str) else ""
+        if not text:
+            continue
+        parts.append(text[:remaining])
+        remaining -= len(parts[-1])
+    return "".join(parts)
+
+
+def conversation_fingerprint(messages: Sequence[dict[str, Any]] | None) -> str | None:
+    """Identify *which* conversation a prompt belongs to, cheaply.
+
+    The warm-continuation discount keys on the caller, and a caller is not a
+    conversation: one API key, grant, or NAT'd IP sends many. Without an
+    identity, a caller who follows a 500k-token conversation with an unrelated
+    500k-token one has the second discounted to nothing -- harmless as a routing
+    hint, but as a *priority* it hands a genuinely cold mega-prefill the
+    interactive tier, letting it jump the queue and retract a real elephant.
+
+    A head slice is enough to tell the two apart. A continuation contains the
+    previous turn as a prefix, so it hashes identically; a different
+    conversation diverges within the first few KB -- and one that does not has,
+    by definition, a multi-KB shared prefix that really is resident in the
+    endpoint's radix cache. Bounded at ``_FINGERPRINT_CHARS`` so this costs a
+    hash of a few KB rather than of a megabyte-scale prompt.
+
+    Stability across turns therefore begins once a conversation's prompt exceeds
+    that bound: below it, each turn appends inside the slice and re-hashes
+    differently, so the discount does not apply. That window is harmless by
+    construction -- ``_FINGERPRINT_CHARS`` is about a thousand tokens, two
+    orders of magnitude below :data:`INTERVENE_TOKENS`, so every prompt in it is
+    interactive on its own size and needs no discount to be tiered correctly.
+
+    Args:
+        messages: OpenAI-style messages, or None.
+
+    Returns:
+        A short hex digest, or None when there is no text to fingerprint (a
+        pure-image first turn), which callers must read as "cannot vouch for
+        this" rather than as a match.
+    """
+    if not messages:
+        return None
+    head: list[str] = []
+    remaining = _FINGERPRINT_CHARS
+    for message in messages:
+        if remaining <= 0:
+            break
+        if not isinstance(message, dict):
+            continue
+        text = _content_text(message.get("content"), remaining)
+        if not text:
+            continue
+        head.append(text)
+        remaining -= len(text)
+    if not head:
+        return None
+    return hashlib.blake2b("\x00".join(head).encode("utf-8", "ignore"), digest_size=8).hexdigest()
+
+
 def priority_for_prefill(tokens: int) -> int:
     """Map an estimated prompt size to an upstream scheduling priority.
 
@@ -231,6 +325,25 @@ def priority_for_prefill(tokens: int) -> int:
     if tokens >= INTERVENE_TOKENS:
         return PRIORITY_LARGE
     return PRIORITY_INTERACTIVE
+
+
+@dataclass(frozen=True)
+class _PrefixHint:
+    """One caller's last prompt on one endpoint, for warm-continuation discounting.
+
+    Attributes:
+        tokens: That prompt's estimated total size.
+        expires_at: Clock value past which the radix cache is assumed cold.
+        fingerprint: Which conversation it was, or None when it could not be
+            fingerprinted. Consulted only by callers that pass one, so routing
+            keeps the caller-scoped discount it was built with while scheduling
+            priority -- where a wrong discount preempts real work rather than
+            merely skewing a load estimate -- requires the match.
+    """
+
+    tokens: int
+    expires_at: float
+    fingerprint: str | None = None
 
 
 @dataclass
@@ -290,7 +403,7 @@ class PrefillLoadTracker:
         # never counts against its own affinity ceiling.
         self._by_caller: dict[tuple[str, str], int] = {}
         # (affinity_key, endpoint_id) -> (last prompt tokens, expiry).
-        self._prefix_hints: OrderedDict[tuple[str, str], tuple[int, float]] = OrderedDict()
+        self._prefix_hints: OrderedDict[tuple[str, str], _PrefixHint] = OrderedDict()
         self._elephant_tokens = max(int(elephant_tokens), 1)
         self._elephant_limit = max(int(elephant_limit), 1)
         self._clock = clock
@@ -300,6 +413,8 @@ class PrefillLoadTracker:
         endpoint_id: str,
         tokens: int,
         affinity_key: str | None = None,
+        *,
+        fingerprint: str | None = None,
     ) -> int:
         """Estimate what this endpoint must actually prefill for this prompt.
 
@@ -328,9 +443,11 @@ class PrefillLoadTracker:
             return total
         with self._lock:
             hint = self._prefix_hints.get((affinity_key, endpoint_id))
-            if hint is None or hint[1] <= self._clock():
+            if hint is None or hint.expires_at <= self._clock():
                 return total
-            return max(total - hint[0], 0)
+            if fingerprint is not None and fingerprint != hint.fingerprint:
+                return total
+            return max(total - hint.tokens, 0)
 
     @property
     def elephant_tokens(self) -> int:
@@ -362,6 +479,7 @@ class PrefillLoadTracker:
         tokens: int,
         *,
         affinity_key: str | None = None,
+        fingerprint: str | None = None,
     ) -> PrefillLease:
         """Charge a request's estimated un-cached prefill to an endpoint.
 
@@ -391,7 +509,7 @@ class PrefillLoadTracker:
             if affinity_key is not None:
                 caller = (endpoint_id, affinity_key)
                 self._by_caller[caller] = self._by_caller.get(caller, 0) + charged
-                self._remember_prompt_locked(affinity_key, endpoint_id, total, now)
+                self._remember_prompt_locked(affinity_key, endpoint_id, total, now, fingerprint)
         return PrefillLease(
             endpoint_id=endpoint_id,
             tokens=charged,
@@ -405,10 +523,15 @@ class PrefillLoadTracker:
         endpoint_id: str,
         tokens: int,
         now: float,
+        fingerprint: str | None = None,
     ) -> None:
         """Record a prompt size for warm-continuation discounting. Caller holds the lock."""
         key = (affinity_key, endpoint_id)
-        self._prefix_hints[key] = (tokens, now + _PREFIX_HINT_TTL_SEC)
+        self._prefix_hints[key] = _PrefixHint(
+            tokens=tokens,
+            expires_at=now + _PREFIX_HINT_TTL_SEC,
+            fingerprint=fingerprint,
+        )
         self._prefix_hints.move_to_end(key)
         while len(self._prefix_hints) > _PREFIX_HINT_MAX_ENTRIES:
             self._prefix_hints.popitem(last=False)

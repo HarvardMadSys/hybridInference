@@ -27,6 +27,7 @@ from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
     PrefillLease,
     PrefillLoadTracker,
+    conversation_fingerprint,
     estimate_prefill_tokens,
     priority_for_prefill,
 )
@@ -576,7 +577,11 @@ class FixedRouter:
         return chosen
 
     def _dispatch_priority(
-        self, endpoint_id: str, prefill_tokens: int, affinity_key: str | None
+        self,
+        endpoint_id: str,
+        prefill_tokens: int,
+        affinity_key: str | None,
+        fingerprint: str | None = None,
     ) -> int:
         """Scheduling priority for one dispatch, ranked on *this* endpoint's work.
 
@@ -594,7 +599,9 @@ class FixedRouter:
         cold prefill.
         """
         return priority_for_prefill(
-            self._prefill_load.uncached_estimate(endpoint_id, prefill_tokens, affinity_key)
+            self._prefill_load.uncached_estimate(
+                endpoint_id, prefill_tokens, affinity_key, fingerprint=fingerprint
+            )
         )
 
     async def chat_completion(
@@ -626,6 +633,9 @@ class FixedRouter:
         )
         prefill_tokens = estimate_prefill_tokens(messages)
         affinity_key = current_affinity_key()
+        # Which conversation this is, so a caller's unrelated prompt cannot
+        # inherit another's warm-prefix discount (see _dispatch_priority).
+        fingerprint = conversation_fingerprint(messages)
         primary = self._select_adapter(
             model_id,
             pin_provider=pin_provider,
@@ -645,13 +655,16 @@ class FixedRouter:
                 provider=primary.config.provider,
                 **{
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                        endpoint_id, prefill_tokens, affinity_key
+                        endpoint_id, prefill_tokens, affinity_key, fingerprint
                     )
                 },
             ):
                 self._ensure_health(endpoint_id)
                 lease = self._prefill_load.acquire(
-                    endpoint_id, prefill_tokens, affinity_key=affinity_key
+                    endpoint_id,
+                    prefill_tokens,
+                    affinity_key=affinity_key,
+                    fingerprint=fingerprint,
                 )
                 try:
                     resp = await primary.chat_completion(messages, **params)
@@ -715,13 +728,16 @@ class FixedRouter:
                         provider=adapter.config.provider,
                         **{
                             req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                                endpoint_id, prefill_tokens, affinity_key
+                                endpoint_id, prefill_tokens, affinity_key, fingerprint
                             )
                         },
                     ):
                         self._ensure_health(endpoint_id)
                         lease = self._prefill_load.acquire(
-                            endpoint_id, prefill_tokens, affinity_key=affinity_key
+                            endpoint_id,
+                            prefill_tokens,
+                            affinity_key=affinity_key,
+                            fingerprint=fingerprint,
                         )
                         try:
                             resp = await adapter.chat_completion(messages, **params)
@@ -777,6 +793,9 @@ class FixedRouter:
         )
         prefill_tokens = estimate_prefill_tokens(messages)
         affinity_key = current_affinity_key()
+        # Which conversation this is, so a caller's unrelated prompt cannot
+        # inherit another's warm-prefix discount (see _dispatch_priority).
+        fingerprint = conversation_fingerprint(messages)
         primary = self._select_adapter(
             model_id,
             pin_provider=pin_provider,
@@ -798,7 +817,7 @@ class FixedRouter:
                 provider=primary.config.provider,
                 **{
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                        primary_endpoint_id, prefill_tokens, affinity_key
+                        primary_endpoint_id, prefill_tokens, affinity_key, fingerprint
                     )
                 },
             ):
@@ -813,7 +832,10 @@ class FixedRouter:
                 # upstream interaction: a generator abandoned after the routing
                 # chunk still unwinds through this method's finally.
                 lease = self._prefill_load.acquire(
-                    primary_endpoint_id, prefill_tokens, affinity_key=affinity_key
+                    primary_endpoint_id,
+                    prefill_tokens,
+                    affinity_key=affinity_key,
+                    fingerprint=fingerprint,
                 )
                 yield routing_chunk(primary)
                 async for chunk in primary.stream_chat_completion(messages, **params):
@@ -896,7 +918,7 @@ class FixedRouter:
                         provider=adapter.config.provider,
                         **{
                             req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                                adapter_endpoint_id, prefill_tokens, affinity_key
+                                adapter_endpoint_id, prefill_tokens, affinity_key, fingerprint
                             )
                         },
                     ):
@@ -907,7 +929,10 @@ class FixedRouter:
                         )
                         first = True
                         lease = self._prefill_load.acquire(
-                            adapter_endpoint_id, prefill_tokens, affinity_key=affinity_key
+                            adapter_endpoint_id,
+                            prefill_tokens,
+                            affinity_key=affinity_key,
+                            fingerprint=fingerprint,
                         )
                         async for chunk in adapter.stream_chat_completion(messages, **params):
                             if first and has_non_empty_content(chunk):
