@@ -156,6 +156,19 @@ unset each engine keeps its own default. Ignored for embedding models (vLLM's
 pooling runner does not chunk prefill and refuses a budget below its context
 length).
 
+Set ``"priority_scheduling": true`` to start sglang with
+``--enable-priority-scheduling``, which orders the waiting queue by each
+request's ``priority`` field (higher first) rather than arrival, and retracts a
+running request for an arriving one that outranks it by at least
+``--priority-scheduling-preemption-threshold`` (sglang default 10; override with
+``"priority_preemption_threshold"``). The gateway supplies the priority for
+routes marked ``priority_scheduling: true`` in ``models.yaml`` -- interactive 20,
+large 15, elephant 0 -- so a mega-prefill queues behind interactive traffic
+instead of ahead of it, and can be retracted for it. Where
+``chunked_prefill_size`` bounds how long one prefill holds the GPU per step,
+this decides which prefill runs at all; they are complementary. Ignored for
+embedding models, which have no decode to protect.
+
 Set ``"moe_runner_backend"`` (e.g. ``"marlin"``) to override the MoE runner.
 NVFP4 / FP4-expert checkpoints need ``"marlin"`` on pre-Blackwell (SM90, e.g.
 H200) GPUs; the default ``triton`` runner asserts on the packed FP4 shapes.
@@ -1600,6 +1613,37 @@ class BackendManager:
             return []
         return [flag, str(size)]
 
+    def _priority_scheduling_args(self) -> list[str]:
+        """Build the sglang priority-scheduling flags, or nothing when off.
+
+        With ``--enable-priority-scheduling`` sglang orders its waiting queue by
+        each request's ``priority`` field (higher first) instead of arrival, and
+        will retract a running request for an arriving one whose priority
+        exceeds it by at least ``--priority-scheduling-preemption-threshold``
+        (sglang's default: 10). That is the half of "prioritize decode" this
+        process owns: chunk size bounds how long one prefill holds the GPU per
+        step, and this decides *which* prefill gets admitted -- so an elephant
+        stops being scheduled ahead of the interactive traffic behind it.
+
+        The gateway stamps the priority (see ``routing/prefill_load.py``:
+        interactive 20, large 15, elephant 0). Those values are chosen against
+        the default threshold: interactive outranks an elephant by 20 and can
+        retract it, while ordinary traffic differs by 5 or 0 and merely queues
+        ahead. Raising the threshold here without moving those apart turns
+        preemption off; lowering it lets ordinary prompts retract each other.
+
+        Off unless configured -- an unflagged server ignores the field, so the
+        two sides can be rolled out in either order. Generative backends only:
+        an embedding backend has no decode to protect.
+        """
+        if not self.config.get("priority_scheduling") or self.config.get("is_embedding"):
+            return []
+        args = ["--enable-priority-scheduling"]
+        threshold = self.config.get("priority_preemption_threshold")
+        if threshold is not None:
+            args += ["--priority-scheduling-preemption-threshold", str(threshold)]
+        return args
+
     def _hicache_args(self) -> list[str]:
         """Build the HiCache (host-DRAM KV tier) flags for an sglang backend.
 
@@ -1726,6 +1770,8 @@ class BackendManager:
             cmd += ["--enable-cache-report"]
             # Bound how long a decode waits behind a co-resident prefill.
             cmd += self._chunked_prefill_args("--chunked-prefill-size")
+            # ... and decide which prefill gets to make it wait at all.
+            cmd += self._priority_scheduling_args()
             cmd += self._hicache_args()
             tcp = self.config.get("tool_call_parser")
             if tcp:

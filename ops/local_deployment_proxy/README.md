@@ -212,6 +212,8 @@ Models are defined in `local_deployment_proxy/models.json`:
 | `max_model_len` | `--context-length` |
 | `mem_fraction` | `--mem-fraction-static` |
 | `chunked_prefill_size` | optional prefill tokens per forward pass — `--chunked-prefill-size` (sglang) / `--max-num-batched-tokens` (vLLM). Bounds how long a decode stalls behind a co-resident prefill; see [Chunked prefill size](#chunked-prefill-size). Unset → the engine's own default. Chat models only |
+| `priority_scheduling` | `true` → `--enable-priority-scheduling` (sglang), so the gateway's per-request priority orders the waiting queue and can retract a running mega-prefill. See [Prioritizing decode over prefill](#prioritizing-decode-over-prefill). Chat models only |
+| `priority_preemption_threshold` | optional `--priority-scheduling-preemption-threshold` (sglang default `10`) — the priority gap an arriving request needs to retract a running one |
 | `tool_call_parser` | `--tool-call-parser` (omit to disable; chat models only) |
 | `is_embedding` | `true` → launch with `--is-embedding` (encode-only); serves `/v1/embeddings` |
 | `attention_backend` | optional `--attention-backend` (embedding models) |
@@ -271,6 +273,45 @@ Leave it unset to keep each engine's own default (sglang resolves one from GPU
 memory at startup and prints it in the `server_args` line of the container log;
 vLLM uses 8192 for online serving). `-1` disables chunking entirely — sglang
 only, and it hands a long prompt the whole GPU until it finishes.
+
+### Prioritizing decode over prefill
+
+Chunk size bounds how long a single prefill holds the GPU. It says nothing about
+*which* prefill gets to hold it — a 700k-token cache miss that arrives first is
+still admitted first, and everything behind it waits. `priority_scheduling`
+closes that half.
+
+It takes both sides, and they are independent:
+
+1. **This proxy** starts sglang with `--enable-priority-scheduling`, so the
+   waiting queue is ordered by each request's `priority` field (higher first)
+   instead of by arrival, and an arriving request retracts a running one when it
+   outranks it by at least `priority_preemption_threshold` (sglang default 10).
+2. **The gateway** stamps that priority, for routes that set
+   `priority_scheduling: true` in `models.yaml`. The tiers come from the same
+   thresholds prefill-aware routing already uses
+   (`apps/backend/routing/prefill_load.py`):
+
+   | Estimated prompt | Priority | Effect |
+   |---|---:|---|
+   | < 50k tokens (interactive) | 20 | scheduled first; retracts a running elephant |
+   | ≥ 50k tokens (large) | 15 | queues behind interactive, never preempted by it |
+   | ≥ 200k tokens (elephant) | 0 | scheduled last, retractable |
+
+   The *spacing* is the policy, not the absolute values: interactive beats an
+   elephant by 20 (≥ the threshold, so it preempts) and beats a large prompt by
+   5 (< the threshold, so it merely queues ahead). Peers differ by 0 and never
+   retract each other, so ordinary traffic sees no churn.
+
+Priority is assigned from prompt size alone, by the gateway, and a client cannot
+set its own — the adapters forward a whitelist of sampling params that does not
+include `priority`.
+
+Roll out in either order: an sglang server without the flag ignores the field,
+and a flagged server with no gateway-side opt-in sees every request at sglang's
+own default priority. vLLM backends are unaffected — its priority policy reads
+the opposite way (lower value first), so it is deliberately not wired to the same
+config field; reach it with `vllm_extra_args` if you want it.
 
 ## Configuration
 

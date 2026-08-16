@@ -443,6 +443,7 @@ def register_from_models_yaml(
                     "route_metadata",
                     "extra_body",
                     "processor",
+                    "priority_scheduling",
                 )
                 if k in m
             }
@@ -640,6 +641,15 @@ def register_from_models_yaml(
                 # Route-level processor override (bypasses model-ID auto-detection)
                 if "processor" in r:
                     adapter_cfg["processor"] = r["processor"]
+
+                # Whether this endpoint's server runs sglang priority scheduling.
+                # Route-level, because it is a fact about one server rather than
+                # about the model: the same model routinely has a local sglang
+                # route and a remote fallback that must not receive the field.
+                if "priority_scheduling" in r:
+                    adapter_cfg["priority_scheduling"] = bool(r["priority_scheduling"])
+                elif "priority_scheduling" in adapter_cfg:
+                    adapter_cfg["priority_scheduling"] = bool(adapter_cfg["priority_scheduling"])
 
                 # Route-level input_modalities override (default: inherit the
                 # model-level declaration). Lets a narrower fallback (e.g. a

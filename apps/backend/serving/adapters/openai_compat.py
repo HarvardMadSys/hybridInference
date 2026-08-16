@@ -690,6 +690,32 @@ class OpenAICompatAdapter(BaseAdapter):
         """Get model ID to send to upstream API."""
         return self.config.provider_model_id or self.config.id
 
+    def _apply_upstream_priority(self, payload: dict[str, Any]) -> None:
+        """Stamp the router's scheduling priority for priority-scheduling endpoints.
+
+        sglang declares ``priority`` on its OpenAI-compatible request schema and
+        honours it when the server was started with
+        ``--enable-priority-scheduling``; the value only means anything there, so
+        it is emitted for routes that declare the server runs with it and for no
+        others. A server without the flag ignores the field, but a remote
+        provider that validates its request body strictly would not, and this
+        adapter serves both.
+
+        The value comes from the router (via req_ctx), never from the caller: it
+        ranks a request by the cost it imposes on a shared replica, which is not
+        a number its sender should get to choose. A client that puts ``priority``
+        in its request body is already dropped by ``validate_params``.
+        """
+        if not self.config.priority_scheduling:
+            return
+        from serving.utils import context as req_ctx
+
+        priority = req_ctx.get().get(req_ctx.UPSTREAM_PRIORITY)
+        # Absent means no router published one -- a direct adapter call, a warmup
+        # probe. Upstream's own default is the right answer then.
+        if isinstance(priority, int) and not isinstance(priority, bool):
+            payload["priority"] = priority
+
     def _augment_payload(self, payload: dict[str, Any], *, stream: bool) -> dict[str, Any]:
         """Subclass extension point for provider-specific payload mutation.
 
@@ -735,6 +761,7 @@ class OpenAICompatAdapter(BaseAdapter):
         filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
         if filtered_rf and self.config.supports_structured_output:
             payload["response_format"] = filtered_rf
+        self._apply_upstream_priority(payload)
         payload = self._augment_payload(payload, stream=False)
 
         # Make request
@@ -803,6 +830,7 @@ class OpenAICompatAdapter(BaseAdapter):
         if getattr(self.config, "include_usage_in_stream", False):
             existing_options = payload.get("stream_options") or {}
             payload["stream_options"] = {**existing_options, "include_usage": True}
+        self._apply_upstream_priority(payload)
         payload = self._augment_payload(payload, stream=True)
 
         url = self._build_url()

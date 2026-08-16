@@ -24,7 +24,12 @@ if TYPE_CHECKING:
 
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
-from routing.prefill_load import PrefillLease, PrefillLoadTracker, estimate_prefill_tokens
+from routing.prefill_load import (
+    PrefillLease,
+    PrefillLoadTracker,
+    estimate_prefill_tokens,
+    priority_for_prefill,
+)
 from routing.route_table import EffectiveRoute, RouteTableSnapshot
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
@@ -612,7 +617,11 @@ class FixedRouter:
                 )
             raise ValueError(f"No route configured for model {model_id}")
         try:
-            with req_ctx.push(model=model_id, provider=primary.config.provider):
+            with req_ctx.push(
+                model=model_id,
+                provider=primary.config.provider,
+                **{req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(prefill_tokens)},
+            ):
                 endpoint_id = endpoint_id_for_adapter(primary)
                 self._ensure_health(endpoint_id)
                 lease = self._prefill_load.acquire(
@@ -675,7 +684,11 @@ class FixedRouter:
                 if not self._health_registry.allow_request(endpoint_id):
                     continue
                 try:
-                    with req_ctx.push(model=model_id, provider=adapter.config.provider):
+                    with req_ctx.push(
+                        model=model_id,
+                        provider=adapter.config.provider,
+                        **{req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(prefill_tokens)},
+                    ):
                         self._ensure_health(endpoint_id)
                         lease = self._prefill_load.acquire(
                             endpoint_id, prefill_tokens, affinity_key=affinity_key
@@ -749,7 +762,11 @@ class FixedRouter:
         chunks_yielded = False
         lease: PrefillLease | None = None
         try:
-            with req_ctx.push(model=model_id, provider=primary.config.provider):
+            with req_ctx.push(
+                model=model_id,
+                provider=primary.config.provider,
+                **{req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(prefill_tokens)},
+            ):
                 # Emit synthetic _routing chunk so completions.py can recover
                 # the upstream provider/base_url/endpoint_id for DB logging.
                 # Without this, req_ctx.push() inside this block is invisible
@@ -840,7 +857,11 @@ class FixedRouter:
                 if not self._health_registry.allow_request(adapter_endpoint_id):
                     continue
                 try:
-                    with req_ctx.push(model=model_id, provider=adapter.config.provider):
+                    with req_ctx.push(
+                        model=model_id,
+                        provider=adapter.config.provider,
+                        **{req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(prefill_tokens)},
+                    ):
                         yield routing_chunk(
                             adapter,
                             fallback=True,

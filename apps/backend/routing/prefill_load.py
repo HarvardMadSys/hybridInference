@@ -100,6 +100,25 @@ INTERVENE_TOKENS: int = _env_int("ROUTING_PREFILL_INTERVENE_TOKENS", 50_000)
 # mega-prefill) than the prefix-cache hit it buys, so selection is re-run.
 AFFINITY_BACKLOG_CEILING: int = _env_int("ROUTING_PREFILL_AFFINITY_CEILING", 150_000)
 
+# Scheduling priority stamped on requests to endpoints that run sglang priority
+# scheduling. sglang schedules the *higher* integer first and preempts a running
+# request only once the gap reaches its --priority-scheduling-preemption-threshold
+# (default 10), so the spacing between these three values *is* the policy:
+#
+#   interactive - elephant = 20  >= 10  -> an arriving small prompt can retract a
+#                                          mega-prefill that already holds the GPU
+#   interactive - large     =  5  <  10  -> ordinary prompts only queue ahead of a
+#                                          large one, never preempt it
+#   interactive - interactive = 0        -> peers never preempt each other, so
+#                                          normal traffic sees no retraction churn
+#
+# Retraction is not free even though the radix cache keeps the prefix, which is
+# why only the elephant tier is exposed to it: it is the one tier whose prefill
+# is long enough that waiting it out is worse than restarting it.
+PRIORITY_INTERACTIVE: int = _env_int("ROUTING_PRIORITY_INTERACTIVE", 20)
+PRIORITY_LARGE: int = _env_int("ROUTING_PRIORITY_LARGE", 15)
+PRIORITY_ELEPHANT: int = _env_int("ROUTING_PRIORITY_ELEPHANT", 0)
+
 # Bounds on the per-(caller, endpoint) prompt-size memory used to discount a
 # warm continuation. One small int per live conversation; TTL matches the
 # radix cache's useful lifetime closely enough that a stale hint just means we
@@ -176,6 +195,42 @@ def estimate_prefill_tokens(messages: Sequence[dict[str, Any]] | None) -> int:
             continue
         chars += _content_chars(message.get("content"))
     return chars // _CHARS_PER_TOKEN
+
+
+def priority_for_prefill(tokens: int) -> int:
+    """Map an estimated prompt size to an upstream scheduling priority.
+
+    The gateway is the only authority on this value -- a client-supplied
+    ``priority`` never reaches an upstream, because the adapters forward a
+    whitelist of sampling params and this is not one of them. Which is the
+    point: priority is a claim about the *cost* a request imposes on the shared
+    replica, and no caller is disinterested about its own.
+
+    The tiers reuse the thresholds selection already runs on, so one prompt is
+    never an elephant for routing and an ordinary request for scheduling:
+
+    - at or above :data:`ELEPHANT_TOKENS` -- a prefill long enough to stall the
+      replica for everyone else; scheduled last and preemptible.
+    - at or above :data:`INTERVENE_TOKENS` -- large enough to matter, not large
+      enough to be worth retracting once it has started.
+    - below both -- interactive traffic, which is what this exists to protect.
+
+    Size is the only input on purpose. Deriving it from the caller (paying tier,
+    API key) would make it a fairness lever rather than a scheduling one, and the
+    request that suffers most from a mega-prefill is usually another caller's.
+
+    Args:
+        tokens: Estimated un-cached prompt tokens, from
+            :func:`estimate_prefill_tokens`.
+
+    Returns:
+        The priority integer to stamp on the upstream request body.
+    """
+    if tokens >= ELEPHANT_TOKENS:
+        return PRIORITY_ELEPHANT
+    if tokens >= INTERVENE_TOKENS:
+        return PRIORITY_LARGE
+    return PRIORITY_INTERACTIVE
 
 
 @dataclass

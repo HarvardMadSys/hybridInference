@@ -629,3 +629,131 @@ async def test_stream_fallback_releases_both_leases():
     assert any("GOOD" in str(c) for c in chunks)
     assert r.prefill_load.backlog("BAD") == 0
     assert r.prefill_load.backlog("GOOD") == 0
+
+
+# ---------------------------------------------------------------------------
+# priority_for_prefill
+# ---------------------------------------------------------------------------
+
+
+class _PriorityCapturingAdapter(BaseAdapter):
+    """Records the priority visible in req_ctx at the moment of dispatch.
+
+    An adapter is the only place that observation is meaningful: ``req_ctx.push``
+    unwinds when the router leaves the block, so reading it afterwards proves
+    nothing about what the upstream request would have carried.
+    """
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__(config)
+        self.seen: list[Any] = []
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        self.seen.append(req_ctx.get().get(req_ctx.UPSTREAM_PRIORITY))
+        return self.format_response(content="ok", model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        self.seen.append(req_ctx.get().get(req_ctx.UPSTREAM_PRIORITY))
+        yield self.format_stream_chunk(model=self.config.id, content="ok")
+
+
+@pytest.mark.unit
+def test_priority_tiers_follow_the_selection_thresholds():
+    # One prompt must not be an elephant for routing and an ordinary request for
+    # scheduling, so the tiers are cut at the same thresholds selection uses.
+    assert prefill_load.priority_for_prefill(0) == prefill_load.PRIORITY_INTERACTIVE
+    assert (
+        prefill_load.priority_for_prefill(prefill_load.INTERVENE_TOKENS - 1)
+        == prefill_load.PRIORITY_INTERACTIVE
+    )
+    assert (
+        prefill_load.priority_for_prefill(prefill_load.INTERVENE_TOKENS)
+        == prefill_load.PRIORITY_LARGE
+    )
+    assert (
+        prefill_load.priority_for_prefill(prefill_load.ELEPHANT_TOKENS - 1)
+        == prefill_load.PRIORITY_LARGE
+    )
+    assert (
+        prefill_load.priority_for_prefill(prefill_load.ELEPHANT_TOKENS)
+        == prefill_load.PRIORITY_ELEPHANT
+    )
+    assert (
+        prefill_load.priority_for_prefill(10 * prefill_load.ELEPHANT_TOKENS)
+        == prefill_load.PRIORITY_ELEPHANT
+    )
+
+
+@pytest.mark.unit
+def test_priority_spacing_preempts_only_elephants():
+    """The gaps between tiers are the policy; sglang's threshold reads them.
+
+    An arriving request retracts a running one only when it outranks it by at
+    least ``--priority-scheduling-preemption-threshold`` (sglang default 10).
+    Interactive must clear that bar against an elephant and stay under it
+    against everything else, or normal traffic starts retracting itself.
+    """
+    default_threshold = 10
+    interactive = prefill_load.PRIORITY_INTERACTIVE
+
+    assert interactive - prefill_load.PRIORITY_ELEPHANT >= default_threshold
+    assert interactive - prefill_load.PRIORITY_LARGE < default_threshold
+    assert interactive - interactive < default_threshold
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_publishes_priority_for_the_dispatched_request():
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+
+    small = [{"role": "user", "content": "x" * 400}]
+    huge = [{"role": "user", "content": "x" * (4 * prefill_load.ELEPHANT_TOKENS)}]
+
+    await r.chat_completion("m", small)
+    await r.chat_completion("m", huge)
+    async for _ in r.stream_chat_completion("m", huge):
+        pass
+
+    assert adapter.seen == [
+        prefill_load.PRIORITY_INTERACTIVE,
+        prefill_load.PRIORITY_ELEPHANT,
+        prefill_load.PRIORITY_ELEPHANT,
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_endpoint_gets_its_own_priority_publication():
+    # The push unwinds with the failed attempt, so the fallback dispatch has to
+    # republish rather than inherit -- otherwise the second endpoint would send
+    # whatever the process last left in the context, or nothing at all.
+    r = FixedRouter()
+    bad = _FailAdapter(_cfg("m", provider="BAD", base_url="http://BAD"))
+    good = _PriorityCapturingAdapter(_cfg("m", provider="GOOD", base_url="http://GOOD"))
+    r.register_route("m", [(bad, 1.0), (good, 1.0)])
+
+    req_ctx.set({"affinity_key": "u1"})
+    r._affinity[("u1", "m")] = _Affinity(endpoint_id="BAD", expires_at=time.monotonic() + 300)
+
+    await r.chat_completion("m", [{"role": "user", "content": "x" * 400}])
+
+    assert good.seen == [prefill_load.PRIORITY_INTERACTIVE]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_priority_does_not_outlive_the_dispatch():
+    # Published with push(), not update(): a value that survived the request
+    # would rank the *next* one, which reaches a different endpoint at a
+    # different size.
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+
+    await r.chat_completion("m", [{"role": "user", "content": "x" * 400}])
+
+    assert req_ctx.get().get(req_ctx.UPSTREAM_PRIORITY) is None

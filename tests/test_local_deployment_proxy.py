@@ -3215,6 +3215,87 @@ def test_vllm_extra_args_still_override_chunked_prefill_size(
     assert cmd[-2:] == ["--max-num-batched-tokens", "4096"]
 
 
+def test_sglang_priority_scheduling_is_opt_in(monkeypatch: Any, tmp_path: Path) -> None:
+    """The flag is what makes the gateway's per-request priority mean anything.
+
+    Without it sglang ignores the ``priority`` field entirely and serves the
+    waiting queue in arrival order, so a mega-prefill that got there first keeps
+    being admitted ahead of the interactive traffic behind it.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    base = _chunked_prefill_base("sglang")
+
+    default = proxy.BackendManager(MODEL_NAME, dict(base))._sglang_run_cmd("0")
+    enabled = proxy.BackendManager(
+        MODEL_NAME, {**base, "priority_scheduling": True}
+    )._sglang_run_cmd("0")
+
+    assert "--enable-priority-scheduling" not in default
+    assert "--enable-priority-scheduling" in enabled
+    # Threshold left to sglang's own default (10), which is what the gateway's
+    # tier spacing is chosen against.
+    assert "--priority-scheduling-preemption-threshold" not in enabled
+
+
+def test_sglang_priority_preemption_threshold_override(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    config = {
+        **_chunked_prefill_base("sglang"),
+        "priority_scheduling": True,
+        "priority_preemption_threshold": 5,
+    }
+
+    cmd = proxy.BackendManager(MODEL_NAME, config)._sglang_run_cmd("0")
+
+    assert cmd[cmd.index("--priority-scheduling-preemption-threshold") + 1] == "5"
+
+
+def test_priority_threshold_needs_priority_scheduling(monkeypatch: Any, tmp_path: Path) -> None:
+    # A threshold on its own is a no-op sglang would reject as an unrecognized
+    # combination rather than a hint that the flag was forgotten; emitting
+    # neither keeps the launch honest about what it configured.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    config = {**_chunked_prefill_base("sglang"), "priority_preemption_threshold": 5}
+
+    cmd = proxy.BackendManager(MODEL_NAME, config)._sglang_run_cmd("0")
+
+    assert "--priority-scheduling-preemption-threshold" not in cmd
+    assert "--enable-priority-scheduling" not in cmd
+
+
+def test_priority_scheduling_skipped_for_embedding_backends(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # An encode-only backend has no decode to protect, and its requests are all
+    # prefill -- ranking them against each other buys nothing.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    config = {
+        **_chunked_prefill_base("sglang"),
+        "is_embedding": True,
+        "max_model_len": 8192,
+        "priority_scheduling": True,
+    }
+
+    cmd = proxy.BackendManager(MODEL_NAME, config)._sglang_run_cmd("0")
+
+    assert "--enable-priority-scheduling" not in cmd
+
+
+def test_vllm_backends_ignore_priority_scheduling(monkeypatch: Any, tmp_path: Path) -> None:
+    """vLLM's priority policy reads the opposite way, so it is not wired here.
+
+    Its scheduler treats a *lower* value as earlier. Emitting the sglang flag or
+    silently reusing the gateway's higher-is-first values would invert the
+    intent and schedule elephants first.
+    """
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    config = {**_chunked_prefill_base("vllm"), "priority_scheduling": True}
+
+    cmd = proxy.BackendManager(MODEL_NAME, config)._vllm_run_cmd("0")
+
+    assert not any("priority" in str(arg) for arg in cmd)
+
+
 def test_health_endpoint_returns_200_without_api_key(monkeypatch: Any, tmp_path: Path) -> None:
     """Both phases a lazy proxy spends most of its life in answer 200, unauthenticated.
 

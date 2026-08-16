@@ -32,6 +32,13 @@ USER_ROLE = "user_role"
 # long-running request crosses a price-window boundary.
 PRICING_TIME = "pricing_time"
 
+# req_ctx key holding the scheduling priority the router assigned this request,
+# published around dispatch by FixedRouter and read by the OpenAI-compatible
+# adapter for endpoints configured with ``priority_scheduling``. Pushed rather
+# than updated durably: it describes one dispatch attempt, and a fallback to a
+# second endpoint re-publishes its own.
+UPSTREAM_PRIORITY = "upstream_priority"
+
 # req_ctx key naming the upstream that served (or refused) this request.
 PROVIDER = "provider"
 #: Provider label meaning "no upstream was ever selected" — a pre-routing failure.

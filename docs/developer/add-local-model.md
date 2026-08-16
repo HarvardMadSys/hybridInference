@@ -265,6 +265,36 @@ If `config/routing.yaml` is present, it can adjust route weights after models ar
 registered. Without `routing.yaml`, the gateway uses the weights in
 `config/models.yaml`.
 
+### Prioritizing Decode on an sglang Route
+
+A route whose server was started with sglang's `--enable-priority-scheduling`
+can declare that, and the gateway will stamp a per-request `priority` on the
+upstream body so a mega-prefill is scheduled behind interactive traffic rather
+than ahead of it:
+
+```yaml
+    route:
+      - kind: sglang
+        weight: 1.0
+        base_url: ${LOCAL_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        priority_scheduling: true
+      # The remote fallback must NOT set it — it is a fact about an sglang
+      # server, not about the model.
+      - kind: deepseek
+        weight: 0.0
+        api_key: ${DEEPSEEK_API_KEY}
+```
+
+Priority is derived from estimated prompt size alone (interactive 20, large 15,
+elephant 0 — see `apps/backend/routing/prefill_load.py`), and clients cannot set
+their own. Set it only on routes pointing at a server launched with the flag;
+the matching proxy-side config is `priority_scheduling` in
+[`ops/local_deployment_proxy/README.md`](../../ops/local_deployment_proxy/README.md#prioritizing-decode-over-prefill),
+which also explains the tier spacing and how it interacts with
+`chunked_prefill_size`.
+
 ## Troubleshooting
 
 ### Model Does Not Appear in `/v1/models`
