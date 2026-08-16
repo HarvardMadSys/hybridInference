@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
+from routing.prefill_load import PrefillLease, PrefillLoadTracker, estimate_prefill_tokens
 from routing.route_table import EffectiveRoute, RouteTableSnapshot
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
@@ -174,6 +175,15 @@ class FixedRouter:
         # weight 0 so the existing ``weight > 0`` gates in selection and every
         # fallback loop skip them without any per-call-site change.
         self.disabled_provider_resolver = disabled_provider_resolver
+        # In-flight prefill per endpoint. Weighted-random balances request
+        # counts, which lets one mega-prefill monopolize a replica while its
+        # siblings idle; this is the signal that lets selection see that.
+        self._prefill_load = PrefillLoadTracker()
+
+    @property
+    def prefill_load(self) -> PrefillLoadTracker:
+        """Return the per-endpoint in-flight prefill tracker."""
+        return self._prefill_load
 
     @property
     def endpoint_health_registry(self) -> EndpointHealthRegistry:
@@ -429,6 +439,7 @@ class FixedRouter:
         *,
         pin_provider: str | None = None,
         required_modalities: frozenset[str] | None = None,
+        prefill_tokens: int = 0,
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection with optional affinity.
 
@@ -438,6 +449,10 @@ class FixedRouter:
             required_modalities: Non-text input modalities the request needs.
                 Routes that do not declare all of them are excluded so media is
                 never dispatched to a route that cannot handle it.
+            prefill_tokens: Estimated prompt size, used to steer away from
+                endpoints already saturated with prefill and to keep concurrent
+                mega-prefills spread across replicas. Zero keeps the historical
+                pure weighted-random behavior.
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -494,9 +509,19 @@ class FixedRouter:
                 if entry is not None and entry.expires_at > now:
                     for adapter, _w in allowed:
                         if endpoint_id_for_adapter(adapter) == entry.endpoint_id:
-                            entry.expires_at = now + AFFINITY_TTL_SECONDS
-                            return adapter
-                    del self._affinity[(affinity_key, model_id)]
+                            # A pin is worth honoring for its prefix-cache hit,
+                            # but not into a queue: one high-volume key holding
+                            # a binding is exactly how a single replica ends up
+                            # absorbing every request while its siblings idle.
+                            # Falling through re-runs selection and re-pins to
+                            # whatever it picks, so the caller rebuilds locality
+                            # on an endpoint that can actually serve it.
+                            if self._prefill_load.should_keep_affinity(entry.endpoint_id):
+                                entry.expires_at = now + AFFINITY_TTL_SECONDS
+                                return adapter
+                            break
+                    else:
+                        del self._affinity[(affinity_key, model_id)]
                 elif entry is not None:
                     del self._affinity[(affinity_key, model_id)]
 
@@ -507,16 +532,14 @@ class FixedRouter:
             else allowed
         )
 
-        rand = random.random()
-        cumulative = 0.0
-        chosen: BaseAdapter | None = None
-        for adapter, weight in pool:
-            cumulative += weight
-            if rand <= cumulative:
-                chosen = adapter
-                break
-        if chosen is None:
-            chosen = pool[-1][0]
+        chosen = pool[
+            self._prefill_load.select_index(
+                [endpoint_id_for_adapter(adapter) for adapter, _w in pool],
+                [weight for _a, weight in pool],
+                prefill_tokens,
+                random.random,
+            )
+        ][0]
 
         if affinity_key:
             now = time.monotonic()
@@ -556,8 +579,12 @@ class FixedRouter:
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
+        prefill_tokens = estimate_prefill_tokens(messages)
         primary = self._select_adapter(
-            model_id, pin_provider=pin_provider, required_modalities=required_modalities
+            model_id,
+            pin_provider=pin_provider,
+            required_modalities=required_modalities,
+            prefill_tokens=prefill_tokens,
         )
         if not primary:
             if pin_provider:
@@ -569,7 +596,11 @@ class FixedRouter:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
                 endpoint_id = endpoint_id_for_adapter(primary)
                 self._ensure_health(endpoint_id)
-                resp = await primary.chat_completion(messages, **params)
+                lease = self._prefill_load.acquire(endpoint_id, prefill_tokens)
+                try:
+                    resp = await primary.chat_completion(messages, **params)
+                finally:
+                    self._prefill_load.release(lease)
                 self._on_success(endpoint_id)
             # Preserve adapter-set _routing if present;
             # only set default routing if the adapter didn't provide one.
@@ -625,7 +656,11 @@ class FixedRouter:
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
                         self._ensure_health(endpoint_id)
-                        resp = await adapter.chat_completion(messages, **params)
+                        lease = self._prefill_load.acquire(endpoint_id, prefill_tokens)
+                        try:
+                            resp = await adapter.chat_completion(messages, **params)
+                        finally:
+                            self._prefill_load.release(lease)
                         self._on_success(endpoint_id)
                     if "_routing" not in resp:
                         resp["_routing"] = {
@@ -674,8 +709,12 @@ class FixedRouter:
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
+        prefill_tokens = estimate_prefill_tokens(messages)
         primary = self._select_adapter(
-            model_id, pin_provider=pin_provider, required_modalities=required_modalities
+            model_id,
+            pin_provider=pin_provider,
+            required_modalities=required_modalities,
+            prefill_tokens=prefill_tokens,
         )
         if not primary:
             if pin_provider:
@@ -684,6 +723,7 @@ class FixedRouter:
                 )
             raise ValueError(f"No route configured for model {model_id}")
         chunks_yielded = False
+        lease: PrefillLease | None = None
         try:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
                 # Emit synthetic _routing chunk so completions.py can recover
@@ -692,19 +732,32 @@ class FixedRouter:
                 # to the parent coroutine when the stream is consumed via an
                 # asyncio.create_task reader, and api_logs ends up with
                 # provider="router" and cost_usd=NULL.
-                yield routing_chunk(primary)
                 first = True
                 primary_endpoint_id = endpoint_id_for_adapter(primary)
+                # Charged before the first yield so the lease brackets the whole
+                # upstream interaction: a generator abandoned after the routing
+                # chunk still unwinds through this method's finally.
+                lease = self._prefill_load.acquire(primary_endpoint_id, prefill_tokens)
+                yield routing_chunk(primary)
                 async for chunk in primary.stream_chat_completion(messages, **params):
                     if first and has_non_empty_content(chunk):
                         # Providers may emit keep-alives or empty terminal chunks.
                         first = False
                         # Consider first non-empty token as a success signal for availability.
                         self._on_success(primary_endpoint_id)
+                        # First token means the prompt is resident and this
+                        # endpoint is decoding, not prefilling. Holding the
+                        # lease for the whole stream would let a long cheap
+                        # decode read as prefill pressure and push traffic away
+                        # from an endpoint that is no longer busy prefilling.
+                        self._prefill_load.release(lease)
                     yield chunk
                     chunks_yielded = True
             return
         except Exception as primary_error:
+            # Primary is done either way; release before the fallback attempts
+            # so its backlog does not shadow it for the rest of this request.
+            self._prefill_load.release(lease)
             self._on_failure(
                 endpoint_id_for_adapter(primary),
                 reason="stream_exception",
@@ -768,10 +821,12 @@ class FixedRouter:
                             failed_attempts=failed_attempts,
                         )
                         first = True
+                        lease = self._prefill_load.acquire(adapter_endpoint_id, prefill_tokens)
                         async for chunk in adapter.stream_chat_completion(messages, **params):
                             if first and has_non_empty_content(chunk):
                                 first = False
                                 self._on_success(adapter_endpoint_id)
+                                self._prefill_load.release(lease)
                             yield chunk
                             chunks_yielded = True
                     return
@@ -790,4 +845,14 @@ class FixedRouter:
                     if chunks_yielded:
                         raise
                     continue
+                finally:
+                    # Covers the attempt that never reached a first token.
+                    self._prefill_load.release(lease)
             raise primary_error
+        finally:
+            # Backstop for every exit this generator has: an upstream error
+            # before the first token, and — the case that actually leaks in
+            # production — a client disconnect, which closes the generator
+            # mid-stream and would otherwise strand the lease forever, making
+            # the endpoint look permanently busy to every later request.
+            self._prefill_load.release(lease)
