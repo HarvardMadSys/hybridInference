@@ -290,13 +290,21 @@ It takes both sides, and they are independent:
 2. **The gateway** stamps that priority, for routes that set
    `priority_scheduling: true` in `models.yaml`. The tiers come from the same
    thresholds prefill-aware routing already uses
-   (`apps/backend/routing/prefill_load.py`):
+   (`apps/backend/routing/prefill_load.py`), applied to the **un-cached**
+   prefill rather than the prompt size — the fleet runs above 90% prefix-cache
+   hit, so ranking a warm 500k-token continuation on its total would queue the
+   interactive case last:
 
-   | Estimated prompt | Priority | Effect |
+   | Un-cached prefill | Priority | Effect |
    |---|---:|---|
    | < 50k tokens (interactive) | 20 | scheduled first; retracts a running elephant |
    | ≥ 50k tokens (large) | 15 | queues behind interactive, never preempted by it |
    | ≥ 200k tokens (elephant) | 0 | scheduled last, retractable |
+
+   The discount is per endpoint, and recomputed for each dispatch: a prefix
+   resident on the replica a caller has been talking to is not resident on a
+   fallback that has never seen the conversation, and that fallback really is
+   facing the cold prefill.
 
    The *spacing* is the policy, not the absolute values: interactive beats an
    elephant by 20 (≥ the threshold, so it preempts) and beats a large prompt by
@@ -306,6 +314,12 @@ It takes both sides, and they are independent:
 Priority is assigned from prompt size alone, by the gateway, and a client cannot
 set its own — the adapters forward a whitelist of sampling params that does not
 include `priority`.
+
+Only the default (`fixed`) router stamps a priority. A model configured with
+`router: routewise` dispatches through a router that has no prefill accounting
+of its own, so it cannot compute the un-cached estimate the tiers are defined
+on; rather than rank warm continuations wrongly, it publishes nothing and those
+models keep the upstream's own default priority.
 
 Roll out in either order: an sglang server without the flag ignores the field,
 and a flagged server with no gateway-side opt-in sees every request at sglang's

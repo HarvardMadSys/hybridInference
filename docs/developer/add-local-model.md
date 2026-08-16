@@ -287,11 +287,15 @@ than ahead of it:
         api_key: ${DEEPSEEK_API_KEY}
 ```
 
-Priority is derived from estimated prompt size alone (interactive 20, large 15,
-elephant 0 — see `apps/backend/routing/prefill_load.py`), and clients cannot set
-their own. Set it only on routes pointing at a server launched with the flag;
+Priority is derived from the estimated *un-cached* prefill — the prompt size
+minus the prefix this endpoint is expected to have cached (interactive 20, large
+15, elephant 0; see `apps/backend/routing/prefill_load.py`) — and clients cannot
+set their own. Only the default `fixed` router stamps it; a model on
+`router: routewise` keeps the upstream's default priority, because that router
+has no prefill accounting to compute the discount from. Set it only on routes
+pointing at a server launched with the flag;
 the matching proxy-side config is `priority_scheduling` in
-[`ops/local_deployment_proxy/README.md`](../../ops/local_deployment_proxy/README.md#prioritizing-decode-over-prefill),
+`ops/local_deployment_proxy/README.md` ("Prioritizing decode over prefill"),
 which also explains the tier spacing and how it interacts with
 `chunked_prefill_size`.
 

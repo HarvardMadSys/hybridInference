@@ -757,3 +757,56 @@ async def test_priority_does_not_outlive_the_dispatch():
     await r.chat_completion("m", [{"role": "user", "content": "x" * 400}])
 
     assert req_ctx.get().get(req_ctx.UPSTREAM_PRIORITY) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_warm_continuation_keeps_interactive_priority():
+    """A cached prefix is not prefill, so it must not rank the request as one.
+
+    The fleet runs above 90% prefix-cache hit. Ranking on total prompt size
+    would stamp the common agentic case -- a 500k-token conversation whose next
+    turn adds a tool result -- as an elephant, and the upstream would then
+    schedule it last and preempt it for the very traffic it *is*.
+    """
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+
+    # Turn 1: a cold 300k-token prompt really is an elephant on this endpoint.
+    huge = "x" * (4 * 300_000)
+    await r.chat_completion("m", [{"role": "user", "content": huge}])
+    # Turn 2: same conversation plus a small tool result. Almost all of it is
+    # resident in the endpoint's radix cache now.
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
+
+    assert adapter.seen == [
+        prefill_load.PRIORITY_ELEPHANT,
+        prefill_load.PRIORITY_INTERACTIVE,
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_priority_is_recomputed_per_endpoint_on_fallback():
+    # The discount is per endpoint: a prefix resident on the replica the caller
+    # has been talking to is not resident on a fallback that has never seen the
+    # conversation, and that fallback faces the full cold prefill.
+    r = FixedRouter()
+    warm = _PriorityCapturingAdapter(_cfg("m", provider="WARM", base_url="http://WARM"))
+    cold = _PriorityCapturingAdapter(_cfg("m", provider="COLD", base_url="http://COLD"))
+    r.register_route("m", [(warm, 1.0), (cold, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+    r._affinity[("u1", "m")] = _Affinity(endpoint_id="WARM", expires_at=time.monotonic() + 300)
+
+    huge = "x" * (4 * 300_000)
+    await r.chat_completion("m", [{"role": "user", "content": huge}])
+    # WARM now remembers the prompt; the same conversation continues on it, then
+    # is dispatched to COLD, which has no history for this caller.
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
+    r._affinity[("u1", "m")] = _Affinity(endpoint_id="COLD", expires_at=time.monotonic() + 300)
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
+
+    assert warm.seen == [prefill_load.PRIORITY_ELEPHANT, prefill_load.PRIORITY_INTERACTIVE]
+    assert cold.seen == [prefill_load.PRIORITY_ELEPHANT]

@@ -575,6 +575,28 @@ class FixedRouter:
 
         return chosen
 
+    def _dispatch_priority(
+        self, endpoint_id: str, prefill_tokens: int, affinity_key: str | None
+    ) -> int:
+        """Scheduling priority for one dispatch, ranked on *this* endpoint's work.
+
+        Deliberately the un-cached estimate rather than the prompt size: the
+        fleet runs above 90% prefix-cache hit, so ranking on the total would
+        stamp a warm 500k-token continuation -- a few thousand delta tokens of
+        actual prefill -- as an elephant and have the upstream schedule it last
+        and preempt it, which is the opposite of what its cost deserves. The
+        same discount decides selection and the elephant limit, so priority
+        agrees with routing by construction.
+
+        Per endpoint, because the discount is: a prefix resident on the replica
+        the caller has been talking to is not resident on a fallback that has
+        never seen this conversation, and that fallback really is facing the
+        cold prefill.
+        """
+        return priority_for_prefill(
+            self._prefill_load.uncached_estimate(endpoint_id, prefill_tokens, affinity_key)
+        )
+
     async def chat_completion(
         self,
         model_id: str,
@@ -617,12 +639,16 @@ class FixedRouter:
                 )
             raise ValueError(f"No route configured for model {model_id}")
         try:
+            endpoint_id = endpoint_id_for_adapter(primary)
             with req_ctx.push(
                 model=model_id,
                 provider=primary.config.provider,
-                **{req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(prefill_tokens)},
+                **{
+                    req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
+                        endpoint_id, prefill_tokens, affinity_key
+                    )
+                },
             ):
-                endpoint_id = endpoint_id_for_adapter(primary)
                 self._ensure_health(endpoint_id)
                 lease = self._prefill_load.acquire(
                     endpoint_id, prefill_tokens, affinity_key=affinity_key
@@ -687,7 +713,11 @@ class FixedRouter:
                     with req_ctx.push(
                         model=model_id,
                         provider=adapter.config.provider,
-                        **{req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(prefill_tokens)},
+                        **{
+                            req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
+                                endpoint_id, prefill_tokens, affinity_key
+                            )
+                        },
                     ):
                         self._ensure_health(endpoint_id)
                         lease = self._prefill_load.acquire(
@@ -762,10 +792,15 @@ class FixedRouter:
         chunks_yielded = False
         lease: PrefillLease | None = None
         try:
+            primary_endpoint_id = endpoint_id_for_adapter(primary)
             with req_ctx.push(
                 model=model_id,
                 provider=primary.config.provider,
-                **{req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(prefill_tokens)},
+                **{
+                    req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
+                        primary_endpoint_id, prefill_tokens, affinity_key
+                    )
+                },
             ):
                 # Emit synthetic _routing chunk so completions.py can recover
                 # the upstream provider/base_url/endpoint_id for DB logging.
@@ -774,7 +809,6 @@ class FixedRouter:
                 # asyncio.create_task reader, and api_logs ends up with
                 # provider="router" and cost_usd=NULL.
                 first = True
-                primary_endpoint_id = endpoint_id_for_adapter(primary)
                 # Charged before the first yield so the lease brackets the whole
                 # upstream interaction: a generator abandoned after the routing
                 # chunk still unwinds through this method's finally.
@@ -860,7 +894,11 @@ class FixedRouter:
                     with req_ctx.push(
                         model=model_id,
                         provider=adapter.config.provider,
-                        **{req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(prefill_tokens)},
+                        **{
+                            req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
+                                adapter_endpoint_id, prefill_tokens, affinity_key
+                            )
+                        },
                     ):
                         yield routing_chunk(
                             adapter,
