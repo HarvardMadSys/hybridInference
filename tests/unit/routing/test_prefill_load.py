@@ -615,10 +615,17 @@ async def test_stream_fallback_releases_both_leases():
     bad = _FailAdapter(_cfg("m", provider="BAD", base_url="http://BAD"))
     good = _EchoAdapter(_cfg("m", provider="GOOD", base_url="http://GOOD"))
     r.register_route("m", [(bad, 1.0), (good, 1.0)])
-    req_ctx.set({})
     messages = [{"role": "user", "content": "x" * 4000}]
 
-    async for _chunk in r.stream_chat_completion("m", messages):
-        pass
+    # Pin the primary to BAD. Left to a weighted draw this test would pick GOOD
+    # first half the time and silently never exercise the fallback path at all.
+    req_ctx.set({"affinity_key": "u1"})
+    r._affinity[("u1", "m")] = _Affinity(endpoint_id="BAD", expires_at=time.monotonic() + 300)
+
+    chunks = [chunk async for chunk in r.stream_chat_completion("m", messages)]
+
+    # A fallback actually happened: BAD was tried, then GOOD served the stream.
+    assert any("BAD" in str(c) for c in chunks)
+    assert any("GOOD" in str(c) for c in chunks)
     assert r.prefill_load.backlog("BAD") == 0
     assert r.prefill_load.backlog("GOOD") == 0
