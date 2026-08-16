@@ -437,6 +437,7 @@ class PrefillLoadTracker:
         tokens: int,
         rand: Callable[[], float],
         affinity_key: str | None = None,
+        avoid: str | None = None,
     ) -> int:
         """Pick a candidate by weight, then break toward the lighter endpoint.
 
@@ -471,6 +472,10 @@ class PrefillLoadTracker:
             tokens: Estimated *total* prompt tokens for this request.
             rand: Zero-argument callable returning a float in [0, 1).
             affinity_key: Caller identity, used to discount a warm prefix.
+            avoid: Endpoint already judged too backlogged for this caller.
+                Dropped from the candidates when anything else remains --
+                a weighted draw would otherwise re-pick it a fair fraction of
+                the time, undoing the decision that was just made.
 
         Returns:
             Index into ``keys`` of the selected candidate.
@@ -482,6 +487,10 @@ class PrefillLoadTracker:
             return 0
 
         eligible = list(range(count))
+        if avoid is not None:
+            remaining = [i for i in eligible if keys[i] != avoid]
+            if remaining:
+                eligible = remaining
         if PREFILL_AWARE_ENABLED:
             # Computed before taking the lock; uncached_estimate locks too.
             elephant_here = [

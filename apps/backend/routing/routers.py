@@ -512,6 +512,9 @@ class FixedRouter:
         if AFFINITY_ENABLED:
             affinity_key = req_ctx.get().get("affinity_key") or None
 
+        # Set when a pin is dropped for backlog, so selection does not simply
+        # hand the caller straight back to the endpoint it was moved off.
+        avoid_endpoint_id: str | None = None
         if affinity_key:
             now = time.monotonic()
             with self._lock:
@@ -531,6 +534,7 @@ class FixedRouter:
                             ):
                                 entry.expires_at = now + AFFINITY_TTL_SECONDS
                                 return adapter
+                            avoid_endpoint_id = entry.endpoint_id
                             break
                     else:
                         del self._affinity[(affinity_key, model_id)]
@@ -551,6 +555,7 @@ class FixedRouter:
                 prefill_tokens,
                 random.random,
                 affinity_key,
+                avoid_endpoint_id,
             )
         ][0]
 

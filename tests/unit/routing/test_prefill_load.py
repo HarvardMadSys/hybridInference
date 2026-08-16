@@ -296,6 +296,22 @@ def test_small_request_not_restricted_by_elephant_limit():
 
 
 @pytest.mark.unit
+def test_avoid_excludes_named_endpoint():
+    """A weighted draw must not hand the caller back the endpoint it just left."""
+    t = PrefillLoadTracker()
+    # Draw values that would otherwise land on index 0 both times.
+    assert t.select_index(["a", "b"], [0.9, 0.1], 100, _fixed_rand(0.0), None, "a") == 1
+
+
+@pytest.mark.unit
+def test_avoid_ignored_when_it_is_the_only_candidate():
+    t = PrefillLoadTracker()
+    assert t.select_index(["a", "b"], [0.5, 0.5], 100, _fixed_rand(0.0), None, "zz") in (0, 1)
+    # Only 'a' is a real candidate; avoiding it would mean routing nowhere.
+    assert t.select_index(["a"], [1.0], 100, _fixed_rand(0.0), None, "a") == 0
+
+
+@pytest.mark.unit
 def test_zero_weights_do_not_divide_by_zero():
     t = PrefillLoadTracker()
     assert t.select_index(["a", "b"], [0.0, 0.0], 10, _fixed_rand(0.5)) == 1
