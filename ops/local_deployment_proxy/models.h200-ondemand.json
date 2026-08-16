@@ -67,7 +67,8 @@
         "reasoning_parser": "qwen3",
         "vllm_tool_call_parser": "hermes",
         "vllm_extra_args": [
-            "--default-chat-template-kwargs", "{\"enable_thinking\": false}"
+            "--default-chat-template-kwargs", "{\"enable_thinking\": false}",
+            "--max-num-seqs", "128"
         ],
         "startup_estimate_seconds": 240
     },
