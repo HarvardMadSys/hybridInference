@@ -9,7 +9,7 @@
 > 创建:2026-08-03,基于 Murphy 与 Claude 的对话,并吸收另一 agent 会话的
 > 交叉评审(symlink 挂载悬空、拉模式触发、digest 与计划文本的关系)。
 > 修订:2026-08-12,状态对账——W0 已完成、W1 GitHub 侧已完成、§7 行动项已随
-> H4 解决;详见 §0 与各工作项内的进展注记。同日并入六轮交叉评审:W5 删除
+> H4 解决;详见 §0 与各工作项内的进展注记。同日并入七轮交叉评审:W5 删除
 > 时序改判(不与搬迁同批)、W6 增补 prod 观察窗、W7 compose base 来源待拍板
 > (§6-5)与 `/agents` 路由缺口(P1)、判据②改以 public-export **物化树**
 > 为对象、W2 同源硬门(脏检查含 untracked + 无旁路)、W2 砍除 frontend
@@ -17,8 +17,10 @@
 > W5c services 表述修正(harness 非 worker,按 §7 拆)、sweep 计数刷新为
 > 18、§5 W8 计数改五项、执行原则新增"生产周边显式化"、GHCR 认证改判
 > (短期 token + 临时 DOCKER_CONFIG,取消主机持久凭据)、W4 增自动发布与
-> package 授权、lock 增 `source_commit`、判据"distributions/ 只剩
-> example"写实为清空。
+> package 授权、lock 增 `source_commit`(第七轮收敛为唯一 SHA 真值)、
+> 判据"distributions/ 只剩 example"写实为清空(删除批联动 export
+> manifest optional 化)、W1 补第四组 runner(trusted-automation)、
+> Pages 切换移 W5e、W2 增架构硬门与缓存回滚落实。
 
 ## 0. 前提:Step 1 的收官状态(2026-08-12 对账)
 
@@ -60,11 +62,12 @@ hybridInference(Step 3 后公开)          freeInference(私有)
 ```yaml
 upstream:
   release: 20260812            # 溯源用的上游标识
-  source_commit: <sha>         # 本次 bump 的上游 SHA(provenance 锚,
-                               # 2026-08-12 评审第六轮增)
-  backend:  ghcr.io/harvardmadsys/hybridinference-backend@sha256:…   # digest
-  frontend:                    # v1:源码 pin 用同一 source_commit;W7 后翻 digest
-    source_commit: <sha>
+  source_commit: <sha>         # 唯一 SHA 真值(第七轮收敛,防双锚漂移):
+                               # 镜像 revision label 断言等于它,
+                               # v1 的 frontend 源码 pin 也 checkout 它
+  backend: ghcr.io/harvardmadsys/hybridinference-backend@sha256:…   # digest
+  # frontend 无独立字段:v1 = 按 source_commit 现场 build(§2-1 豁免);
+  # W7 完成后新增 frontend: <digest> 字段
 ```
 
 `digest` 与 `source_commit` 必须在**同一个 bump PR 内原子更新**;W4 的门
@@ -126,9 +129,11 @@ staging=dev / prod=main 映射、release tag 节奏、回滚入口。
 
 - GitHub:freeInference 建 `production`/`staging` Environments,迁移
   `PROD_*` / `STAGING_*` 五件套 secrets;org App(4436561)安装覆盖新仓
-  (bump bot 与 agents 签 token 用);三组 self-hosted runner 标签
-  (`deploy-production`/`deploy-staging`/`deploy-edge`)在新仓注册——runner
-  可同机双注册,迁移窗口内两仓并行。
+  (bump bot 与 agents 签 token 用);**四**组 self-hosted runner 标签
+  (`deploy-production`/`deploy-staging`/`deploy-edge`/
+  `trusted-automation`——第四组 2026-08-12 评审第七轮补:sync-main.yml 与
+  rag-index.yml 都跑在它上面,漏注册则两个 workflow 在新仓永远排队)在
+  新仓注册——runner 可同机双注册,迁移窗口内两仓并行。
 - GHCR(2026-08-12 评审第五轮改判,取代原"主机持久只读凭据"方案):
   上游 CI 推镜像用自身 `GITHUB_TOKEN`(packages:write)。**拉取侧不设任何
   主机持久凭据**——deploy workflow 以短期 `GITHUB_TOKEN`
@@ -139,9 +144,11 @@ staging=dev / prod=main 映射、release tag 节奏、回滚入口。
   排在 W4(W2 期间同仓,`GITHUB_TOKEN` 天然有权,无此前提)。镜像包
   private;Step 3 后 backend 包转 public,login 步骤整个删除。回滚兜底:
   按 digest 回滚优先命中主机本地 daemon 缓存,不依赖 registry 可达。
-- Cloudflare:Pages 项目 `freeinference-doc` 的 Git 集成切到新仓
-  (main=生产、dev=preview 不变;有 2026-07-27 双目录过渡的先例可循);
-  workers 部署所需 CF token/OIDC 进新仓 Environments。
+- Cloudflare:W1 只做**准备**——workers 部署所需 CF token 进新仓
+  Environments(已完成)、确认 Pages 项目的访问权。`freeinference-doc`
+  的 Git 集成**切换动作属 W5e 不属 W1**(2026-08-12 评审第七轮纠正:
+  W1 时新仓还是空的,切过去 Pages 会对着空树构建;须等 main/dev 内容
+  就位后切,有 2026-07-27 双目录过渡的先例可循)。
 - 主机:`/srv/freeInference` checkout + 只读 deploy key;迁移窗口内
   `/srv/hybridInference` 保留作回滚。
 
@@ -176,7 +183,11 @@ ignored 的 `.env`、`var/**` 属预期主机状态,不在拒脏范围。两项�
 HEAD 须为 `origin/dev` 的祖先(拒任意 ref 部署),checkout 信任/属主
 自愈同款复刻(safe.directory + `sudo -n chown`)。部署日志记录 source 与
 digest。复活 PR = #1258(build-candidates + digest deploy,双 workflow
-均 dispatch-only,backend-only)。
+均 dispatch-only,backend-only)。部署前的架构硬门(第七轮):镜像
+`.Os/.Architecture` 与主机归一化架构(x86_64→amd64 等)硬比较,不符即
+拒,不允许留到容器启动才炸;首跑运行日志同时留档 staging 的 `uname -m`
+与 Docker server 平台。缓存兜底为真实行为:精确 digest 已在本地 daemon
+store 时跳过 login/pull,registry 不可达也能回滚到旧 digest。
 
 ### W3 归属清单重生成
 
@@ -196,7 +207,10 @@ digest。复活 PR = #1258(build-candidates + digest deploy,双 workflow
   backend 镜像(带 `org.opencontainers.image.revision` label)——W2 的
   build-candidates 是 dispatch-only 的验证切片,不承担这条自动链;没有
   自动发布,bump bot 就没有新 digest 可 bump。发布 job 挂上游 ci.yml,
-  digest 经 packages API / run summary 可查。
+  digest 经 packages API / run summary 可查。**架构注记(第七轮)**:W4
+  同时登记 prod 主机架构;若与 staging 不同,自动发布必须产出
+  multi-arch manifest,`upstream.lock` 钉 manifest digest(单架构则钉
+  平台镜像 digest,部署侧的架构硬门已在 #1258 落地)。
 - package 授权:首个 candidate 发布后,把 freeInference 加进 backend
   package 的 Actions access(read)——W1 GHCR 改判的前提项,落在这里。
 - bump workflow:cron 轮询上游 dev(节奏见 §6),生成 bump PR;门测试 =
@@ -226,7 +240,12 @@ testkit 留上游,站点 targets 迁私有仓;(d) `ops/` 按 W3 裁定的部分;
 prod=release tag)始终可用;删除推迟到 W6 观察窗结束后,按逆批次序独立 PR
 执行,E 门(banned-strings、禁 import `distributions/`、中立启动)在删除批
 上强制,Step 3 开源前完成即可。(备选:旧生产链钉死在迁移前 release tag、
-删除照旧同批——回滚面更窄,不推荐;二选一归 Murphy。)
+删除照旧同批——回滚面更窄,不推荐;二选一归 Murphy。)**删除批的既有
+测试联动(第七轮)**:`public_export_manifest.yaml` 对 `distributions/`
+的排除规则非 optional,`test_public_export_manifest.py` 强制"被排除路径
+必须存在"——清空 `distributions/` 的删除批须同步把该排除规则标
+`optional: true` 并更新注释(保留规则本身:将来任何 overlay 重现,导出
+照样不带它),否则删除批 CI 必红。
 
 ### W6 切换与演练
 
