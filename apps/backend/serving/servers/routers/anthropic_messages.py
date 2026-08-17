@@ -1224,26 +1224,39 @@ async def anthropic_messages(
     prefill_anchor = prompt_anchor(prefill_messages)
     prefill_load = router_exec.prefill_load
     prefill_affinity = req_ctx.get().get("affinity_key")
-    req_ctx.update(
-        {
-            req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(
-                prefill_load.uncached_estimate(
-                    dispatch_endpoint_id,
-                    prefill_tokens,
-                    prefill_affinity,
-                    fingerprint=prefill_fingerprint,
-                    messages=prefill_messages,
+
+    def _begin_prefill():
+        """Publish this request's priority and charge its prefill to the endpoint.
+
+        Called where the dispatch actually begins, never merely where it is
+        prepared. A lease taken in the handler body would leak on the streaming
+        path: a client that disconnects after the handler returns but before
+        Starlette starts iterating the response generator leaves a generator
+        that never runs, so its ``finally`` never returns the lease and the
+        endpoint stays charged -- and possibly holding an elephant slot --
+        until the process restarts. Selection would then steer traffic away
+        from a replica that is idle, which is worse than not accounting at all.
+        """
+        req_ctx.update(
+            {
+                req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(
+                    prefill_load.uncached_estimate(
+                        dispatch_endpoint_id,
+                        prefill_tokens,
+                        prefill_affinity,
+                        fingerprint=prefill_fingerprint,
+                        messages=prefill_messages,
+                    )
                 )
-            )
-        }
-    )
-    prefill_lease = prefill_load.acquire(
-        dispatch_endpoint_id,
-        prefill_tokens,
-        affinity_key=prefill_affinity,
-        fingerprint=prefill_fingerprint,
-        anchor=prefill_anchor,
-    )
+            }
+        )
+        return prefill_load.acquire(
+            dispatch_endpoint_id,
+            prefill_tokens,
+            affinity_key=prefill_affinity,
+            fingerprint=prefill_fingerprint,
+            anchor=prefill_anchor,
+        )
 
     if adapter.native_format == "openai":
         normalized_tool_inputs = _count_non_object_tool_inputs(body)
@@ -1314,6 +1327,8 @@ async def anthropic_messages(
         }
 
         async def _gen():
+            # Bound to this generator's execution: see _begin_prefill.
+            prefill_lease = _begin_prefill()
             request_usage = {
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -1579,6 +1594,7 @@ async def anthropic_messages(
 
         return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
 
+    prefill_lease = _begin_prefill()
     try:
         resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
         prefill_load.release(prefill_lease, prefill_confirmed=True)

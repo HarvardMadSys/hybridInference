@@ -217,3 +217,57 @@ async def test_a_completed_turn_makes_the_next_one_interactive(
     assert r2.status_code == 200
     assert sent["priority"] == PRIORITY_INTERACTIVE
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_streaming_lease_is_taken_when_the_generator_runs(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, no_log_store, priority_route
+):
+    """Acquisition must be bound to the generator's execution, not the handler's.
+
+    Starlette starts iterating only after the handler returns, so a client that
+    disconnects in between leaves a generator that never runs -- and a lease
+    taken in the handler body would never be released, charging the endpoint
+    until process restart while selection steers traffic away from a replica
+    that is idle. Pinned by construction time: no lease may exist yet when the
+    response object is built.
+    """
+    from fastapi import responses as fastapi_responses
+
+    tracker = anthropic_compat_router.prefill_load
+    endpoint_id = endpoint_id_for_adapter(_adapter(anthropic_compat_router))
+    calls: list[str] = []
+    real_acquire = tracker.acquire
+
+    def spy_acquire(*args, **kwargs):
+        calls.append("acquire")
+        return real_acquire(*args, **kwargs)
+
+    monkeypatch.setattr(tracker, "acquire", spy_acquire)
+
+    at_construction: dict = {}
+    real_cls = fastapi_responses.StreamingResponse
+
+    class _Recording(real_cls):
+        def __init__(self, content, **kwargs):
+            at_construction["leases"] = len(calls)
+            super().__init__(content, **kwargs)
+
+    monkeypatch.setattr(fastapi_responses, "StreamingResponse", _Recording)
+
+    async def fake_stream(self, body, request_id, usage_sink=None, extra_headers=None):
+        yield b'event: message_start\ndata: {"type":"message_start"}\n\n'
+
+    from serving.adapters.base import BaseAdapter
+
+    monkeypatch.setattr(BaseAdapter, "stream_messages", fake_stream)
+
+    r = await anthropic_test_client.post("/v1/messages", json=_body(stream=True), headers=_auth())
+
+    assert r.status_code == 200
+    # The response object existed before any lease did...
+    assert at_construction["leases"] == 0
+    # ...the generator then took one, and gave it back.
+    assert calls == ["acquire"]
+    assert tracker.backlog(endpoint_id) == 0
+    await asyncio.sleep(0)

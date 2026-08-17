@@ -178,7 +178,14 @@ def _content_chars(content: Any) -> int:
                 total += _AUDIO_TOKENS * _CHARS_PER_TOKEN
             else:
                 text = block.get("text")
-                if isinstance(text, str):
+                if not isinstance(text, str):
+                    # Anthropic's tool_use.input and tool_result.content carry no
+                    # "text" field, and on an agent surface they are most of the
+                    # prompt -- file contents going out, command output coming
+                    # back. Counting only text blocks would price a tool-heavy
+                    # Claude Code history at nearly nothing.
+                    total += _serialized_chars(block)
+                elif isinstance(text, str):
                     total += len(text)
         return total
     return len(str(content))
@@ -275,6 +282,12 @@ def _prefix_units(messages: Sequence[dict[str, Any]] | None) -> Iterator[str]:
                         text = block.get("text")
                         if isinstance(text, str):
                             yield text
+                        else:
+                            # tool_use / tool_result / thinking blocks: serialized
+                            # rather than skipped, so editing tool history cannot
+                            # validate as an unchanged prefix.
+                            with contextlib.suppress(TypeError, ValueError):
+                                yield json.dumps(block, sort_keys=True)
         extra = {k: v for k, v in message.items() if k not in ("role", "content") and v is not None}
         if extra:
             with contextlib.suppress(TypeError, ValueError):

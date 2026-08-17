@@ -1402,3 +1402,57 @@ def test_evidence_distinguishes_a_re_split_content_list():
     ) != prefill_load.conversation_fingerprint(two_blocks)
     # ...and the same structure still matches itself.
     assert prefill_load._anchor_holds(one_block, prefill_load.prompt_anchor(one_block))
+
+
+@pytest.mark.unit
+def test_anthropic_tool_blocks_are_prompt_bearing():
+    """Anthropic carries tool payloads as content blocks, not message fields.
+
+    ``tool_use.input`` (the file going out) and ``tool_result.content`` (the
+    command output coming back) have no ``text`` field, and on an agent surface
+    they are most of the prompt. Counting only text blocks priced a whole Claude
+    Code history at nearly nothing, which is interactive priority for a cold
+    mega-prefill.
+    """
+    history = [
+        {"role": "user", "content": [{"type": "text", "text": "fix the migration"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "edit_file",
+                    "input": {"path": "m.sql", "contents": "x" * (4 * 300_000)},
+                }
+            ],
+        },
+    ]
+
+    tokens = prefill_load.estimate_prefill_tokens(history)
+
+    assert tokens > prefill_load.ELEPHANT_TOKENS
+    assert prefill_load.priority_for_prefill(tokens) == prefill_load.PRIORITY_ELEPHANT
+
+
+@pytest.mark.unit
+def test_edited_tool_history_does_not_validate_as_a_warm_prefix():
+    # The same blocks in the evidence stream: rewriting what a tool returned
+    # changes the prefix, so it must not pass the anchor.
+    def history(payload: str):
+        return [
+            {"role": "user", "content": [{"type": "text", "text": "run it"}]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": payload},
+                ],
+            },
+        ]
+
+    original = history("output " + "a" * 50_000)
+    rewritten = history("output " + "b" * 50_000)
+    anchor = prefill_load.prompt_anchor(original)
+
+    assert not prefill_load._anchor_holds(rewritten, anchor)
+    assert prefill_load._anchor_holds([*original, {"role": "assistant", "content": "done"}], anchor)
