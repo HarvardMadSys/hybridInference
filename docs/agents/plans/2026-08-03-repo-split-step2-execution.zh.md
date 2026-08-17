@@ -9,7 +9,7 @@
 > 创建:2026-08-03,基于 Murphy 与 Claude 的对话,并吸收另一 agent 会话的
 > 交叉评审(symlink 挂载悬空、拉模式触发、digest 与计划文本的关系)。
 > 修订:2026-08-12,状态对账——W0 已完成、W1 GitHub 侧已完成、§7 行动项已随
-> H4 解决;详见 §0 与各工作项内的进展注记。同日并入八轮交叉评审:W5 删除
+> H4 解决;详见 §0 与各工作项内的进展注记。已并入九轮交叉评审:W5 删除
 > 时序改判(不与搬迁同批)、W6 增补 prod 观察窗、W7 compose base 来源待拍板
 > (§6-5)与 `/agents` 路由缺口(P1)、判据②改以 public-export **物化树**
 > 为对象、W2 同源硬门(脏检查含 untracked + 无旁路)、W2 砍除 frontend
@@ -22,7 +22,8 @@
 > manifest optional 化)、W1 补第四组 runner(trusted-automation)与主机
 > 状态迁移、Pages 切换移 W5e 并加四步硬序、W2 定稿对齐语义(reset 到镜像
 > revision、失败自动恢复 last-known-good、架构门以 Docker server 为准)、
-> W3 增 workflow→runner→env→secrets 依赖矩阵。
+> W3 增 workflow→runner→env→secrets 依赖矩阵、W2 恢复路径闭合(up 失败
+> 同路恢复、探针限时)与 candidate 全量 fetch(仓库自证的浅克隆 flake)。
 
 ## 0. 前提:Step 1 的收官状态(2026-08-12 对账)
 
@@ -154,8 +155,9 @@ staging=dev / prod=main 映射、release tag 节奏、回滚入口。
 - 主机:`/srv/freeInference` checkout + 只读 deploy key;迁移窗口内
   `/srv/hybridInference` 保留作回滚。**主机状态迁移(第八轮补)**:新
   checkout 不止是代码——`.env`、`.env.oncall`、`var/data/**`、
-  `var/deploy-digest.log` 等文件型运维状态必须在 W6 前复制或外置为两条
-  回滚链共享的 host-state 目录(owner/mode 核验);Docker named volumes
+  `var/deploy-digest.log` 等文件型运维状态必须在 W6 前迁妥——**首选外置
+  为两条回滚链共享的 host-state 目录**(owner/mode 核验;复制双份只作
+  过渡,长期双份必漂移;`var/data` 当前主要是 GeoIP 数据);Docker named volumes
   (Postgres/pgAdmin/codex-oncall)靠固定 compose project name 存续,
   不需搬。缺 `.env` 新链第一步就退出、`var/data` 挂上空目录=数据面清零,
   这两种失败都必须在 W6 演练里而非切换日发现。
@@ -195,7 +197,11 @@ candidate 镜像推 GHCR(首个 candidate 钉 staging 当前 SHA——同代码�
 (容器真正跑在 server 上;`uname` 只留档;server 平台读不到即 fail
 closed)。checkout 信任/属主自愈同 classic(safe.directory +
 `sudo -n chown`)。首飞钉 staging 当前 SHA 时对齐为 no-op,"同码只换
-包装"的证明不变。复活 PR = #1258(dispatch-only,backend-only)。
+包装"的证明不变。恢复路径闭合(第九轮):`compose up` 启动失败与探活
+失败汇入**同一**恢复函数(`set -e` 不再短路恢复块),恢复自身的 up 也
+显式捕获失败并给出人工处置指引;健康探针带超时(connect 2s / 总 5s),
+挂死的 `/health` 吃不满 job 超时。复活 PR = #1258(dispatch-only,
+backend-only)。
 
 ### W3 归属清单重生成
 
