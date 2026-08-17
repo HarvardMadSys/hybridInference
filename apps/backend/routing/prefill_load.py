@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
 logger = get_logger(__name__)
 
@@ -147,15 +147,6 @@ _AUDIO_TOKENS: int = 200
 _FINGERPRINT_CHARS_PER_MESSAGE: int = 2048
 _FINGERPRINT_MAX_MESSAGES: int = 4
 
-# Width of the anchor window -- the slice of the remembered prompt's tail that a
-# later prompt must reproduce, at the same offset, to be treated as extending it
-# rather than forking from it. Wide enough that matching it by accident is not a
-# concern, narrow enough to hash on every request.
-_ANCHOR_CHARS: int = 2048
-
-# Sentinel for "take all the text" when slicing a message for the anchor walk.
-_ANCHOR_TEXT_UNBOUNDED: int = 1 << 62
-
 
 def _content_chars(content: Any) -> int:
     """Return an approximate character count for one message's content.
@@ -233,66 +224,102 @@ def estimate_prefill_tokens(
     return chars // _CHARS_PER_TOKEN
 
 
-def _prompt_text(messages: Sequence[dict[str, Any]] | None) -> list[str]:
-    """Return the prompt's text pieces, in the order the upstream sees them.
+def _media_identity(block: dict[str, Any]) -> str:
+    """Return a cheap, stable identity for one image/audio block.
 
-    Binary blocks are skipped rather than substituted: their flat token cost is
-    a sizing convenience and has no stable textual form, so including it would
-    make the anchor below disagree with itself between two identical prompts.
+    The payload itself is not hashed: a base64 data URL runs to megabytes, and
+    hashing every attachment on the routing hot path is the cost this module
+    exists to avoid. Type, length and both edges are enough to notice that an
+    attachment was *replaced*, which is what invalidates the prefix -- while
+    staying identical for the same attachment resent unchanged.
     """
-    pieces: list[str] = []
+    kind = block.get("type") or "media"
+    payload = block.get("image_url") or block.get("input_audio") or block.get("source") or ""
+    if isinstance(payload, dict):
+        payload = payload.get("url") or payload.get("data") or ""
+    if not isinstance(payload, str):
+        payload = str(payload)
+    return f"\x03{kind}:{len(payload)}:{payload[:64]}:{payload[-64:]}"
+
+
+def _prefix_units(messages: Sequence[dict[str, Any]] | None) -> Iterator[str]:
+    """Yield the prompt's prefix-bearing content, in the order the upstream sees it.
+
+    One canonical stream per prompt, so two identical prompts produce identical
+    units and a changed one diverges at the point it changed. Text is yielded
+    verbatim; media contributes :func:`_media_identity` rather than its payload;
+    every non-content field a message carries (tool calls, reasoning) is
+    serialized with sorted keys. Role markers separate messages so a boundary
+    cannot be forged by concatenating two prompts' text.
+    """
     for message in messages or ():
         if not isinstance(message, dict):
             continue
-        text = _content_text(message.get("content"), _ANCHOR_TEXT_UNBOUNDED)
-        if text:
-            pieces.append(text)
+        yield f"\x01{message.get('role')}\x02"
+        content = message.get("content")
+        if isinstance(content, str):
+            yield content
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, str):
+                    yield block
+                elif isinstance(block, dict):
+                    if block.get("type") in ("image", "image_url", "audio", "input_audio"):
+                        yield _media_identity(block)
+                    else:
+                        text = block.get("text")
+                        if isinstance(text, str):
+                            yield text
         extra = {k: v for k, v in message.items() if k not in ("role", "content") and v is not None}
         if extra:
             with contextlib.suppress(TypeError, ValueError):
-                pieces.append(json.dumps(extra, sort_keys=True))
-    return pieces
+                yield json.dumps(extra, sort_keys=True)
 
 
 def prompt_anchor(messages: Sequence[dict[str, Any]] | None) -> tuple[int, str] | None:
-    """Return (text length, digest of the final ``_ANCHOR_CHARS``) for a prompt.
+    """Return (prefix length, digest of the whole prefix) for a prompt.
 
-    Stored with the prefix hint and re-checked on the next turn. A continuation
-    reproduces the remembered prompt exactly and then appends, so the same
-    window at the same offset still hashes the same; a fork or retry that shares
-    only the opening -- same system prompt, same first user turn, diverging
-    later -- does not, and is charged in full instead of subtracting a prefix
-    the endpoint never cached past the fork point.
+    Stored with the prefix hint and re-checked on the next turn, where it proves
+    that the later prompt *contains this one as a prefix* -- not merely that the
+    two share an opening, and not merely that they agree at one sampled window.
+    A spot check can be satisfied by a prompt that matches at the sample and
+    differs in between; a prefix digest cannot.
 
     This is what makes the discount evidence-based rather than assumed. The
     conversation fingerprint says "the same conversation started here"; the
-    anchor says "and this prompt really contains the one we measured".
+    anchor says "and every character we measured is still here, unchanged".
+
+    Hashed incrementally over :func:`_prefix_units` so a megabyte-scale prompt
+    costs one pass and no copy of itself.
 
     Returns:
-        The pair, or None for a prompt with no anchorable text.
+        The pair, or None for a prompt with nothing to anchor on.
     """
-    pieces = _prompt_text(messages)
-    if not pieces:
+    digest = hashlib.blake2b(digest_size=8)
+    length = 0
+    for unit in _prefix_units(messages):
+        digest.update(unit.encode("utf-8", "ignore"))
+        length += len(unit)
+    if length == 0:
         return None
-    joined = "".join(pieces)
-    if not joined:
-        return None
-    window = joined[-_ANCHOR_CHARS:]
-    digest = hashlib.blake2b(window.encode("utf-8", "ignore"), digest_size=8).hexdigest()
-    return len(joined), digest
+    return length, digest.hexdigest()
 
 
 def _anchor_holds(messages: Sequence[dict[str, Any]] | None, anchor: tuple[int, str]) -> bool:
-    """Return True when this prompt reproduces ``anchor`` at the same offset."""
-    length, digest = anchor
+    """Return True when the remembered prompt is a prefix of this one."""
+    length, expected = anchor
     if length <= 0:
         return False
-    joined = "".join(_prompt_text(messages))
-    if len(joined) < length:
-        # Shorter than what was measured: cannot be an extension of it.
-        return False
-    window = joined[max(length - _ANCHOR_CHARS, 0) : length]
-    return hashlib.blake2b(window.encode("utf-8", "ignore"), digest_size=8).hexdigest() == digest
+    digest = hashlib.blake2b(digest_size=8)
+    seen = 0
+    for unit in _prefix_units(messages):
+        if seen >= length:
+            break
+        take = unit[: length - seen]
+        digest.update(take.encode("utf-8", "ignore"))
+        seen += len(take)
+    # Short of the remembered length: cannot contain it, let alone extend it.
+    return seen == length and digest.hexdigest() == expected
 
 
 def _message_extra_chars(message: dict[str, Any]) -> int:

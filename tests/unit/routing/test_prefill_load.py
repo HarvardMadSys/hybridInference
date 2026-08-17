@@ -1296,3 +1296,88 @@ def test_tool_call_history_counts_toward_prefill():
     assert content_only < prefill_load.INTERVENE_TOKENS
     assert full > prefill_load.INTERVENE_TOKENS
     assert prefill_load.priority_for_prefill(full) != prefill_load.PRIORITY_INTERACTIVE
+
+
+@pytest.mark.unit
+def test_anchor_rejects_an_edited_middle_with_matching_length_and_tail():
+    """A spot check can be satisfied; a prefix digest cannot.
+
+    A retry that keeps the opening, the total length and the final characters
+    while editing earlier history leaves the upstream cache valid only up to the
+    edit. Accidentally hitting all three is implausible; constructing them is
+    not, and a caller controls its own prompt.
+    """
+    base = [
+        {"role": "system", "content": "S" * 3_000},
+        {"role": "user", "content": "opening"},
+        {"role": "assistant", "content": "A" * 100_000},
+        {"role": "user", "content": "tail" * 600},
+    ]
+    edited = [
+        base[0],
+        base[1],
+        {"role": "assistant", "content": "B" * 100_000},  # same length, different bytes
+        base[3],
+    ]
+    anchor = prefill_load.prompt_anchor(base)
+
+    assert prefill_load.prompt_anchor(edited)[0] == anchor[0]  # identical length
+    assert not prefill_load._anchor_holds(edited, anchor)
+    assert prefill_load._anchor_holds([*base, {"role": "user", "content": "next"}], anchor)
+
+
+@pytest.mark.unit
+def test_anchor_notices_a_replaced_attachment():
+    # Text-only evidence would miss this: the conversation reads identically
+    # while the image that invalidates the prefix has been swapped.
+    def convo(url: str):
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what changed in this screenshot?"},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+        ]
+
+    original = convo("data:image/png;base64," + "A" * 5_000)
+    replaced = convo("data:image/png;base64," + "B" * 5_000)
+    anchor = prefill_load.prompt_anchor(original)
+
+    assert not prefill_load._anchor_holds(replaced, anchor)
+    # The same attachment resent unchanged still matches, and a later turn extends it.
+    assert prefill_load._anchor_holds(original, anchor)
+    assert prefill_load._anchor_holds(
+        [*original, {"role": "assistant", "content": "the button moved"}], anchor
+    )
+
+
+@pytest.mark.unit
+def test_anchor_holds_across_a_long_appending_conversation():
+    # The property that has to survive all this strictness: a normal agentic
+    # session keeps its discount turn after turn.
+    messages = [
+        {"role": "system", "content": "S" * 5_000},
+        {"role": "user", "content": "start"},
+    ]
+    anchor = prefill_load.prompt_anchor(messages)
+
+    for turn in range(8):
+        messages = [
+            *messages,
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"c{turn}",
+                        "type": "function",
+                        "function": {"name": "read", "arguments": '{"p":"' + "x" * 5_000 + '"}'},
+                    }
+                ],
+            },
+            {"role": "user", "content": f"turn {turn} " + "y" * 5_000},
+        ]
+        assert prefill_load._anchor_holds(messages, anchor), turn
+        anchor = prefill_load.prompt_anchor(messages)
