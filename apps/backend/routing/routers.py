@@ -639,7 +639,11 @@ class FixedRouter:
         affinity_key = current_affinity_key()
         # Which conversation this is, so a caller's unrelated prompt cannot
         # inherit another's warm-prefix discount (see _dispatch_priority).
-        fingerprint = conversation_fingerprint(messages)
+        fingerprint = conversation_fingerprint(
+            messages,
+            tools=params.get("tools"),
+            response_format=params.get("response_format"),
+        )
         primary = self._select_adapter(
             model_id,
             pin_provider=pin_provider,
@@ -808,7 +812,11 @@ class FixedRouter:
         affinity_key = current_affinity_key()
         # Which conversation this is, so a caller's unrelated prompt cannot
         # inherit another's warm-prefix discount (see _dispatch_priority).
-        fingerprint = conversation_fingerprint(messages)
+        fingerprint = conversation_fingerprint(
+            messages,
+            tools=params.get("tools"),
+            response_format=params.get("response_format"),
+        )
         primary = self._select_adapter(
             model_id,
             pin_provider=pin_provider,

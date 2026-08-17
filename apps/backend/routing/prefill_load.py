@@ -36,6 +36,7 @@ worst it does is prefer a different endpoint that is already admissible.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -273,7 +274,12 @@ def _content_text(content: Any, limit: int) -> str:
     return "".join(parts)
 
 
-def conversation_fingerprint(messages: Sequence[dict[str, Any]] | None) -> str | None:
+def conversation_fingerprint(
+    messages: Sequence[dict[str, Any]] | None,
+    *,
+    tools: Any = None,
+    response_format: Any = None,
+) -> str | None:
     """Identify *which* conversation a prompt belongs to, cheaply.
 
     The warm-continuation discount keys on the caller, and a caller is not a
@@ -301,19 +307,31 @@ def conversation_fingerprint(messages: Sequence[dict[str, Any]] | None) -> str |
     still collide, and that is the intended limit: they share a genuine prefix
     of that length, which really is resident in the endpoint's radix cache.
 
+    Tool definitions and the output schema are part of the identity too, because
+    they are part of the *prefix*: the chat template renders them ahead of the
+    conversation, so swapping one tool catalog for another of the same size
+    invalidates the cache from that point while leaving both the messages and
+    the token total unchanged. Hashed whole rather than sliced -- a change
+    anywhere in them breaks the prefix, so it must break the digest.
+
     Args:
         messages: OpenAI-style messages, or None.
+        tools: Tool definitions from the request, if any.
+        response_format: Structured-output spec from the request, if any.
 
     Returns:
-        A short hex digest, or None when there is no text to fingerprint (a
-        pure-image first turn), which callers must read as "cannot vouch for
-        this" rather than as a match.
+        A short hex digest, or None when there is nothing to fingerprint (a
+        pure-image first turn with no tools), which callers must read as "cannot
+        vouch for this" rather than as a match.
     """
-    if not messages:
-        return None
     head: list[str] = []
+    for label, value in (("tools", tools), ("schema", response_format)):
+        # Unserializable: contributes nothing rather than a fake identity.
+        with contextlib.suppress(TypeError, ValueError):
+            if value:
+                head.append(f"{label}:{json.dumps(value, sort_keys=True)}")
     seen_user = False
-    for message in messages[:_FINGERPRINT_MAX_MESSAGES]:
+    for message in (messages or ())[:_FINGERPRINT_MAX_MESSAGES]:
         if not isinstance(message, dict):
             continue
         role = message.get("role")

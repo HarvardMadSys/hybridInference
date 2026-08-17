@@ -1115,3 +1115,71 @@ async def test_router_prices_the_tool_catalog_it_forwards():
     await r.chat_completion("m", [{"role": "user", "content": "hi"}], tools=tools)
 
     assert adapter.seen == [prefill_load.PRIORITY_ELEPHANT]
+
+
+@pytest.mark.unit
+def test_fingerprint_covers_tools_and_schema():
+    """Swapping the tool catalog breaks the prefix, so it must break the identity.
+
+    The chat template renders tools ahead of the conversation, so a different
+    catalog of the same size invalidates the cache from that point while leaving
+    both the messages and the token total unchanged -- the discount would
+    otherwise be granted against a prefix that is no longer there.
+    """
+    messages = [{"role": "user", "content": "hi"}]
+    catalog_a = [{"type": "function", "function": {"name": "read", "description": "d" * 100}}]
+    catalog_b = [{"type": "function", "function": {"name": "write", "description": "d" * 100}}]
+
+    bare = prefill_load.conversation_fingerprint(messages)
+    with_a = prefill_load.conversation_fingerprint(messages, tools=catalog_a)
+    with_b = prefill_load.conversation_fingerprint(messages, tools=catalog_b)
+
+    assert len({bare, with_a, with_b}) == 3
+    # Same catalog, same identity -- a stable agent keeps its discount.
+    assert with_a == prefill_load.conversation_fingerprint(messages, tools=catalog_a)
+    # The schema participates the same way.
+    assert (
+        prefill_load.conversation_fingerprint(messages, response_format={"type": "json_object"})
+        != bare
+    )
+    # Tools alone can identify a request whose content is unhashable (image-only).
+    image_only = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}]
+    assert prefill_load.conversation_fingerprint(image_only) is None
+    assert prefill_load.conversation_fingerprint(image_only, tools=catalog_a) is not None
+
+
+@pytest.mark.unit
+def test_swapped_tool_catalog_is_not_discounted_as_warm():
+    # End to end on the tracker: same conversation, different catalog of the
+    # same size, must be charged in full rather than read as a continuation.
+    t = PrefillLoadTracker()
+    messages = [{"role": "user", "content": "x" * (4 * 300_000)}]
+    tools_a = [{"type": "function", "function": {"name": "read", "description": "d" * 100}}]
+    tools_b = [{"type": "function", "function": {"name": "write", "description": "d" * 100}}]
+    size = prefill_load.estimate_prefill_tokens(messages, tools=tools_a)
+
+    t.release(
+        t.acquire(
+            "ep",
+            size,
+            affinity_key="u1",
+            fingerprint=prefill_load.conversation_fingerprint(messages, tools=tools_a),
+        ),
+        prefill_confirmed=True,
+    )
+
+    swapped = t.uncached_estimate(
+        "ep",
+        prefill_load.estimate_prefill_tokens(messages, tools=tools_b),
+        "u1",
+        fingerprint=prefill_load.conversation_fingerprint(messages, tools=tools_b),
+    )
+    same = t.uncached_estimate(
+        "ep",
+        size,
+        "u1",
+        fingerprint=prefill_load.conversation_fingerprint(messages, tools=tools_a),
+    )
+
+    assert prefill_load.priority_for_prefill(swapped) == prefill_load.PRIORITY_ELEPHANT
+    assert prefill_load.priority_for_prefill(same) == prefill_load.PRIORITY_INTERACTIVE
