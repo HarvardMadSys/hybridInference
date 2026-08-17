@@ -135,7 +135,14 @@ PRIORITY_ELEPHANT: int = _env_int("ROUTING_PRIORITY_ELEPHANT", 0)
 # window in which the backend that wrote it is still up.
 #
 # A restart *within* that window is what `forget_endpoint` covers.
-_PREFIX_HINT_TTL_SEC: float = 20 * 60.0
+#
+# Configurable because the 24-minute figure is the shipped default, not a
+# guarantee: a deployment that lowers IDLE_TIMEOUT, or a backend whose radix
+# cache evicts under memory pressure, can drop a prefix sooner. Lower this to
+# match. No setting makes the hint a promise -- only the backend knows what it
+# still holds -- so the value is chosen to fail in the direction that forgoes a
+# discount rather than the one that grants a preemption.
+_PREFIX_HINT_TTL_SEC: float = float(_env_int("ROUTING_PREFILL_HINT_TTL_SEC", 20 * 60))
 _PREFIX_HINT_MAX_ENTRIES: int = 50_000
 
 # Bytes per token for the cheap estimator. Deliberately coarse -- see

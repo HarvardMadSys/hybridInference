@@ -1244,6 +1244,20 @@ async def anthropic_messages(
     prefill_load = router_exec.prefill_load
     prefill_affinity = req_ctx.get().get("affinity_key")
 
+    def _record_dispatch_failure(endpoint_id: str, **kwargs: Any) -> None:
+        """Record an endpoint failure and drop its warm-prefix hints.
+
+        The mirror of ``FixedRouter._on_failure``: a failing endpoint has most
+        likely lost its radix cache (restart, OOM, a container replaced under
+        the same id), so hints describing that cache stop being evidence. This
+        surface records its own outcomes rather than going through the router,
+        so without this the chat path would forget a restarted backend's hints
+        while Claude Code traffic kept discounting against them -- and a cold
+        continuation stamped interactive is one that preempts.
+        """
+        prefill_load.forget_endpoint(endpoint_id)
+        health_registry.record_failure(endpoint_id, **kwargs)
+
     def _begin_prefill():
         """Publish this request's priority and charge its prefill to the endpoint.
 
@@ -1404,7 +1418,7 @@ async def anthropic_messages(
                                 # arrives as a timer rather than an exception.
                                 # No ``exc``: there is no HTTP status, so the
                                 # registry's client-error exemption is moot.
-                                health_registry.record_failure(
+                                _record_dispatch_failure(
                                     dispatch_endpoint_id,
                                     reason="messages_stream_idle",
                                     detail=stream_error_operator,
@@ -1480,7 +1494,7 @@ async def anthropic_messages(
                 # ``exc=`` so the registry can apply its client-error exemption:
                 # a 400 from a malformed request is one caller's mistake and
                 # must not open the circuit for everyone.
-                health_registry.record_failure(
+                _record_dispatch_failure(
                     dispatch_endpoint_id,
                     reason="messages_stream_exception",
                     detail=stream_error_operator,
@@ -1502,7 +1516,7 @@ async def anthropic_messages(
                 logger.warning(f"[{request_id}] Streaming dispatch failed: key pool exhausted")
                 # Carries no HTTP status, so it is never exempt: every key for
                 # this endpoint is muted and nothing it is sent can succeed.
-                health_registry.record_failure(
+                _record_dispatch_failure(
                     dispatch_endpoint_id,
                     reason="messages_stream_exception",
                     detail=stream_error_operator,
@@ -1526,7 +1540,7 @@ async def anthropic_messages(
                 stream_error_message = scrub_error_for_user(exc, request_id, 502)
                 stream_error_operator = operator_safe_error(exc)
                 logger.exception(f"[{request_id}] Streaming dispatch failed")
-                health_registry.record_failure(
+                _record_dispatch_failure(
                     dispatch_endpoint_id,
                     reason="messages_stream_exception",
                     detail=stream_error_operator,
@@ -1610,7 +1624,7 @@ async def anthropic_messages(
         # and the registry drops 4xx client errors on that basis so one caller's
         # malformed request cannot open the circuit for everyone. The
         # status-less failures below (key pool, timeout) are never exempt.
-        health_registry.record_failure(
+        _record_dispatch_failure(
             dispatch_endpoint_id,
             reason="messages_exception",
             detail=operator_safe_error(exc),
@@ -1639,7 +1653,7 @@ async def anthropic_messages(
         scrub_exc = exc if client_status == exc.status else None
         error_message = scrub_error_for_user(scrub_exc, request_id, client_status)
         logger.exception(f"[{request_id}] Adapter messages() failed")
-        health_registry.record_failure(
+        _record_dispatch_failure(
             dispatch_endpoint_id,
             reason="messages_exception",
             detail=operator_safe_error(exc),
@@ -1669,7 +1683,7 @@ async def anthropic_messages(
         # hammering with immediate retries for the whole mute window.
         error_message = scrub_error_for_user(None, request_id, 429)
         logger.warning(f"[{request_id}] Adapter messages() failed: key pool exhausted")
-        health_registry.record_failure(
+        _record_dispatch_failure(
             dispatch_endpoint_id,
             reason="messages_exception",
             detail=operator_safe_error(exc),
@@ -1698,7 +1712,7 @@ async def anthropic_messages(
         # the client can tell a slow upstream from a real server fault.
         error_message = scrub_error_for_user(None, request_id, 504)
         logger.warning(f"[{request_id}] Adapter messages() timed out")
-        health_registry.record_failure(
+        _record_dispatch_failure(
             dispatch_endpoint_id,
             reason="messages_exception",
             detail=operator_safe_error(exc),
@@ -1724,7 +1738,7 @@ async def anthropic_messages(
         # CancelledError must propagate uncounted -- the upstream did not fail.
         error_message = scrub_error_for_user(exc, request_id, 502)
         logger.exception(f"[{request_id}] Adapter messages() failed")
-        health_registry.record_failure(
+        _record_dispatch_failure(
             dispatch_endpoint_id,
             reason="messages_exception",
             detail=operator_safe_error(exc),
