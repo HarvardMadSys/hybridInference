@@ -23,7 +23,9 @@
 > 状态迁移、Pages 切换移 W5e 并加四步硬序、W2 定稿对齐语义(reset 到镜像
 > revision、失败自动恢复 last-known-good、架构门以 Docker server 为准)、
 > W3 增 workflow→runner→env→secrets 依赖矩阵、W2 恢复路径闭合(up 失败
-> 同路恢复、探针限时)与 candidate 全量 fetch(仓库自证的浅克隆 flake)。
+> 同路恢复、探针限时)与 candidate 全量 fetch(仓库自证的浅克隆 flake)、
+> last-known-good 改取自运行容器(compose 盖 revision label,缺失
+> fail closed;首飞前先跑一次 classic 盖章)。
 
 ## 0. 前提:Step 1 的收官状态(2026-08-12 对账)
 
@@ -200,7 +202,14 @@ closed)。checkout 信任/属主自愈同 classic(safe.directory +
 包装"的证明不变。恢复路径闭合(第九轮):`compose up` 启动失败与探活
 失败汇入**同一**恢复函数(`set -e` 不再短路恢复块),恢复自身的 up 也
 显式捕获失败并给出人工处置指引;健康探针带超时(connect 2s / 总 5s),
-挂死的 `/health` 吃不满 job 超时。复活 PR = #1258(dispatch-only,
+挂死的 `/health` 吃不满 job 超时。last-known-good 来源纪律(第十轮):
+恢复目标的 image 与 revision 必须取自**同一运行容器**——compose 给
+backend 容器盖 `org.opencontainers.image.revision` label(值 = classic
+脚本本就 export 的 `BUILD_SHA` / digest 部署的镜像 revision,恢复时同样
+盖章);label 缺失或指向未知 commit 即无可信恢复目标,fail closed,绝不
+回退用 checkout HEAD 猜(checkout 与容器可能来自不同次部署:classic 在
+reset 后失败即是)。**首飞协议因此加一步:合并后先跑一次 classic
+staging 给现役容器盖章,再打 W2 首飞。**复活 PR = #1258(dispatch-only,
 backend-only)。
 
 ### W3 归属清单重生成
