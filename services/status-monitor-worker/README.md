@@ -195,16 +195,19 @@ workflow runs per instance. Nothing about an instance is written twice.
 
 One-time setup, in this order:
 
+The database already exists and its id is committed above. Migrations are
+applied by the deploy itself, before the new version can serve. What remains is
+the one value that must not be committed:
+
 ```bash
 cd services/status-monitor-worker
-npx wrangler d1 create freeinference-monitor-staging   # paste the id into [[env.staging.d1_databases]]
-npx wrangler d1 migrations apply freeinference-monitor-staging --remote --env staging
 npx wrangler secret put PROBER_API_KEY --env staging   # a key issued on STAGING
 ```
 
 The prober key must belong to the gateway this instance names. A key from the
 wrong deployment is rejected account-wide and pages a single "Monitoring cycle
-failing" alert rather than any per-model one.
+failing" alert rather than any per-model one — which is what cost the 08-11
+cutover eleven hours of blind probing.
 
 `PROBER_API_KEY` is a **secret**, not a var. `CODEX_ONCALL_RELAY_URL`,
 `CODEX_ONCALL_RELAY_TOKEN`, and `SLACK_WEBHOOK_URL` are optional secrets. Both

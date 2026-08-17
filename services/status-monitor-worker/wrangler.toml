@@ -126,5 +126,5 @@ entrypoint = "StatusMonitorProducerEntrypoint"
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "freeinference-monitor-staging"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "17456f32-35f0-4634-9da8-1ecd5d86cbb8"
 migrations_dir = "migrations"
