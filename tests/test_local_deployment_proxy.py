@@ -3263,22 +3263,30 @@ def test_priority_threshold_needs_priority_scheduling(monkeypatch: Any, tmp_path
     assert "--enable-priority-scheduling" not in cmd
 
 
-def test_priority_scheduling_skipped_for_embedding_backends(
+def test_priority_scheduling_is_emitted_for_embedding_backends_too(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
-    # An encode-only backend has no decode to protect, and its requests are all
-    # prefill -- ranking them against each other buys nothing.
+    """Inert there, not withheld -- unlike ``chunked_prefill_size``.
+
+    sglang accepts the flag on an encode-only server and finds no priorities to
+    order, because the gateway never stamps one on an embedding request. Dropping
+    it would make the launch disagree with the config for no gain; the knob that
+    genuinely must not reach an embedding backend is the prefill chunk size,
+    which vLLM's pooling runner rejects outright.
+    """
     proxy = _load_proxy(monkeypatch, tmp_path)
     config = {
         **_chunked_prefill_base("sglang"),
         "is_embedding": True,
         "max_model_len": 8192,
         "priority_scheduling": True,
+        "chunked_prefill_size": 2048,
     }
 
     cmd = proxy.BackendManager(MODEL_NAME, config)._sglang_run_cmd("0")
 
-    assert "--enable-priority-scheduling" not in cmd
+    assert "--enable-priority-scheduling" in cmd
+    assert "--chunked-prefill-size" not in cmd
 
 
 def test_vllm_backends_ignore_priority_scheduling(monkeypatch: Any, tmp_path: Path) -> None:

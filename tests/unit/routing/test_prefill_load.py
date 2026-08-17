@@ -1498,3 +1498,31 @@ def test_emoji_and_mixed_scripts_count_above_their_character_length():
 
     assert prefill_load.estimate_prefill_tokens(emoji) == 10_000  # 40k bytes / 4
     assert prefill_load.estimate_prefill_tokens(mixed) > len(mixed[0]["content"]) // 4
+
+
+@pytest.mark.unit
+def test_attachment_identity_covers_the_whole_payload():
+    """Edges-and-length was a spot check, and spot checks can be satisfied.
+
+    Replacing bytes in the middle of an equally sized attachment left the
+    identity unchanged while the upstream prefix was invalid from that
+    attachment onward -- the same hole the anchor closed for text.
+    """
+    head, tail = "A" * 64, "Z" * 64
+
+    def convo(middle: str):
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": head + middle + tail}},
+                    {"type": "text", "text": "what is this?"},
+                ],
+            }
+        ]
+
+    original = convo("M" * 5_000)
+    tampered = convo("N" * 5_000)  # same length, same first/last 64 chars
+
+    assert not prefill_load._anchor_holds(tampered, prefill_load.prompt_anchor(original))
+    assert prefill_load._anchor_holds(original, prefill_load.prompt_anchor(original))

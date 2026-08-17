@@ -166,8 +166,9 @@ routes marked ``priority_scheduling: true`` in ``models.yaml`` -- interactive 20
 large 15, elephant 0 -- so a mega-prefill queues behind interactive traffic
 instead of ahead of it, and can be retracted for it. Where
 ``chunked_prefill_size`` bounds how long one prefill holds the GPU per step,
-this decides which prefill runs at all; they are complementary. Ignored for
-embedding models, which have no decode to protect.
+this decides which prefill runs at all; they are complementary. Inert on an
+embedding backend -- sglang accepts the flag there and finds nothing to order,
+since the gateway never stamps a priority on an embedding request.
 
 Set ``"moe_runner_backend"`` (e.g. ``"marlin"``) to override the MoE runner.
 NVFP4 / FP4-expert checkpoints need ``"marlin"`` on pre-Blackwell (SM90, e.g.
@@ -1633,10 +1634,15 @@ class BackendManager:
         preemption off; lowering it lets ordinary prompts retract each other.
 
         Off unless configured -- an unflagged server ignores the field, so the
-        two sides can be rolled out in either order. Generative backends only:
-        an embedding backend has no decode to protect.
+        two sides can be rolled out in either order.
+
+        Unlike ``chunked_prefill_size`` this is not withheld from embedding
+        backends. sglang accepts the flag on an encode-only server and simply
+        finds no priorities to order there -- the gateway never stamps one on an
+        embedding request -- so the flag is inert rather than wrong, and the
+        launch says what was configured instead of quietly dropping it.
         """
-        if not self.config.get("priority_scheduling") or self.config.get("is_embedding"):
+        if not self.config.get("priority_scheduling"):
             return []
         args = ["--enable-priority-scheduling"]
         threshold = self.config.get("priority_preemption_threshold")
@@ -1755,6 +1761,9 @@ class BackendManager:
         # readiness, so skipping it keeps slow models inside HEALTH_TIMEOUT.
         if self.config.get("skip_server_warmup"):
             cmd += ["--skip-server-warmup"]
+        # Which prefill gets to make a decode wait. Emitted for either kind of
+        # backend: inert on an encode-only one rather than wrong, so the launch
+        # says what was configured.
         cmd += self._priority_scheduling_args()
         if self.config.get("is_embedding"):
             # Embedding models run sglang in encode-only mode; tool-call parsing

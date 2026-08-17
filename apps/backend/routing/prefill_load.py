@@ -250,11 +250,17 @@ def estimate_prefill_tokens(
 def _media_identity(block: dict[str, Any]) -> str:
     """Return a cheap, stable identity for one image/audio block.
 
-    The payload itself is not hashed: a base64 data URL runs to megabytes, and
-    hashing every attachment on the routing hot path is the cost this module
-    exists to avoid. Type, length and both edges are enough to notice that an
-    attachment was *replaced*, which is what invalidates the prefix -- while
-    staying identical for the same attachment resent unchanged.
+    The payload is digested rather than sampled. Edges-and-length was cheaper,
+    but it is a spot check by another name: swapping bytes in the middle of an
+    equally sized attachment left the identity unchanged while the upstream
+    prefix was invalid from that attachment onward -- the same hole the anchor
+    closed for text, and closing it there while leaving it open here would just
+    move the entry point.
+
+    A digest is one pass with no copy, which is the same order as the size walk
+    this module already does over every prompt; what it must never do is *keep*
+    the payload, so a megabyte data URL is hashed and discarded rather than
+    concatenated into an evidence string.
     """
     kind = block.get("type") or "media"
     payload = block.get("image_url") or block.get("input_audio") or block.get("source") or ""
@@ -262,7 +268,8 @@ def _media_identity(block: dict[str, Any]) -> str:
         payload = payload.get("url") or payload.get("data") or ""
     if not isinstance(payload, str):
         payload = str(payload)
-    return f"\x03{kind}:{len(payload)}:{payload[:64]}:{payload[-64:]}"
+    digest = hashlib.blake2b(payload.encode("utf-8", "ignore"), digest_size=8).hexdigest()
+    return f"\x03{kind}:{len(payload)}:{digest}"
 
 
 def _prefix_units(messages: Sequence[dict[str, Any]] | None) -> Iterator[str]:

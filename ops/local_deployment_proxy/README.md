@@ -212,7 +212,7 @@ Models are defined in `local_deployment_proxy/models.json`:
 | `max_model_len` | `--context-length` |
 | `mem_fraction` | `--mem-fraction-static` |
 | `chunked_prefill_size` | optional prefill tokens per forward pass — `--chunked-prefill-size` (sglang) / `--max-num-batched-tokens` (vLLM). Bounds how long a decode stalls behind a co-resident prefill; see [Chunked prefill size](#chunked-prefill-size). Unset → the engine's own default. Chat models only |
-| `priority_scheduling` | `true` → `--enable-priority-scheduling` (sglang), so the gateway's per-request priority orders the waiting queue and can retract a running mega-prefill. See [Prioritizing decode over prefill](#prioritizing-decode-over-prefill). Chat models only |
+| `priority_scheduling` | `true` → `--enable-priority-scheduling` (sglang), so the gateway's per-request priority orders the waiting queue and can retract a running mega-prefill. See [Prioritizing decode over prefill](#prioritizing-decode-over-prefill). Inert on an embedding backend (nothing stamps a priority there) |
 | `priority_preemption_threshold` | optional `--priority-scheduling-preemption-threshold` (sglang default `10`) — the priority gap an arriving request needs to retract a running one |
 | `tool_call_parser` | `--tool-call-parser` (omit to disable; chat models only) |
 | `is_embedding` | `true` → launch with `--is-embedding` (encode-only); serves `/v1/embeddings` |
