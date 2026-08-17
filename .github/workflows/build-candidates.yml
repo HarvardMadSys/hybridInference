@@ -62,6 +62,11 @@ jobs:
           esac
 
       - uses: actions/checkout@v6
+        with:
+          # Full fetch, matching ci.yml: shallow fetches of this repository
+          # intermittently fail with "pack has N unresolved deltas" /
+          # "missing blob" (see the fetch-depth comments in ci.yml).
+          fetch-depth: 0
 
       - name: Compute image names
         id: names

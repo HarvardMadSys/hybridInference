@@ -263,8 +263,11 @@ jobs:
           fi
 
           wait_backend_healthy() {
+            # Bounded probe: --max-time keeps a connected-but-hanging /health
+            # from pinning one curl (and this loop) to the whole job timeout,
+            # which would skip the restore below.
             for i in $(seq 1 30); do
-              if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+              if curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:8080/health >/dev/null 2>&1; then
                 return 0
               fi
               sleep 2
@@ -272,22 +275,25 @@ jobs:
             return 1
           }
 
-          docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env up -d --no-build backend
-
-          if wait_backend_healthy; then
+          # `set -e` would abort on a failed `up` before the restore could
+          # run, stranding whatever compose left behind — so the start
+          # command and the health check funnel into the same recovery path.
+          deploy_ok=1
+          docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env up -d --no-build backend || deploy_ok=0
+          if [ "${deploy_ok}" -eq 1 ] && wait_backend_healthy; then
             echo "[digest-deploy] backend healthy"
           else
-            echo "[digest-deploy] backend health check failed; last logs:"
+            echo "[digest-deploy] deploy failed (start ok=${deploy_ok}); last logs:"
             docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env logs --tail=80 backend || true
             if [ -n "${prev_image}" ]; then
               echo "[digest-deploy] restoring last-known-good backend ${prev_image} at checkout ${prev_rev}"
               [ "$(git rev-parse HEAD)" = "${prev_rev}" ] || git reset --hard "${prev_rev}"
               discover_env_args
-              BACKEND_IMAGE="${prev_image}" docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env up -d --no-build backend
-              if wait_backend_healthy; then
+              if BACKEND_IMAGE="${prev_image}" docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env up -d --no-build backend \
+                 && wait_backend_healthy; then
                 echo "[digest-deploy] last-known-good restored; the new digest never became healthy"
               else
-                echo "[digest-deploy] RESTORE FAILED TOO — staging needs manual attention (classic Deploy Staging rebuilds from source)"
+                echo "[digest-deploy] RESTORE FAILED TOO — staging is down and needs manual attention: run the classic Deploy Staging (rebuilds from source), or compose up the previous image by hand"
               fi
             else
               echo "[digest-deploy] no previous backend container to restore; run the classic Deploy Staging to rebuild from source"
