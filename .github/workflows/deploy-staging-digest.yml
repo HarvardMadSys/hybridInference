@@ -132,7 +132,7 @@ jobs:
           sudo -n chown -R "$(id -un)" /srv/hybridInference 2>/dev/null \
             || echo "[digest-deploy] ownership reclaim skipped (no passwordless sudo?); continuing"
 
-          echo "[digest-deploy] host arch: $(uname -m); $(docker --version)"
+          echo "[digest-deploy] host arch: $(uname -m); docker server: $(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2>/dev/null || echo unknown); $(docker --version)"
           [ -f .env ] || { echo "[digest-deploy] missing /srv/hybridInference/.env"; exit 1; }
 
           # The classic deploy resets the checkout before composing; this
@@ -154,18 +154,44 @@ jobs:
             *) echo "[digest-deploy] backend_image must be pinned by @sha256 digest"; exit 1 ;;
           esac
 
-          # Isolated credential store: the deploy user's default
-          # ~/.docker/config.json may hold credentials other services rely
-          # on, and a login/logout pair here would overwrite and then delete
-          # them. The ephemeral token lives in a private temp dir (mktemp -d
-          # creates 0700) that dies with this deploy; only login and pull
-          # use it — compose keeps the default config, so user-level
-          # cli-plugins still resolve, and it needs no registry auth because
-          # the image is already in the local daemon store by then.
-          docker_cfg="$(mktemp -d)"
-          trap 'rm -rf "${docker_cfg}"' EXIT
-          printf '%s' "${GHCR_TOKEN}" | DOCKER_CONFIG="${docker_cfg}" docker login ghcr.io -u "${GHCR_USER}" --password-stdin
-          DOCKER_CONFIG="${docker_cfg}" docker pull "${BACKEND_IMAGE}"
+          # A digest reference is content-addressed: if this exact digest is
+          # already in the local daemon store, that IS the image, and the
+          # deploy needs no registry at all — which is what lets a rollback
+          # to a previous digest succeed during a GHCR outage. Only a
+          # missing image takes the credentialed path.
+          if docker image inspect "${BACKEND_IMAGE}" >/dev/null 2>&1; then
+            echo "[digest-deploy] ${BACKEND_IMAGE} already in the local daemon store; skipping registry login/pull"
+          else
+            # Isolated credential store: the deploy user's default
+            # ~/.docker/config.json may hold credentials other services rely
+            # on, and a login/logout pair here would overwrite and then
+            # delete them. The ephemeral token lives in a private temp dir
+            # (mktemp -d creates 0700) that dies with this deploy; only
+            # login and pull use it — compose keeps the default config, so
+            # user-level cli-plugins still resolve, and it needs no registry
+            # auth because the image is already in the local daemon store.
+            docker_cfg="$(mktemp -d)"
+            trap 'rm -rf "${docker_cfg}"' EXIT
+            printf '%s' "${GHCR_TOKEN}" | DOCKER_CONFIG="${docker_cfg}" docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+            DOCKER_CONFIG="${docker_cfg}" docker pull "${BACKEND_IMAGE}"
+          fi
+
+          # Architecture hard gate. A wrong-arch image survives pull and
+          # compose recreate and only dies at exec time — after the old
+          # backend is already gone. The artifact-promotion design names
+          # the arch matrix a hard gate precisely so this is never
+          # discovered at start-up on the deploy host.
+          host_arch="$(uname -m)"
+          case "${host_arch}" in
+            x86_64) host_arch=amd64 ;;
+            aarch64|arm64) host_arch=arm64 ;;
+          esac
+          img_platform="$(docker image inspect --format '{{ .Os }}/{{ .Architecture }}' "${BACKEND_IMAGE}")"
+          if [ "${img_platform}" != "linux/${host_arch}" ]; then
+            echo "[digest-deploy] image is ${img_platform} but the host is linux/${host_arch}; refusing before compose touches the running backend"
+            exit 1
+          fi
+
           files=(-f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.digest-backend.yml)
 
           # The image carries the code; this checkout supplies the config
