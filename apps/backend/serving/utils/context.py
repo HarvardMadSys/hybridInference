@@ -32,11 +32,12 @@ USER_ROLE = "user_role"
 # long-running request crosses a price-window boundary.
 PRICING_TIME = "pricing_time"
 
-# req_ctx key holding the scheduling priority the router assigned this request,
-# published around dispatch by FixedRouter and read by the OpenAI-compatible
-# adapter for endpoints configured with ``priority_scheduling``. Pushed rather
-# than updated durably: it describes one dispatch attempt, and a fallback to a
-# second endpoint re-publishes its own.
+# req_ctx key holding the scheduling priority assigned to this request, read by
+# the OpenAI-compatible adapter for endpoints configured with
+# ``priority_scheduling``. FixedRouter pushes it around each dispatch, because a
+# fallback to a second endpoint re-publishes its own; the Anthropic surface,
+# which has no fallback, writes it durably instead so it survives into the
+# background reader task that consumes the upstream stream.
 UPSTREAM_PRIORITY = "upstream_priority"
 
 # req_ctx key naming the upstream that served (or refused) this request.
@@ -71,6 +72,11 @@ REQUEST_SCOPED_KEYS = (
     PRICING_TIME,
     CLIENT_ERROR_KIND,
     PROVIDER,
+    # The Anthropic surface has no fallback to re-publish for, so it writes this
+    # durably rather than around a dispatch. That makes clearing it per request
+    # mandatory: a leftover value would rank the next request, which is a
+    # different prompt on a possibly different endpoint.
+    UPSTREAM_PRIORITY,
 )
 
 

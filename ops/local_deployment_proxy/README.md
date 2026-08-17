@@ -325,11 +325,17 @@ Priority is assigned from prompt size alone, by the gateway, and a client cannot
 set its own — the adapters forward a whitelist of sampling params that does not
 include `priority`.
 
-Only the default (`fixed`) router stamps a priority. A model configured with
-`router: routewise` dispatches through a router that has no prefill accounting
-of its own, so it cannot compute the un-cached estimate the tiers are defined
-on; rather than rank warm continuations wrongly, it publishes nothing and those
-models keep the upstream's own default priority.
+Both request surfaces stamp it: `/v1/chat/completions` through `FixedRouter`,
+and `/v1/messages` (Claude Code traffic) through its own accounting — that
+handler dispatches its own adapter and never enters the router, so it estimates,
+fingerprints and leases for itself, counting Anthropic's top-level `system`
+block as part of the prompt.
+
+The exception is a model configured with `router: routewise`, which dispatches
+through a router that has no prefill accounting of its own, so it cannot compute
+the un-cached estimate the tiers are defined on; rather than rank warm
+continuations wrongly, it publishes nothing and those models keep the upstream's
+own default priority.
 
 Roll out in either order: an sglang server without the flag ignores the field,
 and a flagged server with no gateway-side opt-in sees every request at sglang's

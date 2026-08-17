@@ -30,6 +30,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from routing.endpoints import endpoint_id_for_adapter
+from routing.prefill_load import (
+    conversation_fingerprint,
+    estimate_prefill_tokens,
+    priority_for_prefill,
+    prompt_anchor,
+)
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
@@ -207,6 +213,23 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     return JSONResponse(
         status_code=exc.status_code, content=content, headers=dict(exc.headers or {})
     )
+
+
+def _prefill_inputs(body: dict[str, Any]) -> tuple[list[dict[str, Any]], Any]:
+    """Return (messages, tools) for prefill accounting on an Anthropic body.
+
+    Anthropic carries the system prompt beside ``messages`` rather than inside
+    it, and for a coding agent that block is the largest fixed part of the
+    prompt -- omitting it would size every request short and, worse, leave the
+    conversation identity blind to the one field that distinguishes two agents.
+    It is prepended as a system message so the estimator, fingerprint and anchor
+    see the prompt in the order the upstream will.
+    """
+    system = body.get("system")
+    messages = [m for m in (body.get("messages") or []) if isinstance(m, dict)]
+    if system:
+        messages = [{"role": "system", "content": system}, *messages]
+    return messages, body.get("tools")
 
 
 # --- Model resolution ------------------------------------------------------
@@ -1187,6 +1210,41 @@ async def anthropic_messages(
     # (strips cache_control blocks). The log must preserve the original client payload.
     messages_for_log = copy.deepcopy(body.get("messages"))
 
+    # Prefill accounting for this surface. FixedRouter does this for
+    # /v1/chat/completions, but this handler dispatches its own adapter and
+    # never enters the router -- and this is where the prefill-dominated Claude
+    # Code traffic arrives, so without it the local sglang backends would order
+    # their queue by arrival for exactly the requests the priority exists to
+    # order. Published durably rather than around the dispatch: there is no
+    # fallback here to re-publish for, and the streaming path hands the upstream
+    # to a background reader task, which copies the context at creation.
+    prefill_messages, prefill_tools = _prefill_inputs(body)
+    prefill_tokens = estimate_prefill_tokens(prefill_messages, tools=prefill_tools)
+    prefill_fingerprint = conversation_fingerprint(prefill_messages, tools=prefill_tools)
+    prefill_anchor = prompt_anchor(prefill_messages)
+    prefill_load = router_exec.prefill_load
+    prefill_affinity = req_ctx.get().get("affinity_key")
+    req_ctx.update(
+        {
+            req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(
+                prefill_load.uncached_estimate(
+                    dispatch_endpoint_id,
+                    prefill_tokens,
+                    prefill_affinity,
+                    fingerprint=prefill_fingerprint,
+                    messages=prefill_messages,
+                )
+            )
+        }
+    )
+    prefill_lease = prefill_load.acquire(
+        dispatch_endpoint_id,
+        prefill_tokens,
+        affinity_key=prefill_affinity,
+        fingerprint=prefill_fingerprint,
+        anchor=prefill_anchor,
+    )
+
     if adapter.native_format == "openai":
         normalized_tool_inputs = _count_non_object_tool_inputs(body)
         if normalized_tool_inputs:
@@ -1373,6 +1431,10 @@ async def anthropic_messages(
                                 # that the upstream accepted the connection.
                                 health_success_recorded = True
                                 health_registry.record_success(dispatch_endpoint_id)
+                                # Prefill is done once content flows; the prompt
+                                # is resident, so the endpoint is decoding and
+                                # its prefix is safe to remember.
+                                prefill_load.release(prefill_lease, prefill_confirmed=True)
                         yield chunk
                 finally:
                     reader_task.cancel()
@@ -1458,6 +1520,11 @@ async def anthropic_messages(
                 }
                 yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
             finally:
+                # Idempotent: a stream that reached first content already
+                # returned this above. Everything else -- an upstream error, a
+                # client disconnect mid-prefill -- unwinds here, and must not
+                # leave the endpoint charged for a prefill nobody is doing.
+                prefill_load.release(prefill_lease)
                 latency_ms = int((time.time() - start) * 1000)
                 if log_store:
                     final_acc = _finalize_response_acc(response_acc)
@@ -1514,6 +1581,7 @@ async def anthropic_messages(
 
     try:
         resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
+        prefill_load.release(prefill_lease, prefill_confirmed=True)
     except HTTPException as exc:
         error_message = str(exc.detail)
         # ``exc=`` throughout: HTTPException/ClientResponseError carry a status,
@@ -1655,6 +1723,12 @@ async def anthropic_messages(
             operator_error=operator_safe_error(exc),
         )
         return _anthropic_error(502, error_message)
+
+    finally:
+        # Every except arm above returns its own error response, so this is the
+        # only place that covers them all. Idempotent, so the confirmed release
+        # on the success path stands.
+        prefill_load.release(prefill_lease)
 
     # Every branch above returns, so reaching here means the adapter produced a
     # response. Recorded before logging so a slow log store can't delay the

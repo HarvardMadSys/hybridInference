@@ -261,6 +261,11 @@ def _prefix_units(messages: Sequence[dict[str, Any]] | None) -> Iterator[str]:
             yield content
         elif isinstance(content, list):
             for block in content:
+                # A block marker, so re-splitting the same characters across
+                # blocks is a different prompt here as well as upstream: the
+                # adapter joins text blocks with a newline, so ["ab"] and
+                # ["a", "b"] serialize differently and cache differently.
+                yield "\x04"
                 if isinstance(block, str):
                     yield block
                 elif isinstance(block, dict):
@@ -382,7 +387,7 @@ def _content_text(content: Any, limit: int) -> str:
             text = value if isinstance(value, str) else ""
         if not text:
             continue
-        parts.append(text[:remaining])
+        parts.append("\x04" + text[:remaining])
         remaining -= len(parts[-1])
     return "".join(parts)
 

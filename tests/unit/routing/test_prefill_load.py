@@ -1381,3 +1381,24 @@ def test_anchor_holds_across_a_long_appending_conversation():
         ]
         assert prefill_load._anchor_holds(messages, anchor), turn
         anchor = prefill_load.prompt_anchor(messages)
+
+
+@pytest.mark.unit
+def test_evidence_distinguishes_a_re_split_content_list():
+    """Re-splitting the same characters is a different prompt upstream.
+
+    `_normalize_text_content` joins text blocks with a newline, so ["ab"] and
+    ["a", "b"] serialize differently and cache differently. Concatenating them
+    identically here would let the anchor vouch for a prefix that changed.
+    """
+    one_block = [{"role": "user", "content": [{"type": "text", "text": "ab"}]}]
+    two_blocks = [
+        {"role": "user", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}
+    ]
+
+    assert not prefill_load._anchor_holds(two_blocks, prefill_load.prompt_anchor(one_block))
+    assert prefill_load.conversation_fingerprint(
+        one_block
+    ) != prefill_load.conversation_fingerprint(two_blocks)
+    # ...and the same structure still matches itself.
+    assert prefill_load._anchor_holds(one_block, prefill_load.prompt_anchor(one_block))
