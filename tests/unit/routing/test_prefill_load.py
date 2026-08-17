@@ -961,11 +961,13 @@ async def test_overlapping_turns_do_not_preempt_the_request_warming_the_cache():
     huge = "x" * (4 * 300_000)
 
     # First turn is still in flight: acquire without releasing.
+    first_turn = [{"role": "user", "content": huge}]
     in_flight = r.prefill_load.acquire(
         "OK",
-        prefill_load.estimate_prefill_tokens([{"role": "user", "content": huge}]),
+        prefill_load.estimate_prefill_tokens(first_turn),
         affinity_key="u1",
-        fingerprint=prefill_load.conversation_fingerprint([{"role": "user", "content": huge}]),
+        fingerprint=prefill_load.conversation_fingerprint(first_turn),
+        anchor=prefill_load.prompt_anchor(first_turn),
     )
     await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
     assert adapter.seen == [prefill_load.PRIORITY_ELEPHANT]
@@ -1183,3 +1185,114 @@ def test_swapped_tool_catalog_is_not_discounted_as_warm():
 
     assert prefill_load.priority_for_prefill(swapped) == prefill_load.PRIORITY_ELEPHANT
     assert prefill_load.priority_for_prefill(same) == prefill_load.PRIORITY_INTERACTIVE
+
+
+@pytest.mark.unit
+def test_fork_sharing_only_the_opening_is_not_discounted():
+    """Same opening, early divergence: a fork is not a continuation.
+
+    The fingerprint identifies where a conversation *started*, so two branches
+    of one conversation -- a retry, a re-roll, a parallel agent branch -- carry
+    the same identity. The remembered hint holds the whole completed prompt, so
+    without a containment check the second branch would subtract all of it,
+    read interactive, and preempt a real elephant while prefilling a large cold
+    suffix. The anchor is what distinguishes them.
+    """
+    t = PrefillLoadTracker()
+    opening = [
+        {"role": "system", "content": "S" * 5_000},
+        {"role": "user", "content": "shared opening"},
+    ]
+    branch_a = [*opening, {"role": "assistant", "content": "A" * (4 * 300_000)}]
+    branch_b = [*opening, {"role": "assistant", "content": "B" * (4 * 300_000)}]
+    continuation = [*branch_a, {"role": "user", "content": "next"}]
+
+    t.release(
+        t.acquire(
+            "ep",
+            prefill_load.estimate_prefill_tokens(branch_a),
+            affinity_key="u1",
+            fingerprint=prefill_load.conversation_fingerprint(branch_a),
+            anchor=prefill_load.prompt_anchor(branch_a),
+        ),
+        prefill_confirmed=True,
+    )
+
+    # Both branches share an identity...
+    assert prefill_load.conversation_fingerprint(branch_a) == prefill_load.conversation_fingerprint(
+        branch_b
+    )
+
+    def charged(msgs):
+        return t.uncached_estimate(
+            "ep",
+            prefill_load.estimate_prefill_tokens(msgs),
+            "u1",
+            fingerprint=prefill_load.conversation_fingerprint(msgs),
+            messages=msgs,
+        )
+
+    # ...but only the one that contains the measured prompt is discounted.
+    assert prefill_load.priority_for_prefill(charged(branch_b)) == prefill_load.PRIORITY_ELEPHANT
+    assert (
+        prefill_load.priority_for_prefill(charged(continuation))
+        == prefill_load.PRIORITY_INTERACTIVE
+    )
+
+
+@pytest.mark.unit
+def test_anchorless_hint_is_never_discounted_by_a_strict_caller():
+    # A hint that cannot vouch for containment is treated like a missing
+    # fingerprint: charge in full rather than assume.
+    t = PrefillLoadTracker()
+    messages = [{"role": "user", "content": "x" * (4 * 300_000)}]
+    t.release(
+        t.acquire(
+            "ep",
+            prefill_load.estimate_prefill_tokens(messages),
+            affinity_key="u1",
+            fingerprint=prefill_load.conversation_fingerprint(messages),
+        ),
+        prefill_confirmed=True,
+    )
+
+    size = prefill_load.estimate_prefill_tokens(messages)
+    fp = prefill_load.conversation_fingerprint(messages)
+
+    assert t.uncached_estimate("ep", size, "u1", fingerprint=fp, messages=messages) == size
+    # Routing, which passes no messages, keeps the looser behavior it was built with.
+    assert t.uncached_estimate("ep", size, "u1") == 0
+
+
+@pytest.mark.unit
+def test_tool_call_history_counts_toward_prefill():
+    """`content: None` does not mean "costs nothing".
+
+    `_clean_message` forwards every non-None field, so an assistant turn whose
+    payload is a large `tool_calls[].function.arguments` is prefilled in full
+    while being invisible to a content-only estimate.
+    """
+    history = [
+        {"role": "user", "content": "run the migration"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": f"call_{i}",
+                    "type": "function",
+                    "function": {"name": "apply", "arguments": '{"sql": "' + "x" * 20_000 + '"}'},
+                }
+                for i in range(20)
+            ],
+        },
+    ]
+
+    content_only = prefill_load.estimate_prefill_tokens(
+        [{"role": m["role"], "content": m.get("content")} for m in history]
+    )
+    full = prefill_load.estimate_prefill_tokens(history)
+
+    assert content_only < prefill_load.INTERVENE_TOKENS
+    assert full > prefill_load.INTERVENE_TOKENS
+    assert prefill_load.priority_for_prefill(full) != prefill_load.PRIORITY_INTERACTIVE

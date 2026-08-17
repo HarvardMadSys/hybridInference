@@ -147,6 +147,15 @@ _AUDIO_TOKENS: int = 200
 _FINGERPRINT_CHARS_PER_MESSAGE: int = 2048
 _FINGERPRINT_MAX_MESSAGES: int = 4
 
+# Width of the anchor window -- the slice of the remembered prompt's tail that a
+# later prompt must reproduce, at the same offset, to be treated as extending it
+# rather than forking from it. Wide enough that matching it by accident is not a
+# concern, narrow enough to hash on every request.
+_ANCHOR_CHARS: int = 2048
+
+# Sentinel for "take all the text" when slicing a message for the anchor walk.
+_ANCHOR_TEXT_UNBOUNDED: int = 1 << 62
+
 
 def _content_chars(content: Any) -> int:
     """Return an approximate character count for one message's content.
@@ -198,11 +207,14 @@ def estimate_prefill_tokens(
     endpoints and recognize an elephant. Being off by 20% changes nothing about
     which endpoint wins; spending 100ms of CPU to route would.
 
-    Tool definitions and a structured-output schema count too. They are not in
-    ``messages``, but the adapter serializes them into the same upstream body
-    and the model prefills them like any other text -- an agent carrying a large
-    MCP tool catalog can impose far more prefill than its visible turn suggests,
-    and sizing on messages alone would rank it as though it had not.
+    Everything the adapter forwards counts, not just ``content``. Tool
+    definitions and a structured-output schema are serialized into the same
+    upstream body, and inside each message ``_clean_message`` preserves every
+    non-None field -- so an assistant turn carrying ``tool_calls`` with large
+    ``arguments``, or ``reasoning_content``, is prompt-bearing even when its
+    ``content`` is null. An agentic history of tool calls, or a large MCP
+    catalog, therefore imposes far more prefill than its visible turn suggests,
+    and sizing on message content alone would rank it as though it had not.
 
     Args:
         messages: OpenAI-style messages, or None.
@@ -216,9 +228,83 @@ def estimate_prefill_tokens(
     for message in messages or ():
         if not isinstance(message, dict):
             continue
-        chars += _content_chars(message.get("content"))
+        chars += _content_chars(message.get("content")) + _message_extra_chars(message)
     chars += _serialized_chars(tools) + _serialized_chars(response_format)
     return chars // _CHARS_PER_TOKEN
+
+
+def _prompt_text(messages: Sequence[dict[str, Any]] | None) -> list[str]:
+    """Return the prompt's text pieces, in the order the upstream sees them.
+
+    Binary blocks are skipped rather than substituted: their flat token cost is
+    a sizing convenience and has no stable textual form, so including it would
+    make the anchor below disagree with itself between two identical prompts.
+    """
+    pieces: list[str] = []
+    for message in messages or ():
+        if not isinstance(message, dict):
+            continue
+        text = _content_text(message.get("content"), _ANCHOR_TEXT_UNBOUNDED)
+        if text:
+            pieces.append(text)
+        extra = {k: v for k, v in message.items() if k not in ("role", "content") and v is not None}
+        if extra:
+            with contextlib.suppress(TypeError, ValueError):
+                pieces.append(json.dumps(extra, sort_keys=True))
+    return pieces
+
+
+def prompt_anchor(messages: Sequence[dict[str, Any]] | None) -> tuple[int, str] | None:
+    """Return (text length, digest of the final ``_ANCHOR_CHARS``) for a prompt.
+
+    Stored with the prefix hint and re-checked on the next turn. A continuation
+    reproduces the remembered prompt exactly and then appends, so the same
+    window at the same offset still hashes the same; a fork or retry that shares
+    only the opening -- same system prompt, same first user turn, diverging
+    later -- does not, and is charged in full instead of subtracting a prefix
+    the endpoint never cached past the fork point.
+
+    This is what makes the discount evidence-based rather than assumed. The
+    conversation fingerprint says "the same conversation started here"; the
+    anchor says "and this prompt really contains the one we measured".
+
+    Returns:
+        The pair, or None for a prompt with no anchorable text.
+    """
+    pieces = _prompt_text(messages)
+    if not pieces:
+        return None
+    joined = "".join(pieces)
+    if not joined:
+        return None
+    window = joined[-_ANCHOR_CHARS:]
+    digest = hashlib.blake2b(window.encode("utf-8", "ignore"), digest_size=8).hexdigest()
+    return len(joined), digest
+
+
+def _anchor_holds(messages: Sequence[dict[str, Any]] | None, anchor: tuple[int, str]) -> bool:
+    """Return True when this prompt reproduces ``anchor`` at the same offset."""
+    length, digest = anchor
+    if length <= 0:
+        return False
+    joined = "".join(_prompt_text(messages))
+    if len(joined) < length:
+        # Shorter than what was measured: cannot be an extension of it.
+        return False
+    window = joined[max(length - _ANCHOR_CHARS, 0) : length]
+    return hashlib.blake2b(window.encode("utf-8", "ignore"), digest_size=8).hexdigest() == digest
+
+
+def _message_extra_chars(message: dict[str, Any]) -> int:
+    """Return the char cost of a message's non-content fields.
+
+    ``role`` is a word and ``content`` is counted separately by the caller;
+    everything else the adapter preserves -- ``tool_calls`` and their serialized
+    ``arguments``, ``reasoning_content``, ``name``, ``tool_call_id`` -- is prompt
+    text the upstream prefills like any other.
+    """
+    extra = {k: v for k, v in message.items() if k not in ("role", "content") and v is not None}
+    return _serialized_chars(extra)
 
 
 def _serialized_chars(value: Any) -> int:
@@ -398,11 +484,14 @@ class _PrefixHint:
             keeps the caller-scoped discount it was built with while scheduling
             priority -- where a wrong discount preempts real work rather than
             merely skewing a load estimate -- requires the match.
+        anchor: That prompt's length and tail digest, so a later turn can be
+            shown to *contain* it rather than merely to share its opening.
     """
 
     tokens: int
     expires_at: float
     fingerprint: str | None = None
+    anchor: tuple[int, str] | None = None
 
 
 @dataclass
@@ -422,6 +511,8 @@ class PrefillLease:
             the prefix hint only once prefill is confirmed complete.
         fingerprint: Which conversation the prompt belongs to, stored with that
             hint so a later turn can prove it is the same one.
+        anchor: This prompt's length and tail digest, stored with that hint so a
+            later turn can prove it contains this one.
     """
 
     endpoint_id: str
@@ -431,6 +522,7 @@ class PrefillLease:
     released: bool = False
     prompt_tokens: int = 0
     fingerprint: str | None = None
+    anchor: tuple[int, str] | None = None
 
 
 class PrefillLoadTracker:
@@ -480,6 +572,7 @@ class PrefillLoadTracker:
         affinity_key: str | None = None,
         *,
         fingerprint: str | None = None,
+        messages: Sequence[dict[str, Any]] | None = None,
     ) -> int:
         """Estimate what this endpoint must actually prefill for this prompt.
 
@@ -495,10 +588,20 @@ class PrefillLoadTracker:
         on the routing path, and the tokenization a real prefix match needs is
         the cost this whole module is written to avoid.
 
+        Two optional checks tighten this for callers that cannot afford a wrong
+        answer. ``fingerprint`` requires the remembered turn to belong to the
+        same conversation; ``messages`` additionally requires this prompt to
+        *contain* the remembered one, verified against its stored anchor. A fork
+        or retry sharing only the opening passes the first and fails the second,
+        which is the difference between subtracting a cached prefix and
+        subtracting one that diverged.
+
         Args:
             endpoint_id: Candidate endpoint.
             tokens: Estimated total prompt tokens.
             affinity_key: Caller identity, or None when unknown.
+            fingerprint: Conversation identity to require a match on.
+            messages: This request's messages, to verify the stored anchor.
 
         Returns:
             Estimated un-cached prefill tokens, never negative.
@@ -511,6 +614,12 @@ class PrefillLoadTracker:
             if hint is None or hint.expires_at <= self._clock():
                 return total
             if fingerprint is not None and fingerprint != hint.fingerprint:
+                return total
+            if messages is not None and not (
+                hint.anchor is not None and _anchor_holds(messages, hint.anchor)
+            ):
+                # Shares the opening but does not contain the measured prompt:
+                # a fork or a retry, whose divergent suffix is a cold prefill.
                 return total
             return max(total - hint.tokens, 0)
 
@@ -545,6 +654,7 @@ class PrefillLoadTracker:
         *,
         affinity_key: str | None = None,
         fingerprint: str | None = None,
+        anchor: tuple[int, str] | None = None,
     ) -> PrefillLease:
         """Charge a request's estimated un-cached prefill to an endpoint.
 
@@ -586,6 +696,7 @@ class PrefillLoadTracker:
             affinity_key=affinity_key,
             prompt_tokens=total,
             fingerprint=fingerprint,
+            anchor=anchor,
         )
 
     def _remember_prompt_locked(
@@ -595,6 +706,7 @@ class PrefillLoadTracker:
         tokens: int,
         now: float,
         fingerprint: str | None = None,
+        anchor: tuple[int, str] | None = None,
     ) -> None:
         """Record a prompt size for warm-continuation discounting. Caller holds the lock."""
         key = (affinity_key, endpoint_id)
@@ -602,6 +714,7 @@ class PrefillLoadTracker:
             tokens=tokens,
             expires_at=now + _PREFIX_HINT_TTL_SEC,
             fingerprint=fingerprint,
+            anchor=anchor,
         )
         self._prefix_hints.move_to_end(key)
         while len(self._prefix_hints) > _PREFIX_HINT_MAX_ENTRIES:
@@ -639,6 +752,7 @@ class PrefillLoadTracker:
                     lease.prompt_tokens,
                     self._clock(),
                     lease.fingerprint,
+                    lease.anchor,
                 )
             remaining = self._backlog.get(lease.endpoint_id, 0) - lease.tokens
             if remaining > 0:

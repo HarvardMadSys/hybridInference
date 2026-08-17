@@ -17,7 +17,7 @@ from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     from routing.protocols import RoutingRequestOptions
     from serving.adapters.base import BaseAdapter
@@ -30,6 +30,7 @@ from routing.prefill_load import (
     conversation_fingerprint,
     estimate_prefill_tokens,
     priority_for_prefill,
+    prompt_anchor,
 )
 from routing.route_table import EffectiveRoute, RouteTableSnapshot
 from routing.streaming import has_non_empty_content
@@ -582,6 +583,7 @@ class FixedRouter:
         prefill_tokens: int,
         affinity_key: str | None,
         fingerprint: str | None = None,
+        messages: Sequence[dict[str, Any]] | None = None,
     ) -> int:
         """Scheduling priority for one dispatch, ranked on *this* endpoint's work.
 
@@ -600,7 +602,11 @@ class FixedRouter:
         """
         return priority_for_prefill(
             self._prefill_load.uncached_estimate(
-                endpoint_id, prefill_tokens, affinity_key, fingerprint=fingerprint
+                endpoint_id,
+                prefill_tokens,
+                affinity_key,
+                fingerprint=fingerprint,
+                messages=messages,
             )
         )
 
@@ -644,6 +650,8 @@ class FixedRouter:
             tools=params.get("tools"),
             response_format=params.get("response_format"),
         )
+        # Proof, for the next turn, that it really contains this prompt.
+        anchor = prompt_anchor(messages)
         primary = self._select_adapter(
             model_id,
             pin_provider=pin_provider,
@@ -663,7 +671,7 @@ class FixedRouter:
                 provider=primary.config.provider,
                 **{
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                        endpoint_id, prefill_tokens, affinity_key, fingerprint
+                        endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
                     )
                 },
             ):
@@ -673,6 +681,7 @@ class FixedRouter:
                     prefill_tokens,
                     affinity_key=affinity_key,
                     fingerprint=fingerprint,
+                    anchor=anchor,
                 )
                 try:
                     resp = await primary.chat_completion(messages, **params)
@@ -740,7 +749,7 @@ class FixedRouter:
                         provider=adapter.config.provider,
                         **{
                             req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                                endpoint_id, prefill_tokens, affinity_key, fingerprint
+                                endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
                             )
                         },
                     ):
@@ -750,6 +759,7 @@ class FixedRouter:
                             prefill_tokens,
                             affinity_key=affinity_key,
                             fingerprint=fingerprint,
+                            anchor=anchor,
                         )
                         try:
                             resp = await adapter.chat_completion(messages, **params)
@@ -817,6 +827,8 @@ class FixedRouter:
             tools=params.get("tools"),
             response_format=params.get("response_format"),
         )
+        # Proof, for the next turn, that it really contains this prompt.
+        anchor = prompt_anchor(messages)
         primary = self._select_adapter(
             model_id,
             pin_provider=pin_provider,
@@ -838,7 +850,7 @@ class FixedRouter:
                 provider=primary.config.provider,
                 **{
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                        primary_endpoint_id, prefill_tokens, affinity_key, fingerprint
+                        primary_endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
                     )
                 },
             ):
@@ -857,6 +869,7 @@ class FixedRouter:
                     prefill_tokens,
                     affinity_key=affinity_key,
                     fingerprint=fingerprint,
+                    anchor=anchor,
                 )
                 yield routing_chunk(primary)
                 async for chunk in primary.stream_chat_completion(messages, **params):
@@ -939,7 +952,11 @@ class FixedRouter:
                         provider=adapter.config.provider,
                         **{
                             req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                                adapter_endpoint_id, prefill_tokens, affinity_key, fingerprint
+                                adapter_endpoint_id,
+                                prefill_tokens,
+                                affinity_key,
+                                fingerprint,
+                                messages,
                             )
                         },
                     ):
@@ -954,6 +971,7 @@ class FixedRouter:
                             prefill_tokens,
                             affinity_key=affinity_key,
                             fingerprint=fingerprint,
+                            anchor=anchor,
                         )
                         async for chunk in adapter.stream_chat_completion(messages, **params):
                             if first and has_non_empty_content(chunk):
