@@ -3336,3 +3336,51 @@ class TestRouteWiseEnvelopeCalibration:
         # No _warm_envelope call: snapshot returns None and quota is skipped.
         selected = router._select_decision("test-model", {"prompt_tokens": 100}).adapter
         assert selected is api
+
+
+class TestUpstreamPriorityIsNotPublished:
+    """RouteWise leaves the upstream's own scheduling priority alone, on purpose.
+
+    A priority ranks a request by the *un-cached* prefill it imposes, and that
+    discount lives in FixedRouter's PrefillLoadTracker, which this router does
+    not own or feed. Publishing the raw prompt size instead would stamp every
+    warm long-context continuation as an elephant and have an sglang backend
+    schedule it last and preempt it -- worse than publishing nothing, which
+    leaves those models on the upstream's own default. Pinned here so the
+    omission stays a decision rather than becoming a silent regression.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ("chat", "stream"))
+    async def test_dispatch_publishes_no_priority(self, operation):
+        from serving.utils import context as req_ctx
+
+        seen: list[Any] = []
+        adapter = _make_adapter(provider="sglang", endpoint_id="test-model:local-8003")
+        adapter.reports_leg_outcomes = False
+
+        async def _chat(messages, **params):
+            seen.append(req_ctx.get().get(req_ctx.UPSTREAM_PRIORITY))
+            return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+        async def _stream(messages, **params):
+            seen.append(req_ctx.get().get(req_ctx.UPSTREAM_PRIORITY))
+            yield json.dumps({"choices": [{"delta": {"content": "ok"}}]})
+
+        adapter.chat_completion = _chat
+        adapter.stream_chat_completion = _stream
+        router = RouteWiseRouter(config=RouteWiseConfig(db_bootstrap_enabled=False))
+
+        messages = [{"role": "user", "content": "hi"}]
+        if operation == "chat":
+            await router._execute_adapter(_unreserved_decision(adapter), "test-model", messages)
+        else:
+            async for _chunk in router._execute_stream_adapter(
+                _unreserved_decision(adapter), "test-model", messages
+            ):
+                pass
+
+        # The dispatch ran (so the assertion is not vacuous) and carried no
+        # priority: an sglang backend serves these at its own default.
+        assert seen == [None]

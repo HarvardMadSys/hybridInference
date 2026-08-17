@@ -129,6 +129,14 @@ class ModelConfig:
     # Optional upstream chat endpoint path override for OpenAI-like providers
     # that do not expose the default /v1/chat/completions route.
     chat_path: str | None = None
+    # Whether this endpoint runs an sglang server started with
+    # --enable-priority-scheduling. When set, the OpenAI-compatible adapter
+    # stamps the router's per-request priority onto the upstream body so a
+    # mega-prefill is scheduled behind interactive traffic instead of ahead of
+    # it. Opt-in per route because the value carries sglang's convention
+    # (higher integer first): vLLM's priority policy reads the opposite way, and
+    # a remote provider has no reason to accept the field at all.
+    priority_scheduling: bool = False
     # Provider profile for usage extraction (e.g. "deepseek" for cache hit/miss semantics).
     # When set, OpenAICompatAdapter uses profile-specific usage normalization.
     provider_profile: str | None = None

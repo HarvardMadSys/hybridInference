@@ -2484,6 +2484,8 @@ class RouteWiseRouter:
         original_config = getattr(adapter, "config", None)
         try:
             endpoint_id = endpoint_id_for_adapter(adapter)
+            # No req_ctx.UPSTREAM_PRIORITY here, deliberately: see the note on
+            # _execute_stream_adapter.
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
                 self._ensure_health(endpoint_id)
                 result = await adapter.chat_completion(messages, **params)
@@ -2515,6 +2517,20 @@ class RouteWiseRouter:
         original_config = getattr(adapter, "config", None)
         try:
             endpoint_id = endpoint_id_for_adapter(adapter)
+            # Deliberately no req_ctx.UPSTREAM_PRIORITY, in either execution
+            # path. A priority ranks a request by the *un-cached* prefill it
+            # imposes, and that discount comes from the per-caller prompt-size
+            # memory in FixedRouter's PrefillLoadTracker -- which this router
+            # neither owns nor feeds, because #1267 wired prefill accounting
+            # into FixedRouter only. Publishing the raw prompt size instead
+            # would stamp every warm long-context continuation as an elephant
+            # and have the upstream schedule it last and preempt it: worse than
+            # publishing nothing, which simply leaves an sglang backend using
+            # its own default priority for these models, exactly as before.
+            #
+            # So `priority_scheduling: true` is inert for a model on
+            # `router: routewise`. Giving RouteWise its own prefill accounting
+            # is what would fix it, and that is a larger change than this.
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
                 self._ensure_health(endpoint_id)
                 first = True

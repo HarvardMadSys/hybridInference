@@ -344,7 +344,9 @@ def test_warm_continuation_charges_only_the_growth():
     """The core fix: a warm 500k continuation must not read as 500k of prefill."""
     t = PrefillLoadTracker()
     lease = t.acquire("a", 490_000, affinity_key="caller")
-    t.release(lease)
+    # A completed prefill is what makes the prefix resident, and therefore what
+    # writes the hint; see test_in_flight_prefix_is_not_treated_as_cached.
+    t.release(lease, prefill_confirmed=True)
     # Next turn is the same conversation plus a tool result.
     assert t.uncached_estimate("a", 500_000, "caller") == 10_000
     warm = t.acquire("a", 500_000, affinity_key="caller")
@@ -356,7 +358,7 @@ def test_warm_continuation_charges_only_the_growth():
 def test_warm_prefix_is_per_endpoint():
     """Moving a warm session to another endpoint must cost a full prefill."""
     t = PrefillLoadTracker()
-    t.release(t.acquire("a", 490_000, affinity_key="caller"))
+    t.release(t.acquire("a", 490_000, affinity_key="caller"), prefill_confirmed=True)
     assert t.uncached_estimate("a", 500_000, "caller") == 10_000
     assert t.uncached_estimate("b", 500_000, "caller") == 500_000
 
@@ -364,7 +366,9 @@ def test_warm_prefix_is_per_endpoint():
 @pytest.mark.unit
 def test_warm_prefix_is_per_caller():
     t = PrefillLoadTracker()
-    t.release(t.acquire("a", 490_000, affinity_key="caller1"))
+    t.release(t.acquire("a", 490_000, affinity_key="caller1"), prefill_confirmed=True)
+    # caller1's hint exists (so this is not vacuous) and does not reach caller2.
+    assert t.uncached_estimate("a", 500_000, "caller1") == 10_000
     assert t.uncached_estimate("a", 500_000, "caller2") == 500_000
 
 
@@ -372,7 +376,7 @@ def test_warm_prefix_is_per_caller():
 def test_prefix_hint_expires():
     now = [1000.0]
     t = PrefillLoadTracker(clock=lambda: now[0])
-    t.release(t.acquire("a", 490_000, affinity_key="caller"))
+    t.release(t.acquire("a", 490_000, affinity_key="caller"), prefill_confirmed=True)
     assert t.uncached_estimate("a", 500_000, "caller") == 10_000
     now[0] += prefill_load._PREFIX_HINT_TTL_SEC + 1
     assert t.uncached_estimate("a", 500_000, "caller") == 500_000
@@ -381,7 +385,7 @@ def test_prefix_hint_expires():
 @pytest.mark.unit
 def test_shrinking_prompt_never_charges_negative():
     t = PrefillLoadTracker()
-    t.release(t.acquire("a", 500_000, affinity_key="caller"))
+    t.release(t.acquire("a", 500_000, affinity_key="caller"), prefill_confirmed=True)
     assert t.uncached_estimate("a", 1_000, "caller") == 0
 
 
@@ -389,7 +393,7 @@ def test_shrinking_prompt_never_charges_negative():
 def test_warm_continuation_not_barred_by_elephant_limit():
     """A warm continuation must still reach the endpoint holding its prefix."""
     t = PrefillLoadTracker(elephant_tokens=100_000, elephant_limit=1)
-    t.release(t.acquire("warm", 490_000, affinity_key="caller"))
+    t.release(t.acquire("warm", 490_000, affinity_key="caller"), prefill_confirmed=True)
     # Someone else's cold mega-prefill saturates 'warm'.
     t.acquire("warm", 400_000, affinity_key="other")
     assert t.elephants("warm") == 1
@@ -629,3 +633,1005 @@ async def test_stream_fallback_releases_both_leases():
     assert any("GOOD" in str(c) for c in chunks)
     assert r.prefill_load.backlog("BAD") == 0
     assert r.prefill_load.backlog("GOOD") == 0
+
+
+# ---------------------------------------------------------------------------
+# priority_for_prefill
+# ---------------------------------------------------------------------------
+
+
+class _PriorityCapturingAdapter(BaseAdapter):
+    """Records the priority visible in req_ctx at the moment of dispatch.
+
+    An adapter is the only place that observation is meaningful: ``req_ctx.push``
+    unwinds when the router leaves the block, so reading it afterwards proves
+    nothing about what the upstream request would have carried.
+    """
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__(config)
+        self.seen: list[Any] = []
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        self.seen.append(req_ctx.get().get(req_ctx.UPSTREAM_PRIORITY))
+        return self.format_response(content="ok", model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        self.seen.append(req_ctx.get().get(req_ctx.UPSTREAM_PRIORITY))
+        yield self.format_stream_chunk(model=self.config.id, content="ok")
+
+
+@pytest.mark.unit
+def test_priority_tiers_follow_the_selection_thresholds():
+    # One prompt must not be an elephant for routing and an ordinary request for
+    # scheduling, so the tiers are cut at the same thresholds selection uses.
+    assert prefill_load.priority_for_prefill(0) == prefill_load.PRIORITY_INTERACTIVE
+    assert (
+        prefill_load.priority_for_prefill(prefill_load.INTERVENE_TOKENS - 1)
+        == prefill_load.PRIORITY_INTERACTIVE
+    )
+    assert (
+        prefill_load.priority_for_prefill(prefill_load.INTERVENE_TOKENS)
+        == prefill_load.PRIORITY_LARGE
+    )
+    assert (
+        prefill_load.priority_for_prefill(prefill_load.ELEPHANT_TOKENS - 1)
+        == prefill_load.PRIORITY_LARGE
+    )
+    assert (
+        prefill_load.priority_for_prefill(prefill_load.ELEPHANT_TOKENS)
+        == prefill_load.PRIORITY_ELEPHANT
+    )
+    assert (
+        prefill_load.priority_for_prefill(10 * prefill_load.ELEPHANT_TOKENS)
+        == prefill_load.PRIORITY_ELEPHANT
+    )
+
+
+@pytest.mark.unit
+def test_priority_spacing_preempts_only_elephants():
+    """The gaps between tiers are the policy; sglang's threshold reads them.
+
+    An arriving request retracts a running one only when it outranks it by at
+    least ``--priority-scheduling-preemption-threshold`` (sglang default 10).
+    Interactive must clear that bar against an elephant and stay under it
+    against everything else, or normal traffic starts retracting itself.
+    """
+    default_threshold = 10
+    interactive = prefill_load.PRIORITY_INTERACTIVE
+
+    assert interactive - prefill_load.PRIORITY_ELEPHANT >= default_threshold
+    assert interactive - prefill_load.PRIORITY_LARGE < default_threshold
+    assert interactive - interactive < default_threshold
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_publishes_priority_for_the_dispatched_request():
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+
+    small = [{"role": "user", "content": "x" * 400}]
+    huge = [{"role": "user", "content": "x" * (4 * prefill_load.ELEPHANT_TOKENS)}]
+
+    await r.chat_completion("m", small)
+    await r.chat_completion("m", huge)
+    async for _ in r.stream_chat_completion("m", huge):
+        pass
+
+    assert adapter.seen == [
+        prefill_load.PRIORITY_INTERACTIVE,
+        prefill_load.PRIORITY_ELEPHANT,
+        prefill_load.PRIORITY_ELEPHANT,
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_endpoint_gets_its_own_priority_publication():
+    # The push unwinds with the failed attempt, so the fallback dispatch has to
+    # republish rather than inherit -- otherwise the second endpoint would send
+    # whatever the process last left in the context, or nothing at all.
+    r = FixedRouter()
+    bad = _FailAdapter(_cfg("m", provider="BAD", base_url="http://BAD"))
+    good = _PriorityCapturingAdapter(_cfg("m", provider="GOOD", base_url="http://GOOD"))
+    r.register_route("m", [(bad, 1.0), (good, 1.0)])
+
+    req_ctx.set({"affinity_key": "u1"})
+    r._affinity[("u1", "m")] = _Affinity(endpoint_id="BAD", expires_at=time.monotonic() + 300)
+
+    await r.chat_completion("m", [{"role": "user", "content": "x" * 400}])
+
+    assert good.seen == [prefill_load.PRIORITY_INTERACTIVE]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_priority_does_not_outlive_the_dispatch():
+    # Published with push(), not update(): a value that survived the request
+    # would rank the *next* one, which reaches a different endpoint at a
+    # different size.
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+
+    await r.chat_completion("m", [{"role": "user", "content": "x" * 400}])
+
+    assert req_ctx.get().get(req_ctx.UPSTREAM_PRIORITY) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_warm_continuation_keeps_interactive_priority():
+    """A cached prefix is not prefill, so it must not rank the request as one.
+
+    The fleet runs above 90% prefix-cache hit. Ranking on total prompt size
+    would stamp the common agentic case -- a 500k-token conversation whose next
+    turn adds a tool result -- as an elephant, and the upstream would then
+    schedule it last and preempt it for the very traffic it *is*.
+    """
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+
+    # Turn 1: a cold 300k-token prompt really is an elephant on this endpoint.
+    huge = "x" * (4 * 300_000)
+    await r.chat_completion("m", [{"role": "user", "content": huge}])
+    # Turn 2: same conversation plus a small tool result. Almost all of it is
+    # resident in the endpoint's radix cache now.
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
+
+    assert adapter.seen == [
+        prefill_load.PRIORITY_ELEPHANT,
+        prefill_load.PRIORITY_INTERACTIVE,
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_priority_is_recomputed_per_endpoint_on_fallback():
+    # The discount is per endpoint: a prefix resident on the replica the caller
+    # has been talking to is not resident on a fallback that has never seen the
+    # conversation, and that fallback faces the full cold prefill.
+    r = FixedRouter()
+    warm = _PriorityCapturingAdapter(_cfg("m", provider="WARM", base_url="http://WARM"))
+    cold = _PriorityCapturingAdapter(_cfg("m", provider="COLD", base_url="http://COLD"))
+    r.register_route("m", [(warm, 1.0), (cold, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+    r._affinity[("u1", "m")] = _Affinity(endpoint_id="WARM", expires_at=time.monotonic() + 300)
+
+    huge = "x" * (4 * 300_000)
+    await r.chat_completion("m", [{"role": "user", "content": huge}])
+    # WARM now remembers the prompt; the same conversation continues on it, then
+    # is dispatched to COLD, which has no history for this caller.
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
+    r._affinity[("u1", "m")] = _Affinity(endpoint_id="COLD", expires_at=time.monotonic() + 300)
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
+
+    assert warm.seen == [prefill_load.PRIORITY_ELEPHANT, prefill_load.PRIORITY_INTERACTIVE]
+    assert cold.seen == [prefill_load.PRIORITY_ELEPHANT]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unrelated_conversation_does_not_inherit_the_warm_discount():
+    """A caller is not a conversation, and priority must not confuse the two.
+
+    The hint keys on the caller (API key, grant, or NAT'd IP), so without a
+    conversation identity a caller who follows one 300k-token prompt with a
+    *different* 300k-token prompt would have the second discounted to nothing
+    and stamped interactive -- a genuinely cold mega-prefill handed the tier
+    that lets it retract a real elephant.
+    """
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+
+    first = "conversation one. " + "x" * (4 * 300_000)
+    second = "conversation two. " + "y" * (4 * 300_000)
+    await r.chat_completion("m", [{"role": "user", "content": first}])
+    await r.chat_completion("m", [{"role": "user", "content": second}])
+    # ...while the real continuation of the *second* one still gets the discount.
+    await r.chat_completion("m", [{"role": "user", "content": second + "z" * 400}])
+
+    assert adapter.seen == [
+        prefill_load.PRIORITY_ELEPHANT,
+        prefill_load.PRIORITY_ELEPHANT,
+        prefill_load.PRIORITY_INTERACTIVE,
+    ]
+
+
+@pytest.mark.unit
+def test_fingerprint_separates_conversations_sharing_a_system_prompt():
+    # Agentic clients send the same system prompt for every conversation, so
+    # identity has to come from what follows it. Divergence inside the head
+    # slice is what makes the discount safe to grant.
+    system = [{"role": "system", "content": "You are a helpful assistant. " * 100}]
+    one = [*system, {"role": "user", "content": "find the bug in foo.py"}]
+    other = [*system, {"role": "user", "content": "write a poem about hedgehogs"}]
+
+    assert prefill_load.conversation_fingerprint(one) != prefill_load.conversation_fingerprint(
+        other
+    )
+    assert prefill_load.conversation_fingerprint([]) is None
+    assert prefill_load.conversation_fingerprint(None) is None
+
+
+@pytest.mark.unit
+def test_fingerprint_ignores_binary_blocks():
+    # A base64 image would dominate the head slice, so two unrelated prompts
+    # carrying the same attachment would fingerprint identically.
+    payload = {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 5000}}
+    one = [{"role": "user", "content": [payload, {"type": "text", "text": "what is this?"}]}]
+    two = [{"role": "user", "content": [payload, {"type": "text", "text": "translate this"}]}]
+
+    assert prefill_load.conversation_fingerprint(one) != prefill_load.conversation_fingerprint(two)
+
+
+@pytest.mark.unit
+def test_routing_discount_is_unchanged_by_the_fingerprint_gate():
+    """Selection keeps the caller-scoped discount #1267 shipped.
+
+    The gate is opt-in per caller of ``uncached_estimate`` because the two
+    consumers differ in what a wrong discount costs: a mis-estimated *load*
+    skews one routing draw and self-corrects, while a mis-assigned *priority*
+    preempts work that was already running. Only the stricter consumer pays for
+    the strictness.
+    """
+    tracker = PrefillLoadTracker()
+    tracker.release(
+        tracker.acquire("ep", 300_000, affinity_key="u1", fingerprint="conv-a"),
+        prefill_confirmed=True,
+    )
+
+    # No fingerprint supplied (routing): discounted, as before.
+    assert tracker.uncached_estimate("ep", 300_000, "u1") == 0
+    # A different conversation, asking for the match (priority): not discounted.
+    assert tracker.uncached_estimate("ep", 300_000, "u1", fingerprint="conv-b") == 300_000
+    # The same conversation: discounted.
+    assert tracker.uncached_estimate("ep", 300_000, "u1", fingerprint="conv-a") == 0
+
+
+@pytest.mark.unit
+def test_unfingerprintable_prompt_never_claims_a_match():
+    # A prompt with no text (a pure-image turn) cannot be identified, so the
+    # priority path must charge it in full rather than treat None as a match.
+    tracker = PrefillLoadTracker()
+    tracker.release(
+        tracker.acquire("ep", 300_000, affinity_key="u1", fingerprint=None),
+        prefill_confirmed=True,
+    )
+
+    assert tracker.uncached_estimate("ep", 300_000, "u1", fingerprint="conv-a") == 300_000
+    assert tracker.uncached_estimate("ep", 300_000, "u1") == 0
+
+
+@pytest.mark.unit
+def test_in_flight_prefix_is_not_treated_as_cached():
+    """A prefix nobody has finished building must not discount anything.
+
+    Two large turns of one conversation can overlap -- a client retry, a
+    stop-and-resend, parallel agent branches. Writing the hint at dispatch
+    would let the second turn discount against a prefix the first is still
+    prefilling, and as a *priority* that is self-defeating: the second is
+    stamped interactive and can retract the very request that would have made
+    the prefix resident.
+    """
+    t = PrefillLoadTracker()
+    in_flight = t.acquire("a", 490_000, affinity_key="caller", fingerprint="conv")
+
+    # Still prefilling: the next turn is charged in full, either way it is read.
+    assert t.uncached_estimate("a", 500_000, "caller") == 500_000
+    assert t.uncached_estimate("a", 500_000, "caller", fingerprint="conv") == 500_000
+
+    t.release(in_flight, prefill_confirmed=True)
+
+    assert t.uncached_estimate("a", 500_000, "caller", fingerprint="conv") == 10_000
+
+
+@pytest.mark.unit
+def test_failed_dispatch_leaves_no_hint():
+    # An attempt that errored or was abandoned cached nothing. Its lease still
+    # unwinds through release() from a finally, which must not record a prefix.
+    t = PrefillLoadTracker()
+    failed = t.acquire("a", 490_000, affinity_key="caller", fingerprint="conv")
+    t.release(failed)
+
+    assert t.uncached_estimate("a", 500_000, "caller", fingerprint="conv") == 500_000
+    assert t.backlog("a") == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_overlapping_turns_do_not_preempt_the_request_warming_the_cache():
+    """End to end: the second of two overlapping turns must not read interactive.
+
+    ``_KeepAliveAdapter`` holds the lease open past the first (empty) chunk, so
+    the second dispatch is decided while the first is genuinely still prefilling.
+    """
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+    huge = "x" * (4 * 300_000)
+
+    # First turn is still in flight: acquire without releasing.
+    first_turn = [{"role": "user", "content": huge}]
+    in_flight = r.prefill_load.acquire(
+        "OK",
+        prefill_load.estimate_prefill_tokens(first_turn),
+        affinity_key="u1",
+        fingerprint=prefill_load.conversation_fingerprint(first_turn),
+        anchor=prefill_load.prompt_anchor(first_turn),
+    )
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
+    assert adapter.seen == [prefill_load.PRIORITY_ELEPHANT]
+
+    # Once it completes, the continuation is the interactive delta it really is.
+    r.prefill_load.release(in_flight, prefill_confirmed=True)
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 800}])
+    assert adapter.seen[-1] == prefill_load.PRIORITY_INTERACTIVE
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_streaming_confirms_the_prefix_at_first_token():
+    # The streaming path releases on first content and again in a finally; the
+    # first of those is the completion signal, so a streamed turn must leave a
+    # usable hint behind exactly as a non-streamed one does.
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+    huge = "x" * (4 * 300_000)
+
+    async for _ in r.stream_chat_completion("m", [{"role": "user", "content": huge}]):
+        pass
+    await r.chat_completion("m", [{"role": "user", "content": huge + "x" * 400}])
+
+    assert adapter.seen == [prefill_load.PRIORITY_ELEPHANT, prefill_load.PRIORITY_INTERACTIVE]
+
+
+@pytest.mark.unit
+def test_fingerprint_survives_a_system_prompt_larger_than_the_budget():
+    """A coding agent's system prompt must not swallow the whole identity.
+
+    This is the population that matters here: agentic clients send tens of KB of
+    system prompt, identical across every conversation they open. A single
+    budget spread over the prompt head is consumed by it entirely, so every
+    conversation from that agent fingerprints the same -- and one completed
+    500k-token conversation would then make an unrelated cold 500k-token request
+    look warm and hand it interactive priority.
+    """
+    system = {"role": "system", "content": "You are a coding agent. " * 2_000}
+    one = [system, {"role": "user", "content": "find the bug in foo.py"}]
+    other = [system, {"role": "user", "content": "write a poem about hedgehogs"}]
+
+    assert len(system["content"]) > prefill_load._FINGERPRINT_CHARS_PER_MESSAGE
+    assert prefill_load.conversation_fingerprint(one) != prefill_load.conversation_fingerprint(
+        other
+    )
+
+
+@pytest.mark.unit
+def test_fingerprint_is_stable_from_the_second_turn():
+    # Identity is the opening (leading system messages plus the first user
+    # turn), which an append-only client never rewrites -- so a continuation
+    # matches without waiting for any budget to saturate.
+    system = {"role": "system", "content": "You are a coding agent. " * 2_000}
+    turn1 = [system, {"role": "user", "content": "find the bug in foo.py"}]
+    turn2 = [*turn1, {"role": "assistant", "content": "looking"}, {"role": "user", "content": "?"}]
+    turn3 = [
+        *turn2,
+        {"role": "assistant", "content": "found it"},
+        {"role": "user", "content": "fix"},
+    ]
+
+    assert (
+        prefill_load.conversation_fingerprint(turn1)
+        == prefill_load.conversation_fingerprint(turn2)
+        == prefill_load.conversation_fingerprint(turn3)
+    )
+
+
+@pytest.mark.unit
+def test_unrelated_conversations_sharing_a_huge_system_prompt_stay_cold():
+    # End to end: the collision above, priced. Both are cold mega-prefills and
+    # both must read elephant.
+    t = PrefillLoadTracker()
+    system = {"role": "system", "content": "You are a coding agent. " * 2_000}
+    first = [system, {"role": "user", "content": "a" * (4 * 300_000)}]
+    second = [system, {"role": "user", "content": "b" * (4 * 300_000)}]
+
+    t.release(
+        t.acquire(
+            "ep",
+            prefill_load.estimate_prefill_tokens(first),
+            affinity_key="u1",
+            fingerprint=prefill_load.conversation_fingerprint(first),
+        ),
+        prefill_confirmed=True,
+    )
+
+    charged = t.uncached_estimate(
+        "ep",
+        prefill_load.estimate_prefill_tokens(second),
+        "u1",
+        fingerprint=prefill_load.conversation_fingerprint(second),
+    )
+    assert prefill_load.priority_for_prefill(charged) == prefill_load.PRIORITY_ELEPHANT
+
+
+@pytest.mark.unit
+def test_tool_catalog_and_schema_count_toward_prefill():
+    """Tools are prompt-bearing: the adapter serializes them into the same body.
+
+    An agent with a large MCP tool catalog imposes that prefill on every request,
+    however short its visible turn. Sizing on messages alone would rank such a
+    request interactive and let it preempt a genuine elephant.
+    """
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": f"tool_{i}",
+                "description": "d" * 4_000,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        for i in range(60)
+    ]
+
+    bare = prefill_load.estimate_prefill_tokens(messages)
+    with_tools = prefill_load.estimate_prefill_tokens(messages, tools=tools)
+
+    assert bare < prefill_load.INTERVENE_TOKENS
+    assert with_tools > prefill_load.INTERVENE_TOKENS
+    assert prefill_load.priority_for_prefill(with_tools) != prefill_load.PRIORITY_INTERACTIVE
+    # A schema counts the same way, and unserializable input is skipped, not guessed.
+    assert prefill_load.estimate_prefill_tokens(
+        messages, response_format={"type": "json_schema", "schema": {"d": "x" * 40_000}}
+    ) > prefill_load.estimate_prefill_tokens(messages)
+    assert prefill_load.estimate_prefill_tokens(messages, tools=object()) == bare
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_prices_the_tool_catalog_it_forwards():
+    # The router reads tools out of params, which is where the serving path puts
+    # them, so what is priced is what the adapter will actually send.
+    r = FixedRouter()
+    adapter = _PriorityCapturingAdapter(_cfg("m", provider="OK", base_url="http://OK"))
+    r.register_route("m", [(adapter, 1.0)])
+    tools = [
+        {"type": "function", "function": {"name": f"t{i}", "description": "d" * 20_000}}
+        for i in range(60)
+    ]
+
+    await r.chat_completion("m", [{"role": "user", "content": "hi"}], tools=tools)
+
+    assert adapter.seen == [prefill_load.PRIORITY_ELEPHANT]
+
+
+@pytest.mark.unit
+def test_fingerprint_covers_tools_and_schema():
+    """Swapping the tool catalog breaks the prefix, so it must break the identity.
+
+    The chat template renders tools ahead of the conversation, so a different
+    catalog of the same size invalidates the cache from that point while leaving
+    both the messages and the token total unchanged -- the discount would
+    otherwise be granted against a prefix that is no longer there.
+    """
+    messages = [{"role": "user", "content": "hi"}]
+    catalog_a = [{"type": "function", "function": {"name": "read", "description": "d" * 100}}]
+    catalog_b = [{"type": "function", "function": {"name": "write", "description": "d" * 100}}]
+
+    bare = prefill_load.conversation_fingerprint(messages)
+    with_a = prefill_load.conversation_fingerprint(messages, tools=catalog_a)
+    with_b = prefill_load.conversation_fingerprint(messages, tools=catalog_b)
+
+    assert len({bare, with_a, with_b}) == 3
+    # Same catalog, same identity -- a stable agent keeps its discount.
+    assert with_a == prefill_load.conversation_fingerprint(messages, tools=catalog_a)
+    # The schema participates the same way.
+    assert (
+        prefill_load.conversation_fingerprint(messages, response_format={"type": "json_object"})
+        != bare
+    )
+    # Tools alone can identify a request whose content is unhashable (image-only).
+    image_only = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}]
+    assert prefill_load.conversation_fingerprint(image_only) is None
+    assert prefill_load.conversation_fingerprint(image_only, tools=catalog_a) is not None
+
+
+@pytest.mark.unit
+def test_swapped_tool_catalog_is_not_discounted_as_warm():
+    # End to end on the tracker: same conversation, different catalog of the
+    # same size, must be charged in full rather than read as a continuation.
+    t = PrefillLoadTracker()
+    messages = [{"role": "user", "content": "x" * (4 * 300_000)}]
+    tools_a = [{"type": "function", "function": {"name": "read", "description": "d" * 100}}]
+    tools_b = [{"type": "function", "function": {"name": "write", "description": "d" * 100}}]
+    size = prefill_load.estimate_prefill_tokens(messages, tools=tools_a)
+
+    t.release(
+        t.acquire(
+            "ep",
+            size,
+            affinity_key="u1",
+            fingerprint=prefill_load.conversation_fingerprint(messages, tools=tools_a),
+        ),
+        prefill_confirmed=True,
+    )
+
+    swapped = t.uncached_estimate(
+        "ep",
+        prefill_load.estimate_prefill_tokens(messages, tools=tools_b),
+        "u1",
+        fingerprint=prefill_load.conversation_fingerprint(messages, tools=tools_b),
+    )
+    same = t.uncached_estimate(
+        "ep",
+        size,
+        "u1",
+        fingerprint=prefill_load.conversation_fingerprint(messages, tools=tools_a),
+    )
+
+    assert prefill_load.priority_for_prefill(swapped) == prefill_load.PRIORITY_ELEPHANT
+    assert prefill_load.priority_for_prefill(same) == prefill_load.PRIORITY_INTERACTIVE
+
+
+@pytest.mark.unit
+def test_fork_sharing_only_the_opening_is_not_discounted():
+    """Same opening, early divergence: a fork is not a continuation.
+
+    The fingerprint identifies where a conversation *started*, so two branches
+    of one conversation -- a retry, a re-roll, a parallel agent branch -- carry
+    the same identity. The remembered hint holds the whole completed prompt, so
+    without a containment check the second branch would subtract all of it,
+    read interactive, and preempt a real elephant while prefilling a large cold
+    suffix. The anchor is what distinguishes them.
+    """
+    t = PrefillLoadTracker()
+    opening = [
+        {"role": "system", "content": "S" * 5_000},
+        {"role": "user", "content": "shared opening"},
+    ]
+    branch_a = [*opening, {"role": "assistant", "content": "A" * (4 * 300_000)}]
+    branch_b = [*opening, {"role": "assistant", "content": "B" * (4 * 300_000)}]
+    continuation = [*branch_a, {"role": "user", "content": "next"}]
+
+    t.release(
+        t.acquire(
+            "ep",
+            prefill_load.estimate_prefill_tokens(branch_a),
+            affinity_key="u1",
+            fingerprint=prefill_load.conversation_fingerprint(branch_a),
+            anchor=prefill_load.prompt_anchor(branch_a),
+        ),
+        prefill_confirmed=True,
+    )
+
+    # Both branches share an identity...
+    assert prefill_load.conversation_fingerprint(branch_a) == prefill_load.conversation_fingerprint(
+        branch_b
+    )
+
+    def charged(msgs):
+        return t.uncached_estimate(
+            "ep",
+            prefill_load.estimate_prefill_tokens(msgs),
+            "u1",
+            fingerprint=prefill_load.conversation_fingerprint(msgs),
+            messages=msgs,
+        )
+
+    # ...but only the one that contains the measured prompt is discounted.
+    assert prefill_load.priority_for_prefill(charged(branch_b)) == prefill_load.PRIORITY_ELEPHANT
+    assert (
+        prefill_load.priority_for_prefill(charged(continuation))
+        == prefill_load.PRIORITY_INTERACTIVE
+    )
+
+
+@pytest.mark.unit
+def test_anchorless_hint_is_never_discounted_by_a_strict_caller():
+    # A hint that cannot vouch for containment is treated like a missing
+    # fingerprint: charge in full rather than assume.
+    t = PrefillLoadTracker()
+    messages = [{"role": "user", "content": "x" * (4 * 300_000)}]
+    t.release(
+        t.acquire(
+            "ep",
+            prefill_load.estimate_prefill_tokens(messages),
+            affinity_key="u1",
+            fingerprint=prefill_load.conversation_fingerprint(messages),
+        ),
+        prefill_confirmed=True,
+    )
+
+    size = prefill_load.estimate_prefill_tokens(messages)
+    fp = prefill_load.conversation_fingerprint(messages)
+
+    assert t.uncached_estimate("ep", size, "u1", fingerprint=fp, messages=messages) == size
+    # Routing, which passes no messages, keeps the looser behavior it was built with.
+    assert t.uncached_estimate("ep", size, "u1") == 0
+
+
+@pytest.mark.unit
+def test_tool_call_history_counts_toward_prefill():
+    """`content: None` does not mean "costs nothing".
+
+    `_clean_message` forwards every non-None field, so an assistant turn whose
+    payload is a large `tool_calls[].function.arguments` is prefilled in full
+    while being invisible to a content-only estimate.
+    """
+    history = [
+        {"role": "user", "content": "run the migration"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": f"call_{i}",
+                    "type": "function",
+                    "function": {"name": "apply", "arguments": '{"sql": "' + "x" * 20_000 + '"}'},
+                }
+                for i in range(20)
+            ],
+        },
+    ]
+
+    content_only = prefill_load.estimate_prefill_tokens(
+        [{"role": m["role"], "content": m.get("content")} for m in history]
+    )
+    full = prefill_load.estimate_prefill_tokens(history)
+
+    assert content_only < prefill_load.INTERVENE_TOKENS
+    assert full > prefill_load.INTERVENE_TOKENS
+    assert prefill_load.priority_for_prefill(full) != prefill_load.PRIORITY_INTERACTIVE
+
+
+@pytest.mark.unit
+def test_anchor_rejects_an_edited_middle_with_matching_length_and_tail():
+    """A spot check can be satisfied; a prefix digest cannot.
+
+    A retry that keeps the opening, the total length and the final characters
+    while editing earlier history leaves the upstream cache valid only up to the
+    edit. Accidentally hitting all three is implausible; constructing them is
+    not, and a caller controls its own prompt.
+    """
+    base = [
+        {"role": "system", "content": "S" * 3_000},
+        {"role": "user", "content": "opening"},
+        {"role": "assistant", "content": "A" * 100_000},
+        {"role": "user", "content": "tail" * 600},
+    ]
+    edited = [
+        base[0],
+        base[1],
+        {"role": "assistant", "content": "B" * 100_000},  # same length, different bytes
+        base[3],
+    ]
+    anchor = prefill_load.prompt_anchor(base)
+
+    assert prefill_load.prompt_anchor(edited)[0] == anchor[0]  # identical length
+    assert not prefill_load._anchor_holds(edited, anchor)
+    assert prefill_load._anchor_holds([*base, {"role": "user", "content": "next"}], anchor)
+
+
+@pytest.mark.unit
+def test_anchor_notices_a_replaced_attachment():
+    # Text-only evidence would miss this: the conversation reads identically
+    # while the image that invalidates the prefix has been swapped.
+    def convo(url: str):
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what changed in this screenshot?"},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+        ]
+
+    original = convo("data:image/png;base64," + "A" * 5_000)
+    replaced = convo("data:image/png;base64," + "B" * 5_000)
+    anchor = prefill_load.prompt_anchor(original)
+
+    assert not prefill_load._anchor_holds(replaced, anchor)
+    # The same attachment resent unchanged still matches, and a later turn extends it.
+    assert prefill_load._anchor_holds(original, anchor)
+    assert prefill_load._anchor_holds(
+        [*original, {"role": "assistant", "content": "the button moved"}], anchor
+    )
+
+
+@pytest.mark.unit
+def test_anchor_holds_across_a_long_appending_conversation():
+    # The property that has to survive all this strictness: a normal agentic
+    # session keeps its discount turn after turn.
+    messages = [
+        {"role": "system", "content": "S" * 5_000},
+        {"role": "user", "content": "start"},
+    ]
+    anchor = prefill_load.prompt_anchor(messages)
+
+    for turn in range(8):
+        messages = [
+            *messages,
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"c{turn}",
+                        "type": "function",
+                        "function": {"name": "read", "arguments": '{"p":"' + "x" * 5_000 + '"}'},
+                    }
+                ],
+            },
+            {"role": "user", "content": f"turn {turn} " + "y" * 5_000},
+        ]
+        assert prefill_load._anchor_holds(messages, anchor), turn
+        anchor = prefill_load.prompt_anchor(messages)
+
+
+@pytest.mark.unit
+def test_evidence_distinguishes_a_re_split_content_list():
+    """Re-splitting the same characters is a different prompt upstream.
+
+    `_normalize_text_content` joins text blocks with a newline, so ["ab"] and
+    ["a", "b"] serialize differently and cache differently. Concatenating them
+    identically here would let the anchor vouch for a prefix that changed.
+    """
+    one_block = [{"role": "user", "content": [{"type": "text", "text": "ab"}]}]
+    two_blocks = [
+        {"role": "user", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}
+    ]
+
+    assert not prefill_load._anchor_holds(two_blocks, prefill_load.prompt_anchor(one_block))
+    assert prefill_load.conversation_fingerprint(
+        one_block
+    ) != prefill_load.conversation_fingerprint(two_blocks)
+    # ...and the same structure still matches itself.
+    assert prefill_load._anchor_holds(one_block, prefill_load.prompt_anchor(one_block))
+
+
+@pytest.mark.unit
+def test_anthropic_tool_blocks_are_prompt_bearing():
+    """Anthropic carries tool payloads as content blocks, not message fields.
+
+    ``tool_use.input`` (the file going out) and ``tool_result.content`` (the
+    command output coming back) have no ``text`` field, and on an agent surface
+    they are most of the prompt. Counting only text blocks priced a whole Claude
+    Code history at nearly nothing, which is interactive priority for a cold
+    mega-prefill.
+    """
+    history = [
+        {"role": "user", "content": [{"type": "text", "text": "fix the migration"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "edit_file",
+                    "input": {"path": "m.sql", "contents": "x" * (4 * 300_000)},
+                }
+            ],
+        },
+    ]
+
+    tokens = prefill_load.estimate_prefill_tokens(history)
+
+    assert tokens > prefill_load.ELEPHANT_TOKENS
+    assert prefill_load.priority_for_prefill(tokens) == prefill_load.PRIORITY_ELEPHANT
+
+
+@pytest.mark.unit
+def test_edited_tool_history_does_not_validate_as_a_warm_prefix():
+    # The same blocks in the evidence stream: rewriting what a tool returned
+    # changes the prefix, so it must not pass the anchor.
+    def history(payload: str):
+        return [
+            {"role": "user", "content": [{"type": "text", "text": "run it"}]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": payload},
+                ],
+            },
+        ]
+
+    original = history("output " + "a" * 50_000)
+    rewritten = history("output " + "b" * 50_000)
+    anchor = prefill_load.prompt_anchor(original)
+
+    assert not prefill_load._anchor_holds(rewritten, anchor)
+    assert prefill_load._anchor_holds([*original, {"role": "assistant", "content": "done"}], anchor)
+
+
+@pytest.mark.unit
+def test_multibyte_text_is_not_underestimated_into_the_preempting_tier():
+    """Four characters per token is an ASCII assumption, and this fleet serves CJK.
+
+    A Chinese character is one token and three UTF-8 bytes, so a ~100k-token
+    prompt is ~100k characters: at four characters per token it estimates to 25k
+    and lands in the interactive tier -- the one tier allowed to retract a
+    running elephant. Measuring bytes puts it near 75k instead. Still coarse,
+    but no longer coarse in the direction that hands a mega-prefill the
+    preempting tier.
+    """
+    cjk = [{"role": "user", "content": "汉字测试内容" * 17_000}]  # ~102k chars
+
+    tokens = prefill_load.estimate_prefill_tokens(cjk)
+
+    assert tokens > prefill_load.INTERVENE_TOKENS
+    assert prefill_load.priority_for_prefill(tokens) != prefill_load.PRIORITY_INTERACTIVE
+
+
+@pytest.mark.unit
+def test_ascii_sizing_is_unchanged_and_costs_no_encode():
+    # The common case must not regress, in value or in cost: isascii() is a
+    # C-level scan with no allocation, and for ASCII the byte length is the
+    # character length.
+    ascii_only = [{"role": "user", "content": "x" * 4_000}]
+
+    assert prefill_load.estimate_prefill_tokens(ascii_only) == 1_000
+    assert prefill_load._text_size("x" * 4_000) == 4_000
+    assert prefill_load._text_size("汉") == 3
+
+
+@pytest.mark.unit
+def test_emoji_and_mixed_scripts_count_above_their_character_length():
+    # Emoji are four bytes each; a prompt of them is nowhere near as cheap as
+    # its character count suggests.
+    emoji = [{"role": "user", "content": "🔥" * 10_000}]
+    mixed = [{"role": "user", "content": ("hello 世界 " * 5_000)}]
+
+    assert prefill_load.estimate_prefill_tokens(emoji) == 10_000  # 40k bytes / 4
+    assert prefill_load.estimate_prefill_tokens(mixed) > len(mixed[0]["content"]) // 4
+
+
+@pytest.mark.unit
+def test_attachment_identity_covers_the_whole_payload():
+    """Edges-and-length was a spot check, and spot checks can be satisfied.
+
+    Replacing bytes in the middle of an equally sized attachment left the
+    identity unchanged while the upstream prefix was invalid from that
+    attachment onward -- the same hole the anchor closed for text.
+    """
+    head, tail = "A" * 64, "Z" * 64
+
+    def convo(middle: str):
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": head + middle + tail}},
+                    {"type": "text", "text": "what is this?"},
+                ],
+            }
+        ]
+
+    original = convo("M" * 5_000)
+    tampered = convo("N" * 5_000)  # same length, same first/last 64 chars
+
+    assert not prefill_load._anchor_holds(tampered, prefill_load.prompt_anchor(original))
+    assert prefill_load._anchor_holds(original, prefill_load.prompt_anchor(original))
+
+
+@pytest.mark.unit
+def test_evidence_follows_the_client_key_order():
+    """Two key orders are two request bodies, so they are two identities.
+
+    ``_clean_message`` forwards a message with its keys in the order the client
+    sent them, and the chat template renders tools the same way, so normalizing
+    with ``sort_keys`` would give two different upstream prefixes one identity --
+    vouching for a prefix that changed. Losing a discount when a client
+    reshuffles its own JSON is the safe direction; granting one is not.
+    """
+    tools_a = [{"type": "function", "function": {"name": "read", "description": "d"}}]
+    tools_b = [{"function": {"description": "d", "name": "read"}, "type": "function"}]
+    messages = [{"role": "user", "content": "hi"}]
+
+    assert prefill_load.conversation_fingerprint(
+        messages, tools=tools_a
+    ) != prefill_load.conversation_fingerprint(messages, tools=tools_b)
+
+    call_a = [{"role": "assistant", "content": None, "tool_calls": [{"id": "c", "type": "f"}]}]
+    call_b = [{"role": "assistant", "tool_calls": [{"type": "f", "id": "c"}], "content": None}]
+
+    assert not prefill_load._anchor_holds(call_b, prefill_load.prompt_anchor(call_a))
+    # The same order still matches itself, so a stable client keeps its discount.
+    assert prefill_load._anchor_holds(call_a, prefill_load.prompt_anchor(call_a))
+
+
+@pytest.mark.unit
+def test_hint_ttl_is_shorter_than_a_backend_idle_stop():
+    """The hint may not outlive the cache it describes.
+
+    The local proxy stops an idle backend after 24 minutes, which empties the
+    radix cache. A hint trusted for longer is evidence for a cache nobody holds,
+    and it now selects a tier that preempts -- so the window has to sit inside
+    the one where the backend that wrote it is still up.
+    """
+    idle_stop_seconds = 24 * 60
+
+    assert idle_stop_seconds > prefill_load._PREFIX_HINT_TTL_SEC
+
+
+@pytest.mark.unit
+def test_endpoint_failure_forgets_its_hints():
+    # A restart inside the TTL window empties the cache while leaving the hints
+    # intact; a failure is the signal the gateway actually gets for it.
+    t = PrefillLoadTracker()
+    messages = [{"role": "user", "content": "x" * (4 * 300_000)}]
+    size = prefill_load.estimate_prefill_tokens(messages)
+    for endpoint in ("a", "b"):
+        t.release(
+            t.acquire(
+                endpoint,
+                size,
+                affinity_key="u1",
+                fingerprint=prefill_load.conversation_fingerprint(messages),
+                anchor=prefill_load.prompt_anchor(messages),
+            ),
+            prefill_confirmed=True,
+        )
+
+    t.forget_endpoint("a")
+
+    def charged(endpoint):
+        return t.uncached_estimate(
+            endpoint,
+            size,
+            "u1",
+            fingerprint=prefill_load.conversation_fingerprint(messages),
+            messages=messages,
+        )
+
+    assert prefill_load.priority_for_prefill(charged("a")) == prefill_load.PRIORITY_ELEPHANT
+    # Only that endpoint: a sibling's cache is untouched by its neighbour's fault.
+    assert prefill_load.priority_for_prefill(charged("b")) == prefill_load.PRIORITY_INTERACTIVE
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_forgets_hints_when_a_dispatch_fails():
+    r = FixedRouter()
+    bad = _FailAdapter(_cfg("m", provider="BAD", base_url="http://BAD"))
+    r.register_route("m", [(bad, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+    messages = [{"role": "user", "content": "x" * (4 * 300_000)}]
+    r.prefill_load.release(
+        r.prefill_load.acquire(
+            "BAD",
+            prefill_load.estimate_prefill_tokens(messages),
+            affinity_key="u1",
+            fingerprint=prefill_load.conversation_fingerprint(messages),
+            anchor=prefill_load.prompt_anchor(messages),
+        ),
+        prefill_confirmed=True,
+    )
+
+    with pytest.raises(RuntimeError, match="fail"):
+        await r.chat_completion("m", messages)
+
+    assert (
+        r.prefill_load.uncached_estimate(
+            "BAD",
+            prefill_load.estimate_prefill_tokens(messages),
+            "u1",
+            fingerprint=prefill_load.conversation_fingerprint(messages),
+            messages=messages,
+        )
+        > prefill_load.ELEPHANT_TOKENS
+    )

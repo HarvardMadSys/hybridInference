@@ -147,6 +147,11 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         "client_error_kind",
         "provider",
         "pricing_time",
+        # Written durably by the Anthropic Messages surface, which has no
+        # fallback to publish around and hands its upstream to a background
+        # reader task. A leftover value would rank the next request -- a
+        # different prompt, possibly on a different endpoint.
+        "upstream_priority",
     }
 )
 
@@ -160,9 +165,10 @@ def test_request_scoped_key_set_is_pinned() -> None:
     401 split, ``user_role`` for access to tier-reserved provider keys (absent
     means "internal caller, unrestricted"), ``auth_key_hash``/``affinity_key``
     for which upstream key and provider a caller sticks to (absent means "no
-    caller identity", which shares one binding). Dropping one un-clears it and makes
-    the next request inherit it, so the set is not something to shrink as a side
-    effect of another change.
+    caller identity", which shares one binding), ``upstream_priority`` for the
+    scheduling rank an sglang backend is told to queue by. Dropping one
+    un-clears it and makes the next request inherit it, so the set is not
+    something to shrink as a side effect of another change.
     """
     assert set(req_ctx.REQUEST_SCOPED_KEYS) == _PINNED_REQUEST_SCOPED_KEYS
 

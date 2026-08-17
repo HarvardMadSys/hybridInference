@@ -17,14 +17,21 @@ from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     from routing.protocols import RoutingRequestOptions
     from serving.adapters.base import BaseAdapter
 
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
-from routing.prefill_load import PrefillLease, PrefillLoadTracker, estimate_prefill_tokens
+from routing.prefill_load import (
+    PrefillLease,
+    PrefillLoadTracker,
+    conversation_fingerprint,
+    estimate_prefill_tokens,
+    priority_for_prefill,
+    prompt_anchor,
+)
 from routing.route_table import EffectiveRoute, RouteTableSnapshot
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
@@ -234,6 +241,10 @@ class FixedRouter:
         detail: str | None = None,
         exc: BaseException | None = None,
     ) -> None:
+        # A failing endpoint has most likely lost its prefix cache (restart,
+        # OOM, a container replaced under the same id), so the hints describing
+        # it stop being evidence. See PrefillLoadTracker.forget_endpoint.
+        self._prefill_load.forget_endpoint(endpoint_id)
         self._health_registry.record_failure(
             endpoint_id,
             reason=reason,
@@ -570,6 +581,39 @@ class FixedRouter:
 
         return chosen
 
+    def _dispatch_priority(
+        self,
+        endpoint_id: str,
+        prefill_tokens: int,
+        affinity_key: str | None,
+        fingerprint: str | None = None,
+        messages: Sequence[dict[str, Any]] | None = None,
+    ) -> int:
+        """Scheduling priority for one dispatch, ranked on *this* endpoint's work.
+
+        Deliberately the un-cached estimate rather than the prompt size: the
+        fleet runs above 90% prefix-cache hit, so ranking on the total would
+        stamp a warm 500k-token continuation -- a few thousand delta tokens of
+        actual prefill -- as an elephant and have the upstream schedule it last
+        and preempt it, which is the opposite of what its cost deserves. The
+        same discount decides selection and the elephant limit, so priority
+        agrees with routing by construction.
+
+        Per endpoint, because the discount is: a prefix resident on the replica
+        the caller has been talking to is not resident on a fallback that has
+        never seen this conversation, and that fallback really is facing the
+        cold prefill.
+        """
+        return priority_for_prefill(
+            self._prefill_load.uncached_estimate(
+                endpoint_id,
+                prefill_tokens,
+                affinity_key,
+                fingerprint=fingerprint,
+                messages=messages,
+            )
+        )
+
     async def chat_completion(
         self,
         model_id: str,
@@ -597,8 +641,21 @@ class FixedRouter:
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
-        prefill_tokens = estimate_prefill_tokens(messages)
+        prefill_tokens = estimate_prefill_tokens(
+            messages,
+            tools=params.get("tools"),
+            response_format=params.get("response_format"),
+        )
         affinity_key = current_affinity_key()
+        # Which conversation this is, so a caller's unrelated prompt cannot
+        # inherit another's warm-prefix discount (see _dispatch_priority).
+        fingerprint = conversation_fingerprint(
+            messages,
+            tools=params.get("tools"),
+            response_format=params.get("response_format"),
+        )
+        # Proof, for the next turn, that it really contains this prompt.
+        anchor = prompt_anchor(messages)
         primary = self._select_adapter(
             model_id,
             pin_provider=pin_provider,
@@ -612,14 +669,30 @@ class FixedRouter:
                 )
             raise ValueError(f"No route configured for model {model_id}")
         try:
-            with req_ctx.push(model=model_id, provider=primary.config.provider):
-                endpoint_id = endpoint_id_for_adapter(primary)
+            endpoint_id = endpoint_id_for_adapter(primary)
+            with req_ctx.push(
+                model=model_id,
+                provider=primary.config.provider,
+                **{
+                    req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
+                        endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
+                    )
+                },
+            ):
                 self._ensure_health(endpoint_id)
                 lease = self._prefill_load.acquire(
-                    endpoint_id, prefill_tokens, affinity_key=affinity_key
+                    endpoint_id,
+                    prefill_tokens,
+                    affinity_key=affinity_key,
+                    fingerprint=fingerprint,
+                    anchor=anchor,
                 )
                 try:
                     resp = await primary.chat_completion(messages, **params)
+                    # A returned response proves this endpoint finished
+                    # prefilling this prompt, which is what makes its prefix
+                    # safe to remember.
+                    self._prefill_load.release(lease, prefill_confirmed=True)
                 finally:
                     self._prefill_load.release(lease)
                 self._on_success(endpoint_id)
@@ -675,13 +748,26 @@ class FixedRouter:
                 if not self._health_registry.allow_request(endpoint_id):
                     continue
                 try:
-                    with req_ctx.push(model=model_id, provider=adapter.config.provider):
+                    with req_ctx.push(
+                        model=model_id,
+                        provider=adapter.config.provider,
+                        **{
+                            req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
+                                endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
+                            )
+                        },
+                    ):
                         self._ensure_health(endpoint_id)
                         lease = self._prefill_load.acquire(
-                            endpoint_id, prefill_tokens, affinity_key=affinity_key
+                            endpoint_id,
+                            prefill_tokens,
+                            affinity_key=affinity_key,
+                            fingerprint=fingerprint,
+                            anchor=anchor,
                         )
                         try:
                             resp = await adapter.chat_completion(messages, **params)
+                            self._prefill_load.release(lease, prefill_confirmed=True)
                         finally:
                             self._prefill_load.release(lease)
                         self._on_success(endpoint_id)
@@ -732,8 +818,21 @@ class FixedRouter:
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
-        prefill_tokens = estimate_prefill_tokens(messages)
+        prefill_tokens = estimate_prefill_tokens(
+            messages,
+            tools=params.get("tools"),
+            response_format=params.get("response_format"),
+        )
         affinity_key = current_affinity_key()
+        # Which conversation this is, so a caller's unrelated prompt cannot
+        # inherit another's warm-prefix discount (see _dispatch_priority).
+        fingerprint = conversation_fingerprint(
+            messages,
+            tools=params.get("tools"),
+            response_format=params.get("response_format"),
+        )
+        # Proof, for the next turn, that it really contains this prompt.
+        anchor = prompt_anchor(messages)
         primary = self._select_adapter(
             model_id,
             pin_provider=pin_provider,
@@ -749,7 +848,16 @@ class FixedRouter:
         chunks_yielded = False
         lease: PrefillLease | None = None
         try:
-            with req_ctx.push(model=model_id, provider=primary.config.provider):
+            primary_endpoint_id = endpoint_id_for_adapter(primary)
+            with req_ctx.push(
+                model=model_id,
+                provider=primary.config.provider,
+                **{
+                    req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
+                        primary_endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
+                    )
+                },
+            ):
                 # Emit synthetic _routing chunk so completions.py can recover
                 # the upstream provider/base_url/endpoint_id for DB logging.
                 # Without this, req_ctx.push() inside this block is invisible
@@ -757,12 +865,15 @@ class FixedRouter:
                 # asyncio.create_task reader, and api_logs ends up with
                 # provider="router" and cost_usd=NULL.
                 first = True
-                primary_endpoint_id = endpoint_id_for_adapter(primary)
                 # Charged before the first yield so the lease brackets the whole
                 # upstream interaction: a generator abandoned after the routing
                 # chunk still unwinds through this method's finally.
                 lease = self._prefill_load.acquire(
-                    primary_endpoint_id, prefill_tokens, affinity_key=affinity_key
+                    primary_endpoint_id,
+                    prefill_tokens,
+                    affinity_key=affinity_key,
+                    fingerprint=fingerprint,
+                    anchor=anchor,
                 )
                 yield routing_chunk(primary)
                 async for chunk in primary.stream_chat_completion(messages, **params):
@@ -776,7 +887,7 @@ class FixedRouter:
                         # lease for the whole stream would let a long cheap
                         # decode read as prefill pressure and push traffic away
                         # from an endpoint that is no longer busy prefilling.
-                        self._prefill_load.release(lease)
+                        self._prefill_load.release(lease, prefill_confirmed=True)
                     yield chunk
                     chunks_yielded = True
             return
@@ -840,7 +951,19 @@ class FixedRouter:
                 if not self._health_registry.allow_request(adapter_endpoint_id):
                     continue
                 try:
-                    with req_ctx.push(model=model_id, provider=adapter.config.provider):
+                    with req_ctx.push(
+                        model=model_id,
+                        provider=adapter.config.provider,
+                        **{
+                            req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
+                                adapter_endpoint_id,
+                                prefill_tokens,
+                                affinity_key,
+                                fingerprint,
+                                messages,
+                            )
+                        },
+                    ):
                         yield routing_chunk(
                             adapter,
                             fallback=True,
@@ -848,13 +971,17 @@ class FixedRouter:
                         )
                         first = True
                         lease = self._prefill_load.acquire(
-                            adapter_endpoint_id, prefill_tokens, affinity_key=affinity_key
+                            adapter_endpoint_id,
+                            prefill_tokens,
+                            affinity_key=affinity_key,
+                            fingerprint=fingerprint,
+                            anchor=anchor,
                         )
                         async for chunk in adapter.stream_chat_completion(messages, **params):
                             if first and has_non_empty_content(chunk):
                                 first = False
                                 self._on_success(adapter_endpoint_id)
-                                self._prefill_load.release(lease)
+                                self._prefill_load.release(lease, prefill_confirmed=True)
                             yield chunk
                             chunks_yielded = True
                     return

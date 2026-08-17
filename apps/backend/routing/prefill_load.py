@@ -12,7 +12,7 @@ actively harmful: the fleet runs above 90% prefix-cache hit, so a warm 500k
 continuation would report its endpoint as blocked when it is really about to
 prefill a few thousand delta tokens, and every diversion that followed would
 land on a cold endpoint and manufacture a real cache miss. The cached prefix is
-estimated from the caller's last prompt size on that endpoint -- agentic prompts
+estimated from the caller's last *completed* prompt on that endpoint -- agentic prompts
 grow monotonically, so the growth is the un-cached part -- which costs one dict
 lookup rather than the tokenization a true prefix match would need.
 
@@ -36,6 +36,9 @@ worst it does is prefer a different endpoint that is already admissible.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import json
 import os
 import threading
 import time
@@ -46,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
 logger = get_logger(__name__)
 
@@ -100,21 +103,81 @@ INTERVENE_TOKENS: int = _env_int("ROUTING_PREFILL_INTERVENE_TOKENS", 50_000)
 # mega-prefill) than the prefix-cache hit it buys, so selection is re-run.
 AFFINITY_BACKLOG_CEILING: int = _env_int("ROUTING_PREFILL_AFFINITY_CEILING", 150_000)
 
+# Scheduling priority stamped on requests to endpoints that run sglang priority
+# scheduling. sglang schedules the *higher* integer first and preempts a running
+# request only once the gap reaches its --priority-scheduling-preemption-threshold
+# (default 10), so the spacing between these three values *is* the policy:
+#
+#   interactive - elephant = 20  >= 10  -> an arriving small prompt can retract a
+#                                          mega-prefill that already holds the GPU
+#   interactive - large     =  5  <  10  -> ordinary prompts only queue ahead of a
+#                                          large one, never preempt it
+#   interactive - interactive = 0        -> peers never preempt each other, so
+#                                          normal traffic sees no retraction churn
+#
+# Retraction is not free even though the radix cache keeps the prefix, which is
+# why only the elephant tier is exposed to it: it is the one tier whose prefill
+# is long enough that waiting it out is worse than restarting it.
+PRIORITY_INTERACTIVE: int = _env_int("ROUTING_PRIORITY_INTERACTIVE", 20)
+PRIORITY_LARGE: int = _env_int("ROUTING_PRIORITY_LARGE", 15)
+PRIORITY_ELEPHANT: int = _env_int("ROUTING_PRIORITY_ELEPHANT", 0)
+
 # Bounds on the per-(caller, endpoint) prompt-size memory used to discount a
-# warm continuation. One small int per live conversation; TTL matches the
-# radix cache's useful lifetime closely enough that a stale hint just means we
-# briefly over-discount one request.
-_PREFIX_HINT_TTL_SEC: float = 2 * 3600.0
+# warm continuation.
+#
+# The TTL is the shortest interval after which the prefix it describes can be
+# gone: the local proxy stops an idle backend after 24 minutes
+# (ops/local_deployment_proxy, IDLE_TIMEOUT=1440s), which empties the radix
+# cache entirely. A hint that outlives that is evidence for a cache nobody
+# holds -- and since this now selects a preemption-capable priority tier, the
+# cost of believing it is a cold mega-prefill stamped interactive, retracting
+# work that was correctly tiered. Twenty minutes keeps it strictly inside the
+# window in which the backend that wrote it is still up.
+#
+# A restart *within* that window is what `forget_endpoint` covers.
+#
+# Configurable because the 24-minute figure is the shipped default, not a
+# guarantee: a deployment that lowers IDLE_TIMEOUT, or a backend whose radix
+# cache evicts under memory pressure, can drop a prefix sooner. Lower this to
+# match. No setting makes the hint a promise -- only the backend knows what it
+# still holds -- so the value is chosen to fail in the direction that forgoes a
+# discount rather than the one that grants a preemption.
+_PREFIX_HINT_TTL_SEC: float = float(_env_int("ROUTING_PREFILL_HINT_TTL_SEC", 20 * 60))
 _PREFIX_HINT_MAX_ENTRIES: int = 50_000
 
-# Chars per token for the cheap estimator. Deliberately coarse -- see
-# estimate_prefill_tokens for why precision is not worth the CPU here.
-_CHARS_PER_TOKEN: int = 4
+# Bytes per token for the cheap estimator. Deliberately coarse -- see
+# estimate_prefill_tokens for why precision is not worth the CPU here -- but
+# measured in UTF-8 bytes rather than characters, because the two diverge by
+# more than the tolerance this feeds. A CJK character is one token and three
+# bytes; at four *characters* per token a 100k-token Chinese prompt estimates
+# at 25k and lands in the interactive tier, which is the one tier allowed to
+# preempt. Bytes put it at ~75k instead: still approximate, no longer
+# approximate in the direction that hands a mega-prefill the preempting tier.
+_BYTES_PER_TOKEN: int = 4
 
 # Flat costs for non-text blocks, mirroring serving.utils.tokens so a base64
 # image is never char-counted as a colossal text prompt.
 _IMAGE_TOKENS: int = 85
 _AUDIO_TOKENS: int = 200
+
+# How much of each message identifies the conversation it belongs to, and how
+# many messages deep to look for the opening turn. A per-message budget rather
+# than one budget over the whole head: a coding agent's system prompt runs well
+# past any single-slice bound, and a shared system prompt that swallowed the
+# budget would fingerprint every one of that agent's conversations identically
+# -- which is the collision this exists to prevent.
+_FINGERPRINT_CHARS_PER_MESSAGE: int = 2048
+_FINGERPRINT_MAX_MESSAGES: int = 4
+
+
+def _text_size(text: str) -> int:
+    """Return a text's UTF-8 byte length, without paying for it on ASCII.
+
+    ``isascii()`` is a C-level scan with no allocation and is true for the bulk
+    of this fleet's traffic, where the byte length is the character length. Only
+    text that is actually multibyte pays for an encode.
+    """
+    return len(text) if text.isascii() else len(text.encode("utf-8", "ignore"))
 
 
 def _content_chars(content: Any) -> int:
@@ -131,51 +194,398 @@ def _content_chars(content: Any) -> int:
     if content is None:
         return 0
     if isinstance(content, str):
-        return len(content)
+        return _text_size(content)
     if isinstance(content, list):
         total = 0
         for block in content:
             if isinstance(block, str):
-                total += len(block)
+                total += _text_size(block)
                 continue
             if not isinstance(block, dict):
                 continue
             btype = block.get("type")
             if btype in ("image", "image_url"):
-                total += _IMAGE_TOKENS * _CHARS_PER_TOKEN
+                total += _IMAGE_TOKENS * _BYTES_PER_TOKEN
             elif btype in ("audio", "input_audio"):
-                total += _AUDIO_TOKENS * _CHARS_PER_TOKEN
+                total += _AUDIO_TOKENS * _BYTES_PER_TOKEN
             else:
                 text = block.get("text")
-                if isinstance(text, str):
-                    total += len(text)
+                if not isinstance(text, str):
+                    # Anthropic's tool_use.input and tool_result.content carry no
+                    # "text" field, and on an agent surface they are most of the
+                    # prompt -- file contents going out, command output coming
+                    # back. Counting only text blocks would price a tool-heavy
+                    # Claude Code history at nearly nothing.
+                    total += _serialized_chars(block)
+                elif isinstance(text, str):
+                    total += _text_size(text)
         return total
     return len(str(content))
 
 
-def estimate_prefill_tokens(messages: Sequence[dict[str, Any]] | None) -> int:
+def estimate_prefill_tokens(
+    messages: Sequence[dict[str, Any]] | None,
+    *,
+    tools: Any = None,
+    response_format: Any = None,
+) -> int:
     """Estimate prompt size in tokens, cheaply enough for the routing hot path.
 
-    Uses a character heuristic rather than ``serving.utils.tokens``: real
+    Uses a byte heuristic rather than ``serving.utils.tokens``: real
     tokenization of a 700k-token prompt means pushing megabytes of text through
     tiktoken on every request, and this value only has to be good enough to rank
     endpoints and recognize an elephant. Being off by 20% changes nothing about
     which endpoint wins; spending 100ms of CPU to route would.
 
+    Everything the adapter forwards counts, not just ``content``. Tool
+    definitions and a structured-output schema are serialized into the same
+    upstream body, and inside each message ``_clean_message`` preserves every
+    non-None field -- so an assistant turn carrying ``tool_calls`` with large
+    ``arguments``, or ``reasoning_content``, is prompt-bearing even when its
+    ``content`` is null. An agentic history of tool calls, or a large MCP
+    catalog, therefore imposes far more prefill than its visible turn suggests,
+    and sizing on message content alone would rank it as though it had not.
+
     Args:
         messages: OpenAI-style messages, or None.
+        tools: Tool definitions from the request, if any.
+        response_format: Structured-output spec from the request, if any.
 
     Returns:
         Estimated prompt tokens (never negative).
     """
-    if not messages:
-        return 0
     chars = 0
-    for message in messages:
+    for message in messages or ():
         if not isinstance(message, dict):
             continue
-        chars += _content_chars(message.get("content"))
-    return chars // _CHARS_PER_TOKEN
+        chars += _content_chars(message.get("content")) + _message_extra_chars(message)
+    chars += _serialized_chars(tools) + _serialized_chars(response_format)
+    return chars // _BYTES_PER_TOKEN
+
+
+def _media_identity(block: dict[str, Any]) -> str:
+    """Return a cheap, stable identity for one image/audio block.
+
+    The payload is digested rather than sampled. Edges-and-length was cheaper,
+    but it is a spot check by another name: swapping bytes in the middle of an
+    equally sized attachment left the identity unchanged while the upstream
+    prefix was invalid from that attachment onward -- the same hole the anchor
+    closed for text, and closing it there while leaving it open here would just
+    move the entry point.
+
+    A digest is one pass with no copy, which is the same order as the size walk
+    this module already does over every prompt; what it must never do is *keep*
+    the payload, so a megabyte data URL is hashed and discarded rather than
+    concatenated into an evidence string.
+    """
+    kind = block.get("type") or "media"
+    payload = block.get("image_url") or block.get("input_audio") or block.get("source") or ""
+    if isinstance(payload, dict):
+        payload = payload.get("url") or payload.get("data") or ""
+    if not isinstance(payload, str):
+        payload = str(payload)
+    digest = hashlib.blake2b(payload.encode("utf-8", "ignore"), digest_size=8).hexdigest()
+    return f"\x03{kind}:{len(payload)}:{digest}"
+
+
+def _prefix_units(messages: Sequence[dict[str, Any]] | None) -> Iterator[str]:
+    """Yield the prompt's prefix-bearing content, in the order the upstream sees it.
+
+    One canonical stream per prompt, so two identical prompts produce identical
+    units and a changed one diverges at the point it changed. Text is yielded
+    verbatim; media contributes :func:`_media_identity` rather than its payload;
+    every non-content field a message carries (tool calls, reasoning) is
+    serialized in its own key order. Role markers separate messages so a
+    boundary cannot be forged by concatenating two prompts' text.
+
+    Deliberately not ``sort_keys``: ``_clean_message`` forwards a message with
+    its keys in the order the client sent them, so two orderings are two
+    different request bodies and two different cached prefixes. Normalizing them
+    to one identity would vouch for a prefix that changed -- the unsafe
+    direction. Keeping the order costs at worst a discount forgone when a client
+    reshuffles its own JSON, which is the safe one.
+    """
+    for message in messages or ():
+        if not isinstance(message, dict):
+            continue
+        yield f"\x01{message.get('role')}\x02"
+        content = message.get("content")
+        if isinstance(content, str):
+            yield content
+        elif isinstance(content, list):
+            for block in content:
+                # A block marker, so re-splitting the same characters across
+                # blocks is a different prompt here as well as upstream: the
+                # adapter joins text blocks with a newline, so ["ab"] and
+                # ["a", "b"] serialize differently and cache differently.
+                yield "\x04"
+                if isinstance(block, str):
+                    yield block
+                elif isinstance(block, dict):
+                    if block.get("type") in ("image", "image_url", "audio", "input_audio"):
+                        yield _media_identity(block)
+                    else:
+                        text = block.get("text")
+                        if isinstance(text, str):
+                            yield text
+                        else:
+                            # tool_use / tool_result / thinking blocks: serialized
+                            # rather than skipped, so editing tool history cannot
+                            # validate as an unchanged prefix.
+                            with contextlib.suppress(TypeError, ValueError):
+                                yield json.dumps(block)
+        extra = {k: v for k, v in message.items() if k not in ("role", "content") and v is not None}
+        if extra:
+            with contextlib.suppress(TypeError, ValueError):
+                yield json.dumps(extra)
+
+
+def prompt_anchor(messages: Sequence[dict[str, Any]] | None) -> tuple[int, str] | None:
+    """Return (prefix length, digest of the whole prefix) for a prompt.
+
+    Stored with the prefix hint and re-checked on the next turn, where it proves
+    that the later prompt *contains this one as a prefix* -- not merely that the
+    two share an opening, and not merely that they agree at one sampled window.
+    A spot check can be satisfied by a prompt that matches at the sample and
+    differs in between; a prefix digest cannot.
+
+    This is what makes the discount evidence-based rather than assumed. The
+    conversation fingerprint says "the same conversation started here"; the
+    anchor says "and every character we measured is still here, unchanged".
+
+    Hashed incrementally over :func:`_prefix_units` so a megabyte-scale prompt
+    costs one pass and no copy of itself.
+
+    Returns:
+        The pair, or None for a prompt with nothing to anchor on.
+    """
+    digest = hashlib.blake2b(digest_size=8)
+    length = 0
+    for unit in _prefix_units(messages):
+        digest.update(unit.encode("utf-8", "ignore"))
+        length += len(unit)
+    if length == 0:
+        return None
+    return length, digest.hexdigest()
+
+
+def _anchor_holds(messages: Sequence[dict[str, Any]] | None, anchor: tuple[int, str]) -> bool:
+    """Return True when the remembered prompt is a prefix of this one."""
+    length, expected = anchor
+    if length <= 0:
+        return False
+    digest = hashlib.blake2b(digest_size=8)
+    seen = 0
+    for unit in _prefix_units(messages):
+        if seen >= length:
+            break
+        take = unit[: length - seen]
+        digest.update(take.encode("utf-8", "ignore"))
+        seen += len(take)
+    # Short of the remembered length: cannot contain it, let alone extend it.
+    return seen == length and digest.hexdigest() == expected
+
+
+def _message_extra_chars(message: dict[str, Any]) -> int:
+    """Return the char cost of a message's non-content fields.
+
+    ``role`` is a word and ``content`` is counted separately by the caller;
+    everything else the adapter preserves -- ``tool_calls`` and their serialized
+    ``arguments``, ``reasoning_content``, ``name``, ``tool_call_id`` -- is prompt
+    text the upstream prefills like any other.
+    """
+    extra = {k: v for k, v in message.items() if k not in ("role", "content") and v is not None}
+    return _serialized_chars(extra)
+
+
+def _serialized_chars(value: Any) -> int:
+    """Return the char cost of a non-message prompt field (tools, schemas).
+
+    These reach the upstream as JSON, so their serialized length is what the
+    model prefills. Sized with ``json.dumps`` rather than walked structurally
+    because the shape is arbitrary and the objects are small next to the prompts
+    this module exists to measure; anything unserializable is skipped rather
+    than guessed at.
+    """
+    if not value:
+        return 0
+    try:
+        # ensure_ascii escapes multibyte text to \uXXXX, which over-counts rather
+        # than under-counts it -- the safe direction for a tier that preempts.
+        return len(json.dumps(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _content_text(content: Any, limit: int) -> str:
+    """Return up to ``limit`` chars of a message's text, ignoring binary blocks.
+
+    Only text identifies a conversation here: image and audio blocks are skipped
+    rather than summarized, because a base64 payload would dominate the slice
+    and two different prompts carrying the same attachment would collide.
+    """
+    if limit <= 0:
+        return ""
+    if isinstance(content, str):
+        return content[:limit]
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    remaining = limit
+    for block in content:
+        if remaining <= 0:
+            break
+        text = ""
+        if isinstance(block, str):
+            text = block
+        elif isinstance(block, dict) and block.get("type") not in (
+            "image",
+            "image_url",
+            "audio",
+            "input_audio",
+        ):
+            value = block.get("text")
+            text = value if isinstance(value, str) else ""
+        if not text:
+            continue
+        parts.append("\x04" + text[:remaining])
+        remaining -= len(parts[-1])
+    return "".join(parts)
+
+
+def conversation_fingerprint(
+    messages: Sequence[dict[str, Any]] | None,
+    *,
+    tools: Any = None,
+    response_format: Any = None,
+) -> str | None:
+    """Identify *which* conversation a prompt belongs to, cheaply.
+
+    The warm-continuation discount keys on the caller, and a caller is not a
+    conversation: one API key, grant, or NAT'd IP sends many. Without an
+    identity, a caller who follows a 500k-token conversation with an unrelated
+    500k-token one has the second discounted to nothing -- harmless as a routing
+    hint, but as a *priority* it hands a genuinely cold mega-prefill the
+    interactive tier, letting it jump the queue and retract a real elephant.
+
+    What identifies a conversation is its *opening*: the leading system messages
+    plus the first user turn. Both are fixed for the life of an append-only
+    conversation -- later turns are appended after them -- so a continuation
+    hashes identically from turn two onwards, while a different conversation
+    from the same caller differs in its first user message and does not.
+
+    Each message contributes at most ``_FINGERPRINT_CHARS_PER_MESSAGE``, and at
+    most ``_FINGERPRINT_MAX_MESSAGES`` are read. The per-message budget is the
+    load-bearing part: one budget spread over the head would be swallowed whole
+    by a coding agent's system prompt, which runs to tens of KB, and every
+    conversation that agent ever sends would then fingerprint the same -- the
+    exact collision this exists to prevent. Roles are hashed alongside the text
+    so a message boundary cannot be forged by concatenation.
+
+    Two conversations that share both a system prompt *and* a first user turn
+    still collide, and that is the intended limit: they share a genuine prefix
+    of that length, which really is resident in the endpoint's radix cache.
+
+    Tool definitions and the output schema are part of the identity too, because
+    they are part of the *prefix*: the chat template renders them ahead of the
+    conversation, so swapping one tool catalog for another of the same size
+    invalidates the cache from that point while leaving both the messages and
+    the token total unchanged. Hashed whole rather than sliced, and in the
+    client's own key order rather than sorted -- a change anywhere in them,
+    ordering included, breaks the prefix, so it must break the digest.
+
+    Args:
+        messages: OpenAI-style messages, or None.
+        tools: Tool definitions from the request, if any.
+        response_format: Structured-output spec from the request, if any.
+
+    Returns:
+        A short hex digest, or None when there is nothing to fingerprint (a
+        pure-image first turn with no tools), which callers must read as "cannot
+        vouch for this" rather than as a match.
+    """
+    head: list[str] = []
+    for label, value in (("tools", tools), ("schema", response_format)):
+        # Unserializable: contributes nothing rather than a fake identity.
+        with contextlib.suppress(TypeError, ValueError):
+            if value:
+                head.append(f"{label}:{json.dumps(value)}")
+    seen_user = False
+    for message in (messages or ())[:_FINGERPRINT_MAX_MESSAGES]:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        text = _content_text(message.get("content"), _FINGERPRINT_CHARS_PER_MESSAGE)
+        if text:
+            head.append(f"{role}:{text}")
+        # The first user turn is the discriminator; nothing after it adds
+        # identity, and reading further would make the digest move as the
+        # conversation grows.
+        if role == "user":
+            seen_user = True
+        if seen_user:
+            break
+    if not head:
+        return None
+    return hashlib.blake2b("\x00".join(head).encode("utf-8", "ignore"), digest_size=8).hexdigest()
+
+
+def priority_for_prefill(tokens: int) -> int:
+    """Map an estimated prompt size to an upstream scheduling priority.
+
+    The gateway is the only authority on this value -- a client-supplied
+    ``priority`` never reaches an upstream, because the adapters forward a
+    whitelist of sampling params and this is not one of them. Which is the
+    point: priority is a claim about the *cost* a request imposes on the shared
+    replica, and no caller is disinterested about its own.
+
+    The tiers reuse the thresholds selection already runs on, so one prompt is
+    never an elephant for routing and an ordinary request for scheduling:
+
+    - at or above :data:`ELEPHANT_TOKENS` -- a prefill long enough to stall the
+      replica for everyone else; scheduled last and preemptible.
+    - at or above :data:`INTERVENE_TOKENS` -- large enough to matter, not large
+      enough to be worth retracting once it has started.
+    - below both -- interactive traffic, which is what this exists to protect.
+
+    Size is the only input on purpose. Deriving it from the caller (paying tier,
+    API key) would make it a fairness lever rather than a scheduling one, and the
+    request that suffers most from a mega-prefill is usually another caller's.
+
+    Args:
+        tokens: Estimated un-cached prompt tokens, from
+            :func:`estimate_prefill_tokens`.
+
+    Returns:
+        The priority integer to stamp on the upstream request body.
+    """
+    if tokens >= ELEPHANT_TOKENS:
+        return PRIORITY_ELEPHANT
+    if tokens >= INTERVENE_TOKENS:
+        return PRIORITY_LARGE
+    return PRIORITY_INTERACTIVE
+
+
+@dataclass(frozen=True)
+class _PrefixHint:
+    """One caller's last prompt on one endpoint, for warm-continuation discounting.
+
+    Attributes:
+        tokens: That prompt's estimated total size.
+        expires_at: Clock value past which the radix cache is assumed cold.
+        fingerprint: Which conversation it was, or None when it could not be
+            fingerprinted. Consulted only by callers that pass one, so routing
+            keeps the caller-scoped discount it was built with while scheduling
+            priority -- where a wrong discount preempts real work rather than
+            merely skewing a load estimate -- requires the match.
+        anchor: That prompt's length and tail digest, so a later turn can be
+            shown to *contain* it rather than merely to share its opening.
+    """
+
+    tokens: int
+    expires_at: float
+    fingerprint: str | None = None
+    anchor: tuple[int, str] | None = None
 
 
 @dataclass
@@ -191,6 +601,12 @@ class PrefillLease:
         released: Set once the lease has been returned; makes release idempotent
             so the streaming path can release on first token and again in a
             ``finally`` without double-crediting.
+        prompt_tokens: This request's estimated *total* prompt size, written to
+            the prefix hint only once prefill is confirmed complete.
+        fingerprint: Which conversation the prompt belongs to, stored with that
+            hint so a later turn can prove it is the same one.
+        anchor: This prompt's length and tail digest, stored with that hint so a
+            later turn can prove it contains this one.
     """
 
     endpoint_id: str
@@ -198,6 +614,9 @@ class PrefillLease:
     elephant: bool
     affinity_key: str | None = None
     released: bool = False
+    prompt_tokens: int = 0
+    fingerprint: str | None = None
+    anchor: tuple[int, str] | None = None
 
 
 class PrefillLoadTracker:
@@ -235,7 +654,7 @@ class PrefillLoadTracker:
         # never counts against its own affinity ceiling.
         self._by_caller: dict[tuple[str, str], int] = {}
         # (affinity_key, endpoint_id) -> (last prompt tokens, expiry).
-        self._prefix_hints: OrderedDict[tuple[str, str], tuple[int, float]] = OrderedDict()
+        self._prefix_hints: OrderedDict[tuple[str, str], _PrefixHint] = OrderedDict()
         self._elephant_tokens = max(int(elephant_tokens), 1)
         self._elephant_limit = max(int(elephant_limit), 1)
         self._clock = clock
@@ -245,6 +664,9 @@ class PrefillLoadTracker:
         endpoint_id: str,
         tokens: int,
         affinity_key: str | None = None,
+        *,
+        fingerprint: str | None = None,
+        messages: Sequence[dict[str, Any]] | None = None,
     ) -> int:
         """Estimate what this endpoint must actually prefill for this prompt.
 
@@ -260,10 +682,20 @@ class PrefillLoadTracker:
         on the routing path, and the tokenization a real prefix match needs is
         the cost this whole module is written to avoid.
 
+        Two optional checks tighten this for callers that cannot afford a wrong
+        answer. ``fingerprint`` requires the remembered turn to belong to the
+        same conversation; ``messages`` additionally requires this prompt to
+        *contain* the remembered one, verified against its stored anchor. A fork
+        or retry sharing only the opening passes the first and fails the second,
+        which is the difference between subtracting a cached prefix and
+        subtracting one that diverged.
+
         Args:
             endpoint_id: Candidate endpoint.
             tokens: Estimated total prompt tokens.
             affinity_key: Caller identity, or None when unknown.
+            fingerprint: Conversation identity to require a match on.
+            messages: This request's messages, to verify the stored anchor.
 
         Returns:
             Estimated un-cached prefill tokens, never negative.
@@ -273,9 +705,17 @@ class PrefillLoadTracker:
             return total
         with self._lock:
             hint = self._prefix_hints.get((affinity_key, endpoint_id))
-            if hint is None or hint[1] <= self._clock():
+            if hint is None or hint.expires_at <= self._clock():
                 return total
-            return max(total - hint[0], 0)
+            if fingerprint is not None and fingerprint != hint.fingerprint:
+                return total
+            if messages is not None and not (
+                hint.anchor is not None and _anchor_holds(messages, hint.anchor)
+            ):
+                # Shares the opening but does not contain the measured prompt:
+                # a fork or a retry, whose divergent suffix is a cold prefill.
+                return total
+            return max(total - hint.tokens, 0)
 
     @property
     def elephant_tokens(self) -> int:
@@ -307,20 +747,28 @@ class PrefillLoadTracker:
         tokens: int,
         *,
         affinity_key: str | None = None,
+        fingerprint: str | None = None,
+        anchor: tuple[int, str] | None = None,
     ) -> PrefillLease:
         """Charge a request's estimated un-cached prefill to an endpoint.
 
         Never blocks or refuses: admission is decided during selection, and a
         request that reached dispatch must always be allowed to proceed.
 
-        Also records this prompt's size against ``(affinity_key, endpoint_id)``
-        so the caller's next turn on this endpoint is recognized as warm.
+        The prompt is *not* remembered here. A hint written at dispatch would
+        claim a prefix that no upstream has built yet: two overlapping turns of
+        one conversation would have the second discounted against the first
+        while the first is still prefilling, and a dispatch that fails would
+        leave behind a hint for a prefix that was never cached. It is written by
+        :meth:`release` instead, once prefill is confirmed complete.
 
         Args:
             endpoint_id: Endpoint about to receive the request.
             tokens: Estimated *total* prompt tokens; the cached prefix is
                 discounted here.
             affinity_key: Caller identity, when known.
+            fingerprint: Conversation identity, carried on the lease and stored
+                with the hint when prefill completes.
 
         Returns:
             The lease to hand back to :meth:`release`.
@@ -328,7 +776,6 @@ class PrefillLoadTracker:
         total = max(int(tokens), 0)
         charged = self.uncached_estimate(endpoint_id, total, affinity_key)
         elephant = self.is_elephant(charged)
-        now = self._clock()
         with self._lock:
             self._backlog[endpoint_id] = self._backlog.get(endpoint_id, 0) + charged
             if elephant:
@@ -336,12 +783,14 @@ class PrefillLoadTracker:
             if affinity_key is not None:
                 caller = (endpoint_id, affinity_key)
                 self._by_caller[caller] = self._by_caller.get(caller, 0) + charged
-                self._remember_prompt_locked(affinity_key, endpoint_id, total, now)
         return PrefillLease(
             endpoint_id=endpoint_id,
             tokens=charged,
             elephant=elephant,
             affinity_key=affinity_key,
+            prompt_tokens=total,
+            fingerprint=fingerprint,
+            anchor=anchor,
         )
 
     def _remember_prompt_locked(
@@ -350,22 +799,59 @@ class PrefillLoadTracker:
         endpoint_id: str,
         tokens: int,
         now: float,
+        fingerprint: str | None = None,
+        anchor: tuple[int, str] | None = None,
     ) -> None:
         """Record a prompt size for warm-continuation discounting. Caller holds the lock."""
         key = (affinity_key, endpoint_id)
-        self._prefix_hints[key] = (tokens, now + _PREFIX_HINT_TTL_SEC)
+        self._prefix_hints[key] = _PrefixHint(
+            tokens=tokens,
+            expires_at=now + _PREFIX_HINT_TTL_SEC,
+            fingerprint=fingerprint,
+            anchor=anchor,
+        )
         self._prefix_hints.move_to_end(key)
         while len(self._prefix_hints) > _PREFIX_HINT_MAX_ENTRIES:
             self._prefix_hints.popitem(last=False)
 
-    def release(self, lease: PrefillLease | None) -> None:
+    def forget_endpoint(self, endpoint_id: str) -> None:
+        """Drop every warm-prefix hint recorded against one endpoint.
+
+        Called when an endpoint fails, because the most likely explanations --
+        a restart, an OOM, a container replaced under the same ``endpoint_id``
+        -- all empty its radix cache while leaving the hints describing it
+        untouched. The TTL bounds how long a *quiet* endpoint is believed; this
+        bounds a *broken* one, which can lose its cache at any point inside that
+        window.
+
+        Over-invalidates on purpose: a 4xx from one caller says nothing about
+        the cache, but forgetting costs at most a discount, while keeping a hint
+        for a cache that no longer exists costs a cold mega-prefill the
+        interactive tier -- and that tier preempts.
+        """
+        with self._lock:
+            stale = [key for key in self._prefix_hints if key[1] == endpoint_id]
+            for key in stale:
+                del self._prefix_hints[key]
+
+    def release(self, lease: PrefillLease | None, *, prefill_confirmed: bool = False) -> None:
         """Return a lease's tokens to an endpoint's budget.
 
         Idempotent and None-tolerant so callers can release at the natural point
         (first token) and again from a ``finally`` without special-casing.
 
+        ``prefill_confirmed`` is what writes the warm-prefix hint, and it means
+        exactly one thing: this endpoint has now finished prefilling this prompt,
+        so the prefix really is resident. Releases that unwind an error or a
+        client disconnect leave it False and write nothing -- a prefix nobody
+        built must not discount the next request, least of all into a priority
+        tier that preempts the request still building it.
+
         Args:
             lease: The lease from :meth:`acquire`, or None.
+            prefill_confirmed: True only where the upstream has demonstrably
+                finished prefill (a returned response, or the first content
+                token of a stream).
         """
         if lease is None or lease.released:
             return
@@ -373,6 +859,15 @@ class PrefillLoadTracker:
             if lease.released:
                 return
             lease.released = True
+            if prefill_confirmed and lease.affinity_key is not None:
+                self._remember_prompt_locked(
+                    lease.affinity_key,
+                    lease.endpoint_id,
+                    lease.prompt_tokens,
+                    self._clock(),
+                    lease.fingerprint,
+                    lease.anchor,
+                )
             remaining = self._backlog.get(lease.endpoint_id, 0) - lease.tokens
             if remaining > 0:
                 self._backlog[lease.endpoint_id] = remaining

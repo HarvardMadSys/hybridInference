@@ -30,6 +30,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from routing.endpoints import endpoint_id_for_adapter
+from routing.prefill_load import (
+    conversation_fingerprint,
+    estimate_prefill_tokens,
+    priority_for_prefill,
+    prompt_anchor,
+)
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
@@ -207,6 +213,23 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     return JSONResponse(
         status_code=exc.status_code, content=content, headers=dict(exc.headers or {})
     )
+
+
+def _prefill_inputs(body: dict[str, Any]) -> tuple[list[dict[str, Any]], Any]:
+    """Return (messages, tools) for prefill accounting on an Anthropic body.
+
+    Anthropic carries the system prompt beside ``messages`` rather than inside
+    it, and for a coding agent that block is the largest fixed part of the
+    prompt -- omitting it would size every request short and, worse, leave the
+    conversation identity blind to the one field that distinguishes two agents.
+    It is prepended as a system message so the estimator, fingerprint and anchor
+    see the prompt in the order the upstream will.
+    """
+    system = body.get("system")
+    messages = [m for m in (body.get("messages") or []) if isinstance(m, dict)]
+    if system:
+        messages = [{"role": "system", "content": system}, *messages]
+    return messages, body.get("tools")
 
 
 # --- Model resolution ------------------------------------------------------
@@ -1200,6 +1223,74 @@ async def anthropic_messages(
                 f"[{request_id}] Dropped Anthropic-only fields for OpenAI backend: {dropped}"
             )
 
+    # Prefill accounting for this surface. Computed *after* the sanitizer,
+    # which strips Anthropic-only fields from these very dicts in place: sizing
+    # and anchoring the pre-sanitized form would store evidence for a prompt
+    # that is not the one dispatched, and the next turn -- re-walking the same
+    # mutated dicts -- would fail its own containment check every time. That
+    # breaks the warm path for precisely the clients this serves, since
+    # cache_control is what Claude Code sends. FixedRouter does this for
+    # /v1/chat/completions, but this handler dispatches its own adapter and
+    # never enters the router -- and this is where the prefill-dominated Claude
+    # Code traffic arrives, so without it the local sglang backends would order
+    # their queue by arrival for exactly the requests the priority exists to
+    # order. Published durably rather than around the dispatch: there is no
+    # fallback here to re-publish for, and the streaming path hands the upstream
+    # to a background reader task, which copies the context at creation.
+    prefill_messages, prefill_tools = _prefill_inputs(body)
+    prefill_tokens = estimate_prefill_tokens(prefill_messages, tools=prefill_tools)
+    prefill_fingerprint = conversation_fingerprint(prefill_messages, tools=prefill_tools)
+    prefill_anchor = prompt_anchor(prefill_messages)
+    prefill_load = router_exec.prefill_load
+    prefill_affinity = req_ctx.get().get("affinity_key")
+
+    def _record_dispatch_failure(endpoint_id: str, **kwargs: Any) -> None:
+        """Record an endpoint failure and drop its warm-prefix hints.
+
+        The mirror of ``FixedRouter._on_failure``: a failing endpoint has most
+        likely lost its radix cache (restart, OOM, a container replaced under
+        the same id), so hints describing that cache stop being evidence. This
+        surface records its own outcomes rather than going through the router,
+        so without this the chat path would forget a restarted backend's hints
+        while Claude Code traffic kept discounting against them -- and a cold
+        continuation stamped interactive is one that preempts.
+        """
+        prefill_load.forget_endpoint(endpoint_id)
+        health_registry.record_failure(endpoint_id, **kwargs)
+
+    def _begin_prefill():
+        """Publish this request's priority and charge its prefill to the endpoint.
+
+        Called where the dispatch actually begins, never merely where it is
+        prepared. A lease taken in the handler body would leak on the streaming
+        path: a client that disconnects after the handler returns but before
+        Starlette starts iterating the response generator leaves a generator
+        that never runs, so its ``finally`` never returns the lease and the
+        endpoint stays charged -- and possibly holding an elephant slot --
+        until the process restarts. Selection would then steer traffic away
+        from a replica that is idle, which is worse than not accounting at all.
+        """
+        req_ctx.update(
+            {
+                req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(
+                    prefill_load.uncached_estimate(
+                        dispatch_endpoint_id,
+                        prefill_tokens,
+                        prefill_affinity,
+                        fingerprint=prefill_fingerprint,
+                        messages=prefill_messages,
+                    )
+                )
+            }
+        )
+        return prefill_load.acquire(
+            dispatch_endpoint_id,
+            prefill_tokens,
+            affinity_key=prefill_affinity,
+            fingerprint=prefill_fingerprint,
+            anchor=prefill_anchor,
+        )
+
     metadata = {
         "user_agent": request.headers.get("user-agent"),
         "referer": request.headers.get("referer"),
@@ -1256,6 +1347,8 @@ async def anthropic_messages(
         }
 
         async def _gen():
+            # Bound to this generator's execution: see _begin_prefill.
+            prefill_lease = _begin_prefill()
             request_usage = {
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -1325,7 +1418,7 @@ async def anthropic_messages(
                                 # arrives as a timer rather than an exception.
                                 # No ``exc``: there is no HTTP status, so the
                                 # registry's client-error exemption is moot.
-                                health_registry.record_failure(
+                                _record_dispatch_failure(
                                     dispatch_endpoint_id,
                                     reason="messages_stream_idle",
                                     detail=stream_error_operator,
@@ -1373,6 +1466,10 @@ async def anthropic_messages(
                                 # that the upstream accepted the connection.
                                 health_success_recorded = True
                                 health_registry.record_success(dispatch_endpoint_id)
+                                # Prefill is done once content flows; the prompt
+                                # is resident, so the endpoint is decoding and
+                                # its prefix is safe to remember.
+                                prefill_load.release(prefill_lease, prefill_confirmed=True)
                         yield chunk
                 finally:
                     reader_task.cancel()
@@ -1397,7 +1494,7 @@ async def anthropic_messages(
                 # ``exc=`` so the registry can apply its client-error exemption:
                 # a 400 from a malformed request is one caller's mistake and
                 # must not open the circuit for everyone.
-                health_registry.record_failure(
+                _record_dispatch_failure(
                     dispatch_endpoint_id,
                     reason="messages_stream_exception",
                     detail=stream_error_operator,
@@ -1419,7 +1516,7 @@ async def anthropic_messages(
                 logger.warning(f"[{request_id}] Streaming dispatch failed: key pool exhausted")
                 # Carries no HTTP status, so it is never exempt: every key for
                 # this endpoint is muted and nothing it is sent can succeed.
-                health_registry.record_failure(
+                _record_dispatch_failure(
                     dispatch_endpoint_id,
                     reason="messages_stream_exception",
                     detail=stream_error_operator,
@@ -1443,7 +1540,7 @@ async def anthropic_messages(
                 stream_error_message = scrub_error_for_user(exc, request_id, 502)
                 stream_error_operator = operator_safe_error(exc)
                 logger.exception(f"[{request_id}] Streaming dispatch failed")
-                health_registry.record_failure(
+                _record_dispatch_failure(
                     dispatch_endpoint_id,
                     reason="messages_stream_exception",
                     detail=stream_error_operator,
@@ -1458,6 +1555,11 @@ async def anthropic_messages(
                 }
                 yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
             finally:
+                # Idempotent: a stream that reached first content already
+                # returned this above. Everything else -- an upstream error, a
+                # client disconnect mid-prefill -- unwinds here, and must not
+                # leave the endpoint charged for a prefill nobody is doing.
+                prefill_load.release(prefill_lease)
                 latency_ms = int((time.time() - start) * 1000)
                 if log_store:
                     final_acc = _finalize_response_acc(response_acc)
@@ -1512,15 +1614,17 @@ async def anthropic_messages(
 
         return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
 
+    prefill_lease = _begin_prefill()
     try:
         resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
+        prefill_load.release(prefill_lease, prefill_confirmed=True)
     except HTTPException as exc:
         error_message = str(exc.detail)
         # ``exc=`` throughout: HTTPException/ClientResponseError carry a status,
         # and the registry drops 4xx client errors on that basis so one caller's
         # malformed request cannot open the circuit for everyone. The
         # status-less failures below (key pool, timeout) are never exempt.
-        health_registry.record_failure(
+        _record_dispatch_failure(
             dispatch_endpoint_id,
             reason="messages_exception",
             detail=operator_safe_error(exc),
@@ -1549,7 +1653,7 @@ async def anthropic_messages(
         scrub_exc = exc if client_status == exc.status else None
         error_message = scrub_error_for_user(scrub_exc, request_id, client_status)
         logger.exception(f"[{request_id}] Adapter messages() failed")
-        health_registry.record_failure(
+        _record_dispatch_failure(
             dispatch_endpoint_id,
             reason="messages_exception",
             detail=operator_safe_error(exc),
@@ -1579,7 +1683,7 @@ async def anthropic_messages(
         # hammering with immediate retries for the whole mute window.
         error_message = scrub_error_for_user(None, request_id, 429)
         logger.warning(f"[{request_id}] Adapter messages() failed: key pool exhausted")
-        health_registry.record_failure(
+        _record_dispatch_failure(
             dispatch_endpoint_id,
             reason="messages_exception",
             detail=operator_safe_error(exc),
@@ -1608,7 +1712,7 @@ async def anthropic_messages(
         # the client can tell a slow upstream from a real server fault.
         error_message = scrub_error_for_user(None, request_id, 504)
         logger.warning(f"[{request_id}] Adapter messages() timed out")
-        health_registry.record_failure(
+        _record_dispatch_failure(
             dispatch_endpoint_id,
             reason="messages_exception",
             detail=operator_safe_error(exc),
@@ -1634,7 +1738,7 @@ async def anthropic_messages(
         # CancelledError must propagate uncounted -- the upstream did not fail.
         error_message = scrub_error_for_user(exc, request_id, 502)
         logger.exception(f"[{request_id}] Adapter messages() failed")
-        health_registry.record_failure(
+        _record_dispatch_failure(
             dispatch_endpoint_id,
             reason="messages_exception",
             detail=operator_safe_error(exc),
@@ -1655,6 +1759,12 @@ async def anthropic_messages(
             operator_error=operator_safe_error(exc),
         )
         return _anthropic_error(502, error_message)
+
+    finally:
+        # Every except arm above returns its own error response, so this is the
+        # only place that covers them all. Idempotent, so the confirmed release
+        # on the success path stands.
+        prefill_load.release(prefill_lease)
 
     # Every branch above returns, so reaching here means the adapter produced a
     # response. Recorded before logging so a slow log store can't delay the
