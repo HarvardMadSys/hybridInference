@@ -1755,6 +1755,7 @@ class BackendManager:
         # readiness, so skipping it keeps slow models inside HEALTH_TIMEOUT.
         if self.config.get("skip_server_warmup"):
             cmd += ["--skip-server-warmup"]
+        cmd += self._priority_scheduling_args()
         if self.config.get("is_embedding"):
             # Embedding models run sglang in encode-only mode; tool-call parsing
             # and chat-completion endpoints are irrelevant for them.
@@ -1770,8 +1771,6 @@ class BackendManager:
             cmd += ["--enable-cache-report"]
             # Bound how long a decode waits behind a co-resident prefill.
             cmd += self._chunked_prefill_args("--chunked-prefill-size")
-            # ... and decide which prefill gets to make it wait at all.
-            cmd += self._priority_scheduling_args()
             cmd += self._hicache_args()
             tcp = self.config.get("tool_call_parser")
             if tcp:

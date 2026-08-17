@@ -129,9 +129,15 @@ PRIORITY_ELEPHANT: int = _env_int("ROUTING_PRIORITY_ELEPHANT", 0)
 _PREFIX_HINT_TTL_SEC: float = 2 * 3600.0
 _PREFIX_HINT_MAX_ENTRIES: int = 50_000
 
-# Chars per token for the cheap estimator. Deliberately coarse -- see
-# estimate_prefill_tokens for why precision is not worth the CPU here.
-_CHARS_PER_TOKEN: int = 4
+# Bytes per token for the cheap estimator. Deliberately coarse -- see
+# estimate_prefill_tokens for why precision is not worth the CPU here -- but
+# measured in UTF-8 bytes rather than characters, because the two diverge by
+# more than the tolerance this feeds. A CJK character is one token and three
+# bytes; at four *characters* per token a 100k-token Chinese prompt estimates
+# at 25k and lands in the interactive tier, which is the one tier allowed to
+# preempt. Bytes put it at ~75k instead: still approximate, no longer
+# approximate in the direction that hands a mega-prefill the preempting tier.
+_BYTES_PER_TOKEN: int = 4
 
 # Flat costs for non-text blocks, mirroring serving.utils.tokens so a base64
 # image is never char-counted as a colossal text prompt.
@@ -148,6 +154,16 @@ _FINGERPRINT_CHARS_PER_MESSAGE: int = 2048
 _FINGERPRINT_MAX_MESSAGES: int = 4
 
 
+def _text_size(text: str) -> int:
+    """Return a text's UTF-8 byte length, without paying for it on ASCII.
+
+    ``isascii()`` is a C-level scan with no allocation and is true for the bulk
+    of this fleet's traffic, where the byte length is the character length. Only
+    text that is actually multibyte pays for an encode.
+    """
+    return len(text) if text.isascii() else len(text.encode("utf-8", "ignore"))
+
+
 def _content_chars(content: Any) -> int:
     """Return an approximate character count for one message's content.
 
@@ -162,20 +178,20 @@ def _content_chars(content: Any) -> int:
     if content is None:
         return 0
     if isinstance(content, str):
-        return len(content)
+        return _text_size(content)
     if isinstance(content, list):
         total = 0
         for block in content:
             if isinstance(block, str):
-                total += len(block)
+                total += _text_size(block)
                 continue
             if not isinstance(block, dict):
                 continue
             btype = block.get("type")
             if btype in ("image", "image_url"):
-                total += _IMAGE_TOKENS * _CHARS_PER_TOKEN
+                total += _IMAGE_TOKENS * _BYTES_PER_TOKEN
             elif btype in ("audio", "input_audio"):
-                total += _AUDIO_TOKENS * _CHARS_PER_TOKEN
+                total += _AUDIO_TOKENS * _BYTES_PER_TOKEN
             else:
                 text = block.get("text")
                 if not isinstance(text, str):
@@ -186,7 +202,7 @@ def _content_chars(content: Any) -> int:
                     # Claude Code history at nearly nothing.
                     total += _serialized_chars(block)
                 elif isinstance(text, str):
-                    total += len(text)
+                    total += _text_size(text)
         return total
     return len(str(content))
 
@@ -199,7 +215,7 @@ def estimate_prefill_tokens(
 ) -> int:
     """Estimate prompt size in tokens, cheaply enough for the routing hot path.
 
-    Uses a character heuristic rather than ``serving.utils.tokens``: real
+    Uses a byte heuristic rather than ``serving.utils.tokens``: real
     tokenization of a 700k-token prompt means pushing megabytes of text through
     tiktoken on every request, and this value only has to be good enough to rank
     endpoints and recognize an elephant. Being off by 20% changes nothing about
@@ -228,7 +244,7 @@ def estimate_prefill_tokens(
             continue
         chars += _content_chars(message.get("content")) + _message_extra_chars(message)
     chars += _serialized_chars(tools) + _serialized_chars(response_format)
-    return chars // _CHARS_PER_TOKEN
+    return chars // _BYTES_PER_TOKEN
 
 
 def _media_identity(block: dict[str, Any]) -> str:
@@ -364,6 +380,8 @@ def _serialized_chars(value: Any) -> int:
     if not value:
         return 0
     try:
+        # ensure_ascii escapes multibyte text to \uXXXX, which over-counts rather
+        # than under-counts it -- the safe direction for a tier that preempts.
         return len(json.dumps(value))
     except (TypeError, ValueError):
         return 0

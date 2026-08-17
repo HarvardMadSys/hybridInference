@@ -1456,3 +1456,45 @@ def test_edited_tool_history_does_not_validate_as_a_warm_prefix():
 
     assert not prefill_load._anchor_holds(rewritten, anchor)
     assert prefill_load._anchor_holds([*original, {"role": "assistant", "content": "done"}], anchor)
+
+
+@pytest.mark.unit
+def test_multibyte_text_is_not_underestimated_into_the_preempting_tier():
+    """Four characters per token is an ASCII assumption, and this fleet serves CJK.
+
+    A Chinese character is one token and three UTF-8 bytes, so a ~100k-token
+    prompt is ~100k characters: at four characters per token it estimates to 25k
+    and lands in the interactive tier -- the one tier allowed to retract a
+    running elephant. Measuring bytes puts it near 75k instead. Still coarse,
+    but no longer coarse in the direction that hands a mega-prefill the
+    preempting tier.
+    """
+    cjk = [{"role": "user", "content": "汉字测试内容" * 17_000}]  # ~102k chars
+
+    tokens = prefill_load.estimate_prefill_tokens(cjk)
+
+    assert tokens > prefill_load.INTERVENE_TOKENS
+    assert prefill_load.priority_for_prefill(tokens) != prefill_load.PRIORITY_INTERACTIVE
+
+
+@pytest.mark.unit
+def test_ascii_sizing_is_unchanged_and_costs_no_encode():
+    # The common case must not regress, in value or in cost: isascii() is a
+    # C-level scan with no allocation, and for ASCII the byte length is the
+    # character length.
+    ascii_only = [{"role": "user", "content": "x" * 4_000}]
+
+    assert prefill_load.estimate_prefill_tokens(ascii_only) == 1_000
+    assert prefill_load._text_size("x" * 4_000) == 4_000
+    assert prefill_load._text_size("汉") == 3
+
+
+@pytest.mark.unit
+def test_emoji_and_mixed_scripts_count_above_their_character_length():
+    # Emoji are four bytes each; a prompt of them is nowhere near as cheap as
+    # its character count suggests.
+    emoji = [{"role": "user", "content": "🔥" * 10_000}]
+    mixed = [{"role": "user", "content": ("hello 世界 " * 5_000)}]
+
+    assert prefill_load.estimate_prefill_tokens(emoji) == 10_000  # 40k bytes / 4
+    assert prefill_load.estimate_prefill_tokens(mixed) > len(mixed[0]["content"]) // 4
