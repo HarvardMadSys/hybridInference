@@ -9,7 +9,7 @@
 > 创建:2026-08-03,基于 Murphy 与 Claude 的对话,并吸收另一 agent 会话的
 > 交叉评审(symlink 挂载悬空、拉模式触发、digest 与计划文本的关系)。
 > 修订:2026-08-12,状态对账——W0 已完成、W1 GitHub 侧已完成、§7 行动项已随
-> H4 解决;详见 §0 与各工作项内的进展注记。同日并入七轮交叉评审:W5 删除
+> H4 解决;详见 §0 与各工作项内的进展注记。同日并入八轮交叉评审:W5 删除
 > 时序改判(不与搬迁同批)、W6 增补 prod 观察窗、W7 compose base 来源待拍板
 > (§6-5)与 `/agents` 路由缺口(P1)、判据②改以 public-export **物化树**
 > 为对象、W2 同源硬门(脏检查含 untracked + 无旁路)、W2 砍除 frontend
@@ -19,8 +19,10 @@
 > (短期 token + 临时 DOCKER_CONFIG,取消主机持久凭据)、W4 增自动发布与
 > package 授权、lock 增 `source_commit`(第七轮收敛为唯一 SHA 真值)、
 > 判据"distributions/ 只剩 example"写实为清空(删除批联动 export
-> manifest optional 化)、W1 补第四组 runner(trusted-automation)、
-> Pages 切换移 W5e、W2 增架构硬门与缓存回滚落实。
+> manifest optional 化)、W1 补第四组 runner(trusted-automation)与主机
+> 状态迁移、Pages 切换移 W5e 并加四步硬序、W2 定稿对齐语义(reset 到镜像
+> revision、失败自动恢复 last-known-good、架构门以 Docker server 为准)、
+> W3 增 workflow→runner→env→secrets 依赖矩阵。
 
 ## 0. 前提:Step 1 的收官状态(2026-08-12 对账)
 
@@ -150,7 +152,13 @@ staging=dev / prod=main 映射、release tag 节奏、回滚入口。
   W1 时新仓还是空的,切过去 Pages 会对着空树构建;须等 main/dev 内容
   就位后切,有 2026-07-27 双目录过渡的先例可循)。
 - 主机:`/srv/freeInference` checkout + 只读 deploy key;迁移窗口内
-  `/srv/hybridInference` 保留作回滚。
+  `/srv/hybridInference` 保留作回滚。**主机状态迁移(第八轮补)**:新
+  checkout 不止是代码——`.env`、`.env.oncall`、`var/data/**`、
+  `var/deploy-digest.log` 等文件型运维状态必须在 W6 前复制或外置为两条
+  回滚链共享的 host-state 目录(owner/mode 核验);Docker named volumes
+  (Postgres/pgAdmin/codex-oncall)靠固定 compose project name 存续,
+  不需搬。缺 `.env` 新链第一步就退出、`var/data` 挂上空目录=数据面清零,
+  这两种失败都必须在 W6 演练里而非切换日发现。
 
 **进展(2026-08-11)**:GitHub 侧已完成——`production`/`staging`
 Environments 已建;secrets 已迁(production 6/6;staging 6/8,缺
@@ -174,20 +182,20 @@ candidate 镜像推 GHCR(首个 candidate 钉 staging 当前 SHA——同代码�
 源码部署链保留为回滚。验收 = smoke 通过 + 一次回滚演练。**在同仓完成,不与
 搬迁混窗**(单变量原则)。
 
-同源为硬门(2026-08-12 评审第三、四轮定稿):镜像的
-`org.opencontainers.image.revision` label 必须等于主机 checkout 的 HEAD,
-且 checkout 必须干净——判据是 `git status --porcelain=v1
---untracked-files=all` 为空,tracked 改动与 untracked 新文件都算脏;
-ignored 的 `.env`、`var/**` 属预期主机状态,不在拒脏范围。两项均无旁路
-开关(评审后移除了 `allow_sha_mismatch`);另两道与 classic 对齐的守卫:
-HEAD 须为 `origin/dev` 的祖先(拒任意 ref 部署),checkout 信任/属主
-自愈同款复刻(safe.directory + `sudo -n chown`)。部署日志记录 source 与
-digest。复活 PR = #1258(build-candidates + digest deploy,双 workflow
-均 dispatch-only,backend-only)。部署前的架构硬门(第七轮):镜像
-`.Os/.Architecture` 与主机归一化架构(x86_64→amd64 等)硬比较,不符即
-拒,不允许留到容器启动才炸;首跑运行日志同时留档 staging 的 `uname -m`
-与 Docker server 平台。缓存兜底为真实行为:精确 digest 已在本地 daemon
-store 时跳过 login/pull,registry 不可达也能回滚到旧 digest。
+同源硬门(第八轮定稿为**对齐语义**):镜像的
+`org.opencontainers.image.revision` label 是部署的 SHA 真值——须存在、须为
+`origin/dev` 祖先;checkout 须干净(`git status --porcelain=v1
+--untracked-files=all` 为空,含 untracked;ignored 的 `.env`、`var/**` 属
+预期主机状态例外)后 `git reset --hard` **对齐到 label**,配置挂载永远
+匹配镜像代码。由此 previous-digest 回滚是完整语义:回滚 digest 同时回卷
+配置,配合"精确 digest 已在本地 daemon store 即跳过 login/pull"的缓存
+路径,registry 故障也能回滚。健康检查失败**自动恢复 last-known-good**
+(部署前捕获旧容器镜像与旧 revision,失败时双恢复并二次探活),恢复后仍
+以失败退出。无任何旁路开关。架构硬门以 **Docker server 平台**为比较对象
+(容器真正跑在 server 上;`uname` 只留档;server 平台读不到即 fail
+closed)。checkout 信任/属主自愈同 classic(safe.directory +
+`sudo -n chown`)。首飞钉 staging 当前 SHA 时对齐为 no-op,"同码只换
+包装"的证明不变。复活 PR = #1258(dispatch-only,backend-only)。
 
 ### W3 归属清单重生成
 
@@ -197,6 +205,15 @@ store 时跳过 login/pull,registry 不可达也能回滚到旧 digest。
 `ops/release/`(公开导出工具疑属上游)、`freeinference-harness`(主设计
 倾向"上游 testkit + 站点 targets 拆开")、`docs/developer/`(内部站)。
 (`agent-job-runner.yml` 原列灰区,已随 H4 出仓,条目作废——见 §7。)
+
+**产出物增补(第八轮)**:归属表之外,W3 同时生成
+`workflow → runner 标签 → environment → secrets/variables` 依赖矩阵,
+W5 每批搬迁按矩阵做 preflight。已知至少涉及的 secrets:
+`RAG_GATEWAY_API_KEY`、`CODEX_ONCALL_MODEL_API_KEY`、
+`CODEX_ONCALL_SLACK_BOT_TOKEN`、`ALERT_CONTROL_PLANE_ROUTE_KEY_V1` /
+`_PRODUCER_SIGNING_KEY_V1`、`CLOUDFLARE_API_TOKEN`;variables:
+`ALERT_CONTROL_PLANE_STAGING_URL`、`ALERT_CONTROL_PLANE_SLACK_CHANNEL_ID`;
+`ROUTEWISE_GITHUB_TOKEN` 除非迁移前确认可删(§2-3 的核实项)。
 
 ### W4 新仓骨架:lock + bump bot + 门测试
 
@@ -229,7 +246,10 @@ rag-index、codex-oncall、alert-control-plane-*;按 W3 裁定);
 (c) `services/` 中 W3 判定为 FreeInference-owned 的部分——注意
 `freeinference-harness` 不是 worker,按 §7 既有裁定拆开:协议一致性
 testkit 留上游,站点 targets 迁私有仓;(d) `ops/` 按 W3 裁定的部分;
-(e) doc 站 Pages 切仓;(f) rag-index 的跨仓依赖处理——ingest 依赖上游
+(e) doc 站 Pages 切仓——切换前四步硬序(第八轮):新仓成功跑一次
+sync-main → 确认 main 与 dev 都有文档内容 → 验证 production/preview 两个
+Pages build → 才切 Git integration(W5 PR 默认只进 dev,不走这四步则新仓
+main 可能为空,生产 doc 站会对着空树构建);(f) rag-index 的跨仓依赖处理——ingest 依赖上游
 `chunker.py`/`ingest.py`,v1 在 pin 的上游 checkout 里执行,终态改用带工具的
 上游镜像。
 
