@@ -241,6 +241,10 @@ class FixedRouter:
         detail: str | None = None,
         exc: BaseException | None = None,
     ) -> None:
+        # A failing endpoint has most likely lost its prefix cache (restart,
+        # OOM, a container replaced under the same id), so the hints describing
+        # it stop being evidence. See PrefillLoadTracker.forget_endpoint.
+        self._prefill_load.forget_endpoint(endpoint_id)
         self._health_registry.record_failure(
             endpoint_id,
             reason=reason,

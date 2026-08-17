@@ -123,10 +123,19 @@ PRIORITY_LARGE: int = _env_int("ROUTING_PRIORITY_LARGE", 15)
 PRIORITY_ELEPHANT: int = _env_int("ROUTING_PRIORITY_ELEPHANT", 0)
 
 # Bounds on the per-(caller, endpoint) prompt-size memory used to discount a
-# warm continuation. One small int per live conversation; TTL matches the
-# radix cache's useful lifetime closely enough that a stale hint just means we
-# briefly over-discount one request.
-_PREFIX_HINT_TTL_SEC: float = 2 * 3600.0
+# warm continuation.
+#
+# The TTL is the shortest interval after which the prefix it describes can be
+# gone: the local proxy stops an idle backend after 24 minutes
+# (ops/local_deployment_proxy, IDLE_TIMEOUT=1440s), which empties the radix
+# cache entirely. A hint that outlives that is evidence for a cache nobody
+# holds -- and since this now selects a preemption-capable priority tier, the
+# cost of believing it is a cold mega-prefill stamped interactive, retracting
+# work that was correctly tiered. Twenty minutes keeps it strictly inside the
+# window in which the backend that wrote it is still up.
+#
+# A restart *within* that window is what `forget_endpoint` covers.
+_PREFIX_HINT_TTL_SEC: float = 20 * 60.0
 _PREFIX_HINT_MAX_ENTRIES: int = 50_000
 
 # Bytes per token for the cheap estimator. Deliberately coarse -- see
@@ -279,8 +288,15 @@ def _prefix_units(messages: Sequence[dict[str, Any]] | None) -> Iterator[str]:
     units and a changed one diverges at the point it changed. Text is yielded
     verbatim; media contributes :func:`_media_identity` rather than its payload;
     every non-content field a message carries (tool calls, reasoning) is
-    serialized with sorted keys. Role markers separate messages so a boundary
-    cannot be forged by concatenating two prompts' text.
+    serialized in its own key order. Role markers separate messages so a
+    boundary cannot be forged by concatenating two prompts' text.
+
+    Deliberately not ``sort_keys``: ``_clean_message`` forwards a message with
+    its keys in the order the client sent them, so two orderings are two
+    different request bodies and two different cached prefixes. Normalizing them
+    to one identity would vouch for a prefix that changed -- the unsafe
+    direction. Keeping the order costs at worst a discount forgone when a client
+    reshuffles its own JSON, which is the safe one.
     """
     for message in messages or ():
         if not isinstance(message, dict):
@@ -310,11 +326,11 @@ def _prefix_units(messages: Sequence[dict[str, Any]] | None) -> Iterator[str]:
                             # rather than skipped, so editing tool history cannot
                             # validate as an unchanged prefix.
                             with contextlib.suppress(TypeError, ValueError):
-                                yield json.dumps(block, sort_keys=True)
+                                yield json.dumps(block)
         extra = {k: v for k, v in message.items() if k not in ("role", "content") and v is not None}
         if extra:
             with contextlib.suppress(TypeError, ValueError):
-                yield json.dumps(extra, sort_keys=True)
+                yield json.dumps(extra)
 
 
 def prompt_anchor(messages: Sequence[dict[str, Any]] | None) -> tuple[int, str] | None:
@@ -467,8 +483,9 @@ def conversation_fingerprint(
     they are part of the *prefix*: the chat template renders them ahead of the
     conversation, so swapping one tool catalog for another of the same size
     invalidates the cache from that point while leaving both the messages and
-    the token total unchanged. Hashed whole rather than sliced -- a change
-    anywhere in them breaks the prefix, so it must break the digest.
+    the token total unchanged. Hashed whole rather than sliced, and in the
+    client's own key order rather than sorted -- a change anywhere in them,
+    ordering included, breaks the prefix, so it must break the digest.
 
     Args:
         messages: OpenAI-style messages, or None.
@@ -485,7 +502,7 @@ def conversation_fingerprint(
         # Unserializable: contributes nothing rather than a fake identity.
         with contextlib.suppress(TypeError, ValueError):
             if value:
-                head.append(f"{label}:{json.dumps(value, sort_keys=True)}")
+                head.append(f"{label}:{json.dumps(value)}")
     seen_user = False
     for message in (messages or ())[:_FINGERPRINT_MAX_MESSAGES]:
         if not isinstance(message, dict):
@@ -789,6 +806,26 @@ class PrefillLoadTracker:
         self._prefix_hints.move_to_end(key)
         while len(self._prefix_hints) > _PREFIX_HINT_MAX_ENTRIES:
             self._prefix_hints.popitem(last=False)
+
+    def forget_endpoint(self, endpoint_id: str) -> None:
+        """Drop every warm-prefix hint recorded against one endpoint.
+
+        Called when an endpoint fails, because the most likely explanations --
+        a restart, an OOM, a container replaced under the same ``endpoint_id``
+        -- all empty its radix cache while leaving the hints describing it
+        untouched. The TTL bounds how long a *quiet* endpoint is believed; this
+        bounds a *broken* one, which can lose its cache at any point inside that
+        window.
+
+        Over-invalidates on purpose: a 4xx from one caller says nothing about
+        the cache, but forgetting costs at most a discount, while keeping a hint
+        for a cache that no longer exists costs a cold mega-prefill the
+        interactive tier -- and that tier preempts.
+        """
+        with self._lock:
+            stale = [key for key in self._prefix_hints if key[1] == endpoint_id]
+            for key in stale:
+                del self._prefix_hints[key]
 
     def release(self, lease: PrefillLease | None, *, prefill_confirmed: bool = False) -> None:
         """Return a lease's tokens to an endpoint's budget.

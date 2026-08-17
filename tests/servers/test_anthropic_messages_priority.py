@@ -271,3 +271,47 @@ async def test_streaming_lease_is_taken_when_the_generator_runs(
     assert calls == ["acquire"]
     assert tracker.backlog(endpoint_id) == 0
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_cache_control_blocks_do_not_break_the_warm_path(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, no_log_store, priority_route
+):
+    """Evidence must describe the prompt that is dispatched, not the one received.
+
+    ``_sanitize_for_openai_backend`` strips Anthropic-only fields from the
+    message dicts in place before an OpenAI-backed dispatch. Sizing and
+    anchoring the pre-sanitized form stored evidence for a prompt that was never
+    sent, and the next turn -- re-walking the same mutated dicts -- failed its
+    own containment check every time, so a long session was re-priced from its
+    full size on every turn. cache_control is exactly what Claude Code sends, so
+    this broke the warm path for the traffic the feature exists to serve.
+    """
+    sent = _capture_upstream(monkeypatch)
+    system = [
+        {
+            "type": "text",
+            "text": "You are a coding agent. " * 40_000,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    opening = [{"role": "user", "content": [{"type": "text", "text": "find the bug"}]}]
+
+    r1 = await anthropic_test_client.post(
+        "/v1/messages", json=_body(system=system, messages=opening), headers=_auth()
+    )
+    assert r1.status_code == 200
+    assert sent["priority"] == PRIORITY_ELEPHANT
+
+    follow_up = [
+        *opening,
+        {"role": "assistant", "content": [{"type": "text", "text": "looking"}]},
+        {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
+    ]
+    r2 = await anthropic_test_client.post(
+        "/v1/messages", json=_body(system=system, messages=follow_up), headers=_auth()
+    )
+
+    assert r2.status_code == 200
+    assert sent["priority"] == PRIORITY_INTERACTIVE
+    await asyncio.sleep(0)

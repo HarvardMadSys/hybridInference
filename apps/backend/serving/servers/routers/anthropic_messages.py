@@ -1210,7 +1210,26 @@ async def anthropic_messages(
     # (strips cache_control blocks). The log must preserve the original client payload.
     messages_for_log = copy.deepcopy(body.get("messages"))
 
-    # Prefill accounting for this surface. FixedRouter does this for
+    if adapter.native_format == "openai":
+        normalized_tool_inputs = _count_non_object_tool_inputs(body)
+        if normalized_tool_inputs:
+            logger.warning(
+                f"[{request_id}] Normalizing {normalized_tool_inputs} non-object "
+                "Anthropic tool_use.input value(s) before OpenAI-backed dispatch"
+            )
+        dropped = _sanitize_for_openai_backend(body)
+        if dropped:
+            logger.warning(
+                f"[{request_id}] Dropped Anthropic-only fields for OpenAI backend: {dropped}"
+            )
+
+    # Prefill accounting for this surface. Computed *after* the sanitizer,
+    # which strips Anthropic-only fields from these very dicts in place: sizing
+    # and anchoring the pre-sanitized form would store evidence for a prompt
+    # that is not the one dispatched, and the next turn -- re-walking the same
+    # mutated dicts -- would fail its own containment check every time. That
+    # breaks the warm path for precisely the clients this serves, since
+    # cache_control is what Claude Code sends. FixedRouter does this for
     # /v1/chat/completions, but this handler dispatches its own adapter and
     # never enters the router -- and this is where the prefill-dominated Claude
     # Code traffic arrives, so without it the local sglang backends would order
@@ -1257,19 +1276,6 @@ async def anthropic_messages(
             fingerprint=prefill_fingerprint,
             anchor=prefill_anchor,
         )
-
-    if adapter.native_format == "openai":
-        normalized_tool_inputs = _count_non_object_tool_inputs(body)
-        if normalized_tool_inputs:
-            logger.warning(
-                f"[{request_id}] Normalizing {normalized_tool_inputs} non-object "
-                "Anthropic tool_use.input value(s) before OpenAI-backed dispatch"
-            )
-        dropped = _sanitize_for_openai_backend(body)
-        if dropped:
-            logger.warning(
-                f"[{request_id}] Dropped Anthropic-only fields for OpenAI backend: {dropped}"
-            )
 
     metadata = {
         "user_agent": request.headers.get("user-agent"),

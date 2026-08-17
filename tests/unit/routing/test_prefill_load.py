@@ -1526,3 +1526,112 @@ def test_attachment_identity_covers_the_whole_payload():
 
     assert not prefill_load._anchor_holds(tampered, prefill_load.prompt_anchor(original))
     assert prefill_load._anchor_holds(original, prefill_load.prompt_anchor(original))
+
+
+@pytest.mark.unit
+def test_evidence_follows_the_client_key_order():
+    """Two key orders are two request bodies, so they are two identities.
+
+    ``_clean_message`` forwards a message with its keys in the order the client
+    sent them, and the chat template renders tools the same way, so normalizing
+    with ``sort_keys`` would give two different upstream prefixes one identity --
+    vouching for a prefix that changed. Losing a discount when a client
+    reshuffles its own JSON is the safe direction; granting one is not.
+    """
+    tools_a = [{"type": "function", "function": {"name": "read", "description": "d"}}]
+    tools_b = [{"function": {"description": "d", "name": "read"}, "type": "function"}]
+    messages = [{"role": "user", "content": "hi"}]
+
+    assert prefill_load.conversation_fingerprint(
+        messages, tools=tools_a
+    ) != prefill_load.conversation_fingerprint(messages, tools=tools_b)
+
+    call_a = [{"role": "assistant", "content": None, "tool_calls": [{"id": "c", "type": "f"}]}]
+    call_b = [{"role": "assistant", "tool_calls": [{"type": "f", "id": "c"}], "content": None}]
+
+    assert not prefill_load._anchor_holds(call_b, prefill_load.prompt_anchor(call_a))
+    # The same order still matches itself, so a stable client keeps its discount.
+    assert prefill_load._anchor_holds(call_a, prefill_load.prompt_anchor(call_a))
+
+
+@pytest.mark.unit
+def test_hint_ttl_is_shorter_than_a_backend_idle_stop():
+    """The hint may not outlive the cache it describes.
+
+    The local proxy stops an idle backend after 24 minutes, which empties the
+    radix cache. A hint trusted for longer is evidence for a cache nobody holds,
+    and it now selects a tier that preempts -- so the window has to sit inside
+    the one where the backend that wrote it is still up.
+    """
+    idle_stop_seconds = 24 * 60
+
+    assert idle_stop_seconds > prefill_load._PREFIX_HINT_TTL_SEC
+
+
+@pytest.mark.unit
+def test_endpoint_failure_forgets_its_hints():
+    # A restart inside the TTL window empties the cache while leaving the hints
+    # intact; a failure is the signal the gateway actually gets for it.
+    t = PrefillLoadTracker()
+    messages = [{"role": "user", "content": "x" * (4 * 300_000)}]
+    size = prefill_load.estimate_prefill_tokens(messages)
+    for endpoint in ("a", "b"):
+        t.release(
+            t.acquire(
+                endpoint,
+                size,
+                affinity_key="u1",
+                fingerprint=prefill_load.conversation_fingerprint(messages),
+                anchor=prefill_load.prompt_anchor(messages),
+            ),
+            prefill_confirmed=True,
+        )
+
+    t.forget_endpoint("a")
+
+    def charged(endpoint):
+        return t.uncached_estimate(
+            endpoint,
+            size,
+            "u1",
+            fingerprint=prefill_load.conversation_fingerprint(messages),
+            messages=messages,
+        )
+
+    assert prefill_load.priority_for_prefill(charged("a")) == prefill_load.PRIORITY_ELEPHANT
+    # Only that endpoint: a sibling's cache is untouched by its neighbour's fault.
+    assert prefill_load.priority_for_prefill(charged("b")) == prefill_load.PRIORITY_INTERACTIVE
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_router_forgets_hints_when_a_dispatch_fails():
+    r = FixedRouter()
+    bad = _FailAdapter(_cfg("m", provider="BAD", base_url="http://BAD"))
+    r.register_route("m", [(bad, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+    messages = [{"role": "user", "content": "x" * (4 * 300_000)}]
+    r.prefill_load.release(
+        r.prefill_load.acquire(
+            "BAD",
+            prefill_load.estimate_prefill_tokens(messages),
+            affinity_key="u1",
+            fingerprint=prefill_load.conversation_fingerprint(messages),
+            anchor=prefill_load.prompt_anchor(messages),
+        ),
+        prefill_confirmed=True,
+    )
+
+    with pytest.raises(RuntimeError, match="fail"):
+        await r.chat_completion("m", messages)
+
+    assert (
+        r.prefill_load.uncached_estimate(
+            "BAD",
+            prefill_load.estimate_prefill_tokens(messages),
+            "u1",
+            fingerprint=prefill_load.conversation_fingerprint(messages),
+            messages=messages,
+        )
+        > prefill_load.ELEPHANT_TOKENS
+    )
