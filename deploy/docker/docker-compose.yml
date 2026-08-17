@@ -29,6 +29,14 @@ services:
         - github_token
     container_name: hybridinference-backend
     restart: unless-stopped
+    # Source-revision stamp on the running container. The classic deploy
+    # scripts already export BUILD_SHA before composing; the digest deploy
+    # sets it to the image's revision label. The digest path's last-known-good
+    # restore reads this label back from the container it is about to replace
+    # — image and revision from the same object — and fails closed when the
+    # label is absent rather than guessing from the checkout HEAD.
+    labels:
+      org.opencontainers.image.revision: ${BUILD_SHA:-}
     env_file: ../../.env
     environment:
       DB_HOST: postgres

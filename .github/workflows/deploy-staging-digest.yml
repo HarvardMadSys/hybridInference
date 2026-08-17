@@ -217,9 +217,9 @@ jobs:
             echo "[digest-deploy] image revision ${img_rev} is not an ancestor of origin/dev; refusing"
             exit 1
           fi
-          prev_rev="$(git rev-parse HEAD)"
-          if [ "${img_rev}" != "${prev_rev}" ]; then
-            echo "[digest-deploy] aligning checkout ${prev_rev} -> image revision ${img_rev}"
+          pre_align_head="$(git rev-parse HEAD)"
+          if [ "${img_rev}" != "${pre_align_head}" ]; then
+            echo "[digest-deploy] aligning checkout ${pre_align_head} -> image revision ${img_rev}"
             git reset --hard "${img_rev}"
           fi
 
@@ -253,13 +253,27 @@ jobs:
           }
           discover_env_args
 
-          # Last-known-good, captured before compose touches anything, so a
-          # failed health check can put staging back by itself instead of
-          # leaving a broken container running.
+          # Last-known-good, taken from the RUNNING CONTAINER only — image
+          # ID and source revision from the same object. The checkout HEAD
+          # proves nothing about the container (a classic deploy that failed
+          # after its reset leaves the old backend running under a newer
+          # HEAD), and restoring old code with new config would recreate
+          # exactly the mismatch this workflow exists to prevent. A missing
+          # revision label means no trusted restore target: fail closed,
+          # never guess from HEAD.
           prev_container="$(docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env ps -q backend 2>/dev/null || true)"
           prev_image=""
+          prev_container_rev=""
           if [ -n "${prev_container}" ]; then
             prev_image="$(docker inspect --format '{{ .Image }}' "${prev_container}" 2>/dev/null || true)"
+            prev_container_rev="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${prev_container}" 2>/dev/null || true)"
+            if [ -z "${prev_container_rev}" ]; then
+              echo "[digest-deploy] running backend carries no source-revision label; restore is unavailable this run (one classic deploy stamps it)"
+              prev_image=""
+            elif ! git cat-file -e "${prev_container_rev}^{commit}" 2>/dev/null; then
+              echo "[digest-deploy] running backend's revision label ${prev_container_rev} is not a known commit; restore is unavailable this run"
+              prev_image=""
+            fi
           fi
 
           wait_backend_healthy() {
@@ -279,24 +293,24 @@ jobs:
           # run, stranding whatever compose left behind — so the start
           # command and the health check funnel into the same recovery path.
           deploy_ok=1
-          docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env up -d --no-build backend || deploy_ok=0
+          BUILD_SHA="${img_rev}" docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env up -d --no-build backend || deploy_ok=0
           if [ "${deploy_ok}" -eq 1 ] && wait_backend_healthy; then
             echo "[digest-deploy] backend healthy"
           else
             echo "[digest-deploy] deploy failed (start ok=${deploy_ok}); last logs:"
             docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env logs --tail=80 backend || true
             if [ -n "${prev_image}" ]; then
-              echo "[digest-deploy] restoring last-known-good backend ${prev_image} at checkout ${prev_rev}"
-              [ "$(git rev-parse HEAD)" = "${prev_rev}" ] || git reset --hard "${prev_rev}"
+              echo "[digest-deploy] restoring last-known-good backend ${prev_image} at its own revision ${prev_container_rev}"
+              [ "$(git rev-parse HEAD)" = "${prev_container_rev}" ] || git reset --hard "${prev_container_rev}"
               discover_env_args
-              if BACKEND_IMAGE="${prev_image}" docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env up -d --no-build backend \
+              if BACKEND_IMAGE="${prev_image}" BUILD_SHA="${prev_container_rev}" docker compose "${files[@]}" "${overlay_envs[@]}" "${staging_envs[@]}" --env-file .env up -d --no-build backend \
                  && wait_backend_healthy; then
                 echo "[digest-deploy] last-known-good restored; the new digest never became healthy"
               else
                 echo "[digest-deploy] RESTORE FAILED TOO — staging is down and needs manual attention: run the classic Deploy Staging (rebuilds from source), or compose up the previous image by hand"
               fi
             else
-              echo "[digest-deploy] no previous backend container to restore; run the classic Deploy Staging to rebuild from source"
+              echo "[digest-deploy] no trusted last-known-good to restore; run the classic Deploy Staging to rebuild from source"
             fi
             exit 1
           fi
