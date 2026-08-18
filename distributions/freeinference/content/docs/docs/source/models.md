@@ -38,33 +38,27 @@ route selection; they are not fees charged by FreeInference to users. See the
 [official DeepSeek pricing page](https://api-docs.deepseek.com/quick_start/pricing/)
 for the latest rates.
 
-Since **2026-08-16 16:00 UTC**, DeepSeek bills at peak and off-peak rates.
-Peak hours are **01:00–04:00 UTC** and **06:00–10:00 UTC** each day; all
-other hours are off-peak. Off-peak is half the peak rate.
+Since **2026-08-16 16:00 UTC**, DeepSeek itself bills at peak and off-peak
+rates: peak hours are **01:00–04:00 UTC** and **06:00–10:00 UTC** each day,
+and off-peak is half the peak rate.
 
-| Model | Period | Input (cache hit) | Input (cache miss) | Output |
-|-------|--------|------------------:|-------------------:|-------:|
-| V4 Flash (`deepseek-v4-flash`) | Off-peak | $0.007 | $0.22 | $0.66 |
-| V4 Flash (`deepseek-v4-flash`) | Peak | $0.014 | $0.44 | $1.32 |
-| V4 Pro (`deepseek-v4-pro`) | Off-peak | $0.022 | $0.66 | $1.98 |
-| V4 Pro (`deepseek-v4-pro`) | Peak | $0.044 | $1.32 | $3.96 |
-
-The gateway applies the peak/off-peak split automatically from the request
-timestamp, so cost accounting follows the rate in force when the call is made.
-
-The rates that applied **before** that cutover are kept here for reference
-only; they no longer affect billing.
+**FreeInference does not track that split.** The gateway accounts for every
+DeepSeek call at the peak rate, whatever the hour:
 
 | Model | Input (cache hit) | Input (cache miss) | Output |
 |-------|------------------:|-------------------:|-------:|
-| V4 Flash (`deepseek-v4-flash`) | $0.0028 | $0.14 | $0.28 |
-| V4 Pro (`deepseek-v4-pro`) | $0.003625 | $0.435 | $0.87 |
+| V4 Flash (`deepseek-v4-flash`) | $0.014 | $0.44 | $1.32 |
+| V4 Pro (`deepseek-v4-pro`) | $0.044 | $1.32 | $3.96 |
 
-The V4 Pro rows in both tables document the upstream rate for completeness;
-they do not add `deepseek-v4-pro` to the generally available FreeInference
-catalog. Availability remains determined by the authenticated
-`GET /v1/models` response, and administrator-only models remain omitted from
-the overview.
+Using the peak rate uniformly means an off-peak call is accounted at twice
+the rate DeepSeek actually charged for it. These figures drive internal cost
+accounting and route selection; they are not fees billed to users, so the
+effect is on quota consumption, not on anything you pay.
+
+The V4 Pro rows document the upstream rate for completeness; they do not add
+`deepseek-v4-pro` to the generally available FreeInference catalog.
+Availability remains determined by the authenticated `GET /v1/models`
+response, and administrator-only models remain omitted from the overview.
 
 ## Embedding Model
 

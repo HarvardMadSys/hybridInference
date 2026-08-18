@@ -689,38 +689,19 @@ models:
     output_modalities: ["text"]
     quantization: "none"
     # DeepSeek API pricing: https://api-docs.deepseek.com/quick_start/pricing
-    # Peak/off-peak pricing took effect 2026-08-16 16:00 UTC and is live: the
-    # daily peak windows are 01:00-04:00 and 06:00-10:00 UTC; all other hours
-    # use the off-peak price. The flat `pricing:` block below is the superseded
-    # pre-cutover rate, kept only because `pricing_schedule` falls back to it
-    # for timestamps before `effective_at`.
+    # DeepSeek has billed peak/off-peak since 2026-08-16 16:00 UTC (peak
+    # windows 01:00-04:00 and 06:00-10:00 UTC, off-peak at half the rate). We
+    # deliberately do not track that split: this is the flat peak rate, applied
+    # every hour. Accounting therefore never under-charges, and over-states an
+    # off-peak call by 2x. Use `pricing_schedule` (serving/pricing.py) if the
+    # hour-by-hour split is ever wanted here.
     pricing:
-      prompt: "0.14"
-      completion: "0.28"
+      prompt: "0.44"
+      completion: "1.32"
       image: "0"
       request: "0"
-      input_cache_reads: "0.0028"
+      input_cache_reads: "0.014"
       input_cache_writes: "0"
-    pricing_schedule:
-      effective_at: "2026-08-16T16:00:00Z"
-      timezone: UTC
-      default:
-        prompt: "0.22"
-        completion: "0.66"
-        input_cache_reads: "0.007"
-      windows:
-        - start: "01:00"
-          end: "04:00"
-          pricing:
-            prompt: "0.44"
-            completion: "1.32"
-            input_cache_reads: "0.014"
-        - start: "06:00"
-          end: "10:00"
-          pricing:
-            prompt: "0.44"
-            completion: "1.32"
-            input_cache_reads: "0.014"
     route:
       # H200 local sglang — one route per node, each running ops/h200_idle_proxy.
       # h200a keeps the unsuffixed H200_DEPLOYMENT_URL (tunnelled on port 8003) so
@@ -795,38 +776,19 @@ models:
     output_modalities: ["text"]
     quantization: "none"
     # DeepSeek API pricing: https://api-docs.deepseek.com/quick_start/pricing
-    # Peak/off-peak pricing took effect 2026-08-16 16:00 UTC and is live: the
-    # daily peak windows are 01:00-04:00 and 06:00-10:00 UTC; all other hours
-    # use the off-peak price. The flat `pricing:` block below is the superseded
-    # pre-cutover rate, kept only because `pricing_schedule` falls back to it
-    # for timestamps before `effective_at`.
+    # DeepSeek has billed peak/off-peak since 2026-08-16 16:00 UTC (peak
+    # windows 01:00-04:00 and 06:00-10:00 UTC, off-peak at half the rate). We
+    # deliberately do not track that split: this is the flat peak rate, applied
+    # every hour. Accounting therefore never under-charges, and over-states an
+    # off-peak call by 2x. Use `pricing_schedule` (serving/pricing.py) if the
+    # hour-by-hour split is ever wanted here.
     pricing:
-      prompt: "0.435"
-      completion: "0.87"
+      prompt: "1.32"
+      completion: "3.96"
       image: "0"
       request: "0"
-      input_cache_reads: "0.003625"
+      input_cache_reads: "0.044"
       input_cache_writes: "0"
-    pricing_schedule:
-      effective_at: "2026-08-16T16:00:00Z"
-      timezone: UTC
-      default:
-        prompt: "0.66"
-        completion: "1.98"
-        input_cache_reads: "0.022"
-      windows:
-        - start: "01:00"
-          end: "04:00"
-          pricing:
-            prompt: "1.32"
-            completion: "3.96"
-            input_cache_reads: "0.044"
-        - start: "06:00"
-          end: "10:00"
-          pricing:
-            prompt: "1.32"
-            completion: "3.96"
-            input_cache_reads: "0.044"
     route:
       - kind: deepseek
         weight: 1.0
