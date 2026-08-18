@@ -689,9 +689,11 @@ models:
     output_modalities: ["text"]
     quantization: "none"
     # DeepSeek API pricing: https://api-docs.deepseek.com/quick_start/pricing
-    # Current price remains active until 2026-08-16 16:00 UTC. Thereafter the
+    # Peak/off-peak pricing took effect 2026-08-16 16:00 UTC and is live: the
     # daily peak windows are 01:00-04:00 and 06:00-10:00 UTC; all other hours
-    # use the off-peak price.
+    # use the off-peak price. The flat `pricing:` block below is the superseded
+    # pre-cutover rate, kept only because `pricing_schedule` falls back to it
+    # for timestamps before `effective_at`.
     pricing:
       prompt: "0.14"
       completion: "0.28"
@@ -793,9 +795,11 @@ models:
     output_modalities: ["text"]
     quantization: "none"
     # DeepSeek API pricing: https://api-docs.deepseek.com/quick_start/pricing
-    # Current price remains active until 2026-08-16 16:00 UTC. Thereafter the
+    # Peak/off-peak pricing took effect 2026-08-16 16:00 UTC and is live: the
     # daily peak windows are 01:00-04:00 and 06:00-10:00 UTC; all other hours
-    # use the off-peak price.
+    # use the off-peak price. The flat `pricing:` block below is the superseded
+    # pre-cutover rate, kept only because `pricing_schedule` falls back to it
+    # for timestamps before `effective_at`.
     pricing:
       prompt: "0.435"
       completion: "0.87"

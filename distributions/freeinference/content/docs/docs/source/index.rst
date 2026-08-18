@@ -67,29 +67,52 @@ Available Models
 
 .. list-table::
    :header-rows: 1
-   :widths: 32 18 50
+   :widths: 28 10 16 46
 
    * - Model
+     - Access
      - Context Length
      - Best For
    * - GLM-5.1
+     - Free
      - 200K tokens
      - General coding, bilingual, thinking
    * - **DeepSeek V4 Flash** :sup:`agentic`
+     - Free
      - 1M tokens
      - Complex coding and long reasoning chains
    * - **Qwen3.6 35B** :sup:`fastest`
+     - Free
      - 262K tokens
      - Quick edits and background calls
    * - MiniMax M3
+     - Free
      - 1M tokens
      - Long-context and multimodal work
    * - MiniMax M2.5
+     - Free
      - 205K tokens
      - General reasoning with long output
    * - DiffusionGemma
+     - Free
      - 262K tokens
      - Fast local text generation
+   * - **GLM-5.3** :sup:`strongest coding`
+     - Pro
+     - 1M tokens
+     - Strongest coding results; always reasons
+   * - GLM-5.2
+     - Pro
+     - 1M tokens
+     - Long context with switchable thinking
+   * - Kimi K2.7 Code
+     - Pro
+     - 262K tokens
+     - Coding-agent workflows
+
+Models marked **Pro** need a Pro-enabled key; the rest are available to every
+account. ``bge-m3`` is also available for codebase indexing via
+``/v1/embeddings``.
 
 See the complete :doc:`models` list for all available models.
 
