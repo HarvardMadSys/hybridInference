@@ -20,6 +20,43 @@ keeping public ingress closed. C2 uses the separate
 runtime, identity, and registry binding validates. The checked-in example has
 no mode or credential, so it remains dormant.
 
+## There is one control plane, and it serves every target
+
+This worker is named `freeinference-alert-control-plane-staging` and runs with
+`CONTROL_PLANE_MODE=staging-ingress`. Neither describes a reliability tier.
+`environment` is the **trust shard this producer was bootstrapped in** — which
+GitHub Environment signed its attestation and which registry shard holds its
+record. It is deliberately not the environment an alert is *about*; that is
+`target_environment`, and the two diverge for a prober, which by definition
+watches something other than itself.
+
+So: this single instance owns incidents for **every** `target_environment`,
+production included. The staging name is not a licence to experiment on it — it
+is the paging path for production outages.
+
+Decided 2026-08-18 (see issue #1103) after #1260 split the two fields. The
+alternative considered was a second, production-labelled instance; it was
+declined because every surface a responder reads — Slack banner, incident
+thread, probe rows, dashboard scoping — already names the correct target, while
+a second instance adds deploy skew and doubles a manually dispatched deploy
+surface without changing anything observable. The real gap that argument was
+reaching for is deployment **control**, not instance identity, and it is
+addressed on the GitHub Environment rather than here.
+
+### Invariant: never resolve an incident object by name outside submission
+
+Exactly two call sites derive an incident Durable Object name, both on the live
+submission path — the HTTP ingress in `src/index.ts` and the Service Binding RPC
+in `src/status-monitor-rpc.ts`. Nothing enumerates incidents, and there is no
+`idFromString` anywhere.
+
+That is what makes the identity fields cheap to change: an incident whose route
+material moves is not migrated, it simply goes cold and drains its own alarm, so
+the only gate a cutover needs is "no incident in flight". Adding a feature that
+reads incident objects back by name — history browsing, replay, aggregate stats
+— would treat Durable Object state as an enumerable datastore and destroy that
+property. **Do not.** Land derived history in separate storage instead.
+
 ## Current Phase C2/C3c boundaries
 
 - Producers submit one canonical `AlertEvent`; trusted environment, source,
