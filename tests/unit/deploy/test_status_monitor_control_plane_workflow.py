@@ -136,6 +136,20 @@ def test_status_monitor_cutover_is_ordered_and_mutually_exclusive():
     assert "alert_delivery_owner:v1:%" in gate
     assert "alert_delivery_pending:v1:%" in gate
 
+    # The gate blocks only when route material actually moves. Principal is
+    # derived from the target, so an unchanged target means the incoming version
+    # addresses every incident object exactly as the running one does. Enforcing
+    # regardless would make the monitor undeployable during any outage — when a
+    # fix is most likely needed — and deadlocks re-attestation, because a pending
+    # transition cannot drain until the running version is attested and attesting
+    # requires this deploy.
+    assert "last_cycle_target_environment" in gate
+    assert "deployedTarget === incomingTarget" in gate
+    assert (
+        steps["Require no incident in flight before cutting over"]["env"]["TARGET_ENVIRONMENT"]
+        == "${{ steps.target.outputs.targetEnvironment }}"
+    )
+
     # The cleanup exists for a version that was attested but never went live, so
     # it must precede every post-activation step. Below one, a failure there
     # would retire the registration of a version that is serving — the Worker

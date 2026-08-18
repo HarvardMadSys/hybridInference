@@ -293,17 +293,21 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           DATABASE_NAME: ${{ steps.target.outputs.databaseName }}
+          TARGET_ENVIRONMENT: ${{ steps.target.outputs.targetEnvironment }}
           WRANGLER_ENV: ${{ matrix.wrangler_env }}
         working-directory: services/status-monitor-worker
         run: |
           set -euo pipefail
           npx wrangler d1 execute "${DATABASE_NAME}" --remote --json \
             ${WRANGLER_ENV:+--env "${WRANGLER_ENV}"} --command "
-            SELECT COUNT(*) AS in_flight FROM meta
-             WHERE (key = 'alert_state' AND value NOT IN ('{}', ''))
-                OR key = 'cycle_alert'
-                OR key LIKE 'alert_delivery_owner:v1:%'
-                OR key LIKE 'alert_delivery_pending:v1:%'
+            SELECT
+              (SELECT COUNT(*) FROM meta
+                WHERE (key = 'alert_state' AND value NOT IN ('{}', ''))
+                   OR key = 'cycle_alert'
+                   OR key LIKE 'alert_delivery_owner:v1:%'
+                   OR key LIKE 'alert_delivery_pending:v1:%') AS in_flight,
+              (SELECT value FROM meta
+                WHERE key = 'last_cycle_target_environment') AS deployed_target
           " > "${RUNNER_TEMP}/in-flight.json"
           IN_FLIGHT_PATH="${RUNNER_TEMP}/in-flight.json" node <<'NODE'
           const fs = require("node:fs");
@@ -313,10 +317,26 @@ jobs:
           if (rows.length !== 1 || !Number.isInteger(rows[0].in_flight)) {
             throw new Error("could not read incident state; refusing to cut over blind");
           }
-          if (rows[0].in_flight !== 0) {
+          // Only a change of route material can strand an incident. Principal is
+          // derived from the target, so an unchanged target means the incoming
+          // version addresses every incident object exactly as the running one
+          // does — there is nothing for the gate to protect, and enforcing it
+          // anyway would make the monitor undeployable during any outage, which
+          // is when a fix is most likely to be needed. It also deadlocks: a
+          // pending transition cannot drain until the running version is
+          // attested, and attesting requires this deploy.
+          const deployedTarget = rows[0].deployed_target ?? null;
+          const incomingTarget = process.env.TARGET_ENVIRONMENT;
+          if (deployedTarget === incomingTarget) {
+            console.log(
+              `route material unchanged (target ${incomingTarget}); ` +
+                `${rows[0].in_flight} in-flight record(s) are safe across this activation`,
+            );
+          } else if (rows[0].in_flight !== 0) {
             throw new Error(
-              `${rows[0].in_flight} incident record(s) in flight — re-run once they resolve, ` +
-                "or their recovery will be routed to a different incident object",
+              `${rows[0].in_flight} incident record(s) in flight while the target moves ` +
+                `${deployedTarget ?? "(none)"} → ${incomingTarget} — re-run once they ` +
+                "resolve, or their recovery will be routed to a different incident object",
             );
           }
           NODE
