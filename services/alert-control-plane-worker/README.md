@@ -39,9 +39,20 @@ alternative considered was a second, production-labelled instance; it was
 declined because every surface a responder reads — Slack banner, incident
 thread, probe rows, dashboard scoping — already names the correct target, while
 a second instance adds deploy skew and doubles a manually dispatched deploy
-surface without changing anything observable. The real gap that argument was
-reaching for is deployment **control**, not instance identity, and it is
-addressed on the GitHub Environment rather than here.
+surface without changing anything observable.
+
+The strongest counter-argument was that production paging identity sits behind
+whatever controls the `staging` GitHub Environment carries. Two things answer it.
+Both environments currently carry `protection_rules: []`, so a
+production-labelled instance would inherit nothing this one does not already
+have. And the usual reason such a gap widens — more people gaining deploy access
+— is excluded by design here: this deployment's hosts, accounts and deploy
+workflows live in a private overlay precisely so the operational surface is never
+published, whatever happens to the neutral upstream. The remaining path to a
+deploy is pinned by the OIDC allowlist to an exact repository, ref, environment
+and workflow ref.
+
+So this is a steady state, not a deferral.
 
 ### Invariant: never resolve an incident object by name outside submission
 
