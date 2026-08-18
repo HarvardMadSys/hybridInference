@@ -115,6 +115,57 @@ models:
           - ${STAGING_API_KEY}
         provider_model_id: "glm-5.2"
 
+  - id: glm-5.3
+    name: GLM-5.3
+    provider: zai
+    required_role: pro
+    quantization: "fp8"
+    context_length: 1000000
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    # Reasoning is always on upstream: 5.3 dropped `thinking.type: disabled`, so
+    # a client that still sends it gets an upstream 400. `reasoning_effort`
+    # (low/high/max) is the supported way to dial thinking down.
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking, reasoning_effort]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    aliases: ["freeinference-glm-5.3"]
+    # Billed at the same rate as glm-5.2 (which is 2x 5.2's Z.AI PAYG rate).
+    # Z.AI has not published a separate 5.3 PAYG rate yet
+    # (https://docs.z.ai/guides/overview/pricing); revisit if it lands above 5.2's.
+    # These values are charged as USD/M tokens against each user's cost quota.
+    pricing:
+      prompt: "2.8"
+      completion: "8.8"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.8"
+      input_cache_writes: "0"
+    route:
+      - kind: zai
+        weight: 1.0
+        base_url: ${ZAI_BASE_URL}
+        api_keys:
+          - ${ZAI_API_KEY}
+          - ${ZAI_API_KEY2}
+        provider_model_id: "glm-5.3"
+      # No Ollama Cloud / Chutes fallback yet: the 5.3 weights are not public
+      # (Z.AI said ~2 weeks after the 2026-08-14 launch), so neither host serves
+      # it. Add both once they do, mirroring glm-5.2.
+      #
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "glm-5.3"
+
   - id: glm-5-turbo
     name: GLM-5 Turbo
     required_role: admin

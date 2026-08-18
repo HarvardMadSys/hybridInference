@@ -23,6 +23,7 @@ your key is not available to that account.
 | `diffusiongemma` | Free | 262K | 8K | Text | Fast local model, tools, structured output, thinking |
 | `deepseek-v4-flash` | Free | 1M | 393K | Text | Agentic coding, tools, structured output, reasoning controls |
 | `glm-5.2` | Pro | 1M | 131K | Text | Tools, structured output, thinking, tool streaming |
+| `glm-5.3` | Pro | 1M | 131K | Text | Tools, structured output, always-on thinking with `reasoning_effort`, tool streaming |
 | `kimi-k2.7-code` | Pro | 262K | 131K | Text, image, video | Coding agents, tools, structured output, thinking |
 
 All listed models produce text. Context and output limits are deployment
@@ -76,8 +77,12 @@ indexing. It is not a chat or completion model.
   extended reasoning.
 - Use `minimax-m3` for long-context or multimodal work.
 - Use `deepseek-v4-flash` for complex agentic coding and long reasoning chains.
-- Pro users can choose `glm-5.2` for its larger context or
-  `kimi-k2.7-code` for coding-agent workflows.
+- Pro users can choose `glm-5.3` for the strongest coding results, `glm-5.2`
+  when thinking has to be switchable, or `kimi-k2.7-code` for coding-agent
+  workflows. `glm-5.3` and `glm-5.2` share the same 1M context.
+- `glm-5.3` always reasons: it rejects `thinking: {"type": "disabled"}`. Send
+  `reasoning_effort` (`low`, `high`, `max`) to control how much it thinks, and
+  stay on `glm-5.2` if your client needs thinking fully off.
 
 ## Access and Retired IDs
 

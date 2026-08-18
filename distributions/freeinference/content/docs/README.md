@@ -65,7 +65,7 @@ FreeInference provides free access to state-of-the-art language models for codin
 - **DiffusionGemma** - 262K context, fast local text model
 - **BGE-M3** - 8K-context embedding model for codebase indexing
 
-Pro-enabled keys also expose **GLM-5.2** and **Kimi K2.7 Code**. Query
+Pro-enabled keys also expose **GLM-5.3**, **GLM-5.2** and **Kimi K2.7 Code**. Query
 `GET https://freeinference.org/v1/models` with your API key for the current
 catalog available to your account.
 
