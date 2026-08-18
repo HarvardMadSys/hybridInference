@@ -169,41 +169,30 @@ def test_schedule_supports_window_across_midnight() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("model_id", "current", "off_peak", "peak"),
+    ("model_id", "peak"),
     [
-        (
-            "deepseek-v4-flash",
-            ("0.14", "0.0028", "0.28"),
-            ("0.22", "0.007", "0.66"),
-            ("0.44", "0.014", "1.32"),
-        ),
-        (
-            "deepseek-v4-pro",
-            ("0.435", "0.003625", "0.87"),
-            ("0.66", "0.022", "1.98"),
-            ("1.32", "0.044", "3.96"),
-        ),
+        ("deepseek-v4-flash", ("0.44", "0.014", "1.32")),
+        ("deepseek-v4-pro", ("1.32", "0.044", "3.96")),
     ],
 )
-def test_shipped_deepseek_prices_match_official_schedule(
+def test_shipped_deepseek_prices_are_the_flat_peak_rate(
     model_id: str,
-    current: tuple[str, str, str],
-    off_peak: tuple[str, str, str],
     peak: tuple[str, str, str],
 ) -> None:
+    """DeepSeek is billed at the upstream peak rate every hour.
+
+    DeepSeek itself charges peak/off-peak (off-peak is half), but this
+    deployment deliberately does not track the split: it ships the peak rate
+    as a flat price so accounting never under-charges. A ``pricing_schedule``
+    here would reintroduce the hour-by-hour behaviour, so its absence is part
+    of what this asserts.
+    """
     document = yaml.safe_load(MODELS_YAML.read_text())
     raw = next(model for model in document["models"] if model["id"] == model_id)
-    schedule = PricingSchedule.from_raw(raw["pricing_schedule"])
 
-    def prices(instant: dt.datetime) -> tuple[str, str, str]:
-        resolved = schedule.resolve(raw["pricing"], at=instant)
-        return (
-            resolved["prompt"],
-            resolved["input_cache_reads"],
-            resolved["completion"],
-        )
-
-    assert prices(ACTIVATION - dt.timedelta(microseconds=1)) == current
-    assert prices(_at(17, 12)) == off_peak
-    assert prices(_at(17, 2)) == peak
-    assert prices(_at(17, 7)) == peak
+    assert "pricing_schedule" not in raw
+    assert (
+        raw["pricing"]["prompt"],
+        raw["pricing"]["input_cache_reads"],
+        raw["pricing"]["completion"],
+    ) == peak
