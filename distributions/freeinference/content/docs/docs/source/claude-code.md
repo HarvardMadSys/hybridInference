@@ -108,6 +108,7 @@ The recommended defaults are:
 | `deepseek-v4-flash` | Complex coding and agentic work; long context and tool use |
 | `qwen3.6-35b` | Fast background and lightweight tasks |
 | `glm-5.1` | General-purpose coding alternative |
+| `glm-5.3` | Strongest coding results; always reasons (Pro access) |
 
 Inside Claude Code, run `/model` to view or change the current session model.
 Run `/status` to confirm the active model and authentication/provider status.

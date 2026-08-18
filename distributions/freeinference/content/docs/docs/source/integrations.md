@@ -42,6 +42,7 @@ claude-code
    | Faster edit loops | `qwen3.6-35b` |
    | Long context or image input | `minimax-m3` |
    | Complex agentic coding | `deepseek-v4-flash` |
+   | Strongest coding results (Pro access) | `glm-5.3` |
    | Kimi coding model (Pro access) | `kimi-k2.7-code` |
 
 7. Save the settings.
@@ -179,7 +180,7 @@ current setup, model mappings, verification steps, and gateway limitations.
    API Key: your-api-key-here
    ```
 
-5. Select a public model such as `glm-5.1`, `qwen3.6-35b`, `deepseek-v4-flash`, or `minimax-m3`. `kimi-k2.7-code` requires Pro access.
+5. Select a public model such as `glm-5.1`, `qwen3.6-35b`, `deepseek-v4-flash`, or `minimax-m3`. `glm-5.3` and `kimi-k2.7-code` require Pro access.
 
 6. Save settings and start using FreeInference.
 
