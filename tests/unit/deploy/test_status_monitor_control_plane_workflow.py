@@ -84,10 +84,9 @@ def test_status_monitor_deploys_both_instances_from_resolved_config():
         "Require no incident in flight before cutting over",
         "Release the cutover lock",
     ):
-        assert (
-            steps[name]["env"]["DATABASE_NAME"]
-            == "${{ steps.target.outputs.databaseName }}"
-        ), name
+        assert steps[name]["env"]["DATABASE_NAME"] == "${{ steps.target.outputs.databaseName }}", (
+            name
+        )
 
 
 def test_status_monitor_cutover_is_ordered_and_mutually_exclusive():
