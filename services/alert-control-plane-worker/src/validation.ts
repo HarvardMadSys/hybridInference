@@ -315,6 +315,9 @@ function parseModelUnavailableContext(value: unknown): ModelUnavailableContext {
   context.reason = optional(input, "reason", (item) =>
     enumValue<ModelUnavailabilityReason>(item, "context.reason", [
       "authentication",
+      "empty_response",
+      "invalid_request",
+      "malformed_response",
       "rate_limited",
       "timeout",
       "unknown",

@@ -4,8 +4,21 @@ import type { ProbeResult } from "./probe";
 
 export type AlertDeliveryOwner = "legacy" | "control-plane";
 export type ModelUnavailableStatus = "firing" | "resolved";
+/**
+ * Why a model was unreachable, as a closed set — the raw probe error is
+ * deliberately never shipped across this boundary.
+ *
+ * The set has to actually cover what probes see, or it launders distinct
+ * failures into `unknown` and the page carries no diagnosis. `empty_response`
+ * exists because that was the real 2026-08-12 production outage: HTTP 200 with a
+ * well-formed, contentless stream, which matched none of the original five values
+ * and paged as `unknown`.
+ */
 export type ModelUnavailabilityReason =
   | "authentication"
+  | "empty_response"
+  | "invalid_request"
+  | "malformed_response"
   | "rate_limited"
   | "timeout"
   | "unknown"
@@ -268,12 +281,37 @@ export function prepareDrainOwnerWrite(
     .bind(metaKey(OWNER_KEY_PREFIX, fingerprint), owner);
 }
 
+/**
+ * Map a probe error onto the closed wire enum.
+ *
+ * Order matters: the auth/rate-limit/timeout tests read HTTP codes out of the
+ * message, so they run before the shape tests, which would otherwise claim a
+ * `HTTP 503` body that happens to mention a stream.
+ *
+ * The three shape reasons exist because `probe.ts` fails a response for reasons
+ * the transport never signals — a 200 that carried nothing, a stream that ended
+ * mid-flight, a 4xx that says our request was wrong. Before they existed all
+ * three read as `unknown`, which is how the 2026-08-12 production outage paged
+ * with no diagnosis: `empty completion (no content generated)`, repeated for
+ * ~100 minutes, rendered as `Reason: unknown`.
+ */
 function failureReason(error: string | null): ModelUnavailabilityReason {
   if (error === null) return "unknown";
   if (/\b(?:401|403|auth|unauthori[sz]ed|forbidden)\b/i.test(error)) return "authentication";
   if (/\b(?:429|rate.?limit)\b/i.test(error)) return "rate_limited";
   if (/\b(?:timeout|timed out|deadline)\b/i.test(error)) return "timeout";
   if (/\b(?:5\d\d|upstream|connection|unavailable)\b/i.test(error)) return "upstream_error";
+  // A syntactically fine response that carried no output. The provider answered;
+  // it just produced nothing a caller could use.
+  if (/\bempty (?:completion|embedding)\b/i.test(error)) return "empty_response";
+  // The response could not be read to completion: a corrupt SSE frame, a stream
+  // with no terminal marker, or no body at all.
+  if (/\b(?:malformed|incomplete stream|no response body)\b/i.test(error)) {
+    return "malformed_response";
+  }
+  // A 4xx that is neither auth nor rate limit — the gateway rejected the request
+  // itself, so the fault is on our side of the call (bad model id, bad params).
+  if (/\bHTTP 4\d\d\b/.test(error)) return "invalid_request";
   return "unknown";
 }
 

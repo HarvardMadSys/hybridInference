@@ -26,8 +26,21 @@ export interface ProviderCircuitContext {
   readonly reason?: ProviderFailureReason;
 }
 
+/**
+ * Why a model was unreachable, as a closed set — the raw probe error is
+ * deliberately never shipped across this boundary.
+ *
+ * The set has to actually cover what probes see, or it launders distinct
+ * failures into `unknown` and the page carries no diagnosis. `empty_response`
+ * exists because that was the real 2026-08-12 production outage: HTTP 200 with a
+ * well-formed, contentless stream, which matched none of the original five values
+ * and paged as `unknown`.
+ */
 export type ModelUnavailabilityReason =
   | "authentication"
+  | "empty_response"
+  | "invalid_request"
+  | "malformed_response"
   | "rate_limited"
   | "timeout"
   | "unknown"

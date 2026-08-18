@@ -108,6 +108,47 @@ function db(value = new FakeD1()): D1Database {
   return value as unknown as D1Database;
 }
 
+describe("probe failure classification", () => {
+  const reasonFor = (error: string) =>
+    modelUnavailableEvent(result({ error }), "firing", 2, "event-1").context.reason;
+
+  it("names the failure the 2026-08-12 outage actually was", () => {
+    // ~100 minutes of production outage paged as `Reason: unknown`, because a
+    // 200 carrying a well-formed but contentless stream matched none of the
+    // original five values. The real error only reached the monitor's own D1.
+    expect(reasonFor("stream error: empty completion (no content generated)")).toBe(
+      "empty_response",
+    );
+    expect(reasonFor("empty embedding response")).toBe("empty_response");
+  });
+
+  it("separates a response it could not read from one that carried nothing", () => {
+    expect(reasonFor("stream error: malformed SSE data chunk")).toBe("malformed_response");
+    expect(reasonFor("stream error: incomplete stream (no terminal marker)")).toBe(
+      "malformed_response",
+    );
+    expect(reasonFor("no response body")).toBe("malformed_response");
+  });
+
+  it("attributes a non-auth 4xx to the request rather than the provider", () => {
+    expect(reasonFor("HTTP 400: unsupported parameter")).toBe("invalid_request");
+    expect(reasonFor("HTTP 404: Model 'gone' not found")).toBe("invalid_request");
+  });
+
+  it("still reads transport failures out of the message first", () => {
+    // These run before the shape tests on purpose: a 5xx body that happens to
+    // mention a stream is an upstream failure, not a malformed response.
+    expect(reasonFor("HTTP 401: Invalid or expired API key")).toBe("authentication");
+    expect(reasonFor("HTTP 429: rate limit exceeded")).toBe("rate_limited");
+    expect(reasonFor("timeout")).toBe("timeout");
+    expect(reasonFor("HTTP 503: upstream stream unavailable")).toBe("upstream_error");
+  });
+
+  it("keeps unknown for a message it genuinely cannot place", () => {
+    expect(reasonFor("something nobody has seen before")).toBe("unknown");
+  });
+});
+
 describe("model-unavailable source adapter", () => {
   it("produces only the canonical platform-neutral body", () => {
     const event = modelUnavailableEvent(result(), "firing", 2, "event-stable-1");
