@@ -214,6 +214,30 @@ cutover eleven hours of blind probing.
 relay values are required to enable on-call analysis; retain the Slack webhook as its
 delivery fallback.
 
+### Setting any secret silences alerting until the next deploy
+
+`wrangler secret put` creates a **new Worker version and activates it**. The
+Control Plane's attestation is pinned to an immutable version ID, so the version
+now serving is one it has no record of, and it rejects that version's
+submissions as `unknown_deployment`.
+
+The Worker keeps probing and keeps writing `probe_results` — the dashboard looks
+entirely healthy — while every alert transition it tries to send is refused. So
+after rotating a key, **re-run the deploy workflow**. Nothing is lost in the
+meantime: refused transitions are persisted verbatim and replayed on the cycle
+after the version is attested again, which is how a firing incident that
+recovered mid-rotation still gets its recovery notice.
+
+This is a consequence of pinning identity to an immutable version, not a defect
+in it — but the operational shape is counter-intuitive enough to be worth
+stating: *changing a credential makes alerting go quiet, and the symptom is
+silence rather than an error.*
+
+Verify with the endpoint that actually authenticates. `GET /v1/models` is public
+on both gateways — it answers 200 for a revoked key, a nonsense key, and no
+`Authorization` header at all — so a 200 there proves nothing about a key. Probe
+`POST /v1/chat/completions` instead.
+
 ## Deploy
 
 CI deploys this Worker automatically: `.github/workflows/deploy-status-monitor.yml`
