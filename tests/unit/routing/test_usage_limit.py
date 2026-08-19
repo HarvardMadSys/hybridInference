@@ -154,3 +154,27 @@ def test_minimax_token_plan_names_no_window_and_holds_the_floor():
     assert limit.window == "unspecified"
     assert limit.reset_at is None
     assert limit.suppress_until == NOW + MIN_ALERT_GAP
+
+
+def test_zai_fair_usage_policy_throttle_is_a_plan_limit():
+    # The production text behind the glm-*:zai-api storm: Z.AI's code 1313 names
+    # its plan policy but never says "usage limit", so it went unclassified and
+    # paged on every trip — 111 in 7.5 hours for one endpoint alone.
+    detail = (
+        '{"error":{"code":"1313","message":"Your account\'s current usage pattern '
+        "does not comply with the Fair Usage Policy, and your request frequency "
+        "has been limited. For details, please refer to the Subscription Service "
+        'Agreement. To restore access, please submit a request."}}'
+    )
+    limit = detect_usage_limit(detail, now=NOW)
+    assert limit is not None
+    # It names neither a reset timestamp nor a window, so the floor governs.
+    assert limit.window == "unspecified"
+    assert limit.reset_at is None
+    assert limit.suppress_until == NOW + MIN_ALERT_GAP
+
+
+def test_fair_usage_policy_marker_does_not_swallow_a_transient_rate_limit():
+    # The marker is the *policy name*, not the word "usage": a plain per-minute
+    # rate limit that merely mentions usage must still page normally.
+    assert detect_usage_limit("429: request rate limit exceeded, usage is high", now=NOW) is None
