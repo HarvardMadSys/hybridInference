@@ -27,18 +27,22 @@ def test_cd_accepts_only_manual_or_successful_push_ci(name: str) -> None:
     assert "github.event.workflow_run.conclusion == 'success'" in condition
 
 
-def test_docs_only_filters_apply_to_push_but_not_pull_requests() -> None:
-    triggers = _triggers(_workflow("ci.yml"))
-    ignored = [
-        "docs/**",
-        "distributions/freeinference/content/docs/**",
-        "**/*.md",
-        "LICENSE",
-        ".gitignore",
-    ]
+def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
+    """A path filter here withholds the run itself, not just the jobs.
 
-    assert triggers["push"]["paths-ignore"] == ignored
-    assert "paths-ignore" not in triggers["pull_request"]
+    Pushes carried a docs-only `paths-ignore` until #1283 made every green dev
+    SHA publish a backend candidate for the distribution repo's bump bot. A
+    filtered push creates no workflow run at all, so nothing downstream can
+    rescue it — not a job-level condition, and not the staging deploy that
+    hangs off this workflow's completion. Cheapness is the per-job change
+    classification's job, which is asserted separately.
+    """
+    triggers = _triggers(_workflow("ci.yml"))
+
+    for event in ("push", "pull_request"):
+        assert "paths-ignore" not in (triggers[event] or {}), event
+        assert "paths" not in (triggers[event] or {}), event
+
     assert triggers["schedule"]
 
 
