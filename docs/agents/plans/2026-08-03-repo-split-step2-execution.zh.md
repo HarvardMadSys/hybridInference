@@ -210,7 +210,9 @@ backend 容器盖 `org.opencontainers.image.revision` label(值 = classic
 回退用 checkout HEAD 猜(checkout 与容器可能来自不同次部署:classic 在
 reset 后失败即是)。**首飞协议因此加一步:合并后先跑一次 classic
 staging 给现役容器盖章,再打 W2 首飞。**复活 PR = #1258(dispatch-only,
-backend-only)。
+backend-only)。candidate 构建改跑自建 arm64 runner(2026-08-18:org 的
+GitHub-hosted 分钟账单受阻——与当年 CI 迁上自建舰队同因;原生 arm64 免
+QEMU 反而更快;Step 3 公开后 hosted 免费,可回迁"发布不依赖舰队"原则)。
 
 ### W3 归属清单重生成
 

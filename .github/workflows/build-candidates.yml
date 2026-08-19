@@ -41,10 +41,15 @@ concurrency:
 jobs:
   build:
     name: Build and push candidates
-    # GitHub-hosted (amd64) on purpose: candidate publishing should not
-    # depend on FreeInference self-hosted runners. Cross-arch builds go
-    # through QEMU via the platform input.
-    runs-on: ubuntu-latest
+    # Self-hosted, by billing reality (2026-08-18): the original design ran
+    # this on GitHub-hosted runners so publishing would not depend on the
+    # FreeInference fleet, but the org's hosted minutes are billing-blocked
+    # — the same constraint that moved CI onto the fleet. arm64-docker is
+    # native for the staging host's architecture, so arm64 candidates skip
+    # QEMU entirely; QEMU stays installed for cross-arch builds (a future
+    # amd64 prod candidate). Revisit at Step 3: a public repository gets
+    # hosted minutes free, which restores the original stance.
+    runs-on: [self-hosted, Linux, arm64-docker]
     timeout-minutes: 45
     steps:
       # The choice type constrains the UI and the dispatch API both, but the
