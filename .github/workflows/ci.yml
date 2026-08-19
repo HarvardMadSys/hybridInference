@@ -743,7 +743,14 @@ jobs:
     # native for the staging host's architecture; single-arch until the
     # production architecture is registered (plan W4 note), at which point
     # a differing prod arch upgrades this to a multi-arch manifest.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success'
+    # !cancelled() suppresses the implicit success() GitHub prepends to any
+    # job `if` lacking a status function. Implicit success() evaluates the
+    # WHOLE transitive needs chain — and docker-build, an ancestor via
+    # ci-gate, is legitimately skipped on many pushes, which silently
+    # skipped this job too: publish-per-SHA would have held only when
+    # docker-build happened to run, the exact coupling this job exists to
+    # ban. The explicit ci-gate result check below is the real gate.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate]
     runs-on: [self-hosted, Linux, arm64-docker]
     timeout-minutes: 45
