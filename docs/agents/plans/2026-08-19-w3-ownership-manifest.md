@@ -1,0 +1,120 @@
+# W3:仓库归属清单与依赖矩阵(Step 2)
+
+> 状态:裁定稿,待 Murphy review。生成:2026-08-19,基于 dev `67452e63` 的
+> 实测采集(`brand_residue_sweep.py` = 0 unclaimed / **20** work streams;
+> 13 个 workflow 的逐文件抽取)。既有裁定沿用不重裁:Step 2 计划 §7
+> (agent 路径、harness 拆分)、主设计三分表。
+> 用法:W4 骨架与 W5 每一批搬迁,以本文 §1 定目的地、§2 做 preflight;
+> 发现与本文不符,先改本文再动手。
+
+## 0. 裁定原则
+
+1. **身份与运维随部署走,机制与守卫留上游**——sweep 的 reason 字段是初判,
+   本文只在其上细化到可执行粒度。
+2. **"上游中立化"不是搬迁**:冻结的 FreeInference 契约值、compose 默认值
+   属于上游代码的中立化批(随 W5a 完成后翻转),不进任何搬迁批次。
+3. 历史文档不搬也不入判据②:Step 3 由导出 manifest 排除(物化树口径)。
+
+## 1. 归属总表
+
+### 1.1 迁 freeInference(物理搬迁,按 W5 批次)
+
+| 路径 | 类型 | 批次 | 生产影响 | 验证方式 |
+|---|---|---|---|---|
+| `distributions/freeinference/`(26 hits) | 内容+配置 | **W5a** | 高:models/routing/alerts 真值 | 契约测试 + `iter_effective_routes` 路由快照 diff + smoke |
+| `.github/workflows/` 部署族 10 个:`deploy.yml`、`deploy-staging.yml`、`deploy-staging-digest.yml`、`deploy-rollback.yml`、`deploy-status-monitor.yml`、`alert-control-plane-staging-lifecycle.yml`、`sync-main.yml`、`rag-index.yml`、`codex-oncall.yml`、`slack-readback-gate.yml` | 代码 | **W5b** | 高:部署与告警链路 | §2 矩阵逐行 preflight;staging 先行部署一次 |
+| `ops/deploy/`(deploy_staging.sh、deploy_production.sh、check_production_env.sh 等) | 代码 | **W5b**(与 workflow 同批,互相调用) | 高 | 同上 |
+| `.env.oncall.example` | 内容 | **W5b**(codex-oncall 族) | 低 | oncall 容器起动检查 |
+| `services/status-monitor-worker/`(12 hits) | 代码 | **W5c** | 中:状态页/告警探测 | worker 部署 + 探测记录出现 |
+| `services/alert-control-plane-worker/`(10 hits) | 代码 | **W5c** | 中:告警链路 | lifecycle workflow 全流程 |
+| `services/freeinference-harness/` 站点 targets | 代码 | **W5c** | 低 | harness 对 staging 跑通 |
+| `ops/db/`(20 hits:api_logs 导出、分析、runtime overrides 导出) | 代码 | **W5d** | 低(离线工具) | 在新仓对 staging DB 跑一次代表性脚本 |
+| `ops/h200_idle_proxy/`、`ops/spark_idle_proxy/`、`ops/local_deployment_proxy/`(14 hits) | 代码 | **W5d** | 中:机队闲置代理 | 对应主机 systemd 单元指向新路径后重启验证 |
+| `ops/setup/`(3 hits) | 代码 | **W5d** | 低 | 文档内命令走查 |
+| `benchmark/`(paper artifacts) | 内容 | **W5d**(或未来 paper 仓,不阻塞) | 无 | n/a |
+| `docs/developer/`(内部站,5+ hits) | 内容 | **W5e** | 中:internaldoc 站 | 站点构建绿 + 抽查页面 |
+| doc 站 Pages Git 集成(freeinference-doc) | 设置 | **W5e**(四步硬序,见计划) | 高:生产 doc 站 | production/preview 双构建验证 |
+| rag-index 跨仓依赖(chunker/ingest) | 代码 | **W5f** | 中:RAG 索引更新 | 新仓跑通一次 rag-index |
+
+### 1.2 留上游(不动)
+
+| 路径 | 理由 |
+|---|---|
+| `ops/release/`(public_export 工具链、secret_patterns) | Step 3 资产,导出的就是上游 |
+| `ops/ci/`、`ops/admin/brand_residue_sweep.py`、`ops/lib/`* | CI 与中立性守卫(*lib 按消费方跟随,搬迁批 preflight 逐个核) |
+| `.github/workflows/` 三个:`ci.yml`、`ci-observability.yml`、`build-candidates.yml` | 上游 CI 与 release engineering(candidates 是 W4 自动发布的前身) |
+| 守卫测试 6 个(test_neutral_startup、contract_settings_defaults、site_identity、compose_identity、brand_residue_sweep、no_personal_data) | 刻意携带 marker 的中立性断言 |
+| `LICENSE`、`README*` 三份、`branding.ts` 注释、compose `NEXT_PUBLIC_GITHUB_URL` 默认、`pyproject/uv.lock` RouteWise URL、`docs/developer` 内 5 个单点提及 | sweep 判定的事实性提及(worked example / 版权归属 / 包源),非品牌残留 |
+| `services/freeinference-harness/` 协议一致性 testkit | §7 既有裁定 |
+
+### 1.3 上游中立化批(代码工作,非搬迁;W5a 之后执行)
+
+`tests/` 冻结契约值(14)、`deploy/` compose 默认(11)、`apps/frontend`(4)、
+`apps/backend`(2)、`.env.example`(1)、`AGENTS.md`/`CLAUDE.md` 站点行、
+`Makefile` 的 docs 指针——**随 W5a 真值落新仓后统一翻中立**,判据 =
+契约测试刻意更新 + `make test` 全绿 + 中立启动保持。
+
+### 1.4 历史文档(留上游,导出排除)
+
+`docs/agents/`(39)、`docs/reviews/`(3)、`docs/superpowers/`(2):
+不搬、不翻;Step 3 物化导出时按 manifest 排除(判据②口径)。
+
+## 2. workflow → runner → environment → secrets/variables 依赖矩阵
+
+| workflow | runner | env | secrets | variables | 目的地 |
+|---|---|---|---|---|---|
+| Deploy Production | `deploy-production` | production | PROD_×5, ROUTEWISE_GITHUB_TOKEN | — | freeInference |
+| Rollback Production | `deploy-production` | production | PROD_×5, ROUTEWISE_GITHUB_TOKEN | — | freeInference |
+| Deploy Staging | `deploy-staging` | staging | STAGING_×5, ROUTEWISE_GITHUB_TOKEN | — | freeInference |
+| Deploy Staging by Digest | `deploy-staging` | staging | STAGING_×5, GITHUB_TOKEN | — | freeInference(W4 改造:对 `upstream.lock.source_commit` 校验) |
+| Deploy Status Monitor | `deploy-edge` | staging+process | CLOUDFLARE_API_TOKEN | ALERT_CONTROL_PLANE_STAGING_URL | freeInference |
+| Alert CP Staging Lifecycle | **ubuntu-22.04(hosted!)** | staging | ALERT_CP_×2, CLOUDFLARE_API_TOKEN, CODEX_ONCALL_SLACK_BOT_TOKEN | ALERT_CP_STAGING_URL, ALERT_CP_SLACK_CHANNEL_ID | freeInference |
+| Codex On-Call | **ubuntu-22.04(hosted!)** | — | CODEX_ONCALL_MODEL_API_KEY, CODEX_ONCALL_SLACK_BOT_TOKEN | — | freeInference |
+| Slack Readback Gate | **ubuntu-22.04(hosted!)** | — | CODEX_ONCALL_SLACK_BOT_TOKEN | — | freeInference |
+| RAG Index | `trusted-automation` | — | RAG_GATEWAY_API_KEY, GITHUB_TOKEN | — | freeInference |
+| Sync dev to main | `trusted-automation` | — | GITHUB_TOKEN | — | freeInference |
+| CI | `ci-general`, `image-verify-arm64` | — | DEEPSEEK/GEMINI/ZAI keys, ROUTEWISE_GITHUB_TOKEN | — | 上游 |
+| CI Observability | **ubuntu-latest(hosted!)** | — | — | — | 上游 |
+| Build Candidate Images | `arm64-docker` | — | GITHUB_TOKEN, ROUTEWISE_GITHUB_TOKEN | — | 上游(W4 演化为自动发布) |
+
+## 3. 新仓资产缺口清单(对照 08-11 已迁项)
+
+- **runner 标签 6 组**:`deploy-production` / `deploy-staging` / `deploy-edge` /
+  `trusted-automation`(计划已列)+ 迁移后若 oncall 族转自建还需规划(见 §4-1)。
+- **staging 环境缺 2 secrets**:`ALERT_CONTROL_PLANE_PRODUCER_SIGNING_KEY_V1`、
+  `ALERT_CONTROL_PLANE_ROUTE_KEY_V1`(已知,W5b 前补)。
+- **⚠ 新发现:2 个 variables 从未在迁移清单上**——
+  `ALERT_CONTROL_PLANE_STAGING_URL`、`ALERT_CONTROL_PLANE_SLACK_CHANNEL_ID`
+  是 **environment/repo variables 不是 secrets**(08-11 只迁了 secrets,
+  variables 走 `gh variable set`,值可从旧仓直接读出:`gh variable list`)。
+- **repo 级 secrets 4 项待迁**:`RAG_GATEWAY_API_KEY`、
+  `CODEX_ONCALL_MODEL_API_KEY`、`CODEX_ONCALL_SLACK_BOT_TOKEN`、
+  `ROUTEWISE_GITHUB_TOKEN`(最后一项先做 §4-2 核实,能删则不迁)。
+- **package Actions access**:backend 包已诞生(2026-08-19),给
+  freeInference 授 read 现在即可执行(原 W4 项,可提前)。
+
+## 4. 风险注记
+
+1. **hosted-runner 账单面(现行风险,与迁移无关也会咬)**:矩阵中 4 个
+   workflow 跑在 GitHub-hosted runner 上,当前 org 账单状态下**下次触发即
+   失败**(Alert CP Lifecycle、Codex On-Call、Slack Readback Gate、
+   CI Observability)。选项:修账单,或迁去自建标签(oncall 族低负载,
+   `trusted-automation` 可承接)。搬迁时必须显式选择,不能默认照抄
+   `ubuntu-22.04`。
+2. **`ROUTEWISE_GITHUB_TOKEN` 核实项**(计划 §2-3):RouteWise 仓已公开,
+   该 token 理论上可从全链路删除(CI/deploy/build-candidates 均有
+   `|| github.token` 类回退或可加)。在 W5b 前做一次实测(移除后跑通
+   CI + staging 部署),能删则新仓少迁一个 secret。
+3. **`deploy-staging-digest` 不是照抄搬迁**:W4 要把同源门从"对齐主机
+   HEAD"改写为"断言 `upstream.lock.source_commit`"(计划 §1 已定),
+   搬的是改造后的版本;上游副本在删除批清除。
+4. **`ops/lib` 与零散共享件**:按消费方跟随;每个搬迁批的 preflight 里
+   跑一次"谁 import 它"检查(删代码前先问谁按路径加载它)。
+
+## 5. 执行序摘要
+
+W5a(distributions)→ W5b(workflows + ops/deploy + oncall 族)→
+W5c(services 三件)→ W5d(ops 数据/代理/setup + benchmark)→
+W5e(docs/developer + Pages 四步硬序)→ W5f(rag-index 跨仓依赖)。
+每批:复制+接线 → §2 矩阵 preflight → staging 验证 → 下一批;
+上游删除全部推迟到 W6 观察窗后(计划既定)。
