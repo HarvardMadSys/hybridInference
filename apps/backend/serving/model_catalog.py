@@ -15,10 +15,13 @@ is the identity the sandbox's calls now run as (see ``model_auth``).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from serving.config.settings import has_role
 from serving.model_access import is_model_disabled_for_user
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # Agents drive chat surfaces; an embedding model would "resolve" and then be
 # useless, so it is excluded from both the picker and the validation.
@@ -72,6 +75,47 @@ async def agent_visible_models(
         seen.add(canonical)
         visible.append(canonical)
     return visible
+
+
+def agent_model_reasoning_efforts(router_exec: Any, models: Sequence[str]) -> dict[str, list[str]]:
+    """The reasoning-effort values each of ``models`` accepts, for the ones that do.
+
+    Models that cannot take a reasoning effort are absent from the mapping
+    rather than present with an empty list: a consumer intersecting this
+    against its own runtime's vocabulary should reach "no knob here" by finding
+    nothing, which is also what it finds when talking to a gateway too old to
+    answer this at all. One shape for both, so the picker cannot render an
+    empty control in either case.
+
+    Read off the first route's config, as the rest of this module does — the
+    field is per model, copied onto every route the registry builds from it.
+
+    Args:
+        router_exec: Model registry.
+        models: Canonical ids to describe, normally the caller's visible list.
+
+    Returns:
+        ``{model_id: [values]}`` for those models declaring a domain.
+    """
+    efforts: dict[str, list[str]] = {}
+    for model_id in models:
+        route = getattr(router_exec, "routes", {}).get(model_id)
+        if route is None:
+            continue
+        # Describe what can be described. This is additive metadata on an
+        # endpoint whose actual job is the model list, so a route that cannot
+        # account for its adapters costs the caller one absent effort domain —
+        # not the catalog, and not the job that was about to be created.
+        configs = [adapter.config for adapter, _ in getattr(route, "adapters", None) or ()]
+        if not configs:
+            continue
+        cfg = configs[0]
+        if "reasoning_effort" not in (getattr(cfg, "supported_params", None) or ()):
+            continue
+        declared = [str(value) for value in (getattr(cfg, "reasoning_efforts", None) or ())]
+        if declared:
+            efforts[model_id] = declared
+    return efforts
 
 
 async def agent_model_resolvable(

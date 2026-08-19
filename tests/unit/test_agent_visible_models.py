@@ -13,7 +13,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from serving.model_catalog import agent_model_resolvable, agent_visible_models
+from serving.model_catalog import (
+    agent_model_reasoning_efforts,
+    agent_model_resolvable,
+    agent_visible_models,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -101,3 +105,50 @@ async def test_visibility_resolver_override_wins_both_ways():
         router_exec, visibility_resolver=Resolver(), user_ctx={"role": "internal"}
     )
     assert visible == ["loosened"]
+
+
+def _effort_route(
+    canonical: str,
+    *,
+    supported_params: list[str] | None = None,
+    reasoning_efforts: list[str] | None = None,
+):
+    adapter = SimpleNamespace(
+        config=SimpleNamespace(
+            id=canonical,
+            model_type="chat",
+            supported_params=supported_params or ["max_tokens"],
+            reasoning_efforts=reasoning_efforts or [],
+        )
+    )
+    return SimpleNamespace(
+        published=True, required_role=None, admin_only=False, adapters=[(adapter, 1.0)]
+    )
+
+
+async def test_reasoning_effort_domains_are_reported_per_model():
+    """Only models that both support the parameter and declare values appear."""
+    router_exec = _exec(
+        {
+            "declares": _effort_route(
+                "declares",
+                supported_params=["max_tokens", "reasoning_effort"],
+                reasoning_efforts=["low", "high", "max"],
+            ),
+            # Supports the parameter but nobody recorded its accepted values.
+            # Absent, not empty-listed: a guessed domain is the 400 factory this
+            # field exists to prevent, and "no knob" is the honest answer.
+            "undeclared": _effort_route("undeclared", supported_params=["reasoning_effort"]),
+            "plain": _effort_route("plain"),
+        }
+    )
+    models = await agent_visible_models(router_exec, user_ctx={"role": "free"})
+
+    efforts = agent_model_reasoning_efforts(router_exec, models)
+
+    assert efforts == {"declares": ["low", "high", "max"]}
+
+
+async def test_reasoning_effort_domains_ignore_unknown_models():
+    """A caller's stale model list must not raise, just describe nothing."""
+    assert agent_model_reasoning_efforts(_exec({}), ["gone"]) == {}

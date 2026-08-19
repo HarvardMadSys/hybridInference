@@ -527,6 +527,38 @@ def test_register_from_models_yaml_cliproxy_gpt55(tmp_path, monkeypatch):
     assert adapter.config.context_length == 1050000
     assert adapter.config.max_output_length == 128000
     assert "reasoning_effort" in adapter.config.supported_params
+    # Domain unset in this YAML: supporting the parameter is not declaring
+    # which words it takes, and the registry must not invent them.
+    assert adapter.config.reasoning_efforts == []
+
+
+@pytest.mark.unit
+def test_register_from_models_yaml_carries_reasoning_effort_domain(tmp_path, monkeypatch):
+    """A declared domain reaches the adapter config the routers read it from."""
+    yaml_text = (
+        "models:\n"
+        "  - id: glm-x\n"
+        "    name: GLM X\n"
+        "    provider: zai\n"
+        "    supported_params: [max_tokens, stream, reasoning_effort]\n"
+        "    reasoning_efforts: [low, high, max]\n"
+        "    route:\n"
+        "      - kind: zai\n"
+        "        weight: 1.0\n"
+        "        base_url: ${ZAI_URL}\n"
+        "        api_key: ${ZAI_KEY}\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("ZAI_URL", "http://zai.local/v1")
+    monkeypatch.setenv("ZAI_KEY", "sk-test")
+
+    exe = RouteExecutor()
+    count, _infos = registry.register_from_models_yaml(exe, Path(p))
+
+    assert count == 1
+    adapter = exe.routes["glm-x"].adapters[0][0]
+    assert adapter.config.reasoning_efforts == ["low", "high", "max"]
 
 
 @pytest.mark.unit

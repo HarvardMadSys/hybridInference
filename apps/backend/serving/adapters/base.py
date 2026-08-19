@@ -102,6 +102,16 @@ class ModelConfig:
     supported_params: list[str] = field(
         default_factory=lambda: ["temperature", "top_p", "max_tokens"]
     )
+    # The values this model's ``reasoning_effort`` actually accepts. Meaningful
+    # only when ``reasoning_effort`` is in ``supported_params``; empty otherwise.
+    #
+    # **Absent means "not offered", never a guessed default.** The obvious
+    # default -- low/medium/high -- is wrong for the model that most wants this
+    # knob: glm-5.3 takes low/high/max and has no medium. A default would hand
+    # every consumer a value the upstream 400s on, which is the failure this
+    # field exists to prevent. A deployment that wants the knob declares the
+    # domain it verified.
+    reasoning_efforts: list[str] = field(default_factory=list)
     pricing: dict[str, str] = field(
         default_factory=lambda: {
             "prompt": "0",

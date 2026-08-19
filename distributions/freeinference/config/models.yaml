@@ -128,6 +128,8 @@ models:
     # a client that still sends it gets an upstream 400. `reasoning_effort`
     # (low/high/max) is the supported way to dial thinking down.
     supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking, reasoning_effort]
+    # No `medium` — the domain is the upstream's, not a platform convention.
+    reasoning_efforts: [low, high, max]
     input_modalities: ["text"]
     output_modalities: ["text"]
     aliases: ["freeinference-glm-5.3"]
@@ -685,6 +687,9 @@ models:
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream, thinking, reasoning_effort]
+    # `reasoning_efforts` deliberately unset: the accepted values are not
+    # recorded anywhere we can check, and a guessed domain is a 400 factory.
+    # Declare it once the DeepSeek API's own list is verified.
     input_modalities: ["text"]
     output_modalities: ["text"]
     quantization: "none"
@@ -772,6 +777,9 @@ models:
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream, thinking, reasoning_effort]
+    # `reasoning_efforts` deliberately unset: the accepted values are not
+    # recorded anywhere we can check, and a guessed domain is a 400 factory.
+    # Declare it once the DeepSeek API's own list is verified.
     input_modalities: ["text"]
     output_modalities: ["text"]
     quantization: "none"

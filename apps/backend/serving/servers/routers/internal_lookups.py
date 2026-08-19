@@ -35,7 +35,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, status
 
 from serving.model_access import get_disabled_models_from_preferences
-from serving.model_catalog import agent_visible_models
+from serving.model_catalog import agent_model_reasoning_efforts, agent_visible_models
 from serving.servers.deps import (
     get_model_visibility_resolver,
     get_operational_store,
@@ -131,7 +131,8 @@ async def model_catalog(
             the inference path's agree.
 
     Returns:
-        The canonical chat-model ids, in registry order.
+        The canonical chat-model ids in registry order, their alias table, and
+        the reasoning-effort domain of each model that has one.
 
     Raises:
         HTTPException: 403 if the account is unknown or not active.
@@ -165,6 +166,10 @@ async def model_catalog(
         # once and works in canonical ids from there; nothing downstream — the
         # grant, the store, the scope check — ever sees an alias.
         "aliases": _aliases_for(router_exec, models),
+        # Which models can be told how hard to think, and with which words.
+        # Additive: a control plane that predates this key sees no efforts
+        # anywhere and offers no such control, which is the behaviour it had.
+        "reasoning_efforts": agent_model_reasoning_efforts(router_exec, models),
     }
 
 
