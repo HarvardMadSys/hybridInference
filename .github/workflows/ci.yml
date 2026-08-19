@@ -7,15 +7,12 @@ on:
     - cron: '23 18 * * *'
   push:
     branches: [main, dev, "murphy/dev/*"]
-    # Keep docs-only branch pushes from triggering deployment workflows.
-    # Pull requests intentionally do not use these filters so CI Gate is
-    # always reported for branch protection.
-    paths-ignore:
-      - 'docs/**'
-      - 'distributions/freeinference/content/docs/**'
-      - '**/*.md'
-      - 'LICENSE'
-      - '.gitignore'
+    # No paths-ignore on pushes (2026-08-19): every dev SHA must publish a
+    # backend candidate for the distribution repo's bump bot, and a
+    # path-filtered push creates no workflow run at all — a job-level
+    # condition can never rescue that. Accepted cost: docs-only merges run
+    # full CI and ride the normal staging deploy. The per-job path
+    # classification below still keeps those runs cheap.
   pull_request:
     branches: [main, dev]
 
@@ -768,9 +765,9 @@ jobs:
           set -euo pipefail
           short="${GITHUB_SHA:0:8}"
           digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100" \
-                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${short}\") | .name" 2>/dev/null | head -1 || true)"
+                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" 2>/dev/null | head -1 || true)"
           if [ -n "${digest}" ]; then
-            echo "candidate dev-${short} already published (${digest}); skipping the build"
+            echo "candidate dev-${GITHUB_SHA} already published (${digest}); skipping the build"
           fi
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "shortsha=${short}" >> "$GITHUB_OUTPUT"
@@ -796,7 +793,11 @@ jobs:
           file: deploy/docker/Dockerfile.backend
           platforms: linux/arm64
           push: true
-          tags: ghcr.io/harvardmadsys/hybridinference-backend:dev-${{ steps.existing.outputs.shortsha }}
+          # Full-SHA tag is what the bump bot resolves (an 8-char prefix is
+          # not a SHA claim); the short tag stays for humans.
+          tags: |
+            ghcr.io/harvardmadsys/hybridinference-backend:dev-${{ github.sha }}
+            ghcr.io/harvardmadsys/hybridinference-backend:dev-${{ steps.existing.outputs.shortsha }}
           # The digest deploy and the bump gate both read the revision label
           # back and compare it against their SHA truth; a candidate without
           # it is refused at deploy time.
