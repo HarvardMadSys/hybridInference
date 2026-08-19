@@ -67,6 +67,23 @@ class OnCallSettings(BaseSettings):
         le=10_000,
         alias="CODEX_ONCALL_MAX_PENDING_JOBS",
     )
+    # Delivery confirmation: after a dispatch returns 204, the relay polls the
+    # Actions run list every confirm_poll_seconds and considers the hand-off
+    # delivered only when a run appears before confirm_timeout_seconds. A
+    # dispatch GitHub accepts while no workflow listens for it would otherwise
+    # drop the analysis silently.
+    confirm_poll_seconds: float = Field(
+        default=10.0,
+        ge=1.0,
+        le=300.0,
+        alias="CODEX_ONCALL_CONFIRM_POLL_SECONDS",
+    )
+    confirm_timeout_seconds: float = Field(
+        default=120.0,
+        ge=10.0,
+        le=3_600.0,
+        alias="CODEX_ONCALL_CONFIRM_TIMEOUT_SECONDS",
+    )
 
     @property
     def configured(self) -> bool:

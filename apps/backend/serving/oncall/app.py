@@ -35,6 +35,8 @@ def build_service(settings: OnCallSettings) -> OnCallService:
         poll_seconds=settings.worker_poll_seconds,
         max_attempts=settings.max_attempts,
         max_pending_jobs=settings.max_pending_jobs,
+        confirm_poll_seconds=settings.confirm_poll_seconds,
+        confirm_timeout_seconds=settings.confirm_timeout_seconds,
     )
 
 

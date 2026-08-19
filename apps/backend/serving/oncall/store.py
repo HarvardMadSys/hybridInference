@@ -38,6 +38,16 @@ class OnCallJob:
     stage: str
     attempts: int
     slack_thread_ts: str
+    # Delivery-confirmation bookkeeping, populated once the job parks in the
+    # "confirm" stage: before_run_id is the newest Actions run id observed
+    # before the dispatch, dispatched_at when the dispatch happened,
+    # not_before when the next confirmation poll is due, and deadline by
+    # which a run must have appeared.
+    before_run_id: int | None = None
+    dispatched_at: float | None = None
+    not_before: float | None = None
+    deadline: float | None = None
+    last_error: str | None = None
 
 
 class OnCallStore:
@@ -75,6 +85,10 @@ class OnCallStore:
                     status TEXT NOT NULL DEFAULT 'queued',
                     attempts INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT,
+                    not_before REAL,
+                    deadline REAL,
+                    before_run_id INTEGER,
+                    dispatched_at REAL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
@@ -83,10 +97,41 @@ class OnCallStore:
                     ON oncall_jobs(status, id);
                 """
             )
+            self._ensure_columns(
+                connection,
+                "oncall_jobs",
+                {
+                    "not_before": "REAL",
+                    "deadline": "REAL",
+                    "before_run_id": "INTEGER",
+                    "dispatched_at": "REAL",
+                },
+            )
+            # Created after the column migration: on an existing volume the
+            # columns do not exist yet when the schema script above runs.
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS oncall_jobs_confirm "
+                "ON oncall_jobs(status, stage, not_before)"
+            )
             connection.execute(
                 "UPDATE oncall_jobs SET status = 'queued', updated_at = ? WHERE status = 'running'",
                 (time.time(),),
             )
+
+    @staticmethod
+    def _ensure_columns(
+        connection: sqlite3.Connection, table: str, columns: dict[str, str]
+    ) -> None:
+        """Add missing columns to an existing table in place.
+
+        SQLite has no ``ADD COLUMN IF NOT EXISTS``, so volumes created by an
+        older relay are migrated column by column here instead of being
+        dropped and rebuilt.
+        """
+        present = {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in columns.items():
+            if name not in present:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -221,7 +266,8 @@ class OnCallStore:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT id, fingerprint, event_json, slack_thread_ts, stage, attempts
+                SELECT id, fingerprint, event_json, slack_thread_ts, stage, attempts,
+                       before_run_id, dispatched_at, not_before, deadline, last_error
                 FROM oncall_jobs
                 WHERE status = 'queued'
                 ORDER BY id
@@ -239,13 +285,108 @@ class OnCallStore:
                 """,
                 (attempts, time.time(), row["id"]),
             )
+        return self._job_from_row(row, attempts=attempts)
+
+    async def start_confirm(
+        self,
+        job_id: int,
+        *,
+        not_before: float,
+        deadline: float,
+        before_run_id: int | None,
+        dispatched_at: float,
+    ) -> None:
+        """Park a dispatched job in the confirm stage until a run appears."""
+        await asyncio.to_thread(
+            self._start_confirm, job_id, not_before, deadline, before_run_id, dispatched_at
+        )
+
+    def _start_confirm(
+        self,
+        job_id: int,
+        not_before: float,
+        deadline: float,
+        before_run_id: int | None,
+        dispatched_at: float,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE oncall_jobs
+                SET stage = 'confirm', not_before = ?, deadline = ?, before_run_id = ?,
+                    dispatched_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (not_before, deadline, before_run_id, dispatched_at, time.time(), job_id),
+            )
+
+    async def claim_next_confirm(self, now: float) -> OnCallJob | None:
+        """Return the confirm-stage job whose next poll is due, if any.
+
+        Poll scheduling is driven by ``not_before``: every call hands back the
+        oldest parked job that is due at ``now``, so the worker needs no
+        separate timer and a restart simply resumes polling.
+        """
+        return await asyncio.to_thread(self._claim_next_confirm, now)
+
+    def _claim_next_confirm(self, now: float) -> OnCallJob | None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT id, fingerprint, event_json, slack_thread_ts, stage, attempts,
+                       before_run_id, dispatched_at, not_before, deadline, last_error
+                FROM oncall_jobs
+                WHERE status = 'running' AND stage = 'confirm' AND not_before <= ?
+                ORDER BY id
+                LIMIT 1
+                """,
+                (now,),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                "UPDATE oncall_jobs SET updated_at = ? WHERE id = ?",
+                (time.time(), row["id"]),
+            )
+        return self._job_from_row(row)
+
+    async def defer_confirm(self, job_id: int, *, not_before: float, error: str | None) -> None:
+        """Reschedule a confirmation poll and record why the last one failed."""
+        await asyncio.to_thread(self._defer_confirm, job_id, not_before, error)
+
+    def _defer_confirm(self, job_id: int, not_before: float, error: str | None) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE oncall_jobs
+                SET not_before = ?, last_error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (not_before, error, time.time(), job_id),
+            )
+
+    @staticmethod
+    def _job_from_row(row: sqlite3.Row, *, attempts: int | None = None) -> OnCallJob:
+        """Build a job from a row that selected the full job column set.
+
+        ``attempts`` defaults to the stored value; pass the post-increment
+        value when the row was just claimed.
+        """
         return OnCallJob(
             id=int(row["id"]),
             fingerprint=row["fingerprint"],
             event=AlertEvent.model_validate_json(row["event_json"]),
             stage=row["stage"],
-            attempts=attempts,
+            attempts=attempts if attempts is not None else int(row["attempts"]),
             slack_thread_ts=row["slack_thread_ts"],
+            before_run_id=row["before_run_id"],
+            dispatched_at=(
+                float(row["dispatched_at"]) if row["dispatched_at"] is not None else None
+            ),
+            not_before=float(row["not_before"]) if row["not_before"] is not None else None,
+            deadline=float(row["deadline"]) if row["deadline"] is not None else None,
+            last_error=row["last_error"],
         )
 
     async def complete_job(self, job_id: int) -> None:
@@ -271,14 +412,27 @@ class OnCallStore:
 
     def _retry_or_fail(self, job_id: int, error: str, final: bool) -> None:
         with self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE oncall_jobs
-                SET status = ?, last_error = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                ("failed" if final else "queued", error[:2_000], time.time(), job_id),
-            )
+            if final:
+                connection.execute(
+                    """
+                    UPDATE oncall_jobs
+                    SET status = 'failed', last_error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (error[:2_000], time.time(), job_id),
+                )
+            else:
+                # Requeue for a fresh dispatch attempt. A job that timed out in
+                # the confirm stage restarts from dispatch, since a second
+                # repository_dispatch is the only way to get a new run.
+                connection.execute(
+                    """
+                    UPDATE oncall_jobs
+                    SET status = 'queued', stage = 'dispatch', last_error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (error[:2_000], time.time(), job_id),
+                )
 
     async def job_counts(self) -> dict[str, int]:
         """Return queue counts for health reporting."""

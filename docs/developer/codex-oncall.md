@@ -29,9 +29,9 @@ Split of responsibilities:
 
 - **Relay (Docker, always on):** authenticates producers, posts the original
   alert immediately, deduplicates incidents in SQLite, queues one durable
-  hand-off per firing alert, and falls back loudly when GitHub is unreachable.
-  It runs no Codex, holds no model credentials, and contains no repository
-  snapshot.
+  hand-off per firing alert, confirms each hand-off actually produced a
+  workflow run, and falls back loudly when GitHub is unreachable. It runs no
+  Codex, holds no model credentials, and contains no repository snapshot.
 - **Workflow (GitHub Actions, per alert):** ephemeral runner checks out the
   live `dev` branch (no image-staleness), installs a pinned Codex CLI, runs
   the read-only investigation, and posts the structured analysis (or its own
@@ -64,10 +64,19 @@ would be appropriate for human follow-up.
   workflow warning — to the ephemeral VM as the isolation boundary.
 - One workflow run per incident fingerprint at a time (Actions concurrency
   group); duplicates queue instead of racing.
-- The relay retries only the hand-off itself. After a successful dispatch the
-  workflow owns the outcome and posts its own failure notice (with the run
-  URL) if the analysis fails; if the dispatch itself finally fails, the relay
-  posts the failure notice.
+- The relay retries only the hand-off itself, and treats HTTP 204 as
+  "accepted", not "delivered": after a dispatch it parks the job and polls
+  the Actions run list until a run appears (every 10 s, within a 120 s
+  window) before marking the job done. GitHub returns 204 even when no
+  workflow listens for the event any more (for example after the workflow
+  file is renamed), which would otherwise drop the analysis silently. This
+  confirmation is coarse by design — `repository_dispatch` carries no run id,
+  so the relay matches "a run appeared" rather than "this exact run" — and it
+  does not track the run to completion. Once a run is confirmed, the workflow
+  owns the outcome and posts its own failure notice (with the run URL) if the
+  analysis fails; if the dispatch itself finally fails, or no run appears
+  within the window, the relay posts the failure notice in the original
+  thread.
 - Fingerprints deduplicate transport retries. Recovery events close the active
   incident and reply in its original Slack thread.
 
@@ -83,8 +92,10 @@ would be appropriate for human follow-up.
    | `CODEX_ONCALL_SLACK_BOT_TOKEN` | Same Slack bot token the relay uses (`chat:write`, invited to the channel). |
 
 3. Create a **fine-grained PAT** for the relay with *Contents: read & write*
-   on this repository only — that is the permission `repository_dispatch`
-   requires. It goes into `.env.oncall` below, not into Actions secrets.
+   and *Actions: read* on this repository only — Contents is the permission
+   `repository_dispatch` requires, and Actions: read lets the relay list
+   workflow runs to confirm a dispatch actually produced a run. It goes into
+   `.env.oncall` below, not into Actions secrets.
 
 ## Configure the relay
 
@@ -214,7 +225,9 @@ curl -i http://127.0.0.1:8091/v1/alerts \
 
 A successful request returns `202`, posts the synthetic alert immediately, and
 starts a `Codex On-Call` run under the repository's Actions tab; the
-analysis reply lands in the alert's Slack thread when the run finishes.
+analysis reply lands in the alert's Slack thread when the run finishes. If a
+run never appears, the relay posts a failure notice in the thread within the
+confirmation window (120 s) instead of dropping the alert.
 Reusing the same fingerprint inside the dedupe window returns
 `duplicate: true` without another top-level message. On the first live run,
 check the workflow log for the sandbox self-check result.

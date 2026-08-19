@@ -43,14 +43,22 @@ def event() -> AlertEvent:
 
 
 class FakeResponse:
-    def __init__(self, status_code: int) -> None:
+    def __init__(self, status_code: int, payload: dict | None = None) -> None:
         self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> dict:
+        return self._payload or {}
 
 
 class FakeHttpClient:
-    def __init__(self, response: FakeResponse) -> None:
+    def __init__(
+        self, response: FakeResponse | None = None, get_response: FakeResponse | None = None
+    ) -> None:
         self.response = response
+        self.get_response = get_response
         self.calls: list[tuple[str, dict]] = []
+        self.get_calls: list[str] = []
 
     async def __aenter__(self):
         return self
@@ -61,6 +69,10 @@ class FakeHttpClient:
     async def post(self, url: str, **kwargs):
         self.calls.append((url, kwargs))
         return self.response
+
+    async def get(self, url: str, **kwargs):
+        self.get_calls.append(url)
+        return self.get_response
 
 
 def test_payload_is_sanitized_and_excludes_slack_text():
@@ -117,3 +129,88 @@ def test_defaults_point_at_the_gateway_responses_api(monkeypatch):
     # No default any more: it used to be one deployment's public URL, so
     # every other operator dispatched their analysis at it.
     assert defaults.model_base_url == ""
+
+
+def runs_payload(*run_ids: int) -> dict:
+    return {
+        "workflow_runs": [
+            {
+                "id": run_id,
+                "html_url": f"https://github.com/example/actions/runs/{run_id}",
+            }
+            for run_id in run_ids
+        ]
+    }
+
+
+async def test_latest_run_id_snapshots_the_newest_run():
+    fake = FakeHttpClient(get_response=FakeResponse(200, runs_payload(41, 40)))
+    with patch("serving.oncall.dispatcher.httpx.AsyncClient", return_value=fake):
+        run_id = await GitHubDispatcher(settings()).latest_run_id()
+
+    assert run_id == 41
+    assert "event=repository_dispatch" in fake.get_calls[0]
+    assert "per_page=1" in fake.get_calls[0]
+
+
+async def test_latest_run_id_is_best_effort():
+    client = GitHubDispatcher(settings())
+    fake = FakeHttpClient(get_response=FakeResponse(403))
+    with patch("serving.oncall.dispatcher.httpx.AsyncClient", return_value=fake):
+        assert await client.latest_run_id() is None
+
+    empty = FakeHttpClient(get_response=FakeResponse(200, {"workflow_runs": []}))
+    with patch("serving.oncall.dispatcher.httpx.AsyncClient", return_value=empty):
+        assert await client.latest_run_id() == 0
+
+
+async def test_confirm_run_started_matches_runs_newer_than_snapshot():
+    fake = FakeHttpClient(get_response=FakeResponse(200, runs_payload(40, 42)))
+    with patch("serving.oncall.dispatcher.httpx.AsyncClient", return_value=fake):
+        found, url = await GitHubDispatcher(settings()).confirm_run_started(
+            before_run_id=41, dispatched_at=1.0
+        )
+
+    assert found is True
+    assert url == "https://github.com/example/actions/runs/42"
+    assert "event=repository_dispatch" in fake.get_calls[0]
+
+
+async def test_confirm_run_started_rejects_only_older_runs():
+    fake = FakeHttpClient(get_response=FakeResponse(200, runs_payload(40)))
+    with patch("serving.oncall.dispatcher.httpx.AsyncClient", return_value=fake):
+        found, url = await GitHubDispatcher(settings()).confirm_run_started(
+            before_run_id=41, dispatched_at=1.0
+        )
+
+    assert found is False
+    assert url is None
+
+
+async def test_confirm_run_started_falls_back_to_creation_time_without_snapshot():
+    payload = {
+        "workflow_runs": [
+            {
+                "id": 5,
+                "html_url": "https://github.com/example/actions/runs/5",
+                "created_at": "2026-08-18T10:00:17Z",
+            }
+        ]
+    }
+    fake = FakeHttpClient(get_response=FakeResponse(200, payload))
+    with patch("serving.oncall.dispatcher.httpx.AsyncClient", return_value=fake):
+        found, url = await GitHubDispatcher(settings()).confirm_run_started(
+            before_run_id=None, dispatched_at=600.0
+        )
+
+    assert found is True
+    assert url == "https://github.com/example/actions/runs/5"
+
+
+async def test_confirm_run_started_raises_when_runs_are_unreadable():
+    fake = FakeHttpClient(get_response=FakeResponse(403))
+    with (
+        patch("serving.oncall.dispatcher.httpx.AsyncClient", return_value=fake),
+        pytest.raises(DispatchError, match="403"),
+    ):
+        await GitHubDispatcher(settings()).confirm_run_started(before_run_id=1, dispatched_at=1.0)

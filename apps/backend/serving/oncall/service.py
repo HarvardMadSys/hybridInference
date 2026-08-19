@@ -1,4 +1,4 @@
-"""Incident orchestration: Slack delivery and GitHub Actions hand-off."""
+"""Incident orchestration: Slack delivery and confirmed GitHub hand-off."""
 
 from __future__ import annotations
 
@@ -38,6 +38,14 @@ class AnalysisDispatcher(Protocol):
     async def dispatch(self, event: AlertEvent, slack_thread_ts: str) -> None:
         """Trigger the analysis workflow for one firing alert."""
 
+    async def latest_run_id(self) -> int | None:
+        """Return the newest run id before dispatch, or None when unknown."""
+
+    async def confirm_run_started(
+        self, *, before_run_id: int | None, dispatched_at: float
+    ) -> tuple[bool, str | None]:
+        """Return whether a workflow run started after the dispatch, with its URL."""
+
 
 class OnCallService:
     """Deduplicate incidents and hand durable analysis jobs to GitHub Actions."""
@@ -51,6 +59,8 @@ class OnCallService:
         poll_seconds: float = 1.0,
         max_attempts: int = 2,
         max_pending_jobs: int = 100,
+        confirm_poll_seconds: float = 10.0,
+        confirm_timeout_seconds: float = 120.0,
     ) -> None:
         self.store = store
         self._slack = slack
@@ -58,6 +68,8 @@ class OnCallService:
         self._poll_seconds = poll_seconds
         self._max_attempts = max_attempts
         self._max_pending_jobs = max_pending_jobs
+        self._confirm_poll_seconds = confirm_poll_seconds
+        self._confirm_timeout_seconds = confirm_timeout_seconds
         self._submit_lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
@@ -155,37 +167,146 @@ class OnCallService:
             )
 
     async def process_one(self) -> bool:
-        """Hand one queued job to GitHub Actions; return False when idle.
+        """Hand one unit of work; return False when idle.
 
-        The workflow owns everything after a successful dispatch: it runs the
-        Codex analysis and replies (or posts its own failure notice) in the
-        original Slack thread. The relay only retries the hand-off itself.
+        Two kinds of work share the loop: dispatching a queued hand-off, and
+        polling a parked hand-off to confirm its workflow run actually
+        started. A dispatch is not considered delivered on HTTP 204 alone —
+        GitHub can accept the event while no workflow listens for it any
+        more, which would drop the analysis silently. The job parks in the
+        confirm stage until a run appears (not_before schedules the polls,
+        deadline bounds them), then the workflow owns the outcome: it runs
+        the Codex analysis and replies (or posts its own failure notice) in
+        the original Slack thread.
         """
         job = await self.store.claim_next_job()
+        if job is not None:
+            return await self._dispatch_job(job)
+        job = await self.store.claim_next_confirm(time.time())
         if job is None:
             return False
+        return await self._poll_confirm(job)
+
+    async def _dispatch_job(self, job: OnCallJob) -> bool:
+        """Dispatch one hand-off and park it for delivery confirmation."""
         try:
             if job.stage != "dispatch":
                 raise RuntimeError(f"invalid oncall job stage: {job.stage}")
+            before_run_id = await self._snapshot_latest_run()
             await self._dispatcher.dispatch(job.event, job.slack_thread_ts)
-            await self.store.complete_job(job.id)
+            now = time.time()
+            await self.store.start_confirm(
+                job.id,
+                not_before=now,
+                deadline=now + self._confirm_timeout_seconds,
+                before_run_id=before_run_id,
+                dispatched_at=now,
+            )
         except Exception as exc:
             log.exception("oncall job %s failed during %s", job.id, job.stage)
-            final = await self.store.retry_or_fail(job, str(exc), self._max_attempts)
-            if final:
+            if await self._persist_failure(job, str(exc)):
                 await self._post_failure_notice(job)
-            else:
-                self._wake.set()
         return True
 
-    async def _post_failure_notice(self, job: OnCallJob) -> None:
+    async def _snapshot_latest_run(self) -> int | None:
+        """Snapshot the newest run id before dispatch, tolerating probe failure."""
         try:
-            await self._slack.post(
-                "*Codex on-call unavailable*\n"
-                f"Hand-off to the GitHub Actions analysis workflow failed after "
-                f"{job.attempts} attempts. Check the oncall relay logs.",
-                thread_ts=job.slack_thread_ts,
+            return await self._dispatcher.latest_run_id()
+        except Exception:
+            log.exception("failed to snapshot latest Actions run id; confirming by creation time")
+            return None
+
+    async def _poll_confirm(self, job: OnCallJob) -> bool:
+        """Poll one parked hand-off: complete it, defer it, or fail it."""
+        try:
+            found, run_url = await self._dispatcher.confirm_run_started(
+                before_run_id=job.before_run_id,
+                dispatched_at=job.dispatched_at if job.dispatched_at is not None else 0.0,
             )
+        except Exception as exc:
+            # A transient GitHub failure (network, 5xx, 403) is not an
+            # analysis failure: reschedule the poll instead of giving up.
+            # Only a deadline that passes without confirmation is final.
+            log.warning("oncall job %s confirmation poll failed: %s", job.id, exc)
+            if time.time() >= (job.deadline if job.deadline is not None else 0.0):
+                return await self._fail_confirm(job, f"last confirmation check failed: {exc}")
+            await self._defer_confirm(job, str(exc))
+            return True
+
+        if found:
+            log.info("oncall job %s confirmed started: %s", job.id, run_url)
+            try:
+                await self.store.complete_job(job.id)
+            except Exception:
+                log.exception(
+                    "completing oncall job %s failed; it will be requeued on restart",
+                    job.id,
+                )
+            return True
+
+        if time.time() >= (job.deadline if job.deadline is not None else 0.0):
+            return await self._fail_confirm(job, None)
+        await self._defer_confirm(job, None)
+        return True
+
+    async def _defer_confirm(self, job: OnCallJob, error: str | None) -> None:
+        """Reschedule the next confirmation poll for a parked job."""
+        try:
+            await self.store.defer_confirm(
+                job.id,
+                not_before=time.time() + self._confirm_poll_seconds,
+                error=error,
+            )
+        except Exception:
+            log.exception(
+                "deferring confirmation poll for oncall job %s failed; "
+                "it will be requeued on restart",
+                job.id,
+            )
+
+    async def _fail_confirm(self, job: OnCallJob, error: str | None) -> bool:
+        """Turn a confirmation timeout into a retry or a final failure notice."""
+        reason = (
+            f"GitHub accepted the dispatch (HTTP 204) but no `Codex On-Call` "
+            f"workflow run appeared within {self._confirm_timeout_seconds:.0f}s. "
+            f"The original alert above still stands."
+        )
+        if error:
+            reason += f" {error}."
+        if await self._persist_failure(job, reason):
+            await self._post_failure_notice(job, reason=reason)
+        return True
+
+    async def _persist_failure(self, job: OnCallJob, error: str) -> bool:
+        """Requeue or finalize a failed job; return True when it is final.
+
+        Every write here is guarded separately: an exception escaping this
+        method would leave the row stuck in ``running`` — claimed but never
+        claimable again — and the analysis would be lost silently. That is
+        the same bug class this confirmation flow is meant to close, so the
+        failure path must not reintroduce it. If even the requeue write
+        fails, the startup requeue in the store is the last resort.
+        """
+        try:
+            final = await self.store.retry_or_fail(job, error, self._max_attempts)
+        except Exception:
+            log.exception(
+                "persisting failure for oncall job %s failed; it will be requeued on restart",
+                job.id,
+            )
+            return False
+        if not final:
+            self._wake.set()
+        return final
+
+    async def _post_failure_notice(self, job: OnCallJob, *, reason: str | None = None) -> None:
+        text = "*Codex on-call unavailable*\n" + (
+            reason
+            or f"Hand-off to the GitHub Actions analysis workflow failed after "
+            f"{job.attempts} attempts. Check the oncall relay logs."
+        )
+        try:
+            await self._slack.post(text, thread_ts=job.slack_thread_ts)
         except Exception:
             log.exception("failed to post final oncall failure notice for job %s", job.id)
 
