@@ -196,32 +196,49 @@ class OnCallService:
         cloud-agent backend the dispatcher returns a platform job id, the
         relay job parks in ``await_result``, and each later claim of it is one
         poll of that platform job.
+
+        Whichever stage runs, it runs inside the retry guard: a claimed job is
+        already marked 'running', so a stage that raises its way out of here
+        would never be claimed again.
         """
         job = await self.store.claim_next_job()
         if job is None:
             return False
-        if job.stage == "await_result":
-            await self._poll_agent_result(job)
-            return True
         try:
-            if job.stage != "dispatch":
-                raise RuntimeError(f"invalid oncall job stage: {job.stage}")
-            handle = await self._dispatcher.dispatch(job.event, job.slack_thread_ts)
-            if handle:
-                now = time.time()
-                await self.store.mark_awaiting(
-                    job.id,
-                    handle,
-                    not_before=now + self._agent_poll_seconds,
-                    deadline=now + self._agent_timeout_seconds,
-                )
+            if job.stage == "await_result":
+                await self._poll_agent_result(job)
+            elif job.stage == "dispatch":
+                handle = await self._dispatcher.dispatch(job.event, job.slack_thread_ts)
+                if handle:
+                    now = time.time()
+                    await self.store.mark_awaiting(
+                        job.id,
+                        handle,
+                        not_before=now + self._agent_poll_seconds,
+                        deadline=now + self._agent_timeout_seconds,
+                    )
+                else:
+                    await self.store.complete_job(job.id)
             else:
-                await self.store.complete_job(job.id)
+                raise RuntimeError(f"invalid oncall job stage: {job.stage}")
         except Exception as exc:
+            # Both stages are inside this guard, and that is the whole point.
+            # ``claim_next_job`` has already flipped the row to 'running' and
+            # only 'queued' rows are ever claimed again, so anything that
+            # escapes here strands the job until the next restart — silently,
+            # while still counting against ``max_pending_jobs``. The poll,
+            # settle and defer paths write to the store on every branch; one
+            # unhandled sqlite3.Error there used to lose a finished,
+            # paid-for analysis with nothing said in the thread.
             log.exception("oncall job %s failed during %s", job.id, job.stage)
             final = await self.store.retry_or_fail(job, str(exc), self._max_attempts)
             if final:
-                await self._post_failure_notice(job)
+                reason = (
+                    None
+                    if job.stage == "dispatch"
+                    else f"the relay could not settle the analysis job ({exc})"
+                )
+                await self._post_failure_notice(job, reason=reason)
             else:
                 self._wake.set()
         return True

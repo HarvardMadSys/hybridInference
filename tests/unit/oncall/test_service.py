@@ -1,5 +1,6 @@
 """Tests for incident dedupe, recovery threading, and dispatch hand-off."""
 
+import sqlite3
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -427,3 +428,73 @@ async def test_awaiting_job_without_poller_fails_closed(tmp_path):
     assert (await store.job_counts())["failed"] == 1
     failure_text, _ = slack.messages[-1]
     assert "no longer be polled" in failure_text
+
+
+async def test_await_result_store_failure_requeues_instead_of_stranding(tmp_path):
+    """A store write that throws mid-poll must not strand the job in 'running'.
+
+    ``claim_next_job`` marks the row running and only ever re-claims queued
+    rows, so an unguarded write in this stage leaked the job until the next
+    restart — invisibly, and still counted against ``max_pending_jobs``.
+    """
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
+    await store.initialize()
+    slack = FakeSlack()
+
+    class BrokenDeferStore:
+        """The real store, except that rescheduling a poll always fails."""
+
+        def __init__(self, inner: OnCallStore) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str):
+            return getattr(self._inner, name)
+
+        async def defer_poll(self, job_id: int, *, not_before: float) -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+    service = agent_service(BrokenDeferStore(store), slack, FakeAgentPoller(["running"]))
+
+    await service.submit(alert())
+    assert await service.process_one() is True  # dispatch → await_result
+    assert await service.process_one() is True  # poll → defer_poll raises
+
+    counts = await store.job_counts()
+    assert counts["running"] == 0
+    assert counts["queued"] == 1
+    assert counts["failed"] == 0
+
+
+async def test_await_result_store_failure_finally_pages_the_thread(tmp_path):
+    """Once the retries are spent the thread is told, rather than left waiting."""
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
+    await store.initialize()
+    slack = FakeSlack()
+
+    class BrokenFailStore:
+        """The real store, except that recording a failed job always fails."""
+
+        def __init__(self, inner: OnCallStore) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str):
+            return getattr(self._inner, name)
+
+        async def fail_job(self, job_id: int, error: str) -> None:
+            raise sqlite3.OperationalError("disk I/O error")
+
+    service = agent_service(
+        BrokenFailStore(store),
+        slack,
+        FakeAgentPoller(["failed"]),
+        max_attempts=1,
+    )
+
+    await service.submit(alert())
+    assert await service.process_one() is True  # dispatch → await_result
+    assert await service.process_one() is True  # settle → fail_job raises
+
+    assert (await store.job_counts())["failed"] == 1
+    failure_text, thread_ts = slack.messages[-1]
+    assert "could not settle the analysis job" in failure_text
+    assert thread_ts is not None
