@@ -27,19 +27,33 @@ def test_cd_accepts_only_manual_or_successful_push_ci(name: str) -> None:
     assert "github.event.workflow_run.conclusion == 'success'" in condition
 
 
-def test_docs_only_filters_apply_to_push_but_not_pull_requests() -> None:
-    triggers = _triggers(_workflow("ci.yml"))
-    ignored = [
-        "docs/**",
-        "distributions/freeinference/content/docs/**",
-        "**/*.md",
-        "LICENSE",
-        ".gitignore",
-    ]
+def test_push_runs_are_never_path_filtered() -> None:
+    """Every dev SHA must produce a workflow run, without exception.
 
-    assert triggers["push"]["paths-ignore"] == ignored
+    The distribution repository's bump bot pins exact SHAs and waits for a
+    published backend candidate per SHA; a path-filtered push creates no run
+    at all, so the publish job could never fire for it and the bot would wait
+    forever (policy flipped 2026-08-19 with the publish-backend job — the
+    old docs-only paths-ignore is deliberately gone, on pushes and pull
+    requests alike).
+    """
+    triggers = _triggers(_workflow("ci.yml"))
+
+    assert "paths-ignore" not in triggers["push"]
+    assert "paths" not in triggers["push"]
     assert "paths-ignore" not in triggers["pull_request"]
     assert triggers["schedule"]
+
+
+def test_every_green_dev_push_publishes_a_candidate() -> None:
+    """The publish job is the reason push filtering is banned; pin its shape."""
+    jobs = _workflow("ci.yml")["jobs"]
+    job = jobs["publish-backend"]
+
+    assert job["needs"] == ["ci-gate"]
+    assert "github.event_name == 'push'" in job["if"]
+    assert "github.ref == 'refs/heads/dev'" in job["if"]
+    assert "needs.ci-gate.result == 'success'" in job["if"]
 
 
 def test_python_tests_signal_controls_only_the_pytest_job() -> None:
