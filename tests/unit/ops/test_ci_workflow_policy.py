@@ -46,6 +46,25 @@ def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
     assert triggers["schedule"]
 
 
+def test_publish_gate_survives_skipped_ancestors() -> None:
+    """Publishing must depend on ci-gate's verdict, not on ancestor luck.
+
+    A job `if` without a status function gets an implicit success() that
+    evaluates the whole transitive needs chain; docker-build — an ancestor
+    through ci-gate — is legitimately skipped on many pushes, and that
+    implicit check silently skipped publishing (observed on dev@04b4f305:
+    gate green, publish skipped). !cancelled() suppresses the implicit
+    check so the explicit conditions are the only gate.
+    """
+    job = _workflow("ci.yml")["jobs"]["publish-backend"]
+
+    assert job["needs"] == ["ci-gate"]
+    assert "!cancelled()" in job["if"]
+    assert "github.event_name == 'push'" in job["if"]
+    assert "github.ref == 'refs/heads/dev'" in job["if"]
+    assert "needs.ci-gate.result == 'success'" in job["if"]
+
+
 def test_python_tests_signal_controls_only_the_pytest_job() -> None:
     jobs = _workflow("ci.yml")["jobs"]
 
