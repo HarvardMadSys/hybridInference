@@ -237,11 +237,13 @@ W5 每批搬迁按矩阵做 preflight。已知至少涉及的 secrets:
 - 目录:`distributions/freeinference/` **保持原路径整体平移**,不做扁平化
   美化(行为冻结;挂载与脚本零路径改写)。
 - `upstream.lock` 落地(§1 格式,含 `source_commit` provenance 锚)。
-- 上游侧自动发布(2026-08-12 评审第六轮补):dev CI 绿后自动构建并发布
+- 上游侧自动发布(2026-08-12 评审第六轮补;**已落**:ci.yml 的
+  `publish-backend` job,挂 `ci-gate` 之后、仅 dev push、刻意不受路径分类
+  影响——docs-only push 也出 candidate,否则 bump bot 会在该 SHA 上永等;
+  已发布判定按 `dev-<shortsha>` tag 幂等跳过):dev CI 绿后自动构建并发布
   backend 镜像(带 `org.opencontainers.image.revision` label)——W2 的
-  build-candidates 是 dispatch-only 的验证切片,不承担这条自动链;没有
-  自动发布,bump bot 就没有新 digest 可 bump。发布 job 挂上游 ci.yml,
-  digest 经 packages API / run summary 可查。**架构注记(第七轮)**:W4
+  build-candidates 保留为 dispatch-only 的手动切片。digest 经
+  packages API / run summary 可查。**架构注记(第七轮)**:W4
   同时登记 prod 主机架构;若与 staging 不同,自动发布必须产出
   multi-arch manifest,`upstream.lock` 钉 manifest digest(单架构则钉
   平台镜像 digest,部署侧的架构硬门已在 #1258 落地)。

@@ -733,3 +733,94 @@ jobs:
             --event-name "${EVENT_NAME}" \
             --classification-json "${CLASSIFICATION_JSON}" \
             --job-results-json "${JOB_RESULTS_JSON}"
+
+  publish-backend:
+    name: Publish backend candidate
+    # Every green dev push publishes its backend candidate image so the
+    # distribution repository's bump bot always finds a digest for dev HEAD
+    # (W4 of the repo-split plan). Deliberately unconditional on path
+    # classification: a docs-only push still gets a candidate — the bump bot
+    # pins exact SHAs and would otherwise wait forever on one. Publishing
+    # rides the arm64 fleet runner for the same billing reality as the
+    # dispatch-only Build Candidate Images workflow (#1279), and stays
+    # native for the staging host's architecture; single-arch until the
+    # production architecture is registered (plan W4 note), at which point
+    # a differing prod arch upgrades this to a multi-arch manifest.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success'
+    needs: [ci-gate]
+    runs-on: [self-hosted, Linux, arm64-docker]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full fetch avoids the intermittent unresolved-delta failures seen
+          # with shallow clones on the self-hosted runner pool.
+          fetch-depth: 0
+
+      - name: Skip when this SHA's candidate already exists
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA:0:8}"
+          digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100" \
+                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${short}\") | .name" 2>/dev/null | head -1 || true)"
+          if [ -n "${digest}" ]; then
+            echo "candidate dev-${short} already published (${digest}); skipping the build"
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "shortsha=${short}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        if: steps.existing.outputs.digest == ''
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.existing.outputs.digest == ''
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend candidate
+        if: steps.existing.outputs.digest == ''
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.backend
+          platforms: linux/arm64
+          push: true
+          tags: ghcr.io/harvardmadsys/hybridinference-backend:dev-${{ steps.existing.outputs.shortsha }}
+          # The digest deploy and the bump gate both read the revision label
+          # back and compare it against their SHA truth; a candidate without
+          # it is refused at deploy time.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          secrets: |
+            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=min,scope=backend
+
+      - name: Candidate summary
+        env:
+          EXISTING: ${{ steps.existing.outputs.digest }}
+          PUSHED: ${{ steps.push.outputs.digest }}
+          SHORT: ${{ steps.existing.outputs.shortsha }}
+        run: |
+          {
+            echo "## Backend candidate"
+            echo ""
+            echo "- source SHA: \`${GITHUB_SHA}\`"
+            if [ -n "${EXISTING}" ]; then
+              echo "- already published: \`ghcr.io/harvardmadsys/hybridinference-backend@${EXISTING}\`"
+            else
+              echo "- pushed: \`ghcr.io/harvardmadsys/hybridinference-backend@${PUSHED}\` (tag \`dev-${SHORT}\`)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
