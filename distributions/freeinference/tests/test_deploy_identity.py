@@ -113,9 +113,73 @@ def test_the_environment_label_is_stated_not_inferred() -> None:
     )
 
 
-def test_staging_uses_the_staging_documentation_site() -> None:
-    """Staging must not send users to production docs."""
-    staging = OVERLAY / "staging"
+def _env_values(path: Path) -> dict[str, str]:
+    """Every key one env file sets, in file order."""
+    values: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value
+    return values
+
+
+# Keys whose production value is correct on staging too, each with the reason.
+# Anything not listed here has to be answered in the staging overlay.
+_SHARED_WITH_PRODUCTION = {
+    "NEXT_PUBLIC_CONTACT_EMAIL": "one team reads this inbox for both deployments",
+}
+
+
+def test_staging_overlay_answers_for_every_production_host() -> None:
+    """Every shared frontend value naming production must be restated here.
+
+    The shared layer is written for the public site, so a value in it naming a
+    production host arrives on staging as a claim about somewhere else. Pinning
+    them one at a time is what failed: the overlay answered for the docs site
+    and nothing coupled the rest to it, so `NEXT_PUBLIC_STATUS_URL` shipped
+    production's status page to staging's header and footer, and
+    `NEXT_PUBLIC_EXAMPLE_API_BASE` handed staging visitors a curl that runs
+    against production. Both had been wrong since the values were introduced.
+
+    Enumerated rather than listed, so the next value added to the shared layer
+    either gets an answer here or fails.
+
+    Frontend only. The backend layer has the same shape, but its values are read
+    by a server whose own `.env` is loaded last and already sets several of
+    them, so a repository-level override there would assert a fix that the host
+    silently outranks.
+    """
+    shared = _env_values(OVERLAY / "frontend.env")
+    staging = _env_values(OVERLAY / "staging" / "frontend.env")
+
+    production_hosts = re.compile(r"(?<![\w.-])(?!staging\.)[\w-]*\.?freeinference\.org")
+    unanswered = {
+        key: value
+        for key, value in shared.items()
+        if production_hosts.search(value)
+        and "staging.freeinference.org" not in value
+        and key not in _SHARED_WITH_PRODUCTION
+        and key not in staging
+    }
+    assert not unanswered, (
+        f"staging inherits these unchanged and would claim production's: {sorted(unanswered)}"
+    )
+
+    # The two that were wrong, pinned by the answer they need rather than by
+    # merely being present.
+    assert staging["NEXT_PUBLIC_DOCS_URL"] == "https://doc.staging.freeinference.org/"
+    assert staging["NEXT_PUBLIC_EXAMPLE_API_BASE"] == "https://staging.freeinference.org"
+
+    # staging's own status host. Production's page reports a different
+    # deployment, so it reads healthy through any staging outage — the reason
+    # this was worth a hostname rather than dropping the link.
+    assert staging["NEXT_PUBLIC_STATUS_URL"] == "https://status.staging.freeinference.org/"
+
+
+def test_staging_overlay_is_loaded_between_the_shared_files_and_the_host() -> None:
+    """Later wins, so the overlay is useless on either side of this window."""
     deploy_script = (REPO / "ops" / "deploy" / "deploy_staging.sh").read_text()
     shared_overlay_at = deploy_script.index("distributions/freeinference/deploy/*.env")
     staging_overlay_at = deploy_script.index("distributions/freeinference/deploy/staging/*.env")
@@ -125,12 +189,8 @@ def test_staging_uses_the_staging_documentation_site() -> None:
         deploy_script
     )
     assert (
-        "NEXT_PUBLIC_DOCS_URL=https://doc.staging.freeinference.org/"
-        in (staging / "frontend.env").read_text()
-    )
-    assert (
         "SITE_DOCS_URL=https://doc.staging.freeinference.org"
-        in (staging / "backend.env").read_text()
+        in (OVERLAY / "staging" / "backend.env").read_text()
     )
 
 
