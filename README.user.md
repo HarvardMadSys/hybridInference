@@ -100,6 +100,22 @@ HybridInference can route to local inference backends and remote providers.
 
 For model setup, see [docs/developer/adding-models.md](docs/developer/adding-models.md) and [docs/developer/add-local-model.md](docs/developer/add-local-model.md).
 
+### Provider Terms
+
+You connect providers with your own credentials — this project ships none — so
+each provider's terms bind you, not the gateway. Read them before adding a
+route.
+
+Some plans, in particular the subscription and coding-plan tiers that several
+providers offer, are licensed for individual personal use and do not permit
+reselling, sharing or otherwise redistributing the capacity they grant. The
+gateway will let you configure such a route; that is not the same as being
+permitted to. If a plan is licensed to you personally, route it only for your
+own personal, non-commercial or research use.
+
+The project's MIT license covers its source code alone. It grants no rights to
+any third-party model, API or subscription.
+
 ## Troubleshooting
 
 - **API key rejected:** confirm the key is active in the gateway's dashboard and sent as `Authorization: Bearer <key>`.
