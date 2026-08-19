@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Annotated
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
+from serving.oncall.agent_backend import CloudAgentClient, CloudAgentDispatcher
 from serving.oncall.config import OnCallSettings
 from serving.oncall.dispatcher import GitHubDispatcher
 from serving.oncall.models import AlertEvent, SubmitAlertResponse
@@ -27,7 +28,13 @@ def build_service(settings: OnCallSettings) -> OnCallService:
         settings.slack_bot_token.get_secret_value().strip(),
         settings.slack_channel_id.strip(),
     )
-    dispatcher = GitHubDispatcher(settings)
+    dispatcher: CloudAgentDispatcher | GitHubDispatcher
+    agent_client: CloudAgentClient | None = None
+    if settings.dispatch_backend == "cloud-agent":
+        agent_client = CloudAgentClient(settings)
+        dispatcher = CloudAgentDispatcher(agent_client)
+    else:
+        dispatcher = GitHubDispatcher(settings)
     return OnCallService(
         store,
         slack,
@@ -35,6 +42,10 @@ def build_service(settings: OnCallSettings) -> OnCallService:
         poll_seconds=settings.worker_poll_seconds,
         max_attempts=settings.max_attempts,
         max_pending_jobs=settings.max_pending_jobs,
+        agent_poller=agent_client,
+        agent_poll_seconds=settings.agent_poll_seconds,
+        agent_timeout_seconds=settings.agent_timeout_seconds,
+        agent_console_url=settings.agent_console_url,
     )
 
 
