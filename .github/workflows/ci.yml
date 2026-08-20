@@ -779,6 +779,13 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "shortsha=${short}" >> "$GITHUB_OUTPUT"
 
+      # QEMU: the amd64 half of the manifest builds emulated on this arm64
+      # runner. Slower, but publishing is asynchronous to every deploy, and
+      # amd64 Python wheels are the best-supported kind — mostly downloads.
+      - name: Set up QEMU
+        if: steps.existing.outputs.digest == ''
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         if: steps.existing.outputs.digest == ''
         uses: docker/setup-buildx-action@v3
@@ -798,7 +805,12 @@ jobs:
         with:
           context: .
           file: deploy/docker/Dockerfile.backend
-          platforms: linux/arm64
+          # Multi-arch since 2026-08-20: production (freeinference-direct)
+          # is x86_64 while staging (spark2) is arm64 — the plan's W4 note,
+          # armed the day the prod architecture was registered. The pushed
+          # digest is the manifest LIST; each host resolves its own platform,
+          # and the revision-label walk is index-aware.
+          platforms: linux/arm64,linux/amd64
           push: true
           # Full-SHA tag is what the bump bot resolves (an 8-char prefix is
           # not a SHA claim); the short tag stays for humans.

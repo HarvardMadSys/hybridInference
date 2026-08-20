@@ -243,10 +243,12 @@ W5 每批搬迁按矩阵做 preflight。已知至少涉及的 secrets:
   已发布判定按 `dev-<shortsha>` tag 幂等跳过):dev CI 绿后自动构建并发布
   backend 镜像(带 `org.opencontainers.image.revision` label)——W2 的
   build-candidates 保留为 dispatch-only 的手动切片。digest 经
-  packages API / run summary 可查。**架构注记(第七轮)**:W4
-  同时登记 prod 主机架构;若与 staging 不同,自动发布必须产出
-  multi-arch manifest,`upstream.lock` 钉 manifest digest(单架构则钉
-  平台镜像 digest,部署侧的架构硬门已在 #1258 落地)。
+  packages API / run summary 可查。**架构注记(第七轮;2026-08-20 已执行)**:prod 主机架构已登记——
+  `freeinference-direct`,**x86_64**(staging=spark2 为 arm64,两者异构)
+  ——自动发布已升 multi-arch(linux/arm64,linux/amd64,QEMU 在 arm
+  runner 上出 amd64 半边),`upstream.lock` 自然钉 manifest list digest,
+  各主机解析各自平台;部署侧架构硬门与 index-aware 的 label 读取器
+  均无需改动。
 - package 授权:首个 candidate 发布后,把 freeInference 加进 backend
   package 的 Actions access(read)——W1 GHCR 改判的前提项,落在这里。
 - bump workflow:cron 轮询上游 dev(节奏见 §6),生成 bump PR;门测试 =
