@@ -352,9 +352,10 @@ class _CircuitBreaker:
         # subscription usage-limit outage (0.0 = not muted). Committed only once a
         # page is delivered (_send_circuit_alert) and cleared on recovery.
         self._alert_suppressed_until: float = 0.0
-        # ``time.monotonic()`` instant of the last *delivered* usage-limit page for
-        # this endpoint (None = never), enforcing ``_MIN_ALERT_GAP_SEC`` between
-        # them. Monotonic, not wall-clock: this only ever measures elapsed time and
+        # ``time.monotonic()`` instant of the last usage-limit page *decision* for
+        # this endpoint — a delivered page, or the trip that started a silent floor
+        # where plan-usage paging is off (None = never) — enforcing
+        # ``_MIN_ALERT_GAP_SEC`` between them. Monotonic, not wall-clock: this only ever measures elapsed time and
         # is never rendered or compared against a provider timestamp, so it must
         # not be steppable by NTP — a backward step would otherwise mute plan pages
         # for the step plus four hours, with no escape short of a restart. None
@@ -490,16 +491,35 @@ class _CircuitBreaker:
             # outage flaps. Scoped to usage-limit trips: an endpoint that breaks
             # for some other reason minutes later is a different incident that
             # still pages immediately.
-            rate_limited = usage_limit is not None and (
+            plan_limit_recent = (
                 self._usage_limit_alerted_at is not None
                 and (time.monotonic() - self._usage_limit_alerted_at) < _MIN_ALERT_GAP_SEC
             )
+            rate_limited = usage_limit is not None and plan_limit_recent
             # A deployment that has turned plan-usage paging off (see
             # ``_PAGE_ON_USAGE_LIMIT``) takes the same path as a held-back page:
-            # silent, and with the mute deadline armed below so the re-trips that
-            # carry no usage marker stay silent too.
-            paging_off = usage_limit is not None and not _PAGE_ON_USAGE_LIMIT
+            # silent, and with the mute deadline armed below.
+            #
+            # Reason-agnostic within the floor, because the deadline alone does not
+            # hold here: behind a key pool, one sibling key with quota left reads as
+            # a recovery and clears it, and the re-trip that follows is usually
+            # ``KeyPoolExhausted`` — no usage marker, so ``usage_limit`` is None and
+            # a text-scoped gate would let exactly the page this policy exists to
+            # remove through. So a trip within ``_MIN_ALERT_GAP_SEC`` of the last
+            # recognized plan limit stays silent whatever it looks like. That does
+            # mute an unrelated outage on the same endpoint for up to the floor —
+            # the same trade the ``max()`` re-arm below already makes, and bounded
+            # the same way, because the stamp only advances once per floor.
+            paging_off = not _PAGE_ON_USAGE_LIMIT and (usage_limit is not None or plan_limit_recent)
             if muted or rate_limited or paging_off:
+                if paging_off and usage_limit is not None and not plan_limit_recent:
+                    # Start this floor's silence. Stamped here rather than after a
+                    # delivery (there is none) so the reason-agnostic gate above has
+                    # a clock that ``on_success`` cannot clear. Only when the floor
+                    # is not already running, so a plan that stays dry mutes in
+                    # floor-length stretches instead of sliding its deadline forward
+                    # on every failure and never letting anything page again.
+                    self._usage_limit_alerted_at = time.monotonic()
                 if usage_limit is not None:
                     # We recognized a plan exhaustion and are holding its page
                     # back. Re-arm the reason-agnostic mute anyway, because the
@@ -531,15 +551,15 @@ class _CircuitBreaker:
                             else None
                         ),
                         "window": usage_limit.window if usage_limit is not None else "active",
-                        # Which gate held: this outage's own mute, the floor
-                        # under plan-usage pages that a recovery cannot reset, or
-                        # plan-usage paging being off for this deployment.
+                        # Which gate held. Paging-off first: where the policy
+                        # applies it is the reason, and the other two only
+                        # describe how long the same silence had left to run.
                         "gate": (
-                            "muted"
+                            "usage_limit_paging_off"
+                            if paging_off
+                            else "muted"
                             if muted
                             else "min_alert_gap"
-                            if rate_limited
-                            else "usage_limit_paging_off"
                         ),
                     },
                 )

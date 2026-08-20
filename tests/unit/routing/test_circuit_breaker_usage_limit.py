@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 from routing import endpoint_health
 from routing.endpoint_health import (
     _ALERT_TASKS,
+    _MIN_ALERT_GAP_SEC,
     _CircuitBreaker,
     _CircuitState,
     set_usage_limit_paging,
@@ -464,3 +465,73 @@ def test_set_usage_limit_paging_toggles_the_policy(monkeypatch):
     assert endpoint_health._PAGE_ON_USAGE_LIMIT is False
     set_usage_limit_paging(True)
     assert endpoint_health._PAGE_ON_USAGE_LIMIT is True
+
+
+async def test_usage_limit_paging_off_survives_pooled_key_recovery(monkeypatch):
+    # The hole a text-scoped gate would leave: behind a key pool, a sibling key
+    # with quota left succeeds, ``on_success`` clears the outage mute, and the
+    # next streak trips as KeyPoolExhausted — no usage marker. With paging off
+    # that must still not page.
+    _trip_env(monkeypatch)
+    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", False)
+    cb = _CircuitBreaker(provider="glm-5.2:zai-api")
+
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        await _drain_alert_tasks()
+        assert _pages_sent(mock_alert) == 0
+
+        cb.on_success()  # a pooled key that still had quota
+        assert cb._alert_suppressed_until == 0.0  # recovery cleared the deadline
+
+        cb.on_failure(reason="KeyPoolExhausted", detail="KeyPoolExhausted: all keys cooling down")
+        cb.on_failure(reason="KeyPoolExhausted", detail="KeyPoolExhausted: all keys cooling down")
+        assert cb.state == _CircuitState.OPEN
+        await _drain_alert_tasks()
+        assert _pages_sent(mock_alert) == 0
+
+
+async def test_usage_limit_paging_off_pages_again_after_the_floor(monkeypatch):
+    # The reason-agnostic silence is bounded by the floor, not permanent: an
+    # endpoint that breaks for an unrelated reason once it elapses still pages.
+    _trip_env(monkeypatch)
+    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", False)
+    cb = _CircuitBreaker(provider="glm-5.2:zai-api")
+
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        await _drain_alert_tasks()
+        assert _pages_sent(mock_alert) == 0
+        assert cb._usage_limit_alerted_at is not None
+
+        # The floor elapses (its clock is monotonic, so age it rather than sleep).
+        cb._usage_limit_alerted_at -= _MIN_ALERT_GAP_SEC + 1
+        cb._alert_suppressed_until = 0.0
+        cb.state = _CircuitState.HALF_OPEN
+        cb.on_failure(reason="chat_exception", detail="upstream 503 Service Unavailable")
+        await _drain_alert_tasks()
+        assert _pages_sent(mock_alert) == 1
+
+
+async def test_usage_limit_paging_off_floor_does_not_slide_forever(monkeypatch):
+    # The stamp advances once per floor, not on every muted failure, so a plan
+    # that stays dry cannot push its silence out indefinitely.
+    _trip_env(monkeypatch)
+    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", False)
+    cb = _CircuitBreaker(provider="glm-5.2:zai-api")
+
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()):
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        await _drain_alert_tasks()
+        first_stamp = cb._usage_limit_alerted_at
+        assert first_stamp is not None
+
+        for _ in range(3):
+            cb.on_success()
+            cb.state = _CircuitState.HALF_OPEN
+            cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+            await _drain_alert_tasks()
+        assert cb._usage_limit_alerted_at == first_stamp
