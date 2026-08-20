@@ -116,10 +116,22 @@ class StateChange(BaseModel):
     cooldown_sec: int = 300
 
 
+class CircuitOpenStateChange(StateChange):
+    """Circuit-open page configuration.
+
+    ``page_on_usage_limit`` is the only field the circuit breaker reads today.
+    Turn it off where subscription plans running dry is routine: that page names
+    nothing an operator can act on, and the breaker re-arms itself once the
+    provider's window resets. Trips for every other reason still page.
+    """
+
+    page_on_usage_limit: bool = True
+
+
 class StateChanges(BaseModel):
     """Container for state-change alert configurations."""
 
-    circuit_open: StateChange = Field(default_factory=StateChange)
+    circuit_open: CircuitOpenStateChange = Field(default_factory=CircuitOpenStateChange)
     db_disconnect: StateChange = Field(default_factory=StateChange)
 
 
