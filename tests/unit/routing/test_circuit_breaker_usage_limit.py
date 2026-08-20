@@ -381,3 +381,28 @@ async def test_min_gap_clock_is_not_wall_clock(monkeypatch):
     # instant on a long-lived host is far smaller than an epoch timestamp.
     assert cb._usage_limit_alerted_at is not None
     assert cb._usage_limit_alerted_at < datetime.now(timezone.utc).timestamp() / 2
+
+
+async def test_zai_fair_usage_flap_pages_once_not_once_per_trip(monkeypatch):
+    # The glm-*:zai-api storm. Z.AI's plan throttle degrades an endpoint
+    # *partially*: some requests still succeed, so availability sags below
+    # CIRCUIT_MIN_AVAILABILITY and every single failure re-trips, while the
+    # successes in between clear the outage mute. Unclassified, that paged on
+    # essentially every trip — 111 in 7.5 hours for this one endpoint. Once the
+    # text is recognized as a plan limit, the 4h floor holds it to one page.
+    _trip_env(monkeypatch)
+    cb = _CircuitBreaker(provider="glm-5.2:zai-api")
+    detail = (
+        '{"error":{"code":"1313","message":"Your account\'s current usage pattern '
+        "does not comply with the Fair Usage Policy, and your request frequency "
+        'has been limited."}}'
+    )
+
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
+        for _ in range(6):
+            cb.on_failure(reason="stream_exception", detail=detail, availability=0.59)
+            assert cb.state == _CircuitState.OPEN
+            await _drain_alert_tasks()
+            cb.on_success()  # a request that got through, clearing the mute
+            assert cb.state == _CircuitState.CLOSED
+        assert _pages_sent(mock_alert) == 1

@@ -7,6 +7,9 @@ window is spent, for example::
     {"error": {"code": "1308", "message":
       "Usage limit reached for 5 hour. Your limit will reset at 2026-07-30 22:45:10"}}
     {"error": "you (1a1a11a) have reached your weekly usage limit, upgrade ..."}
+    {"error": {"code": "1313", "message":
+      "Your account's current usage pattern does not comply with the Fair Usage
+       Policy, and your request frequency has been limited. ..."}}
 
 These are *expected* exhaustions that only clear when the window resets, so the
 circuit breaker uses this module to fire a single "Provider circuit opened"
@@ -15,10 +18,10 @@ whichever is longer (see ``routing.endpoint_health``) — rather than re-paging
 every half-open probe for hours.
 
 The parser is intentionally conservative. It classifies only clear
-"usage limit" phrasing — never a transient per-minute ``rate limit``, which
-recovers on its own and must keep alerting normally — and prefers the
-provider-declared reset timestamp, falling back to the named window
-("weekly", "5 hour", ...) when no timestamp is given.
+"usage limit" phrasing, or a named subscription plan policy — never a transient
+per-minute ``rate limit``, which recovers on its own and must keep alerting
+normally — and prefers the provider-declared reset timestamp, falling back to
+the named window ("weekly", "5 hour", ...) when no timestamp is given.
 
 A provider that gives neither — MiniMax answers a bare "Token Plan usage limit
 reached: Upgrade your Token Plan or purchase Credits for more usage." — used to
@@ -38,10 +41,15 @@ from datetime import datetime, timedelta, timezone
 __all__ = ["MIN_ALERT_GAP", "UsageLimit", "detect_usage_limit"]
 
 # A usage-limit error must clearly name a *usage/subscription* limit. "usage
-# limit" / "subscription limit" are unambiguous. A bare reset phrase counts only
-# when the text is not a transient "rate limit" — a rate limit also "resets", but
-# within seconds, and must keep paging normally.
-_USAGE_MARKERS = ("usage limit", "subscription limit")
+# limit" / "subscription limit" are unambiguous, and so is a named subscription
+# plan policy: Z.AI's code 1313 says only that an account's "usage pattern does
+# not comply with the Fair Usage Policy, and your request frequency has been
+# limited", never "usage limit", yet it throttles the plan for hours rather than
+# seconds — unclassified, it tripped one endpoint's breaker 111 times in 7.5
+# hours of production traffic. A bare reset phrase counts only when the text is
+# not a transient "rate limit" — a rate limit also "resets", but within seconds,
+# and must keep paging normally.
+_USAGE_MARKERS = ("usage limit", "subscription limit", "fair usage policy")
 _RESET_MARKERS = ("limit will reset", "limit resets")
 
 # Collapse whitespace/underscore/hyphen runs so "usage-limit", "usage_limit" and
