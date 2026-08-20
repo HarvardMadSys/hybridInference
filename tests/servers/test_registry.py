@@ -1069,3 +1069,41 @@ def test_an_existing_alias_still_reaches_the_same_adapter(tmp_path, monkeypatch)
     assert exe.routes["legacy-name"] is exe.routes["real-model"]
     assert exe.canonical_id("legacy-name") == "real-model"
     assert exe.routes["legacy-name"].adapters[0][0] is exe.routes["real-model"].adapters[0][0]
+
+
+#: Increasing effort, as the providers spell it. Not a gateway-side scale —
+#: nothing consults this at run time. It exists so the ordering the consumers
+#: rely on is checked here rather than trusted to whoever edits models.yaml.
+_EFFORT_RANK = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+@pytest.mark.unit
+def test_shipped_reasoning_effort_domains_are_ordered_weakest_to_strongest():
+    """The consumers read depth from position, so order is part of the value.
+
+    The cloud agent's composer preselects the deepest level a model offers by
+    taking the last one — there is no cross-provider effort scale to rank them
+    against, and inventing one here would be a third vocabulary to keep in step
+    with every provider's. A domain written out of order would therefore make
+    that composer preselect the wrong depth, quietly, on someone's bill.
+    """
+    import yaml
+
+    path = Path(__file__).resolve().parents[2] / "distributions/freeinference/config/models.yaml"
+    if not path.exists():  # neutral checkout: no deployment overlay to check
+        pytest.skip("this checkout ships no distribution overlay")
+    models = yaml.safe_load(path.read_text())["models"]
+
+    declared = {
+        model["id"]: model["reasoning_efforts"]
+        for model in models
+        if model.get("reasoning_efforts")
+    }
+    assert declared, "no model declares a reasoning-effort domain; this test would pass vacuously"
+
+    for model_id, levels in declared.items():
+        unknown = [level for level in levels if level not in _EFFORT_RANK]
+        assert not unknown, f"{model_id} declares unknown level(s) {unknown}"
+        ranks = [_EFFORT_RANK.index(level) for level in levels]
+        assert ranks == sorted(ranks), f"{model_id} declares {levels} out of order"
+        assert len(set(ranks)) == len(ranks), f"{model_id} declares a level twice"
