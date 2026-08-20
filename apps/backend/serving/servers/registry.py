@@ -438,6 +438,7 @@ def register_from_models_yaml(
                     "supports_structured_output",
                     "on_demand",
                     "supported_params",
+                    "reasoning_efforts",
                     "pricing",
                     "pricing_schedule",
                     "route_metadata",

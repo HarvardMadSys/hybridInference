@@ -504,12 +504,75 @@ def _extract_forwarded_headers(request: Request) -> dict[str, str]:
 # --- Field sanitization for OpenAI backends --------------------------------
 
 
+# --- Reasoning effort -------------------------------------------------------
+#
+# Claude Code sends its `--effort` choice as `output_config.effort`, the shape
+# the Anthropic surface defines. Until this existed the facade did not merely
+# fail to forward it -- it did not know the field by name, so the value went out
+# with the sanitizer's silent bulk drop and did not even reach the dropped-field
+# warning. The knob existed on the CLI, resolved to nothing here, and reported
+# nothing: the worst of the three possible behaviours.
+#
+# Every OpenAI-compatible model that can honour it takes `reasoning_effort`
+# instead, and the adapter already forwards that name when the model's
+# `supported_params` lists it (openai_compat). What was missing is the
+# translation and, more importantly, the domain check: the accepted values are
+# per-model (glm-5.3 takes low/high/max and has no medium), so a value this
+# model never declared is dropped here with a warning rather than sent upstream
+# to become a 400 nobody can trace back to a CLI flag.
+
+
+def _apply_reasoning_effort(body: dict[str, Any], adapter, request_id: str) -> None:
+    """Translate a requested reasoning effort into the OpenAI parameter.
+
+    Reads ``output_config.effort`` (and a directly-supplied top-level
+    ``reasoning_effort``, so both spellings meet the same check). Sets
+    ``body["reasoning_effort"]`` when the resolved model both advertises the
+    parameter and declares the value; otherwise removes it and logs why.
+
+    Postcondition: ``body["reasoning_effort"]`` is either absent or a value this
+    model's own registry entry declared. Called after any reroute, so the check
+    runs against the model that will actually serve the request.
+    """
+    requested = body.get("output_config")
+    effort = requested.get("effort") if isinstance(requested, dict) else None
+    if effort is None:
+        effort = body.pop("reasoning_effort", None)
+    if effort is None:
+        return
+    body.pop("reasoning_effort", None)
+
+    cfg = getattr(adapter, "config", None)
+    supported = getattr(cfg, "supported_params", None) or ()
+    declared = getattr(cfg, "reasoning_efforts", None) or ()
+    model_id = getattr(cfg, "id", "?")
+    if "reasoning_effort" not in supported:
+        logger.warning(
+            f"[{request_id}] Dropped reasoning effort {effort!r}: "
+            f"model {model_id!r} does not support reasoning_effort"
+        )
+        return
+    if effort not in declared:
+        logger.warning(
+            f"[{request_id}] Dropped reasoning effort {effort!r}: "
+            f"model {model_id!r} declares {sorted(declared)}"
+        )
+        return
+    body["reasoning_effort"] = effort
+
+
 def _sanitize_for_openai_backend(body: dict[str, Any]) -> list[str]:
     """Strip Anthropic-only fields the OpenAI translator can't represent.
 
     Removes ``cache_control`` from content blocks and pops top-level fields
-    (``thinking``, ``top_k``, ``container``) that have no OpenAI equivalent.
-    Also detects unsupported ``metadata`` keys beyond ``user_id``.
+    (``thinking``, ``top_k``, ``container``, ``output_config``) that have no
+    OpenAI equivalent. Also detects unsupported ``metadata`` keys beyond
+    ``user_id``.
+
+    ``output_config`` is popped *after* :func:`_apply_reasoning_effort` has had
+    its chance at the effort inside it; whatever else the field carried (a
+    structured-output ``format``, say) has no representation here and is
+    reported as dropped rather than vanishing.
 
     Returns sorted list of dropped-field names for warning logging.
     """
@@ -521,7 +584,7 @@ def _sanitize_for_openai_backend(body: dict[str, Any]) -> list[str]:
                 if isinstance(block, dict) and "cache_control" in block:
                     block.pop("cache_control")
                     dropped.add("cache_control")
-    for k in ("thinking", "top_k", "container"):
+    for k in ("thinking", "top_k", "container", "output_config"):
         if k in body:
             body.pop(k)
             dropped.add(k)
@@ -1217,6 +1280,10 @@ async def anthropic_messages(
                 f"[{request_id}] Normalizing {normalized_tool_inputs} non-object "
                 "Anthropic tool_use.input value(s) before OpenAI-backed dispatch"
             )
+        # Before the sanitizer, which pops the `output_config` this reads, and
+        # after the reroute, so the domain check runs against the model that
+        # will actually serve the request.
+        _apply_reasoning_effort(body, adapter, request_id)
         dropped = _sanitize_for_openai_backend(body)
         if dropped:
             logger.warning(

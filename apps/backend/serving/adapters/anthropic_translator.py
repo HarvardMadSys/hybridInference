@@ -301,6 +301,12 @@ def _translate_params(body: dict[str, Any]) -> dict[str, Any]:
     user_id = metadata.get("user_id")
     if user_id:
         params["user"] = user_id
+    if "reasoning_effort" in body:
+        # Written by the Anthropic router from `output_config.effort`, already
+        # checked against the resolved model's declared domain. Transport only:
+        # the policy lives at the call site that knows which model was picked,
+        # and the adapter still gates on `supported_params` on the way out.
+        params["reasoning_effort"] = body["reasoning_effort"]
     # thinking and other Anthropic-only top-level fields are silently dropped.
     return params
 
