@@ -42,3 +42,34 @@ def test_load_alert_config_missing_file_returns_defaults(tmp_path: Path):
     cfg = load_alert_config(tmp_path / "missing.yaml")
     assert cfg.rules.failed_request_rate.enabled is True
     # All-default config should be valid.
+
+
+def test_circuit_open_page_on_usage_limit_defaults_to_paging(tmp_path: Path):
+    p = tmp_path / "alerts.yaml"
+    p.write_text(
+        textwrap.dedent(
+            """
+            state_changes:
+              circuit_open:
+                enabled: true
+                cooldown_sec: 300
+            """
+        )
+    )
+    assert load_alert_config(p).state_changes.circuit_open.page_on_usage_limit is True
+
+
+def test_circuit_open_page_on_usage_limit_can_be_turned_off(tmp_path: Path):
+    p = tmp_path / "alerts.yaml"
+    p.write_text(
+        textwrap.dedent(
+            """
+            state_changes:
+              circuit_open:
+                enabled: true
+                cooldown_sec: 300
+                page_on_usage_limit: false
+            """
+        )
+    )
+    assert load_alert_config(p).state_changes.circuit_open.page_on_usage_limit is False

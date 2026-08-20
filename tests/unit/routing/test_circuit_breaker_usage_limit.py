@@ -11,7 +11,13 @@ import logging
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
-from routing.endpoint_health import _ALERT_TASKS, _CircuitBreaker, _CircuitState
+from routing import endpoint_health
+from routing.endpoint_health import (
+    _ALERT_TASKS,
+    _CircuitBreaker,
+    _CircuitState,
+    set_usage_limit_paging,
+)
 
 # "weekly usage limit" with no explicit timestamp -> reset ~7 days out,
 # comfortably in the future regardless of when the test runs.
@@ -406,3 +412,55 @@ async def test_zai_fair_usage_flap_pages_once_not_once_per_trip(monkeypatch):
             cb.on_success()  # a request that got through, clearing the mute
             assert cb.state == _CircuitState.CLOSED
         assert _pages_sent(mock_alert) == 1
+
+
+async def test_usage_limit_paging_off_never_pages(monkeypatch):
+    # A deployment that runs on subscription plans exhausts them as a matter of
+    # course, so it can turn the plan-usage page off entirely
+    # (``state_changes.circuit_open.page_on_usage_limit: false``). The trip is
+    # still logged and the endpoint still opens; only the page is dropped.
+    _trip_env(monkeypatch)
+    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", False)
+    cb = _CircuitBreaker(provider="zai:api.z.ai:443")
+
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)
+        cb.on_failure(reason="chat_exception", detail=_WEEKLY_DETAIL)  # CLOSED -> OPEN
+        assert cb.state == _CircuitState.OPEN
+        await _drain_alert_tasks()
+        assert _pages_sent(mock_alert) == 0
+
+        # The mute deadline is armed anyway, so the re-trips this outage produces
+        # in *other* shapes — KeyPoolExhausted once every key sits in its 429
+        # backoff, carrying no usage marker — stay silent too.
+        assert cb._alert_suppressed_until > 0.0
+        cb.state = _CircuitState.HALF_OPEN
+        cb.on_failure(reason="KeyPoolExhausted", detail="KeyPoolExhausted: all keys cooling down")
+        assert cb.state == _CircuitState.OPEN
+        await _drain_alert_tasks()
+        assert _pages_sent(mock_alert) == 0
+
+
+async def test_usage_limit_paging_off_still_pages_other_outages(monkeypatch):
+    # The mute is scoped to plan exhaustion. An endpoint that breaks for any
+    # other reason is a real outage and pages as before.
+    _trip_env(monkeypatch)
+    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", False)
+    cb = _CircuitBreaker(provider="zai:api.z.ai:443")
+
+    with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
+        cb.on_failure(reason="chat_exception", detail="upstream 503 Service Unavailable")
+        cb.on_failure(reason="chat_exception", detail="upstream 503 Service Unavailable")
+        assert cb.state == _CircuitState.OPEN
+        await _drain_alert_tasks()
+        assert _pages_sent(mock_alert) == 1
+
+
+def test_set_usage_limit_paging_toggles_the_policy(monkeypatch):
+    # Startup wiring reads alerts.yaml and calls the setter; nothing else mutates
+    # the flag, so a bad value must not leave paging in an undefined state.
+    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", True)
+    set_usage_limit_paging(False)
+    assert endpoint_health._PAGE_ON_USAGE_LIMIT is False
+    set_usage_limit_paging(True)
+    assert endpoint_health._PAGE_ON_USAGE_LIMIT is True

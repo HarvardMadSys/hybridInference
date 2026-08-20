@@ -854,6 +854,23 @@ async def initialize() -> AppServices:
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
 
+    # The circuit breaker pages ``alert_slack`` directly, which is gated on the
+    # webhook/relay env vars and not on ALERTS_ENABLED — so its plan-usage mute
+    # has to be applied outside the alert-engine block below, or the knob would be
+    # ignored by exactly the deployments still being paged. Best-effort: a
+    # deployment with no alerts.yaml keeps the default (page once per outage).
+    try:
+        from routing.endpoint_health import set_usage_limit_paging
+        from serving.observability.alert_config import load_alert_config as _load_alert_config
+
+        set_usage_limit_paging(
+            _load_alert_config(
+                str(resolve_config_path("alerts").path)
+            ).state_changes.circuit_open.page_on_usage_limit
+        )
+    except Exception:
+        logger.debug("circuit-open alert policy unavailable; keeping defaults", exc_info=True)
+
     # In-process alerting framework. Defaults to disabled. Operators flip the
     # ALERTS_ENABLED env var (or set SLACK_ALERTS_WEBHOOK_URL) to turn it on.
     alert_engine = None

@@ -78,6 +78,17 @@ _AUTH_ALERT_COOLDOWN_SEC = 300
 # comparison the breaker needs.
 _MIN_ALERT_GAP_SEC = MIN_ALERT_GAP.total_seconds()
 
+# Whether a subscription usage-limit trip pages at all. A deployment that runs on
+# subscription plans exhausts them as a matter of course: the page names nothing
+# an operator can act on — no key rotation or restart shortens the provider's
+# window — and the endpoint re-arms itself when it resets, so such a deployment
+# can drop the page entirely. Default True keeps the one-page-per-outage
+# behaviour; set from ``state_changes.circuit_open.page_on_usage_limit`` in
+# alerts.yaml at startup (see ``set_usage_limit_paging``). Non-usage-limit trips
+# page regardless — this gate is scoped to outages the parser recognizes as a
+# plan window running dry.
+_PAGE_ON_USAGE_LIMIT = True
+
 # Title of the upstream-auth page. Shared by the firing and resolving edges so
 # the recovery card reads as the same incident ("Recovered: <title>").
 _AUTH_ALERT_TITLE = "Upstream rejected gateway credential"
@@ -88,6 +99,12 @@ _AUTH_ALERT_TITLE = "Upstream rejected gateway credential"
 # above. Deliberately far shorter than that cooldown so a page dropped by an
 # unreachable sink is retried in seconds rather than after five minutes.
 _AUTH_ALERT_SCHEDULE_INTERVAL_SEC = 5.0
+
+
+def set_usage_limit_paging(enabled: bool) -> None:
+    """Set whether subscription usage-limit trips page (see ``_PAGE_ON_USAGE_LIMIT``)."""
+    global _PAGE_ON_USAGE_LIMIT
+    _PAGE_ON_USAGE_LIMIT = bool(enabled)
 
 
 def _auth_alert_key(endpoint_id: str) -> str:
@@ -477,7 +494,12 @@ class _CircuitBreaker:
                 self._usage_limit_alerted_at is not None
                 and (time.monotonic() - self._usage_limit_alerted_at) < _MIN_ALERT_GAP_SEC
             )
-            if muted or rate_limited:
+            # A deployment that has turned plan-usage paging off (see
+            # ``_PAGE_ON_USAGE_LIMIT``) takes the same path as a held-back page:
+            # silent, and with the mute deadline armed below so the re-trips that
+            # carry no usage marker stay silent too.
+            paging_off = usage_limit is not None and not _PAGE_ON_USAGE_LIMIT
+            if muted or rate_limited or paging_off:
                 if usage_limit is not None:
                     # We recognized a plan exhaustion and are holding its page
                     # back. Re-arm the reason-agnostic mute anyway, because the
@@ -509,9 +531,16 @@ class _CircuitBreaker:
                             else None
                         ),
                         "window": usage_limit.window if usage_limit is not None else "active",
-                        # Which gate held: this outage's own mute, or the floor
-                        # under plan-usage pages that a recovery cannot reset.
-                        "gate": "muted" if muted else "min_alert_gap",
+                        # Which gate held: this outage's own mute, the floor
+                        # under plan-usage pages that a recovery cannot reset, or
+                        # plan-usage paging being off for this deployment.
+                        "gate": (
+                            "muted"
+                            if muted
+                            else "min_alert_gap"
+                            if rate_limited
+                            else "usage_limit_paging_off"
+                        ),
                     },
                 )
                 return

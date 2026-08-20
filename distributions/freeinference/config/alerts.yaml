@@ -42,6 +42,11 @@ state_changes:
   circuit_open:
     enabled: true
     cooldown_sec: 300
+    # Subscription plans running dry is routine here, and the page names nothing
+    # an operator can act on: no key rotation or restart shortens the provider's
+    # window, and the breaker re-arms itself once it resets. Trips for every other
+    # reason still page.
+    page_on_usage_limit: false
   db_disconnect:
     enabled: true
     cooldown_sec: 300
