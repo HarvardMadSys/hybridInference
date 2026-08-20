@@ -731,25 +731,28 @@ jobs:
             --classification-json "${CLASSIFICATION_JSON}" \
             --job-results-json "${JOB_RESULTS_JSON}"
 
-  publish-backend:
-    name: Publish backend candidate
-    # Every green dev push publishes its backend candidate image so the
-    # distribution repository's bump bot always finds a digest for dev HEAD
-    # (W4 of the repo-split plan). Deliberately unconditional on path
-    # classification: a docs-only push still gets a candidate — the bump bot
-    # pins exact SHAs and would otherwise wait forever on one. Publishing
-    # rides the arm64 fleet runner for the same billing reality as the
-    # dispatch-only Build Candidate Images workflow (#1279), and stays
-    # native for the staging host's architecture; single-arch until the
-    # production architecture is registered (plan W4 note), at which point
-    # a differing prod arch upgrades this to a multi-arch manifest.
-    # !cancelled() suppresses the implicit success() GitHub prepends to any
-    # job `if` lacking a status function. Implicit success() evaluates the
-    # WHOLE transitive needs chain — and docker-build, an ancestor via
-    # ci-gate, is legitimately skipped on many pushes, which silently
-    # skipped this job too: publish-per-SHA would have held only when
-    # docker-build happened to run, the exact coupling this job exists to
-    # ban. The explicit ci-gate result check below is the real gate.
+  # ---- Backend candidate publishing --------------------------------------
+  # Every green dev push publishes its backend candidate image so the
+  # distribution repository's bump bot always finds a digest for dev HEAD
+  # (W4 of the repo-split plan). Deliberately unconditional on path
+  # classification: a docs-only push still gets a candidate — the bump bot
+  # pins exact SHAs and would otherwise wait forever on one.
+  #
+  # Multi-arch is built as two NATIVE builds stitched into one manifest
+  # list, never QEMU emulation: the amd64 half under qemu-user on the arm64
+  # runner segfaulted `uv sync` instantly (dev@2e4edfa4, exit 139 —
+  # qemu-user cannot run uv's static binary). Each half pushes by digest
+  # with no tag; the stitch job below is the only thing that creates the
+  # dev-<sha> tags, so a tag's existence still means "complete candidate".
+  #
+  # Gate shape (all three jobs): !cancelled() suppresses the implicit
+  # success() GitHub prepends to any job `if` lacking a status function.
+  # Implicit success() evaluates the WHOLE transitive needs chain — and
+  # docker-build, an ancestor via ci-gate, is legitimately skipped on many
+  # pushes, which silently skipped publishing (observed on dev@04b4f305).
+  # The explicit result checks are the real gate.
+  publish-backend-arm64:
+    name: Publish backend candidate (arm64)
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate]
     runs-on: [self-hosted, Linux, arm64-docker]
@@ -757,6 +760,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      existing: ${{ steps.existing.outputs.digest }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -770,21 +776,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          short="${GITHUB_SHA:0:8}"
           digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100" \
                     --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" 2>/dev/null | head -1 || true)"
           if [ -n "${digest}" ]; then
             echo "candidate dev-${GITHUB_SHA} already published (${digest}); skipping the build"
           fi
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          echo "shortsha=${short}" >> "$GITHUB_OUTPUT"
-
-      # QEMU: the amd64 half of the manifest builds emulated on this arm64
-      # runner. Slower, but publishing is asynchronous to every deploy, and
-      # amd64 Python wheels are the best-supported kind — mostly downloads.
-      - name: Set up QEMU
-        if: steps.existing.outputs.digest == ''
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         if: steps.existing.outputs.digest == ''
@@ -798,25 +795,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push backend candidate
+      - name: Build and push by digest (native arm64)
         if: steps.existing.outputs.digest == ''
         id: push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/docker/Dockerfile.backend
-          # Multi-arch since 2026-08-20: production (freeinference-direct)
-          # is x86_64 while staging (spark2) is arm64 — the plan's W4 note,
-          # armed the day the prod architecture was registered. The pushed
-          # digest is the manifest LIST; each host resolves its own platform,
-          # and the revision-label walk is index-aware.
-          platforms: linux/arm64,linux/amd64
-          push: true
-          # Full-SHA tag is what the bump bot resolves (an 8-char prefix is
-          # not a SHA claim); the short tag stays for humans.
-          tags: |
-            ghcr.io/harvardmadsys/hybridinference-backend:dev-${{ github.sha }}
-            ghcr.io/harvardmadsys/hybridinference-backend:dev-${{ steps.existing.outputs.shortsha }}
+          platforms: linux/arm64
+          # Push by digest, no tags: the per-arch halves are anonymous until
+          # the stitch job assembles them under the dev-<sha> tags.
+          outputs: type=image,name=ghcr.io/harvardmadsys/hybridinference-backend,name-canonical=true,push-by-digest=true,push=true
           # The digest deploy and the bump gate both read the revision label
           # back and compare it against their SHA truth; a candidate without
           # it is refused at deploy time.
@@ -825,14 +814,130 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           secrets: |
             github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
-          cache-from: type=gha,scope=backend
-          cache-to: type=gha,mode=min,scope=backend
+          cache-from: type=gha,scope=backend-arm64
+          cache-to: type=gha,mode=min,scope=backend-arm64
+
+  publish-backend-amd64:
+    name: Publish backend candidate (amd64)
+    # Native twin of the arm64 half, on the x86_64 builder runner
+    # (direct-docker-1 on freeinference-direct — the host the classic
+    # production chain already builds on natively).
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
+    needs: [ci-gate]
+    runs-on: [self-hosted, Linux, x64-docker]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      existing: ${{ steps.existing.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Skip when this SHA's candidate already exists
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100" \
+                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" 2>/dev/null | head -1 || true)"
+          if [ -n "${digest}" ]; then
+            echo "candidate dev-${GITHUB_SHA} already published (${digest}); skipping the build"
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        if: steps.existing.outputs.digest == ''
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.existing.outputs.digest == ''
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest (native amd64)
+        if: steps.existing.outputs.digest == ''
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.backend
+          platforms: linux/amd64
+          outputs: type=image,name=ghcr.io/harvardmadsys/hybridinference-backend,name-canonical=true,push-by-digest=true,push=true
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          secrets: |
+            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
+          cache-from: type=gha,scope=backend-amd64
+          cache-to: type=gha,mode=min,scope=backend-amd64
+
+  publish-backend:
+    name: Publish backend candidate
+    # The stitch: assemble both native halves into one manifest list under
+    # the dev-<sha> tags. Keeps the historical job name — this is the job
+    # whose success means "a complete candidate exists for this SHA", which
+    # is what the bump bot's CI gate and humans both read. Requires BOTH
+    # arch results explicitly: a half-published candidate must never get a
+    # tag (the tag is the completeness signal).
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' && needs.publish-backend-arm64.result == 'success' && needs.publish-backend-amd64.result == 'success' }}
+    needs: [ci-gate, publish-backend-arm64, publish-backend-amd64]
+    runs-on: [self-hosted, Linux, arm64-docker]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Stitch and tag the multi-arch manifest
+        id: stitch
+        env:
+          ARM_DIGEST: ${{ needs.publish-backend-arm64.outputs.digest }}
+          AMD_DIGEST: ${{ needs.publish-backend-amd64.outputs.digest }}
+          EXISTING: ${{ needs.publish-backend-arm64.outputs.existing }}
+        run: |
+          set -euo pipefail
+          img="ghcr.io/harvardmadsys/hybridinference-backend"
+          short="${GITHUB_SHA:0:8}"
+          if [ -n "${EXISTING}" ]; then
+            echo "candidate dev-${GITHUB_SHA} already published (${EXISTING}); nothing to stitch"
+            echo "digest=${EXISTING}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${ARM_DIGEST}" ] || [ -z "${AMD_DIGEST}" ]; then
+            echo "::error title=Missing arch digest::arm64='${ARM_DIGEST}' amd64='${AMD_DIGEST}' — an arch job neither built nor found an existing candidate"
+            exit 1
+          fi
+          # Full-SHA tag is what the bump bot resolves (an 8-char prefix is
+          # not a SHA claim); the short tag stays for humans. imagetools
+          # flattens the per-arch indexes (image + provenance manifests)
+          # into one list; the revision-label walk is index-aware and
+          # already proven against attestation children.
+          docker buildx imagetools create \
+            -t "${img}:dev-${GITHUB_SHA}" \
+            -t "${img}:dev-${short}" \
+            "${img}@${ARM_DIGEST}" \
+            "${img}@${AMD_DIGEST}"
+          index="$(docker buildx imagetools inspect "${img}:dev-${GITHUB_SHA}" --format '{{ json .Manifest.Digest }}' | tr -d '"')"
+          echo "digest=${index}" >> "$GITHUB_OUTPUT"
 
       - name: Candidate summary
         env:
-          EXISTING: ${{ steps.existing.outputs.digest }}
-          PUSHED: ${{ steps.push.outputs.digest }}
-          SHORT: ${{ steps.existing.outputs.shortsha }}
+          EXISTING: ${{ needs.publish-backend-arm64.outputs.existing }}
+          INDEX: ${{ steps.stitch.outputs.digest }}
         run: |
           {
             echo "## Backend candidate"
@@ -841,6 +946,6 @@ jobs:
             if [ -n "${EXISTING}" ]; then
               echo "- already published: \`ghcr.io/harvardmadsys/hybridinference-backend@${EXISTING}\`"
             else
-              echo "- pushed: \`ghcr.io/harvardmadsys/hybridinference-backend@${PUSHED}\` (tag \`dev-${SHORT}\`)"
+              echo "- pushed multi-arch (arm64+amd64): \`ghcr.io/harvardmadsys/hybridinference-backend@${INDEX}\` (tag \`dev-${GITHUB_SHA:0:8}\`)"
             fi
           } >> "$GITHUB_STEP_SUMMARY"

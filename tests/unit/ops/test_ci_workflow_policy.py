@@ -46,7 +46,11 @@ def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
     assert triggers["schedule"]
 
 
-def test_publish_gate_survives_skipped_ancestors() -> None:
+@pytest.mark.parametrize(
+    "job_name",
+    ["publish-backend-arm64", "publish-backend-amd64", "publish-backend"],
+)
+def test_publish_gate_survives_skipped_ancestors(job_name: str) -> None:
     """Publishing must depend on ci-gate's verdict, not on ancestor luck.
 
     A job `if` without a status function gets an implicit success() that
@@ -54,15 +58,52 @@ def test_publish_gate_survives_skipped_ancestors() -> None:
     through ci-gate — is legitimately skipped on many pushes, and that
     implicit check silently skipped publishing (observed on dev@04b4f305:
     gate green, publish skipped). !cancelled() suppresses the implicit
-    check so the explicit conditions are the only gate.
+    check so the explicit conditions are the only gate — on every job of
+    the publish pipeline, arch halves and stitch alike.
     """
-    job = _workflow("ci.yml")["jobs"]["publish-backend"]
+    job = _workflow("ci.yml")["jobs"][job_name]
 
-    assert job["needs"] == ["ci-gate"]
+    assert "ci-gate" in job["needs"]
     assert "!cancelled()" in job["if"]
     assert "github.event_name == 'push'" in job["if"]
     assert "github.ref == 'refs/heads/dev'" in job["if"]
     assert "needs.ci-gate.result == 'success'" in job["if"]
+
+
+def test_publish_stitch_requires_both_native_halves() -> None:
+    """The dev-<sha> tag is the completeness signal; only the stitch mints it.
+
+    The stitch must gate on BOTH arch results explicitly — with !cancelled()
+    suppressing the implicit success(), nothing else stops it from tagging a
+    half-published candidate whose other half failed.
+    """
+    job = _workflow("ci.yml")["jobs"]["publish-backend"]
+
+    assert set(job["needs"]) == {
+        "ci-gate",
+        "publish-backend-arm64",
+        "publish-backend-amd64",
+    }
+    assert "needs.publish-backend-arm64.result == 'success'" in job["if"]
+    assert "needs.publish-backend-amd64.result == 'success'" in job["if"]
+
+
+def test_publish_builds_are_native_never_emulated() -> None:
+    """Candidate builds run natively per arch and are stitched afterwards.
+
+    qemu-user cannot run uv's static binary: the emulated amd64 half of a
+    combined multi-platform build segfaulted `uv sync` instantly (observed
+    on dev@2e4edfa4, exit code 139). Scoped to ci.yml — the dispatch-only
+    Build Candidate Images tool takes an operator-chosen platform input and
+    is that operator's judgment call.
+    """
+    jobs = _workflow("ci.yml")["jobs"]
+
+    for name, job in jobs.items():
+        for step in job.get("steps") or []:
+            assert "setup-qemu-action" not in str(step.get("uses", "")), name
+            platforms = str((step.get("with") or {}).get("platforms", ""))
+            assert "," not in platforms, f"{name}: emulated multi-platform build"
 
 
 def test_python_tests_signal_controls_only_the_pytest_job() -> None:
