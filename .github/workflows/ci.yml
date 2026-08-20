@@ -745,32 +745,34 @@ jobs:
   # with no tag; the stitch job below is the only thing that creates the
   # dev-<sha> tags, so a tag's existence still means "complete candidate".
   #
-  # Gate shape (all three jobs): !cancelled() suppresses the implicit
+  # Gate shape (all publish jobs): !cancelled() suppresses the implicit
   # success() GitHub prepends to any job `if` lacking a status function.
   # Implicit success() evaluates the WHOLE transitive needs chain — and
   # docker-build, an ancestor via ci-gate, is legitimately skipped on many
   # pushes, which silently skipped publishing (observed on dev@04b4f305).
-  # The explicit result checks are the real gate.
-  publish-backend-arm64:
-    name: Publish backend candidate (arm64)
+  # The explicit result checks are the real gate. The precheck's RESULT is
+  # deliberately not required: if it failed, its empty output simply means
+  # "build" — the safe direction.
+  publish-backend-precheck:
+    name: Publish backend candidate (precheck)
+    # ONE existence query, shared by both arch builds and the stitch. When
+    # each job asked the Packages API independently, the answers could
+    # disagree — only ever through a transient API error, since nothing
+    # mints the tag between the checks — and a disagreement wedged the
+    # pipeline: the erring side built, the other side skipped, and the
+    # stitch had neither a full digest pair nor an existing verdict it
+    # trusted (the round-1 P2). A single verdict makes that impossible.
+    # Query errors deliberately report "no candidate" (fail-open): the cost
+    # is an idempotent rebuild + re-tag of identical content, never a wrong
+    # publish.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate]
     runs-on: [self-hosted, Linux, arm64-docker]
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      packages: write
+    timeout-minutes: 5
     outputs:
-      digest: ${{ steps.push.outputs.digest }}
       existing: ${{ steps.existing.outputs.digest }}
     steps:
-      - uses: actions/checkout@v6
-        with:
-          # Full fetch avoids the intermittent unresolved-delta failures seen
-          # with shallow clones on the self-hosted runner pool.
-          fetch-depth: 0
-
-      - name: Skip when this SHA's candidate already exists
+      - name: Look up an existing candidate for this SHA
         id: existing
         env:
           GH_TOKEN: ${{ github.token }}
@@ -779,16 +781,37 @@ jobs:
           digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100" \
                     --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" 2>/dev/null | head -1 || true)"
           if [ -n "${digest}" ]; then
-            echo "candidate dev-${GITHUB_SHA} already published (${digest}); skipping the build"
+            echo "candidate dev-${GITHUB_SHA} already published (${digest}); downstream jobs will skip"
+          else
+            echo "no candidate for dev-${GITHUB_SHA} (or the lookup errored); downstream jobs will build"
           fi
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
+  publish-backend-arm64:
+    name: Publish backend candidate (arm64)
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
+    needs: [ci-gate, publish-backend-precheck]
+    runs-on: [self-hosted, Linux, arm64-docker]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+        if: needs.publish-backend-precheck.outputs.existing == ''
+        with:
+          # Full fetch avoids the intermittent unresolved-delta failures seen
+          # with shallow clones on the self-hosted runner pool.
+          fetch-depth: 0
+
       - name: Set up Docker Buildx
-        if: steps.existing.outputs.digest == ''
+        if: needs.publish-backend-precheck.outputs.existing == ''
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: steps.existing.outputs.digest == ''
+        if: needs.publish-backend-precheck.outputs.existing == ''
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -796,7 +819,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push by digest (native arm64)
-        if: steps.existing.outputs.digest == ''
+        if: needs.publish-backend-precheck.outputs.existing == ''
         id: push
         uses: docker/build-push-action@v6
         with:
@@ -819,11 +842,13 @@ jobs:
 
   publish-backend-amd64:
     name: Publish backend candidate (amd64)
-    # Native twin of the arm64 half, on the x86_64 builder runner
-    # (direct-docker-1 on freeinference-direct — the host the classic
-    # production chain already builds on natively).
+    # Native twin of the arm64 half, on the dedicated x86_64 build runner
+    # (rtx6000b-docker-1). Deliberately NOT on the production serving host:
+    # a runner in the docker group is root-equivalent on its machine, so
+    # builds live alongside the other CI-class workloads on rtx6000b, never
+    # with production serving.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
-    needs: [ci-gate]
+    needs: [ci-gate, publish-backend-precheck]
     runs-on: [self-hosted, Linux, x64-docker]
     timeout-minutes: 45
     permissions:
@@ -831,31 +856,18 @@ jobs:
       packages: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
-      existing: ${{ steps.existing.outputs.digest }}
     steps:
       - uses: actions/checkout@v6
+        if: needs.publish-backend-precheck.outputs.existing == ''
         with:
           fetch-depth: 0
 
-      - name: Skip when this SHA's candidate already exists
-        id: existing
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100" \
-                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" 2>/dev/null | head -1 || true)"
-          if [ -n "${digest}" ]; then
-            echo "candidate dev-${GITHUB_SHA} already published (${digest}); skipping the build"
-          fi
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-
       - name: Set up Docker Buildx
-        if: steps.existing.outputs.digest == ''
+        if: needs.publish-backend-precheck.outputs.existing == ''
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: steps.existing.outputs.digest == ''
+        if: needs.publish-backend-precheck.outputs.existing == ''
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -863,7 +875,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push by digest (native amd64)
-        if: steps.existing.outputs.digest == ''
+        if: needs.publish-backend-precheck.outputs.existing == ''
         id: push
         uses: docker/build-push-action@v6
         with:
@@ -886,9 +898,10 @@ jobs:
     # whose success means "a complete candidate exists for this SHA", which
     # is what the bump bot's CI gate and humans both read. Requires BOTH
     # arch results explicitly: a half-published candidate must never get a
-    # tag (the tag is the completeness signal).
+    # tag (the tag is the completeness signal). The skip verdict comes from
+    # the precheck's single query, the same one the arch jobs obeyed.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' && needs.publish-backend-arm64.result == 'success' && needs.publish-backend-amd64.result == 'success' }}
-    needs: [ci-gate, publish-backend-arm64, publish-backend-amd64]
+    needs: [ci-gate, publish-backend-precheck, publish-backend-arm64, publish-backend-amd64]
     runs-on: [self-hosted, Linux, arm64-docker]
     timeout-minutes: 15
     permissions:
@@ -896,6 +909,7 @@ jobs:
       packages: write
     steps:
       - name: Log in to GHCR
+        if: needs.publish-backend-precheck.outputs.existing == ''
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -907,7 +921,7 @@ jobs:
         env:
           ARM_DIGEST: ${{ needs.publish-backend-arm64.outputs.digest }}
           AMD_DIGEST: ${{ needs.publish-backend-amd64.outputs.digest }}
-          EXISTING: ${{ needs.publish-backend-arm64.outputs.existing }}
+          EXISTING: ${{ needs.publish-backend-precheck.outputs.existing }}
         run: |
           set -euo pipefail
           img="ghcr.io/harvardmadsys/hybridinference-backend"
@@ -918,7 +932,7 @@ jobs:
             exit 0
           fi
           if [ -z "${ARM_DIGEST}" ] || [ -z "${AMD_DIGEST}" ]; then
-            echo "::error title=Missing arch digest::arm64='${ARM_DIGEST}' amd64='${AMD_DIGEST}' — an arch job neither built nor found an existing candidate"
+            echo "::error title=Missing arch digest::arm64='${ARM_DIGEST}' amd64='${AMD_DIGEST}' — precheck said build, but an arch job produced no digest"
             exit 1
           fi
           # Full-SHA tag is what the bump bot resolves (an 8-char prefix is
@@ -936,7 +950,7 @@ jobs:
 
       - name: Candidate summary
         env:
-          EXISTING: ${{ needs.publish-backend-arm64.outputs.existing }}
+          EXISTING: ${{ needs.publish-backend-precheck.outputs.existing }}
           INDEX: ${{ steps.stitch.outputs.digest }}
         run: |
           {

@@ -48,7 +48,12 @@ def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
 
 @pytest.mark.parametrize(
     "job_name",
-    ["publish-backend-arm64", "publish-backend-amd64", "publish-backend"],
+    [
+        "publish-backend-precheck",
+        "publish-backend-arm64",
+        "publish-backend-amd64",
+        "publish-backend",
+    ],
 )
 def test_publish_gate_survives_skipped_ancestors(job_name: str) -> None:
     """Publishing must depend on ci-gate's verdict, not on ancestor luck.
@@ -81,11 +86,37 @@ def test_publish_stitch_requires_both_native_halves() -> None:
 
     assert set(job["needs"]) == {
         "ci-gate",
+        "publish-backend-precheck",
         "publish-backend-arm64",
         "publish-backend-amd64",
     }
     assert "needs.publish-backend-arm64.result == 'success'" in job["if"]
     assert "needs.publish-backend-amd64.result == 'success'" in job["if"]
+
+
+def test_publish_existence_verdict_has_a_single_source() -> None:
+    """One Packages API query, shared by every publish job.
+
+    Independent per-job existence queries can disagree only through a
+    transient API error (nothing mints the tag between them), and a
+    disagreement wedges the pipeline: one side builds, the other skips,
+    and the stitch has neither a digest pair nor a verdict it trusts.
+    Every downstream job must therefore read the precheck's output, and no
+    publish job other than the precheck may query the Packages API itself.
+    """
+    jobs = _workflow("ci.yml")["jobs"]
+    verdict = "needs.publish-backend-precheck.outputs.existing"
+
+    for name in ("publish-backend-arm64", "publish-backend-amd64"):
+        assert "publish-backend-precheck" in jobs[name]["needs"], name
+        gated = [step for step in jobs[name]["steps"] if step.get("if") == f"{verdict} == ''"]
+        assert gated, f"{name}: no step obeys the precheck verdict"
+        assert not any(
+            "/packages/container/" in str(step.get("run", "")) for step in jobs[name]["steps"]
+        ), f"{name}: runs its own existence query"
+
+    stitch = next(step for step in jobs["publish-backend"]["steps"] if step.get("id") == "stitch")
+    assert stitch["env"]["EXISTING"] == "${{ " + verdict + " }}"
 
 
 def test_publish_builds_are_native_never_emulated() -> None:
