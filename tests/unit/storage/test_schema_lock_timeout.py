@@ -146,3 +146,100 @@ async def test_steady_state_startup_takes_no_lock_and_no_guard_leak():
         s for s in statements if s.strip().startswith(("ALTER TABLE", "CREATE INDEX", "DROP INDEX"))
     ]
     assert lock_taking == []
+
+
+class _CatalogConn:
+    """Fake conn with a controllable catalog answer and statement capture."""
+
+    def __init__(self, columns: set[str]) -> None:
+        self.statements: list[str] = []
+        self._columns = columns
+
+    async def execute(self, sql: str, *_args: object) -> str:
+        self.statements.append(sql)
+        return "OK"
+
+    async def fetch(self, _sql: str, *_args: object) -> list[dict[str, str]]:
+        return [{"attname": name} for name in self._columns]
+
+
+@pytest.mark.asyncio
+async def test_apply_column_migrations_settled_path_issues_no_ddl():
+    """Every column present -> one catalog read, zero statements, zero locks.
+
+    This is the invariant the 2026-08-21 production outage was missing for
+    ``api_keys``/``users``: a bare no-op ``ALTER`` still queues ACCESS
+    EXCLUSIVE, and a restart during the nightly ``pg_dump`` window died on it.
+    """
+    from serving.storage.log_schema import apply_column_migrations
+
+    conn = _CatalogConn(columns={"a", "b"})
+
+    await apply_column_migrations(
+        conn,
+        "t",
+        [
+            ("a", "ALTER TABLE t ADD COLUMN IF NOT EXISTS a INT"),
+            ("b", "ALTER TABLE t ADD COLUMN IF NOT EXISTS b INT"),
+        ],
+    )
+
+    assert conn.statements == []
+
+
+@pytest.mark.asyncio
+async def test_apply_column_migrations_runs_only_missing_under_bounded_wait():
+    from serving.storage.log_schema import apply_column_migrations
+
+    conn = _CatalogConn(columns={"a"})
+
+    await conn.fetch("probe")  # not counted; fetch is not recorded
+    await apply_column_migrations(
+        conn,
+        "t",
+        [
+            ("a", "ALTER TABLE t ADD COLUMN IF NOT EXISTS a INT"),
+            ("b", "ALTER TABLE t ADD COLUMN IF NOT EXISTS b INT"),
+        ],
+    )
+
+    assert conn.statements == [
+        f"SET lock_timeout = '{_DDL_LOCK_TIMEOUT}'",
+        "ALTER TABLE t ADD COLUMN IF NOT EXISTS b INT",
+        "SET lock_timeout = DEFAULT",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_drop_columns_if_present_skips_when_already_gone():
+    from serving.storage.log_schema import drop_columns_if_present
+
+    conn = _CatalogConn(columns={"kept"})
+
+    await drop_columns_if_present(
+        conn, "t", [("legacy", "ALTER TABLE t DROP COLUMN IF EXISTS legacy")]
+    )
+
+    assert conn.statements == []
+
+
+@pytest.mark.asyncio
+async def test_apply_column_migrations_translates_lock_timeout():
+    from serving.storage.log_schema import apply_column_migrations
+
+    conn = _CatalogConn(columns=set())
+
+    async def _execute(sql: str, *_args: object) -> str:
+        conn.statements.append(sql)
+        if sql.startswith("ALTER TABLE"):
+            raise _PostgresError("55P03")
+        return "OK"
+
+    conn.execute = _execute
+
+    with pytest.raises(SchemaLockUnavailable):
+        await apply_column_migrations(
+            conn, "t", [("c", "ALTER TABLE t ADD COLUMN IF NOT EXISTS c INT")]
+        )
+
+    assert conn.statements[-1] == "SET lock_timeout = DEFAULT"

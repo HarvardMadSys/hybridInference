@@ -15,6 +15,14 @@ from serving import grants
 from serving.config.settings import ROLE_RANK, VALID_ROLES
 from serving.exceptions import DuplicateAPIKeyError
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
+from serving.storage.log_schema import (
+    apply_column_migrations,
+    bounded_ddl,
+    column_metadata,
+    constraint_definition,
+    drop_columns_if_present,
+    execute_ddl,
+)
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -143,33 +151,67 @@ class PostgresOperationalStore(OperationalStore):
             "ON users(last_login_at DESC NULLS LAST)"
         )
 
-        # Migrations
-        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_note TEXT")
-        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ")
-        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_by TEXT")
-        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_reason TEXT")
-        await conn.execute(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-            "preferences JSONB NOT NULL DEFAULT '{}'::jsonb"
+        # Migrations — catalog-gated (serving.storage.log_schema): the settled
+        # startup path issues no strong-lock DDL at all. ALTER TABLE takes its
+        # ACCESS EXCLUSIVE lock BEFORE evaluating IF NOT EXISTS, and users is
+        # on auth's read path — a bare no-op ALTER queued behind the nightly
+        # pg_dump took production down on 2026-08-21.
+        await apply_column_migrations(
+            conn,
+            "users",
+            [
+                ("approval_note", "ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_note TEXT"),
+                (
+                    "reviewed_at",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ",
+                ),
+                ("reviewed_by", "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_by TEXT"),
+                (
+                    "signup_reason",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_reason TEXT",
+                ),
+                (
+                    "preferences",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                    "preferences JSONB NOT NULL DEFAULT '{}'::jsonb",
+                ),
+                (
+                    "max_concurrent_requests",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                    "max_concurrent_requests INT DEFAULT NULL",
+                ),
+                # Free-text admin-only annotation about a user (any status).
+                ("admin_note", "ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT"),
+                # Admin-authored message shown to the user on the login page when
+                # their account is suspended (user-facing, unlike admin_note).
+                (
+                    "suspension_message",
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_message TEXT",
+                ),
+            ],
         )
-        await conn.execute(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS max_concurrent_requests INT DEFAULT NULL"
-        )
-        # Free-text admin-only annotation about a user (any status).
-        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT")
-        # Admin-authored message shown to the user on the login page when their
-        # account is suspended (user-facing, unlike admin_note).
-        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_message TEXT")
 
-        # Status constraint rebuild
+        # Status constraint rebuild — only when the CHECK does not yet admit
+        # the approval-flow statuses. The rebuild takes ACCESS EXCLUSIVE, so
+        # the settled path must read the catalog and walk away.
+        status_def = await constraint_definition(conn, "users", "users_status_check")
+        status_settled = (
+            status_def is not None and "pending_approval" in status_def and "rejected" in status_def
+        )
         try:
-            async with conn.transaction():
-                await conn.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check")
-                await conn.execute("""
+            if not status_settled:
+                async with bounded_ddl(conn), conn.transaction():
+                    await execute_ddl(
+                        conn, "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check"
+                    )
+                    await execute_ddl(
+                        conn,
+                        """
                     ALTER TABLE users ADD CONSTRAINT users_status_check
                     CHECK (status IN ('active', 'suspended', 'deleted',
                                       'pending_approval', 'rejected'))
-                """)
+                """,
+                    )
         except _asyncpg.PostgresError as exc:
             invalid_rows = await conn.fetch(
                 "SELECT id, email, status FROM users "
@@ -185,42 +227,60 @@ class PostgresOperationalStore(OperationalStore):
             )
             raise
 
-        # Role column & migration
-        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT")
-        await conn.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'free'")
+        # Role column & migration — every strong-lock step gated on the catalog.
+        await apply_column_migrations(
+            conn, "users", [("role", "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT")]
+        )
+        role_meta = await column_metadata(conn, "users", "role")
+        role_default = str(role_meta["default_expr"] or "") if role_meta else ""
+        if "'free'" not in role_default:
+            async with bounded_ddl(conn):
+                await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'free'")
         tag = await conn.execute("UPDATE users SET role = 'free' WHERE role IS NULL")
         backfilled = _parse_command_tag_count(tag)
         if backfilled:
             logger.info("Backfilled default user role for %d existing rows.", backfilled)
 
-        await conn.execute("ALTER TABLE users ALTER COLUMN role SET NOT NULL")
+        if role_meta is None or not role_meta["not_null"]:
+            async with bounded_ddl(conn):
+                await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN role SET NOT NULL")
 
+        role_def = await constraint_definition(conn, "users", "users_role_check")
+        role_settled = role_def is not None and all(
+            member in role_def for member in ("'free'", "'pro'", "'internal'", "'admin'")
+        )
         try:
-            async with conn.transaction():
-                await conn.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
-                tag = await conn.execute(
-                    "UPDATE users SET role = 'internal' "
-                    "WHERE role IN ('internal_group', 'developer')"
-                )
-                migrated = _parse_command_tag_count(tag)
-                if migrated:
-                    logger.info(
-                        "Migrated %d users from internal_group/developer to internal.",
-                        migrated,
+            if not role_settled:
+                async with bounded_ddl(conn), conn.transaction():
+                    await execute_ddl(
+                        conn, "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check"
                     )
-                trial_tag = await conn.execute(
-                    "UPDATE users SET role = 'free' WHERE role = 'trial'"
-                )
-                migrated_trial = _parse_command_tag_count(trial_tag)
-                if migrated_trial:
-                    logger.info(
-                        "Migrated %d users from trial to free.",
-                        migrated_trial,
+                    tag = await conn.execute(
+                        "UPDATE users SET role = 'internal' "
+                        "WHERE role IN ('internal_group', 'developer')"
                     )
-                await conn.execute("""
+                    migrated = _parse_command_tag_count(tag)
+                    if migrated:
+                        logger.info(
+                            "Migrated %d users from internal_group/developer to internal.",
+                            migrated,
+                        )
+                    trial_tag = await conn.execute(
+                        "UPDATE users SET role = 'free' WHERE role = 'trial'"
+                    )
+                    migrated_trial = _parse_command_tag_count(trial_tag)
+                    if migrated_trial:
+                        logger.info(
+                            "Migrated %d users from trial to free.",
+                            migrated_trial,
+                        )
+                    await execute_ddl(
+                        conn,
+                        """
                     ALTER TABLE users ADD CONSTRAINT users_role_check
                     CHECK (role IN ('free', 'pro', 'internal', 'admin'))
-                """)
+                """,
+                    )
         except _asyncpg.PostgresError as exc:
             invalid_rows = await conn.fetch(
                 "SELECT id, email, role FROM users "
@@ -277,15 +337,26 @@ class PostgresOperationalStore(OperationalStore):
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique "
             "ON api_keys(user_id) WHERE status = 'active'"
         )
-        # Migrations
-        await conn.execute(
-            "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
-            "quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00"
+        # Migrations — catalog-gated; this exact cluster (bare, on the auth
+        # read path) is what the 2026-08-21 production outage queued behind
+        # the nightly pg_dump.
+        await apply_column_migrations(
+            conn,
+            "api_keys",
+            [
+                (
+                    "quota_daily_cost_usd",
+                    "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
+                    "quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00",
+                ),
+                (
+                    "quota_monthly_cost_usd",
+                    "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
+                    "quota_monthly_cost_usd DECIMAL(10, 4)",
+                ),
+                ("account_id", "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS account_id TEXT"),
+            ],
         )
-        await conn.execute(
-            "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS quota_monthly_cost_usd DECIMAL(10, 4)"
-        )
-        await conn.execute("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS account_id TEXT")
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id)"
         )
@@ -309,9 +380,9 @@ class PostgresOperationalStore(OperationalStore):
             logger.info("Backfilled account_id for %d legacy api_keys rows.", backfilled)
         # Drop legacy 'tier' column — tier/role unified on users.role
         # (spec: docs/agents/specs/2026-05-02-unify-tier-role-design.md).
-        await conn.execute("""
-            ALTER TABLE api_keys DROP COLUMN IF EXISTS tier
-        """)
+        await drop_columns_if_present(
+            conn, "api_keys", [("tier", "ALTER TABLE api_keys DROP COLUMN IF EXISTS tier")]
+        )
 
         # --- auth_sessions ---
         await conn.execute("""
@@ -497,17 +568,23 @@ class PostgresOperationalStore(OperationalStore):
         # ON DELETE SET NULL, which blocks hard_delete_user. Rebuild the
         # constraint in place. Auto-generated name is
         # ``signup_allowed_domains_created_by_fkey``.
+        fk_def = await constraint_definition(
+            conn, "signup_allowed_domains", "signup_allowed_domains_created_by_fkey"
+        )
         try:
-            async with conn.transaction():
-                await conn.execute(
-                    "ALTER TABLE signup_allowed_domains "
-                    "DROP CONSTRAINT IF EXISTS signup_allowed_domains_created_by_fkey"
-                )
-                await conn.execute(
-                    "ALTER TABLE signup_allowed_domains "
-                    "ADD CONSTRAINT signup_allowed_domains_created_by_fkey "
-                    "FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL"
-                )
+            if fk_def is None or "ON DELETE SET NULL" not in fk_def:
+                async with bounded_ddl(conn), conn.transaction():
+                    await execute_ddl(
+                        conn,
+                        "ALTER TABLE signup_allowed_domains "
+                        "DROP CONSTRAINT IF EXISTS signup_allowed_domains_created_by_fkey",
+                    )
+                    await execute_ddl(
+                        conn,
+                        "ALTER TABLE signup_allowed_domains "
+                        "ADD CONSTRAINT signup_allowed_domains_created_by_fkey "
+                        "FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL",
+                    )
         except _asyncpg.PostgresError as exc:
             logger.error(
                 "Failed to rebuild signup_allowed_domains_created_by_fkey "
@@ -603,14 +680,26 @@ class PostgresOperationalStore(OperationalStore):
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_prc_model ON provider_route_configs(model_id)"
         )
-        await conn.execute(
-            "ALTER TABLE provider_route_configs ADD COLUMN IF NOT EXISTS quota_limit INTEGER"
-        )
-        await conn.execute(
-            "ALTER TABLE provider_route_configs ADD COLUMN IF NOT EXISTS concurrency_limit INTEGER"
-        )
-        await conn.execute(
-            "ALTER TABLE provider_route_configs ADD COLUMN IF NOT EXISTS openrouter_sort TEXT"
+        await apply_column_migrations(
+            conn,
+            "provider_route_configs",
+            [
+                (
+                    "quota_limit",
+                    "ALTER TABLE provider_route_configs "
+                    "ADD COLUMN IF NOT EXISTS quota_limit INTEGER",
+                ),
+                (
+                    "concurrency_limit",
+                    "ALTER TABLE provider_route_configs "
+                    "ADD COLUMN IF NOT EXISTS concurrency_limit INTEGER",
+                ),
+                (
+                    "openrouter_sort",
+                    "ALTER TABLE provider_route_configs "
+                    "ADD COLUMN IF NOT EXISTS openrouter_sort TEXT",
+                ),
+            ],
         )
 
         await conn.execute("""
@@ -636,11 +725,20 @@ class PostgresOperationalStore(OperationalStore):
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_prcand_model ON provider_route_candidates(model_id)"
         )
-        await conn.execute(
-            "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS openrouter_sort TEXT"
-        )
-        await conn.execute(
-            "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS pricing JSONB"
+        await apply_column_migrations(
+            conn,
+            "provider_route_candidates",
+            [
+                (
+                    "openrouter_sort",
+                    "ALTER TABLE provider_route_candidates "
+                    "ADD COLUMN IF NOT EXISTS openrouter_sort TEXT",
+                ),
+                (
+                    "pricing",
+                    "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS pricing JSONB",
+                ),
+            ],
         )
 
         await conn.execute("""
@@ -698,9 +796,16 @@ class PostgresOperationalStore(OperationalStore):
         # constraint — the role vocabulary lives in ``VALID_ROLES`` and is
         # enforced at the admin API; a future role must not require a DDL lock
         # on a table the request path reads at boot.
-        await conn.execute(
-            "ALTER TABLE provider_api_keys "
-            "ADD COLUMN IF NOT EXISTS min_role TEXT NOT NULL DEFAULT 'free'"
+        await apply_column_migrations(
+            conn,
+            "provider_api_keys",
+            [
+                (
+                    "min_role",
+                    "ALTER TABLE provider_api_keys "
+                    "ADD COLUMN IF NOT EXISTS min_role TEXT NOT NULL DEFAULT 'free'",
+                ),
+            ],
         )
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS provider_definitions (

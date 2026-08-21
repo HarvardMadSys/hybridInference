@@ -14,7 +14,15 @@ from typing import Any
 
 import asyncpg
 
-from serving.storage.log_schema import ensure_api_logs_schema
+from serving.storage.log_schema import (
+    apply_column_migrations,
+    bounded_ddl,
+    column_metadata,
+    constraint_definition,
+    drop_columns_if_present,
+    ensure_api_logs_schema,
+    execute_ddl,
+)
 from serving.storage.payload_dedup import strip_duplicated_payload_keys
 from serving.storage.utils import (
     calculate_cost,
@@ -140,27 +148,36 @@ class DatabaseLogger:
                 ON api_keys(user_id) WHERE status = 'active'
             """)
 
-            # Migrations for api_keys table (from token-based to cost-based quotas)
-            await conn.execute("""
-                ALTER TABLE api_keys
-                ADD COLUMN IF NOT EXISTS quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_keys
-                ADD COLUMN IF NOT EXISTS quota_monthly_cost_usd DECIMAL(10, 4)
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_keys
-                ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT
-            """)
-
-            # Add account_id column to link API keys to user accounts (self-registered users only)
-            await conn.execute("""
-                ALTER TABLE api_keys
-                ADD COLUMN IF NOT EXISTS account_id TEXT
-            """)
+            # Migrations for api_keys table (from token-based to cost-based
+            # quotas). Catalog-gated (serving.storage.log_schema): ALTER TABLE
+            # takes ACCESS EXCLUSIVE before evaluating IF NOT EXISTS, and this
+            # exact bare cluster queued behind the nightly pg_dump and took
+            # production down on 2026-08-21.
+            await apply_column_migrations(
+                conn,
+                "api_keys",
+                [
+                    (
+                        "quota_daily_cost_usd",
+                        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
+                        "quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00",
+                    ),
+                    (
+                        "quota_monthly_cost_usd",
+                        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
+                        "quota_monthly_cost_usd DECIMAL(10, 4)",
+                    ),
+                    (
+                        "api_key_encrypted",
+                        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT",
+                    ),
+                    # Links API keys to user accounts (self-registered users only).
+                    (
+                        "account_id",
+                        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS account_id TEXT",
+                    ),
+                ],
+            )
 
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_api_keys_account
@@ -174,9 +191,9 @@ class DatabaseLogger:
                 WHERE status = 'active' AND account_id IS NOT NULL
             """)
 
-            await conn.execute("""
-                ALTER TABLE api_keys DROP COLUMN IF EXISTS tier
-            """)
+            await drop_columns_if_present(
+                conn, "api_keys", [("tier", "ALTER TABLE api_keys DROP COLUMN IF EXISTS tier")]
+            )
 
             # Users table for self-service registration
             await conn.execute("""
@@ -214,40 +231,60 @@ class DatabaseLogger:
                 ON users(created_at DESC)
             """)
 
-            # Migrations: approval-based registration columns
-            await conn.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS approval_note TEXT
-            """)
-
-            await conn.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ
-            """)
-
-            await conn.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS reviewed_by TEXT
-            """)
-
-            await conn.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS preferences JSONB NOT NULL DEFAULT '{}'::jsonb
-            """)
+            # Migrations: approval-based registration columns (catalog-gated —
+            # users is on auth's read path, same doctrine as api_keys above).
+            await apply_column_migrations(
+                conn,
+                "users",
+                [
+                    (
+                        "approval_note",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_note TEXT",
+                    ),
+                    (
+                        "reviewed_at",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ",
+                    ),
+                    (
+                        "reviewed_by",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_by TEXT",
+                    ),
+                    (
+                        "preferences",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "preferences JSONB NOT NULL DEFAULT '{}'::jsonb",
+                    ),
+                ],
+            )
 
             # Expand status CHECK constraint to include pending_approval and rejected.
             # Rebuild inside a transaction so a failed ADD does not leave the table
-            # without its previous integrity constraint.
+            # without its previous integrity constraint. Gated on the current
+            # constraint definition: the rebuild takes ACCESS EXCLUSIVE, so the
+            # settled path reads the catalog and walks away.
+            status_def = await constraint_definition(conn, "users", "users_status_check")
+            status_settled = (
+                status_def is not None
+                and "pending_approval" in status_def
+                and "rejected" in status_def
+            )
             try:
-                async with conn.transaction():
-                    await conn.execute("""
+                if not status_settled:
+                    async with bounded_ddl(conn), conn.transaction():
+                        await execute_ddl(
+                            conn,
+                            """
                         ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check
-                    """)
-                    await conn.execute("""
+                    """,
+                        )
+                        await execute_ddl(
+                            conn,
+                            """
                         ALTER TABLE users
                         ADD CONSTRAINT users_status_check
                         CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected'))
-                    """)
+                    """,
+                        )
             except asyncpg.PostgresError as exc:
                 invalid_status_rows = await conn.fetch("""
                     SELECT id, email, status
@@ -269,16 +306,20 @@ class DatabaseLogger:
                 ON users(created_at DESC) WHERE status = 'pending_approval'
             """)
 
-            # Add role column for permission levels (free/pro/internal/admin)
-            await conn.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS role TEXT
-            """)
-
-            await conn.execute("""
-                ALTER TABLE users
-                ALTER COLUMN role SET DEFAULT 'free'
-            """)
+            # Add role column for permission levels (free/pro/internal/admin).
+            # Each strong-lock step gated on the catalog.
+            await apply_column_migrations(
+                conn,
+                "users",
+                [("role", "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT")],
+            )
+            role_meta = await column_metadata(conn, "users", "role")
+            role_default = str(role_meta["default_expr"] or "") if role_meta else ""
+            if "'free'" not in role_default:
+                async with bounded_ddl(conn):
+                    await execute_ddl(
+                        conn, "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'free'"
+                    )
 
             updated_roles_tag = await conn.execute("""
                 UPDATE users
@@ -292,47 +333,58 @@ class DatabaseLogger:
                     updated_roles,
                 )
 
-            await conn.execute("""
-                ALTER TABLE users
-                ALTER COLUMN role SET NOT NULL
-            """)
+            if role_meta is None or not role_meta["not_null"]:
+                async with bounded_ddl(conn):
+                    await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN role SET NOT NULL")
 
             # Migrate legacy roles and rebuild users_role_check to the current
             # allowed set (free, pro, internal, admin). The constraint
             # must be dropped BEFORE the UPDATE — older DBs may have CHECK
-            # constraints that reject 'internal'.
+            # constraints that reject 'internal'. Gated on the current
+            # definition; skipped entirely once it admits all four roles.
+            role_def = await constraint_definition(conn, "users", "users_role_check")
+            role_settled = role_def is not None and all(
+                member in role_def for member in ("'free'", "'pro'", "'internal'", "'admin'")
+            )
             try:
-                async with conn.transaction():
-                    await conn.execute("""
+                if not role_settled:
+                    async with bounded_ddl(conn), conn.transaction():
+                        await execute_ddl(
+                            conn,
+                            """
                         ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check
-                    """)
-                    migrated_roles_tag = await conn.execute("""
+                    """,
+                        )
+                        migrated_roles_tag = await conn.execute("""
                         UPDATE users
                         SET role = 'internal'
                         WHERE role IN ('internal_group', 'developer')
                     """)
-                    migrated_roles = _parse_command_tag_count(migrated_roles_tag)
-                    if migrated_roles:
-                        logger.info(
-                            "Migrated %d users from internal_group/developer to internal.",
-                            migrated_roles,
-                        )
-                    migrated_trial_tag = await conn.execute("""
+                        migrated_roles = _parse_command_tag_count(migrated_roles_tag)
+                        if migrated_roles:
+                            logger.info(
+                                "Migrated %d users from internal_group/developer to internal.",
+                                migrated_roles,
+                            )
+                        migrated_trial_tag = await conn.execute("""
                         UPDATE users
                         SET role = 'free'
                         WHERE role = 'trial'
                     """)
-                    migrated_trial = _parse_command_tag_count(migrated_trial_tag)
-                    if migrated_trial:
-                        logger.info(
-                            "Migrated %d users from trial to free.",
-                            migrated_trial,
-                        )
-                    await conn.execute("""
+                        migrated_trial = _parse_command_tag_count(migrated_trial_tag)
+                        if migrated_trial:
+                            logger.info(
+                                "Migrated %d users from trial to free.",
+                                migrated_trial,
+                            )
+                        await execute_ddl(
+                            conn,
+                            """
                         ALTER TABLE users
                         ADD CONSTRAINT users_role_check
                         CHECK (role IN ('free', 'pro', 'internal', 'admin'))
-                    """)
+                    """,
+                        )
             except asyncpg.PostgresError as exc:
                 invalid_role_rows = await conn.fetch("""
                     SELECT id, email, role
@@ -511,17 +563,27 @@ class DatabaseLogger:
             # ON DELETE SET NULL, which blocks hard_delete_user. Rebuild
             # the constraint in place. The auto-generated constraint name
             # is ``signup_allowed_domains_created_by_fkey``.
+            fk_def = await constraint_definition(
+                conn, "signup_allowed_domains", "signup_allowed_domains_created_by_fkey"
+            )
             try:
-                async with conn.transaction():
-                    await conn.execute("""
+                if fk_def is None or "ON DELETE SET NULL" not in fk_def:
+                    async with bounded_ddl(conn), conn.transaction():
+                        await execute_ddl(
+                            conn,
+                            """
                         ALTER TABLE signup_allowed_domains
                         DROP CONSTRAINT IF EXISTS signup_allowed_domains_created_by_fkey
-                    """)
-                    await conn.execute("""
+                    """,
+                        )
+                        await execute_ddl(
+                            conn,
+                            """
                         ALTER TABLE signup_allowed_domains
                         ADD CONSTRAINT signup_allowed_domains_created_by_fkey
                         FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-                    """)
+                    """,
+                        )
             except asyncpg.PostgresError as exc:
                 logger.error(
                     "Failed to rebuild signup_allowed_domains_created_by_fkey "
@@ -582,8 +644,18 @@ class DatabaseLogger:
                 )
             """)
             # Backfill the unique constraint on existing tables (no-op if it
-            # already exists or if duplicates would prevent it).
-            await conn.execute("""
+            # already exists or if duplicates would prevent it). Gated on the
+            # catalog so the settled path takes no lock at all.
+            uniq_def = await constraint_definition(
+                conn,
+                "email_broadcast_recipients",
+                "email_broadcast_recipients_broadcast_user_uniq",
+            )
+            if uniq_def is None:
+                async with bounded_ddl(conn):
+                    await execute_ddl(
+                        conn,
+                        """
                 DO $$
                 BEGIN
                     BEGIN
@@ -595,7 +667,8 @@ class DatabaseLogger:
                         WHEN duplicate_table THEN NULL;
                     END;
                 END $$;
-            """)
+            """,
+                    )
 
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast
@@ -691,22 +764,32 @@ class DatabaseLogger:
             # change is metadata-only on existing tables; rows pre-dating
             # this migration are filled by backfill_token_columns at
             # startup and by subsequent hourly rollups.
-            await conn.execute("""
-                ALTER TABLE provider_hourly_stats
-                ADD COLUMN IF NOT EXISTS total_prompt_tokens BIGINT
-            """)
-            await conn.execute("""
-                ALTER TABLE provider_hourly_stats
-                ADD COLUMN IF NOT EXISTS total_cache_read_tokens BIGINT
-            """)
-            await conn.execute("""
-                ALTER TABLE provider_hourly_stats
-                ADD COLUMN IF NOT EXISTS total_reasoning_tokens BIGINT
-            """)
-            await conn.execute("""
-                ALTER TABLE provider_hourly_stats
-                ADD COLUMN IF NOT EXISTS total_cost_usd DECIMAL(14, 8)
-            """)
+            await apply_column_migrations(
+                conn,
+                "provider_hourly_stats",
+                [
+                    (
+                        "total_prompt_tokens",
+                        "ALTER TABLE provider_hourly_stats "
+                        "ADD COLUMN IF NOT EXISTS total_prompt_tokens BIGINT",
+                    ),
+                    (
+                        "total_cache_read_tokens",
+                        "ALTER TABLE provider_hourly_stats "
+                        "ADD COLUMN IF NOT EXISTS total_cache_read_tokens BIGINT",
+                    ),
+                    (
+                        "total_reasoning_tokens",
+                        "ALTER TABLE provider_hourly_stats "
+                        "ADD COLUMN IF NOT EXISTS total_reasoning_tokens BIGINT",
+                    ),
+                    (
+                        "total_cost_usd",
+                        "ALTER TABLE provider_hourly_stats "
+                        "ADD COLUMN IF NOT EXISTS total_cost_usd DECIMAL(14, 8)",
+                    ),
+                ],
+            )
 
             # Privacy-safe country/hour aggregates and their explicit
             # completed-hour coverage markers for the admin geo dashboard.

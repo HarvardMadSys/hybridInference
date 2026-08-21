@@ -45,6 +45,10 @@ def _capturing_conn() -> tuple[MagicMock, list[str]]:
 
     conn.execute = AsyncMock(side_effect=_execute)
     conn.fetch = AsyncMock(return_value=[])
+    # Constraint definitions / column metadata absent -> every gated rebuild
+    # still runs, keeping the fresh-install expectations below intact.
+    conn.fetchval = AsyncMock(return_value=None)
+    conn.fetchrow = AsyncMock(return_value=None)
     return conn, statements
 
 

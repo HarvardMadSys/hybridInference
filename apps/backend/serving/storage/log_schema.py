@@ -39,7 +39,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     import asyncpg
 
@@ -95,8 +95,120 @@ async def _execute_ddl(conn: asyncpg.Connection, ddl: str) -> None:
             raise
         raise SchemaLockUnavailable(
             f"could not acquire the lock for {ddl!r} within {_DDL_LOCK_TIMEOUT}; "
-            "another session holds a conflicting lock on api_logs"
+            "another session holds a conflicting lock"
         ) from exc
+
+
+# Public faces of the guard pair, for the other schema builders
+# (``database.py`` / ``postgres_operational.py``) that adopt the same
+# doctrine: catalog first, strong-lock DDL only when actually needed, and
+# always under the bounded wait. The 2026-08-21 production outage was this
+# module's api_logs incident replayed on ``api_keys`` — the boot-time
+# builders still issued their idempotent ALTERs bare, and the first restart
+# inside the nightly ``pg_dump`` window queued behind it for the pool's
+# 60 s command timeout, three times, and failed the deploy.
+bounded_ddl = _bounded_lock_wait
+execute_ddl = _execute_ddl
+
+
+async def existing_columns(conn: asyncpg.Connection, table: str) -> set[str]:
+    """Column names of *table*; empty when the table does not exist."""
+    rows = await conn.fetch(
+        """
+        SELECT attname
+        FROM pg_attribute
+        WHERE attrelid = to_regclass($1)
+          AND NOT attisdropped
+          AND attnum > 0
+        """,
+        table,
+    )
+    return {r["attname"] for r in rows}
+
+
+async def apply_column_migrations(
+    conn: asyncpg.Connection,
+    table: str,
+    migrations: Sequence[tuple[str, str]],
+) -> None:
+    """Issue only the ``ADD COLUMN`` DDL whose column is actually missing.
+
+    The steady-state startup (every column already present) reads the catalog
+    once and issues no DDL at all — no ``ACCESS EXCLUSIVE`` request, nothing
+    for a long-running reader like the nightly ``pg_dump`` to block. DDL that
+    does run sits under the bounded lock wait and surfaces contention as
+    :class:`SchemaLockUnavailable`. The ``IF NOT EXISTS`` clause stays on the
+    statements as the race guard for two workers booting at once.
+    """
+    present = await existing_columns(conn, table)
+    pending = [ddl for name, ddl in migrations if name not in present]
+    if not pending:
+        return
+    async with _bounded_lock_wait(conn):
+        for ddl in pending:
+            await _execute_ddl(conn, ddl)
+
+
+async def drop_columns_if_present(
+    conn: asyncpg.Connection,
+    table: str,
+    drops: Sequence[tuple[str, str]],
+) -> None:
+    """Issue only the ``DROP COLUMN`` DDL whose column still exists."""
+    present = await existing_columns(conn, table)
+    pending = [ddl for name, ddl in drops if name in present]
+    if not pending:
+        return
+    async with _bounded_lock_wait(conn):
+        for ddl in pending:
+            await _execute_ddl(conn, ddl)
+
+
+async def constraint_definition(conn: asyncpg.Connection, table: str, name: str) -> str | None:
+    """``pg_get_constraintdef`` of *name* on *table*, or None when absent.
+
+    Lets a constraint rebuild be gated on what the constraint currently says
+    (e.g. skip when the CHECK already admits every required member) instead of
+    unconditionally dropping and re-adding it — which takes ``ACCESS
+    EXCLUSIVE`` on every single startup.
+    """
+    return await conn.fetchval(
+        """
+        SELECT pg_get_constraintdef(oid)
+        FROM pg_constraint
+        WHERE conrelid = to_regclass($1)
+          AND conname = $2
+        """,
+        table,
+        name,
+    )
+
+
+async def column_metadata(
+    conn: asyncpg.Connection, table: str, column: str
+) -> dict[str, object] | None:
+    """``{"not_null": bool, "default_expr": str | None}`` for one column.
+
+    None when the table or column does not exist. Gates ``ALTER COLUMN ...
+    SET DEFAULT / SET NOT NULL`` statements the same way the column
+    migrations are gated: read the catalog, only lock when the change is
+    actually needed.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT a.attnotnull AS not_null,
+               pg_get_expr(d.adbin, d.adrelid) AS default_expr
+        FROM pg_attribute a
+        LEFT JOIN pg_attrdef d
+          ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+        WHERE a.attrelid = to_regclass($1)
+          AND a.attname = $2
+          AND NOT a.attisdropped
+        """,
+        table,
+        column,
+    )
+    return dict(row) if row is not None else None
 
 
 # ``(name, ddl)`` for each column added over the table's lifetime, applied as
@@ -228,20 +340,6 @@ _API_LOGS_LEGACY_COLUMN_DROPS = [
 ]
 
 
-async def _existing_columns(conn: asyncpg.Connection) -> set[str]:
-    """Return the live (non-dropped) column names of ``api_logs``."""
-    rows = await conn.fetch(
-        """
-        SELECT attname
-        FROM pg_attribute
-        WHERE attrelid = 'api_logs'::regclass
-          AND NOT attisdropped
-          AND attnum > 0
-        """
-    )
-    return {r["attname"] for r in rows}
-
-
 async def _existing_indexes(conn: asyncpg.Connection) -> set[str]:
     """Return the index names defined on ``api_logs`` in the search path."""
     rows = await conn.fetch(
@@ -315,7 +413,7 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
     # Snapshot the catalog once (cheap ACCESS SHARE) and only issue DDL for
     # objects that are missing, so the common already-migrated startup path
     # never queues an ACCESS EXCLUSIVE / SHARE lock on this hot table.
-    existing_columns = await _existing_columns(conn)
+    existing_columns_now = await existing_columns(conn, "api_logs")
     existing_indexes = await _existing_indexes(conn)
 
     # Everything below takes a strong lock, so it runs under a bounded wait: if
@@ -327,11 +425,11 @@ async def ensure_api_logs_schema(conn: asyncpg.Connection) -> None:
             if index_name in existing_indexes:
                 await _execute_ddl(conn, drop_ddl)
         for col_name, drop_ddl in _API_LOGS_LEGACY_COLUMN_DROPS:
-            if col_name in existing_columns:
+            if col_name in existing_columns_now:
                 await _execute_ddl(conn, drop_ddl)
 
         for col_name, col_ddl in _API_LOGS_COLUMN_MIGRATIONS:
-            if col_name not in existing_columns:
+            if col_name not in existing_columns_now:
                 await _execute_ddl(conn, col_ddl)
 
         for index_name, index_ddl in _API_LOGS_INDEXES:
