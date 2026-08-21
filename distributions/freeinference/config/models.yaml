@@ -68,7 +68,18 @@ models:
     max_output_length: 131072
     supports_tools: true
     supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
+    # Verified per route by handing each backend a nonsense value and reading
+    # what it says it wants, rather than by copying a doc:
+    #   zai    -> none, minimal, low, medium, high, xhigh, max
+    #   ollama -> none, low, medium, high, max        (no minimal, no xhigh)
+    #   chutes -> 404; that route serves no such model, effort or not
+    # The domain below is the **intersection**, because one model id fans out
+    # over these routes by weight: declaring zai's seven would 400 whenever a
+    # request carrying minimal or xhigh happened to land on ollama, at random,
+    # with a retry that usually succeeds. Effort is a property of the route,
+    # and the intersection is the only form that is true of all of them.
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking, reasoning_effort]
+    reasoning_efforts: [none, low, medium, high, max]
     input_modalities: ["text"]
     output_modalities: ["text"]
     aliases: ["freeinference-glm-5.2"]
@@ -125,11 +136,13 @@ models:
     supports_tools: true
     supports_structured_output: true
     # Reasoning is always on upstream: 5.3 dropped `thinking.type: disabled`, so
-    # a client that still sends it gets an upstream 400. `reasoning_effort`
-    # (low/high/max) is the supported way to dial thinking down.
+    # a client that still sends it gets an upstream 400. `reasoning_effort` is
+    # the supported way to dial thinking down. Only the zai route serves this
+    # model today, so there is no intersection to take — unlike glm-5.2 above,
+    # and the note there explains why that matters.
     supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking, reasoning_effort]
-    # No `medium` — the domain is the upstream's, not a platform convention.
-    reasoning_efforts: [low, high, max]
+    # The upstream's own answer to a nonsense value, not the doc's summary:
+    reasoning_efforts: [none, minimal, low, medium, high, xhigh, max]
     input_modalities: ["text"]
     output_modalities: ["text"]
     aliases: ["freeinference-glm-5.3"]
