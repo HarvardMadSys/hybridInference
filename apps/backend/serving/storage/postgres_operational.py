@@ -19,6 +19,7 @@ from serving.storage.log_schema import (
     apply_column_migrations,
     bounded_ddl,
     column_metadata,
+    constraint_admitted_values,
     constraint_definition,
     drop_columns_if_present,
     execute_ddl,
@@ -191,13 +192,18 @@ class PostgresOperationalStore(OperationalStore):
             ],
         )
 
-        # Status constraint rebuild — only when the CHECK does not yet admit
-        # the approval-flow statuses. The rebuild takes ACCESS EXCLUSIVE, so
+        # Status constraint rebuild — only when the CHECK does not admit
+        # exactly the current status set (see constraint_admitted_values for
+        # why exact, not membership). The rebuild takes ACCESS EXCLUSIVE, so
         # the settled path must read the catalog and walk away.
         status_def = await constraint_definition(conn, "users", "users_status_check")
-        status_settled = (
-            status_def is not None and "pending_approval" in status_def and "rejected" in status_def
-        )
+        status_settled = constraint_admitted_values(status_def) == {
+            "active",
+            "suspended",
+            "deleted",
+            "pending_approval",
+            "rejected",
+        }
         try:
             if not status_settled:
                 async with bounded_ddl(conn), conn.transaction():
@@ -245,10 +251,17 @@ class PostgresOperationalStore(OperationalStore):
             async with bounded_ddl(conn):
                 await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN role SET NOT NULL")
 
+        # Settled requires the admitted set to match exactly: the historical
+        # five-member constraint ('trial', 'free', 'pro', 'internal', 'admin')
+        # contains all four current roles, and a membership test would skip
+        # the trial->free row migration below while trial rows still exist.
         role_def = await constraint_definition(conn, "users", "users_role_check")
-        role_settled = role_def is not None and all(
-            member in role_def for member in ("'free'", "'pro'", "'internal'", "'admin'")
-        )
+        role_settled = constraint_admitted_values(role_def) == {
+            "free",
+            "pro",
+            "internal",
+            "admin",
+        }
         try:
             if not role_settled:
                 async with bounded_ddl(conn), conn.transaction():

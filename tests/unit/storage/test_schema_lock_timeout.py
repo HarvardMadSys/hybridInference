@@ -243,3 +243,31 @@ async def test_apply_column_migrations_translates_lock_timeout():
         )
 
     assert conn.statements[-1] == "SET lock_timeout = DEFAULT"
+
+
+def test_constraint_admitted_values_extracts_the_member_set():
+    from serving.storage.log_schema import constraint_admitted_values
+
+    assert constraint_admitted_values(None) is None
+    # pg_get_constraintdef renders IN as = ANY (ARRAY[...]) with ::text casts.
+    assert constraint_admitted_values(
+        "CHECK ((role = ANY (ARRAY['free'::text, 'pro'::text, 'internal'::text, 'admin'::text])))"
+    ) == {"free", "pro", "internal", "admin"}
+
+
+def test_wider_legacy_role_constraint_must_not_look_settled():
+    """The five-member 2026-era users_role_check admits every current role
+    plus 'trial'. A membership gate judged it settled and skipped both the
+    rebuild and the trial->free row migration it carries; the exact-set
+    comparison the builders use must classify it as needing the rebuild."""
+    from serving.storage.log_schema import constraint_admitted_values
+
+    legacy = (
+        "CHECK ((role = ANY (ARRAY['trial'::text, 'free'::text, 'pro'::text, "
+        "'internal'::text, 'admin'::text])))"
+    )
+    current = {"free", "pro", "internal", "admin"}
+
+    admitted = constraint_admitted_values(legacy)
+    assert admitted is not None and admitted > current, "legacy set is a strict superset"
+    assert admitted != current, "so an exact-set gate rebuilds it"

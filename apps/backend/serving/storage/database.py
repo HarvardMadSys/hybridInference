@@ -18,6 +18,7 @@ from serving.storage.log_schema import (
     apply_column_migrations,
     bounded_ddl,
     column_metadata,
+    constraint_admitted_values,
     constraint_definition,
     drop_columns_if_present,
     ensure_api_logs_schema,
@@ -261,13 +262,16 @@ class DatabaseLogger:
             # Rebuild inside a transaction so a failed ADD does not leave the table
             # without its previous integrity constraint. Gated on the current
             # constraint definition: the rebuild takes ACCESS EXCLUSIVE, so the
-            # settled path reads the catalog and walks away.
+            # settled path reads the catalog and walks away. Settled means the
+            # admitted set matches exactly — see constraint_admitted_values.
             status_def = await constraint_definition(conn, "users", "users_status_check")
-            status_settled = (
-                status_def is not None
-                and "pending_approval" in status_def
-                and "rejected" in status_def
-            )
+            status_settled = constraint_admitted_values(status_def) == {
+                "active",
+                "suspended",
+                "deleted",
+                "pending_approval",
+                "rejected",
+            }
             try:
                 if not status_settled:
                     async with bounded_ddl(conn), conn.transaction():
@@ -340,12 +344,18 @@ class DatabaseLogger:
             # Migrate legacy roles and rebuild users_role_check to the current
             # allowed set (free, pro, internal, admin). The constraint
             # must be dropped BEFORE the UPDATE — older DBs may have CHECK
-            # constraints that reject 'internal'. Gated on the current
-            # definition; skipped entirely once it admits all four roles.
+            # constraints that reject 'internal'. Settled requires the admitted
+            # set to match exactly: the historical five-member constraint
+            # ('trial', 'free', 'pro', 'internal', 'admin') contains all four
+            # current roles, and a membership test would skip the trial->free
+            # row migration below while trial rows still exist under it.
             role_def = await constraint_definition(conn, "users", "users_role_check")
-            role_settled = role_def is not None and all(
-                member in role_def for member in ("'free'", "'pro'", "'internal'", "'admin'")
-            )
+            role_settled = constraint_admitted_values(role_def) == {
+                "free",
+                "pro",
+                "internal",
+                "admin",
+            }
             try:
                 if not role_settled:
                     async with bounded_ddl(conn), conn.transaction():

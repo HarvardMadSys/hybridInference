@@ -15,6 +15,7 @@ import pytest
 
 from serving.servers.bootstrap import (
     _describe_exc,
+    _initialize_operational_store,
     _schedule_deferred_schema_migration,
 )
 from serving.storage.log_schema import SchemaLockUnavailable
@@ -58,7 +59,7 @@ async def test_deferred_migration_retries_until_the_lock_clears(monkeypatch):
     monkeypatch.setattr("serving.servers.bootstrap._SCHEMA_RETRY_MAX_DELAY", 0)
     db_logger = _Logger(failures=3)
 
-    _schedule_deferred_schema_migration(db_logger)
+    _schedule_deferred_schema_migration(db_logger.ensure_schema, "logging schema")
     for _ in range(50):
         await asyncio.sleep(0)
         if db_logger.attempts >= 4:
@@ -75,7 +76,7 @@ async def test_deferred_migration_gives_up_rather_than_retrying_forever(monkeypa
     monkeypatch.setattr("serving.servers.bootstrap._SCHEMA_RETRY_MAX_ATTEMPTS", 3)
     db_logger = _Logger(failures=99)
 
-    _schedule_deferred_schema_migration(db_logger)
+    _schedule_deferred_schema_migration(db_logger.ensure_schema, "logging schema")
     for _ in range(50):
         await asyncio.sleep(0)
         if db_logger.attempts >= 3:
@@ -98,7 +99,7 @@ async def test_deferred_migration_stops_on_a_non_lock_error(monkeypatch):
             _Broken.attempts += 1
             raise ValueError("column definition is wrong")
 
-    _schedule_deferred_schema_migration(_Broken())
+    _schedule_deferred_schema_migration(_Broken().ensure_schema, "logging schema")
     for _ in range(50):
         await asyncio.sleep(0)
         if _Broken.attempts:
@@ -106,3 +107,88 @@ async def test_deferred_migration_stops_on_a_non_lock_error(monkeypatch):
     await asyncio.sleep(0)
 
     assert _Broken.attempts == 1
+
+
+class _OpStore:
+    """Minimal PostgresOperationalStore stand-in recording initialize calls."""
+
+    def __init__(self, failures: int) -> None:
+        self._remaining = failures
+        self.attempts = 0
+
+    async def initialize(self) -> None:
+        self.attempts += 1
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise SchemaLockUnavailable("still locked")
+
+
+@pytest.mark.asyncio
+async def test_operational_lock_timeout_defers_instead_of_failing_startup(monkeypatch):
+    """The 2026-08-21 outage's P1 remainder: bootstrap guarded only the
+    logging schema, so an operational migration meeting the same pg_dump lock
+    still aborted startup — with a 3s timeout instead of the old 60s, but
+    aborted all the same. The guard must swallow the lock timeout, keep the
+    store, and land the DDL from the background."""
+    monkeypatch.setattr("serving.servers.bootstrap._SCHEMA_RETRY_INITIAL_DELAY", 0)
+    monkeypatch.setattr("serving.servers.bootstrap._SCHEMA_RETRY_MAX_DELAY", 0)
+    store = _OpStore(failures=2)
+
+    await _initialize_operational_store(store)
+
+    assert store.attempts == 1, "startup itself tries exactly once"
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if store.attempts >= 3:
+            break
+
+    assert store.attempts == 3, "expected 2 lock failures then one background success"
+
+
+@pytest.mark.asyncio
+async def test_operational_non_lock_error_still_fails_startup():
+    """Only lock contention defers; a genuinely broken schema must abort."""
+
+    class _Broken:
+        async def initialize(self) -> None:
+            raise ValueError("schema is genuinely wrong")
+
+    with pytest.raises(ValueError):
+        await _initialize_operational_store(_Broken())
+
+
+def test_lifespan_routes_operational_init_through_the_guard():
+    """No bare ``pg_operational.initialize()`` outside the guard.
+
+    Pins the wiring, not just the helper: the original P1 was precisely a
+    correct mechanism (the logging-schema deferral) that one call site never
+    adopted.
+    """
+    import ast
+    import inspect
+
+    from serving.servers import bootstrap
+
+    tree = ast.parse(inspect.getsource(bootstrap))
+    guard_spans = [
+        (node.lineno, node.end_lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_initialize_operational_store"
+    ]
+    assert guard_spans, "_initialize_operational_store must exist"
+
+    offenders = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "initialize"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "pg_operational"
+        and not any(lo <= node.lineno <= (hi or lo) for lo, hi in guard_spans)
+    ]
+    assert offenders == [], (
+        f"pg_operational.initialize() called outside the SchemaLockUnavailable "
+        f"guard at line(s) {offenders}; call _initialize_operational_store "
+        "instead so a lock-blocked migration defers rather than failing startup"
+    )

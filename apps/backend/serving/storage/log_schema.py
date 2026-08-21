@@ -35,6 +35,7 @@ the usual lock holder is the nightly ``pg_dump``, which runs for hours.
 
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -182,6 +183,23 @@ async def constraint_definition(conn: asyncpg.Connection, table: str, name: str)
         table,
         name,
     )
+
+
+def constraint_admitted_values(definition: str | None) -> set[str] | None:
+    """The quoted string literals a constraint definition admits, or None.
+
+    ``pg_get_constraintdef`` renders a CHECK's members as quoted literals
+    (``role = ANY (ARRAY['free'::text, ...])``), so the set of quoted strings
+    is the constraint's admitted vocabulary. A gate that skips a rebuild must
+    compare this set **exactly**, never by membership: an older, wider
+    constraint can admit every current member plus a legacy one —
+    ``users_role_check`` once shipped as ``('trial', 'free', 'pro',
+    'internal', 'admin')`` — and a subset test judges it settled, silently
+    skipping both the rebuild and the row migration the rebuild carries.
+    """
+    if definition is None:
+        return None
+    return set(re.findall(r"'([^']*)'", definition))
 
 
 async def column_metadata(
