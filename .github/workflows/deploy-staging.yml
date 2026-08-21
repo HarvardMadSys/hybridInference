@@ -1,10 +1,16 @@
 name: Deploy Staging
 
+# DISPATCH-ONLY since the W6 cutover (2026-08-21): staging is deployed by the
+# freeInference repository from its upstream.lock — automatically, on every
+# lock change. This classic chain no longer fires per dev push (two automatic
+# deployers of the same compose stack cannot be serialized across
+# repositories), but it stays fully operational as the manual escape hatch:
+# it rebuilds from source with no registry or lock dependency, which the
+# 08-21 drill exercised end to end (release 20260821 redeploy). Keep it
+# working; just never re-arm the push-follow trigger without retiring the
+# lock chain first.
+
 on:
-  workflow_run:
-    workflows: ["CI"]
-    branches: [dev]
-    types: [completed]
   workflow_dispatch:
 
 concurrency:
@@ -17,10 +23,6 @@ permissions:
 jobs:
   deploy:
     name: Deploy Docker Compose stack
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.conclusion == 'success') }}
     runs-on: [self-hosted, Linux, deploy-staging]
     environment: staging
     timeout-minutes: 30
@@ -94,9 +96,8 @@ jobs:
 
       - name: Deploy on staging host
         env:
-          # workflow_run deploys the CI-validated commit; manual dispatch uses
-          # the workflow file revision selected in the GitHub UI.
-          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # Dispatch-only: the ref selected in the GitHub UI is what deploys.
+          DEPLOY_SHA: ${{ github.sha }}
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           STAGING_PORT: ${{ secrets.STAGING_PORT || '22' }}
           STAGING_USER: ${{ secrets.STAGING_USER }}
