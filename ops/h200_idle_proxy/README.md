@@ -216,7 +216,7 @@ See [`models.json`](models.json):
 | HiCache | **off** — no `hicache_*` key at all; it hangs the scheduler under DSpark (see below) |
 | `moe_runner_backend` | `marlin` — **required** for FP4 experts on H200 (SM90) |
 | `mtp` / `speculative_algorithm` | `true` / `DSPARK` |
-| `sglang_image` | `lmsysorg/sglang@sha256:51e576…` — immutable manifest for `nightly-dev-20260818-c0b6474b`, which contains the DeepSeek-V4 streaming-parser fix (see below) |
+| `sglang_image` | `lmsysorg/sglang:nightly-dev-20260818-c0b6474b@sha256:51e576…` — readable tag plus immutable manifest digest; contains the DeepSeek-V4 streaming-parser fix (see below) |
 | `cache_dir` | node-local DeepGEMM/JIT cache (**not** on shared `/netscratch`) |
 | `skip_server_warmup` | `true` — the proxy's health check already gates readiness |
 
@@ -235,17 +235,75 @@ Merging a change to this file **does not deploy it**. The H200 services read the
 checkout on their own nodes, and there is no GitHub workflow that updates or
 restarts them. An operator with H200 access must sync the merged checkout and
 restart one replica at a time. Every replica is tunnelled to both staging and
-production, so even the first replacement is a production canary:
+production, so even the first replacement is a production canary.
 
-1. Record the current checkout and image, then sync the merged change on the
-   node that owns the chosen replica.
-2. Restart only that replica's `h200_idle_proxy` unit and wait for `/v1/models`
-   plus a one-token generation probe to pass.
-3. Run the streaming/non-streaming tool-call A/B from #1293 through that
-   replica, then watch gateway errors, TTFT, decode latency and parser output.
-4. Continue one replica at a time only after the canary is clean. If it fails,
-   restore the prior checkout/image and restart that same unit before touching
-   another replica.
+Canary **h200b first**: it has one replica. Both h200a units read the same
+checkout, so syncing h200a before the canary passes lets a coincidental restart
+of its other unit consume the new image early. For each replica, use the exact
+unit, direct port and container below:
+
+| Replica | Unit | Direct port | Container |
+|---|---|---:|---|
+| h200b | `h200_idle_proxy` | 8004 | `deepseek-v4-flash-sglang` |
+| h200a A | `h200_idle_proxy` | 8003 | `deepseek-v4-flash-sglang` |
+| h200a B | `h200_idle_proxy_b` | 8005 | `deepseek-v4-flash-sglang-b` |
+
+Set `UNIT`, `PORT` and `CONTAINER` from that table before running the commands
+below. For the recommended first canary on h200b, for example:
+
+```bash
+UNIT=h200_idle_proxy
+PORT=8004
+CONTAINER=deepseek-v4-flash-sglang
+```
+
+1. Run `systemctl cat "$UNIT"` to find the absolute checkout path embedded in
+   `ExecStart`; sync **that checkout**, not another clone. Before syncing,
+   record its commit and configured image for rollback (the idle container may
+   not exist). After syncing, pre-pull the pinned image before taking the
+   replica down:
+
+   ```bash
+   IMAGE=$(jq -r '."deepseek-v4-flash".sglang_image' ops/h200_idle_proxy/models.json)
+   docker pull "$IMAGE"
+   sudo systemctl restart "$UNIT"
+   ```
+
+2. Trigger readiness through that replica's direct port with a
+   **non-streaming** `/v1/chat/completions` request and a client timeout of at
+   least 20 minutes. It blocks until the new backend is actually ready; a
+   streaming request does not, because the idle proxy answers it immediately
+   with a warmup SSE banner. Then require `/v1/models` to report
+   `"status":"loaded"` and verify the launched container used the pin:
+
+   ```bash
+   : "${LOCAL_API_KEY:?export the key used by this proxy}"
+   curl --fail-with-body --max-time 1200 \
+     -H "Authorization: Bearer $LOCAL_API_KEY" \
+     -H 'Content-Type: application/json' \
+     -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Reply with OK."}],"max_tokens":8,"stream":false}' \
+     "http://127.0.0.1:${PORT}/v1/chat/completions"
+   curl --fail-with-body "http://127.0.0.1:${PORT}/v1/models" \
+     | jq -e 'any(.data[]; .id == "deepseek-v4-flash" and .status == "loaded")'
+   RUNNING_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$CONTAINER")
+   test "$RUNNING_IMAGE" = "$IMAGE"
+   ```
+
+3. Run the streaming/non-streaming tool-call A/B from #1293 against
+   `http://127.0.0.1:${PORT}/v1`, not a gateway URL that can select another
+   replica. Both responses must retain the complete prose immediately before
+   the tool call. At low traffic, also run the existing 1M-token stability probe
+   against the same container and require `cached` to be 0:
+
+   ```bash
+   docker exec -i "$CONTAINER" python3 - 1000000 \
+     < ops/h200_idle_proxy/longctx_probe.py
+   ```
+
+4. Watch gateway errors, TTFT, decode latency and parser output. Continue to
+   h200a A and then h200a B only after h200b is clean, pre-pulling on h200a
+   before either restart. If a canary fails, restore the prior checkout/image
+   and restart that same unit before touching another replica.
 
 Do not close #1293 merely because this config PR merged; close it only after the
 running replicas pass the live A/B.
@@ -432,9 +490,10 @@ collapse at long context. (`bench_serving` simply stops printing "Accept length"
 
 - 4× NVIDIA H200 (or at least GPUs 2 and 3 free)
 - Docker + NVIDIA Container Toolkit
-- `lmsysorg/sglang:v0.5.17` or newer (**DSpark is not in ≤ 0.5.15**;
-  grammar-constrained decoding is not in ≤ 0.5.16 — see
-  [Why grammar decoding needs ≥ v0.5.17](#why-grammar-decoding-needs--v0517))
+- The parser-fixed SGLang image pinned in [`models.json`](models.json). v0.5.17
+  meets the DSpark and grammar feature floors but is **not** safe for streamed
+  DeepSeek-V4 tool calls; see
+  [SGLang parser hotfix and manual rollout](#sglang-parser-hotfix-and-manual-rollout).
 - Weights at `model_dir` (or `hf_repo` download on first request)
 - SSH to staging/prod with `GatewayPorts clientspecified` (or `yes`)
 - `autossh` for durable tunnels (installed by `install.sh`)

@@ -12,7 +12,8 @@ MODELS_JSON = ROOT / "ops" / "h200_idle_proxy" / "models.json"
 # a descendant of SGLang 5899674, which fixes the DeepSeek-V4 streaming parser
 # dropping buffered prose before a DSML tool call (hybridInference #1293).
 PARSER_FIXED_IMAGE = (
-    "lmsysorg/sglang@sha256:51e576f02368480c055c7aadb67590d82b172e2392123ce4cf4cc8251b2d8caf"
+    "lmsysorg/sglang:nightly-dev-20260818-c0b6474b@"
+    "sha256:51e576f02368480c055c7aadb67590d82b172e2392123ce4cf4cc8251b2d8caf"
 )
 
 
