@@ -51,6 +51,8 @@ from .registry import ModelRegistrationInfo, register_from_models_yaml
 from .routewise_rebuild import rebuild_cached_routewise_routers
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from routing.routers import ManagedRouter
 
 logger = get_logger(__name__)
@@ -80,13 +82,19 @@ def _describe_exc(exc: BaseException) -> str:
     return repr(exc)
 
 
-def _schedule_deferred_schema_migration(db_logger: DatabaseLogger) -> None:
+def _schedule_deferred_schema_migration(
+    ensure_schema: Callable[[], Awaitable[None]], subject: str
+) -> None:
     """Finish a lock-blocked schema migration in the background.
 
     Startup must not block on it. The lock holder is typically a long-running
     reader rather than anything broken, and waiting is what turns a backup
     window into a failed deploy: the container misses its healthcheck, so
     compose never starts the services gated on it.
+
+    ``ensure_schema`` must be idempotent (both schema passes are catalog-gated,
+    so a retry re-issues only what is still missing); ``subject`` names the
+    schema in log lines so concurrent deferrals stay distinguishable.
     """
 
     async def _retry() -> None:
@@ -94,28 +102,53 @@ def _schedule_deferred_schema_migration(db_logger: DatabaseLogger) -> None:
         for attempt in range(1, _SCHEMA_RETRY_MAX_ATTEMPTS + 1):
             await asyncio.sleep(delay)
             try:
-                await db_logger.ensure_schema()
+                await ensure_schema()
             except SchemaLockUnavailable:
                 delay = min(delay * 2, _SCHEMA_RETRY_MAX_DELAY)
                 logger.info(
-                    f"Deferred schema migration still lock-blocked "
+                    f"Deferred {subject} migration still lock-blocked "
                     f"(attempt {attempt}/{_SCHEMA_RETRY_MAX_ATTEMPTS}); "
                     f"retrying in {delay}s"
                 )
             except Exception as exc:
-                logger.error(f"Deferred schema migration failed: {_describe_exc(exc)}")
+                logger.error(f"Deferred {subject} migration failed: {_describe_exc(exc)}")
                 return
             else:
-                logger.info(f"Deferred schema migration completed after {attempt} attempt(s)")
+                logger.info(f"Deferred {subject} migration completed after {attempt} attempt(s)")
                 return
         logger.error(
-            f"Deferred schema migration gave up after {_SCHEMA_RETRY_MAX_ATTEMPTS} attempts; "
-            "api_logs is still missing schema changes and inserts may fail"
+            f"Deferred {subject} migration gave up after {_SCHEMA_RETRY_MAX_ATTEMPTS} attempts; "
+            f"the {subject} is still missing changes and writes depending on them may fail"
         )
 
     task = asyncio.create_task(_retry())
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
+async def _initialize_operational_store(pg_operational: PostgresOperationalStore) -> None:
+    """Run the operational store's DDL, deferring a lock-blocked migration.
+
+    Same doctrine as the logging schema pass in ``lifespan``: on any deployment
+    where a lock conflict is possible at all, the operational tables already
+    exist (the conflicting holder — the nightly ``pg_dump`` — is a reader of
+    those tables), so only a pending migration can be blocked. The store keeps
+    serving on the existing schema while the DDL lands in the background;
+    ``initialize`` is catalog-gated and idempotent, so the retry re-issues only
+    what is still missing.
+
+    Anything other than a lock timeout still propagates — startup must not
+    mask a genuinely broken schema.
+    """
+    try:
+        await pg_operational.initialize()
+    except SchemaLockUnavailable as lock_exc:
+        logger.warning(
+            f"Operational schema migration deferred: {_describe_exc(lock_exc)}. "
+            "Operational store stays enabled on the existing schema; retrying "
+            "the migration in the background."
+        )
+        _schedule_deferred_schema_migration(pg_operational.initialize, "operational schema")
 
 
 class _RouteWiseRouterTypeError(TypeError):
@@ -630,7 +663,7 @@ async def initialize() -> AppServices:
                         "Database logging stays enabled; retrying the migration "
                         "in the background."
                     )
-                    _schedule_deferred_schema_migration(db_logger)
+                    _schedule_deferred_schema_migration(db_logger.ensure_schema, "logging schema")
                 # Start broadcast email scheduler. Tear it down if rehydration
                 # fails to avoid a half-initialized scheduler running in background.
                 if db_logger.pool:
@@ -820,7 +853,7 @@ async def initialize() -> AppServices:
 
     if db_logger and db_logger.pool:
         pg_operational = PostgresOperationalStore(db_logger.pool)
-        await pg_operational.initialize()
+        await _initialize_operational_store(pg_operational)
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
         log_store = PostgresLogStore(
             db_logger.pool,
