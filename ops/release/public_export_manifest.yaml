@@ -61,10 +61,6 @@ exclude:
   # in the result while passing here.
   - path: tests/unit/deploy/test_oncall_container.py
     reason: Asserts the on-call image build, which lives in services/.
-  - path: tests/unit/deploy/test_status_monitor_control_plane_workflow.py
-    reason: Asserts the status-monitor deploy workflow and its wrangler pin.
-  - path: tests/unit/deploy/test_slack_readback_gate_workflow.py
-    reason: Asserts a workflow in .github/workflows/, which the export replaces.
   - path: tests/unit/config/test_distribution_manifests_discovery.py
     reason: >-
       Asserts that this deployment's manifest resolves its config inside the
