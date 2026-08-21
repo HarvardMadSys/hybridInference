@@ -216,9 +216,39 @@ See [`models.json`](models.json):
 | HiCache | **off** — no `hicache_*` key at all; it hangs the scheduler under DSpark (see below) |
 | `moe_runner_backend` | `marlin` — **required** for FP4 experts on H200 (SM90) |
 | `mtp` / `speculative_algorithm` | `true` / `DSPARK` |
-| `sglang_image` | `lmsysorg/sglang:v0.5.17` — DSpark needs ≥ 0.5.16, grammar needs ≥ 0.5.17 (see below) |
+| `sglang_image` | `lmsysorg/sglang@sha256:51e576…` — immutable manifest for `nightly-dev-20260818-c0b6474b`, which contains the DeepSeek-V4 streaming-parser fix (see below) |
 | `cache_dir` | node-local DeepGEMM/JIT cache (**not** on shared `/netscratch`) |
 | `skip_server_warmup` | `true` — the proxy's health check already gates readiness |
+
+### SGLang parser hotfix and manual rollout
+
+SGLang v0.5.17 drops buffered prose immediately before a DeepSeek-V4 DSML
+tool call when the response is streamed. This is the user-visible truncation in
+[#1293](https://github.com/HarvardMadSys/hybridInference/issues/1293). Upstream
+fixed it in
+[`5899674`](https://github.com/sgl-project/sglang/commit/5899674504af7a12109332a0d14a96f1c5d5bb9d),
+after v0.5.17 was released. Until that fix reaches a tagged release, this profile
+pins the immutable multi-architecture manifest behind
+`nightly-dev-20260818-c0b6474b`; commit `c0b6474b` descends from the fix.
+
+Merging a change to this file **does not deploy it**. The H200 services read the
+checkout on their own nodes, and there is no GitHub workflow that updates or
+restarts them. An operator with H200 access must sync the merged checkout and
+restart one replica at a time. Every replica is tunnelled to both staging and
+production, so even the first replacement is a production canary:
+
+1. Record the current checkout and image, then sync the merged change on the
+   node that owns the chosen replica.
+2. Restart only that replica's `h200_idle_proxy` unit and wait for `/v1/models`
+   plus a one-token generation probe to pass.
+3. Run the streaming/non-streaming tool-call A/B from #1293 through that
+   replica, then watch gateway errors, TTFT, decode latency and parser output.
+4. Continue one replica at a time only after the canary is clean. If it fails,
+   restore the prior checkout/image and restart that same unit before touching
+   another replica.
+
+Do not close #1293 merely because this config PR merged; close it only after the
+running replicas pass the live A/B.
 
 > **Why the official checkpoint and not an NVFP4 conversion?** `marlin` dequantizes
 > both MXFP4 and NVFP4 to BF16, so there is no throughput gain from converting — and
