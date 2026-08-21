@@ -560,11 +560,6 @@ models:
     max_output_length: 131072
     supports_tools: true
     supports_structured_output: true
-    # k3 always reasons and takes a depth, unlike the k2.x models above
-    # which only have the on/off `thinking` switch:
-    # https://platform.kimi.ai/docs/api/chat. Upstream's own default is `max`.
-    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking, reasoning_effort]
-    reasoning_efforts: [low, high, max]
     pricing:
       prompt: "2.8"
       completion: "8.0"
