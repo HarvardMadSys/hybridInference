@@ -213,7 +213,7 @@ See [`models.json`](models.json):
 | `hf_repo` | `deepseek-ai/DeepSeek-V4-Flash-0731` |
 | `max_model_len` | `1048576` (1M — the model's YARN architectural max, not VRAM-bound) |
 | `mem_fraction` | `0.80` — **not** 0.90; DSpark + a 1M prefill need the headroom (see below) |
-| HiCache | **off** — no `hicache_*` key at all; it hangs the scheduler under DSpark (see below) |
+| HiCache | **on** — `hicache_ratio: 5`, `write_through_selective`; the pinned nightly attaches the DSpark draft pool (see below) |
 | `moe_runner_backend` | `marlin` — **required** for FP4 experts on H200 (SM90) |
 | `mtp` / `speculative_algorithm` | `true` / `DSPARK` |
 | `sglang_image` | `lmsysorg/sglang:nightly-dev-20260818-c0b6474b@sha256:51e576…` — readable tag plus immutable manifest digest; contains the DeepSeek-V4 streaming-parser fix (see below) |
@@ -287,6 +287,10 @@ CONTAINER=deepseek-v4-flash-sglang
      | jq -e 'any(.data[]; .id == "deepseek-v4-flash" and .status == "loaded")'
    RUNNING_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$CONTAINER")
    test "$RUNNING_IMAGE" = "$IMAGE"
+   docker inspect --format '{{json .Config.Cmd}}' "$CONTAINER" \
+     | jq -e 'index("--enable-hierarchical-cache") and index("--hicache-ratio")'
+   docker logs "$CONTAINER" 2>&1 \
+     | grep -E 'hicache_attached=True' | grep -v 'not supported for HiCache'
    ```
 
 3. Run the streaming/non-streaming tool-call A/B from #1293 against
@@ -300,10 +304,13 @@ CONTAINER=deepseek-v4-flash-sglang
      < ops/h200_idle_proxy/longctx_probe.py
    ```
 
-4. Watch gateway errors, TTFT, decode latency and parser output. Continue to
-   h200a A and then h200a B only after h200b is clean, pre-pulling on h200a
-   before either restart. If a canary fails, restore the prior checkout/image
-   and restart that same unit before touching another replica.
+4. Watch gateway errors, TTFT, decode latency, parser output, and the
+   scheduler watchdog (`Scheduler watchdog timeout`). The v0.5.17 HiCache
+   deadlock took ~20 minutes of ordinary traffic to surface; do not promote
+   h200a on a short smoke. Continue to h200a A and then h200a B only after
+   h200b is clean, pre-pulling on h200a before either restart. If a canary
+   fails, restore the prior checkout/image and restart that same unit before
+   touching another replica.
 
 Do not close #1293 merely because this config PR merged; close it only after the
 running replicas pass the live A/B.
@@ -340,49 +347,48 @@ running replicas pass the live A/B.
 > Raise it again only alongside a smaller CUDA-graph batch ladder, and re-test 1M before
 > trusting it — sustained-load stability does **not** imply long-context safety.
 
-> **Why HiCache is off.** It deadlocks the scheduler when DSpark is on. sglang builds
-> the tree cache hierarchically and then declines to manage the draft pool:
+> **Why HiCache is on.** It is an L2 prefix cache in host DRAM: prefixes evicted
+> from HBM are restored over PCIe instead of recomputed. It does **not** enlarge
+> the running-request KV budget or the usable context, and it does not change
+> decode ITL when the working set fits in HBM. It pays off when unique prefixes
+> overflow the ~2.94M-token device pool.
+>
+> sglang **v0.5.17** could not do this under DSpark. It built the tree cache
+> hierarchically and then declined to manage the draft pool:
 >
 > ```
 > Tree cache initialized: impl=UnifiedRadixCache hybrid_swa=True hierarchical=True
 > Draft pool type DeepSeekV4TokenToKVPool not supported for HiCache, skipping.
 > ```
 >
-> So the target KV pool is written back to host DRAM while the speculative draft pool
-> is not tracked at all. Under ordinary traffic — single-digit concurrency, KV pool
-> 4% full — both TP ranks stop making progress mid-decode, and 300 s later the
-> scheduler watchdog SIGQUITs the server:
+> The target KV pool was written back to host DRAM while the speculative draft
+> pool was not tracked at all. Under ordinary traffic — single-digit concurrency,
+> KV pool 4% full — both TP ranks stopped making progress mid-decode, and 300 s
+> later the scheduler watchdog SIGQUIT'd the server. On 2026-08-06 that took
+> down **both** h200a replicas, twice each, roughly 20 minutes into serving.
+>
+> The pinned nightly (`c0b6474b`) attaches the draft pool. On h200b, 2026-08-22:
 >
 > ```
-> [TP0] Scheduler watchdog timeout (self.watchdog_timeout=300, self.soft=False)
-> [TP1] Scheduler watchdog timeout (self.watchdog_timeout=300, self.soft=False)
+> Tree cache initialized: impl=UnifiedRadixCache hybrid_swa=True hicache_attached=True
 > ```
 >
-> On 2026-08-06 this took down **both** h200a replicas, twice each, roughly 20 minutes
-> into serving. There is no OOM, no Xid and no CUDA error — the ranks simply stop, so
-> it reads as a hang rather than a crash, and py-spy cannot dump the stack
-> (`Failed to copy Py_Version symbol`). h200b ran the same model, image, TP size and
-> `mem_fraction` for 3+ hours without a watchdog; the only difference was that the
-> `dev` → `main` promotion had been held, so HiCache had not reached it. Removing the
-> keys and cold-starting both replicas ended it.
+> Same flags, same DSpark, no skip, no watchdog in the measurement window.
+> Overflowed shared-prefix replay (48 × 80k prefixes, ~3.8M tokens) went
+> **61 s → 4.6 s median TTFT** (13×); single-stream decode ITL stayed 1.85 ms.
+> Do **not** put these keys on v0.5.17 — that is the deadlock image.
 >
-> Turning it back on needs an sglang release whose HiCache path supports
-> `DeepSeekV4TokenToKVPool` for the draft pool, or DSpark switched off — which costs
-> far more than HiCache returns (DSpark is worth 3.2x at c=1 and ~1.3x at saturation;
-> HiCache only improves TTFT on a prefix-cache hit and does not enlarge the KV budget
-> or the usable context).
->
-> Two traps for whoever re-enables it. **Any** `hicache_*` key turns the feature on —
-> `_hicache_args` emits `--enable-hierarchical-cache` as soon as one is present — so a
-> leftover `hicache_write_policy` is enough. And sglang **rejects `--hicache-size` for
-> this architecture** (`ValueError: DeepSeek V4 HiCache currently does not support
-> --hicache-size; use --hicache-ratio instead`, SIGQUIT at scheduler init), so sizing
-> must go through `hicache_ratio`. The pool is **per scheduler process**, not per box:
-> a ratio multiplies the ~34 GB device KV pool, and this box runs four ranks, so
-> ratio 5 is ~700 GB of 1507 GB. Each rank guards its own allocation against
+> Sizing still has to go through `hicache_ratio`, not `hicache_size`:
+> `ValueError: DeepSeek V4 HiCache currently does not support --hicache-size;
+> use --hicache-ratio instead` SIGQUITs at scheduler init. The pool is **per
+> scheduler process**, not per box: a ratio multiplies the ~34 GB device KV
+> pool, and a 4×H200 box runs four ranks, so ratio 5 is ~700 GB of 1507 GB.
+> Each rank guards its own allocation against
 > `psutil.virtual_memory().available - 10 GB`, which makes over-sizing fail
 > asymmetrically — rank 0 pins its share, rank 1 raises `Not enough host memory
 > available`, or the two race past the check and the OOM-killer takes the node.
+> `write_through_selective` is the policy that was on the box before #1219
+> turned HiCache off.
 
 > **Why `DSPARK` and not `EAGLE`?** 0731's speculative module is DSpark, not the
 > preview checkpoint's MTP: 3 blocks (`dspark_target_layer_ids: [40,41,42]`) with
