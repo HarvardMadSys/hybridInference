@@ -213,7 +213,7 @@ See [`models.json`](models.json):
 | `hf_repo` | `deepseek-ai/DeepSeek-V4-Flash-0731` |
 | `max_model_len` | `1048576` (1M — the model's YARN architectural max, not VRAM-bound) |
 | `mem_fraction` | `0.80` — **not** 0.90; DSpark + a 1M prefill need the headroom (see below) |
-| HiCache | **on** — `hicache_ratio: 5`, `write_through_selective`; the pinned nightly attaches the DSpark draft pool (see below) |
+| HiCache | **on** — `hicache_ratio: 10`, `write_through_selective`; the pinned nightly attaches the DSpark draft pool (see below) |
 | `moe_runner_backend` | `marlin` — **required** for FP4 experts on H200 (SM90) |
 | `mtp` / `speculative_algorithm` | `true` / `DSPARK` |
 | `sglang_image` | `lmsysorg/sglang:nightly-dev-20260818-c0b6474b@sha256:51e576…` — readable tag plus immutable manifest digest; contains the DeepSeek-V4 streaming-parser fix (see below) |
@@ -381,9 +381,10 @@ running replicas pass the live A/B.
 > Sizing still has to go through `hicache_ratio`, not `hicache_size`:
 > `ValueError: DeepSeek V4 HiCache currently does not support --hicache-size;
 > use --hicache-ratio instead` SIGQUITs at scheduler init. The pool is **per
-> scheduler process**, not per box: a ratio multiplies the ~34 GB device KV
-> pool, and a 4×H200 box runs four ranks, so ratio 5 is ~700 GB of 1507 GB.
-> Each rank guards its own allocation against
+> scheduler process**, not per box. Measured on h200b at ratio 5 the nightly
+> pinned ~118 GB/rank of host DRAM (not 5 × 34 GB); ratio 10 is therefore
+> ~236 GB/rank, ~472 GB on this one-replica box and ~944 GB on a 4-rank
+> h200a. Each rank guards its own allocation against
 > `psutil.virtual_memory().available - 10 GB`, which makes over-sizing fail
 > asymmetrically — rank 0 pins its share, rank 1 raises `Not enough host memory
 > available`, or the two race past the check and the OOM-killer takes the node.
