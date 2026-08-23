@@ -11,9 +11,10 @@ name: RAG Index
 #
 # This workflow closes both gaps: when the corpus (or the chunking/ingest
 # code) changes on dev, it re-embeds via the production gateway (bge-m3),
-# commits the refreshed index back to dev, and dispatches the staging deploy
-# so the running assistant picks it up. Production receives it through the
-# normal sync-main flow.
+# commits the refreshed index back to dev. Staging then receives it through
+# the distribution repository's lock chain — the single automatic deployer
+# since the W6 cutover (#1297) — and production through the normal sync-main
+# flow. This workflow no longer dispatches any deploy itself.
 #
 # Loop safety: the auto-commit only touches content/rag/docs_index.json, which is
 # not in this workflow's trigger paths — that path exclusion is the loop guard.
@@ -23,7 +24,6 @@ name: RAG Index
 # commit stalled the entire bump loop until the next human push (observed
 # live 2026-08-23 on e838b631). App pushes trigger CI; the candidate bakes;
 # the bump flows.
-# workflows anyway.
 
 on:
   push:
@@ -37,7 +37,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: rag-index
@@ -150,8 +149,3 @@ jobs:
           git push origin HEAD:dev
           echo "pushed=true" >> "${GITHUB_OUTPUT}"
 
-      - name: Deploy staging with the fresh index
-        if: steps.commit.outputs.pushed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run deploy-staging.yml --ref dev
