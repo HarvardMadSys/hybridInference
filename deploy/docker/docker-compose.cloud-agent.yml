@@ -28,6 +28,18 @@ services:
       - hybridinference
       - cloud-agent
 
+  # The on-call relay dispatches headless analysis jobs to this same stack's
+  # control plane (#1254 cloud-agent backend): `http://control-plane:8000` is
+  # Docker DNS, resolvable only on the agent network. Without this the relay's
+  # dispatch dies on getaddrinfo — exactly the console's failure mode above,
+  # rediscovered live during the 2026-08-22 backend cutover (no host-gateway
+  # route exists either: the control plane publishes on 127.0.0.1 only).
+  # Same re-list rule.
+  codex-oncall:
+    networks:
+      - hybridinference
+      - cloud-agent
+
 networks:
   cloud-agent:
     external: true
