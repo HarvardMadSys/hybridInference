@@ -219,6 +219,7 @@ See [`models.json`](models.json):
 | `sglang_image` | `lmsysorg/sglang:nightly-dev-20260818-c0b6474b@sha256:51e576…` — readable tag plus immutable manifest digest; contains the DeepSeek-V4 streaming-parser fix (see below) |
 | `cache_dir` | node-local DeepGEMM/JIT cache (**not** on shared `/netscratch`) |
 | `skip_server_warmup` | `true` — the proxy's health check already gates readiness |
+| `enable_metrics` | `true` — Prometheus `/metrics` on the node-local backend port (`:18003` / replica B `:18004`). Those ports are not tunnelled |
 
 ### SGLang parser hotfix and manual rollout
 
@@ -288,9 +289,13 @@ CONTAINER=deepseek-v4-flash-sglang
    RUNNING_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$CONTAINER")
    test "$RUNNING_IMAGE" = "$IMAGE"
    docker inspect --format '{{json .Config.Cmd}}' "$CONTAINER" \
-     | jq -e 'index("--enable-hierarchical-cache") and index("--hicache-ratio")'
+     | jq -e 'index("--enable-hierarchical-cache") and index("--hicache-ratio") and index("--enable-metrics")'
    docker logs "$CONTAINER" 2>&1 \
      | grep -E 'hicache_attached=True' | grep -v 'not supported for HiCache'
+   # /metrics is on the node-local backend port, not the tunnelled proxy.
+   BACKEND_PORT=$(docker inspect --format '{{(index (index .NetworkSettings.Ports "8001/tcp") 0).HostPort}}' "$CONTAINER")
+   curl --fail-with-body --max-time 5 "http://127.0.0.1:${BACKEND_PORT}/metrics" \
+     | grep -E '^sglang_'
    ```
 
 3. Run the streaming/non-streaming tool-call A/B from #1293 against

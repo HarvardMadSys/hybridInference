@@ -16,6 +16,7 @@
         "hicache_write_policy": "write_through_selective",
         "moe_runner_backend": "marlin",
         "skip_server_warmup": true,
+        "enable_metrics": true,
         "mtp": true,
         "speculative_algorithm": "DSPARK",
         "tool_call_parser": "deepseekv4",

@@ -225,6 +225,7 @@ Models are defined in `local_deployment_proxy/models.json`:
 | `speculative_num_draft_tokens` | optional `--speculative-num-draft-tokens` (default `2`) |
 | `mamba` | `true` → hybrid Mamba/linear-attention model (Qwen3.5/3.6 MoE); with `mtp` adds `--mamba-scheduler-strategy extra_buffer` and exports `SGLANG_ENABLE_SPEC_V2=1` so spec decoding works with radix cache |
 | `mamba_scheduler_strategy` | optional override for `--mamba-scheduler-strategy` (default `extra_buffer`) |
+| `enable_metrics` | `true` → `--enable-metrics` (sglang). Prometheus `/metrics` on the host `backend_port` (container 8001). Off unless set. Scrape that node-local port directly — the proxy does not special-case `GET /metrics` |
 
 **vLLM-only fields** (`engine: vllm`). `served_name`, `model_dir`, `max_model_len`, and `mem_fraction` map to the vLLM equivalents (`--served-model-name`, `--model`, `--max-model-len`, `--gpu-memory-utilization`); the sglang-only knobs above (`mtp`, `mamba`, `attention_backend`, …) are ignored.
 

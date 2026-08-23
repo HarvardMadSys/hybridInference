@@ -4473,6 +4473,21 @@ def test_sglang_skip_server_warmup_opt_in(monkeypatch: Any, tmp_path: Path) -> N
     )._sglang_run_cmd("2,3")
 
 
+def test_sglang_enable_metrics_opt_in(monkeypatch: Any, tmp_path: Path) -> None:
+    # Prometheus /metrics is off unless the profile asks for it; the H200
+    # DeepSeek deployment does. Absent the key, the launch must not grow the
+    # flag — other profiles should stay quiet.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    base = _dspark_base()
+
+    assert "--enable-metrics" not in proxy.BackendManager(MODEL_NAME, dict(base))._sglang_run_cmd(
+        "2,3"
+    )
+    assert "--enable-metrics" in proxy.BackendManager(
+        MODEL_NAME, {**base, "enable_metrics": True}
+    )._sglang_run_cmd("2,3")
+
+
 def test_sglang_mamba_mtp_uses_extra_buffer_and_spec_v2(monkeypatch: Any, tmp_path: Path) -> None:
     # Hybrid Mamba MoE models (Qwen3.5/3.6) must keep the radix (prefix) cache while
     # running MTP spec decoding. sglang disables the radix cache for these unless the

@@ -134,6 +134,13 @@ Set ``"skip_server_warmup": true`` to pass ``--skip-server-warmup``, and
 ``/root/.cache``; both cut startup time on large MoE models. Keep ``cache_dir``
 node-local rather than on shared storage.
 
+Set ``"enable_metrics": true`` to pass ``--enable-metrics``, which serves
+Prometheus metrics at the backend's ``/metrics`` (the host mapping of
+container port 8001, i.e. ``backend_port``). Off unless configured. Scrape
+the node-local backend port directly: this proxy does not special-case
+``GET /metrics`` (a body-less GET has no ``model`` field to route on), and
+the H200 backend ports are not tunnelled.
+
 Set ``"hicache_size"`` (GB) to give a generative model an L2 prefix-cache tier
 in host DRAM (sglang HiCache), so prefixes evicted from HBM are restored over
 PCIe instead of recomputed. The size is allocated **per scheduler process** --
@@ -1761,6 +1768,12 @@ class BackendManager:
         # readiness, so skipping it keeps slow models inside HEALTH_TIMEOUT.
         if self.config.get("skip_server_warmup"):
             cmd += ["--skip-server-warmup"]
+        # Prometheus /metrics on the engine port. Off unless configured -- the
+        # default launch stays quiet, and the idle proxy does not special-case
+        # GET /metrics, so scrape the host backend_port (not the tunnelled
+        # listener). Emitted for either kind of backend.
+        if self.config.get("enable_metrics"):
+            cmd += ["--enable-metrics"]
         # Which prefill gets to make a decode wait. Emitted for either kind of
         # backend: inert on an encode-only one rather than wrong, so the launch
         # says what was configured.
