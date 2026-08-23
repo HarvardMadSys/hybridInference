@@ -531,3 +531,264 @@ async def test_list_request_type_unknown_value_applies_no_filter(admin_client_ca
     for query in (count_query, select_query):
         assert _EMBEDDING_PREDICATE not in query
         assert _CHAT_PREDICATE not in query
+
+
+# ---------------------------------------------------------------------------
+# /admin/recent-requests/performance — per-(model, endpoint) summary
+# ---------------------------------------------------------------------------
+
+
+# Percentile arrays come back from ``percentile_cont(ARRAY[0.1, 0.5, 0.9])``, or
+# as NULL when the FILTER excluded every row in the group.
+_TTFT_PERCENTILES: tuple[float, ...] = (210.0, 425.0, 1250.0)
+_THROUGHPUT_PERCENTILES: tuple[float, ...] = (18.25, 40.1, 63.75)
+
+
+def _perf_group_row(
+    *,
+    served_model: str = "glm-4.6",
+    served_endpoint: str = "glm-4.6:local-12003",
+    request_count: int = 10,
+    tt_count: int = 10,
+    tt_mean: float | None = 480.4444,
+    tt_percentiles: tuple[float, ...] | None = _TTFT_PERCENTILES,
+    tp_count: int = 8,
+    tp_mean: float | None = 42.375,
+    tp_percentiles: tuple[float, ...] | None = _THROUGHPUT_PERCENTILES,
+) -> dict[str, Any]:
+    return {
+        "served_model": served_model,
+        "served_endpoint": served_endpoint,
+        "request_count": request_count,
+        "tt_count": tt_count,
+        "tt_mean": tt_mean,
+        "tt_percentiles": tt_percentiles,
+        "tp_count": tp_count,
+        "tp_mean": tp_mean,
+        "tp_percentiles": tp_percentiles,
+    }
+
+
+@pytest.mark.asyncio
+async def test_perf_summary_scopes_to_successful_streaming_rows(admin_client_capture):
+    """The summary aggregates only successful, streamed requests, over 7d by default."""
+    client, calls, _logger = admin_client_capture
+    resp = await client.get("/admin/recent-requests/performance")
+    assert resp.status_code == 200, resp.text
+
+    assert calls["fetch"], "expected the aggregate query to run"
+    query, args = calls["fetch"][0]
+    assert "l.timestamp >= NOW() - make_interval(days => $1::int)" in query
+    assert "l.status_code BETWEEN 200 AND 399" in query
+    assert "l.stream = TRUE" in query
+    # days=7 default, then the group cap.
+    assert args[0] == 7
+    # No users join when no user filter is active (api_logs is high-volume).
+    assert "LEFT JOIN users u" not in query
+
+
+@pytest.mark.asyncio
+async def test_perf_summary_groups_by_served_route(admin_client_capture):
+    """Grouping keys are the served model/endpoint, falling back to model/provider."""
+    client, calls, _logger = admin_client_capture
+    resp = await client.get("/admin/recent-requests/performance")
+    assert resp.status_code == 200, resp.text
+
+    query, _args = calls["fetch"][0]
+    assert "COALESCE(NULLIF(l.served_model_id, ''), l.model_id) AS served_model" in query
+    assert "COALESCE(NULLIF(l.served_endpoint_id, ''), l.provider) AS served_endpoint" in query
+    assert "GROUP BY served_model, served_endpoint" in query
+    # Busiest route first so the cap drops the quietest pairs, not arbitrary ones.
+    assert "ORDER BY request_count DESC" in query
+
+
+@pytest.mark.asyncio
+async def test_perf_summary_requests_p10_median_p90(admin_client_capture):
+    """Both metrics are summarized with mean + P10/median/P90 percentiles."""
+    client, calls, _logger = admin_client_capture
+    resp = await client.get("/admin/recent-requests/performance")
+    assert resp.status_code == 200, resp.text
+
+    query, _args = calls["fetch"][0]
+    assert query.count("percentile_cont(ARRAY[0.1, 0.5, 0.9]::float8[])") == 2
+    assert "AVG(ttft_ms) AS tt_mean" in query
+    assert "AVG(throughput_tps) AS tp_mean" in query
+    assert "COUNT(ttft_ms) AS tt_count" in query
+    assert "COUNT(throughput_tps) AS tp_count" in query
+
+
+@pytest.mark.asyncio
+async def test_perf_summary_throughput_matches_row_level_guardrails(admin_client_capture):
+    """The aggregate's throughput expression mirrors ``_decode_throughput_tps``.
+
+    A row's Decode column and this summary must be reconcilable, so the SQL
+    carries the same decode-window / output-token floors as the Python helper
+    rather than its own copy of the thresholds.
+    """
+    from serving.servers.routers.admin.metrics import (
+        _DECODE_MIN_TOKENS,
+        _DECODE_MIN_WINDOW_MS,
+    )
+
+    client, calls, _logger = admin_client_capture
+    resp = await client.get("/admin/recent-requests/performance")
+    assert resp.status_code == 200, resp.text
+
+    query, _args = calls["fetch"][0]
+    assert f"l.latency_ms - l.ttft_ms >= {_DECODE_MIN_WINDOW_MS}" in query
+    assert f"l.completion_tokens >= {_DECODE_MIN_TOKENS}" in query
+    assert "(l.completion_tokens - 1)::float * 1000.0" in query
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query_string", "expected_days"),
+    [("", 7), ("?days=30", 30), ("?days=999", 90), ("?days=0", 1)],
+)
+async def test_perf_summary_days_clamped(admin_client_capture, query_string, expected_days):
+    client, calls, _logger = admin_client_capture
+    resp = await client.get(f"/admin/recent-requests/performance{query_string}")
+    assert resp.status_code == 200, resp.text
+    _query, args = calls["fetch"][0]
+    assert args[0] == expected_days
+    assert resp.json()["days"] == expected_days
+
+
+@pytest.mark.asyncio
+async def test_perf_summary_reuses_list_filters(admin_client_capture):
+    """User / model / type filters bind exactly as they do on the list view."""
+    client, calls, _logger = admin_client_capture
+    resp = await client.get(
+        "/admin/recent-requests/performance?user_id=alice&model_id=GLM&request_type=chat"
+    )
+    assert resp.status_code == 200, resp.text
+
+    query, args = calls["fetch"][0]
+    assert (
+        "(l.user_id ILIKE '%' || $2 || '%' ESCAPE '\\' "
+        "OR u.user_name ILIKE '%' || $2 || '%' ESCAPE '\\' "
+        "OR u.email ILIKE '%' || $2 || '%' ESCAPE '\\')"
+    ) in query
+    assert "l.model_id ILIKE '%' || $3 || '%' ESCAPE '\\'" in query
+    assert _CHAT_PREDICATE in query
+    # The users join is added only because the user predicate needs it.
+    assert "LEFT JOIN users u ON u.id = l.user_id" in query
+    assert args[0] == 7
+    assert args[1] == "alice"
+    assert args[2] == "GLM"
+
+
+@pytest.mark.asyncio
+async def test_perf_summary_ignores_error_filters(admin_client_capture):
+    """errors_only / status_code are not accepted: this view is success-scoped."""
+    client, calls, _logger = admin_client_capture
+    resp = await client.get(
+        "/admin/recent-requests/performance?errors_only=true&status_code=500",
+    )
+    assert resp.status_code == 200, resp.text
+
+    query, _args = calls["fetch"][0]
+    assert "l.error IS NOT NULL" not in query
+    assert "l.status_code = $" not in query
+    assert "l.status_code BETWEEN 200 AND 399" in query
+
+
+@pytest.mark.asyncio
+async def test_perf_summary_maps_rows_to_distributions(admin_client_capture):
+    client, _calls, logger = admin_client_capture
+
+    async def _fake_fetch(query: str, *_args: Any) -> list[Any]:
+        assert "GROUP BY served_model, served_endpoint" in query
+        return [
+            _perf_group_row(),
+            _perf_group_row(
+                served_endpoint="glm-4.6:zai-api",
+                request_count=4,
+                tt_count=4,
+                tt_mean=2100.0,
+                tt_percentiles=(1500.0, 2000.0, 3100.0),
+                # No measurable decode window on this route: Postgres returns
+                # NULL for both the mean and the percentile array.
+                tp_count=0,
+                tp_mean=None,
+                tp_percentiles=None,
+            ),
+        ]
+
+    conn = await logger.pool.acquire().__aenter__()
+    conn.fetch = AsyncMock(side_effect=_fake_fetch)
+
+    resp = await client.get("/admin/recent-requests/performance")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["truncated"] is False
+    assert [g["endpoint_id"] for g in body["groups"]] == [
+        "glm-4.6:local-12003",
+        "glm-4.6:zai-api",
+    ]
+    local = body["groups"][0]
+    assert local["model_id"] == "glm-4.6"
+    assert local["request_count"] == 10
+    assert local["ttft_ms"] == {
+        "count": 10,
+        "mean": 480.44,
+        "p10": 210.0,
+        "p50": 425.0,
+        "p90": 1250.0,
+    }
+    assert local["decode_throughput_tps"] == {
+        "count": 8,
+        "mean": 42.38,
+        "p10": 18.25,
+        "p50": 40.1,
+        "p90": 63.75,
+    }
+    # A route with no measurable samples reports count 0 and no numbers, so the
+    # UI can render it as undefined instead of zero.
+    remote = body["groups"][1]
+    assert remote["decode_throughput_tps"] == {
+        "count": 0,
+        "mean": None,
+        "p10": None,
+        "p50": None,
+        "p90": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_perf_summary_flags_truncation(admin_client_capture):
+    """Over the cap, the extra probe row is dropped and truncated is reported."""
+    from serving.servers.routers.admin.metrics import _PERF_BREAKDOWN_MAX_GROUPS
+
+    client, _calls, logger = admin_client_capture
+
+    async def _fake_fetch(query: str, *args: Any) -> list[Any]:
+        # The query asks for one more group than it returns, to detect the cap.
+        assert args[-1] == _PERF_BREAKDOWN_MAX_GROUPS + 1
+        return [
+            _perf_group_row(served_endpoint=f"endpoint-{i}")
+            for i in range(_PERF_BREAKDOWN_MAX_GROUPS + 1)
+        ]
+
+    conn = await logger.pool.acquire().__aenter__()
+    conn.fetch = AsyncMock(side_effect=_fake_fetch)
+
+    resp = await client.get("/admin/recent-requests/performance")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["truncated"] is True
+    assert len(body["groups"]) == _PERF_BREAKDOWN_MAX_GROUPS
+
+
+@pytest.mark.asyncio
+async def test_perf_summary_requires_admin_auth():
+    logger, _calls = _make_db_logger_with_capture()
+    app = FastAPI(title="Admin Recent Requests Perf Auth Test")
+    app.state.services = AppServices(router=RouteExecutor(), db_logger=logger)  # type: ignore[attr-defined]
+    # No verify_admin_access override: the real dependency runs.
+    app.include_router(admin.router)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/admin/recent-requests/performance")
+    assert resp.status_code in (401, 403), resp.text

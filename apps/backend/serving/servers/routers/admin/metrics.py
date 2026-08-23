@@ -21,6 +21,9 @@ from serving.schemas_admin import (
     AdminRequestMetricsBucket,
     AdminRequestMetricsResponse,
     AdminRequestMetricsWindow,
+    AdminRequestPerfBreakdownResponse,
+    AdminRequestPerfDistribution,
+    AdminRequestPerfGroup,
     AdminTtftScatterModel,
     AdminTtftScatterPoint,
     AdminTtftScatterResponse,
@@ -182,6 +185,42 @@ def _decode_throughput_tps(
     if completion_tokens < _DECODE_MIN_TOKENS:
         return None
     return (completion_tokens - 1) / ((latency_ms - ttft_ms) / 1000.0)
+
+
+# SQL twin of :func:`_decode_throughput_tps` over an ``api_logs l`` row, for
+# aggregate queries that must agree with the per-row Decode column. The
+# thresholds are interpolated from the same constants so the two can't drift.
+# The streaming guard is left to the caller's row filter (``l.stream = TRUE``),
+# and ``_DECODE_MIN_TOKENS`` (> 1) subsumes the helper's "more than one output
+# token" check.
+_DECODE_THROUGHPUT_SQL = f"""
+                    CASE
+                        WHEN l.ttft_ms IS NOT NULL AND l.ttft_ms > 0
+                            AND l.latency_ms IS NOT NULL
+                            AND l.latency_ms - l.ttft_ms >= {_DECODE_MIN_WINDOW_MS}
+                            AND l.completion_tokens IS NOT NULL
+                            AND l.completion_tokens >= {_DECODE_MIN_TOKENS}
+                            THEN (l.completion_tokens - 1)::float * 1000.0
+                                 / (l.latency_ms - l.ttft_ms)
+                    END""".strip()
+
+# Cap on (model, endpoint) pairs returned by the per-route summary. Well above
+# any realistic route count, so it only guards against a pathological spread of
+# historical endpoint labels blowing up the payload.
+_PERF_BREAKDOWN_MAX_GROUPS = 100
+
+
+def _perf_distribution_from_row(row: Any, prefix: str) -> AdminRequestPerfDistribution:
+    """Build a mean/P10/median/P90 summary from a ``{prefix}_*`` aggregate row."""
+    percentiles = row[f"{prefix}_percentiles"] or ()
+    p10, p50, p90 = (*percentiles, None, None, None)[:3]
+    return AdminRequestPerfDistribution(
+        count=int(row[f"{prefix}_count"] or 0),
+        mean=_round_or_none(row[f"{prefix}_mean"]),
+        p10=_round_or_none(p10),
+        p50=_round_or_none(p50),
+        p90=_round_or_none(p90),
+    )
 
 
 @router.get("/request-metrics", response_model=AdminRequestMetricsResponse)
@@ -594,6 +633,78 @@ async def admin_get_ttft_scatter(
     return AdminTtftScatterResponse(models=models)
 
 
+def _build_recent_requests_filters(
+    *,
+    days: int,
+    user_id: str | None = None,
+    model_id: str | None = None,
+    status_code: int | None = None,
+    errors_only: bool = False,
+    request_type: str | None = None,
+) -> tuple[list[str], list[Any], bool]:
+    """Build the WHERE clauses + bind params shared by the Recent Requests views.
+
+    Returns ``(clauses, params, needs_user_join)``. Placeholders are numbered
+    from ``$1`` in the returned param order, so a caller can append its own
+    params (LIMIT/OFFSET, a group cap) after these. ``needs_user_join`` is True
+    when a clause references the joined ``users`` row — api_logs is high-volume,
+    so callers skip that join whenever no predicate needs it.
+
+    The list view and the per-route performance summary run over the same rows,
+    so both build their filters here: a predicate added for one can't silently
+    leave the other summarizing a different slice of traffic.
+    """
+    # Always bound by the lookback window so no query scans the full retention
+    # range.
+    clauses: list[str] = []
+    params: list[Any] = [days]
+    clauses.append(f"l.timestamp >= NOW() - make_interval(days => ${len(params)}::int)")
+    needs_user_join = False
+
+    if user_id:
+        # Substring match across the user id and the joined user's name/email so
+        # admins can search by any of the identifiers shown in the table, not
+        # just an exact user id. Matching runs server-side across the full
+        # lookback window, so it isn't limited to the current page of results.
+        params.append(_escape_ilike_substring_term(user_id))
+        idx = len(params)
+        clauses.append(
+            f"(l.user_id ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
+            f"OR u.user_name ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
+            f"OR u.email ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
+        )
+        needs_user_join = True
+
+    if model_id:
+        params.append(_escape_ilike_substring_term(model_id))
+        clauses.append(f"l.model_id ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
+
+    if status_code is not None:
+        clauses.append(f"l.status_code = ${len(params) + 1}")
+        params.append(status_code)
+
+    if errors_only:
+        clauses.append(
+            "(l.error IS NOT NULL OR l.status_code IS NULL "
+            "OR l.status_code < 200 OR l.status_code >= 400)"
+        )
+
+    # Optional request-type filter so admins can isolate embedding traffic
+    # (tagged ``metadata.request_type = "embedding"``) from chat/completions,
+    # which carry no such tag. Embedding rows are interleaved with much
+    # higher-volume chat traffic and ordered by time, so without this filter
+    # they are easily pushed past the first page — the reason they looked
+    # "missing" from the admin dashboard while still visible in a user's own
+    # (low-volume) Recent Requests view. Bound as a constant predicate (no new
+    # parameter) so the LIMIT/OFFSET placeholder indices stay correct.
+    if request_type == "embedding":
+        clauses.append("(l.metadata->>'request_type') = 'embedding'")
+    elif request_type == "chat":
+        clauses.append("(l.metadata->>'request_type') IS DISTINCT FROM 'embedding'")
+
+    return clauses, params, needs_user_join
+
+
 @router.get("/recent-requests", response_model=AdminRecentRequestsResponse)
 async def admin_list_recent_requests(
     request: Request,
@@ -630,59 +741,21 @@ async def admin_list_recent_requests(
     offset = max(0, offset)
     days = max(1, min(days, 90))
 
-    # Build WHERE clause — always bound by lookback window so neither the
-    # COUNT nor the SELECT scans the full retention range.
-    where_clauses: list[str] = []
-    params: list[Any] = [days]
-    where_clauses.append(f"l.timestamp >= NOW() - make_interval(days => ${len(params)}::int)")
-
-    if user_id:
-        # Substring match across the user id and the joined user's name/email so
-        # admins can search by any of the identifiers shown in the table, not
-        # just an exact user id. Matching runs server-side across the full
-        # lookback window, so it isn't limited to the current page of results.
-        params.append(_escape_ilike_substring_term(user_id))
-        idx = len(params)
-        where_clauses.append(
-            f"(l.user_id ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
-            f"OR u.user_name ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
-            f"OR u.email ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
-        )
-
-    if model_id:
-        params.append(_escape_ilike_substring_term(model_id))
-        where_clauses.append(f"l.model_id ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
-
-    if status_code is not None:
-        where_clauses.append(f"l.status_code = ${len(params) + 1}")
-        params.append(status_code)
-
-    if errors_only:
-        where_clauses.append(
-            "(l.error IS NOT NULL OR l.status_code IS NULL "
-            "OR l.status_code < 200 OR l.status_code >= 400)"
-        )
-
-    # Optional request-type filter so admins can isolate embedding traffic
-    # (tagged ``metadata.request_type = "embedding"``) from chat/completions,
-    # which carry no such tag. Embedding rows are interleaved with much
-    # higher-volume chat traffic and ordered by time, so without this filter
-    # they are easily pushed past the first page — the reason they looked
-    # "missing" from the admin dashboard while still visible in a user's own
-    # (low-volume) Recent Requests view. Bound as a constant predicate (no new
-    # parameter) so the LIMIT/OFFSET placeholder indices stay correct.
-    if request_type == "embedding":
-        where_clauses.append("(l.metadata->>'request_type') = 'embedding'")
-    elif request_type == "chat":
-        where_clauses.append("(l.metadata->>'request_type') IS DISTINCT FROM 'embedding'")
-
+    where_clauses, params, needs_user_join = _build_recent_requests_filters(
+        days=days,
+        user_id=user_id,
+        model_id=model_id,
+        status_code=status_code,
+        errors_only=errors_only,
+        request_type=request_type,
+    )
     where_sql = "WHERE " + " AND ".join(where_clauses)
 
     async with db_logger.pool.acquire() as conn:
-        # Get total count. Only join users when the user filter is active —
-        # it's the only predicate that references u.user_name/u.email, and
+        # Get total count. Only join users when a filter needs it —
+        # u.user_name/u.email are only referenced by the user predicate, and
         # api_logs is high-volume so the join is worth avoiding otherwise.
-        count_join_sql = "LEFT JOIN users u ON u.id = l.user_id " if user_id else ""
+        count_join_sql = "LEFT JOIN users u ON u.id = l.user_id " if needs_user_join else ""
         count_row = await conn.fetchrow(
             f"SELECT COUNT(*) as total FROM api_logs l {count_join_sql}{where_sql}",
             *params,
@@ -772,6 +845,127 @@ async def admin_list_recent_requests(
     ]
 
     return AdminRecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
+
+
+@router.get(
+    "/recent-requests/performance",
+    response_model=AdminRequestPerfBreakdownResponse,
+)
+async def admin_recent_requests_performance(
+    days: int = 7,
+    user_id: str | None = None,
+    model_id: str | None = None,
+    request_type: str | None = None,
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminRequestPerfBreakdownResponse:
+    """Summarize TTFT and decode throughput per served (model, endpoint) pair.
+
+    Backs the per-route summary above the Recent Requests table: for each served
+    route it returns the request count plus mean / median / P10 / P90 for TTFT
+    and decode throughput, so endpoints serving the same model can be compared
+    against each other.
+
+    Rows are restricted to *successful streaming* requests
+    (``status_code`` 200-399, ``stream = TRUE``): a failed request has no
+    meaningful latency profile, and TTFT on a non-streamed response is just its
+    total latency, which would drag the percentiles toward whole-response time.
+    Throughput uses the same guardrails as the table's per-row Decode column
+    (see :func:`_decode_throughput_tps`), so a row's value and this summary
+    can be reconciled. Embedding traffic never streams, so it drops out here
+    regardless of ``request_type``.
+
+    Query Parameters:
+    - days: Lookback window in days (default: 7, clamped to [1, 90])
+    - user_id: Filter by user ID, name, or email (substring match)
+    - model_id: Filter by requested model ID (substring match)
+    - request_type: ``"embedding"`` / ``"chat"``, as on ``/recent-requests``
+
+    ``errors_only`` and ``status_code`` are deliberately not accepted — this
+    view is always scoped to successful requests.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    days = max(1, min(days, 90))
+
+    where_clauses, params, needs_user_join = _build_recent_requests_filters(
+        days=days,
+        user_id=user_id,
+        model_id=model_id,
+        request_type=request_type,
+    )
+    where_clauses.append("l.status_code BETWEEN 200 AND 399")
+    where_clauses.append("l.stream = TRUE")
+    where_sql = "WHERE " + " AND ".join(where_clauses)
+    join_sql = "LEFT JOIN users u ON u.id = l.user_id " if needs_user_join else ""
+    # Fetch one extra group so a capped result can be reported as truncated
+    # rather than silently passing for the whole picture.
+    group_limit_idx = len(params) + 1
+    params.append(_PERF_BREAKDOWN_MAX_GROUPS + 1)
+
+    async with db_logger.pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            WITH base AS (
+                SELECT
+                    COALESCE(NULLIF(l.served_model_id, ''), l.model_id) AS served_model,
+                    COALESCE(NULLIF(l.served_endpoint_id, ''), l.provider) AS served_endpoint,
+                    -- ttft_ms > 0 (not merely NOT NULL) so both metrics agree on
+                    -- what counts as a measured first token, as the row-level
+                    -- helper does.
+                    CASE
+                        WHEN l.ttft_ms IS NOT NULL AND l.ttft_ms > 0
+                            THEN l.ttft_ms::float
+                    END AS ttft_ms,
+                    {_DECODE_THROUGHPUT_SQL} AS throughput_tps
+                FROM api_logs l
+                {join_sql}{where_sql}
+            )
+            SELECT
+                served_model,
+                served_endpoint,
+                COUNT(*) AS request_count,
+
+                COUNT(ttft_ms) AS tt_count,
+                AVG(ttft_ms) AS tt_mean,
+                percentile_cont(ARRAY[0.1, 0.5, 0.9]::float8[])
+                    WITHIN GROUP (ORDER BY ttft_ms)
+                    FILTER (WHERE ttft_ms IS NOT NULL) AS tt_percentiles,
+
+                COUNT(throughput_tps) AS tp_count,
+                AVG(throughput_tps) AS tp_mean,
+                percentile_cont(ARRAY[0.1, 0.5, 0.9]::float8[])
+                    WITHIN GROUP (ORDER BY throughput_tps)
+                    FILTER (WHERE throughput_tps IS NOT NULL) AS tp_percentiles
+            FROM base
+            GROUP BY served_model, served_endpoint
+            ORDER BY request_count DESC, served_model ASC, served_endpoint ASC
+            LIMIT ${group_limit_idx}
+            """,
+            *params,
+        )
+
+    truncated = len(rows) > _PERF_BREAKDOWN_MAX_GROUPS
+    groups = [
+        AdminRequestPerfGroup(
+            model_id=row["served_model"],
+            endpoint_id=row["served_endpoint"],
+            request_count=int(row["request_count"] or 0),
+            ttft_ms=_perf_distribution_from_row(row, "tt"),
+            decode_throughput_tps=_perf_distribution_from_row(row, "tp"),
+        )
+        for row in rows[:_PERF_BREAKDOWN_MAX_GROUPS]
+    ]
+
+    return AdminRequestPerfBreakdownResponse(
+        generated_at=datetime.now(timezone.utc),
+        days=days,
+        groups=groups,
+        truncated=truncated,
+    )
 
 
 @router.get(

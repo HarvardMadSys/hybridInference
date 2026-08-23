@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminRecentRequestItem } from '@/lib/api/admin';
@@ -14,11 +14,17 @@ vi.mock('@/lib/api/admin', () => ({
   listRecentRequests: vi.fn(),
   getRequestMetrics: vi.fn(),
   getRecentRequestContent: vi.fn(),
+  getRecentRequestsPerformance: vi.fn(),
   clearErrorRequests: vi.fn(),
   exportRequests: vi.fn(),
 }));
 
-import { getRecentRequestContent, getRequestMetrics, listRecentRequests } from '@/lib/api/admin';
+import {
+  getRecentRequestContent,
+  getRecentRequestsPerformance,
+  getRequestMetrics,
+  listRecentRequests,
+} from '@/lib/api/admin';
 
 function makeRequest(overrides: Partial<AdminRecentRequestItem> = {}): AdminRecentRequestItem {
   return {
@@ -107,6 +113,12 @@ describe('RequestsTab row expansion', () => {
       limit: 50,
       offset: 0,
     });
+    vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 7,
+      groups: [],
+      truncated: false,
+    });
   });
 
   afterEach(() => {
@@ -174,6 +186,29 @@ describe('RequestsTab row expansion', () => {
     expect(releasePointerCaptureSpy).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Request ID:')).not.toBeInTheDocument();
     expect(getRecentRequestContent).not.toHaveBeenCalled();
+  });
+
+  it('loads the per-endpoint performance panel with the tab filters', async () => {
+    render(<RequestsTab />);
+
+    await screen.findByText('gpt-4o-mini');
+    expect(getRecentRequestsPerformance).toHaveBeenCalledWith({
+      days: 7,
+      userId: undefined,
+      modelId: undefined,
+      requestType: undefined,
+    });
+
+    // Changing the lookback re-scopes the summary alongside the list.
+    fireEvent.change(screen.getByLabelText('Lookback window'), { target: { value: '30' } });
+    await waitFor(() =>
+      expect(getRecentRequestsPerformance).toHaveBeenLastCalledWith({
+        days: 30,
+        userId: undefined,
+        modelId: undefined,
+        requestType: undefined,
+      }),
+    );
   });
 
   it('leaves touch gestures to native scrolling (no JS pan / pointer capture)', async () => {

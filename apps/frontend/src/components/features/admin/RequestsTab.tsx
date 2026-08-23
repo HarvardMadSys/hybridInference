@@ -25,6 +25,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { formatRouteWiseDecision } from '@/lib/utils/routewise';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import { FoldedText } from './requestContent';
+import { RequestPerformancePanel } from './RequestPerformancePanel';
 
 const REQ_PAGE_SIZE = 50;
 const REQUEST_TABLE_DRAG_THRESHOLD_PX = 4;
@@ -448,6 +449,10 @@ export function RequestsTab() {
   const [reqJumpPage, setReqJumpPage] = useState('');
   const [reqMetrics, setReqMetrics] = useState<AdminRequestMetricsWindow[]>([]);
   const [reqMetricsLoading, setReqMetricsLoading] = useState(false);
+  // Bumped by Refresh / Clear errors so the per-endpoint performance panel
+  // reloads alongside the volume cards and the list. Filter changes reload it
+  // on their own (it takes the same filters as props).
+  const [perfRefreshKey, setPerfRefreshKey] = useState(0);
   const reqJumpInputId = useId();
   const [showExportPanel, setShowExportPanel] = useState(false);
   const [exportStartDate, setExportStartDate] = useState('');
@@ -532,6 +537,7 @@ export function RequestsTab() {
       toast.success(result.message);
       loadRequests(reqUserFilter, reqModelFilter);
       loadRequestMetrics();
+      setPerfRefreshKey((key) => key + 1);
     } catch (e) {
       toast.error(getErrorMessage(e));
     } finally {
@@ -617,6 +623,10 @@ export function RequestsTab() {
               onClick={() => {
                 loadRequestMetrics();
                 loadRequests(reqUserFilter, reqModelFilter);
+                // Flush the debounce first so the performance panel refetches
+                // with whatever the filter inputs currently show, like the list.
+                flushFilterSearch();
+                setPerfRefreshKey((key) => key + 1);
               }}
               disabled={reqMetricsLoading || reqLoading}
               className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
@@ -805,6 +815,16 @@ export function RequestsTab() {
           </div>
         </div>
       )}
+
+      {/* Per-endpoint latency/throughput summary for the filtered window */}
+      <RequestPerformancePanel
+        days={reqDays}
+        userFilter={debouncedUserFilter}
+        modelFilter={debouncedModelFilter}
+        requestType={reqType}
+        errorsOnly={reqErrorsOnly}
+        refreshKey={perfRefreshKey}
+      />
 
       {/* Table */}
       <div className="mt-4 rounded-2xl border border-gray-200 bg-white shadow-sm">

@@ -610,6 +610,61 @@ export async function listRecentRequests(
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }
 
+// ----------------------------------------------------------------------------
+// Per-route performance — TTFT / decode throughput per served (model, endpoint)
+// ----------------------------------------------------------------------------
+
+export interface AdminRequestPerfDistribution {
+  // Requests the metric was defined on. Lower than the group's request_count
+  // when TTFT wasn't recorded, or the decode window was too short to measure.
+  count: number;
+  mean: number | null;
+  p10: number | null;
+  p50: number | null;
+  p90: number | null;
+}
+
+export interface AdminRequestPerfGroup {
+  // The *served* model/endpoint (falling back to the requested model and the
+  // provider label on rows logged before those columns existed).
+  model_id: string;
+  endpoint_id: string;
+  request_count: number;
+  ttft_ms: AdminRequestPerfDistribution;
+  decode_throughput_tps: AdminRequestPerfDistribution;
+}
+
+export interface AdminRequestPerfBreakdownResponse {
+  generated_at: string;
+  days: number;
+  groups: AdminRequestPerfGroup[];
+  truncated: boolean;
+}
+
+export async function getRecentRequestsPerformance({
+  days,
+  userId,
+  modelId,
+  requestType,
+}: {
+  days?: number;
+  userId?: string;
+  modelId?: string;
+  requestType?: 'chat' | 'embedding';
+} = {}): Promise<AdminRequestPerfBreakdownResponse> {
+  const params = new URLSearchParams();
+  if (days != null) params.set('days', String(days));
+  if (userId) params.set('user_id', userId);
+  if (modelId) params.set('model_id', modelId);
+  if (requestType) params.set('request_type', requestType);
+  const query = params.toString();
+  const resp = await fetchWithAuth(
+    API_BASE,
+    query ? `/admin/recent-requests/performance?${query}` : '/admin/recent-requests/performance',
+  );
+  return jsonOrThrow<AdminRequestPerfBreakdownResponse>(resp);
+}
+
 export interface AdminRecentRequestContentResponse {
   prompt: string | null;
   response: string | null;
