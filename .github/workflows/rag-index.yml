@@ -16,7 +16,13 @@ name: RAG Index
 # normal sync-main flow.
 #
 # Loop safety: the auto-commit only touches content/rag/docs_index.json, which is
-# not in the trigger paths — and pushes made with GITHUB_TOKEN do not trigger
+# not in this workflow's trigger paths — that path exclusion is the loop guard.
+# The push now uses an App token PRECISELY SO THAT it triggers workflows:
+# a GITHUB_TOKEN push creates no CI run, and the distribution repository's
+# bump gate refuses any dev head without a green push CI run — every index
+# commit stalled the entire bump loop until the next human push (observed
+# live 2026-08-23 on e838b631). App pushes trigger CI; the candidate bakes;
+# the bump flows.
 # workflows anyway.
 
 on:
@@ -48,10 +54,20 @@ jobs:
     runs-on: [self-hosted, Linux, trusted-automation]
     timeout-minutes: 20
     steps:
+      - name: Mint push token (App — its pushes trigger CI; GITHUB_TOKEN's do not)
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.BUMP_APP_ID }}
+          private-key: ${{ secrets.BUMP_APP_PRIVATE_KEY }}
+          owner: HarvardMadSys
+          repositories: hybridInference
+          permission-contents: write
+
       - uses: actions/checkout@v4
         with:
           ref: dev
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
 
       - name: Isolate uv cache dir
         # The race the `prune-cache` note below describes is this job sharing
