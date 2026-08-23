@@ -11,13 +11,19 @@ name: RAG Index
 #
 # This workflow closes both gaps: when the corpus (or the chunking/ingest
 # code) changes on dev, it re-embeds via the production gateway (bge-m3),
-# commits the refreshed index back to dev, and dispatches the staging deploy
-# so the running assistant picks it up. Production receives it through the
-# normal sync-main flow.
+# commits the refreshed index back to dev. Staging then receives it through
+# the distribution repository's lock chain — the single automatic deployer
+# since the W6 cutover (#1297) — and production through the normal sync-main
+# flow. This workflow no longer dispatches any deploy itself.
 #
 # Loop safety: the auto-commit only touches content/rag/docs_index.json, which is
-# not in the trigger paths — and pushes made with GITHUB_TOKEN do not trigger
-# workflows anyway.
+# not in this workflow's trigger paths — that path exclusion is the loop guard.
+# The push now uses an App token PRECISELY SO THAT it triggers workflows:
+# a GITHUB_TOKEN push creates no CI run, and the distribution repository's
+# bump gate refuses any dev head without a green push CI run — every index
+# commit stalled the entire bump loop until the next human push (observed
+# live 2026-08-23 on e838b631). App pushes trigger CI; the candidate bakes;
+# the bump flows.
 
 on:
   push:
@@ -31,7 +37,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: rag-index
@@ -48,10 +53,20 @@ jobs:
     runs-on: [self-hosted, Linux, trusted-automation]
     timeout-minutes: 20
     steps:
+      - name: Mint push token (App — its pushes trigger CI; GITHUB_TOKEN's do not)
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.BUMP_APP_ID }}
+          private-key: ${{ secrets.BUMP_APP_PRIVATE_KEY }}
+          owner: HarvardMadSys
+          repositories: hybridInference
+          permission-contents: write
+
       - uses: actions/checkout@v4
         with:
           ref: dev
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app.outputs.token }}
 
       - name: Isolate uv cache dir
         # The race the `prune-cache` note below describes is this job sharing
@@ -134,8 +149,3 @@ jobs:
           git push origin HEAD:dev
           echo "pushed=true" >> "${GITHUB_OUTPUT}"
 
-      - name: Deploy staging with the fresh index
-        if: steps.commit.outputs.pushed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run deploy-staging.yml --ref dev
