@@ -631,6 +631,53 @@ class AdminTtftScatterResponse(BaseModel):
     models: list[AdminTtftScatterModel]
 
 
+class AdminRequestPerfDistribution(BaseModel):
+    """Mean / median / P10 / P90 summary for one metric of a served route.
+
+    ``count`` is how many requests the metric was defined on, which can be
+    lower than the group's ``request_count``: TTFT needs a recorded first-token
+    timestamp, and decode throughput additionally needs a decode window long
+    enough to measure (see ``_decode_throughput_tps``).
+    """
+
+    count: int
+    mean: float | None = None
+    p10: float | None = None
+    p50: float | None = None
+    p90: float | None = None
+
+
+class AdminRequestPerfGroup(BaseModel):
+    """TTFT + decode-throughput summary for one served (model, endpoint) pair.
+
+    ``model_id`` / ``endpoint_id`` are the *served* route
+    (``api_logs.served_model_id`` / ``served_endpoint_id``), falling back to the
+    requested model and the provider label for rows logged before those columns
+    existed. Endpoints of the same model are kept apart so a local server and a
+    remote API serving one model can be compared directly.
+
+    ``request_count`` counts the successful *streamed* requests in the group —
+    the rows this view is scoped to, not all traffic on the route.
+    """
+
+    model_id: str
+    endpoint_id: str
+    request_count: int
+    ttft_ms: AdminRequestPerfDistribution
+    decode_throughput_tps: AdminRequestPerfDistribution
+
+
+class AdminRequestPerfBreakdownResponse(BaseModel):
+    """Per-(model, endpoint) TTFT and decode-throughput summary."""
+
+    generated_at: datetime
+    days: int
+    groups: list[AdminRequestPerfGroup]
+    # True when more (model, endpoint) pairs matched than the response caps at,
+    # so the UI can say the tail was dropped instead of implying full coverage.
+    truncated: bool = False
+
+
 class AdminRecentRequestItem(BaseModel):
     """A single API request log entry (admin view, includes user identity)."""
 
@@ -1410,6 +1457,9 @@ __all__ = [
     "AdminRequestMetricsBucket",
     "AdminRequestMetricsResponse",
     "AdminRequestMetricsWindow",
+    "AdminRequestPerfBreakdownResponse",
+    "AdminRequestPerfDistribution",
+    "AdminRequestPerfGroup",
     "AdminTtftScatterModel",
     "AdminTtftScatterPoint",
     "AdminTtftScatterResponse",
