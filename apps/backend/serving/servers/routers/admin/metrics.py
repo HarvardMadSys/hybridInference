@@ -209,6 +209,64 @@ _DECODE_THROUGHPUT_SQL = f"""
 # historical endpoint labels blowing up the payload.
 _PERF_BREAKDOWN_MAX_GROUPS = 100
 
+# The per-route summary computes exact percentiles over every matching row, and
+# the group cap above applies only after aggregation, so it saves no scan work.
+# The panel behind it refetches on each settled filter change and on Refresh,
+# and an admin can pick a 90-day lookback. Cache per filter tuple for a few
+# seconds and serialize misses, so a burst of filter edits — or a second admin
+# on the same tab — cannot pile overlapping month-scale scans onto the pool.
+# Same reasoning as _PERFORMANCE_METRICS_CACHE; keyed because this view is
+# parameterized rather than fixed-window. Queued misses for *different* filters
+# still run once the lock frees (the query cannot be cancelled server-side),
+# but at most one runs at a time.
+_PERF_BREAKDOWN_CACHE_TTL_SECONDS = 20.0
+# Bound on distinct filter tuples kept. A session of filter edits walks through
+# many keys, and each entry holds only a small summary.
+_PERF_BREAKDOWN_CACHE_MAX_ENTRIES = 32
+# (pool id, days, user_id, model_id, request_type)
+_PerfBreakdownKey = tuple[int, int, str | None, str | None, str | None]
+_PERF_BREAKDOWN_CACHE: dict[_PerfBreakdownKey, tuple[float, AdminRequestPerfBreakdownResponse]] = {}
+_PERF_BREAKDOWN_LOCK: asyncio.Lock | None = None
+_PERF_BREAKDOWN_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _perf_breakdown_lock() -> asyncio.Lock:
+    """Return a lock bound to the active event loop for breakdown cache misses."""
+    global _PERF_BREAKDOWN_LOCK, _PERF_BREAKDOWN_LOCK_LOOP
+
+    loop = asyncio.get_running_loop()
+    if _PERF_BREAKDOWN_LOCK is None or _PERF_BREAKDOWN_LOCK_LOOP is not loop:
+        _PERF_BREAKDOWN_LOCK = asyncio.Lock()
+        _PERF_BREAKDOWN_LOCK_LOOP = loop
+    return _PERF_BREAKDOWN_LOCK
+
+
+def _perf_breakdown_cached(
+    key: _PerfBreakdownKey,
+) -> AdminRequestPerfBreakdownResponse | None:
+    """Return a still-fresh cached breakdown for *key*, dropping it once stale."""
+    entry = _PERF_BREAKDOWN_CACHE.get(key)
+    if entry is None:
+        return None
+    cached_at, response = entry
+    if time.monotonic() - cached_at >= _PERF_BREAKDOWN_CACHE_TTL_SECONDS:
+        _PERF_BREAKDOWN_CACHE.pop(key, None)
+        return None
+    return response
+
+
+def _perf_breakdown_store(
+    key: _PerfBreakdownKey,
+    response: AdminRequestPerfBreakdownResponse,
+) -> None:
+    """Cache *response* under *key*, evicting the oldest entries past the cap."""
+    # Re-insert rather than assign so the key moves to the end: dicts preserve
+    # insertion order, which is what makes "pop the first key" evict the oldest.
+    _PERF_BREAKDOWN_CACHE.pop(key, None)
+    _PERF_BREAKDOWN_CACHE[key] = (time.monotonic(), response)
+    while len(_PERF_BREAKDOWN_CACHE) > _PERF_BREAKDOWN_CACHE_MAX_ENTRIES:
+        _PERF_BREAKDOWN_CACHE.pop(next(iter(_PERF_BREAKDOWN_CACHE)))
+
 
 def _perf_distribution_from_row(row: Any, prefix: str) -> AdminRequestPerfDistribution:
     """Build a mean/P10/median/P90 summary from a ``{prefix}_*`` aggregate row."""
@@ -847,24 +905,19 @@ async def admin_list_recent_requests(
     return AdminRecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
 
 
-@router.get(
-    "/recent-requests/performance",
-    response_model=AdminRequestPerfBreakdownResponse,
-)
-async def admin_recent_requests_performance(
-    days: int = 7,
-    user_id: str | None = None,
-    model_id: str | None = None,
-    request_type: str | None = None,
-    _admin_id: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
+async def _load_request_perf_breakdown(
+    db_logger,
+    *,
+    days: int,
+    user_id: str | None,
+    model_id: str | None,
+    request_type: str | None,
 ) -> AdminRequestPerfBreakdownResponse:
-    """Summarize TTFT and decode throughput per served (model, endpoint) pair.
+    """Aggregate TTFT and decode throughput per served (model, endpoint) pair.
 
-    Backs the per-route summary above the Recent Requests table: for each served
-    route it returns the request count plus mean / median / P10 / P90 for TTFT
-    and decode throughput, so endpoints serving the same model can be compared
-    against each other.
+    One grouped scan over the filtered window. Callers go through
+    :func:`_get_cached_request_perf_breakdown` so a burst of filter changes does
+    not run this repeatedly; ``days`` is expected pre-clamped by the handler.
 
     Rows are restricted to *successful streaming* requests
     (``status_code`` 200-399, ``stream = TRUE``): a failed request has no
@@ -874,23 +927,7 @@ async def admin_recent_requests_performance(
     (see :func:`_decode_throughput_tps`), so a row's value and this summary
     can be reconciled. Embedding traffic never streams, so it drops out here
     regardless of ``request_type``.
-
-    Query Parameters:
-    - days: Lookback window in days (default: 7, clamped to [1, 90])
-    - user_id: Filter by user ID, name, or email (substring match)
-    - model_id: Filter by requested model ID (substring match)
-    - request_type: ``"embedding"`` / ``"chat"``, as on ``/recent-requests``
-
-    ``errors_only`` and ``status_code`` are deliberately not accepted — this
-    view is always scoped to successful requests.
-
-    Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
-    if not db_logger or not db_logger.pool:
-        raise HTTPException(500, "Database not configured")
-
-    days = max(1, min(days, 90))
-
     where_clauses, params, needs_user_join = _build_recent_requests_filters(
         days=days,
         user_id=user_id,
@@ -902,7 +939,9 @@ async def admin_recent_requests_performance(
     where_sql = "WHERE " + " AND ".join(where_clauses)
     join_sql = "LEFT JOIN users u ON u.id = l.user_id " if needs_user_join else ""
     # Fetch one extra group so a capped result can be reported as truncated
-    # rather than silently passing for the whole picture.
+    # rather than silently passing for the whole picture. Postgres placeholders
+    # are 1-based, so the cap binds as $(len(params) + 1) — appended after the
+    # filter params the helper already numbered.
     group_limit_idx = len(params) + 1
     params.append(_PERF_BREAKDOWN_MAX_GROUPS + 1)
 
@@ -965,6 +1004,91 @@ async def admin_recent_requests_performance(
         days=days,
         groups=groups,
         truncated=truncated,
+    )
+
+
+async def _get_cached_request_perf_breakdown(
+    db_logger,
+    *,
+    days: int,
+    user_id: str | None,
+    model_id: str | None,
+    request_type: str | None,
+    refresh: bool = False,
+) -> AdminRequestPerfBreakdownResponse:
+    """Load the per-route breakdown, reusing a recent result for these filters."""
+    key: _PerfBreakdownKey = (
+        id(db_logger.pool),
+        days,
+        user_id or None,
+        model_id or None,
+        request_type or None,
+    )
+    if not refresh:
+        cached = _perf_breakdown_cached(key)
+        if cached is not None:
+            return cached
+
+    async with _perf_breakdown_lock():
+        # Re-check inside the lock: a request that queued behind an identical
+        # miss takes that result instead of running the same scan again.
+        if not refresh:
+            cached = _perf_breakdown_cached(key)
+            if cached is not None:
+                return cached
+
+        response = await _load_request_perf_breakdown(
+            db_logger,
+            days=days,
+            user_id=user_id,
+            model_id=model_id,
+            request_type=request_type,
+        )
+        _perf_breakdown_store(key, response)
+        return response
+
+
+@router.get(
+    "/recent-requests/performance",
+    response_model=AdminRequestPerfBreakdownResponse,
+)
+async def admin_recent_requests_performance(
+    days: int = 7,
+    user_id: str | None = None,
+    model_id: str | None = None,
+    request_type: str | None = None,
+    refresh: bool = False,
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminRequestPerfBreakdownResponse:
+    """Return TTFT / decode-throughput percentiles per served (model, endpoint).
+
+    Backs the per-route summary above the Recent Requests table, so endpoints
+    serving the same model can be compared against each other. See
+    :func:`_load_request_perf_breakdown` for which rows are summarized.
+
+    Query Parameters:
+    - days: Lookback window in days (default: 7, clamped to [1, 90])
+    - user_id: Filter by user ID, name, or email (substring match)
+    - model_id: Filter by requested model ID (substring match)
+    - request_type: ``"embedding"`` / ``"chat"``, as on ``/recent-requests``
+    - refresh: Bypass the short-lived per-filter cache (the panel's Refresh)
+
+    ``errors_only`` and ``status_code`` are deliberately not accepted — this
+    view is always scoped to successful requests.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    return await _get_cached_request_perf_breakdown(
+        db_logger,
+        days=max(1, min(days, 90)),
+        user_id=user_id,
+        model_id=model_id,
+        request_type=request_type,
+        refresh=refresh,
     )
 
 

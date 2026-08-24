@@ -646,17 +646,22 @@ export async function getRecentRequestsPerformance({
   userId,
   modelId,
   requestType,
+  refresh = false,
 }: {
   days?: number;
   userId?: string;
   modelId?: string;
   requestType?: 'chat' | 'embedding';
+  // Bypass the backend's short-lived per-filter cache. Set when the admin
+  // explicitly asks for fresh numbers, not on filter changes.
+  refresh?: boolean;
 } = {}): Promise<AdminRequestPerfBreakdownResponse> {
   const params = new URLSearchParams();
   if (days != null) params.set('days', String(days));
   if (userId) params.set('user_id', userId);
   if (modelId) params.set('model_id', modelId);
   if (requestType) params.set('request_type', requestType);
+  if (refresh) params.set('refresh', 'true');
   const query = params.toString();
   const resp = await fetchWithAuth(
     API_BASE,

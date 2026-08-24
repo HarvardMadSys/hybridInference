@@ -141,16 +141,56 @@ describe('RequestPerformancePanel', () => {
         userId: 'ada@example.com',
         modelId: 'glm',
         requestType: 'chat',
+        refresh: false,
       }),
     );
   });
 
-  it('reloads when the refresh key changes', async () => {
+  it('reloads on a refresh key change and asks the backend to skip its cache', async () => {
     const { rerender } = render(<RequestPerformancePanel {...defaultProps} refreshKey={0} />);
     await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(1));
+    // A filter-driven load must ride the cache; only Refresh bypasses it.
+    expect(getRecentRequestsPerformance).toHaveBeenLastCalledWith(
+      expect.objectContaining({ refresh: false }),
+    );
 
     rerender(<RequestPerformancePanel {...defaultProps} refreshKey={1} />);
     await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(2));
+    expect(getRecentRequestsPerformance).toHaveBeenLastCalledWith(
+      expect.objectContaining({ refresh: true }),
+    );
+
+    // A later filter change is not a refresh, even though refreshKey stays at 1.
+    rerender(<RequestPerformancePanel {...defaultProps} days={30} refreshKey={1} />);
+    await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(3));
+    expect(getRecentRequestsPerformance).toHaveBeenLastCalledWith(
+      expect.objectContaining({ days: 30, refresh: false }),
+    );
+  });
+
+  it('formats a whole-thousand throughput without a stray decimal', async () => {
+    vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 7,
+      groups: [
+        makeGroup({
+          // Float arithmetic upstream can land just off a round thousand.
+          decode_throughput_tps: {
+            count: 10,
+            mean: 1000.0000000000001,
+            p10: 1500,
+            p50: 2000,
+            p90: 2500.5,
+          },
+        }),
+      ],
+      truncated: false,
+    });
+
+    render(<RequestPerformancePanel {...defaultProps} />);
+
+    await screen.findByText('glm-4.6:local-12003');
+    expect(rowCells('glm-4.6:local-12003').slice(-4)).toEqual(['1k', '2k', '1.5k', '2.5k']);
   });
 
   it('notes that "errors only" does not narrow the summary', async () => {

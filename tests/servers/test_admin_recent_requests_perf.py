@@ -69,6 +69,16 @@ def _make_db_logger_with_capture() -> tuple[Any, dict[str, list[Any]]]:
     return logger, calls
 
 
+@pytest.fixture(autouse=True)
+def _isolate_perf_breakdown_cache():
+    """Clear the per-filter breakdown cache so each test issues its own query."""
+    from serving.servers.routers.admin import metrics as admin_metrics
+
+    admin_metrics._PERF_BREAKDOWN_CACHE.clear()
+    yield
+    admin_metrics._PERF_BREAKDOWN_CACHE.clear()
+
+
 @pytest.fixture
 def admin_app_with_capture() -> tuple[FastAPI, dict[str, list[Any]], Any]:
     logger, calls = _make_db_logger_with_capture()
@@ -779,6 +789,26 @@ async def test_perf_summary_flags_truncation(admin_client_capture):
     body = resp.json()
     assert body["truncated"] is True
     assert len(body["groups"]) == _PERF_BREAKDOWN_MAX_GROUPS
+
+
+@pytest.mark.asyncio
+async def test_perf_summary_repeat_request_is_served_from_cache(admin_client_capture):
+    """A repeat with identical filters reuses the result; refresh=true rescans."""
+    client, calls, _logger = admin_client_capture
+
+    assert (await client.get("/admin/recent-requests/performance")).status_code == 200
+    assert len(calls["fetch"]) == 1
+
+    assert (await client.get("/admin/recent-requests/performance")).status_code == 200
+    assert len(calls["fetch"]) == 1, "identical filters should not rescan"
+
+    assert (await client.get("/admin/recent-requests/performance?refresh=true")).status_code == 200
+    assert len(calls["fetch"]) == 2, "refresh must bypass the cache"
+
+    # A different lookback is a different cache key, so it scans on its own.
+    assert (await client.get("/admin/recent-requests/performance?days=30")).status_code == 200
+    assert len(calls["fetch"]) == 3
+    assert calls["fetch"][-1][1][0] == 30
 
 
 @pytest.mark.asyncio

@@ -197,6 +197,7 @@ describe('RequestsTab row expansion', () => {
       userId: undefined,
       modelId: undefined,
       requestType: undefined,
+      refresh: false,
     });
 
     // Changing the lookback re-scopes the summary alongside the list.
@@ -207,7 +208,16 @@ describe('RequestsTab row expansion', () => {
         userId: undefined,
         modelId: undefined,
         requestType: undefined,
+        refresh: false,
       }),
+    );
+
+    // Refresh reloads the summary and asks the backend for fresh numbers.
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() =>
+      expect(getRecentRequestsPerformance).toHaveBeenLastCalledWith(
+        expect.objectContaining({ days: 30, refresh: true }),
+      ),
     );
   });
 

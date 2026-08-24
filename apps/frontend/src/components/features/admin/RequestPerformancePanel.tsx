@@ -20,7 +20,9 @@ function formatThroughput(tps?: number | null): string {
   if (tps == null) return '—';
   if (tps >= 1000) {
     const k = tps / 1000;
-    return `${k.toFixed(tps % 1000 === 0 ? 0 : 1)}k`;
+    // Tolerance rather than `tps % 1000 === 0`: these are floats, so an exact
+    // thousand can arrive as 1000.0000000000001 and print as "1.0k".
+    return `${k.toFixed(Math.abs(k - Math.round(k)) < 0.001 ? 0 : 1)}k`;
   }
   if (tps >= 100) return `${Math.round(tps)}`;
   return tps.toFixed(1);
@@ -93,37 +95,47 @@ export function RequestPerformancePanel({
   // Monotonic id so a slow response issued under older filters can't overwrite
   // a newer one (the filters change as the admin types).
   const seqRef = useRef(0);
+  // Last refreshKey acted on, so a reload driven by Refresh can be told apart
+  // from one driven by a filter change: only the former bypasses the backend's
+  // short-lived per-filter cache.
+  const refreshKeyRef = useRef(refreshKey);
 
-  const load = useCallback(async () => {
-    const seq = ++seqRef.current;
-    setLoading(true);
-    try {
-      const data = await getRecentRequestsPerformance({
-        days,
-        userId: userFilter || undefined,
-        modelId: modelFilter || undefined,
-        requestType: requestType === 'all' ? undefined : requestType,
-      });
-      if (seq !== seqRef.current) return;
-      setGroups(data.groups);
-      setTruncated(data.truncated);
-      setError(null);
-    } catch (e) {
-      // Reported inline rather than as a toast: this panel refetches on every
-      // filter change, and a repeated toast per keystroke would bury the list's
-      // own errors.
-      if (seq === seqRef.current) {
-        setError(getErrorMessage(e));
-        setGroups([]);
-        setTruncated(false);
+  const load = useCallback(
+    async (refresh: boolean) => {
+      const seq = ++seqRef.current;
+      setLoading(true);
+      try {
+        const data = await getRecentRequestsPerformance({
+          days,
+          userId: userFilter || undefined,
+          modelId: modelFilter || undefined,
+          requestType: requestType === 'all' ? undefined : requestType,
+          refresh,
+        });
+        if (seq !== seqRef.current) return;
+        setGroups(data.groups);
+        setTruncated(data.truncated);
+        setError(null);
+      } catch (e) {
+        // Reported inline rather than as a toast: this panel refetches on every
+        // filter change, and a repeated toast per keystroke would bury the
+        // list's own errors.
+        if (seq === seqRef.current) {
+          setError(getErrorMessage(e));
+          setGroups([]);
+          setTruncated(false);
+        }
+      } finally {
+        if (seq === seqRef.current) setLoading(false);
       }
-    } finally {
-      if (seq === seqRef.current) setLoading(false);
-    }
-  }, [days, userFilter, modelFilter, requestType]);
+    },
+    [days, userFilter, modelFilter, requestType],
+  );
 
   useEffect(() => {
-    load();
+    const isRefresh = refreshKey !== refreshKeyRef.current;
+    refreshKeyRef.current = refreshKey;
+    load(isRefresh);
   }, [load, refreshKey]);
 
   return (
