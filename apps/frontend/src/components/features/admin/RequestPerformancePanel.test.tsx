@@ -199,6 +199,49 @@ describe('RequestPerformancePanel', () => {
     expect(await screen.findByText(/not narrowed by/)).toBeInTheDocument();
   });
 
+  it('discards a stale response that lands after a newer one', async () => {
+    // The panel refetches as the admin edits filters, so responses can land out
+    // of order. Without the sequence guard an older response overwrites the
+    // newer rows and the table silently describes the wrong filter.
+    function deferred() {
+      let resolve!: (value: Awaited<ReturnType<typeof getRecentRequestsPerformance>>) => void;
+      const promise = new Promise<Awaited<ReturnType<typeof getRecentRequestsPerformance>>>(
+        (r) => (resolve = r),
+      );
+      return { promise, resolve };
+    }
+    const first = deferred();
+    const second = deferred();
+    vi.mocked(getRecentRequestsPerformance)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    const { rerender } = render(<RequestPerformancePanel {...defaultProps} days={7} />);
+    await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(1));
+
+    rerender(<RequestPerformancePanel {...defaultProps} days={30} />);
+    await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(2));
+
+    // The newer request answers first...
+    second.resolve({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 30,
+      groups: [makeGroup({ endpoint_id: 'newer-endpoint' })],
+      truncated: false,
+    });
+    await screen.findByText('newer-endpoint');
+
+    // ...then the older one arrives late and must be ignored.
+    first.resolve({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 7,
+      groups: [makeGroup({ endpoint_id: 'stale-endpoint' })],
+      truncated: false,
+    });
+    await waitFor(() => expect(screen.getByText('newer-endpoint')).toBeInTheDocument());
+    expect(screen.queryByText('stale-endpoint')).not.toBeInTheDocument();
+  });
+
   it('shows an empty state when nothing matched', async () => {
     vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
