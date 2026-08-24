@@ -17,6 +17,7 @@ Connection: ``TEST_PG_DSN`` when set, otherwise the ``DB_HOST`` / ``DB_PORT`` /
 
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -75,7 +76,11 @@ def pg_dsn() -> str:
             await conn.close()
         return None
 
-    failure = asyncio.new_event_loop().run_until_complete(_probe())
+    loop = asyncio.new_event_loop()
+    try:
+        failure = loop.run_until_complete(_probe())
+    finally:
+        loop.close()
     if failure is not None:
         pytest.skip(f"PostgreSQL test database not available: {failure}")
     return dsn
@@ -91,10 +96,13 @@ async def db_logger(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerat
     on every pooled connection, so the unqualified names in the schema builder
     and in the endpoint's SQL resolve here.
     """
-    # Deterministic per test and per xdist worker, so a crashed run leaves an
-    # identifiable schema behind rather than a random one.
+    # Named from a stable digest of the test id, not hash(): str hashing is
+    # salted per process, so hash() would give the same test a different schema
+    # every run and a schema left behind by a crash could not be traced back to
+    # the test that made it.
     worker = os.getenv("PYTEST_XDIST_WORKER", "master")
-    schema = f"perf_breakdown_{worker}_{abs(hash(request.node.name)) % 10**8}"
+    test_digest = hashlib.sha1(request.node.name.encode()).hexdigest()[:10]
+    schema = f"perf_breakdown_{worker}_{test_digest}"
 
     admin_conn = await asyncpg.connect(pg_dsn)
     try:
