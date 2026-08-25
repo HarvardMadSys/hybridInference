@@ -28,13 +28,32 @@ type ChartPoint = {
   requests: number;
 };
 
-function hourLabel(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+/**
+ * Label one bucket for the x axis and the tooltip.
+ *
+ * A clock time alone is only unambiguous while the window is a single day. The
+ * 30- and 90-day windows bucket daily, where every label would otherwise read
+ * "12:00 AM", and the 7-day window repeats each time four times — so once the
+ * window spans days the date goes in, and once buckets are a day wide the time
+ * comes out.
+ */
+export function bucketLabel(iso: string, bucketMinutes: number, days: number): string {
+  const at = new Date(iso);
+  if (bucketMinutes >= 1440) {
+    return at.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+  const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (days <= 1) return time;
+  return `${at.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
 }
 
-export function buildTrendPoints(series: AdminRequestPerfTrendSeries): ChartPoint[] {
+export function buildTrendPoints(
+  series: AdminRequestPerfTrendSeries,
+  bucketMinutes = 60,
+  days = 1,
+): ChartPoint[] {
   return series.buckets.map((bucket) => ({
-    label: hourLabel(bucket.start_time),
+    label: bucketLabel(bucket.start_time, bucketMinutes, days),
     ttft_p50: bucket.ttft_ms_p50,
     ttft_p90: bucket.ttft_ms_p90,
     tps_p50: bucket.decode_throughput_tps_p50,
@@ -119,11 +138,13 @@ function TrendChart({
 export function EndpointTrendCharts({
   series,
   bucketMinutes,
+  days,
 }: {
   series: AdminRequestPerfTrendSeries;
   bucketMinutes: number;
+  days: number;
 }) {
-  const points = buildTrendPoints(series);
+  const points = buildTrendPoints(series, bucketMinutes, days);
   const measured = points.filter((p) => p.requests > 0).length;
 
   return (

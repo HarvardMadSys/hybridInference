@@ -665,3 +665,92 @@ async def test_trend_totals_reconcile_with_the_flat_summary(db_logger):
     }
     for series in trend.series:
         assert sum(b.request_count for b in series.buckets) == series.request_count, series
+
+
+@pytest.mark.asyncio
+async def test_trend_returns_a_named_route_even_below_the_cap(db_logger, monkeypatch):
+    """Asking for one route returns it whether or not it is among the busiest.
+
+    The summary lists far more routes than the trend caps at, and every one of
+    them is selectable, so a quiet route must still be chartable.
+    """
+    from serving.servers.routers.admin import metrics as admin_metrics
+
+    monkeypatch.setattr(admin_metrics, "_PERF_TREND_MAX_SERIES", 1)
+    rows = [
+        *[
+            _row(f"busy-{i}", served_endpoint="ep-busy", at=_inside_hour_bucket(2))
+            for i in range(5)
+        ],
+        _row("quiet-0", served_endpoint="ep-quiet", ttft=900, at=_inside_hour_bucket(2)),
+    ]
+    await _seed(db_logger.pool, rows)
+
+    # Unselected: the cap keeps only the busiest, and says so.
+    capped = await _load_request_perf_trend(
+        db_logger, days=1, user_id=None, model_id=None, request_type=None
+    )
+    assert [s.endpoint_id for s in capped.series] == ["ep-busy"]
+    assert capped.truncated is True
+
+    # Selected: the quiet route comes back on its own.
+    selected = await _load_request_perf_trend(
+        db_logger,
+        days=1,
+        user_id=None,
+        model_id=None,
+        request_type=None,
+        served_model="glm-4.6",
+        served_endpoint="ep-quiet",
+    )
+    assert [s.endpoint_id for s in selected.series] == ["ep-quiet"]
+    assert selected.series[0].request_count == 1
+    busy_bucket = next(b for b in selected.series[0].buckets if b.request_count)
+    assert busy_bucket.ttft_ms_p50 == 900.0
+
+
+@pytest.mark.asyncio
+async def test_trend_route_selection_distinguishes_models_sharing_an_endpoint(db_logger):
+    """Two models can share an endpoint id; selecting one must not return both.
+
+    Rows logged before ``served_endpoint_id`` existed fall back to the provider
+    label, so ``openai`` can be the endpoint id of several models at once.
+    """
+    rows = [
+        _row(
+            "legacy-a",
+            model="model-a",
+            provider="openai",
+            served_model=None,
+            served_endpoint=None,
+            ttft=300,
+            latency=4300,
+            at=_inside_hour_bucket(2),
+        ),
+        _row(
+            "legacy-b",
+            model="model-b",
+            provider="openai",
+            served_model=None,
+            served_endpoint=None,
+            ttft=1500,
+            latency=5500,
+            at=_inside_hour_bucket(2),
+        ),
+    ]
+    await _seed(db_logger.pool, rows)
+
+    selected = await _load_request_perf_trend(
+        db_logger,
+        days=1,
+        user_id=None,
+        model_id=None,
+        request_type=None,
+        served_model="model-b",
+        served_endpoint="openai",
+    )
+
+    assert [(s.model_id, s.endpoint_id) for s in selected.series] == [("model-b", "openai")]
+    busy = next(b for b in selected.series[0].buckets if b.request_count)
+    # model-a's 300 ms would be the giveaway if the selector ignored the model.
+    assert busy.ttft_ms_p50 == 1500.0

@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import {
   AdminRequestPerfDistribution,
   AdminRequestPerfGroup,
-  AdminRequestPerfTrendResponse,
+  AdminRequestPerfTrendSeries,
   getRecentRequestsPerformance,
   getRecentRequestsPerformanceTrend,
 } from '@/lib/api/admin';
@@ -94,12 +94,17 @@ export function RequestPerformancePanel({
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Expanding a route reveals its trend. The trend covers every route in one
-  // response, so it is fetched once on the first expand and reused; it is
-  // dropped whenever the filters change, since it then describes other rows.
+  // Expanding a route reveals its trend, fetched for that route alone and kept
+  // per route so reopening one is free. Keyed by model *and* endpoint: an
+  // endpoint id is not unique on its own — an admin-supplied route_id is
+  // per-model, and rows predating served_endpoint_id fall back to a shared
+  // provider label — so keying on the endpoint alone would expand two models
+  // together and show one of them the other's numbers.
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [trend, setTrend] = useState<AdminRequestPerfTrendResponse | null>(null);
-  const [trendLoading, setTrendLoading] = useState(false);
+  const [trendByRoute, setTrendByRoute] = useState<
+    Map<string, { series: AdminRequestPerfTrendSeries; bucketMinutes: number; days: number }>
+  >(() => new Map());
+  const [trendLoading, setTrendLoading] = useState<string | null>(null);
   const [trendError, setTrendError] = useState<string | null>(null);
 
   // Monotonic id so a slow response issued under older filters can't overwrite
@@ -109,14 +114,21 @@ export function RequestPerformancePanel({
   // from one driven by a filter change: only the former bypasses the backend's
   // short-lived per-filter cache.
   const refreshKeyRef = useRef(refreshKey);
+  // Monotonic id for trend fetches, bumped on every filter change, so a response
+  // issued under filters that no longer apply is dropped instead of being shown.
+  const trendSeqRef = useRef(0);
 
   const load = useCallback(
     async (refresh: boolean) => {
       const seq = ++seqRef.current;
       setLoading(true);
       try {
+        // Any trend in flight described the previous filters; bump the guard so
+        // its response is discarded rather than restored into the new view.
+        trendSeqRef.current += 1;
         setExpanded(null);
-        setTrend(null);
+        setTrendByRoute(new Map());
+        setTrendLoading(null);
         setTrendError(null);
         const data = await getRecentRequestsPerformance({
           days,
@@ -152,25 +164,46 @@ export function RequestPerformancePanel({
   }, [load, refreshKey]);
 
   const toggleExpanded = useCallback(
-    (endpointId: string) => {
-      const next = expanded === endpointId ? null : endpointId;
+    (group: AdminRequestPerfGroup) => {
+      const routeKey = `${group.model_id}|${group.endpoint_id}`;
+      const next = expanded === routeKey ? null : routeKey;
       setExpanded(next);
-      if (next === null || trend !== null || trendLoading) return;
-      setTrendLoading(true);
+      if (next === null || trendByRoute.has(routeKey) || trendLoading === routeKey) return;
+
+      const seq = trendSeqRef.current;
+      setTrendLoading(routeKey);
       getRecentRequestsPerformanceTrend({
         days,
         userId: userFilter || undefined,
         modelId: modelFilter || undefined,
         requestType: requestType === 'all' ? undefined : requestType,
+        servedModel: group.model_id,
+        servedEndpoint: group.endpoint_id,
       })
         .then((data) => {
-          setTrend(data);
+          if (seq !== trendSeqRef.current) return;
+          const series = data.series.find(
+            (s) => s.model_id === group.model_id && s.endpoint_id === group.endpoint_id,
+          );
+          if (series) {
+            setTrendByRoute((prev) =>
+              new Map(prev).set(routeKey, {
+                series,
+                bucketMinutes: data.bucket_minutes,
+                days: data.days,
+              }),
+            );
+          }
           setTrendError(null);
         })
-        .catch((e) => setTrendError(getErrorMessage(e)))
-        .finally(() => setTrendLoading(false));
+        .catch((e) => {
+          if (seq === trendSeqRef.current) setTrendError(getErrorMessage(e));
+        })
+        .finally(() => {
+          if (seq === trendSeqRef.current) setTrendLoading(null);
+        });
     },
-    [expanded, trend, trendLoading, days, userFilter, modelFilter, requestType],
+    [expanded, trendByRoute, trendLoading, days, userFilter, modelFilter, requestType],
   );
 
   return (
@@ -259,17 +292,18 @@ export function RequestPerformancePanel({
               </thead>
               <tbody>
                 {groups.map((group) => {
-                  const isExpanded = expanded === group.endpoint_id;
-                  const series = trend?.series.find((s) => s.endpoint_id === group.endpoint_id);
+                  const routeKey = `${group.model_id}|${group.endpoint_id}`;
+                  const isExpanded = expanded === routeKey;
+                  const routeTrend = trendByRoute.get(routeKey);
                   return (
                     <Fragment key={`${group.model_id}|${group.endpoint_id}`}>
                       <tr
                         className="cursor-pointer border-b border-gray-100 last:border-b-0 hover:bg-gray-50/60"
-                        onClick={() => toggleExpanded(group.endpoint_id)}
+                        onClick={() => toggleExpanded(group)}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
-                            toggleExpanded(group.endpoint_id);
+                            toggleExpanded(group);
                           }
                         }}
                         tabIndex={0}
@@ -301,22 +335,23 @@ export function RequestPerformancePanel({
                       {isExpanded && (
                         <tr className="border-b border-gray-100 bg-gray-50/40">
                           <td colSpan={11} className="px-4 py-3">
-                            {trendLoading && !series ? (
+                            {trendLoading === routeKey && !routeTrend ? (
                               <p className="py-6 text-center text-[12px] text-gray-400">
                                 Loading trend…
                               </p>
-                            ) : trendError ? (
+                            ) : trendError && !routeTrend ? (
                               <p className="py-6 text-center text-[12px] text-red-600">
                                 Failed to load the trend: {trendError}
                               </p>
-                            ) : series ? (
+                            ) : routeTrend ? (
                               <EndpointTrendCharts
-                                series={series}
-                                bucketMinutes={trend?.bucket_minutes ?? 60}
+                                series={routeTrend.series}
+                                bucketMinutes={routeTrend.bucketMinutes}
+                                days={routeTrend.days}
                               />
                             ) : (
                               <p className="py-6 text-center text-[12px] text-gray-400">
-                                No trend data for this endpoint.
+                                No measurable traffic for this route in the window.
                               </p>
                             )}
                           </td>

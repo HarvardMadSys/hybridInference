@@ -703,12 +703,19 @@ export async function getRecentRequestsPerformanceTrend({
   userId,
   modelId,
   requestType,
+  servedModel,
+  servedEndpoint,
   refresh = false,
 }: {
   days?: number;
   userId?: string;
   modelId?: string;
   requestType?: 'chat' | 'embedding';
+  // The exact served route to chart. Without it the response carries only the
+  // busiest routes, so a quiet one the summary still lists would come back
+  // empty.
+  servedModel?: string;
+  servedEndpoint?: string;
   refresh?: boolean;
 } = {}): Promise<AdminRequestPerfTrendResponse> {
   const params = new URLSearchParams();
@@ -716,6 +723,8 @@ export async function getRecentRequestsPerformanceTrend({
   if (userId) params.set('user_id', userId);
   if (modelId) params.set('model_id', modelId);
   if (requestType) params.set('request_type', requestType);
+  if (servedModel) params.set('served_model', servedModel);
+  if (servedEndpoint) params.set('served_endpoint', servedEndpoint);
   if (refresh) params.set('refresh', 'true');
   const query = params.toString();
   const resp = await fetchWithAuth(

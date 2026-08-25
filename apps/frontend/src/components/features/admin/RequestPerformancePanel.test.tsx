@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminRequestPerfGroup } from '@/lib/api/admin';
 import { RequestPerformancePanel } from './RequestPerformancePanel';
-import { buildTrendPoints } from './EndpointTrendCharts';
+import { bucketLabel, buildTrendPoints } from './EndpointTrendCharts';
 
 vi.mock('@/lib/api/admin', () => ({
   getRecentRequestsPerformance: vi.fn(),
@@ -350,6 +350,9 @@ describe('RequestPerformancePanel trends', () => {
         userId: undefined,
         modelId: undefined,
         requestType: undefined,
+        // The exact route, so a quiet one outside the busiest N still charts.
+        servedModel: 'glm-4.6',
+        servedEndpoint: 'glm-4.6:local-12003',
       }),
     );
   });
@@ -367,15 +370,92 @@ describe('RequestPerformancePanel trends', () => {
     expect(screen.getByText(/3 of 4 hourly buckets/)).toBeInTheDocument();
   });
 
-  it('reuses the one trend response when a second route is opened', async () => {
+  it('fetches each route once and reuses it when reopened', async () => {
     render(<RequestPerformancePanel {...defaultProps} days={1} />);
-    await expandFirstRow();
+    const row = await expandFirstRow();
     await screen.findByTestId('endpoint-trend-ttft');
+    expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(1);
 
-    const second = screen.getByText('glm-4.6:zai-api').closest('tr');
-    fireEvent.click(second!);
+    // Collapse and reopen: served from what was already fetched.
+    fireEvent.click(row);
+    fireEvent.click(row);
+    await screen.findByTestId('endpoint-trend-ttft');
+    expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(1);
+  });
 
+  it('charts a route the busiest-N response would have dropped', async () => {
+    // The summary lists far more routes than the trend response caps at, so the
+    // client asks for the one it opened rather than filtering a global response.
+    vi.mocked(getRecentRequestsPerformanceTrend).mockResolvedValue(
+      makeTrend({
+        series: [{ ...makeTrend().series[0], model_id: 'glm-4.6', endpoint_id: 'glm-4.6:zai-api' }],
+      }),
+    );
+    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+
+    const quiet = (await screen.findByText('glm-4.6:zai-api')).closest('tr');
+    fireEvent.click(quiet!);
+
+    expect(await screen.findByTestId('endpoint-trend-ttft')).toBeInTheDocument();
+    expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledWith(
+      expect.objectContaining({ servedEndpoint: 'glm-4.6:zai-api' }),
+    );
+  });
+
+  it('keeps two models that share an endpoint id apart', async () => {
+    // Legacy rows fall back to the provider label, so one endpoint id can belong
+    // to two models. Expanding one must not open — or mis-label — the other.
+    vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      groups: [
+        makeGroup({ model_id: 'model-a', endpoint_id: 'openai' }),
+        makeGroup({ model_id: 'model-b', endpoint_id: 'openai' }),
+      ],
+      truncated: false,
+    });
+    vi.mocked(getRecentRequestsPerformanceTrend).mockResolvedValue(
+      makeTrend({
+        series: [{ ...makeTrend().series[0], model_id: 'model-a', endpoint_id: 'openai' }],
+      }),
+    );
+    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+
+    const rows = await screen.findAllByText('openai');
+    fireEvent.click(rows[0].closest('tr')!);
+
+    await screen.findByTestId('endpoint-trend-ttft');
+    // Exactly one row opened, and it asked for model-a's series specifically.
+    expect(screen.getAllByTestId('endpoint-trend-ttft')).toHaveLength(1);
+    expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledWith(
+      expect.objectContaining({ servedModel: 'model-a', servedEndpoint: 'openai' }),
+    );
+  });
+
+  it('discards a trend that arrives after the filters moved on', async () => {
+    // Without a guard the late response repopulates the cache for the old
+    // filters, and reopening the row then shows measurements from a window the
+    // admin is no longer looking at.
+    let resolveFirst!: (value: AdminRequestPerfTrendResponse) => void;
+    const pending = new Promise<AdminRequestPerfTrendResponse>((r) => (resolveFirst = r));
+    vi.mocked(getRecentRequestsPerformanceTrend).mockReturnValueOnce(pending);
+
+    const { rerender } = render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    await expandFirstRow();
     await waitFor(() => expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(1));
+
+    // Filters move while that request is still in flight.
+    rerender(<RequestPerformancePanel {...defaultProps} days={7} />);
+    await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(2));
+    resolveFirst(makeTrend());
+
+    // Reopening must ask again for the new window rather than serve the stale one.
+    vi.mocked(getRecentRequestsPerformanceTrend).mockResolvedValue(makeTrend({ days: 7 }));
+    await expandFirstRow();
+    await waitFor(() => expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(2));
+    expect(getRecentRequestsPerformanceTrend).toHaveBeenLastCalledWith(
+      expect.objectContaining({ days: 7 }),
+    );
   });
 
   it('closes the trend and drops it when the filters change', async () => {
@@ -464,5 +544,40 @@ describe('buildTrendPoints', () => {
 
     expect(points[0].label).toBe(expected);
     expect(new Set(points.map((p) => p.label)).size).toBe(4);
+  });
+});
+
+describe('bucketLabel', () => {
+  const iso = '2026-06-30T15:00:00.000Z';
+
+  it('shows a clock time for a one-day window', () => {
+    const label = bucketLabel(iso, 60, 1);
+    expect(label).toBe(
+      new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    );
+    expect(label).not.toMatch(/[A-Za-z]{3}\s\d/);
+  });
+
+  it('adds the date once the window spans days', () => {
+    // 7d buckets are 6 hours wide, so four buckets a day would share a label.
+    const label = bucketLabel(iso, 360, 7);
+    const date = new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+    expect(label).toContain(date);
+    expect(label).toContain(
+      new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    );
+  });
+
+  it('drops the time for day-wide buckets', () => {
+    // Every 30/90d bucket starts at midnight; the time carries no information.
+    const label = bucketLabel(iso, 1440, 30);
+    expect(label).toBe(new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' }));
+  });
+
+  it('labels every bucket of a 30-day window distinctly', () => {
+    const labels = Array.from({ length: 5 }, (_, i) =>
+      bucketLabel(`2026-06-${String(20 + i).padStart(2, '0')}T00:00:00.000Z`, 1440, 30),
+    );
+    expect(new Set(labels).size).toBe(labels.length);
   });
 });

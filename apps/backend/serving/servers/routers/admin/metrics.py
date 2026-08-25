@@ -235,8 +235,8 @@ _PERF_BREAKDOWN_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
 # The trend view scans the same rows as the breakdown, bucketed, so it gets the
 # same treatment: its own keyed cache, sharing the TTL, entry cap and lock (one
 # heavy scan at a time across both views is exactly the bound that matters).
-# (pool id, days, user_id, model_id, request_type)
-_PerfTrendKey = tuple[int, int, str | None, str | None, str | None]
+# (pool id, days, user_id, model_id, request_type, served_model, served_endpoint)
+_PerfTrendKey = tuple[int, int, str | None, str | None, str | None, str | None, str | None]
 _PERF_TREND_CACHE: dict[_PerfTrendKey, tuple[float, AdminRequestPerfTrendResponse]] = {}
 
 # Bucket width per lookback, mirroring REQUEST_METRIC_WINDOWS: a day of hourly
@@ -244,7 +244,11 @@ _PERF_TREND_CACHE: dict[_PerfTrendKey, tuple[float, AdminRequestPerfTrendRespons
 # than return hundreds of points nobody can read on a sparkline.
 _TREND_BUCKET_MINUTES: tuple[tuple[int, int], ...] = ((1, 60), (7, 360), (30, 1440), (90, 1440))
 # Fewer series than the flat table: each carries a full bucket grid, and a chart
-# with more lines than this is unreadable anyway.
+# with more lines than this is unreadable anyway. The cap only bites on an
+# unselected request — asking for one route (served_model / served_endpoint)
+# returns it whether or not it is among the busiest, so every row the summary
+# offers can be opened even though the summary lists up to
+# _PERF_BREAKDOWN_MAX_GROUPS of them.
 _PERF_TREND_MAX_SERIES = 12
 
 
@@ -1132,6 +1136,8 @@ async def _load_request_perf_trend(
     user_id: str | None,
     model_id: str | None,
     request_type: str | None,
+    served_model: str | None = None,
+    served_endpoint: str | None = None,
 ) -> AdminRequestPerfTrendResponse:
     """Bucket TTFT and decode throughput over time, per served (model, endpoint).
 
@@ -1144,6 +1150,10 @@ async def _load_request_perf_trend(
     bucket grid: quiet buckets come back with ``request_count`` 0 and no
     statistics, so a gap reads as a gap rather than as a straight line drawn
     between two distant points.
+
+    ``served_model`` / ``served_endpoint`` select one route exactly (matched
+    against the same grouping keys). The UI passes the route it opened, so a
+    quiet route the traffic ranking would have dropped is still available.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
@@ -1157,6 +1167,18 @@ async def _load_request_perf_trend(
     )
     where_clauses.append("l.status_code BETWEEN 200 AND 399")
     where_clauses.append("l.stream = TRUE")
+    # Exact match on the grouping keys, not the ILIKE model filter above: this
+    # selects the one route the caller opened.
+    if served_model:
+        params.append(served_model)
+        where_clauses.append(
+            f"COALESCE(NULLIF(l.served_model_id, ''), l.model_id) = ${len(params)}"
+        )
+    if served_endpoint:
+        params.append(served_endpoint)
+        where_clauses.append(
+            f"COALESCE(NULLIF(l.served_endpoint_id, ''), l.provider) = ${len(params)}"
+        )
     where_sql = "WHERE " + " AND ".join(where_clauses)
     join_sql = "LEFT JOIN users u ON u.id = l.user_id " if needs_user_join else ""
     bucket_idx = len(params) + 1
@@ -1281,6 +1303,8 @@ async def _get_cached_request_perf_trend(
     user_id: str | None,
     model_id: str | None,
     request_type: str | None,
+    served_model: str | None = None,
+    served_endpoint: str | None = None,
     refresh: bool = False,
 ) -> AdminRequestPerfTrendResponse:
     """Load the per-route trend, reusing a recent result for these filters."""
@@ -1290,6 +1314,8 @@ async def _get_cached_request_perf_trend(
         user_id or None,
         model_id or None,
         request_type or None,
+        served_model or None,
+        served_endpoint or None,
     )
     if not refresh:
         cached = _perf_cache_get(_PERF_TREND_CACHE, key)
@@ -1308,6 +1334,8 @@ async def _get_cached_request_perf_trend(
             user_id=user_id,
             model_id=model_id,
             request_type=request_type,
+            served_model=served_model,
+            served_endpoint=served_endpoint,
         )
         _perf_cache_put(_PERF_TREND_CACHE, key, response)
         return response
@@ -1322,6 +1350,8 @@ async def admin_recent_requests_performance_trend(
     user_id: str | None = None,
     model_id: str | None = None,
     request_type: str | None = None,
+    served_model: str | None = None,
+    served_endpoint: str | None = None,
     refresh: bool = False,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
@@ -1338,6 +1368,8 @@ async def admin_recent_requests_performance_trend(
     - user_id: Filter by user ID, name, or email (substring match)
     - model_id: Filter by requested model ID (substring match)
     - request_type: ``"embedding"`` / ``"chat"``, as on ``/recent-requests``
+    - served_model / served_endpoint: exact served route to return, so a route
+      outside the busiest ``_PERF_TREND_MAX_SERIES`` can still be charted
     - refresh: Bypass the short-lived per-filter cache
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
@@ -1351,6 +1383,8 @@ async def admin_recent_requests_performance_trend(
         user_id=user_id,
         model_id=model_id,
         request_type=request_type,
+        served_model=served_model,
+        served_endpoint=served_endpoint,
         refresh=refresh,
     )
 
