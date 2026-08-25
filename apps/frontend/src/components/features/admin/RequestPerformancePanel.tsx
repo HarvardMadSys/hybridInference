@@ -58,6 +58,19 @@ function MetricCells({ dist, kind }: { dist: AdminRequestPerfDistribution; kind:
   );
 }
 
+/**
+ * Identity of a served route, for React keys and the per-route trend state.
+ *
+ * JSON rather than `model + '|' + endpoint`: both halves are free-form — an
+ * admin-supplied route_id becomes the endpoint id verbatim — so a separator
+ * that can appear inside either half makes ("a|b", "c") and ("a", "b|c") the
+ * same key, and those two routes would then share expansion state and each
+ * other's charts.
+ */
+export function routeKeyOf(route: { model_id: string; endpoint_id: string }): string {
+  return JSON.stringify([route.model_id, route.endpoint_id]);
+}
+
 function sampleSummary(group: AdminRequestPerfGroup): string {
   return (
     `${group.request_count.toLocaleString()} successful streaming request(s); ` +
@@ -104,8 +117,12 @@ export function RequestPerformancePanel({
   const [trendByRoute, setTrendByRoute] = useState<
     Map<string, { series: AdminRequestPerfTrendSeries; bucketMinutes: number; days: number }>
   >(() => new Map());
-  const [trendLoading, setTrendLoading] = useState<string | null>(null);
-  const [trendError, setTrendError] = useState<string | null>(null);
+  // Per route, not one shared marker: with two routes open, the first to answer
+  // would otherwise clear the second's "loading" and show its error under the
+  // second's chart — and, with the marker cleared, reopening the still-pending
+  // route would fire a second copy of an expensive query.
+  const [trendLoading, setTrendLoading] = useState<ReadonlySet<string>>(() => new Set());
+  const [trendErrors, setTrendErrors] = useState<ReadonlyMap<string, string>>(() => new Map());
 
   // Monotonic id so a slow response issued under older filters can't overwrite
   // a newer one (the filters change as the admin types).
@@ -117,6 +134,10 @@ export function RequestPerformancePanel({
   // Monotonic id for trend fetches, bumped on every filter change, so a response
   // issued under filters that no longer apply is dropped instead of being shown.
   const trendSeqRef = useRef(0);
+  // Set when a reload came from Refresh. The backend caches trends for ~20s per
+  // filter tuple, so without this the chart opened right after a Refresh can be
+  // older than the summary sitting above it.
+  const trendNeedsRefreshRef = useRef(false);
 
   const load = useCallback(
     async (refresh: boolean) => {
@@ -126,10 +147,11 @@ export function RequestPerformancePanel({
         // Any trend in flight described the previous filters; bump the guard so
         // its response is discarded rather than restored into the new view.
         trendSeqRef.current += 1;
+        trendNeedsRefreshRef.current = refresh;
         setExpanded(null);
         setTrendByRoute(new Map());
-        setTrendLoading(null);
-        setTrendError(null);
+        setTrendLoading(new Set());
+        setTrendErrors(new Map());
         const data = await getRecentRequestsPerformance({
           days,
           userId: userFilter || undefined,
@@ -165,13 +187,23 @@ export function RequestPerformancePanel({
 
   const toggleExpanded = useCallback(
     (group: AdminRequestPerfGroup) => {
-      const routeKey = `${group.model_id}|${group.endpoint_id}`;
+      const routeKey = routeKeyOf(group);
       const next = expanded === routeKey ? null : routeKey;
       setExpanded(next);
-      if (next === null || trendByRoute.has(routeKey) || trendLoading === routeKey) return;
+      if (next === null || trendByRoute.has(routeKey) || trendLoading.has(routeKey)) return;
 
       const seq = trendSeqRef.current;
-      setTrendLoading(routeKey);
+      // Every route's first fetch after a Refresh bypasses the backend cache;
+      // trendByRoute was just cleared, so each route fetches exactly once and
+      // the flag stands until the next filter-driven load clears it.
+      const refresh = trendNeedsRefreshRef.current;
+      setTrendLoading((prev) => new Set(prev).add(routeKey));
+      setTrendErrors((prev) => {
+        if (!prev.has(routeKey)) return prev;
+        const next = new Map(prev);
+        next.delete(routeKey);
+        return next;
+      });
       getRecentRequestsPerformanceTrend({
         days,
         userId: userFilter || undefined,
@@ -179,6 +211,7 @@ export function RequestPerformancePanel({
         requestType: requestType === 'all' ? undefined : requestType,
         servedModel: group.model_id,
         servedEndpoint: group.endpoint_id,
+        refresh,
       })
         .then((data) => {
           if (seq !== trendSeqRef.current) return;
@@ -194,13 +227,18 @@ export function RequestPerformancePanel({
               }),
             );
           }
-          setTrendError(null);
         })
         .catch((e) => {
-          if (seq === trendSeqRef.current) setTrendError(getErrorMessage(e));
+          if (seq !== trendSeqRef.current) return;
+          setTrendErrors((prev) => new Map(prev).set(routeKey, getErrorMessage(e)));
         })
         .finally(() => {
-          if (seq === trendSeqRef.current) setTrendLoading(null);
+          if (seq !== trendSeqRef.current) return;
+          setTrendLoading((prev) => {
+            const next = new Set(prev);
+            next.delete(routeKey);
+            return next;
+          });
         });
     },
     [expanded, trendByRoute, trendLoading, days, userFilter, modelFilter, requestType],
@@ -292,11 +330,12 @@ export function RequestPerformancePanel({
               </thead>
               <tbody>
                 {groups.map((group) => {
-                  const routeKey = `${group.model_id}|${group.endpoint_id}`;
+                  const routeKey = routeKeyOf(group);
                   const isExpanded = expanded === routeKey;
                   const routeTrend = trendByRoute.get(routeKey);
+                  const routeError = trendErrors.get(routeKey);
                   return (
-                    <Fragment key={`${group.model_id}|${group.endpoint_id}`}>
+                    <Fragment key={routeKey}>
                       <tr
                         className="cursor-pointer border-b border-gray-100 last:border-b-0 hover:bg-gray-50/60"
                         onClick={() => toggleExpanded(group)}
@@ -335,13 +374,13 @@ export function RequestPerformancePanel({
                       {isExpanded && (
                         <tr className="border-b border-gray-100 bg-gray-50/40">
                           <td colSpan={11} className="px-4 py-3">
-                            {trendLoading === routeKey && !routeTrend ? (
+                            {trendLoading.has(routeKey) && !routeTrend ? (
                               <p className="py-6 text-center text-[12px] text-gray-400">
                                 Loading trend…
                               </p>
-                            ) : trendError && !routeTrend ? (
+                            ) : routeError && !routeTrend ? (
                               <p className="py-6 text-center text-[12px] text-red-600">
-                                Failed to load the trend: {trendError}
+                                Failed to load the trend: {routeError}
                               </p>
                             ) : routeTrend ? (
                               <EndpointTrendCharts
