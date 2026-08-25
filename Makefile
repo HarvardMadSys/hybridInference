@@ -1,5 +1,5 @@
 .PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
-       docker-volumes up down restart ps logs build
+       docker-volumes up down restart ps logs build smoke
 
 # Default target
 .DEFAULT_GOAL := help
@@ -158,7 +158,13 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 #   make up                          # discovers the overlay, and says so
 #   make up DISTRIBUTION=none        # your own gateway, named after nobody
 #   make up DISTRIBUTION=<name>       # pick one when several are present
+#
+# Deployment auto-discovery intentionally considers only `distributions/`.
+# Public tutorial distributions live under `examples/distributions/` and are
+# resolved only when named explicitly, so adding a runnable example can never
+# change which real deployment a bare `make up` selects.
 # distributions/<name>/deploy/<file>.env -> <name>, deduplicated.
+_DISTRIBUTION_LOOKUP_ROOTS := distributions examples/distributions
 _DISTRIBUTION_DIRS := $(sort $(foreach f,$(wildcard distributions/*/deploy/*.env),$(word 2,$(subst /, ,$(f)))))
 ifeq ($(words $(_DISTRIBUTION_DIRS)),1)
 DISTRIBUTION ?= $(_DISTRIBUTION_DIRS)
@@ -170,11 +176,19 @@ else
 DISTRIBUTION ?= $(error Several distributions carry deploy/*.env ($(_DISTRIBUTION_DIRS)). Name one: make $(MAKECMDGOALS) DISTRIBUTION=<name>, or DISTRIBUTION=none)
 endif
 ifeq ($(DISTRIBUTION),none)
+DISTRIBUTION_PATH :=
 DISTRIBUTION_ENV_FILES :=
 else ifneq ($(DISTRIBUTION),)
-DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(wildcard distributions/$(DISTRIBUTION)/deploy/*.env))
+_DISTRIBUTION_PATHS := $(foreach root,$(_DISTRIBUTION_LOOKUP_ROOTS),$(wildcard $(root)/$(DISTRIBUTION)))
+ifeq ($(words $(_DISTRIBUTION_PATHS)),0)
+$(error DISTRIBUTION=$(DISTRIBUTION) matches neither distributions/$(DISTRIBUTION) nor examples/distributions/$(DISTRIBUTION))
+else ifneq ($(words $(_DISTRIBUTION_PATHS)),1)
+$(error DISTRIBUTION=$(DISTRIBUTION) is ambiguous across $(_DISTRIBUTION_PATHS))
+endif
+DISTRIBUTION_PATH := $(firstword $(_DISTRIBUTION_PATHS))
+DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(wildcard $(DISTRIBUTION_PATH)/deploy/*.env))
 ifeq ($(DISTRIBUTION_ENV_FILES),)
-$(error DISTRIBUTION=$(DISTRIBUTION) matches no distributions/$(DISTRIBUTION)/deploy/*.env)
+$(error DISTRIBUTION=$(DISTRIBUTION) matches no $(DISTRIBUTION_PATH)/deploy/*.env)
 endif
 $(info Using distribution '$(DISTRIBUTION)' — its identity is compiled into the console. DISTRIBUTION=none for a neutral stack.)
 endif
@@ -187,6 +201,10 @@ COMPOSE_EXTRA_ENV_ARGS := $(patsubst %,--env-file %,$(wildcard $(COMPOSE_EXTRA_E
 # repository and their own deployment, so this stack no longer has an opt-in
 # that attaches `backend` to an agent network.
 COMPOSE_FILE_ARGS := -f deploy/docker/docker-compose.yml
+DISTRIBUTION_COMPOSE_FILE := $(if $(DISTRIBUTION_PATH),$(wildcard $(DISTRIBUTION_PATH)/deploy/docker-compose.yml),)
+ifneq ($(DISTRIBUTION_COMPOSE_FILE),)
+COMPOSE_FILE_ARGS += -f $(DISTRIBUTION_COMPOSE_FILE)
+endif
 # Standalone cloud agent on the same host (freeinference-cloud-agent). Opting
 # in attaches the console to that stack's network so the `/agents` rewrites
 # from #1206 can resolve `web` and `control-plane`; without it they resolve
@@ -196,7 +214,17 @@ COMPOSE_FILE_ARGS := -f deploy/docker/docker-compose.yml
 ifeq ($(CLOUD_AGENT_NETWORK),1)
 COMPOSE_FILE_ARGS += -f deploy/docker/docker-compose.cloud-agent.yml
 endif
-COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) --env-file .env
+# A host-local `.env` remains last whenever it exists, preserving its override
+# precedence. Public runnable examples deliberately need no secret file, so do
+# not hand Compose a path that is absent on a fresh clone.
+LOCAL_ENV_ARGS := $(if $(wildcard .env),--env-file .env,)
+# The example is deterministic even in an operator checkout that already has a
+# deployment .env. Shell variables still outrank every --env-file in Compose,
+# which is the explicit escape hatch documented for a real upstream.
+ifeq ($(DISTRIBUTION_PATH),examples/distributions/example)
+LOCAL_ENV_ARGS :=
+endif
+COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
 DOCKER_VOLUMES := hybridinference_postgres_data
 
 docker-volumes:  ## Create external Docker volumes required by production compose
@@ -207,8 +235,28 @@ docker-volumes:  ## Create external Docker volumes required by production compos
 		fi; \
 	done
 
-up: docker-volumes  ## Start all services
+# The runnable tutorial proves the backend routing chain, not the production
+# frontend/database stack. Start its fake to healthy first, then use --no-deps
+# so backend's production Postgres dependency stays stopped while DB_ENABLED is
+# false. The production branch retains its external-volume prerequisite.
+ifeq ($(DISTRIBUTION_PATH),examples/distributions/example)
+up:  ## Start all services
+	$(COMPOSE) up -d --wait example-provider
+	$(COMPOSE) up -d --no-deps backend
+else
+up: docker-volumes
 	$(COMPOSE) up -d
+endif
+
+BACKEND_PORT ?= 8080
+SMOKE_BASE_URL ?= http://localhost:$(BACKEND_PORT)
+SMOKE_TIMEOUT ?= 120
+SMOKE_PYTHON ?= python3
+SMOKE_SCRIPT := $(DISTRIBUTION_PATH)/smoke.py
+
+smoke:  ## Verify the selected distribution's running stack
+	@test -f "$(SMOKE_SCRIPT)" || (echo "No smoke script for DISTRIBUTION=$(DISTRIBUTION)"; exit 1)
+	$(SMOKE_PYTHON) "$(SMOKE_SCRIPT)" --base-url "$(SMOKE_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)"
 
 down:  ## Stop all services
 	$(COMPOSE) down
@@ -230,9 +278,24 @@ else
 	$(COMPOSE) logs -f --tail=500
 endif
 
-build: docker-volumes  ## Rebuild images and restart (or: make build s=backend)
+# Keep rebuild semantics aligned with `up`: rebuilding the tutorial must not
+# unexpectedly turn it into the production full stack.
+ifeq ($(DISTRIBUTION_PATH),examples/distributions/example)
+build:  ## Rebuild images and restart (or: make build s=backend)
+	$(COMPOSE) up -d --wait example-provider
+ifdef s
+ifneq ($(filter-out backend example-provider,$(s)),)
+$(error The runnable example can build only backend or example-provider)
+endif
+	$(COMPOSE) up -d --build --no-deps $(s)
+else
+	$(COMPOSE) up -d --build --no-deps backend
+endif
+else
+build: docker-volumes
 ifdef s
 	$(COMPOSE) up -d --build $(s)
 else
 	$(COMPOSE) up -d --build
+endif
 endif

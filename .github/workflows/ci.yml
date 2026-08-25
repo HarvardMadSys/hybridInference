@@ -662,6 +662,10 @@ jobs:
           context: .
           file: deploy/docker/Dockerfile.${{ matrix.image }}
           push: false
+          # The backend cell immediately runs the documented example against
+          # this exact image. Other cells only need build verification.
+          load: ${{ matrix.image == 'backend' }}
+          tags: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.image }}
           secrets: |
             github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
           cache-from: type=gha,scope=${{ matrix.image }}
@@ -678,10 +682,56 @@ jobs:
           context: .
           file: deploy/docker/Dockerfile.${{ matrix.image }}
           push: false
+          load: ${{ matrix.image == 'backend' }}
+          tags: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.image }}
           secrets: |
             github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=min,scope=${{ matrix.image }}
+
+      - name: Start runnable router example
+        id: example-up
+        if: matrix.image == 'backend'
+        env:
+          COMPOSE_PROJECT_NAME: hi-example-${{ github.run_id }}-${{ github.run_attempt }}
+          EXAMPLE_BACKEND_CONTAINER_NAME: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-backend
+          EXAMPLE_PROVIDER_CONTAINER_NAME: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-provider
+          BACKEND_PORT: "0"
+        run: make up DISTRIBUTION=example
+
+      - name: Smoke runnable router example
+        id: example-smoke
+        if: matrix.image == 'backend'
+        env:
+          EXAMPLE_BACKEND_CONTAINER_NAME: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-backend
+        run: |
+          port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
+          test -n "${port}"
+          SMOKE_BASE_URL="http://127.0.0.1:${port}" make smoke DISTRIBUTION=example
+
+      - name: Show runnable example logs
+        if: >-
+          always() && matrix.image == 'backend' &&
+          (steps.example-up.outcome == 'failure' || steps.example-smoke.outcome == 'failure')
+        env:
+          EXAMPLE_BACKEND_CONTAINER_NAME: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-backend
+          EXAMPLE_PROVIDER_CONTAINER_NAME: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-provider
+        run: |
+          docker logs "${EXAMPLE_BACKEND_CONTAINER_NAME}" || true
+          docker logs "${EXAMPLE_PROVIDER_CONTAINER_NAME}" || true
+
+      - name: Stop runnable router example
+        if: always() && matrix.image == 'backend'
+        env:
+          COMPOSE_PROJECT_NAME: hi-example-${{ github.run_id }}-${{ github.run_attempt }}
+          EXAMPLE_BACKEND_CONTAINER_NAME: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-backend
+          EXAMPLE_PROVIDER_CONTAINER_NAME: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-provider
+          BACKEND_PORT: "0"
+        run: |
+          make down DISTRIBUTION=example || true
+          docker image rm \
+            "${COMPOSE_PROJECT_NAME}-backend" \
+            "${COMPOSE_PROJECT_NAME}-example-provider" || true
 
   ci-gate:
     name: CI Gate

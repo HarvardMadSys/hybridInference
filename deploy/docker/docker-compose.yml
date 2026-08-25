@@ -37,7 +37,9 @@ services:
     # label is absent rather than guessing from the checkout HEAD.
     labels:
       org.opencontainers.image.revision: ${BUILD_SHA:-}
-    env_file: ../../.env
+    # Production keeps using the repo-root .env. A public, secret-free example
+    # may point BACKEND_ENV_FILE at its checked-in local defaults instead.
+    env_file: ${BACKEND_ENV_FILE:-../../.env}
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"     # always use container-internal port; DB_PORT in .env controls host mapping only
@@ -107,7 +109,7 @@ services:
       - ../../distributions:/app/distributions:ro
       - ../../var/data:/app/var/data          # credentials and downloaded GeoIP data (read-write)
     ports:
-      - "127.0.0.1:8080:8080"
+      - "${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy

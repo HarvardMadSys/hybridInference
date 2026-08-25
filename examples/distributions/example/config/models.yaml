@@ -1,0 +1,22 @@
+models:
+  - id: example-chat
+    name: Runnable Example Chat
+    provider: openai_compat
+    context_length: 4096
+    max_output_length: 1024
+    supports_tools: false
+    supports_structured_output: false
+    supported_params: [temperature, top_p, max_tokens, stop]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: ${EXAMPLE_UPSTREAM_BASE_URL}
+        api_key: ${EXAMPLE_UPSTREAM_API_KEY}
+        provider_model_id: ${EXAMPLE_UPSTREAM_MODEL}

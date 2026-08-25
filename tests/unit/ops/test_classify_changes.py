@@ -39,6 +39,22 @@ def test_backend_sources_and_tests_map_to_backend() -> None:
     assert tests.docker_matrix() == []
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "examples/distributions/example/README.md",
+        "examples/distributions/example/config/models.yaml",
+        "examples/distributions/example/smoke.py",
+        "examples/support/openai_compat_fake.py",
+        "examples/support/Dockerfile.openai-compat-fake",
+    ],
+)
+def test_runnable_example_changes_run_backend_tests_image_and_smoke(path: str) -> None:
+    result = classify([path])
+    assert _true_categories(result) == {"backend", "python_tests"}
+    assert result.docker_matrix() == ["backend"]
+
+
 def test_oncall_source_also_triggers_backend_tests() -> None:
     result = classify(["apps/backend/serving/oncall/app.py"])
     assert _true_categories(result) == {"oncall", "backend", "python_tests"}

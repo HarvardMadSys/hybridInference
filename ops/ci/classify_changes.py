@@ -63,6 +63,11 @@ _OVERLAY_DOCS = re.compile(r"^distributions/[^/]+/content/docs/")
 FRONTEND_PREFIX = "apps/frontend/"
 BACKEND_SOURCE_PREFIX = "apps/backend/"
 BACKEND_TEST_PREFIX = "tests/"
+# Dockerfile.backend bakes public runnable examples into the image, and the
+# backend Docker matrix cell executes their documented smoke contract. Keep
+# this before the generic Markdown-as-docs rule so editing the example README
+# cannot bypass the very CI path it documents.
+BACKEND_EXAMPLE_PREFIX = "examples/"
 # Dockerfile.oncall COPYs the entire apps/backend/serving tree, so any serving
 # change -- not just serving/oncall -- is baked into the on-call image and must
 # rebuild it. Keep this in sync with that Dockerfile's COPY scope.
@@ -184,6 +189,14 @@ def classify(files: Sequence[str] | None) -> Classification:
             result.full = True
             result.python_tests = True
             hit("full", path)
+            continue
+        # Runnable examples are backend image inputs and CI acceptance inputs,
+        # including their Markdown instructions.
+        if path.startswith(BACKEND_EXAMPLE_PREFIX):
+            result.backend = True
+            result.python_tests = True
+            result.docker_images.add("backend")
+            hit("backend", path)
             continue
         # 2. Documentation never triggers application checks, but the Sphinx
         #    source tree gates the docs build.
