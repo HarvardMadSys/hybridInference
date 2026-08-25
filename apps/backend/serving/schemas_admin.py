@@ -678,6 +678,49 @@ class AdminRequestPerfBreakdownResponse(BaseModel):
     truncated: bool = False
 
 
+class AdminRequestPerfTrendBucket(BaseModel):
+    """One time bucket of a served route's TTFT / decode-throughput trend.
+
+    Emitted for every bucket in the window, including quiet ones: a gap in
+    traffic is information, and the chart needs a continuous axis. A bucket with
+    no measurable sample carries ``request_count`` (possibly 0) and ``None``
+    statistics rather than zeros.
+    """
+
+    start_time: datetime
+    request_count: int
+    ttft_ms_mean: float | None = None
+    ttft_ms_p50: float | None = None
+    ttft_ms_p90: float | None = None
+    decode_throughput_tps_mean: float | None = None
+    decode_throughput_tps_p50: float | None = None
+    decode_throughput_tps_p90: float | None = None
+
+
+class AdminRequestPerfTrendSeries(BaseModel):
+    """One served (model, endpoint) pair's trend across the window.
+
+    ``buckets`` is always the full, evenly spaced grid, oldest first, so two
+    series can be read against the same x axis without the client aligning them.
+    """
+
+    model_id: str
+    endpoint_id: str
+    request_count: int
+    buckets: list[AdminRequestPerfTrendBucket]
+
+
+class AdminRequestPerfTrendResponse(BaseModel):
+    """Per-(model, endpoint) TTFT and decode-throughput trend over time."""
+
+    generated_at: datetime
+    days: int
+    bucket_minutes: int
+    series: list[AdminRequestPerfTrendSeries]
+    # True when busier routes crowded others out of the response.
+    truncated: bool = False
+
+
 class AdminRecentRequestItem(BaseModel):
     """A single API request log entry (admin view, includes user identity)."""
 
@@ -1460,6 +1503,9 @@ __all__ = [
     "AdminRequestPerfBreakdownResponse",
     "AdminRequestPerfDistribution",
     "AdminRequestPerfGroup",
+    "AdminRequestPerfTrendBucket",
+    "AdminRequestPerfTrendResponse",
+    "AdminRequestPerfTrendSeries",
     "AdminTtftScatterModel",
     "AdminTtftScatterPoint",
     "AdminTtftScatterResponse",

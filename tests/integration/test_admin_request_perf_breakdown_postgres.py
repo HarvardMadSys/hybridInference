@@ -18,6 +18,7 @@ Connection: ``TEST_PG_DSN`` when set, otherwise the ``DB_HOST`` / ``DB_PORT`` /
 from __future__ import annotations
 
 import hashlib
+import itertools
 import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -34,8 +35,10 @@ from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
 from serving.servers.routers.admin.metrics import (
     _PERF_BREAKDOWN_CACHE,
+    _PERF_TREND_CACHE,
     _decode_throughput_tps,
     _load_request_perf_breakdown,
+    _load_request_perf_trend,
 )
 from serving.storage.log_schema import ensure_api_logs_schema
 from tests.fixtures.auth_helpers import assert_test_db_name
@@ -134,10 +137,12 @@ async def db_logger(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerat
         )
 
     _PERF_BREAKDOWN_CACHE.clear()
+    _PERF_TREND_CACHE.clear()
     try:
         yield SimpleNamespace(pool=pool)
     finally:
         _PERF_BREAKDOWN_CACHE.clear()
+        _PERF_TREND_CACHE.clear()
         await pool.close()
         admin_conn = await asyncpg.connect(pg_dsn)
         try:
@@ -163,6 +168,7 @@ def _row(
     user_id: str = "user-1",
     request_type: str | None = None,
     age_days: int = 1,
+    at: datetime | None = None,
 ) -> dict[str, Any]:
     return {
         "request_id": request_id,
@@ -178,6 +184,10 @@ def _row(
         "user_id": user_id,
         "request_type": request_type,
         "age_days": age_days,
+        # An explicit timestamp wins over the age. Trend buckets are floored to
+        # absolute clock hours, so "N hours ago" lands in a different bucket
+        # depending on the minute the suite happens to run at.
+        "at": at,
     }
 
 
@@ -208,7 +218,7 @@ async def _seed(pool: asyncpg.Pool, rows: list[dict[str, Any]]) -> None:
                     '{{"request_type": "{}"}}'.format(r["request_type"])
                     if r["request_type"]
                     else "{}",
-                    now - timedelta(days=r["age_days"]),
+                    r.get("at") or now - timedelta(days=r["age_days"]),
                 )
                 for r in rows
             ],
@@ -459,3 +469,199 @@ async def test_filters_narrow_the_same_rows_as_the_list_view(db_logger):
     local_wide = next(g for g in wide.groups if g.endpoint_id == "glm-4.6:local-12003")
     # The 40-day-old row is in range now.
     assert local_wide.request_count == 11
+
+
+# ---------------------------------------------------------------------------
+# /admin/recent-requests/performance/trend — bucketed over time
+# ---------------------------------------------------------------------------
+
+
+def _inside_hour_bucket(hours_back: int) -> datetime:
+    """A timestamp in the middle of the hourly bucket *hours_back* hours ago.
+
+    Buckets are floored to absolute epoch hours, so placing a row "5.5 hours
+    ago" would straddle a boundary or not depending on the wall-clock minute the
+    suite ran at. Anchoring to the boundary makes placement exact.
+    """
+    now = datetime.now(timezone.utc)
+    floor_hour = datetime.fromtimestamp(int(now.timestamp()) // 3600 * 3600, tz=timezone.utc)
+    return floor_hour - timedelta(hours=hours_back) + timedelta(minutes=30)
+
+
+@pytest.mark.asyncio
+async def test_trend_locates_a_regression_in_the_hour_it_happened(db_logger):
+    """A slowdown confined to one hour shows up in that hour's bucket alone."""
+    rows = []
+    # Two healthy hours: TTFT 200/400 ms, 41 tokens over a 4 s decode window.
+    for hours_back in (5, 4):
+        rows += [
+            _row(
+                f"ok-{hours_back}-{i}",
+                ttft=ttft,
+                latency=ttft + 4000,
+                completion=41,
+                at=_inside_hour_bucket(hours_back),
+            )
+            for i, ttft in enumerate((200, 400))
+        ]
+    # Then one bad hour: first token an order of magnitude later, and half the
+    # decode rate (21 tokens across the same 4 s).
+    rows += [
+        _row(
+            f"bad-{i}",
+            ttft=ttft,
+            latency=ttft + 4000,
+            completion=21,
+            at=_inside_hour_bucket(2),
+        )
+        for i, ttft in enumerate((4000, 6000))
+    ]
+    await _seed(db_logger.pool, rows)
+
+    response = await _load_request_perf_trend(
+        db_logger, days=1, user_id=None, model_id=None, request_type=None
+    )
+
+    assert response.bucket_minutes == 60
+    assert response.days == 1
+    assert len(response.series) == 1
+    series = response.series[0]
+    assert (series.model_id, series.endpoint_id) == ("glm-4.6", "glm-4.6:local-12003")
+    assert series.request_count == 6
+
+    # The grid covers the whole window, evenly spaced and oldest first, so the
+    # client can plot it without aligning anything itself.
+    starts = [b.start_time for b in series.buckets]
+    assert len(starts) == 25
+    assert starts == sorted(starts)
+    assert {(b - a).total_seconds() for a, b in itertools.pairwise(starts)} == {3600.0}
+
+    populated = [b for b in series.buckets if b.request_count > 0]
+    assert [b.request_count for b in populated] == [2, 2, 2]
+    healthy_first, healthy_second, bad = populated
+    for healthy in (healthy_first, healthy_second):
+        assert healthy.ttft_ms_p50 == 300.0, healthy
+        assert healthy.ttft_ms_p90 == 380.0, healthy
+        assert healthy.decode_throughput_tps_p50 == 10.0, healthy
+    # The regression stays in its own bucket instead of being averaged away.
+    assert bad.ttft_ms_p50 == 5000.0
+    assert bad.ttft_ms_p90 == 5800.0
+    assert bad.decode_throughput_tps_p50 == 5.0
+
+
+@pytest.mark.asyncio
+async def test_trend_quiet_buckets_are_present_and_empty(db_logger):
+    """A gap in traffic stays a gap rather than a line drawn across it."""
+    await _seed(
+        db_logger.pool,
+        [_row("only-one", ttft=300, latency=4300, completion=41, at=_inside_hour_bucket(3))],
+    )
+
+    response = await _load_request_perf_trend(
+        db_logger, days=1, user_id=None, model_id=None, request_type=None
+    )
+    buckets = response.series[0].buckets
+
+    quiet = [b for b in buckets if b.request_count == 0]
+    assert len(quiet) == len(buckets) - 1
+    for bucket in quiet:
+        assert bucket.ttft_ms_mean is None
+        assert bucket.ttft_ms_p50 is None
+        assert bucket.decode_throughput_tps_p50 is None
+
+
+@pytest.mark.asyncio
+async def test_trend_keeps_endpoints_apart_on_one_shared_axis(db_logger):
+    """Two endpoints of a model stay separate series, busiest first."""
+    rows = [
+        *[
+            _row(f"local-{i}", ttft=200, latency=4200, completion=41, at=_inside_hour_bucket(2))
+            for i in range(3)
+        ],
+        *[
+            _row(
+                f"remote-{i}",
+                served_endpoint="glm-4.6:zai-api",
+                ttft=2000,
+                latency=6000,
+                completion=21,
+                at=_inside_hour_bucket(2),
+            )
+            for i in range(2)
+        ],
+    ]
+    await _seed(db_logger.pool, rows)
+
+    response = await _load_request_perf_trend(
+        db_logger, days=1, user_id=None, model_id=None, request_type=None
+    )
+
+    assert [(s.endpoint_id, s.request_count) for s in response.series] == [
+        ("glm-4.6:local-12003", 3),
+        ("glm-4.6:zai-api", 2),
+    ]
+    assert [b.start_time for b in response.series[0].buckets] == [
+        b.start_time for b in response.series[1].buckets
+    ]
+    local_busy = next(b for b in response.series[0].buckets if b.request_count)
+    remote_busy = next(b for b in response.series[1].buckets if b.request_count)
+    assert local_busy.ttft_ms_p50 == 200.0
+    assert remote_busy.ttft_ms_p50 == 2000.0
+    assert remote_busy.decode_throughput_tps_p50 == 5.0
+
+
+@pytest.mark.asyncio
+async def test_trend_series_cap_reports_truncation(db_logger, monkeypatch):
+    """Past the cap the busiest routes are kept and the drop is reported."""
+    from serving.servers.routers.admin import metrics as admin_metrics
+
+    monkeypatch.setattr(admin_metrics, "_PERF_TREND_MAX_SERIES", 2)
+    rows = [
+        *[
+            _row(f"busy-{i}", served_endpoint="ep-busy", at=_inside_hour_bucket(2))
+            for i in range(3)
+        ],
+        *[_row(f"mid-{i}", served_endpoint="ep-mid", at=_inside_hour_bucket(2)) for i in range(2)],
+        _row("quiet-0", served_endpoint="ep-quiet", at=_inside_hour_bucket(2)),
+    ]
+    await _seed(db_logger.pool, rows)
+
+    response = await _load_request_perf_trend(
+        db_logger, days=1, user_id=None, model_id=None, request_type=None
+    )
+
+    assert response.truncated is True
+    assert [s.endpoint_id for s in response.series] == ["ep-busy", "ep-mid"]
+
+
+@pytest.mark.asyncio
+async def test_trend_coarsens_the_bucket_for_a_longer_window(db_logger):
+    """A week comes back as 6-hour buckets, not 168 hourly points."""
+    await _seed(db_logger.pool, [_row("one", ttft=300, latency=4300, completion=41, age_days=2)])
+
+    week = await _load_request_perf_trend(
+        db_logger, days=7, user_id=None, model_id=None, request_type=None
+    )
+
+    assert week.bucket_minutes == 360
+    assert len(week.series[0].buckets) == 29
+    assert sum(b.request_count for b in week.series[0].buckets) == 1
+
+
+@pytest.mark.asyncio
+async def test_trend_totals_reconcile_with_the_flat_summary(db_logger):
+    """The trend and the summary above it describe the same rows."""
+    await _seed(db_logger.pool, _mixed_rows())
+
+    trend = await _load_request_perf_trend(
+        db_logger, days=7, user_id=None, model_id=None, request_type=None
+    )
+    flat = await _load_request_perf_breakdown(
+        db_logger, days=7, user_id=None, model_id=None, request_type=None
+    )
+
+    assert {(s.model_id, s.endpoint_id): s.request_count for s in trend.series} == {
+        (g.model_id, g.endpoint_id): g.request_count for g in flat.groups
+    }
+    for series in trend.series:
+        assert sum(b.request_count for b in series.buckets) == series.request_count, series

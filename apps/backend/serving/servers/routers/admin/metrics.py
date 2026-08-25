@@ -24,6 +24,9 @@ from serving.schemas_admin import (
     AdminRequestPerfBreakdownResponse,
     AdminRequestPerfDistribution,
     AdminRequestPerfGroup,
+    AdminRequestPerfTrendBucket,
+    AdminRequestPerfTrendResponse,
+    AdminRequestPerfTrendSeries,
     AdminTtftScatterModel,
     AdminTtftScatterPoint,
     AdminTtftScatterResponse,
@@ -229,6 +232,21 @@ _PERF_BREAKDOWN_CACHE: dict[_PerfBreakdownKey, tuple[float, AdminRequestPerfBrea
 _PERF_BREAKDOWN_LOCK: asyncio.Lock | None = None
 _PERF_BREAKDOWN_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
 
+# The trend view scans the same rows as the breakdown, bucketed, so it gets the
+# same treatment: its own keyed cache, sharing the TTL, entry cap and lock (one
+# heavy scan at a time across both views is exactly the bound that matters).
+# (pool id, days, user_id, model_id, request_type)
+_PerfTrendKey = tuple[int, int, str | None, str | None, str | None]
+_PERF_TREND_CACHE: dict[_PerfTrendKey, tuple[float, AdminRequestPerfTrendResponse]] = {}
+
+# Bucket width per lookback, mirroring REQUEST_METRIC_WINDOWS: a day of hourly
+# buckets is the case this view was built for, and longer windows coarsen rather
+# than return hundreds of points nobody can read on a sparkline.
+_TREND_BUCKET_MINUTES: tuple[tuple[int, int], ...] = ((1, 60), (7, 360), (30, 1440), (90, 1440))
+# Fewer series than the flat table: each carries a full bucket grid, and a chart
+# with more lines than this is unreadable anyway.
+_PERF_TREND_MAX_SERIES = 12
+
 
 def _perf_breakdown_lock() -> asyncio.Lock:
     """Return a lock bound to the active event loop for breakdown cache misses."""
@@ -241,31 +259,26 @@ def _perf_breakdown_lock() -> asyncio.Lock:
     return _PERF_BREAKDOWN_LOCK
 
 
-def _perf_breakdown_cached(
-    key: _PerfBreakdownKey,
-) -> AdminRequestPerfBreakdownResponse | None:
-    """Return a still-fresh cached breakdown for *key*, dropping it once stale."""
-    entry = _PERF_BREAKDOWN_CACHE.get(key)
+def _perf_cache_get(cache: dict[Any, tuple[float, Any]], key: Any) -> Any | None:
+    """Return a still-fresh cached value for *key*, dropping it once stale."""
+    entry = cache.get(key)
     if entry is None:
         return None
     cached_at, response = entry
     if time.monotonic() - cached_at >= _PERF_BREAKDOWN_CACHE_TTL_SECONDS:
-        _PERF_BREAKDOWN_CACHE.pop(key, None)
+        cache.pop(key, None)
         return None
     return response
 
 
-def _perf_breakdown_store(
-    key: _PerfBreakdownKey,
-    response: AdminRequestPerfBreakdownResponse,
-) -> None:
+def _perf_cache_put(cache: dict[Any, tuple[float, Any]], key: Any, response: Any) -> None:
     """Cache *response* under *key*, evicting the oldest entries past the cap."""
     # Re-insert rather than assign so the key moves to the end: dicts preserve
     # insertion order, which is what makes "pop the first key" evict the oldest.
-    _PERF_BREAKDOWN_CACHE.pop(key, None)
-    _PERF_BREAKDOWN_CACHE[key] = (time.monotonic(), response)
-    while len(_PERF_BREAKDOWN_CACHE) > _PERF_BREAKDOWN_CACHE_MAX_ENTRIES:
-        _PERF_BREAKDOWN_CACHE.pop(next(iter(_PERF_BREAKDOWN_CACHE)))
+    cache.pop(key, None)
+    cache[key] = (time.monotonic(), response)
+    while len(cache) > _PERF_BREAKDOWN_CACHE_MAX_ENTRIES:
+        cache.pop(next(iter(cache)))
 
 
 def _perf_distribution_from_row(row: Any, prefix: str) -> AdminRequestPerfDistribution:
@@ -1025,7 +1038,7 @@ async def _get_cached_request_perf_breakdown(
         request_type or None,
     )
     if not refresh:
-        cached = _perf_breakdown_cached(key)
+        cached = _perf_cache_get(_PERF_BREAKDOWN_CACHE, key)
         if cached is not None:
             return cached
 
@@ -1033,7 +1046,7 @@ async def _get_cached_request_perf_breakdown(
         # Re-check inside the lock: a request that queued behind an identical
         # miss takes that result instead of running the same scan again.
         if not refresh:
-            cached = _perf_breakdown_cached(key)
+            cached = _perf_cache_get(_PERF_BREAKDOWN_CACHE, key)
             if cached is not None:
                 return cached
 
@@ -1044,7 +1057,7 @@ async def _get_cached_request_perf_breakdown(
             model_id=model_id,
             request_type=request_type,
         )
-        _perf_breakdown_store(key, response)
+        _perf_cache_put(_PERF_BREAKDOWN_CACHE, key, response)
         return response
 
 
@@ -1083,6 +1096,256 @@ async def admin_recent_requests_performance(
         raise HTTPException(500, "Database not configured")
 
     return await _get_cached_request_perf_breakdown(
+        db_logger,
+        days=max(1, min(days, 90)),
+        user_id=user_id,
+        model_id=model_id,
+        request_type=request_type,
+        refresh=refresh,
+    )
+
+
+def _trend_bucket_minutes(days: int) -> int:
+    """Bucket width for a *days* lookback: hourly for a day, coarser beyond."""
+    for max_days, minutes in _TREND_BUCKET_MINUTES:
+        if days <= max_days:
+            return minutes
+    return _TREND_BUCKET_MINUTES[-1][1]
+
+
+def _trend_grid(now: datetime, days: int, bucket_minutes: int) -> list[datetime]:
+    """Bucket start times covering the window, oldest first.
+
+    Aligned to absolute epoch multiples of the bucket width — the same flooring
+    the SQL applies — so a fetched bucket lands on exactly one grid slot.
+    """
+    width = bucket_minutes * 60
+    end = int(now.timestamp()) // width * width
+    start = end - (days * 86400 // width) * width
+    return [datetime.fromtimestamp(ts, tz=timezone.utc) for ts in range(start, end + width, width)]
+
+
+async def _load_request_perf_trend(
+    db_logger,
+    *,
+    days: int,
+    user_id: str | None,
+    model_id: str | None,
+    request_type: str | None,
+) -> AdminRequestPerfTrendResponse:
+    """Bucket TTFT and decode throughput over time, per served (model, endpoint).
+
+    The flat summary in :func:`_load_request_perf_breakdown` answers "which
+    endpoint is slower"; this answers "when did it change" — the same rows and
+    the same filters, grouped by time bucket as well as by route, so a regression
+    that started an hour ago is visible instead of being averaged into a day.
+
+    Series are ranked by traffic and capped, and every series carries the full
+    bucket grid: quiet buckets come back with ``request_count`` 0 and no
+    statistics, so a gap reads as a gap rather than as a straight line drawn
+    between two distant points.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    bucket_minutes = _trend_bucket_minutes(days)
+    where_clauses, params, needs_user_join = _build_recent_requests_filters(
+        days=days,
+        user_id=user_id,
+        model_id=model_id,
+        request_type=request_type,
+    )
+    where_clauses.append("l.status_code BETWEEN 200 AND 399")
+    where_clauses.append("l.stream = TRUE")
+    where_sql = "WHERE " + " AND ".join(where_clauses)
+    join_sql = "LEFT JOIN users u ON u.id = l.user_id " if needs_user_join else ""
+    bucket_idx = len(params) + 1
+    params.append(bucket_minutes * 60)
+    series_idx = len(params) + 1
+    # One extra series, so a capped result is reported rather than passing for
+    # the whole picture.
+    params.append(_PERF_TREND_MAX_SERIES + 1)
+
+    async with db_logger.pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            WITH base AS (
+                SELECT
+                    COALESCE(NULLIF(l.served_model_id, ''), l.model_id) AS served_model,
+                    COALESCE(NULLIF(l.served_endpoint_id, ''), l.provider) AS served_endpoint,
+                    to_timestamp(
+                        floor(extract(epoch FROM l.timestamp) / ${bucket_idx}::int)
+                        * ${bucket_idx}::int
+                    ) AS bucket_start,
+                    CASE
+                        WHEN l.ttft_ms IS NOT NULL AND l.ttft_ms > 0
+                            THEN l.ttft_ms::float
+                    END AS ttft_ms,
+                    {_DECODE_THROUGHPUT_SQL} AS throughput_tps
+                FROM api_logs l
+                {join_sql}{where_sql}
+            ),
+            totals AS (
+                SELECT served_model, served_endpoint, COUNT(*) AS total
+                FROM base
+                GROUP BY served_model, served_endpoint
+            ),
+            ranked AS (
+                SELECT
+                    served_model,
+                    served_endpoint,
+                    total,
+                    ROW_NUMBER() OVER (
+                        ORDER BY total DESC, served_model ASC, served_endpoint ASC
+                    ) AS rn
+                FROM totals
+            )
+            SELECT
+                b.served_model,
+                b.served_endpoint,
+                r.total,
+                r.rn,
+                b.bucket_start,
+                COUNT(*) AS request_count,
+                AVG(b.ttft_ms) AS tt_mean,
+                percentile_cont(ARRAY[0.5, 0.9]::float8[])
+                    WITHIN GROUP (ORDER BY b.ttft_ms)
+                    FILTER (WHERE b.ttft_ms IS NOT NULL) AS tt_percentiles,
+                AVG(b.throughput_tps) AS tp_mean,
+                percentile_cont(ARRAY[0.5, 0.9]::float8[])
+                    WITHIN GROUP (ORDER BY b.throughput_tps)
+                    FILTER (WHERE b.throughput_tps IS NOT NULL) AS tp_percentiles
+            FROM base b
+            JOIN ranked r
+              ON r.served_model = b.served_model
+             AND r.served_endpoint = b.served_endpoint
+            WHERE r.rn <= ${series_idx}
+            GROUP BY b.served_model, b.served_endpoint, r.total, r.rn, b.bucket_start
+            ORDER BY r.rn ASC, b.bucket_start ASC
+            """,
+            *params,
+        )
+
+    now = datetime.now(timezone.utc)
+    grid = _trend_grid(now, days, bucket_minutes)
+    # rn > cap means busier routes crowded this one out; drop it but say so.
+    truncated = any(int(row["rn"]) > _PERF_TREND_MAX_SERIES for row in rows)
+
+    by_series: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        if int(row["rn"]) > _PERF_TREND_MAX_SERIES:
+            continue
+        key = (row["served_model"], row["served_endpoint"])
+        entry = by_series.setdefault(key, {"total": int(row["total"] or 0), "buckets": {}})
+        tt_p50, tt_p90 = (*(row["tt_percentiles"] or ()), None, None)[:2]
+        tp_p50, tp_p90 = (*(row["tp_percentiles"] or ()), None, None)[:2]
+        entry["buckets"][row["bucket_start"]] = AdminRequestPerfTrendBucket(
+            start_time=row["bucket_start"],
+            request_count=int(row["request_count"] or 0),
+            ttft_ms_mean=_round_or_none(row["tt_mean"]),
+            ttft_ms_p50=_round_or_none(tt_p50),
+            ttft_ms_p90=_round_or_none(tt_p90),
+            decode_throughput_tps_mean=_round_or_none(row["tp_mean"]),
+            decode_throughput_tps_p50=_round_or_none(tp_p50),
+            decode_throughput_tps_p90=_round_or_none(tp_p90),
+        )
+
+    series = [
+        AdminRequestPerfTrendSeries(
+            model_id=model,
+            endpoint_id=endpoint,
+            request_count=entry["total"],
+            buckets=[
+                entry["buckets"].get(
+                    slot, AdminRequestPerfTrendBucket(start_time=slot, request_count=0)
+                )
+                for slot in grid
+            ],
+        )
+        for (model, endpoint), entry in by_series.items()
+    ]
+
+    return AdminRequestPerfTrendResponse(
+        generated_at=now,
+        days=days,
+        bucket_minutes=bucket_minutes,
+        series=series,
+        truncated=truncated,
+    )
+
+
+async def _get_cached_request_perf_trend(
+    db_logger,
+    *,
+    days: int,
+    user_id: str | None,
+    model_id: str | None,
+    request_type: str | None,
+    refresh: bool = False,
+) -> AdminRequestPerfTrendResponse:
+    """Load the per-route trend, reusing a recent result for these filters."""
+    key: _PerfTrendKey = (
+        id(db_logger.pool),
+        days,
+        user_id or None,
+        model_id or None,
+        request_type or None,
+    )
+    if not refresh:
+        cached = _perf_cache_get(_PERF_TREND_CACHE, key)
+        if cached is not None:
+            return cached
+
+    async with _perf_breakdown_lock():
+        if not refresh:
+            cached = _perf_cache_get(_PERF_TREND_CACHE, key)
+            if cached is not None:
+                return cached
+
+        response = await _load_request_perf_trend(
+            db_logger,
+            days=days,
+            user_id=user_id,
+            model_id=model_id,
+            request_type=request_type,
+        )
+        _perf_cache_put(_PERF_TREND_CACHE, key, response)
+        return response
+
+
+@router.get(
+    "/recent-requests/performance/trend",
+    response_model=AdminRequestPerfTrendResponse,
+)
+async def admin_recent_requests_performance_trend(
+    days: int = 1,
+    user_id: str | None = None,
+    model_id: str | None = None,
+    request_type: str | None = None,
+    refresh: bool = False,
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminRequestPerfTrendResponse:
+    """Return TTFT / decode-throughput trends per served (model, endpoint).
+
+    The time-series companion to ``/admin/recent-requests/performance``: same
+    rows, same filters, bucketed so a change can be located in time. Defaults to
+    the last day in hourly buckets; longer lookbacks coarsen the bucket
+    (``bucket_minutes`` in the response says which was used).
+
+    Query Parameters:
+    - days: Lookback window in days (default: 1, clamped to [1, 90])
+    - user_id: Filter by user ID, name, or email (substring match)
+    - model_id: Filter by requested model ID (substring match)
+    - request_type: ``"embedding"`` / ``"chat"``, as on ``/recent-requests``
+    - refresh: Bypass the short-lived per-filter cache
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    return await _get_cached_request_perf_trend(
         db_logger,
         days=max(1, min(days, 90)),
         user_id=user_id,

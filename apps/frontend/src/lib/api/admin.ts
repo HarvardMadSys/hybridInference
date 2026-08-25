@@ -670,6 +670,63 @@ export async function getRecentRequestsPerformance({
   return jsonOrThrow<AdminRequestPerfBreakdownResponse>(resp);
 }
 
+export interface AdminRequestPerfTrendBucket {
+  start_time: string;
+  request_count: number;
+  ttft_ms_mean: number | null;
+  ttft_ms_p50: number | null;
+  ttft_ms_p90: number | null;
+  decode_throughput_tps_mean: number | null;
+  decode_throughput_tps_p50: number | null;
+  decode_throughput_tps_p90: number | null;
+}
+
+export interface AdminRequestPerfTrendSeries {
+  model_id: string;
+  endpoint_id: string;
+  request_count: number;
+  // Always the full, evenly spaced grid, oldest first — quiet buckets included,
+  // so a gap in traffic renders as a gap rather than a straight line.
+  buckets: AdminRequestPerfTrendBucket[];
+}
+
+export interface AdminRequestPerfTrendResponse {
+  generated_at: string;
+  days: number;
+  bucket_minutes: number;
+  series: AdminRequestPerfTrendSeries[];
+  truncated: boolean;
+}
+
+export async function getRecentRequestsPerformanceTrend({
+  days,
+  userId,
+  modelId,
+  requestType,
+  refresh = false,
+}: {
+  days?: number;
+  userId?: string;
+  modelId?: string;
+  requestType?: 'chat' | 'embedding';
+  refresh?: boolean;
+} = {}): Promise<AdminRequestPerfTrendResponse> {
+  const params = new URLSearchParams();
+  if (days != null) params.set('days', String(days));
+  if (userId) params.set('user_id', userId);
+  if (modelId) params.set('model_id', modelId);
+  if (requestType) params.set('request_type', requestType);
+  if (refresh) params.set('refresh', 'true');
+  const query = params.toString();
+  const resp = await fetchWithAuth(
+    API_BASE,
+    query
+      ? `/admin/recent-requests/performance/trend?${query}`
+      : '/admin/recent-requests/performance/trend',
+  );
+  return jsonOrThrow<AdminRequestPerfTrendResponse>(resp);
+}
+
 export interface AdminRecentRequestContentResponse {
   prompt: string | null;
   response: string | null;

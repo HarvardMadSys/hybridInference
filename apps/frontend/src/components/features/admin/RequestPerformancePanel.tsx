@@ -1,12 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import {
   AdminRequestPerfDistribution,
   AdminRequestPerfGroup,
+  AdminRequestPerfTrendResponse,
   getRecentRequestsPerformance,
+  getRecentRequestsPerformanceTrend,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { EndpointTrendCharts } from './EndpointTrendCharts';
 
 type MetricKind = 'ms' | 'tps';
 
@@ -91,6 +94,13 @@ export function RequestPerformancePanel({
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Expanding a route reveals its trend. The trend covers every route in one
+  // response, so it is fetched once on the first expand and reused; it is
+  // dropped whenever the filters change, since it then describes other rows.
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [trend, setTrend] = useState<AdminRequestPerfTrendResponse | null>(null);
+  const [trendLoading, setTrendLoading] = useState(false);
+  const [trendError, setTrendError] = useState<string | null>(null);
 
   // Monotonic id so a slow response issued under older filters can't overwrite
   // a newer one (the filters change as the admin types).
@@ -105,6 +115,9 @@ export function RequestPerformancePanel({
       const seq = ++seqRef.current;
       setLoading(true);
       try {
+        setExpanded(null);
+        setTrend(null);
+        setTrendError(null);
         const data = await getRecentRequestsPerformance({
           days,
           userId: userFilter || undefined,
@@ -138,6 +151,28 @@ export function RequestPerformancePanel({
     load(isRefresh);
   }, [load, refreshKey]);
 
+  const toggleExpanded = useCallback(
+    (endpointId: string) => {
+      const next = expanded === endpointId ? null : endpointId;
+      setExpanded(next);
+      if (next === null || trend !== null || trendLoading) return;
+      setTrendLoading(true);
+      getRecentRequestsPerformanceTrend({
+        days,
+        userId: userFilter || undefined,
+        modelId: modelFilter || undefined,
+        requestType: requestType === 'all' ? undefined : requestType,
+      })
+        .then((data) => {
+          setTrend(data);
+          setTrendError(null);
+        })
+        .catch((e) => setTrendError(getErrorMessage(e)))
+        .finally(() => setTrendLoading(false));
+    },
+    [expanded, trend, trendLoading, days, userFilter, modelFilter, requestType],
+  );
+
   return (
     <div className="mt-4 rounded-2xl border border-gray-200 bg-white shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-100 px-4 py-3">
@@ -147,7 +182,7 @@ export function RequestPerformancePanel({
           </h2>
           <p className="text-[11px] text-gray-400">
             Successful streaming requests over the last {days}d, split by the model and endpoint
-            that served them
+            that served them. Select a route to see it over time
             {errorsOnly ? ' (not narrowed by “errors only”)' : ''}.
           </p>
         </div>
@@ -168,7 +203,11 @@ export function RequestPerformancePanel({
         )
       ) : (
         <>
-          <div className="max-h-[22rem] overflow-auto">
+          {/* The cap keeps a long route list from dominating the tab, but an
+              expanded chart is ~20rem on its own — leaving the cap in place
+              scrolls every other route out of view, which is the comparison the
+              panel exists for. */}
+          <div className={`overflow-auto ${expanded ? 'max-h-[56rem]' : 'max-h-[22rem]'}`}>
             <table className="min-w-full">
               <thead className="sticky top-0 z-10 bg-gray-50/95 backdrop-blur">
                 <tr className="border-b border-gray-200">
@@ -219,33 +258,73 @@ export function RequestPerformancePanel({
                 </tr>
               </thead>
               <tbody>
-                {groups.map((group) => (
-                  <tr
-                    key={`${group.model_id}|${group.endpoint_id}`}
-                    className="border-b border-gray-100 last:border-b-0 hover:bg-gray-50/60"
-                  >
-                    <td
-                      className="max-w-[180px] truncate py-2 pl-4 pr-2 text-[12px] font-medium text-gray-900"
-                      title={group.model_id}
-                    >
-                      {group.model_id}
-                    </td>
-                    <td
-                      className="max-w-[200px] truncate px-2 py-2 font-mono text-[11px] text-gray-600"
-                      title={group.endpoint_id}
-                    >
-                      {group.endpoint_id}
-                    </td>
-                    <td
-                      className="whitespace-nowrap px-2 py-2 text-right text-[11px] tabular-nums text-gray-700"
-                      title={sampleSummary(group)}
-                    >
-                      {group.request_count.toLocaleString()}
-                    </td>
-                    <MetricCells dist={group.ttft_ms} kind="ms" />
-                    <MetricCells dist={group.decode_throughput_tps} kind="tps" />
-                  </tr>
-                ))}
+                {groups.map((group) => {
+                  const isExpanded = expanded === group.endpoint_id;
+                  const series = trend?.series.find((s) => s.endpoint_id === group.endpoint_id);
+                  return (
+                    <Fragment key={`${group.model_id}|${group.endpoint_id}`}>
+                      <tr
+                        className="cursor-pointer border-b border-gray-100 last:border-b-0 hover:bg-gray-50/60"
+                        onClick={() => toggleExpanded(group.endpoint_id)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            toggleExpanded(group.endpoint_id);
+                          }
+                        }}
+                        tabIndex={0}
+                        role="button"
+                        aria-expanded={isExpanded}
+                        aria-label={`Show the last ${days}d trend for ${group.endpoint_id}`}
+                      >
+                        <td
+                          className="max-w-[180px] truncate py-2 pl-4 pr-2 text-[12px] font-medium text-gray-900"
+                          title={group.model_id}
+                        >
+                          {group.model_id}
+                        </td>
+                        <td
+                          className="max-w-[200px] truncate px-2 py-2 font-mono text-[11px] text-gray-600"
+                          title={group.endpoint_id}
+                        >
+                          {group.endpoint_id}
+                        </td>
+                        <td
+                          className="whitespace-nowrap px-2 py-2 text-right text-[11px] tabular-nums text-gray-700"
+                          title={sampleSummary(group)}
+                        >
+                          {group.request_count.toLocaleString()}
+                        </td>
+                        <MetricCells dist={group.ttft_ms} kind="ms" />
+                        <MetricCells dist={group.decode_throughput_tps} kind="tps" />
+                      </tr>
+                      {isExpanded && (
+                        <tr className="border-b border-gray-100 bg-gray-50/40">
+                          <td colSpan={11} className="px-4 py-3">
+                            {trendLoading && !series ? (
+                              <p className="py-6 text-center text-[12px] text-gray-400">
+                                Loading trend…
+                              </p>
+                            ) : trendError ? (
+                              <p className="py-6 text-center text-[12px] text-red-600">
+                                Failed to load the trend: {trendError}
+                              </p>
+                            ) : series ? (
+                              <EndpointTrendCharts
+                                series={series}
+                                bucketMinutes={trend?.bucket_minutes ?? 60}
+                              />
+                            ) : (
+                              <p className="py-6 text-center text-[12px] text-gray-400">
+                                No trend data for this endpoint.
+                              </p>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

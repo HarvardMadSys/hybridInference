@@ -1,16 +1,19 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminRequestPerfGroup } from '@/lib/api/admin';
 import { RequestPerformancePanel } from './RequestPerformancePanel';
+import { buildTrendPoints } from './EndpointTrendCharts';
 
 vi.mock('@/lib/api/admin', () => ({
   getRecentRequestsPerformance: vi.fn(),
+  getRecentRequestsPerformanceTrend: vi.fn(),
 }));
 
-import { getRecentRequestsPerformance } from '@/lib/api/admin';
+import { getRecentRequestsPerformance, getRecentRequestsPerformanceTrend } from '@/lib/api/admin';
+import type { AdminRequestPerfTrendResponse } from '@/lib/api/admin';
 
 function makeGroup(overrides: Partial<AdminRequestPerfGroup> = {}): AdminRequestPerfGroup {
   return {
@@ -32,6 +35,41 @@ function rowCells(endpointId: string): string[] {
     .map((td) => td.textContent ?? '');
 }
 
+function makeTrend(
+  overrides: Partial<AdminRequestPerfTrendResponse> = {},
+): AdminRequestPerfTrendResponse {
+  const bucket = (hour: number, ttft: number | null, tps: number | null, requests: number) => ({
+    start_time: `2026-06-30T${String(hour).padStart(2, '0')}:00:00.000Z`,
+    request_count: requests,
+    ttft_ms_mean: ttft,
+    ttft_ms_p50: ttft,
+    ttft_ms_p90: ttft === null ? null : ttft * 2,
+    decode_throughput_tps_mean: tps,
+    decode_throughput_tps_p50: tps,
+    decode_throughput_tps_p90: tps === null ? null : tps * 1.5,
+  });
+  return {
+    generated_at: '2026-06-30T12:00:00.000Z',
+    days: 1,
+    bucket_minutes: 60,
+    series: [
+      {
+        model_id: 'glm-4.6',
+        endpoint_id: 'glm-4.6:local-12003',
+        request_count: 30,
+        buckets: [
+          bucket(9, 200, 40, 10),
+          bucket(10, null, null, 0),
+          bucket(11, 220, 39, 10),
+          bucket(12, 4000, 12, 10),
+        ],
+      },
+    ],
+    truncated: false,
+    ...overrides,
+  };
+}
+
 const defaultProps = {
   days: 7,
   userFilter: '',
@@ -48,6 +86,7 @@ describe('RequestPerformancePanel', () => {
       groups: [makeGroup()],
       truncated: false,
     });
+    vi.mocked(getRecentRequestsPerformanceTrend).mockResolvedValue(makeTrend());
   });
 
   afterEach(cleanup);
@@ -274,5 +313,156 @@ describe('RequestPerformancePanel', () => {
     render(<RequestPerformancePanel {...defaultProps} />);
 
     expect(await screen.findByText(/busiest model\/endpoint pairs/)).toBeInTheDocument();
+  });
+});
+
+describe('RequestPerformancePanel trends', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      groups: [makeGroup(), makeGroup({ endpoint_id: 'glm-4.6:zai-api' })],
+      truncated: false,
+    });
+    vi.mocked(getRecentRequestsPerformanceTrend).mockResolvedValue(makeTrend());
+  });
+
+  afterEach(cleanup);
+
+  async function expandFirstRow() {
+    const row = (await screen.findByText('glm-4.6:local-12003')).closest('tr');
+    if (!row) throw new Error('no row');
+    fireEvent.click(row);
+    return row;
+  }
+
+  it('does not fetch the trend until a route is opened', async () => {
+    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    await screen.findByText('glm-4.6:local-12003');
+
+    expect(getRecentRequestsPerformanceTrend).not.toHaveBeenCalled();
+
+    await expandFirstRow();
+    await waitFor(() =>
+      expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledWith({
+        days: 1,
+        userId: undefined,
+        modelId: undefined,
+        requestType: undefined,
+      }),
+    );
+  });
+
+  it('renders both charts for the opened route', async () => {
+    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    await expandFirstRow();
+
+    // One card per metric — never one chart with two y scales, since ms and
+    // tok/s share no axis. recharts itself does not lay out under jsdom, so the
+    // series mapping is asserted directly in the buildTrendPoints tests below.
+    expect(await screen.findByTestId('endpoint-trend-ttft')).toBeInTheDocument();
+    expect(screen.getByTestId('endpoint-trend-throughput')).toBeInTheDocument();
+    // The summary line reports how much of the window actually had traffic.
+    expect(screen.getByText(/3 of 4 hourly buckets/)).toBeInTheDocument();
+  });
+
+  it('reuses the one trend response when a second route is opened', async () => {
+    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    await expandFirstRow();
+    await screen.findByTestId('endpoint-trend-ttft');
+
+    const second = screen.getByText('glm-4.6:zai-api').closest('tr');
+    fireEvent.click(second!);
+
+    await waitFor(() => expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(1));
+  });
+
+  it('closes the trend and drops it when the filters change', async () => {
+    const { rerender } = render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    await expandFirstRow();
+    await screen.findByTestId('endpoint-trend-ttft');
+
+    rerender(<RequestPerformancePanel {...defaultProps} days={7} />);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('endpoint-trend-ttft')).not.toBeInTheDocument(),
+    );
+    // Re-opening asks again, since the cached trend described the old filters.
+    await expandFirstRow();
+    await waitFor(() => expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(2));
+    expect(getRecentRequestsPerformanceTrend).toHaveBeenLastCalledWith(
+      expect.objectContaining({ days: 7 }),
+    );
+  });
+
+  it('reports a trend failure without breaking the table', async () => {
+    vi.mocked(getRecentRequestsPerformanceTrend).mockRejectedValue(new Error('nope'));
+    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    await expandFirstRow();
+
+    expect(await screen.findByText(/Failed to load the trend: nope/)).toBeInTheDocument();
+    expect(screen.getByText('glm-4.6:local-12003')).toBeInTheDocument();
+  });
+
+  it('says so when a route has no measurable samples in the window', async () => {
+    vi.mocked(getRecentRequestsPerformanceTrend).mockResolvedValue(
+      makeTrend({
+        series: [
+          {
+            model_id: 'glm-4.6',
+            endpoint_id: 'glm-4.6:local-12003',
+            request_count: 4,
+            buckets: [
+              {
+                start_time: '2026-06-30T09:00:00.000Z',
+                request_count: 4,
+                ttft_ms_mean: null,
+                ttft_ms_p50: null,
+                ttft_ms_p90: null,
+                decode_throughput_tps_mean: null,
+                decode_throughput_tps_p50: null,
+                decode_throughput_tps_p90: null,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    await expandFirstRow();
+
+    expect(await screen.findAllByText(/No measurable samples/)).toHaveLength(2);
+  });
+});
+
+describe('buildTrendPoints', () => {
+  it('carries a quiet bucket through as a gap rather than a zero', () => {
+    const points = buildTrendPoints(makeTrend().series[0]);
+
+    expect(points).toHaveLength(4);
+    // The quiet 10:00 bucket keeps its slot on the axis with null values, so the
+    // line breaks there instead of sloping across the gap.
+    expect(points[1]).toMatchObject({
+      ttft_p50: null,
+      ttft_p90: null,
+      tps_p50: null,
+      tps_p90: null,
+      requests: 0,
+    });
+    expect(points.map((p) => p.ttft_p50)).toEqual([200, null, 220, 4000]);
+    expect(points.map((p) => p.tps_p50)).toEqual([40, null, 39, 12]);
+    expect(points.map((p) => p.ttft_p90)).toEqual([400, null, 440, 8000]);
+  });
+
+  it('labels each point with its bucket start time', () => {
+    const points = buildTrendPoints(makeTrend().series[0]);
+    const expected = new Date('2026-06-30T09:00:00.000Z').toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    expect(points[0].label).toBe(expected);
+    expect(new Set(points.map((p) => p.label)).size).toBe(4);
   });
 });
