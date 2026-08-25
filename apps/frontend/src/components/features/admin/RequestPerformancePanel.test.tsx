@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminRequestPerfGroup } from '@/lib/api/admin';
-import { RequestPerformancePanel } from './RequestPerformancePanel';
+import { RequestPerformancePanel, routeKeyOf } from './RequestPerformancePanel';
 import { bucketLabel, buildTrendPoints } from './EndpointTrendCharts';
 
 vi.mock('@/lib/api/admin', () => ({
@@ -353,6 +353,7 @@ describe('RequestPerformancePanel trends', () => {
         // The exact route, so a quiet one outside the busiest N still charts.
         servedModel: 'glm-4.6',
         servedEndpoint: 'glm-4.6:local-12003',
+        refresh: false,
       }),
     );
   });
@@ -579,5 +580,157 @@ describe('bucketLabel', () => {
       bucketLabel(`2026-06-${String(20 + i).padStart(2, '0')}T00:00:00.000Z`, 1440, 30),
     );
     expect(new Set(labels).size).toBe(labels.length);
+  });
+});
+
+describe('RequestPerformancePanel trend state isolation', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  beforeEach(() => {
+    // reset, not clear: clearAllMocks leaves queued *Once values in place, so an
+    // unconsumed promise from an earlier test would be handed to the first call
+    // here and the test would assert against the wrong response.
+    vi.mocked(getRecentRequestsPerformance).mockReset();
+    vi.mocked(getRecentRequestsPerformanceTrend).mockReset();
+    vi.clearAllMocks();
+    vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      groups: [makeGroup(), makeGroup({ endpoint_id: 'glm-4.6:zai-api' })],
+      truncated: false,
+    });
+    vi.mocked(getRecentRequestsPerformanceTrend).mockResolvedValue(makeTrend());
+  });
+
+  afterEach(cleanup);
+
+  const rowFor = (endpoint: string) => screen.getByText(endpoint).closest('tr')!;
+
+  it("keeps one route's pending state from clearing another's", async () => {
+    const first = deferred<AdminRequestPerfTrendResponse>();
+    const second = deferred<AdminRequestPerfTrendResponse>();
+    vi.mocked(getRecentRequestsPerformanceTrend)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    await screen.findByText('glm-4.6:local-12003');
+
+    fireEvent.click(rowFor('glm-4.6:local-12003'));
+    fireEvent.click(rowFor('glm-4.6:zai-api'));
+    await waitFor(() => expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(2));
+
+    // The first route answers while the second is still in flight.
+    first.resolve(makeTrend());
+    await waitFor(() => expect(screen.getByText(/Loading trend/)).toBeInTheDocument());
+
+    // The still-pending route must not have flipped to "no traffic", and
+    // reopening it must not fire a duplicate of an expensive query.
+    expect(screen.queryByText(/No measurable traffic/)).not.toBeInTheDocument();
+    fireEvent.click(rowFor('glm-4.6:zai-api'));
+    fireEvent.click(rowFor('glm-4.6:zai-api'));
+    expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(2);
+
+    second.resolve(
+      makeTrend({ series: [{ ...makeTrend().series[0], endpoint_id: 'glm-4.6:zai-api' }] }),
+    );
+    await waitFor(() => expect(screen.queryByText(/Loading trend/)).not.toBeInTheDocument());
+  });
+
+  it("keeps one route's failure off another route", async () => {
+    // Only one route is expanded at a time, so a shared error marker shows
+    // through on the *next* route opened after a failure, not beside it.
+    vi.mocked(getRecentRequestsPerformanceTrend)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(
+        makeTrend({ series: [{ ...makeTrend().series[0], endpoint_id: 'glm-4.6:zai-api' }] }),
+      );
+
+    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    await screen.findByText('glm-4.6:local-12003');
+
+    fireEvent.click(rowFor('glm-4.6:local-12003'));
+    expect(await screen.findByText(/Failed to load the trend: boom/)).toBeInTheDocument();
+
+    // The next route charts normally rather than inheriting that error.
+    fireEvent.click(rowFor('glm-4.6:zai-api'));
+    expect(await screen.findByTestId('endpoint-trend-ttft')).toBeInTheDocument();
+    expect(screen.queryByText(/Failed to load the trend/)).not.toBeInTheDocument();
+
+    // Reopening the failed route retries rather than serving the old failure:
+    // nothing was cached for it, so a transient error is not sticky.
+    const callsBefore = vi.mocked(getRecentRequestsPerformanceTrend).mock.calls.length;
+    fireEvent.click(rowFor('glm-4.6:local-12003'));
+    await waitFor(() =>
+      expect(vi.mocked(getRecentRequestsPerformanceTrend).mock.calls.length).toBe(callsBefore + 1),
+    );
+    expect(screen.queryByText(/Failed to load the trend/)).not.toBeInTheDocument();
+  });
+
+  it("does not show a failed route's error on a route that simply has no data", async () => {
+    // The discriminating case: the second route renders no chart either, so a
+    // shared error marker would surface the first route's failure here instead
+    // of the honest "no traffic" message.
+    vi.mocked(getRecentRequestsPerformanceTrend)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(makeTrend({ series: [] }));
+
+    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    await screen.findByText('glm-4.6:local-12003');
+
+    fireEvent.click(rowFor('glm-4.6:local-12003'));
+    expect(await screen.findByText(/Failed to load the trend: boom/)).toBeInTheDocument();
+
+    fireEvent.click(rowFor('glm-4.6:zai-api'));
+    expect(await screen.findByText(/No measurable traffic for this route/)).toBeInTheDocument();
+    expect(screen.queryByText(/Failed to load the trend/)).not.toBeInTheDocument();
+  });
+
+  it('asks the backend for fresh numbers on the first trend after a Refresh', async () => {
+    const { rerender } = render(
+      <RequestPerformancePanel {...defaultProps} days={1} refreshKey={0} />,
+    );
+    await screen.findByText('glm-4.6:local-12003');
+    fireEvent.click(rowFor('glm-4.6:local-12003'));
+    await waitFor(() =>
+      expect(getRecentRequestsPerformanceTrend).toHaveBeenLastCalledWith(
+        expect.objectContaining({ refresh: false }),
+      ),
+    );
+
+    // Refresh: the summary bypasses the backend's ~20s cache, and the trend
+    // opened afterwards must not come back older than the summary above it.
+    rerender(<RequestPerformancePanel {...defaultProps} days={1} refreshKey={1} />);
+    await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(2));
+    fireEvent.click(rowFor('glm-4.6:local-12003'));
+    await waitFor(() =>
+      expect(getRecentRequestsPerformanceTrend).toHaveBeenLastCalledWith(
+        expect.objectContaining({ refresh: true }),
+      ),
+    );
+  });
+});
+
+describe('routeKeyOf', () => {
+  it('does not collide when an identifier contains the separator', () => {
+    // An admin-supplied route_id becomes the endpoint id verbatim, so neither
+    // half is safe to join with a plain delimiter.
+    expect(routeKeyOf({ model_id: 'a|b', endpoint_id: 'c' })).not.toBe(
+      routeKeyOf({ model_id: 'a', endpoint_id: 'b|c' }),
+    );
+  });
+
+  it('is stable for the same route', () => {
+    expect(routeKeyOf({ model_id: 'glm-4.6', endpoint_id: 'glm-4.6:local-12003' })).toBe(
+      routeKeyOf({ model_id: 'glm-4.6', endpoint_id: 'glm-4.6:local-12003' }),
+    );
   });
 });
