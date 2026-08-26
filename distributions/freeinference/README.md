@@ -162,8 +162,8 @@ That is the whole blocker. Everything else is prepared:
   on the pull request instead of on the server.
 - `ops/` is not uniformly this deployment's. `ops/admin`, `ops/ci`, `ops/db`
   (minus `analysis/`) and the GeoIP updater are generic operator tooling and
-  belong upstream — the export manifest already keeps them, after excluding
-  them wholesale once turned out to take `create_admin.py` with it.
+  belong upstream. Site-specific tools move to the private repository; generic
+  tools stay in the tree that will become public.
 
 So the move is: relocate the site-specific directories, fix `REPO_DIR` in each
 installer (it resolves `../..` from its own location, which changes), let the
@@ -186,5 +186,6 @@ picked up.
 - Content moves in are Tier B (revert = rollback); switching a config file's
   production truth into `config/` here is Tier A and follows the design
   doc's dual-read → dark → canary ladder.
-- This directory is the future repo-split and visibility boundary: assume
-  everything in it stays private to the FreeInference operation.
+- This directory is a transitional migration boundary. Its private deployment
+  content must move out before this repository becomes public; no publication
+  filter will hide it.

@@ -2,8 +2,8 @@
 
 `docs/collaboration/` holds business correspondence naming people outside this
 project; `.workbuddy/` holds an agent's scratch memory. Neither has ever been
-committed, which is the only reason a public export cannot carry them — and
-nothing but a `.gitignore` line keeps that true.
+committed, which is why the repository can still be made public without
+publishing them — and nothing but a `.gitignore` line keeps that true.
 
 This asserts the outcome rather than the mechanism: a reordered ignore rule, a
 `git add -f`, or a new sibling path all show up here.

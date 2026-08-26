@@ -228,8 +228,8 @@ def test_example_writes_nothing_into_the_checkout() -> None:
 
     `var/**` is gitignored, so the example's first run created a root-owned
     var/data that `actions/checkout --clean` could not remove, failing every
-    later job on that runner during checkout. `distributions/` is excluded from
-    the public export, so it would be created the same way downstream.
+    later job on that runner during checkout. A public clone would reproduce
+    the same failure if the example depended on a missing bind-mount source.
     """
     if shutil.which("docker") is None:
         pytest.skip("Docker Compose is not installed")
@@ -613,7 +613,7 @@ def test_fake_provider_stream_response_ignores_client_disconnects(
 
 
 def test_active_ci_runs_the_documented_example_contract() -> None:
-    """Works in both trees: public export replaces this same workflow path."""
+    """The one repository CI executes the same contract the tutorial teaches."""
     workflow = ACTIVE_CI.read_text()
     readme = (EXAMPLE / "README.md").read_text()
     for command in (
@@ -659,12 +659,9 @@ def test_router_tutorial_teaches_what_the_example_actually_serves() -> None:
     assert f"localhost:{published}/health" in tutorial
 
 
-def test_router_tutorial_is_reachable_in_both_developer_toctrees() -> None:
-    """A page absent from the exported toctree is published to nobody."""
+def test_router_tutorial_is_reachable_in_the_developer_toctree() -> None:
+    """The canonical developer guide must link the tutorial."""
     slug = TUTORIAL.stem
-    internal_index = REPO / "docs" / "developer" / "index.rst"
-    public_index = REPO / "ops" / "release" / "export_overlay" / "docs-developer-index.rst"
-
-    for index in (internal_index, public_index):
-        entries = [line.strip() for line in index.read_text().splitlines()]
-        assert slug in entries, f"{index} does not list {slug}"
+    index = REPO / "docs" / "developer" / "index.rst"
+    entries = [line.strip() for line in index.read_text().splitlines()]
+    assert slug in entries, f"{index} does not list {slug}"

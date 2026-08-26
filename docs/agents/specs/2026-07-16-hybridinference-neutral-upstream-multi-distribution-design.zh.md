@@ -6,13 +6,19 @@
 **范围：** 开源上游边界、FreeInference 运营内容拆分、未来发行版扩展方式
 **说明：** 本文聚焦如何安全整理和拆分当前仓库，不改变 RouteWise、Nimbus 的算法语义，也不设计尚未确定的资源系统。
 
+> **2026-08-26 决策更新：** Step 3 直接把现有
+> `HarvardMadSys/hybridInference` 仓库设为 public；不创建新的公开源码仓，
+> 不维护 filtered mirror，也不再物化一棵 replacement tree。本文早期版本中
+> “过滤导出 / 不公开本仓历史”的路线已被此决定取代。当前树与所有保留的 Git
+> 历史都属于公开前审计面；完整门槛见本文“公开与可见性策略”一节。
+
 **相关文档：**
 [2026-06-18-opensource-decoupling.zh.md](2026-06-18-opensource-decoupling.zh.md)
 （英文版 [2026-06-18-opensource-decoupling.md](2026-06-18-opensource-decoupling.md)）
 是用户管理与站点专属内容解耦的 Epic。两文关系：该 Epic 的 P0–P2 是本文
 Phase 1「配置与品牌中性化」的文件级实施清单；其 P3–P4（可插拔
 auth/quota、外部 IdP）不阻塞本文任何 Phase，排在 Phase 3 之后按真实需求执行；
-其「安全关键」章节的处方以本文「公开与可见性策略」一节为准（不做 git 历史重写）。
+其「安全关键」章节的处方以本文「公开与可见性策略」一节为准。
 
 ## 摘要（Executive Summary）
 
@@ -354,22 +360,22 @@ freeinference-infra-private/
 当前仓库为 private。Phase 3 要求公共 CI 和外部可自部署，这隐含"上游必须存在一个
 公开形态"。为避免"归拢运营内容"与"公开仓库"互相冲突，确立以下规则：
 
-### 1. Overlay 目录即未来的可见性边界
+### 1. Overlay 目录是迁移边界，不是发布过滤器
 
-`distributions/freeinference/` 按"未来独立仓库 + 独立可见性等级"设计。归拢做得越
-彻底，这个目录越集中了不适合公开的内容（真实模型目录、告警参数、机器脚本、RAG
-语料、备份位置）。因此 monorepo 在 overlay 存续期间保持 private。
+`distributions/freeinference/` 用来把 FreeInference 专属内容归拢成可整体迁移的
+边界。真实模型目录、告警参数、机器脚本、RAG 语料和备份位置最终进入私有
+`freeInference` 仓；在这些内容仍存在于本仓期间，HybridInference 保持 private。
+公开时不会靠路径过滤隐藏这个目录。
 
-### 2. 已定的硬约束与待定的公开机制
+### 2. 已定的公开机制
 
-已定（硬约束）：**不重写本仓 git 历史**——大量活跃 worktree 与进行中分支会被
-全部作废，且历史中的运营细节（内部拓扑注释、真实配置演变）本就无需随上游公开；
-overlay 存续期间本仓保持 private。
+直接翻转现有 `HarvardMadSys/hybridInference` 的可见性。没有新的公开源码仓、
+filtered mirror 或导出同步任务；GitHub issues、PR 和保留的 Git refs 也随原仓一起
+公开。
 
-待定（见待决策 10）：具体公开机制。当前**推荐方向**是"新建公共仓库 + 过滤导出"
-（排除 `distributions/`、`ops/db/analysis` 及公开面审计标记的内容，同步方向为
-"本仓 → 导出仓"），但它引入第三套仓库状态与同步治理，在 overlay 验证稳定前
-不定稿；"翻转本仓为 public + 历史清理"的路线因违反上述硬约束被排除。
+“不重写本仓历史”不再是硬约束。完整历史必须先审计；若发现不能公开的凭据、个人
+信息或基础设施信息，先吊销/轮换，再在写入冻结窗口清理保留 refs。历史清理会改变
+commit SHA，必须同步重建相关 artifact，并让 FreeInference 合入一次新的完整 bump。
 
 ### 3. 公开前置清单
 
@@ -378,8 +384,10 @@ overlay 存续期间本仓保持 private。
 1. [2026-06-18-opensource-decoupling.zh.md](2026-06-18-opensource-decoupling.zh.md)
    的 P0–P2，其中安全项按修订版处方执行：Statcounter 改 `NEXT_PUBLIC_*` 环境变量
    且默认关闭；`wrangler.toml` 中的 account/database ID 属标识符而非凭据，轮换
-   `CLOUDFLARE_API_TOKEN` 作为廉价保险即可，**不做 git 历史重写**。
-2. 全仓公开面审计：内部域名、主机拓扑注释、真实邮箱、未跟踪杂项文件。
+   `CLOUDFLARE_API_TOKEN` 作为廉价保险；若完整历史审计发现敏感内容，按本节规则
+   清理所有保留 refs。
+2. 当前树与完整历史的公开面审计：凭据、内部域名、主机拓扑、真实邮箱、私有
+   文档和基础设施标识；不以 baseline 接受遗留 finding。
 3. 公共 CI **必须**使用 GitHub-hosted runner（或一次性、隔离的 ephemeral
    runner）——持久 self-hosted runner 暴露给公开仓库的 fork PR，等于允许任意人
    在自有服务器上执行代码；对 fork PR 的人工审批只能作为额外防线，**不是**
@@ -389,8 +397,7 @@ overlay 存续期间本仓保持 private。
 
 ### 4. 时点
 
-任何公开形态最早在 Phase 2 完成（上游目录已不含运营内容）后启动；公开机制、
-时点与同步治理统一列入待决策 10，在 overlay 验证稳定前不定稿。
+只有 Phase 2 完成、上述公开前置清单全部通过后，才翻转原仓可见性。
 
 ## 当前目录迁移映射
 
@@ -886,8 +893,8 @@ agent 只能改 workflow 文件本身；neutral image 被 RouteWise 依赖决定
 7. 各模型/客户端 canary soak window 和 rollback RTO。
 8. 未来下游更适合 fork、独立发行版仓库还是纯 artifact consumer。
 9. 独立 `freeinference-deployment` 的公开范围与可选私有 infra 边界。
-10. 上游公开机制(推荐方向:过滤导出公共仓;硬约束:不重写本仓历史)、创建
-    时点与同步治理;在 overlay 验证稳定前不定稿。
+10. **已决定(2026-08-26):** 直接公开现有 HybridInference 仓；不建导出仓或
+    filtered mirror。当前树和所有保留历史必须先通过公开审计。
 
 ## 最终决策摘要（Decision Summary）
 

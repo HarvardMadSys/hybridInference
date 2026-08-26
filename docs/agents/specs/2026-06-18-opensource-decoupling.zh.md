@@ -6,13 +6,20 @@
 
 > 英文版(用于公开 repo / 提 issue):[2026-06-18-opensource-decoupling.md](2026-06-18-opensource-decoupling.md)
 
+> **2026-08-26 公开决策更新：** 现有 `HarvardMadSys/hybridInference` 仓库
+> 将直接设为 public，不再走 filtered export。因此当前 tree 与所有保留 Git refs
+> 都属于公开前审计面；公开机制与门槛以
+> [主设计文档](2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)
+> 的“公开与可见性策略”一节为准。
+> 本历史 Epic 后文“本仓历史不会公开 / 不做历史重写”的说法均已失效。
+
 > **修订记录(2026-07-16,与主设计文档对齐):** 本 Epic 的 P0–P2 是
 > [中立上游与发行版拆分设计](2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)
 > Phase 1 的文件级实施清单;P3–P4 不阻塞该文任何 Phase,排在其 Phase 3 之后按需执行。
 > 三处处方修订(正文均已按此改写,以下为变更说明):(1)「安全关键」章节——
 > `wrangler.toml` 中的 account/database ID 是标识符而非凭据(git 中无已提交凭据),
-> 轮换 `CLOUDFLARE_API_TOKEN` 作为廉价保险即可,**不做 git 历史重写**;具体公开
-> 机制见主文档「公开与可见性策略」及其待决策 10。Statcounter 环境变量化仍为公开
+> 轮换 `CLOUDFLARE_API_TOKEN` 作为廉价保险;具体公开机制见主文档
+> 「公开与可见性策略」。Statcounter 环境变量化仍为公开
 > 硬前置。(2)P1/P2 默认值与品牌内容——改为三步式:legacy FreeInference 默认值与
 > 素材保留,neutral profile 提供占位或隐藏,overlay 成为生产真值后才删除 legacy。(3)P5 中
 > 「解开 RouteWise 依赖」实为独立决策项:两种方案都意味着 RouteWise 代码公开,
@@ -69,26 +76,23 @@ auth/quota/concurrency,也已经有 `runtime_settings` 注册表和 `USER_AUTH_E
 
 这些会泄露 Harvard 真实基础设施,是硬阻断项:
 
-> **状态复核 2026-07-28。** 下面三条的勾选依据是 `ops/release/public_export.py`
-> 的实测输出,不是"读代码觉得应该没问题"。复跑它即可重新验证。
+> **状态说明 2026-08-26。** 2026-07-28 的勾选曾以 filtered export 为对象，
+> 不再证明原仓可以公开。以下 tree 与完整历史门必须按主设计文档的
+> “公开与可见性策略”重新验收。
 
-- [x] **`wrangler.toml` 中的 Cloudflare 账号 + D1 database ID** ——
+- [ ] **`wrangler.toml` 中的 Cloudflare 账号 + D1 database ID** ——
   `services/status-monitor-worker/wrangler.toml:7,37,38`。它们是标识符而非凭据
   (文件注释本身写明 `account_id` 非机密;真正的 secret `CLOUDFLARE_API_TOKEN`
   从未提交)。
-  **按导出路径已满足,未做参数化。** 三处出现(两个 `wrangler.toml` 与
-  `.github/workflows/alert-control-plane-staging-lifecycle.yml:29`)全部落在
-  `services/` 与 `.github/workflows/` 的排除范围内,导出树的审计里
-  `cloudflare identifier` 命中数为 **0**。若日后排除清单改动使 `services/`
-  重新进入导出,这条自动回到未完成——审计会当场报出来。
-  轮换 `CLOUDFLARE_API_TOKEN` 仍建议做,作为廉价保险;**不做 git 历史重写**
-  ——本私有仓的历史永远不随公开发布,重写只会作废所有活跃 worktree 和进行中 PR。
+  旧导出路径曾隐藏这些值，但直接公开原仓时不成立。公开前必须从当前 tree 迁出
+  不应公开的基础设施信息，并扫描所有保留 refs；如需清理历史，在写入冻结窗口
+  协调完成。轮换 `CLOUDFLARE_API_TOKEN` 仍建议做,作为廉价保险。
 - [x] **Statcounter 分析代码块** —— `apps/frontend/src/app/layout.tsx`
   (project `13224568`,security key `2d8ab84a`)。
   已由 `branding.statcounterProjectId` 门控(空值即整块不渲染),默认值在
   #1069 改为空,compose 与 `Dockerfile.frontend` 的默认值在 #1060 一并清空。
   未配置的部署不加载 Statcounter。
-- [x] 复查 `.gitleaks.toml`,确保轮换后的真实值不会被现有 allowlist 规则误屏蔽。
+- [ ] 复查 `.gitleaks.toml`,确保轮换后的真实值不会被现有 allowlist 规则误屏蔽。
   **复查发现了一个真实缺口**:`docs/agents/(plans|specs)/*.md` 整目录白名单,
   假设设计文档里的凭据都是样例——一把真的网关 key 恰好藏在那里(#1078)。
   精确收窄需要能实跑 gitleaks(盲改会让 Security Scan 对所有人变红),因此改为
@@ -132,7 +136,7 @@ auth/quota/concurrency,也已经有 `runtime_settings` 注册表和 `USER_AUTH_E
       `GATEWAY_BASE_URL`(`:7,17,37,38`)参数化为 Wrangler env 变量。
       *2026-07-28:公开面上已不必要(见安全章节),留作卫生项;做它需要先建
       repo variable,且 wrangler 部署无法本地验证。*
-- [ ] 轮换 `CLOUDFLARE_API_TOKEN` 作为保险(见安全章节;不做历史重写)。
+- [ ] 轮换 `CLOUDFLARE_API_TOKEN` 作为保险，并按 readiness 结果清理保留历史。
 - [x] 把 status-monitor worker 做成**可选** add-on,而非必需依赖。
       *已满足:`apps/backend/` 对 status-monitor 与告警控制面零引用,
       `tests/servers/test_neutral_startup.py` 实测网关在无数据库、无认证、
@@ -211,8 +215,8 @@ profile 隐藏/省略它们,物理删除等 overlay 成为生产真值之后。
 ## 风险与坑
 - **流式 / 中间件顺序(高危):** P3 把 auth/quota 决策插在路由前的热路径;
   no-op enforcer 绝不能缓冲 SSE 响应。要专门测无 auth 的流式路径。
-- **已提交标识符(低危,已修订):** 见安全章节 —— 轮换 API token 作为保险并
-  从 HEAD 参数化;不做历史重写,私有仓历史永远不随公开发布。
+- **已提交标识符(低危,已修订):** 见安全章节 —— 轮换 API token 作为保险、
+  从 HEAD 参数化，并把所有保留历史纳入直接公开审计。
 - **License(低/中):** MIT 没问题,但版权写的是 Harvard SEAS;确认 RouteWise
   本身可再分发,否则做成可选依赖。
 - **D1 vs Postgres(中):** 主存储是 Postgres + 干净抽象;status-monitor 的 D1
@@ -228,6 +232,6 @@ profile 隐藏/省略它们,物理删除等 overlay 成为生产真值之后。
       默认值可保留至 overlay 成为生产真值)。
 - [ ] `USER_AUTH_ENABLED=false` 时能提供 chat completions(含流式),
       且无需任何 DB 用户态。
-- [ ] HEAD 中不含任何 Harvard 真实凭据;已提交的标识符完成参数化,公开发布
-      永远不携带本仓历史。
+- [ ] 当前 tree 与所有保留 Git refs 均不含 Harvard 真实凭据或不应公开的
+      基础设施信息。
 - [ ] 部署者无需改源码即可设置自己的品牌、支持邮箱,并(可选)接入自己的 SSO。

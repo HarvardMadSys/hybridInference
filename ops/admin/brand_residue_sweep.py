@@ -6,10 +6,11 @@ tracked text file for brand markers and buckets hits against an explicit
 allowlist, where **each bucket is a planned work stream** (overlay content,
 neutral-defaults flip, step-2 physical moves, historical docs).
 
-This is deliberately a run-once acceptance instrument, not a CI gate: run it
-while migrating to watch buckets shrink, and run it with ``--strict`` at
-final acceptance — by then the transitional buckets should be deleted from
-ALLOWLIST and any remaining hit fails the check.
+This is deliberately a migration acceptance instrument, not a CI gate: run it
+while migrating to watch buckets shrink, and run it with ``--strict`` at final
+acceptance — by then the transitional buckets should be deleted from ALLOWLIST
+and any remaining hit fails the check. It always scans the repository that
+will be made public; there is no filtered publication tree.
 
     uv run python ops/admin/brand_residue_sweep.py            # inventory
     uv run python ops/admin/brand_residue_sweep.py --strict   # acceptance
@@ -72,7 +73,13 @@ ATTRIBUTION: dict[str, str] = {
 # the measuring apparatus.
 GUARDS: dict[str, str] = {
     "ops/admin/brand_residue_sweep.py": "defines BRAND_MARKERS",
+    "ops/admin/private_surface_sweep.py": (
+        "defines the transitional FreeInference private-surface migration bucket"
+    ),
     "tests/unit/ops/test_brand_residue_sweep.py": "exercises the classifier above",
+    "tests/unit/ops/test_private_surface_sweep.py": (
+        "exercises the private-surface migration guard"
+    ),
     "tests/servers/test_neutral_startup.py": "asserts no marker reaches a response",
     "tests/unit/config/test_site_identity.py": "asserts the identity names no deployment",
     "tests/unit/config/test_contract_settings_defaults.py": "asserts no marker in the CORS default",
@@ -84,10 +91,10 @@ GUARDS: dict[str, str] = {
 # of the neutral upstream. Delete entries as they complete. **An empty PENDING
 # plus a clean --strict run is the criterion-② acceptance.**
 ALLOWLIST: dict[str, str] = {
-    "distributions/": "distribution overlay — the intended home for brand content",
-    "docs/agents/": "historical design docs (not shipped)",
-    "docs/superpowers/": "historical design docs (not shipped)",
-    "docs/reviews/": "review records (not shipped)",
+    "distributions/": "transitional private deployment overlay — migration pending",
+    "docs/agents/": "historical design docs — review before direct publication",
+    "docs/superpowers/": "historical design docs — review before direct publication",
+    "docs/reviews/": "review records — review before direct publication",
     "docs/developer/": "internal doc-site pages — step-2 / neutral wave",
     "services/freeinference-harness/": "step-2 move/neutralize per ownership inventory",
     "services/status-monitor-worker/": "step-2 move/neutralize per ownership inventory",
@@ -173,18 +180,8 @@ def main() -> int:
         action="store_true",
         help="exit non-zero while any residue remains (attribution does not count)",
     )
-    parser.add_argument(
-        "--tree",
-        metavar="DIR",
-        help=(
-            "sweep a materialised export instead of this repository. This is "
-            "the measurement that decides whether the published artifact "
-            "carries residue; the repository keeps the overlay by design, so "
-            "sweeping it answers a different question"
-        ),
-    )
     args = parser.parse_args()
-    repo_root = Path(args.tree) if args.tree else Path(__file__).resolve().parents[2]
+    repo_root = Path(__file__).resolve().parents[2]
 
     buckets, violations = sweep(repo_root)
     total = sum(len(files) for files in buckets.values())

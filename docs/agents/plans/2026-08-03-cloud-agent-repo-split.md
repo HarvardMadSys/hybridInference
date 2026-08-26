@@ -1,10 +1,16 @@
 # Cloud Agent Repo Split — Fine-Grained Execution Plan
 
+> **Publication note (2026-08-26):** References below to the public-export
+> tool are historical statements about this plan's freeze SHA. That tool has
+> since been retired; the existing HybridInference repository itself is the
+> future publication surface, including its retained history.
+
 - **Date:** 2026-08-03
 - **Owner:** Murphy (decisions, reviews, cutover approval)
 - **Executors:** Glen + AI coding agents (each task below is written to be handed to one agent session)
 - **Decision source:** Murphy ↔ Juncheng Slack DM, 2026-07-31 — decouple cloud agent into its own service + repo, share login only, separate agent admin dashboard, dynamic host pool, open-source the result. Glen finishes in ~2 months.
-- **Source repo:** `HarvardMadSys/hybridInference` (private; history is NOT a publication artifact)
+- **Source repo:** `HarvardMadSys/hybridInference` (private during migration;
+  the existing repository and retained history are the future publication surface)
 - **Target repo:** `HarvardMadSys/freeinference-cloud-agent` (created 2026-07-31, currently empty, will be open-sourced)
 - **FREEZE_SHA:** `764a6f97477504deb4542e1c28c3128ff9601c94` (`dev`, 2026-08-03) — declared, A1/A2 complete
 - **Inventory basis:** the freeze commit. File-level authority is [cloud-agent-split-manifest.md](cloud-agent-split-manifest.md).
