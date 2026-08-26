@@ -1,29 +1,32 @@
 # Router Tutorial
 
-Bring up an OpenRouter-compatible gateway from a fresh clone and send it a
-request. No provider account, no API key and no `.env` file are involved: the
-tutorial runs against a fake upstream that ships with the repository, so every
-command below works on a laptop with nothing else configured.
+Bring up an OpenAI-compatible gateway from a fresh clone and send it a request.
+No provider account, no API key and no `.env` file are involved: the tutorial
+runs against a fake upstream that ships with the repository, so every command
+below works on a laptop with nothing else configured.
 
 By the end you will have a gateway answering `/health`, `/v1/models` and
-`/v1/chat/completions` — streaming and non-streaming — and you will know how
-to turn the example into a distribution of your own.
+`/v1/chat/completions` — streaming and non-streaming — and you will know what a
+distribution is made of.
 
-Every command here is the same command CI runs on each change, so a tutorial
-that stops working turns the build red.
+CI runs these same commands whenever the example, the backend or this page
+changes, so the walkthrough cannot rot unnoticed.
 
 ## What you need
 
 - Docker Engine 24+ with Compose v2. Check with `docker compose version`.
 - A running Docker daemon. On macOS that is Docker Desktop or Colima
   (`colima start`). `docker info` must succeed before you continue.
+- GNU Make, and Python 3 on the host: `make smoke` runs the example's smoke
+  client locally rather than in a container. It imports only the standard
+  library, so no `pip install` is involved.
 - Roughly 2 GB of disk for the gateway image.
 - Port 18080 free. The example deliberately avoids 8080, which a gateway you
   already run would be publishing — but if something holds 18080 too, see
   [Port already in use](#port-already-in-use).
 
-Python, Node.js and a GPU are not required. After the image is built nothing
-in this tutorial reaches the network.
+Node.js and a GPU are not required. After the image is built, nothing in this
+tutorial reaches the network.
 
 ## Start the gateway
 
@@ -121,8 +124,11 @@ curl -s localhost:18080/v1/models
 
 The id, name, limits, pricing and sampling parameters all come from
 `examples/distributions/example/config/models.yaml`; the remaining fields are
-defaults the gateway fills in. Editing that file and restarting changes what the
-gateway advertises.
+defaults the gateway fills in.
+
+Editing that file changes what the gateway advertises, but a restart is not
+enough to pick it up: the example's config is copied into the backend image at
+build time rather than mounted, so rerun `make build DISTRIBUTION=example`.
 
 ### Ask for a completion
 
@@ -192,8 +198,8 @@ payload.
 
 The bundled upstream does not report usage on streamed responses, which is the
 OpenAI default, so the token counts in the final chunk are the gateway's own
-estimate. They therefore differ from the exact counts the non-streaming call
-returned for the same prompt.
+estimate. They therefore differ from the counts the non-streaming call returned
+for the same prompt, which the upstream reported itself.
 
 Any OpenAI client library works against this endpoint; point its base URL at
 `http://localhost:18080/v1` and give it any non-empty API key, since
@@ -217,35 +223,38 @@ Clients keep asking for `example-chat`; only the route behind it changed.
 provider — that is intended, since a deterministic check cannot assert a real
 model's words. Call `/v1/chat/completions` directly instead.
 
-## Make it your own
+## What a distribution is made of
 
-The example is a directory, so copying it is how you start a real deployment:
+A distribution is a directory, and the example shows its shape. Four files
+decide what a gateway is:
 
-```bash
-cp -r examples/distributions/example distributions/myrouter
-```
-
-Inside it, four things decide what your gateway is:
-
-| Path | What it controls |
+| Path | What it holds |
 | --- | --- |
 | `distribution.yaml` | Identity (id, display name), site URLs, feature flags, and which config files to load |
-| `config/models.yaml` | The models you serve and the provider routes behind each one |
-| `config/routing.yaml` | Weights across those routes |
-| `deploy/backend.env` | Backend environment: ports, database, auth, upstream credentials |
+| `config/models.yaml` | The models you serve, the provider routes behind each one, and the `weight` on each route |
+| `config/routing.yaml` | Router selection and health behaviour: `default_router`, timeouts, health-check interval, deployment lists |
+| `deploy/backend.env` | Backend environment: published port, database, auth, upstream credentials |
 
-Edit the identity in `distribution.yaml`, replace the model registry with your
-own providers, then start it the same way:
+Real deployments live under `distributions/`, which is the directory a bare
+`make up` discovers when you pass no `DISTRIBUTION` argument. This tutorial's
+copy sits under `examples/distributions/` precisely so that shipping it can
+never change which deployment a bare `make up` selects.
 
-```bash
-make up DISTRIBUTION=myrouter
-make smoke DISTRIBUTION=myrouter
-```
+That separation is also why copying the example is a starting point rather than
+a working deployment. `cp -r examples/distributions/example distributions/myrouter`
+gives you the right shape, but the copy still points back at the original:
+`deploy/backend.env` sets `BACKEND_ENV_FILE` and `DISTRIBUTION_CONFIG_PATH` to
+paths under `examples/distributions/example/`, and `deploy/docker-compose.yml`
+still names the Compose project `hybridinference-example` and builds the fake
+upstream. Its smoke client also asserts the example's own manifest id, model id
+and sentinel.
 
-Overlays under `distributions/` are what `make up` discovers automatically when
-you give it no `DISTRIBUTION` argument; the tutorial's copy lives under
-`examples/distributions/` precisely so that adding it can never change which
-deployment a bare `make up` selects.
+More importantly, `make up` treats the two differently on purpose. The example
+gets a backend-only shortcut — no Postgres, no accounts — while a distribution
+under `distributions/` starts the full stack and expects the external volume
+that goes with it. So a copy is where you begin editing, not something to start
+unchanged; see [Installation](installation.md) and
+[Configuration](configuration.md) for what a full deployment needs.
 
 ## Stop it
 
@@ -274,9 +283,12 @@ BACKEND_PORT=28080 make smoke DISTRIBUTION=example
 
 Then read `localhost:28080` wherever this page says `localhost:18080`.
 
-Changing the port permanently is an edit to one line — `BACKEND_PORT` in
+To change the port permanently, edit `BACKEND_PORT` in
 `examples/distributions/example/deploy/backend.env`. Both Compose and the smoke
-client read it from there, so neither can drift from the other.
+client read it from there, so those two cannot drift apart. Two more places
+state the same port for display rather than for binding, and are worth keeping
+consistent: `SITE_PUBLIC_BASE_URL` in that same file, and `site.public_base_url`
+in `distribution.yaml`.
 
 ### Cannot connect to the Docker daemon
 
