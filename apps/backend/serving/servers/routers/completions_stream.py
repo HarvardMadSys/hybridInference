@@ -40,7 +40,7 @@ from serving.servers.routers.routing_info import (
     merge_adapter_routing,
 )
 from serving.storage.utils import json_safe
-from serving.stream import make_role_chunk
+from serving.stream import make_role_chunk, new_completion_id, stamp_completion_id
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
@@ -285,6 +285,11 @@ class StreamSession:
         self._request_payload = request_payload
         self._timeout_fired_probe = timeout_fired_probe
 
+        # Every frame of this response carries one id, including the ones
+        # adapters mint with their own; the router relabels those on the way
+        # out so clients can group a completion's chunks.
+        self._completion_id = new_completion_id()
+
         # Streaming-loop state
         self._yielded_first_chunk = False
         self._chunk_count = 0
@@ -353,7 +358,7 @@ class StreamSession:
         try:
             # Initial assistant role chunk — many OpenAI-compatible clients
             # (e.g., Cursor) expect role:"assistant" before any content.
-            role_chunk = make_role_chunk(model=self._model)
+            role_chunk = make_role_chunk(model=self._model, completion_id=self._completion_id)
             logger.debug(f"Yielding initial role chunk: {role_chunk[:150]}")
             self._yielded_first_chunk = True
             yield role_chunk
@@ -463,6 +468,7 @@ class StreamSession:
                                 continue
 
                             out_json = result.chunk_json or chunk_json
+                            stamp_completion_id(out_json, self._completion_id)
                             sanitized_chunk = f"data: {json.dumps(out_json)}\n\n"
                             logger.debug(
                                 f"Yielding sanitized chunk {self._chunk_count} "

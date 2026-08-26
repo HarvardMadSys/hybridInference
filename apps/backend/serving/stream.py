@@ -15,14 +15,31 @@ from typing import Any
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 
-def _chunk_id() -> str:
-    """Return a unique chunk id.
+def new_completion_id() -> str:
+    """Return an id identifying one completion for its whole lifetime.
 
-    Millisecond timestamps collide across concurrent streams (and between
-    chunks minted in the same ms), confusing clients that group or trace by
-    completion id.
+    OpenAI gives every chunk of a streamed completion the same ``id``, and
+    clients group or trace frames by it. Minting one per chunk therefore breaks
+    grouping just as surely as the millisecond timestamps this replaced broke
+    it by colliding across concurrent streams: the id has to be unique between
+    completions and constant within one.
+
+    Callers own a completion's id and pass it to every builder below; the
+    default exists only so a lone chunk built outside a stream is still valid.
     """
     return f"chatcmpl-{uuid.uuid4().hex[:24]}"
+
+
+def stamp_completion_id(chunk_json: dict[str, Any], completion_id: str) -> dict[str, Any]:
+    """Set ``completion_id`` on a chunk an adapter minted with its own id.
+
+    Adapters build frames without knowing which completion they belong to, so
+    the router relabels them on the way out. Non-chunk payloads (errors, the
+    synthetic routing frame) are left alone.
+    """
+    if chunk_json.get("object") == "chat.completion.chunk":
+        chunk_json["id"] = completion_id
+    return chunk_json
 
 
 def make_stream_chunk(
@@ -31,6 +48,7 @@ def make_stream_chunk(
     content: str = "",
     finish_reason: str | None = None,
     role: str | None = None,
+    completion_id: str | None = None,
 ) -> str:
     """Create a single SSE data line for a chat.completion.chunk.
 
@@ -39,6 +57,8 @@ def make_stream_chunk(
         content: Delta content for this chunk; empty for terminal chunks.
         finish_reason: When provided, marks the final chunk finish reason.
         role: Role for the first chunk (e.g., "assistant"). OpenAI spec requires the first chunk to include role.
+        completion_id: Id shared by every chunk of this completion. Defaults to
+            a fresh one, which is correct only for a standalone chunk.
 
     Returns:
         A string representing one SSE line with a trailing blank line.
@@ -54,7 +74,7 @@ def make_stream_chunk(
         delta = {"content": content}
 
     chunk: dict[str, Any] = {
-        "id": _chunk_id(),
+        "id": completion_id or new_completion_id(),
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,
@@ -88,6 +108,7 @@ def make_final_usage_chunk(
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
     cache_read_reported: bool = False,
+    completion_id: str | None = None,
 ) -> str:
     """Create the final SSE chunk carrying usage metrics.
 
@@ -108,6 +129,8 @@ def make_final_usage_chunk(
         cache_read_tokens: Tokens read from cache (for cost calculation).
         cache_write_tokens: Tokens written to cache (for cost calculation).
         cache_read_reported: Whether the provider explicitly reported cache-read usage.
+        completion_id: Id shared by every chunk of this completion. Defaults to
+            a fresh one, which is correct only for a standalone chunk.
     """
     prompt_tokens = (
         int(prompt_tokens_override)
@@ -137,7 +160,7 @@ def make_final_usage_chunk(
         usage["cache_write_tokens"] = cache_write_tokens
 
     chunk: dict[str, Any] = {
-        "id": _chunk_id(),
+        "id": completion_id or new_completion_id(),
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,
@@ -155,15 +178,18 @@ def make_final_usage_chunk(
     return f"data: {json.dumps(chunk)}\n\n"
 
 
-def make_role_chunk(*, model: str) -> str:
+def make_role_chunk(*, model: str, completion_id: str | None = None) -> str:
     """Create the initial SSE chunk specifying assistant role.
 
     Many OpenAI-compatible clients expect the first streaming chunk to include
     a delta with "role": "assistant" to mark the beginning of the AI message.
     This helper emits that role-only chunk without content.
+
+    ``completion_id`` is the id every later chunk of this completion repeats;
+    it defaults to a fresh one only so a standalone chunk stays valid.
     """
     chunk: dict[str, Any] = {
-        "id": _chunk_id(),
+        "id": completion_id or new_completion_id(),
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,

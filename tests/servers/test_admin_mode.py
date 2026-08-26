@@ -189,7 +189,7 @@ class TestAdminModeUnit:
             '"finish_reason":null}],"_routing":{"provider":"test"}}\n\n'
         )
 
-        sanitized = playground._sanitize_chunk(chunk)
+        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test")
 
         assert "_routing" not in sanitized
         parsed = json.loads(sanitized[6:])
@@ -204,7 +204,7 @@ class TestAdminModeUnit:
             '"endpoint_id":"glm-4.6:zai-api"}}\n\n'
         )
 
-        sanitized = playground._sanitize_chunk(chunk)
+        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test")
 
         assert "_routing" not in sanitized
         assert "user:pw" not in sanitized
@@ -221,7 +221,9 @@ class TestAdminModeUnit:
         # provider label as its canonical fallback, and so must this.
         chunk = 'data: {"choices":[],"_routing":{"provider":"test","endpoint_id":null}}\n\n'
 
-        route = json.loads(playground._sanitize_chunk(chunk)[6:])[playground._PLAYGROUND_ROUTE_KEY]
+        route = json.loads(playground._sanitize_chunk(chunk, "chatcmpl-test")[6:])[
+            playground._PLAYGROUND_ROUTE_KEY
+        ]
 
         assert route == {"provider": "test", "endpoint_id": "test"}
 
@@ -233,7 +235,7 @@ class TestAdminModeUnit:
             '"error_type":"HTTPStatusError","error":"401 {\\"key\\": \\"sk-leaked\\"}"}]}}\n\n'
         )
 
-        sanitized = playground._sanitize_chunk(chunk)
+        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test")
 
         assert "sk-leaked" not in sanitized
         route = json.loads(sanitized[6:])[playground._PLAYGROUND_ROUTE_KEY]
@@ -257,7 +259,7 @@ class TestAdminModeUnit:
             '"_routing":{"provider":"zai","base_url":"http://10.0.0.5:12003"}}\n\n'
         )
 
-        parsed = json.loads(playground._sanitize_chunk(chunk)[6:])
+        parsed = json.loads(playground._sanitize_chunk(chunk, "chatcmpl-test")[6:])
 
         assert "_routing" not in parsed
         assert playground._PLAYGROUND_ROUTE_KEY not in parsed
@@ -273,7 +275,7 @@ class TestAdminModeUnit:
             '"endpoint_id":"glm-4.6:zai-api"}}\n\n'
         )
 
-        sanitized = playground._sanitize_chunk(chunk)
+        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test")
 
         assert "_routing" not in sanitized
         assert "user:pw" not in sanitized
@@ -298,12 +300,26 @@ class TestAdminModeUnit:
         # that a redaction failure can never fall back to the raw chunk.
         for routing in ('"a string"', "42", "null", '{"failed_attempts":"not-a-list"}'):
             chunk = f'data: {{"choices":[],"_routing":{routing}}}\n\n'
-            assert "_routing" not in playground._sanitize_chunk(chunk)
+            assert "_routing" not in playground._sanitize_chunk(chunk, "chatcmpl-test")
 
     def test_sanitize_chunk_passes_through_unrelated_frames(self):
-        assert playground._sanitize_chunk("data: [DONE]\n\n") == "data: [DONE]\n\n"
-        assert playground._sanitize_chunk(": keepalive\n\n") == ": keepalive\n\n"
-        assert playground._sanitize_chunk("data: not-json\n\n") == "data: not-json\n\n"
+        cid = "chatcmpl-test"
+        assert playground._sanitize_chunk("data: [DONE]\n\n", cid) == "data: [DONE]\n\n"
+        assert playground._sanitize_chunk(": keepalive\n\n", cid) == ": keepalive\n\n"
+        assert playground._sanitize_chunk("data: not-json\n\n", cid) == "data: not-json\n\n"
+
+    def test_sanitize_chunk_relabels_frames_with_the_completion_id(self):
+        # Adapters mint an id per chunk; the playground groups by it too.
+        chunk = (
+            'data: {"id":"chunk-1","object":"chat.completion.chunk","created":123,'
+            '"model":"playground-model","choices":[{"index":0,"delta":{"content":"hi"},'
+            '"finish_reason":null}]}\n\n'
+        )
+
+        parsed = json.loads(playground._sanitize_chunk(chunk, "chatcmpl-abc")[6:])
+
+        assert parsed["id"] == "chatcmpl-abc"
+        assert parsed["choices"][0]["delta"]["content"] == "hi"
 
 
 @pytest.mark.dbtest

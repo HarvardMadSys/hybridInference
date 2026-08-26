@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from routing.endpoints import endpoint_id_for_adapter
 from routing.protocols import RoutingRequestOptions
 from serving.servers.deps import get_router, require_role
-from serving.stream import make_role_chunk
+from serving.stream import make_role_chunk, new_completion_id, stamp_completion_id
 
 router = APIRouter(prefix="/internal/playground", tags=["Playground"])
 
@@ -215,8 +215,11 @@ def _redact_routing(routing: Any) -> dict[str, Any] | None:
     return summary
 
 
-def _sanitize_chunk(chunk: str) -> str:
+def _sanitize_chunk(chunk: str, completion_id: str) -> str:
     """Swap internal routing metadata for an admin-safe summary.
+
+    Also relabels the frame with this response's ``completion_id``, since
+    adapters mint one id per chunk and clients group by it.
 
     Only the router's own synthetic routing frame — ``routing_chunk()``, the
     one with an empty ``choices`` list — is republished. Every other carrier of
@@ -235,17 +238,20 @@ def _sanitize_chunk(chunk: str) -> str:
         obj = json.loads(chunk[6:])
     except Exception:
         return chunk
-    if not isinstance(obj, dict) or _ROUTING_KEY not in obj:
+    if not isinstance(obj, dict):
         return chunk
 
-    routing = obj.pop(_ROUTING_KEY)
-    if not obj.get("choices"):
-        try:
-            summary = _redact_routing(routing)
-        except Exception:
-            summary = None
-        if summary:
-            obj[_PLAYGROUND_ROUTE_KEY] = summary
+    stamp_completion_id(obj, completion_id)
+
+    if _ROUTING_KEY in obj:
+        routing = obj.pop(_ROUTING_KEY)
+        if not obj.get("choices"):
+            try:
+                summary = _redact_routing(routing)
+            except Exception:
+                summary = None
+            if summary:
+                obj[_PLAYGROUND_ROUTE_KEY] = summary
     return f"data: {json.dumps(obj)}\n\n"
 
 
@@ -264,7 +270,8 @@ async def playground_chat(
         ]
 
     async def _generate():
-        yield make_role_chunk(model=body.model)
+        completion_id = new_completion_id()
+        yield make_role_chunk(model=body.model, completion_id=completion_id)
         kwargs: dict[str, Any] = {
             "temperature": body.temperature,
             "max_tokens": body.max_tokens,
@@ -279,7 +286,7 @@ async def playground_chat(
             # a raise inside the redactor would leave `chunk` at its original
             # value and hand the raw `_routing` blob, base_url and all, to the
             # browser. `_sanitize_chunk` is total instead.
-            yield _sanitize_chunk(chunk)
+            yield _sanitize_chunk(chunk, completion_id)
 
     return StreamingResponse(
         _generate(),
