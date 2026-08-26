@@ -123,12 +123,17 @@ curl -s localhost:18080/v1/models
 ```
 
 The id, name, limits, pricing and sampling parameters all come from
-`examples/distributions/example/config/models.yaml`; the remaining fields are
+`distributions/example/config/models.yaml`; the remaining fields are
 defaults the gateway fills in.
 
-Editing that file changes what the gateway advertises, but a restart is not
-enough to pick it up: the example's config is copied into the backend image at
-build time rather than mounted, so rerun `make build DISTRIBUTION=example`.
+Edit that file and restart to change what the gateway advertises — no rebuild:
+
+```bash
+make restart s=backend DISTRIBUTION=example
+```
+
+The backend reads it through the same read-only `distributions/` mount every
+deployment uses, so the file on disk is the file it serves.
 
 ### Ask for a completion
 
@@ -225,8 +230,25 @@ model's words. Call `/v1/chat/completions` directly instead.
 
 ## What a distribution is made of
 
-A distribution is a directory, and the example shows its shape. Four files
-decide what a gateway is:
+A distribution is a directory under `distributions/`, and this example is one.
+Everything it needs at runtime is inside it — manifest, config, Compose overlay,
+its fake upstream and its smoke client — so copying the directory copies a
+working shape:
+
+```text
+distributions/example/
+├── EXAMPLE_OVERLAY          # marks this as a tutorial, not a deployment
+├── distribution.yaml
+├── config/
+│   ├── models.yaml
+│   └── routing.yaml
+├── deploy/
+│   ├── backend.env
+│   └── docker-compose.yml
+├── fixtures/
+│   └── fake-openai-provider/
+└── smoke.py
+```
 
 | Path | What it holds |
 | --- | --- |
@@ -234,27 +256,37 @@ decide what a gateway is:
 | `config/models.yaml` | The models you serve, the provider routes behind each one, and the `weight` on each route |
 | `config/routing.yaml` | Router selection and health behaviour: `default_router`, timeouts, health-check interval, deployment lists |
 | `deploy/backend.env` | Backend environment: published port, database, auth, upstream credentials |
+| `fixtures/` | Fake dependencies this example invents for itself — here, the OpenAI-compatible upstream. Not part of the gateway |
 
-Real deployments live under `distributions/`, which is the directory a bare
-`make up` discovers when you pass no `DISTRIBUTION` argument. This tutorial's
-copy sits under `examples/distributions/` precisely so that shipping it can
-never change which deployment a bare `make up` selects.
+Your own deployment is a sibling directory with the same shape and no
+`fixtures/`, since it talks to real providers.
 
-That separation is also why copying the example is a starting point rather than
-a working deployment. `cp -r examples/distributions/example distributions/myrouter`
-gives you the right shape, but the copy still points back at the original:
-`deploy/backend.env` sets `BACKEND_ENV_FILE` and `DISTRIBUTION_CONFIG_PATH` to
-paths under `examples/distributions/example/`, and `deploy/docker-compose.yml`
-still names the Compose project `hybridinference-example` and builds the fake
-upstream. Its smoke client also asserts the example's own manifest id, model id
-and sentinel.
+The example is not entirely self-contained, though: this page, the CI jobs that
+run it, and the tests that pin its model id and sentinel all live outside the
+directory and name it. Removing the example means removing those too.
 
-More importantly, `make up` treats the two differently on purpose. The example
-gets a backend-only shortcut — no Postgres, no accounts — while a distribution
-under `distributions/` starts the full stack and expects the external volume
-that goes with it. So a copy is where you begin editing, not something to start
-unchanged; see [Installation](installation.md) and
-[Configuration](configuration.md) for what a full deployment needs.
+One file separates the two kinds. `EXAMPLE_OVERLAY` marks this directory as a
+teaching artifact, and that is why a bare `make up` — which otherwise discovers
+the single overlay present and starts it — skips this one, and why
+`make up DISTRIBUTION=example` gets a backend-only stack with no Postgres and no
+accounts. A real overlay does not carry the file and gets the full stack. Always
+name the one you mean: `make up DISTRIBUTION=myrouter` for your deployment,
+`make up DISTRIBUTION=example` for this tutorial.
+
+Nothing reads the file's contents; its presence is the declaration. That is
+deliberate — a marker inside `deploy/backend.env` would be a dotenv, and Compose
+parses those by its own rules, so an overlay could read as a teaching artifact
+to one reader and a deployment to another.
+
+Copying the example is where you start editing, not something to run unchanged.
+Delete `EXAMPLE_OVERLAY` from a copy that should become a real deployment;
+otherwise Make continues to give it the tutorial's backend-only startup. The
+copy also still carries this one's identity: `deploy/backend.env` points
+`BACKEND_ENV_FILE` and `DISTRIBUTION_CONFIG_PATH` back at `distributions/example/`,
+`deploy/docker-compose.yml` names the Compose project `hybridinference-example`
+and builds the fake upstream, and `smoke.py` asserts this manifest's id, model id
+and sentinel. See [Installation](installation.md) and
+[Configuration](configuration.md) for what a real deployment needs.
 
 ## Stop it
 
@@ -284,7 +316,7 @@ BACKEND_PORT=28080 make smoke DISTRIBUTION=example
 Then read `localhost:28080` wherever this page says `localhost:18080`.
 
 To change the port permanently, edit `BACKEND_PORT` in
-`examples/distributions/example/deploy/backend.env`. Both Compose and the smoke
+`distributions/example/deploy/backend.env`. Both Compose and the smoke
 client read it from there, so those two cannot drift apart. Two more places
 state the same port for display rather than for binding, and are worth keeping
 consistent: `SITE_PUBLIC_BASE_URL` in that same file, and `site.public_base_url`

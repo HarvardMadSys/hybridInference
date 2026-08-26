@@ -8,7 +8,7 @@ is required.
 This page is the reference for the directory's contents. For a step-by-step
 walkthrough from clone to first request, including streaming and how to copy
 this into a distribution of your own, read the
-[Router Tutorial](../../../docs/developer/router-tutorial.md).
+[Router Tutorial](../../docs/developer/router-tutorial.md).
 
 It intentionally stops at the first routed completion. Frontend packaging,
 authentication, and visual branding belong to a later full-distribution

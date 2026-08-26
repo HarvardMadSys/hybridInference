@@ -37,6 +37,19 @@ _INDEX_WITHIN_DISTRIBUTION = Path("content") / "rag" / "docs_index.json"
 _CORPUS_WITHIN_DISTRIBUTION = Path("content") / "docs" / "docs" / "source"
 
 
+EXAMPLE_OVERLAY_MARKER = "EXAMPLE_OVERLAY"
+
+
+def _is_example_overlay(path: Path) -> bool:
+    """Return True for a teaching overlay rather than somebody's deployment.
+
+    The runnable example lives beside real overlays but has no deployment RAG
+    corpus. Its marker keeps fallback discovery from making a real overlay
+    ambiguous, and uses the same regular-file test as the Makefile.
+    """
+    return (path / EXAMPLE_OVERLAY_MARKER).is_file()
+
+
 def _distribution_root() -> Path | None:
     """Locate the one distribution overlay this deployment runs, if any.
 
@@ -57,7 +70,11 @@ def _distribution_root() -> Path | None:
 
     app_root = Path(__file__).resolve().parents[2]
     for base in (_REPO_ROOT, app_root):
-        candidates = sorted(p for p in (base / "distributions").glob("*") if p.is_dir())
+        candidates = sorted(
+            p
+            for p in (base / "distributions").glob("*")
+            if p.is_dir() and not _is_example_overlay(p)
+        )
         if len(candidates) == 1:
             return candidates[0]
     return None

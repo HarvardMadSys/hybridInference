@@ -6,7 +6,7 @@ services:
     environment:
       DB_ENABLED: "false"
       USER_AUTH_ENABLED: "false"
-      DISTRIBUTION_CONFIG_PATH: /app/examples/distributions/example/distribution.yaml
+      DISTRIBUTION_CONFIG_PATH: /app/distributions/example/distribution.yaml
       DISTRIBUTION_CONFIG_MODE: active
       MODELS_CONFIG_PATH: ""
       ROUTING_CONFIG_PATH: ""
@@ -14,25 +14,22 @@ services:
       EXAMPLE_UPSTREAM_BASE_URL: ${EXAMPLE_UPSTREAM_BASE_URL}
       EXAMPLE_UPSTREAM_API_KEY: ${EXAMPLE_UPSTREAM_API_KEY}
       EXAMPLE_UPSTREAM_MODEL: ${EXAMPLE_UPSTREAM_MODEL}
-    # Compose merges volumes by target, so naming these two replaces the
-    # production bind mounts rather than adding to them. The example needs
-    # neither -- its config is baked into the image -- and a bind mount whose
-    # host path is missing is created by Docker as root: `var/**` is gitignored,
-    # so running the example left a root-owned var/data in the checkout that
+    # Compose merges volumes by target, so naming this one replaces the
+    # production bind mount rather than adding to it. `../../var/data` is
+    # read-write and `var/**` is gitignored, so Docker created the missing host
+    # path itself, as root: the first CI run left a root-owned var/data that
     # `actions/checkout` could not clean, failing every later job on that runner
-    # before it read a line of code. `distributions/` is absent from the public
-    # export entirely, so it would be created the same way for the outside
-    # readers this example exists for.
+    # before it read a line of code. The example writes no credentials, so it
+    # gets memory instead. The `distributions/` mount it keeps -- that is where
+    # this overlay now lives, and the backend reads its config through it.
     volumes:
       - type: tmpfs
         target: /app/var/data
-      - type: tmpfs
-        target: /app/distributions
 
   example-provider:
     build:
       context: ../..
-      dockerfile: examples/support/Dockerfile.openai-compat-fake
+      dockerfile: distributions/example/fixtures/fake-openai-provider/Dockerfile
     container_name: ${EXAMPLE_PROVIDER_CONTAINER_NAME:-hybridinference-example-provider}
     restart: unless-stopped
     command:

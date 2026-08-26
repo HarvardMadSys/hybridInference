@@ -1,6 +1,0 @@
-FROM python:3.12-alpine
-
-WORKDIR /app
-COPY examples/support/openai_compat_fake.py ./openai_compat_fake.py
-
-ENTRYPOINT ["python", "/app/openai_compat_fake.py"]

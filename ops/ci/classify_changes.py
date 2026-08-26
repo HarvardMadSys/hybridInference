@@ -63,11 +63,13 @@ _OVERLAY_DOCS = re.compile(r"^distributions/[^/]+/content/docs/")
 FRONTEND_PREFIX = "apps/frontend/"
 BACKEND_SOURCE_PREFIX = "apps/backend/"
 BACKEND_TEST_PREFIX = "tests/"
-# Dockerfile.backend bakes public runnable examples into the image, and the
-# backend Docker matrix cell executes their documented smoke contract. Keep
-# this before the generic Markdown-as-docs rule so editing the example README
+# The other distributions/ subtree that must not force a full run. A real
+# overlay does, because changing a deployment's registry or thresholds can
+# affect anything; the runnable example is a teaching artifact whose only
+# consumer is the backend Docker cell that executes its documented smoke
+# contract. Kept before the Markdown-as-docs rule too, so editing its README
 # cannot bypass the very CI path it documents.
-BACKEND_EXAMPLE_PREFIX = "examples/"
+BACKEND_EXAMPLE_PREFIX = "distributions/example/"
 # The router tutorial states the example's commands and pins its model id,
 # sentinel and published port, and tests assert all three. Classifying it as
 # plain docs would let the page most likely to be read rot on a docs-only
@@ -150,7 +152,7 @@ def _normalize(path: str) -> str:
 
 
 def _is_full(path: str) -> bool:
-    if _OVERLAY_DOCS.match(path):
+    if _OVERLAY_DOCS.match(path) or path.startswith(BACKEND_EXAMPLE_PREFIX):
         return False
     return path in FULL_FILES or any(path.startswith(prefix) for prefix in FULL_PREFIXES)
 
