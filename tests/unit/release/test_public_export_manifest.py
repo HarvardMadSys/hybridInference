@@ -110,6 +110,26 @@ def test_the_exported_ci_runs_where_anyone_can_reach_it(manifest: dict) -> None:
     )
 
 
+def test_both_ci_workflows_run_the_runnable_example_contract(manifest: dict) -> None:
+    """The source and exported repositories must guard the same user path."""
+    overlay = {r["path"]: r for r in (manifest.get("overlay") or [])}
+    public_ci = REPO / overlay[".github/workflows/ci.yml"]["source"]
+    internal_ci = REPO / ".github" / "workflows" / "ci.yml"
+
+    for workflow in (internal_ci, public_ci):
+        text = workflow.read_text()
+        assert "make up DISTRIBUTION=example" in text
+        assert "make smoke DISTRIBUTION=example" in text
+        assert "make down DISTRIBUTION=example" in text
+        assert 'BACKEND_PORT: "0"' in text
+        assert "github.run_id" in text
+        assert "docker image rm" in text
+
+    internal = internal_ci.read_text()
+    assert "load: ${{ matrix.image == 'backend' }}" in internal
+    assert "if: always() && matrix.image == 'backend'" in internal
+
+
 def test_no_overlay_source_carries_what_it_is_replacing(manifest: dict) -> None:
     """A replacement that kept the thing it replaces is worse than none.
 

@@ -39,6 +39,22 @@ def test_backend_sources_and_tests_map_to_backend() -> None:
     assert tests.docker_matrix() == []
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "examples/distributions/example/README.md",
+        "examples/distributions/example/config/models.yaml",
+        "examples/distributions/example/smoke.py",
+        "examples/support/openai_compat_fake.py",
+        "examples/support/Dockerfile.openai-compat-fake",
+    ],
+)
+def test_runnable_example_changes_run_backend_tests_image_and_smoke(path: str) -> None:
+    result = classify([path])
+    assert _true_categories(result) == {"backend", "python_tests"}
+    assert result.docker_matrix() == ["backend"]
+
+
 def test_oncall_source_also_triggers_backend_tests() -> None:
     result = classify(["apps/backend/serving/oncall/app.py"])
     assert _true_categories(result) == {"oncall", "backend", "python_tests"}
@@ -153,6 +169,18 @@ def test_sphinx_source_changes_add_the_docs_build(path: str) -> None:
     assert _true_categories(result) == {"docs", "security_only"}
     assert result.full is False
     assert result.docker_matrix() == []
+
+
+def test_router_tutorial_reruns_the_contract_it_documents() -> None:
+    # The page states the example's commands and pins its model id, sentinel and
+    # published port. As plain docs it could contradict them on a docs-only
+    # change and stay green, so it triggers the backend acceptance path -- while
+    # still gating the Sphinx build like the rest of docs/developer/.
+    result = classify(["docs/developer/router-tutorial.md"])
+
+    assert _true_categories(result) == {"backend", "docs", "python_tests"}
+    assert result.docker_matrix() == ["backend"]
+    assert result.full is False
 
 
 def test_docs_build_does_not_suppress_application_categories() -> None:

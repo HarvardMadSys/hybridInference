@@ -1,4 +1,13 @@
-# Example distribution manifest (serving/config/distribution.py).
+# Manifest-only reference (serving/config/distribution.py).
+#
+# This file now points at the adjacent, checked-in OpenRouter examples, so it
+# validates and resolves without dangling paths. For the deterministic bundle
+# that includes env, Compose, a fake upstream, and smoke validation, use:
+#
+#   make up DISTRIBUTION=example
+#   make smoke DISTRIBUTION=example
+#
+# See examples/distributions/example/README.md.
 #
 # A distribution bundles site identity and config-file locations into one
 # versioned document. Activate it with:
@@ -11,9 +20,8 @@
 # and divergence is logged, while current resolution stays effective.
 # Applying `paths:` requires an explicit DISTRIBUTION_CONFIG_MODE=active.
 #
-# `site:` and `features:` are declarations only for now — a later PR in this
-# stack exposes them read-only via GET /site-config; they are wired to no
-# runtime behavior yet.
+# `site:` and `features:` are exposed as a safe public subset by
+# GET /site-config when the manifest runs in active mode.
 #
 # Do not put secrets here — credentials stay in the environment. Relative
 # `paths:` entries resolve against this file's directory.
@@ -38,8 +46,8 @@ features:
   rag: false
 
 paths:
-  models: ./models.yaml
-  routing: ./routing.yaml
+  models: ./models.openrouter.yaml
+  routing: ./routing.minimal.yaml
   # alerts: ./alerts.yaml
 
 deployment:

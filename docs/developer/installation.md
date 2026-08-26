@@ -2,6 +2,10 @@
 
 Detailed installation instructions for HybridInference.
 
+To see a gateway answer a request before configuring anything, follow the
+[Router Tutorial](router-tutorial.md) instead: it needs no provider key, no
+database and no `.env` file. This page covers the full stack.
+
 ## Production (Docker)
 
 The recommended way to run HybridInference in production. Requires Docker Engine 24+

@@ -63,6 +63,17 @@ _OVERLAY_DOCS = re.compile(r"^distributions/[^/]+/content/docs/")
 FRONTEND_PREFIX = "apps/frontend/"
 BACKEND_SOURCE_PREFIX = "apps/backend/"
 BACKEND_TEST_PREFIX = "tests/"
+# Dockerfile.backend bakes public runnable examples into the image, and the
+# backend Docker matrix cell executes their documented smoke contract. Keep
+# this before the generic Markdown-as-docs rule so editing the example README
+# cannot bypass the very CI path it documents.
+BACKEND_EXAMPLE_PREFIX = "examples/"
+# The router tutorial states the example's commands and pins its model id,
+# sentinel and published port, and tests assert all three. Classifying it as
+# plain docs would let the page most likely to be read rot on a docs-only
+# change. Named file rather than a prefix: only this page makes claims CI can
+# check, and it still gates the Sphinx build as ordinary docs/developer/ source.
+BACKEND_TUTORIAL_FILES = frozenset({"docs/developer/router-tutorial.md"})
 # Dockerfile.oncall COPYs the entire apps/backend/serving tree, so any serving
 # change -- not just serving/oncall -- is baked into the on-call image and must
 # rebuild it. Keep this in sync with that Dockerfile's COPY scope.
@@ -184,6 +195,16 @@ def classify(files: Sequence[str] | None) -> Classification:
             result.full = True
             result.python_tests = True
             hit("full", path)
+            continue
+        # Runnable examples are backend image inputs and CI acceptance inputs,
+        # including their Markdown instructions.
+        if path.startswith(BACKEND_EXAMPLE_PREFIX) or path in BACKEND_TUTORIAL_FILES:
+            result.backend = True
+            result.python_tests = True
+            result.docker_images.add("backend")
+            if path.startswith(SPHINX_SOURCE_PREFIX):
+                result.docs = True
+            hit("backend", path)
             continue
         # 2. Documentation never triggers application checks, but the Sphinx
         #    source tree gates the docs build.

@@ -1,0 +1,53 @@
+name: hybridinference-example
+
+services:
+  backend:
+    container_name: ${EXAMPLE_BACKEND_CONTAINER_NAME:-hybridinference-example-backend}
+    environment:
+      DB_ENABLED: "false"
+      USER_AUTH_ENABLED: "false"
+      DISTRIBUTION_CONFIG_PATH: /app/examples/distributions/example/distribution.yaml
+      DISTRIBUTION_CONFIG_MODE: active
+      MODELS_CONFIG_PATH: ""
+      ROUTING_CONFIG_PATH: ""
+      ALERTS_CONFIG_PATH: ""
+      EXAMPLE_UPSTREAM_BASE_URL: ${EXAMPLE_UPSTREAM_BASE_URL}
+      EXAMPLE_UPSTREAM_API_KEY: ${EXAMPLE_UPSTREAM_API_KEY}
+      EXAMPLE_UPSTREAM_MODEL: ${EXAMPLE_UPSTREAM_MODEL}
+    # Compose merges volumes by target, so naming these two replaces the
+    # production bind mounts rather than adding to them. The example needs
+    # neither -- its config is baked into the image -- and a bind mount whose
+    # host path is missing is created by Docker as root: `var/**` is gitignored,
+    # so running the example left a root-owned var/data in the checkout that
+    # `actions/checkout` could not clean, failing every later job on that runner
+    # before it read a line of code. `distributions/` is absent from the public
+    # export entirely, so it would be created the same way for the outside
+    # readers this example exists for.
+    volumes:
+      - type: tmpfs
+        target: /app/var/data
+      - type: tmpfs
+        target: /app/distributions
+
+  example-provider:
+    build:
+      context: ../..
+      dockerfile: examples/support/Dockerfile.openai-compat-fake
+    container_name: ${EXAMPLE_PROVIDER_CONTAINER_NAME:-hybridinference-example-provider}
+    restart: unless-stopped
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8351"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8351/health', timeout=2)
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    networks:
+      - hybridinference

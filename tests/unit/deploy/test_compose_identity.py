@@ -163,9 +163,10 @@ def test_the_makefile_feeds_the_overlay_too() -> None:
     # rebuild silently ships a console with no identity. The clone case is
     # handled by announcing the pick and offering DISTRIBUTION=none, and stops
     # existing once the overlay lives outside this repository.
-    assert "distributions/$(DISTRIBUTION)/deploy/*.env" in makefile, (
+    assert "$(DISTRIBUTION_PATH)/deploy/*.env" in makefile, (
         "the overlay must resolve through DISTRIBUTION, not a bare glob"
     )
+    assert "_DISTRIBUTION_LOOKUP_ROOTS := distributions examples/distributions" in makefile
     assert "DISTRIBUTION ?=" in makefile, "DISTRIBUTION must stay overridable"
     assert "ifeq ($(DISTRIBUTION),none)" in makefile, (
         "there must be a way to ask for a stack that names no deployment"
@@ -173,9 +174,10 @@ def test_the_makefile_feeds_the_overlay_too() -> None:
     assert "$(info Using distribution" in makefile, (
         "compiling a deployment's identity into the console must not be silent"
     )
-    assert "--env-file .env" in compose_line
+    assert "$(LOCAL_ENV_ARGS)" in compose_line
+    assert "LOCAL_ENV_ARGS := $(if $(wildcard .env),--env-file .env,)" in makefile
     assert compose_line.index("$(DISTRIBUTION_ENV_FILES)") < compose_line.index(
-        "--env-file .env"
+        "$(LOCAL_ENV_ARGS)"
     ), "the server's .env must come last so per-host overrides still win"
 
 
@@ -191,7 +193,7 @@ def test_the_makefile_accepts_extra_env_files_before_the_server_env() -> None:
     assert compose_line.index("$(DISTRIBUTION_ENV_FILES)") < compose_line.index(
         "$(COMPOSE_EXTRA_ENV_ARGS)"
     )
-    assert compose_line.index("$(COMPOSE_EXTRA_ENV_ARGS)") < compose_line.index("--env-file .env")
+    assert compose_line.index("$(COMPOSE_EXTRA_ENV_ARGS)") < compose_line.index("$(LOCAL_ENV_ARGS)")
 
 
 def test_the_bottom_of_the_precedence_names_files_that_exist() -> None:

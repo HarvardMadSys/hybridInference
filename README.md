@@ -27,6 +27,18 @@ curl localhost:8080/v1/chat/completions \
   -d '{"model": "llama-3.1-8b", "messages": [{"role": "user", "content": "hi"}]}'
 ```
 
+For a deterministic Docker path that needs no provider key, run the public
+[router distribution example](examples/distributions/example/README.md). The
+[Router Tutorial](docs/developer/router-tutorial.md) walks the same path from
+clone to first request, including streaming and how to turn the example into
+your own distribution. CI executes the same contract:
+
+```bash
+make up DISTRIBUTION=example
+make smoke DISTRIBUTION=example
+make down DISTRIBUTION=example
+```
+
 `DB_ENABLED=false USER_AUTH_ENABLED=false` is the evaluation shortcut: no
 Postgres, and every request is treated as an anonymous admin. A real
 deployment drops both and gets user accounts, API keys, quotas and request
@@ -69,6 +81,7 @@ apps/
   frontend/       # Next.js web UI
 config/           # Model, routing, and alert configuration
   examples/       # Reference registries, including the OpenRouter quickstart
+examples/         # Public runnable bundles and their deterministic support tools
 distributions/    # Per-distribution overlays: identity, content, config
 services/         # status-monitor-worker, freeinference-harness
 tests/            # Unit, API, integration, e2e, and external tests
