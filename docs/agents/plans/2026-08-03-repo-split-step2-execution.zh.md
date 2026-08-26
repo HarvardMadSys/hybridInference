@@ -9,9 +9,8 @@
 > 创建:2026-08-03,基于 Murphy 与 Claude 的对话,并吸收另一 agent 会话的
 > 交叉评审(symlink 挂载悬空、拉模式触发、digest 与计划文本的关系)。
 > **2026-08-26 决策更新:** Step 3 直接公开现有 HybridInference 仓库；
-> 本文所有 public-export / 物化树描述已被
-> [direct-publication readiness plan](2026-08-26-direct-publication-readiness.md)
-> 取代。判据对象是原仓当前树与所有保留的 Git 历史。
+> 本文所有 public-export / 物化树描述均已失效。判据对象是原仓当前树与
+> 所有保留的 Git 历史；公开机制以主设计文档的“公开与可见性策略”为准。
 > 修订:2026-08-12,状态对账——W0 已完成、W1 GitHub 侧已完成、§7 行动项已随
 > H4 解决;详见 §0 与各工作项内的进展注记。已并入九轮交叉评审:W5 删除
 > 时序改判(不与搬迁同批)、W6 增补 prod 观察窗、W7 compose base 来源待拍板
@@ -350,8 +349,8 @@ key/secret 轮换。Cloudflare 两笔(2026-08-12 增):吊销旧 user token
 4. 升级与两种回滚演练通过;
 5. W8 全部清零(2026-08-12 起为五项:原三项 + Cloudflare 两笔)。
 
-达成后，按 direct-publication readiness plan 完成 public runner、仓库设置和
-fresh-remote 复核，然后直接翻转 HybridInference 仓库可见性。
+达成后，完成 public runner、仓库设置和 fresh-remote 复核，然后直接翻转
+HybridInference 仓库可见性。
 
 ## 6. 待拍板(人工决定)
 

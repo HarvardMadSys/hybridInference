@@ -2,8 +2,8 @@
 
 > **Publication note (2026-08-26):** References below to the public-export
 > tool are historical statements about this plan's freeze SHA. That tool has
-> since been retired; the existing HybridInference repository follows the
-> [direct-publication readiness plan](2026-08-26-direct-publication-readiness.md).
+> since been retired; the existing HybridInference repository itself is the
+> future publication surface, including its retained history.
 
 - **Date:** 2026-08-03
 - **Owner:** Murphy (decisions, reviews, cutover approval)

@@ -9,8 +9,9 @@
 > **Publication decision superseded on 2026-08-26.** The existing
 > `HarvardMadSys/hybridInference` repository will become public. There is no
 > filtered export, so both its current tree and every retained Git ref are in
-> scope for the pre-publication audit. See the
-> [direct-publication readiness plan](../plans/2026-08-26-direct-publication-readiness.md).
+> scope for the pre-publication audit. The canonical mechanism and gates are in
+> the main design's
+> [Publication & Visibility section](2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md).
 > Later statements in this historical epic that say the repository history
 > will stay private are no longer operative.
 

@@ -10,10 +10,9 @@
 > workflow 移入 W5c 与源码同批;codex-oncall 依赖上游 `serving.oncall`,
 > 移入 W5f 经 pin 供码);§2 变量/密钥改全名并新增"源码依赖"列。
 >
-> **2026-08-26 决策更新：** 本文的“导出 manifest / 物化树”归属判断已被
-> [direct-publication readiness plan](2026-08-26-direct-publication-readiness.md)
-> 取代。现有 HybridInference 仓库本身将公开；不能公开的内容必须迁出或从
-> 保留历史中清理，不能依赖导出规则隐藏。
+> **2026-08-26 决策更新：** 本文的“导出 manifest / 物化树”归属判断已失效。
+> 现有 HybridInference 仓库本身将公开；不能公开的内容必须迁出或从保留历史
+> 中清理，不能依赖导出规则隐藏。
 
 ## 0. 裁定原则
 

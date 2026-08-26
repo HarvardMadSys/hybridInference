@@ -8,8 +8,9 @@
 
 > **2026-08-26 公开决策更新：** 现有 `HarvardMadSys/hybridInference` 仓库
 > 将直接设为 public，不再走 filtered export。因此当前 tree 与所有保留 Git refs
-> 都属于公开前审计面；完整门槛见
-> [direct-publication readiness plan](../plans/2026-08-26-direct-publication-readiness.md)。
+> 都属于公开前审计面；公开机制与门槛以
+> [主设计文档](2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)
+> 的“公开与可见性策略”一节为准。
 > 本历史 Epic 后文“本仓历史不会公开 / 不做历史重写”的说法均已失效。
 
 > **修订记录(2026-07-16,与主设计文档对齐):** 本 Epic 的 P0–P2 是
@@ -76,8 +77,8 @@ auth/quota/concurrency,也已经有 `runtime_settings` 注册表和 `USER_AUTH_E
 这些会泄露 Harvard 真实基础设施,是硬阻断项:
 
 > **状态说明 2026-08-26。** 2026-07-28 的勾选曾以 filtered export 为对象，
-> 不再证明原仓可以公开。以下 tree 与完整历史门必须按 direct-publication
-> readiness plan 重新验收。
+> 不再证明原仓可以公开。以下 tree 与完整历史门必须按主设计文档的
+> “公开与可见性策略”重新验收。
 
 - [ ] **`wrangler.toml` 中的 Cloudflare 账号 + D1 database ID** ——
   `services/status-monitor-worker/wrangler.toml:7,37,38`。它们是标识符而非凭据

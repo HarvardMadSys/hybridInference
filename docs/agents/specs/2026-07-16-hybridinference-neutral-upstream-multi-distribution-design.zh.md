@@ -10,8 +10,7 @@
 > `HarvardMadSys/hybridInference` 仓库设为 public；不创建新的公开源码仓，
 > 不维护 filtered mirror，也不再物化一棵 replacement tree。本文早期版本中
 > “过滤导出 / 不公开本仓历史”的路线已被此决定取代。当前树与所有保留的 Git
-> 历史都属于公开前审计面；完整门槛与历史清理顺序见
-> [direct-publication readiness plan](../plans/2026-08-26-direct-publication-readiness.md)。
+> 历史都属于公开前审计面；完整门槛见本文“公开与可见性策略”一节。
 
 **相关文档：**
 [2026-06-18-opensource-decoupling.zh.md](2026-06-18-opensource-decoupling.zh.md)
@@ -385,8 +384,8 @@ commit SHA，必须同步重建相关 artifact，并让 FreeInference 合入一�
 1. [2026-06-18-opensource-decoupling.zh.md](2026-06-18-opensource-decoupling.zh.md)
    的 P0–P2，其中安全项按修订版处方执行：Statcounter 改 `NEXT_PUBLIC_*` 环境变量
    且默认关闭；`wrangler.toml` 中的 account/database ID 属标识符而非凭据，轮换
-   `CLOUDFLARE_API_TOKEN` 作为廉价保险；若完整历史审计发现敏感内容，按 readiness
-   plan 清理所有保留 refs。
+   `CLOUDFLARE_API_TOKEN` 作为廉价保险；若完整历史审计发现敏感内容，按本节规则
+   清理所有保留 refs。
 2. 当前树与完整历史的公开面审计：凭据、内部域名、主机拓扑、真实邮箱、私有
    文档和基础设施标识；不以 baseline 接受遗留 finding。
 3. 公共 CI **必须**使用 GitHub-hosted runner（或一次性、隔离的 ephemeral
@@ -398,8 +397,7 @@ commit SHA，必须同步重建相关 artifact，并让 FreeInference 合入一�
 
 ### 4. 时点
 
-只有 Phase 2 完成、direct-publication readiness plan 的全部硬门通过后，才翻转
-原仓可见性。
+只有 Phase 2 完成、上述公开前置清单全部通过后，才翻转原仓可见性。
 
 ## 当前目录迁移映射
 

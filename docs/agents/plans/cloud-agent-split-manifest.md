@@ -3,8 +3,8 @@
 > **Publication note (2026-08-26):** References below to
 > `ops/release/public_export.py` describe a dependency that existed at this
 > manifest's freeze SHA. The filtered-export tool has since been retired; the
-> existing HybridInference repository follows the
-> [direct-publication readiness plan](2026-08-26-direct-publication-readiness.md).
+> existing HybridInference repository itself is the future publication
+> surface, including its retained history.
 
 - **Status:** DECLARED. Regenerate only if the freeze is moved.
 - **FREEZE_SHA:** `764a6f97477504deb4542e1c28c3128ff9601c94` (`dev`, 2026-08-03)

@@ -27,9 +27,8 @@ Ask if you do not have it.
 >
 > Those matter. The current repository itself will become public; there is no
 > filtered export hiding its tree or history. Rotate the password, then remove
-> the private value from every retained ref during the coordinated history
-> cleanup described by the
-> [direct-publication readiness plan](../../docs/agents/plans/2026-08-26-direct-publication-readiness.md).
+> the private value from every retained ref during the pre-publication history
+> cleanup.
 
 ## Operational tooling
 

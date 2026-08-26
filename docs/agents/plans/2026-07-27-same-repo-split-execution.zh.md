@@ -9,8 +9,9 @@
 > 创建:2026-07-27,基于 Murphy 与 Claude 的对话及 Juncheng 的 Slack 意见。
 >
 > **2026-08-26 决策更新：** Step 3 直接公开现有 HybridInference 仓库，
-> 不再采用本文早期推荐的“同名新仓 + 过滤导出”。完整门槛见
-> [direct-publication readiness plan](2026-08-26-direct-publication-readiness.md)。
+> 不再采用本文早期推荐的“同名新仓 + 过滤导出”。公开机制与门槛以
+> [主设计文档](../specs/2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)
+> 的“公开与可见性策略”一节为准。
 
 ## 1. 总目标:三步走
 
