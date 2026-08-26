@@ -6,6 +6,14 @@
 
 > Chinese version: [2026-06-18-opensource-decoupling.zh.md](2026-06-18-opensource-decoupling.zh.md)
 
+> **Publication decision superseded on 2026-08-26.** The existing
+> `HarvardMadSys/hybridInference` repository will become public. There is no
+> filtered export, so both its current tree and every retained Git ref are in
+> scope for the pre-publication audit. See the
+> [direct-publication readiness plan](../plans/2026-08-26-direct-publication-readiness.md).
+> Later statements in this historical epic that say the repository history
+> will stay private are no longer operative.
+
 > **Revision note (2026-07-16, aligned with the main design doc):** P0–P2 of this
 > epic serve as the file-level implementation checklist for Phase 1 of the
 > [neutral-upstream / distribution split design](2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md);
@@ -14,9 +22,8 @@
 > this note records the deltas): (1) security-critical section — the
 > account/database IDs in `wrangler.toml` are identifiers, not credentials (no
 > committed secret exists to rotate); rotate `CLOUDFLARE_API_TOKEN` as cheap
-> insurance and **do not rewrite git history**; the concrete publication
-> mechanism is tracked in the main doc's "Publication & Visibility" section and
-> its open decision 10. Making Statcounter env-driven remains a hard
+> insurance; the concrete publication mechanism is tracked in the main doc's
+> "Publication & Visibility" section. Making Statcounter env-driven remains a hard
 > pre-publication item. (2) P1/P2 defaults and branding content — now three-step: legacy
 > FreeInference defaults/assets stay, a neutral profile supplies generic
 > values or hides them, and removal happens only after the overlay becomes
@@ -92,9 +99,8 @@ These leak real Harvard infrastructure and are the hard blockers:
   identifiers, not credentials (the file itself documents `account_id` as
   non-secret; the actual secret, `CLOUDFLARE_API_TOKEN`, was never committed).
   Parameterize them out of HEAD and rotate `CLOUDFLARE_API_TOKEN` as cheap
-  insurance. **Do not rewrite git history**: this private repo's history never
-  ships (publication follows the main design doc's Publication & Visibility
-  policy), and a rewrite would invalidate every active worktree and open PR.
+  insurance. Audit every retained Git ref before publication; if private data
+  is present, clean it during the coordinated history migration.
 - [ ] **Statcounter analytics block** — `apps/frontend/src/app/layout.tsx:27,31,57`
   (project `13224568`, security key `2d8ab84a`). Every deployer's traffic would
   flow into Harvard's analytics account. Gate behind
@@ -138,8 +144,8 @@ These leak real Harvard infrastructure and are the hard blockers:
 ### P0 — Infra & secret extraction (effort: S) — **do first**
 - [ ] Parameterize `wrangler.toml` `account_id` / `database_id` /
       `database_name` / `GATEWAY_BASE_URL` (`:7,17,37,38`) via Wrangler env vars.
-- [ ] Rotate `CLOUDFLARE_API_TOKEN` as insurance (see security section; no
-      history rewrite).
+- [ ] Rotate `CLOUDFLARE_API_TOKEN` as insurance and clean retained history as
+      required by the readiness audit.
 - [ ] Make the status-monitor worker an **optional** add-on, not a prerequisite.
 
 ### P1 — Backend config-extraction sweep (effort: S/M)
@@ -224,8 +230,8 @@ after the distribution overlay is production truth.
   before routing in the hot path; no-op enforcers must not buffer the SSE
   response. Test the no-auth streaming path explicitly.
 - **Committed identifiers (low, revised):** see security section — rotate the
-  API token as insurance and parameterize HEAD; no history rewrite, since the
-  private repo's history never ships.
+  API token as insurance, parameterize HEAD, and include retained history in
+  the direct-publication audit.
 - **License (low/med):** MIT is fine, but the copyright names Harvard SEAS;
   confirm RouteWise is itself redistributable or make it optional.
 - **D1 vs Postgres (med):** main stores are Postgres with a clean abstraction;
@@ -244,7 +250,7 @@ after the distribution overlay is production truth.
       production truth).
 - [ ] `USER_AUTH_ENABLED=false` serves chat completions (incl. streaming) with
       no DB-backed user state.
-- [ ] No live Harvard credentials in HEAD; committed identifiers are
-      parameterized, and publication never ships this repo's history.
+- [ ] No live Harvard credentials or private infrastructure data in the
+      current tree or any retained Git ref.
 - [ ] A deployer can set their own brand, support email, and (optionally) bring
       their own SSO without editing source.

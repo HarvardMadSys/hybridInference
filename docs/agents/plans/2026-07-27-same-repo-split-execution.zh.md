@@ -7,6 +7,10 @@
 > 以本文 + 主设计文档为准,#1031 待修订。
 >
 > 创建:2026-07-27,基于 Murphy 与 Claude 的对话及 Juncheng 的 Slack 意见。
+>
+> **2026-08-26 决策更新：** Step 3 直接公开现有 HybridInference 仓库，
+> 不再采用本文早期推荐的“同名新仓 + 过滤导出”。完整门槛见
+> [direct-publication readiness plan](2026-08-26-direct-publication-readiness.md)。
 
 ## 1. 总目标:三步走
 
@@ -16,8 +20,8 @@
 2. **Step 2:搬出去。** 拆好的 FreeInference 侧(overlay + 标记的
    ops/workflow)整体迁至 `HarvardMadSys/freeInference`
    (2026-07-27 已建,空、私有),并在该仓重建部署信任链。
-3. **Step 3:开源。** hybridInference 公开。机制待拍板(见 §7-1),
-   推荐"同名新仓 + 过滤导出,本仓改名归档",与主设计文档待决策 10 一致。
+3. **Step 3:开源。** 完成 tree/history/CI readiness 后，直接把现有
+   `HarvardMadSys/hybridInference` 设为 public。
 
 Juncheng 要求全部就绪前保持私有;三步走天然满足(直到 Step 3 前没有任何公开动作)。
 
@@ -149,9 +153,9 @@ Juncheng 要求全部就绪前保持私有;三步走天然满足(直到 Step 3 �
 
 ## 7. 待拍板(人工决定,不阻塞 A–C 动工)
 
-1. **Step 3 公开机制**(owner:Juncheng):同名新仓 + 过滤导出(推荐;
-   主设计文档待决策 10 同向)vs 翻转本仓(历史 + 全部 issues/PRs 变公开,
-   已被主设计硬约束排除)。定了之后修订 #1031 cutover 章节。
+1. **Step 3 公开机制(2026-08-26 已决定):** 翻转现有仓库；历史、issues 和
+   PR 都进入公开面。公开前按 readiness plan 完成私有内容迁移、完整历史清理和
+   public CI hardening。
 2. **RouteWise 是否随上游公开**(owner:Murphy + Juncheng;EuroSys 在审):
    只 gate Step 3,不阻塞 Step 1 任何工作。
 3. **License / Harvard 授权**(owner:Murphy):审批周期最长,建议立即启动;

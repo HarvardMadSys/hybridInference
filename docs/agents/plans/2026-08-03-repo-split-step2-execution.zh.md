@@ -8,10 +8,14 @@
 > 开场第一项)。
 > 创建:2026-08-03,基于 Murphy 与 Claude 的对话,并吸收另一 agent 会话的
 > 交叉评审(symlink 挂载悬空、拉模式触发、digest 与计划文本的关系)。
+> **2026-08-26 决策更新:** Step 3 直接公开现有 HybridInference 仓库；
+> 本文所有 public-export / 物化树描述已被
+> [direct-publication readiness plan](2026-08-26-direct-publication-readiness.md)
+> 取代。判据对象是原仓当前树与所有保留的 Git 历史。
 > 修订:2026-08-12,状态对账——W0 已完成、W1 GitHub 侧已完成、§7 行动项已随
 > H4 解决;详见 §0 与各工作项内的进展注记。已并入九轮交叉评审:W5 删除
 > 时序改判(不与搬迁同批)、W6 增补 prod 观察窗、W7 compose base 来源待拍板
-> (§6-5)与 `/agents` 路由缺口(P1)、判据②改以 public-export **物化树**
+> (§6-5)与 `/agents` 路由缺口(P1)、判据②曾改以 public-export **物化树**
 > 为对象、W2 同源硬门(脏检查含 untracked + 无旁路)、W2 砍除 frontend
 > 候选旁支(缺 `AGENT_*` build args 与 cloud-agent 网络,整条留待 W7)、
 > W5c services 表述修正(harness 非 worker,按 §7 拆)、sweep 计数刷新为
@@ -281,12 +285,8 @@ main 可能为空,生产 doc 站会对着空树构建);(f) rag-index 的跨仓�
 prod=release tag)始终可用;删除推迟到 W6 观察窗结束后,按逆批次序独立 PR
 执行,E 门(banned-strings、禁 import `distributions/`、中立启动)在删除批
 上强制,Step 3 开源前完成即可。(备选:旧生产链钉死在迁移前 release tag、
-删除照旧同批——回滚面更窄,不推荐;二选一归 Murphy。)**删除批的既有
-测试联动(第七轮)**:`public_export_manifest.yaml` 对 `distributions/`
-的排除规则非 optional,`test_public_export_manifest.py` 强制"被排除路径
-必须存在"——清空 `distributions/` 的删除批须同步把该排除规则标
-`optional: true` 并更新注释(保留规则本身:将来任何 overlay 重现,导出
-照样不带它),否则删除批 CI 必红。
+删除照旧同批——回滚面更窄,不推荐;二选一归 Murphy。)2026-08-26 起不再有
+export manifest 联动：删除批直接减少原仓公开面。
 
 ### W6 切换与演练
 
@@ -340,25 +340,18 @@ key/secret 轮换。Cloudflare 两笔(2026-08-12 增):吊销旧 user token
 
 1. 两个手势(sync-main、Deploy Production)在 freeInference 仓完成
    staging + prod 部署,主机不再依赖 hybridInference 的部署链路;
-2. hybridInference 的 **public-export 物化树**
-   (`ops/release/public_export.py --materialize <tmpdir>`,连同 overlay
-   replacements 在内的真实导出结果)上 brand/credential 扫描零命中——
-   `--list` 只扫路径、读不到 export 新增的 replacement 内容,不作判据;
-   `docs/agents/`、`docs/reviews/` 等历史文档不作为本判据对象,其去留
-   (导出 manifest 排除,或随 W5 迁走)Step 3 前拍板;`distributions/`
-   为空(2026-08-12 写实:中立示例已在 `config/examples/`,并无也不新造
-   example overlay);上游 `make test` 全绿、无 overlay 中立启动可用
-   (Step 1 判据③保持)。(门链可执行性 2026-08-12 已实测:物化 839 个
-   上游文件 + 7 个 replacement,credential audit clean,物化树 strict
-   brand sweep = 0 unclaimed / 8 pending streams——8 即 Step 2 未完成
-   的正常现状,清零即达标;)
+2. HybridInference 原仓的当前 tree 通过 brand/credential/personal-data 审计；
+   上游 `make test` 全绿，且 runnable example 在无私有 overlay 的 fresh clone
+   中端到端通过。历史文档、review 记录和 deployment overlay 不再由 manifest
+   隐藏：不能公开的 tree 内容必须迁出。所有保留 refs 的完整历史扫描与必要清理
+   在 Step 2 收口后的 Step 3 写入冻结窗口完成。
 3. `upstream.lock` 为两仓唯一耦合点;bump 门红时 staging 停在旧 pin
    (演练证实);
 4. 升级与两种回滚演练通过;
 5. W8 全部清零(2026-08-12 起为五项:原三项 + Cloudflare 两笔)。
 
-达成后,Step 3 只剩:公开机制拍板(Juncheng)→ 过滤导出
-(`ops/release/public_export.py` 工具链已就绪)→ hybridInference 公开。
+达成后，按 direct-publication readiness plan 完成 public runner、仓库设置和
+fresh-remote 复核，然后直接翻转 HybridInference 仓库可见性。
 
 ## 6. 待拍板(人工决定)
 
@@ -368,7 +361,7 @@ key/secret 轮换。Cloudflare 两笔(2026-08-12 增):吊销旧 user token
    vs 上游 release tag(更符合"已发布"字义,但把 staging 锁死在上游 main
    节奏)。
 3. **bump 节奏**:每次上游 push(体验最接近今天)vs 每日汇总(噪音更小)。
-4. (不阻塞)Step 3 公开机制,owner:Juncheng。
+4. (已决定)Step 3 直接公开现有 HybridInference 仓库。
 5. (不阻塞 W4–W6,W7 动工前必拍)W7 拆除上游 checkout 后 compose base
    的来源——候选见 W7 注记。
 
@@ -406,9 +399,6 @@ cloud agent 同日启动了自己的拆仓(计划:
    目前休眠)共用 auth 层——同一时间只允许一个 PR 动 `auth.py`,顺序:
    agent 契约先,IdP 抽象后。本文 W0–W6 均不触碰 auth.py,无冲突。
 
-**本线认领的行动项——已解决(2026-08-09,随 H4)**:原
-`ops/release/public_export.py:36` 对 `patch_gate.py` 的硬引用已消除:
-credential patterns 独立成 `ops/release/secret_patterns.py`(单一来源,
-export 审计与泄漏测试共用),H4 删除 agent 代码未伤及导出工具链。顺带,
-H4 之后导出树不再含 agent 代码,08-06 勘察发现的"导出会连带公开整套
-agent 代码"问题自动消解。
+**历史注记(2026-08-09,随 H4):** 当时曾为 public-export 拆出 credential
+patterns，以解除对 `patch_gate.py` 的引用。2026-08-26 直接公开决策退役了整套
+export 工具；当前 tree guard 与完整历史扫描分别承担安全门。

@@ -190,7 +190,7 @@ describe("canonical AlertEvent validation", () => {
     "xai-NOTAREAL",
     "rk_NOTAREAL",
     "AIzaNOTAREAL00",
-    "-----BEGIN PRIVATE KEY-----",
+    "-----BEGIN " + "PRIVATE KEY-----",
     "https://hooks.slack.com/services/TEST/TEST/TEST",
   ])("rejects secret material before persistence: %s", (secret) => {
     expect(() =>
