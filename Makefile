@@ -159,13 +159,18 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 #   make up DISTRIBUTION=none        # your own gateway, named after nobody
 #   make up DISTRIBUTION=<name>       # pick one when several are present
 #
-# Deployment auto-discovery intentionally considers only `distributions/`.
-# Public tutorial distributions live under `examples/distributions/` and are
-# resolved only when named explicitly, so adding a runnable example can never
-# change which real deployment a bare `make up` selects.
 # distributions/<name>/deploy/<file>.env -> <name>, deduplicated.
-_DISTRIBUTION_LOOKUP_ROOTS := distributions examples/distributions
-_DISTRIBUTION_DIRS := $(sort $(foreach f,$(wildcard distributions/*/deploy/*.env),$(word 2,$(subst /, ,$(f)))))
+#
+# An overlay declaring DISTRIBUTION_KIND=example is a teaching artifact rather
+# than somebody's deployment, so auto-discovery skips it and it is reachable
+# only when named. That one declaration is what separates the two, everywhere:
+# it also selects the backend-only startup below and is what the public export
+# keys on. Deciding by directory name or path instead would put the same
+# judgement in three files that could disagree.
+_ALL_DISTRIBUTION_DIRS := $(sort $(foreach f,$(wildcard distributions/*/deploy/*.env),$(word 2,$(subst /, ,$(f)))))
+_EXAMPLE_DISTRIBUTION_DIRS := $(sort $(foreach d,$(_ALL_DISTRIBUTION_DIRS),\
+  $(if $(shell grep -lx 'DISTRIBUTION_KIND=example' distributions/$(d)/deploy/*.env 2>/dev/null),$(d),)))
+_DISTRIBUTION_DIRS := $(filter-out $(_EXAMPLE_DISTRIBUTION_DIRS),$(_ALL_DISTRIBUTION_DIRS))
 ifeq ($(words $(_DISTRIBUTION_DIRS)),1)
 DISTRIBUTION ?= $(_DISTRIBUTION_DIRS)
 else ifeq ($(words $(_DISTRIBUTION_DIRS)),0)
@@ -179,18 +184,19 @@ ifeq ($(DISTRIBUTION),none)
 DISTRIBUTION_PATH :=
 DISTRIBUTION_ENV_FILES :=
 else ifneq ($(DISTRIBUTION),)
-_DISTRIBUTION_PATHS := $(foreach root,$(_DISTRIBUTION_LOOKUP_ROOTS),$(wildcard $(root)/$(DISTRIBUTION)))
-ifeq ($(words $(_DISTRIBUTION_PATHS)),0)
-$(error DISTRIBUTION=$(DISTRIBUTION) matches neither distributions/$(DISTRIBUTION) nor examples/distributions/$(DISTRIBUTION))
-else ifneq ($(words $(_DISTRIBUTION_PATHS)),1)
-$(error DISTRIBUTION=$(DISTRIBUTION) is ambiguous across $(_DISTRIBUTION_PATHS))
+DISTRIBUTION_PATH := $(wildcard distributions/$(DISTRIBUTION))
+ifeq ($(DISTRIBUTION_PATH),)
+$(error DISTRIBUTION=$(DISTRIBUTION) matches no distributions/$(DISTRIBUTION))
 endif
-DISTRIBUTION_PATH := $(firstword $(_DISTRIBUTION_PATHS))
-DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(wildcard $(DISTRIBUTION_PATH)/deploy/*.env))
+_DISTRIBUTION_ENV_PATHS := $(wildcard $(DISTRIBUTION_PATH)/deploy/*.env)
+DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(_DISTRIBUTION_ENV_PATHS))
 ifeq ($(DISTRIBUTION_ENV_FILES),)
 $(error DISTRIBUTION=$(DISTRIBUTION) matches no $(DISTRIBUTION_PATH)/deploy/*.env)
 endif
+DISTRIBUTION_KIND := $(shell sed -n 's/^DISTRIBUTION_KIND=//p' $(_DISTRIBUTION_ENV_PATHS) | tail -n 1)
+ifneq ($(DISTRIBUTION_KIND),example)
 $(info Using distribution '$(DISTRIBUTION)' — its identity is compiled into the console. DISTRIBUTION=none for a neutral stack.)
+endif
 endif
 # Deploy scripts may append environment files for a deployment-specific
 # environment, such as staging. These are inserted after the shared
@@ -221,7 +227,7 @@ LOCAL_ENV_ARGS := $(if $(wildcard .env),--env-file .env,)
 # The example is deterministic even in an operator checkout that already has a
 # deployment .env. Shell variables still outrank every --env-file in Compose,
 # which is the explicit escape hatch documented for a real upstream.
-ifeq ($(DISTRIBUTION_PATH),examples/distributions/example)
+ifeq ($(DISTRIBUTION_KIND),example)
 LOCAL_ENV_ARGS :=
 endif
 COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
@@ -239,7 +245,7 @@ docker-volumes:  ## Create external Docker volumes required by production compos
 # frontend/database stack. Start its fake to healthy first, then use --no-deps
 # so backend's production Postgres dependency stays stopped while DB_ENABLED is
 # false. The production branch retains its external-volume prerequisite.
-ifeq ($(DISTRIBUTION_PATH),examples/distributions/example)
+ifeq ($(DISTRIBUTION_KIND),example)
 up:  ## Start all services
 	$(COMPOSE) up -d --wait example-provider
 	$(COMPOSE) up -d --no-deps backend
@@ -287,7 +293,7 @@ endif
 
 # Keep rebuild semantics aligned with `up`: rebuilding the tutorial must not
 # unexpectedly turn it into the production full stack.
-ifeq ($(DISTRIBUTION_PATH),examples/distributions/example)
+ifeq ($(DISTRIBUTION_KIND),example)
 build:  ## Rebuild images and restart (or: make build s=backend)
 	$(COMPOSE) up -d --wait example-provider
 ifdef s

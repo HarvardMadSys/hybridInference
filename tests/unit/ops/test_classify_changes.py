@@ -42,11 +42,11 @@ def test_backend_sources_and_tests_map_to_backend() -> None:
 @pytest.mark.parametrize(
     "path",
     [
-        "examples/distributions/example/README.md",
-        "examples/distributions/example/config/models.yaml",
-        "examples/distributions/example/smoke.py",
-        "examples/support/openai_compat_fake.py",
-        "examples/support/Dockerfile.openai-compat-fake",
+        "distributions/example/README.md",
+        "distributions/example/config/models.yaml",
+        "distributions/example/smoke.py",
+        "distributions/example/fixtures/fake-openai-provider/server.py",
+        "distributions/example/fixtures/fake-openai-provider/Dockerfile",
     ],
 )
 def test_runnable_example_changes_run_backend_tests_image_and_smoke(path: str) -> None:

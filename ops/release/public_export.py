@@ -147,12 +147,13 @@ def _read_text(path: Path) -> str | None:
     return (head + rest).decode("utf-8", errors="replace")
 
 
-def load_manifest() -> tuple[list[dict], list[dict], list[dict]]:
+def load_manifest() -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     data = yaml.safe_load(MANIFEST.read_text())
     return (
         data.get("exclude") or [],
         data.get("undecided") or [],
         data.get("overlay") or [],
+        data.get("keep") or [],
     )
 
 
@@ -175,12 +176,27 @@ def tracked_files() -> list[str]:
     return [n.decode() for n in _git(["git", "ls-files", "-z"], cwd=REPO).stdout.split(b"\0") if n]
 
 
-def excluded(name: str, rules: list[dict]) -> str | None:
-    """Return the excluding path, or None if this file travels."""
+def _covers(rule: dict, name: str) -> bool:
+    p = rule["path"]
+    return name == p.rstrip("/") or name.startswith(p if p.endswith("/") else p + "/")
+
+
+def excluded(name: str, rules: list[dict], keep: list[dict] | None = None) -> str | None:
+    """Return the excluding path, or None if this file travels.
+
+    ``keep`` carves a named path back out of a broader exclusion, and is checked
+    first. It exists so a directory can stay excluded by default while one entry
+    in it travels: `distributions/` is every deployment's private overlay, but
+    `distributions/example/` is the public tutorial and has to reach the people
+    the tutorial is for. Inverting that -- listing the real deployments to
+    exclude instead -- would publish the next one somebody adds.
+    """
+    for rule in keep or []:
+        if _covers(rule, name):
+            return None
     for rule in rules:
-        p = rule["path"]
-        if name == p.rstrip("/") or name.startswith(p if p.endswith("/") else p + "/"):
-            return p
+        if _covers(rule, name):
+            return rule["path"]
     return None
 
 
@@ -309,13 +325,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    rules, undecided, overlay = load_manifest()
+    rules, undecided, overlay, keep = load_manifest()
 
     # A path that is untracked by design (private notes) is legitimately absent
     # from a fresh clone; it is listed so a directory-copy export drops it too.
     stale = [
         r["path"]
-        for r in rules + undecided
+        for r in rules + undecided + keep
         if not r.get("optional") and not (REPO / r["path"].rstrip("/")).exists()
     ]
     if stale:
@@ -326,7 +342,7 @@ def main() -> int:
 
     kept, dropped = [], defaultdict(int)
     for name in tracked_files():
-        rule = excluded(name, rules)
+        rule = excluded(name, rules, keep)
         if rule:
             dropped[rule] += 1
         else:

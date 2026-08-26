@@ -28,7 +28,7 @@ curl localhost:8080/v1/chat/completions \
 ```
 
 For a deterministic Docker path that needs no provider key, run the public
-[router distribution example](examples/distributions/example/README.md). The
+[router distribution example](distributions/example/README.md). The
 [Router Tutorial](docs/developer/router-tutorial.md) walks the same path from
 clone to first request, including streaming and how to turn the example into
 your own distribution. CI executes the same contract:

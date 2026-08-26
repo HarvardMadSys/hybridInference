@@ -7,7 +7,7 @@
 #   make up DISTRIBUTION=example
 #   make smoke DISTRIBUTION=example
 #
-# See examples/distributions/example/README.md.
+# See distributions/example/README.md.
 #
 # A distribution bundles site identity and config-file locations into one
 # versioned document. Activate it with:

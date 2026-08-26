@@ -17,7 +17,8 @@ from serving.config.distribution import load_distribution_config
 from serving.servers.registry import register_from_models_yaml
 
 REPO = Path(__file__).resolve().parents[3]
-EXAMPLE = REPO / "examples" / "distributions" / "example"
+EXAMPLE = REPO / "distributions" / "example"
+FAKE_PROVIDER = EXAMPLE / "fixtures" / "fake-openai-provider"
 BASE_COMPOSE = REPO / "deploy" / "docker" / "docker-compose.yml"
 EXAMPLE_COMPOSE = EXAMPLE / "deploy" / "docker-compose.yml"
 ACTIVE_CI = REPO / ".github" / "workflows" / "ci.yml"
@@ -112,13 +113,12 @@ def test_example_compose_resolves_public_paths_and_forwards_upstream_env() -> No
     fake_build = override["services"]["example-provider"]["build"]
     fake_context = (BASE_COMPOSE.parent / fake_build["context"]).resolve()
     assert fake_context == REPO
-    assert (fake_context / fake_build["dockerfile"]).resolve() == (
-        REPO / "examples" / "support" / "Dockerfile.openai-compat-fake"
-    )
+    assert (fake_context / fake_build["dockerfile"]).resolve() == (FAKE_PROVIDER / "Dockerfile")
+    # The neutral image must carry no distribution content -- the example
+    # included. It reads its config through the read-only distributions/ mount
+    # like any other overlay, which is the whole reason it lives there.
     backend_dockerfile = (REPO / "deploy" / "docker" / "Dockerfile.backend").read_text()
-    assert "COPY examples/distributions/example/distribution.yaml" in backend_dockerfile
-    assert "COPY examples/distributions/example/config/" in backend_dockerfile
-    assert "COPY examples/ examples/" not in backend_dockerfile
+    assert "distributions" not in backend_dockerfile
 
     environment = backend["environment"]
     for name in (
@@ -260,11 +260,13 @@ def test_example_writes_nothing_into_the_checkout() -> None:
     mounts = json.loads(proc.stdout)["services"]["backend"]["volumes"]
     by_target = {mount["target"]: mount for mount in mounts}
 
-    for target in ("/app/var/data", "/app/distributions"):
-        assert by_target[target]["type"] == "tmpfs", (
-            f"{target} is a {by_target[target]['type']} mount; a missing host "
-            "path would be created as root and left in the checkout"
-        )
+    assert by_target["/app/var/data"]["type"] == "tmpfs", (
+        "var/** is gitignored, so a bind mount here is created by Docker as "
+        "root and left in the checkout for actions/checkout to trip over"
+    )
+    # The overlay lives under distributions/, so that mount is how the backend
+    # reads its config -- it must stay a bind, and stay read-only.
+    assert by_target["/app/distributions"]["type"] == "bind"
 
     for mount in mounts:
         if mount["type"] != "bind":
@@ -287,7 +289,7 @@ def test_smoke_url_follows_the_distribution_env_file(
         monkeypatch.delenv(name, raising=False)
 
     sandbox = tmp_path / "repo"
-    deploy = sandbox / "examples" / "distributions" / "example" / "deploy"
+    deploy = sandbox / "distributions" / "example" / "deploy"
     deploy.mkdir(parents=True)
     shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
     shutil.copy2(EXAMPLE_COMPOSE, deploy / "docker-compose.yml")
@@ -299,20 +301,30 @@ def test_smoke_url_follows_the_distribution_env_file(
 
 
 def test_make_selection_preserves_default_and_none_semantics(tmp_path: Path) -> None:
+    """The example shares a root with real overlays but is never auto-selected.
+
+    Both live under distributions/ now, so nothing about the path distinguishes
+    them; DISTRIBUTION_KIND=example does. Without that, a second directory here
+    would make a bare `make up` ambiguous and refuse to start anything.
+    """
     sandbox = tmp_path / "repo"
     (sandbox / "distributions" / "acme" / "deploy").mkdir(parents=True)
+    (sandbox / "distributions" / "example" / "deploy").mkdir(parents=True)
     shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
     (sandbox / "distributions" / "acme" / "deploy" / "backend.env").write_text("SITE_NAME=Acme\n")
+    (sandbox / "distributions" / "example" / "deploy" / "backend.env").write_text(
+        "DISTRIBUTION_KIND=example\n"
+    )
 
     default = _make_dry_run("ps", cwd=sandbox)
     assert "Using distribution 'acme'" in default
     assert "distributions/acme/deploy/backend.env" in default
-    assert "examples/distributions/example/deploy/docker-compose.yml" not in default
+    assert "distributions/example/deploy/backend.env" not in default
 
     neutral = _make_dry_run("ps", "DISTRIBUTION=none", cwd=sandbox)
     assert "Using distribution" not in neutral
     assert "distributions/acme/deploy/backend.env" not in neutral
-    assert "examples/distributions/example/deploy/docker-compose.yml" not in neutral
+    assert "distributions/example/deploy/docker-compose.yml" not in neutral
 
     makefile = (sandbox / "Makefile").read_text()
     assert (
@@ -323,15 +335,15 @@ def test_make_selection_preserves_default_and_none_semantics(tmp_path: Path) -> 
 
 def test_example_make_contract_is_backend_only_and_race_free(tmp_path: Path) -> None:
     sandbox = tmp_path / "repo"
-    (sandbox / "examples" / "distributions" / "example" / "deploy").mkdir(parents=True)
+    (sandbox / "distributions" / "example" / "deploy").mkdir(parents=True)
     shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
     shutil.copy2(
         EXAMPLE / "deploy" / "backend.env",
-        sandbox / "examples" / "distributions" / "example" / "deploy" / "backend.env",
+        sandbox / "distributions" / "example" / "deploy" / "backend.env",
     )
     shutil.copy2(
         EXAMPLE_COMPOSE,
-        sandbox / "examples" / "distributions" / "example" / "deploy" / "docker-compose.yml",
+        sandbox / "distributions" / "example" / "deploy" / "docker-compose.yml",
     )
     (sandbox / ".env").write_text("EXAMPLE_UPSTREAM_MODEL=must-not-win\n")
 
@@ -369,13 +381,11 @@ def test_example_make_contract_is_backend_only_and_race_free(tmp_path: Path) -> 
 
     for target in ("down", "logs"):
         target_output = _make_dry_run(target, "DISTRIBUTION=example", cwd=sandbox)
-        assert "examples/distributions/example/deploy/docker-compose.yml" in target_output
+        assert "distributions/example/deploy/docker-compose.yml" in target_output
 
 
 def test_fake_provider_builds_a_deterministic_non_streaming_completion() -> None:
-    fake = _load_module(
-        "_runnable_example_fake", REPO / "examples" / "support" / "openai_compat_fake.py"
-    )
+    fake = _load_module("_runnable_example_fake", FAKE_PROVIDER / "server.py")
     payload = {
         "model": "example-upstream",
         "messages": [{"role": "user", "content": "hello"}],
@@ -390,9 +400,7 @@ def test_fake_provider_builds_a_deterministic_non_streaming_completion() -> None
 
 
 def test_fake_provider_builds_deterministic_openai_sse_frames() -> None:
-    fake = _load_module(
-        "_runnable_example_fake_stream", REPO / "examples" / "support" / "openai_compat_fake.py"
-    )
+    fake = _load_module("_runnable_example_fake_stream", FAKE_PROVIDER / "server.py")
     payload = {
         "model": "example-upstream",
         "messages": [{"role": "user", "content": "hello"}],
@@ -430,9 +438,7 @@ def test_fake_provider_builds_deterministic_openai_sse_frames() -> None:
 
 
 def test_fake_provider_stream_response_uses_sse_headers_and_flushes_each_frame() -> None:
-    fake = _load_module(
-        "_runnable_example_fake_handler", REPO / "examples" / "support" / "openai_compat_fake.py"
-    )
+    fake = _load_module("_runnable_example_fake_handler", FAKE_PROVIDER / "server.py")
     payload = {"model": "example-upstream", "stream": True}
 
     class RecordingWriter:
@@ -478,7 +484,7 @@ def test_fake_provider_stream_response_ignores_client_disconnects(
 ) -> None:
     fake = _load_module(
         "_runnable_example_fake_disconnect",
-        REPO / "examples" / "support" / "openai_compat_fake.py",
+        FAKE_PROVIDER / "server.py",
     )
 
     class DisconnectingWriter:
@@ -529,9 +535,7 @@ def test_router_tutorial_teaches_what_the_example_actually_serves() -> None:
     models = yaml.safe_load((EXAMPLE / "config" / "models.yaml").read_text())["models"]
     assert f'"model": "{models[0]["id"]}"' in tutorial
 
-    fake = _load_module(
-        "_runnable_example_fake_tutorial", REPO / "examples" / "support" / "openai_compat_fake.py"
-    )
+    fake = _load_module("_runnable_example_fake_tutorial", FAKE_PROVIDER / "server.py")
     assert fake.RESPONSE_TEXT in tutorial
 
     # The port override is useless unless both commands receive it: one

@@ -44,11 +44,6 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY apps/backend/serving/ serving/
 COPY apps/backend/routing/ routing/
 COPY config/ config/
-# Bake only the public example's runtime inputs so the documented Compose path
-# works without a host bind mount. Its docs, smoke client, deploy files, and
-# fake-provider source remain outside the production backend image.
-COPY examples/distributions/example/distribution.yaml examples/distributions/example/distribution.yaml
-COPY examples/distributions/example/config/ examples/distributions/example/config/
 
 # config/ will be overridden by a read-only volume mount at runtime,
 # but we copy a default so the image can run standalone for testing.

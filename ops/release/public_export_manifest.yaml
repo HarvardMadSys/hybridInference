@@ -28,6 +28,8 @@ exclude:
       Distribution overlays are the visibility boundary by construction: real
       model directories, alert thresholds, machine scripts, RAG corpora, site
       identity. The whole point of the overlay is that it does not travel.
+      One entry is carved back out under `keep:` -- see there for why the
+      exception is written that way round.
 
   - path: ops/db/analysis/
     reason: >-
@@ -306,6 +308,26 @@ overlay:
       warn on every build.
 
 undecided: []
+
+# Paths carved back out of a broader exclusion, checked before it. Each entry
+# must name something that an `exclude:` rule would otherwise drop, and the
+# test enforces both halves: that it exists, and that it is genuinely excluded
+# without this.
+#
+# The direction matters. Listing the real deployments to exclude instead, and
+# letting everything else in distributions/ travel, would publish the next
+# overlay somebody adds and forgets to name -- a private deployment leaking
+# because of an omission. This way an omission costs a missing example, which
+# CI notices immediately because the exported workflow runs it.
+keep:
+  - path: distributions/example/
+    reason: >-
+      The runnable router example and its tutorial exist for people outside
+      this deployment: a gateway they can start from a fresh clone with no
+      provider account, no key and no database. It is a distribution by shape
+      only -- a fake upstream and a sentinel reply, carrying no site identity,
+      no credentials and no machine names -- and the exported CI runs its
+      documented commands, so it has to be in the exported tree to run at all.
 
 # ---------------------------------------------------------------------------
 # What this list is *not*
