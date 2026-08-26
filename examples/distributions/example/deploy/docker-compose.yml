@@ -14,6 +14,20 @@ services:
       EXAMPLE_UPSTREAM_BASE_URL: ${EXAMPLE_UPSTREAM_BASE_URL}
       EXAMPLE_UPSTREAM_API_KEY: ${EXAMPLE_UPSTREAM_API_KEY}
       EXAMPLE_UPSTREAM_MODEL: ${EXAMPLE_UPSTREAM_MODEL}
+    # Compose merges volumes by target, so naming these two replaces the
+    # production bind mounts rather than adding to them. The example needs
+    # neither -- its config is baked into the image -- and a bind mount whose
+    # host path is missing is created by Docker as root: `var/**` is gitignored,
+    # so running the example left a root-owned var/data in the checkout that
+    # `actions/checkout` could not clean, failing every later job on that runner
+    # before it read a line of code. `distributions/` is absent from the public
+    # export entirely, so it would be created the same way for the outside
+    # readers this example exists for.
+    volumes:
+      - type: tmpfs
+        target: /app/var/data
+      - type: tmpfs
+        target: /app/distributions
 
   example-provider:
     build:

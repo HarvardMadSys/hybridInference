@@ -222,6 +222,58 @@ def test_example_checked_in_port_defaults_match_the_smoke_url(
     assert published_port["target"] == 8080
 
 
+def test_example_writes_nothing_into_the_checkout() -> None:
+    """A missing bind-mount source is created as root and outlives the run.
+
+    `var/**` is gitignored, so the example's first run created a root-owned
+    var/data that `actions/checkout --clean` could not remove, failing every
+    later job on that runner during checkout. `distributions/` is excluded from
+    the public export, so it would be created the same way downstream.
+    """
+    if shutil.which("docker") is None:
+        pytest.skip("Docker Compose is not installed")
+
+    proc = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(BASE_COMPOSE),
+            "-f",
+            str(EXAMPLE_COMPOSE),
+            "--env-file",
+            str(EXAMPLE / "deploy" / "backend.env"),
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=REPO,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0 and "compose is not a docker command" in proc.stderr.lower():
+        pytest.skip("Docker Compose is not installed")
+    assert proc.returncode == 0, proc.stderr
+
+    mounts = json.loads(proc.stdout)["services"]["backend"]["volumes"]
+    by_target = {mount["target"]: mount for mount in mounts}
+
+    for target in ("/app/var/data", "/app/distributions"):
+        assert by_target[target]["type"] == "tmpfs", (
+            f"{target} is a {by_target[target]['type']} mount; a missing host "
+            "path would be created as root and left in the checkout"
+        )
+
+    for mount in mounts:
+        if mount["type"] != "bind":
+            continue
+        # Whatever still binds must exist in a fresh clone, or Docker creates it.
+        assert Path(mount["source"]).exists(), mount["source"]
+        assert mount.get("read_only") is True, f"{mount['target']} is writable"
+
+
 def test_smoke_url_follows_the_distribution_env_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
