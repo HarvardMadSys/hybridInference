@@ -265,8 +265,8 @@ W5 每批搬迁按矩阵做 preflight。已知至少涉及的 secrets:
 ### W5 物理搬迁(一类一个 PR,批间 staging 验证)
 
 沿用 Step 1 原则:内容类原子搬,每步独立可回退。批次:
-(a) distribution 内容与配置;(b) workflows(sync-main、deploy-*、
-rag-index、codex-oncall、alert-control-plane-*;按 W3 裁定);
+(a) distribution 内容与配置;(b) `ops/deploy/` + freeInference 新仓自有的
+deploy/promotion workflow 接线(不搬上游同名文件;按 W3 裁定);
 (c) `services/` 中 W3 判定为 FreeInference-owned 的部分——注意
 `freeinference-harness` 不是 worker,按 §7 既有裁定拆开:协议一致性
 testkit 留上游,站点 targets 迁私有仓;(d) `ops/` 按 W3 裁定的部分;
@@ -289,11 +289,18 @@ export manifest 联动：删除批直接减少原仓公开面。
 
 ### W6 切换与演练
 
-staging 先整体改由 freeInference 仓部署(旧链路保留回滚)→ staging 观察窗
-→ prod 切换 → **prod 观察窗**(旧链路与旧仓内容在窗内原样保留,三项演练
-在此窗内完成)→ 拆除旧链路 → 之后才执行 W5 修订所述的上游侧删除批。
-必做演练:一次 bump 升级、一次 revert bump 回滚、一次旧 release dispatch
-回滚。
+**状态(2026-08-26):已完成。** staging 与 production 均已切至
+freeInference 部署链,两段观察窗均通过;三项演练的公开安全证据序列为:
+
+- 2026-08-19:digest first-flight rollback;
+- 2026-08-21:staging bump/revert/restore
+  `f274aca4→e8dba4ee→f274aca4`;
+- 2026-08-21:production old-release `20260821→20260818`,随后由
+  freeInference 链部署 `20260821.1`。
+
+本 W6 收口 PR 退役 HybridInference 上游的四个旧部署 workflow;
+`sync-main.yml` 继续承担上游中立的 dev→main/release promotion。后续进入
+W5 修订所述的上游删除批。
 
 ### W7 拆后:frontend 运行时品牌化 → 翻 digest
 

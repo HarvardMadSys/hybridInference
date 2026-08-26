@@ -18,28 +18,31 @@ def _triggers(workflow: dict) -> dict:
     return workflow.get("on") or workflow[True]
 
 
-def test_cd_accepts_only_manual_or_successful_push_ci() -> None:
-    condition = _workflow("deploy.yml")["jobs"]["deploy"]["if"]
+@pytest.mark.parametrize(
+    "workflow_name",
+    [
+        "deploy.yml",
+        "deploy-rollback.yml",
+        "deploy-staging.yml",
+        "deploy-staging-digest.yml",
+    ],
+)
+def test_legacy_deploy_workflows_are_retired(workflow_name: str) -> None:
+    assert not (WORKFLOWS / workflow_name).exists()
 
-    assert "github.event_name == 'workflow_dispatch'" in condition
-    assert "github.event.workflow_run.event == 'push'" in condition
-    assert "github.event.workflow_run.conclusion == 'success'" in condition
 
+def test_manual_candidate_cannot_be_mistaken_for_lock_input() -> None:
+    steps = _workflow("build-candidates.yml")["jobs"]["build"]["steps"]
+    tags = next(
+        step["with"]["tags"] for step in steps if step.get("name") == "Build and push backend"
+    )
+    summary = next(step["run"] for step in steps if step.get("name") == "Candidate summary")
 
-def test_classic_staging_deploy_is_a_dispatch_only_escape_hatch() -> None:
-    """Staging is deployed by the freeInference lock chain since W6.
-
-    Two automatic deployers of the same compose stack cannot be serialized
-    across repositories, so the classic per-push trigger was disarmed at the
-    cutover (2026-08-21). The workflow itself must stay: it rebuilds from
-    source with no registry or lock dependency, which is the escape hatch the
-    08-21 drill exercised (release 20260821 redeploy). Re-arming a push-follow
-    trigger here without first retiring the lock chain reintroduces the
-    stack-stealing this test exists to prevent.
-    """
-    triggers = _triggers(_workflow("deploy-staging.yml"))
-
-    assert list(triggers) == ["workflow_dispatch"], triggers
+    assert "manual-${{ github.sha }}" in tags
+    assert "dev-" not in tags
+    assert "Diagnostic only: upstream.lock never consumes manual-* tags" in summary
+    assert "automatic dev CI multi-arch candidate" in summary
+    assert "Deploy Staging by Digest" not in summary
 
 
 def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
