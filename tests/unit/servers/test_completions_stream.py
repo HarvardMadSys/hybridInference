@@ -282,9 +282,45 @@ async def test_stream_yields_role_chunk_first_then_passthrough_chunks():
     assert out[0].startswith("data: ")
     payload = json.loads(out[0][6:])
     assert payload["choices"][0]["delta"] == {"role": "assistant"}
-    # Followed by the two content chunks (sanitized but byte-identical here).
-    assert out[1] == chunks[0]
-    assert out[2] == chunks[1]
+    # Followed by the two content chunks, unchanged except for the completion
+    # id the router stamps on everything it forwards.
+    for forwarded, original in zip(out[1:], chunks, strict=True):
+        assert json.loads(forwarded[6:]) == {
+            **json.loads(original[6:]),
+            "id": payload["id"],
+        }
+
+
+@pytest.mark.asyncio
+async def test_every_chunk_of_one_completion_repeats_a_single_id():
+    """Clients group a streamed completion by id, so it cannot change mid-stream."""
+    session = _make_session()
+    chunks = [
+        _content_chunk("gpt-4", "Hello "),
+        _content_chunk("gpt-4", "world", finish="stop"),
+    ]
+
+    out = await _consume(session.stream(_aiter(chunks)))
+
+    ids = {
+        json.loads(line[6:])["id"]
+        for line in out
+        if line.startswith("data: ") and not line.startswith("data: [DONE]")
+    }
+    assert len(ids) == 1, f"one completion emitted several ids: {sorted(ids)}"
+    assert next(iter(ids)).startswith("chatcmpl-")
+
+
+@pytest.mark.asyncio
+async def test_two_completions_do_not_share_an_id():
+    """Unique between completions is the other half of the same contract."""
+    ids = []
+    for _ in range(2):
+        session = _make_session()
+        out = await _consume(session.stream(_aiter([_content_chunk("gpt-4", "hi")])))
+        ids.append(json.loads(out[0][6:])["id"])
+
+    assert ids[0] != ids[1]
 
 
 @pytest.mark.asyncio
