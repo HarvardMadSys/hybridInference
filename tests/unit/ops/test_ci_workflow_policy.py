@@ -31,12 +31,17 @@ def test_legacy_deploy_workflows_are_retired(workflow_name: str) -> None:
     assert not (WORKFLOWS / workflow_name).exists()
 
 
-def test_candidate_summary_points_to_the_distribution_lock_chain() -> None:
+def test_manual_candidate_cannot_be_mistaken_for_lock_input() -> None:
     steps = _workflow("build-candidates.yml")["jobs"]["build"]["steps"]
+    tags = next(
+        step["with"]["tags"] for step in steps if step.get("name") == "Build and push backend"
+    )
     summary = next(step["run"] for step in steps if step.get("name") == "Candidate summary")
 
-    assert "consuming distribution repository" in summary
-    assert "upstream.lock" in summary
+    assert "manual-${{ github.sha }}" in tags
+    assert "dev-" not in tags
+    assert "Diagnostic only: upstream.lock never consumes manual-* tags" in summary
+    assert "automatic dev CI multi-arch candidate" in summary
     assert "Deploy Staging by Digest" not in summary
 
 

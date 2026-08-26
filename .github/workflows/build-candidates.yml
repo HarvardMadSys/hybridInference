@@ -1,29 +1,23 @@
 name: Build Candidate Images
 
-# Staging artifact-consumer chain, slice 1 (route (b)-minimal):
-# build the backend image from the current source and push it to GHCR so
-# staging can deploy by immutable digest instead of building from a
-# source checkout.
+# Manual diagnostic image slicer. Canonical deployable backend candidates are
+# published automatically by ci.yml as multi-arch manifests under the
+# dev-<full-sha> tag; distribution bump chains consume only those candidates.
 #
-# Manual-only: nothing builds or publishes automatically. This slice
-# deliberately does NOT add a release manifest, signing, or attestation —
-# the digest printed in the run summary is the whole deliverable.
+# This dispatch-only tool intentionally builds one operator-selected platform
+# under a separate manual-<full-sha>-<arch> tag. It diagnoses Dockerfile/build
+# problems without minting a deployable candidate or repointing either
+# canonical dev tag.
 #
-# First run: dispatch this at the exact SHA staging currently runs, so the
-# digest deploy that follows is provably a packaging-only change.
-#
-# Backend only. A frontend candidate is deliberately not offered: the
-# frontend bakes its identity at build time — ~25 NEXT_PUBLIC_* values,
-# and the /agents rewrites from AGENT_*_INTERNAL_URL — none of which a CI
-# build can see, and the digest deploy attaches no cloud-agent network for
-# those rewrites to resolve into. The frontend digest path arrives with W7
-# (runtime branding), not before.
+# Backend only. Frontend images are distribution-specific and are built by a
+# distribution's own bump pipeline; this neutral upstream workflow has none of
+# the branding or route build args needed to produce one.
 
 on:
   workflow_dispatch:
     inputs:
       platform:
-        description: "Image platform; must match the staging host (the digest deploy logs its uname -m)"
+        description: "Diagnostic image platform; output is not consumed by upstream.lock"
         type: choice
         options:
           - linux/amd64
@@ -45,15 +39,14 @@ jobs:
     # this on GitHub-hosted runners so publishing would not depend on the
     # FreeInference fleet, but the org's hosted minutes are billing-blocked
     # — the same constraint that moved CI onto the fleet. arm64-docker is
-    # native for the staging host's architecture, so arm64 candidates skip
-    # QEMU entirely; QEMU stays installed for cross-arch builds (a future
-    # amd64 prod candidate). Revisit at Step 3: a public repository gets
-    # hosted minutes free, which restores the original stance.
+    # native for arm64 diagnostics, so that choice skips QEMU entirely. An
+    # operator may still request an amd64 diagnostic; canonical deployable
+    # candidates are built natively per architecture in ci.yml.
     runs-on: [self-hosted, Linux, arm64-docker]
     timeout-minutes: 45
     steps:
       # The choice type constrains the UI and the dispatch API both, but the
-      # value still lands in shell via the summary step, so gate it in shell
+      # value still lands in shell steps, so gate it in shell
       # too — from an env var, never a ${{ }} splice into run:. This runs
       # before checkout and login: nothing else may touch a bad input first.
       - name: Validate platform input
@@ -75,10 +68,12 @@ jobs:
 
       - name: Compute image names
         id: names
+        env:
+          PLATFORM: ${{ inputs.platform }}
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           echo "backend=ghcr.io/${owner}/hybridinference-backend" >> "$GITHUB_OUTPUT"
-          echo "shortsha=${GITHUB_SHA:0:8}" >> "$GITHUB_OUTPUT"
+          echo "arch=${PLATFORM#linux/}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -101,15 +96,13 @@ jobs:
           file: deploy/docker/Dockerfile.backend
           platforms: ${{ inputs.platform }}
           push: true
-          tags: ${{ steps.names.outputs.backend }}:dev-${{ steps.names.outputs.shortsha }}
-          # The digest deploy reads the revision label back and refuses to
-          # start an image whose source SHA differs from the host checkout
-          # that supplies its config mounts.
+          tags: ${{ steps.names.outputs.backend }}:manual-${{ github.sha }}-${{ steps.names.outputs.arch }}
+          # Preserve source provenance for diagnosis even though distribution
+          # lock chains deliberately ignore manual-* tags.
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          # Same private-dependency token the staging deploy forwards to the
-          # compose build (routewise git dependency).
+          # Match the dependency-token fallback used by canonical CI builds.
           secrets: |
             github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
 
@@ -123,8 +116,8 @@ jobs:
             echo ""
             echo "- source SHA: \`${GITHUB_SHA}\`"
             echo "- platform: \`${PLATFORM}\`"
-            echo "- backend: \`${{ steps.names.outputs.backend }}@${BACKEND_DIGEST}\`"
+            echo "- diagnostic image: \`${{ steps.names.outputs.backend }}:manual-${GITHUB_SHA}-${{ steps.names.outputs.arch }}@${BACKEND_DIGEST}\`"
             echo ""
-            echo "Deploy: use the consuming distribution repository's upstream bump flow; staging deploys only from upstream.lock, never from a pasted digest."
-            echo "Record kept on the staging host in var/deploy-digest.log."
+            echo "Diagnostic only: upstream.lock never consumes manual-* tags."
+            echo "For deployment, use the automatic dev CI multi-arch candidate and the consuming distribution repository's upstream bump flow."
           } >> "$GITHUB_STEP_SUMMARY"
