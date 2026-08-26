@@ -12,6 +12,7 @@ as a worked example of what that covers.
    :maxdepth: 2
    :caption: Developer Guide:
 
+   router-tutorial
    installation
    deployment
    architecture

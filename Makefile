@@ -248,7 +248,14 @@ up: docker-volumes
 	$(COMPOSE) up -d
 endif
 
-BACKEND_PORT ?= 8080
+# The port has one source of truth: the distribution's own env file, which is
+# also the file Compose reads to publish it. Deriving the smoke URL from the
+# same place means editing the distribution — the thing this repository teaches
+# people to do — cannot leave `make smoke` probing a port nobody published. A
+# shell override still outranks both, and Compose honours it too.
+_DIST_ENV_FILES := $(if $(DISTRIBUTION_PATH),$(wildcard $(DISTRIBUTION_PATH)/deploy/*.env),)
+_DIST_BACKEND_PORT := $(if $(_DIST_ENV_FILES),$(shell sed -n 's/^BACKEND_PORT=//p' $(_DIST_ENV_FILES) | tail -n 1),)
+BACKEND_PORT ?= $(if $(_DIST_BACKEND_PORT),$(_DIST_BACKEND_PORT),8080)
 SMOKE_BASE_URL ?= http://localhost:$(BACKEND_PORT)
 SMOKE_TIMEOUT ?= 120
 SMOKE_PYTHON ?= python3

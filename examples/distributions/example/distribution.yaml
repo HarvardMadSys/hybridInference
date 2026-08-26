@@ -6,7 +6,7 @@ distribution:
   release: "1.0.0"
 
 site:
-  public_base_url: http://localhost:8080
+  public_base_url: http://localhost:18080
   support_email: support@example.test
 
 features:

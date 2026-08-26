@@ -57,7 +57,7 @@ def _check(base_url: str) -> None:
 def main() -> None:
     """Poll until the stack passes every black-box assertion or times out."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default="http://localhost:8080")
+    parser.add_argument("--base-url", default="http://localhost:18080")
     parser.add_argument("--timeout", type=float, default=120)
     args = parser.parse_args()
 

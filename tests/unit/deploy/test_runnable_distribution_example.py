@@ -21,6 +21,7 @@ EXAMPLE = REPO / "examples" / "distributions" / "example"
 BASE_COMPOSE = REPO / "deploy" / "docker" / "docker-compose.yml"
 EXAMPLE_COMPOSE = EXAMPLE / "deploy" / "docker-compose.yml"
 ACTIVE_CI = REPO / ".github" / "workflows" / "ci.yml"
+TUTORIAL = REPO / "docs" / "developer" / "router-tutorial.md"
 
 
 def _load_module(name: str, path: Path):
@@ -49,7 +50,7 @@ def _make_dry_run(*args: str, cwd: Path = REPO) -> str:
 def test_example_manifest_and_config_are_self_contained() -> None:
     config = load_distribution_config(EXAMPLE / "distribution.yaml")
     assert config.distribution.id == "example"
-    assert config.site.public_base_url == "http://localhost:8080"
+    assert config.site.public_base_url == "http://localhost:18080"
     assert Path(config.paths.models) == (EXAMPLE / "config" / "models.yaml").resolve()
     assert Path(config.paths.routing) == (EXAMPLE / "config" / "routing.yaml").resolve()
 
@@ -137,7 +138,7 @@ def test_shell_can_override_the_example_upstream_in_compose() -> None:
     env = os.environ.copy()
     env.update(
         {
-            "BACKEND_PORT": "18080",
+            "BACKEND_PORT": "28080",
             "EXAMPLE_UPSTREAM_BASE_URL": "https://api.example.test/v1",
             "EXAMPLE_UPSTREAM_API_KEY": "explicit-shell-key",
             "EXAMPLE_UPSTREAM_MODEL": "real-upstream-model",
@@ -169,7 +170,7 @@ def test_shell_can_override_the_example_upstream_in_compose() -> None:
     rendered = json.loads(proc.stdout)
     assert rendered["name"] == "hybridinference-example"
     assert rendered["services"]["backend"]["container_name"] == ("hybridinference-example-backend")
-    assert rendered["services"]["backend"]["ports"][0]["published"] == "18080"
+    assert rendered["services"]["backend"]["ports"][0]["published"] == "28080"
     backend_env = rendered["services"]["backend"]["environment"]
     assert backend_env["EXAMPLE_UPSTREAM_BASE_URL"] == "https://api.example.test/v1"
     assert backend_env["EXAMPLE_UPSTREAM_API_KEY"] == "explicit-shell-key"
@@ -184,10 +185,10 @@ def test_example_checked_in_port_defaults_match_the_smoke_url(
         monkeypatch.delenv(name, raising=False)
 
     backend_env_file = EXAMPLE / "deploy" / "backend.env"
-    assert "BACKEND_PORT=8080" in backend_env_file.read_text().splitlines()
+    assert "BACKEND_PORT=18080" in backend_env_file.read_text().splitlines()
 
     smoke = _make_dry_run("smoke", "DISTRIBUTION=example")
-    assert '--base-url "http://localhost:8080"' in smoke
+    assert '--base-url "http://localhost:18080"' in smoke
 
     if shutil.which("docker") is None:
         pytest.skip("Docker Compose is not installed")
@@ -217,8 +218,32 @@ def test_example_checked_in_port_defaults_match_the_smoke_url(
     assert proc.returncode == 0, proc.stderr
     published_port = json.loads(proc.stdout)["services"]["backend"]["ports"][0]
     assert published_port["host_ip"] == "127.0.0.1"
-    assert published_port["published"] == "8080"
+    assert published_port["published"] == "18080"
     assert published_port["target"] == 8080
+
+
+def test_smoke_url_follows_the_distribution_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Editing a distribution's port must move the smoke client with it.
+
+    The port used to be declared twice — once for Compose to publish and once
+    as a Make default for the smoke URL — so changing the distribution moved
+    only one of them and `make smoke` probed a port nobody had published.
+    """
+    for name in ("BACKEND_PORT", "SMOKE_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+    sandbox = tmp_path / "repo"
+    deploy = sandbox / "examples" / "distributions" / "example" / "deploy"
+    deploy.mkdir(parents=True)
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    shutil.copy2(EXAMPLE_COMPOSE, deploy / "docker-compose.yml")
+    (deploy / "backend.env").write_text("BACKEND_PORT=24242\n")
+
+    smoke = _make_dry_run("smoke", "DISTRIBUTION=example", cwd=sandbox)
+
+    assert '--base-url "http://localhost:24242"' in smoke
 
 
 def test_make_selection_preserves_default_and_none_semantics(tmp_path: Path) -> None:
@@ -436,3 +461,47 @@ def test_active_ci_runs_the_documented_example_contract() -> None:
     assert 'BACKEND_PORT: "0"' in workflow
     assert "github.run_id" in workflow
     assert "docker image rm" in workflow
+
+
+def test_router_tutorial_teaches_what_the_example_actually_serves() -> None:
+    """The walkthrough's model id and sentinel must track the shipped example."""
+    tutorial = TUTORIAL.read_text()
+
+    for command in (
+        "make up DISTRIBUTION=example",
+        "make smoke DISTRIBUTION=example",
+        "make down DISTRIBUTION=example",
+    ):
+        assert command in tutorial
+
+    models = yaml.safe_load((EXAMPLE / "config" / "models.yaml").read_text())["models"]
+    assert f'"model": "{models[0]["id"]}"' in tutorial
+
+    fake = _load_module(
+        "_runnable_example_fake_tutorial", REPO / "examples" / "support" / "openai_compat_fake.py"
+    )
+    assert fake.RESPONSE_TEXT in tutorial
+
+    # The port override is useless unless both commands receive it: one
+    # publishes the port, the other connects to it.
+    assert "BACKEND_PORT=28080 make up DISTRIBUTION=example" in tutorial
+    assert "BACKEND_PORT=28080 make smoke DISTRIBUTION=example" in tutorial
+
+    # The walkthrough's URLs must address the port the example publishes.
+    published = next(
+        line.split("=", 1)[1]
+        for line in (EXAMPLE / "deploy" / "backend.env").read_text().splitlines()
+        if line.startswith("BACKEND_PORT=")
+    )
+    assert f"localhost:{published}/health" in tutorial
+
+
+def test_router_tutorial_is_reachable_in_both_developer_toctrees() -> None:
+    """A page absent from the exported toctree is published to nobody."""
+    slug = TUTORIAL.stem
+    internal_index = REPO / "docs" / "developer" / "index.rst"
+    public_index = REPO / "ops" / "release" / "export_overlay" / "docs-developer-index.rst"
+
+    for index in (internal_index, public_index):
+        entries = [line.strip() for line in index.read_text().splitlines()]
+        assert slug in entries, f"{index} does not list {slug}"
