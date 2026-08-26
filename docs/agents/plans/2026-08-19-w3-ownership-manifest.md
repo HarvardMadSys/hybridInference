@@ -9,6 +9,10 @@
 > v2(2026-08-19,评审第一轮):批次按依赖闭合重组(worker 的 3 个
 > workflow 移入 W5c 与源码同批;codex-oncall 依赖上游 `serving.oncall`,
 > 移入 W5f 经 pin 供码);§2 变量/密钥改全名并新增"源码依赖"列。
+>
+> **2026-08-26 决策更新：** 本文的“导出 manifest / 物化树”归属判断已失效。
+> 现有 HybridInference 仓库本身将公开；不能公开的内容必须迁出或从保留历史
+> 中清理，不能依赖导出规则隐藏。
 
 ## 0. 裁定原则
 
@@ -16,7 +20,7 @@
    本文只在其上细化到可执行粒度。
 2. **"上游中立化"不是搬迁**:冻结的 FreeInference 契约值、compose 默认值
    属于上游代码的中立化批(随 W5a 完成后翻转),不进任何搬迁批次。
-3. 历史文档不搬也不入判据②:Step 3 由导出 manifest 排除(物化树口径)。
+3. 历史文档同样属于公开面；Step 3 前逐项判断保留、迁出或清理历史。
 
 ## 1. 归属总表
 
@@ -46,7 +50,7 @@ dispatch 的。
 
 | 路径 | 理由 |
 |---|---|
-| `ops/release/`(public_export 工具链、secret_patterns) | Step 3 资产,导出的就是上游 |
+| `ops/release/` 中的中立 release 工具 | 上游；filtered-export 工具链已退役 |
 | `ops/ci/`、`ops/admin/brand_residue_sweep.py`、`ops/lib/`* | CI 与中立性守卫(*lib 按消费方跟随,搬迁批 preflight 逐个核) |
 | `.github/workflows/` 三个:`ci.yml`、`ci-observability.yml`、`build-candidates.yml` | 上游 CI 与 release engineering(candidates 是 W4 自动发布的前身) |
 | 守卫测试 6 个(test_neutral_startup、contract_settings_defaults、site_identity、compose_identity、brand_residue_sweep、no_personal_data) | 刻意携带 marker 的中立性断言 |
@@ -60,10 +64,10 @@ dispatch 的。
 `Makefile` 的 docs 指针——**随 W5a 真值落新仓后统一翻中立**,判据 =
 契约测试刻意更新 + `make test` 全绿 + 中立启动保持。
 
-### 1.4 历史文档(留上游,导出排除)
+### 1.4 历史文档(公开前复核)
 
-`docs/agents/`(39)、`docs/reviews/`(3)、`docs/superpowers/`(2):
-不搬、不翻;Step 3 物化导出时按 manifest 排除(判据②口径)。
+`docs/agents/`、`docs/reviews/`、`docs/superpowers/` 不再由 manifest 排除。
+保留即公开；含私有内容的文件必须迁出，并在需要时清理所有保留 refs。
 
 ## 2. workflow → runner → environment → secrets/variables 依赖矩阵
 
