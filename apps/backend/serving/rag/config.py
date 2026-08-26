@@ -37,22 +37,31 @@ _INDEX_WITHIN_DISTRIBUTION = Path("content") / "rag" / "docs_index.json"
 _CORPUS_WITHIN_DISTRIBUTION = Path("content") / "docs" / "docs" / "source"
 
 
+_EXAMPLE_MARKER = "DISTRIBUTION_KIND=example"
+
+
 def _is_example_overlay(path: Path) -> bool:
     """Return True for a teaching overlay rather than somebody's deployment.
 
     The runnable router example is a distribution by shape and sits beside the
     real ones, so nothing about its path distinguishes it. It declares
-    ``DISTRIBUTION_KIND=example`` in its own env file instead -- the same line
-    the Makefile reads to keep it out of auto-discovery -- and carries no RAG
-    corpus, so counting it here would make a single-overlay checkout look
+    ``DISTRIBUTION_KIND=example`` in its own env file instead, and carries no
+    RAG corpus -- counting it here would make a single-overlay checkout look
     ambiguous and silently drop the deployment's own index.
+
+    The rule is the Makefile's, exactly: an overlay is an example when *any*
+    line of *any* ``deploy/*.env``, ignoring surrounding whitespace, is exactly
+    the marker. Not the last occurrence, not a value another line might
+    contradict. Two implementations of one rule is a standing hazard, so
+    tests/unit/deploy/test_runnable_distribution_example.py feeds both the same
+    awkward files and fails if they ever disagree.
     """
     for env_file in sorted((path / "deploy").glob("*.env")):
         try:
             text = env_file.read_text()
         except OSError:
             continue
-        if any(line.strip() == "DISTRIBUTION_KIND=example" for line in text.splitlines()):
+        if any(line.strip() == _EXAMPLE_MARKER for line in text.splitlines()):
             return True
     return False
 

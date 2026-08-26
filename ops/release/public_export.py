@@ -181,7 +181,7 @@ def _covers(rule: dict, name: str) -> bool:
     return name == p.rstrip("/") or name.startswith(p if p.endswith("/") else p + "/")
 
 
-def excluded(name: str, rules: list[dict], keep: list[dict] | None = None) -> str | None:
+def excluded(name: str, rules: list[dict], keep: list[dict]) -> str | None:
     """Return the excluding path, or None if this file travels.
 
     ``keep`` carves a named path back out of a broader exclusion, and is checked
@@ -190,14 +190,44 @@ def excluded(name: str, rules: list[dict], keep: list[dict] | None = None) -> st
     `distributions/example/` is the public tutorial and has to reach the people
     the tutorial is for. Inverting that -- listing the real deployments to
     exclude instead -- would publish the next one somebody adds.
+
+    ``keep`` is required rather than defaulting to empty. A caller that omits it
+    does not get a stricter answer, it gets a *wronger* one: the files it forgets
+    are the ones the export actually publishes. That is not hypothetical -- the
+    security audits called this with two arguments and cleared 868 files while
+    877 travelled, leaving the entire example unscanned.
     """
-    for rule in keep or []:
+    for rule in keep:
         if _covers(rule, name):
             return None
     for rule in rules:
         if _covers(rule, name):
             return rule["path"]
     return None
+
+
+def partition_files(rules: list[dict], keep: list[dict]) -> tuple[list[str], dict[str, int]]:
+    """Split tracked files into what travels and what each rule dropped."""
+    kept: list[str] = []
+    dropped: dict[str, int] = defaultdict(int)
+    for name in tracked_files():
+        rule = excluded(name, rules, keep)
+        if rule:
+            dropped[rule] += 1
+        else:
+            kept.append(name)
+    return kept, dropped
+
+
+def exported_files() -> list[str]:
+    """Return exactly the tracked files the export publishes.
+
+    One selection, read from the manifest, for the exporter and every audit of
+    it. Rebuilding the list at each call site is how the audits came to disagree
+    with the thing they audit.
+    """
+    rules, _undecided, _overlay, keep = load_manifest()
+    return partition_files(rules, keep)[0]
 
 
 def materialize(names: list[str], overlay: list[dict], target: Path) -> None:
@@ -340,13 +370,7 @@ def main() -> int:
             print(f"  {p}")
         return 2
 
-    kept, dropped = [], defaultdict(int)
-    for name in tracked_files():
-        rule = excluded(name, rules, keep)
-        if rule:
-            dropped[rule] += 1
-        else:
-            kept.append(name)
+    kept, dropped = partition_files(rules, keep)
 
     print(f"Tracked files: {len(kept) + sum(dropped.values())}")
     print(f"  exported:    {len(kept)}")

@@ -174,7 +174,8 @@ def test_no_exported_file_reaches_into_an_excluded_directory(manifest: dict) -> 
     import public_export
 
     rules = manifest["exclude"]
-    kept = [n for n in public_export.tracked_files() if not public_export.excluded(n, rules)]
+    keep = manifest.get("keep") or []
+    kept = public_export.exported_files()
 
     # Take every string literal inside the call and join them. The path is
     # spelled several ways -- `REPO / "ops" / "release"`,
@@ -192,13 +193,50 @@ def test_no_exported_file_reaches_into_an_excluded_directory(manifest: dict) -> 
         text = (REPO / name).read_text(encoding="utf-8", errors="ignore")
         for args in call.findall(text):
             joined = "/".join(part.strip("/") for part in literal.findall(args))
-            if joined and public_export.excluded(joined, rules):
+            if joined and public_export.excluded(joined, rules, keep):
                 offenders.append(f"{name} -> {joined}")
 
     assert not offenders, (
         "these travel with the export but import from a directory that does "
         f"not, so the exported tree cannot collect its own tests: {offenders}"
     )
+
+
+def test_the_audits_see_everything_the_export_publishes(manifest: dict) -> None:
+    """The audit's file list must be the exporter's, not a near-miss of it.
+
+    `keep:` was added to the exporter and not to the audits, which went on
+    rebuilding the selection from `exclude:` alone. The example travelled and
+    was never scanned -- 877 files published, 868 cleared. Comparing the two
+    counts is what would have caught it, so that is what this asserts.
+    """
+    import public_export
+
+    rules, _undecided, _overlay, keep = public_export.load_manifest()
+    published = set(public_export.exported_files())
+    exclusions_only = {
+        n for n in public_export.tracked_files() if not public_export.excluded(n, rules, [])
+    }
+
+    assert published >= exclusions_only
+    unscanned = published - exclusions_only
+    assert unscanned, "keep: carves nothing out; drop it or the audits are testing a fiction"
+    for name in sorted(unscanned):
+        assert any(public_export._covers(rule, name) for rule in keep), name
+
+
+def test_every_keep_carves_something_out_of_an_exclusion(manifest: dict) -> None:
+    """A keep that nothing excludes reads as protection it is not providing."""
+    import public_export
+
+    rules = manifest["exclude"]
+    for entry in manifest.get("keep") or []:
+        path = entry["path"].rstrip("/")
+        assert entry.get("reason", "").strip(), f"{path} is kept for no stated reason"
+        assert public_export.excluded(path, rules, []), (
+            f"{path} is not excluded by anything, so keeping it changes nothing "
+            "— remove the entry rather than leave a rule that looks load-bearing"
+        )
 
 
 def test_every_known_finding_says_why_it_is_pending(manifest: dict) -> None:
@@ -225,8 +263,7 @@ def test_the_exported_tree_grows_no_new_leak(manifest: dict) -> None:
 
     import public_export
 
-    rules = manifest["exclude"]
-    kept = [n for n in public_export.tracked_files() if not public_export.excluded(n, rules)]
+    kept = public_export.exported_files()
     findings = public_export.audit(kept)
 
     allowed = Counter()

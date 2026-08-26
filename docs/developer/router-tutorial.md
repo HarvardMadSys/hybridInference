@@ -231,8 +231,9 @@ model's words. Call `/v1/chat/completions` directly instead.
 ## What a distribution is made of
 
 A distribution is a directory under `distributions/`, and this example is one.
-Everything it needs is inside its own boundary — copy the directory and you have
-copied the whole thing; delete it and nothing is left behind:
+Everything it needs at runtime is inside it — manifest, config, Compose overlay,
+its fake upstream and its smoke client — so copying the directory copies a
+working shape:
 
 ```text
 distributions/example/
@@ -258,6 +259,11 @@ distributions/example/
 
 Your own deployment is a sibling directory with the same shape and no
 `fixtures/`, since it talks to real providers.
+
+The example is not entirely self-contained, though: this page, the CI jobs that
+run it, the export manifest that publishes it, and the tests that pin its model
+id and sentinel all live outside the directory and name it. Removing the example
+means removing those too.
 
 One line separates the two kinds. `deploy/backend.env` declares
 `DISTRIBUTION_KIND=example`, and that is why a bare `make up` — which otherwise

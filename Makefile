@@ -163,13 +163,22 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 #
 # An overlay declaring DISTRIBUTION_KIND=example is a teaching artifact rather
 # than somebody's deployment, so auto-discovery skips it and it is reachable
-# only when named. That one declaration is what separates the two, everywhere:
-# it also selects the backend-only startup below and is what the public export
-# keys on. Deciding by directory name or path instead would put the same
-# judgement in three files that could disagree.
+# only when named. The same declaration selects the backend-only startup below.
+#
+# One reading of the marker, everywhere: an overlay is an example when *any*
+# line of *any* deploy/*.env, ignoring surrounding whitespace, is exactly
+# `DISTRIBUTION_KIND=example`. Not the last occurrence, not a value that another
+# line might contradict -- so a directory that declares itself a teaching
+# artifact anywhere can never be auto-started as a deployment, which is the
+# direction that costs something when it is wrong. Reading it two ways here and
+# a third way in the backend is how the same file came to mean three things.
+# apps/backend/serving/rag/config.py implements this rule too, and a test feeds
+# both the same awkward files and fails if they disagree.
+_EXAMPLE_MARKER := ^[[:space:]]*DISTRIBUTION_KIND=example[[:space:]]*$$
+is_example_overlay = $(shell grep -lE '$(_EXAMPLE_MARKER)' $(1)/deploy/*.env 2>/dev/null | head -n 1)
 _ALL_DISTRIBUTION_DIRS := $(sort $(foreach f,$(wildcard distributions/*/deploy/*.env),$(word 2,$(subst /, ,$(f)))))
 _EXAMPLE_DISTRIBUTION_DIRS := $(sort $(foreach d,$(_ALL_DISTRIBUTION_DIRS),\
-  $(if $(shell grep -lx 'DISTRIBUTION_KIND=example' distributions/$(d)/deploy/*.env 2>/dev/null),$(d),)))
+  $(if $(call is_example_overlay,distributions/$(d)),$(d),)))
 _DISTRIBUTION_DIRS := $(filter-out $(_EXAMPLE_DISTRIBUTION_DIRS),$(_ALL_DISTRIBUTION_DIRS))
 ifeq ($(words $(_DISTRIBUTION_DIRS)),1)
 DISTRIBUTION ?= $(_DISTRIBUTION_DIRS)
@@ -193,8 +202,13 @@ DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(_DISTRIBUTION_ENV_PATHS))
 ifeq ($(DISTRIBUTION_ENV_FILES),)
 $(error DISTRIBUTION=$(DISTRIBUTION) matches no $(DISTRIBUTION_PATH)/deploy/*.env)
 endif
-DISTRIBUTION_KIND := $(shell sed -n 's/^DISTRIBUTION_KIND=//p' $(_DISTRIBUTION_ENV_PATHS) | tail -n 1)
-ifneq ($(DISTRIBUTION_KIND),example)
+# `override`, because every branch below turns on this one value and a command
+# line must not be able to set it: `make up DISTRIBUTION=example
+# DISTRIBUTION_KIND=deployment` would otherwise create the production volume and
+# start the full stack for the tutorial, and the reverse would give a real
+# deployment the fake upstream. What the overlay declares is the only answer.
+override _IS_EXAMPLE := $(if $(call is_example_overlay,$(DISTRIBUTION_PATH)),yes,)
+ifeq ($(_IS_EXAMPLE),)
 $(info Using distribution '$(DISTRIBUTION)' — its identity is compiled into the console. DISTRIBUTION=none for a neutral stack.)
 endif
 endif
@@ -227,7 +241,7 @@ LOCAL_ENV_ARGS := $(if $(wildcard .env),--env-file .env,)
 # The example is deterministic even in an operator checkout that already has a
 # deployment .env. Shell variables still outrank every --env-file in Compose,
 # which is the explicit escape hatch documented for a real upstream.
-ifeq ($(DISTRIBUTION_KIND),example)
+ifeq ($(_IS_EXAMPLE),yes)
 LOCAL_ENV_ARGS :=
 endif
 COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
@@ -245,7 +259,7 @@ docker-volumes:  ## Create external Docker volumes required by production compos
 # frontend/database stack. Start its fake to healthy first, then use --no-deps
 # so backend's production Postgres dependency stays stopped while DB_ENABLED is
 # false. The production branch retains its external-volume prerequisite.
-ifeq ($(DISTRIBUTION_KIND),example)
+ifeq ($(_IS_EXAMPLE),yes)
 up:  ## Start all services
 	$(COMPOSE) up -d --wait example-provider
 	$(COMPOSE) up -d --no-deps backend
@@ -293,7 +307,7 @@ endif
 
 # Keep rebuild semantics aligned with `up`: rebuilding the tutorial must not
 # unexpectedly turn it into the production full stack.
-ifeq ($(DISTRIBUTION_KIND),example)
+ifeq ($(_IS_EXAMPLE),yes)
 build:  ## Rebuild images and restart (or: make build s=backend)
 	$(COMPOSE) up -d --wait example-provider
 ifdef s

@@ -81,8 +81,8 @@ apps/
   frontend/       # Next.js web UI
 config/           # Model, routing, and alert configuration
   examples/       # Reference registries, including the OpenRouter quickstart
-examples/         # Public runnable bundles and their deterministic support tools
 distributions/    # Per-distribution overlays: identity, content, config
+                  # (including example/, the public runnable router example)
 services/         # status-monitor-worker, freeinference-harness
 tests/            # Unit, API, integration, e2e, and external tests
 ops/              # Deployment, setup, runtime, admin, perf, DB, Cloudflare tooling

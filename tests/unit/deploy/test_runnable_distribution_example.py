@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import serving.rag.config as rag_config
 from routing.executor import RouteExecutor
 from serving.config.distribution import load_distribution_config
 from serving.servers.registry import register_from_models_yaml
@@ -298,6 +299,68 @@ def test_smoke_url_follows_the_distribution_env_file(
     smoke = _make_dry_run("smoke", "DISTRIBUTION=example", cwd=sandbox)
 
     assert '--base-url "http://localhost:24242"' in smoke
+
+
+_MARKER_CASES = [
+    ("DISTRIBUTION_KIND=example\n", True),
+    ("  DISTRIBUTION_KIND=example  \n", True),
+    ("SITE_NAME=Acme\nDISTRIBUTION_KIND=example\n", True),
+    # Any occurrence wins, in either order: the safe answer to a contradictory
+    # file is the one that refuses to auto-start it as a deployment.
+    ("DISTRIBUTION_KIND=deployment\nDISTRIBUTION_KIND=example\n", True),
+    ("DISTRIBUTION_KIND=example\nDISTRIBUTION_KIND=deployment\n", True),
+    ("DISTRIBUTION_KIND=deployment\n", False),
+    ("DISTRIBUTION_KIND=examples\n", False),
+    ("#DISTRIBUTION_KIND=example\n", False),
+    # Compose does not accept spaces around `=`, so neither does the marker.
+    ("DISTRIBUTION_KIND = example\n", False),
+    ("SITE_NAME=Acme\n", False),
+]
+
+
+@pytest.mark.parametrize(("env_text", "is_example"), _MARKER_CASES)
+def test_make_and_backend_read_the_marker_identically(
+    tmp_path: Path, env_text: str, is_example: bool
+) -> None:
+    """One declaration, two readers — they must never disagree about a file.
+
+    The Makefile greps it and the backend parses it in Python. When those drifted
+    the same overlay was a teaching artifact to one and a deployment to the
+    other, which decides whether `make up` creates production volumes.
+    """
+    sandbox = tmp_path / "repo"
+    candidate = sandbox / "distributions" / "candidate"
+    (candidate / "deploy").mkdir(parents=True)
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    (candidate / "deploy" / "backend.env").write_text(env_text)
+
+    # Make's answer, observed through discovery: an example is not a deployment,
+    # so it leaves the tree with nothing to select.
+    selected = "Using distribution 'candidate'" in _make_dry_run("ps", cwd=sandbox)
+
+    assert selected is not is_example
+    assert rag_config._is_example_overlay(candidate) is is_example
+
+
+def test_the_marker_cannot_be_overridden_from_the_command_line(tmp_path: Path) -> None:
+    """What the overlay declares is the only answer.
+
+    Make lets the command line beat any assignment, so the branch that decides
+    between a backend-only tutorial and the full production stack was settable
+    per invocation: `DISTRIBUTION=example DISTRIBUTION_KIND=deployment` created
+    the production volume and started everything.
+    """
+    sandbox = tmp_path / "repo"
+    deploy = sandbox / "distributions" / "example" / "deploy"
+    deploy.mkdir(parents=True)
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    shutil.copy2(EXAMPLE_COMPOSE, deploy / "docker-compose.yml")
+    (deploy / "backend.env").write_text("DISTRIBUTION_KIND=example\n")
+
+    for override in ("DISTRIBUTION_KIND=deployment", "_IS_EXAMPLE="):
+        output = _make_dry_run("up", "DISTRIBUTION=example", override, cwd=sandbox)
+        assert "--no-deps backend" in output, override
+        assert "docker volume" not in output, override
 
 
 def test_make_selection_preserves_default_and_none_semantics(tmp_path: Path) -> None:
