@@ -36,8 +36,8 @@ tests/
   external/       # Hits live servers. Marker: external.
 ops/              # Operational tooling (deploy, setup, runtime, admin, perf, db, cloudflare)
 deploy/           # Systemd units, Docker, observability manifests
-distributions/      # Overlays, one directory each. A neutral checkout carries
-                    # only example/; deployment overlays are absent, see 6.5.
+distributions/      # Overlays, one directory each. Deployment overlays move
+                    # out before publication; example/ remains, see 6.5.
   <name>/           # manifest + site config, branding, content, docs
     content/docs/   # that deployment's public doc-site source (Sphinx)
   example/          # public runnable router example; EXAMPLE_OVERLAY marks it

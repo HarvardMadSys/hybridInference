@@ -262,16 +262,15 @@ Your own deployment is a sibling directory with the same shape and no
 `fixtures/`, since it talks to real providers.
 
 The example is not entirely self-contained, though: this page, the CI jobs that
-run it, the export manifest that publishes it, and the tests that pin its model
-id and sentinel all live outside the directory and name it. Removing the example
-means removing those too.
+run it, and the tests that pin its model id and sentinel all live outside the
+directory and name it. Removing the example means removing those too.
 
 One file separates the two kinds. `EXAMPLE_OVERLAY` marks this directory as a
 teaching artifact, and that is why a bare `make up` — which otherwise discovers
 the single overlay present and starts it — skips this one, and why
 `make up DISTRIBUTION=example` gets a backend-only stack with no Postgres and no
 accounts. A real overlay does not carry the file and gets the full stack. Always
-name the one you mean: `make up DISTRIBUTION=freeinference` for a deployment,
+name the one you mean: `make up DISTRIBUTION=myrouter` for your deployment,
 `make up DISTRIBUTION=example` for this tutorial.
 
 Nothing reads the file's contents; its presence is the declaration. That is
@@ -280,7 +279,9 @@ parses those by its own rules, so an overlay could read as a teaching artifact
 to one reader and a deployment to another.
 
 Copying the example is where you start editing, not something to run unchanged.
-The copy still carries this one's identity: `deploy/backend.env` points
+Delete `EXAMPLE_OVERLAY` from a copy that should become a real deployment;
+otherwise Make continues to give it the tutorial's backend-only startup. The
+copy also still carries this one's identity: `deploy/backend.env` points
 `BACKEND_ENV_FILE` and `DISTRIBUTION_CONFIG_PATH` back at `distributions/example/`,
 `deploy/docker-compose.yml` names the Compose project `hybridinference-example`
 and builds the fake upstream, and `smoke.py` asserts this manifest's id, model id

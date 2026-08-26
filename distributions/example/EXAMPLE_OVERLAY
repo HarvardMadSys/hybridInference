@@ -1,23 +1,3 @@
-This overlay is a teaching artifact, not a deployment.
-
-The file's presence is the whole declaration; nothing reads its contents. Two
-things act on it:
-
-  * `make up` leaves this overlay out of auto-discovery, so adding it here can
-    never change which real deployment a bare `make up` starts, and gives it a
-    backend-only stack with no Postgres, no accounts and no external volume.
-
-  * The backend's overlay discovery does not count it as this deployment's own,
-    so a checkout with one real overlay still resolves to that one.
-
-It is a file rather than a line in deploy/backend.env because that file is a
-dotenv read by Compose, and Compose's parser is not ours: it accepts
-`DISTRIBUTION_KIND = example`, with spaces, as the value `example`, while a
-grep for the exact assignment does not. An overlay that reads as a teaching
-artifact to Compose and as a deployment to Make is the one combination that
-creates production volumes for the tutorial. Existence has no second reading.
-
-The public export reaches the same conclusion by a different route: its
-manifest names this directory under `keep:`. That is deliberate. A publication
-boundary should be a curated list somebody signs off on, not a flag an overlay
-can set for itself.
+This file marks the directory as a runnable teaching example, not a deployment.
+Its presence keeps the example out of deployment auto-discovery; its contents
+are ignored.

@@ -31,10 +31,8 @@ def test_repo_root_uses_parents4_in_repo_layout():
 
 def test_index_path_resolves_to_the_overlay_in_this_checkout():
     # The index is distribution content: the default must resolve into the
-    # overlay, never into the serving package. This repository ships one real
-    # overlay plus the runnable example, which carries an EXAMPLE_OVERLAY marker
-    # and is skipped -- otherwise two directories would read as ambiguous and
-    # this deployment's own index would be dropped.
+    # overlay, never into the serving package. The runnable example is skipped
+    # by its EXAMPLE_OVERLAY marker, leaving the one real overlay unambiguous.
     assert DEFAULT_INDEX_PATH.parts[-4:] == (
         "freeinference",
         "content",

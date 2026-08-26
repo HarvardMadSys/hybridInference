@@ -43,17 +43,9 @@ EXAMPLE_OVERLAY_MARKER = "EXAMPLE_OVERLAY"
 def _is_example_overlay(path: Path) -> bool:
     """Return True for a teaching overlay rather than somebody's deployment.
 
-    The runnable router example is a distribution by shape and sits beside the
-    real ones, so nothing about its path distinguishes it. It carries a marker
-    file instead, and no RAG corpus -- counting it here would make a
-    single-overlay checkout look ambiguous and silently drop the deployment's
-    own index.
-
-    Presence is the whole test, matching the Makefile exactly. Neither reader
-    opens the file, so neither can interpret it differently: a marker inside
-    ``deploy/*.env`` would be a dotenv that Compose parses by its own rules, and
-    an overlay that reads as a teaching artifact to one and a deployment to the
-    other is what decides whether production volumes get created.
+    The runnable example lives beside real overlays but has no deployment RAG
+    corpus. Its marker keeps fallback discovery from making a real overlay
+    ambiguous, and uses the same regular-file test as the Makefile.
     """
     return (path / EXAMPLE_OVERLAY_MARKER).is_file()
 
