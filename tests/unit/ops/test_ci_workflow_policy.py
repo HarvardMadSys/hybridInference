@@ -31,6 +31,15 @@ def test_legacy_deploy_workflows_are_retired(workflow_name: str) -> None:
     assert not (WORKFLOWS / workflow_name).exists()
 
 
+def test_candidate_summary_points_to_the_distribution_lock_chain() -> None:
+    steps = _workflow("build-candidates.yml")["jobs"]["build"]["steps"]
+    summary = next(step["run"] for step in steps if step.get("name") == "Candidate summary")
+
+    assert "consuming distribution repository" in summary
+    assert "upstream.lock" in summary
+    assert "Deploy Staging by Digest" not in summary
+
+
 def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
     """A path filter here withholds the run itself, not just the jobs.
 

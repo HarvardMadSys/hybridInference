@@ -125,6 +125,6 @@ jobs:
             echo "- platform: \`${PLATFORM}\`"
             echo "- backend: \`${{ steps.names.outputs.backend }}@${BACKEND_DIGEST}\`"
             echo ""
-            echo "Deploy: Actions -> Deploy Staging by Digest -> paste the full image@sha256 reference."
+            echo "Deploy: use the consuming distribution repository's upstream bump flow; staging deploys only from upstream.lock, never from a pasted digest."
             echo "Record kept on the staging host in var/deploy-digest.log."
           } >> "$GITHUB_STEP_SUMMARY"
