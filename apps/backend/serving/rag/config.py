@@ -37,33 +37,25 @@ _INDEX_WITHIN_DISTRIBUTION = Path("content") / "rag" / "docs_index.json"
 _CORPUS_WITHIN_DISTRIBUTION = Path("content") / "docs" / "docs" / "source"
 
 
-_EXAMPLE_MARKER = "DISTRIBUTION_KIND=example"
+EXAMPLE_OVERLAY_MARKER = "EXAMPLE_OVERLAY"
 
 
 def _is_example_overlay(path: Path) -> bool:
     """Return True for a teaching overlay rather than somebody's deployment.
 
     The runnable router example is a distribution by shape and sits beside the
-    real ones, so nothing about its path distinguishes it. It declares
-    ``DISTRIBUTION_KIND=example`` in its own env file instead, and carries no
-    RAG corpus -- counting it here would make a single-overlay checkout look
-    ambiguous and silently drop the deployment's own index.
+    real ones, so nothing about its path distinguishes it. It carries a marker
+    file instead, and no RAG corpus -- counting it here would make a
+    single-overlay checkout look ambiguous and silently drop the deployment's
+    own index.
 
-    The rule is the Makefile's, exactly: an overlay is an example when *any*
-    line of *any* ``deploy/*.env``, ignoring surrounding whitespace, is exactly
-    the marker. Not the last occurrence, not a value another line might
-    contradict. Two implementations of one rule is a standing hazard, so
-    tests/unit/deploy/test_runnable_distribution_example.py feeds both the same
-    awkward files and fails if they ever disagree.
+    Presence is the whole test, matching the Makefile exactly. Neither reader
+    opens the file, so neither can interpret it differently: a marker inside
+    ``deploy/*.env`` would be a dotenv that Compose parses by its own rules, and
+    an overlay that reads as a teaching artifact to one and a deployment to the
+    other is what decides whether production volumes get created.
     """
-    for env_file in sorted((path / "deploy").glob("*.env")):
-        try:
-            text = env_file.read_text()
-        except OSError:
-            continue
-        if any(line.strip() == _EXAMPLE_MARKER for line in text.splitlines()):
-            return True
-    return False
+    return (path / EXAMPLE_OVERLAY_MARKER).is_file()
 
 
 def _distribution_root() -> Path | None:

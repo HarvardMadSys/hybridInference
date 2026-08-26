@@ -237,6 +237,7 @@ working shape:
 
 ```text
 distributions/example/
+├── EXAMPLE_OVERLAY          # marks this as a tutorial, not a deployment
 ├── distribution.yaml
 ├── config/
 │   ├── models.yaml
@@ -265,13 +266,18 @@ run it, the export manifest that publishes it, and the tests that pin its model
 id and sentinel all live outside the directory and name it. Removing the example
 means removing those too.
 
-One line separates the two kinds. `deploy/backend.env` declares
-`DISTRIBUTION_KIND=example`, and that is why a bare `make up` — which otherwise
-discovers the single overlay present and starts it — skips this one, and why
+One file separates the two kinds. `EXAMPLE_OVERLAY` marks this directory as a
+teaching artifact, and that is why a bare `make up` — which otherwise discovers
+the single overlay present and starts it — skips this one, and why
 `make up DISTRIBUTION=example` gets a backend-only stack with no Postgres and no
-accounts. A real overlay omits the line and gets the full stack. Always name the
-one you mean: `make up DISTRIBUTION=freeinference` for a deployment,
+accounts. A real overlay does not carry the file and gets the full stack. Always
+name the one you mean: `make up DISTRIBUTION=freeinference` for a deployment,
 `make up DISTRIBUTION=example` for this tutorial.
+
+Nothing reads the file's contents; its presence is the declaration. That is
+deliberate — a marker inside `deploy/backend.env` would be a dotenv, and Compose
+parses those by its own rules, so an overlay could read as a teaching artifact
+to one reader and a deployment to another.
 
 Copying the example is where you start editing, not something to run unchanged.
 The copy still carries this one's identity: `deploy/backend.env` points

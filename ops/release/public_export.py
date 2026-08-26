@@ -219,15 +219,27 @@ def partition_files(rules: list[dict], keep: list[dict]) -> tuple[list[str], dic
     return kept, dropped
 
 
-def exported_files() -> list[str]:
-    """Return exactly the tracked files the export publishes.
+def export_plan() -> dict[str, Path]:
+    """Map every published path to the file whose content lands there.
 
-    One selection, read from the manifest, for the exporter and every audit of
-    it. Rebuilding the list at each call site is how the audits came to disagree
-    with the thing they audit.
+    This is the export as a value: the tracked files that survive the manifest,
+    plus the overlay replacements, with a replacement winning the path it
+    stands in for. Anything that rebuilds part of it -- a filtered list of
+    tracked names -- describes the export rather than being it, and the
+    difference is not cosmetic. The audits did exactly that and cleared 877
+    files while 882 were published: five overlay-only files were never opened,
+    and two more were read as the content they replace.
     """
-    rules, _undecided, _overlay, keep = load_manifest()
-    return partition_files(rules, keep)[0]
+    rules, _undecided, overlay, keep = load_manifest()
+    plan: dict[str, Path] = {name: REPO / name for name in partition_files(rules, keep)[0]}
+    for rule in overlay:
+        plan[rule["path"]] = REPO / rule["source"]
+    return dict(sorted(plan.items()))
+
+
+def exported_files() -> list[str]:
+    """Return every path the export publishes, replacements included."""
+    return list(export_plan())
 
 
 def materialize(names: list[str], overlay: list[dict], target: Path) -> None:
@@ -309,7 +321,10 @@ def broken_docker_context(target: Path) -> list[tuple[str, str]]:
 
 
 def audit(
-    names: list[str], root: Path | None = None, overlay: list[dict] | None = None
+    names: list[str],
+    root: Path | None = None,
+    overlay: list[dict] | None = None,
+    sources: dict[str, Path] | None = None,
 ) -> dict[str, list[str]]:
     """Scan the exported files, and the replacements if the tree was built.
 
@@ -317,14 +332,20 @@ def audit(
     A permission error or a copy that did not land used to `continue`, and the
     run still ended in "clean" — the one word this tool exists to be trusted
     about. Whatever it could not read, it did not clear.
+
+    ``sources`` maps a published path to the file whose content lands there, so
+    a caller with an :func:`export_plan` audits replacements without building
+    the tree. Findings are still reported under the published path, which is
+    where a reader would go looking.
     """
     base = root or REPO
     if root is not None:
         names = list(names) + [r["path"] for r in (overlay or []) if (base / r["path"]).exists()]
     findings: dict[str, list[str]] = defaultdict(list)
     for name in names:
+        origin = (sources or {}).get(name, base / name)
         try:
-            text = _read_text(base / name)
+            text = _read_text(origin)
         except OSError as exc:
             findings["unreadable (audit could not clear it)"].append(f"{name}: {exc.strerror}")
             continue

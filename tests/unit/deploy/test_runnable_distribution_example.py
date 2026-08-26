@@ -301,38 +301,24 @@ def test_smoke_url_follows_the_distribution_env_file(
     assert '--base-url "http://localhost:24242"' in smoke
 
 
-_MARKER_CASES = [
-    ("DISTRIBUTION_KIND=example\n", True),
-    ("  DISTRIBUTION_KIND=example  \n", True),
-    ("SITE_NAME=Acme\nDISTRIBUTION_KIND=example\n", True),
-    # Any occurrence wins, in either order: the safe answer to a contradictory
-    # file is the one that refuses to auto-start it as a deployment.
-    ("DISTRIBUTION_KIND=deployment\nDISTRIBUTION_KIND=example\n", True),
-    ("DISTRIBUTION_KIND=example\nDISTRIBUTION_KIND=deployment\n", True),
-    ("DISTRIBUTION_KIND=deployment\n", False),
-    ("DISTRIBUTION_KIND=examples\n", False),
-    ("#DISTRIBUTION_KIND=example\n", False),
-    # Compose does not accept spaces around `=`, so neither does the marker.
-    ("DISTRIBUTION_KIND = example\n", False),
-    ("SITE_NAME=Acme\n", False),
-]
-
-
-@pytest.mark.parametrize(("env_text", "is_example"), _MARKER_CASES)
-def test_make_and_backend_read_the_marker_identically(
-    tmp_path: Path, env_text: str, is_example: bool
-) -> None:
+@pytest.mark.parametrize("is_example", [True, False])
+def test_make_and_backend_read_the_marker_identically(tmp_path: Path, is_example: bool) -> None:
     """One declaration, two readers — they must never disagree about a file.
 
-    The Makefile greps it and the backend parses it in Python. When those drifted
-    the same overlay was a teaching artifact to one and a deployment to the
-    other, which decides whether `make up` creates production volumes.
+    The marker is a file whose contents nobody reads, so there is nothing left
+    to interpret two ways. It used to be a line in deploy/*.env, which put a
+    dotenv between the declaration and its readers: Compose parses
+    `DISTRIBUTION_KIND = example` as `example`, a grep for the exact assignment
+    does not, and an overlay that is a teaching artifact to one and a deployment
+    to the other is what decides whether production volumes get created.
     """
     sandbox = tmp_path / "repo"
     candidate = sandbox / "distributions" / "candidate"
     (candidate / "deploy").mkdir(parents=True)
     shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
-    (candidate / "deploy" / "backend.env").write_text(env_text)
+    (candidate / "deploy" / "backend.env").write_text("SITE_NAME=Candidate\n")
+    if is_example:
+        (candidate / rag_config.EXAMPLE_OVERLAY_MARKER).write_text("teaching artifact\n")
 
     # Make's answer, observed through discovery: an example is not a deployment,
     # so it leaves the tree with nothing to select.
@@ -342,22 +328,47 @@ def test_make_and_backend_read_the_marker_identically(
     assert rag_config._is_example_overlay(candidate) is is_example
 
 
-def test_the_marker_cannot_be_overridden_from_the_command_line(tmp_path: Path) -> None:
-    """What the overlay declares is the only answer.
+def test_a_dotenv_marker_would_not_be_believed(tmp_path: Path) -> None:
+    """Only the file decides, so Compose's dotenv rules cannot reach the branch.
 
-    Make lets the command line beat any assignment, so the branch that decides
+    Compose reads `DISTRIBUTION_KIND = example` as the value `example`. While
+    that line was the declaration, an overlay could look like a teaching
+    artifact to Compose and a deployment to Make -- and Make's answer is the one
+    that creates the production volume.
+    """
+    sandbox = tmp_path / "repo"
+    candidate = sandbox / "distributions" / "candidate"
+    (candidate / "deploy").mkdir(parents=True)
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    (candidate / "deploy" / "backend.env").write_text("DISTRIBUTION_KIND = example\n")
+
+    assert "Using distribution 'candidate'" in _make_dry_run("ps", cwd=sandbox)
+    assert rag_config._is_example_overlay(candidate) is False
+
+
+def test_the_marker_cannot_be_overridden_from_the_command_line(tmp_path: Path) -> None:
+    """What the overlay carries is the only answer.
+
+    Make lets the command line beat any assignment, so the branch choosing
     between a backend-only tutorial and the full production stack was settable
-    per invocation: `DISTRIBUTION=example DISTRIBUTION_KIND=deployment` created
-    the production volume and started everything.
+    per invocation -- first through `DISTRIBUTION_KIND`, then, once that was
+    protected, through the regex it was matched with.
     """
     sandbox = tmp_path / "repo"
     deploy = sandbox / "distributions" / "example" / "deploy"
     deploy.mkdir(parents=True)
     shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
     shutil.copy2(EXAMPLE_COMPOSE, deploy / "docker-compose.yml")
-    (deploy / "backend.env").write_text("DISTRIBUTION_KIND=example\n")
+    (deploy / "backend.env").write_text("SITE_NAME=Example\n")
+    (deploy.parent / rag_config.EXAMPLE_OVERLAY_MARKER).write_text("teaching artifact\n")
 
-    for override in ("DISTRIBUTION_KIND=deployment", "_IS_EXAMPLE="):
+    for override in (
+        "_IS_EXAMPLE=",
+        "DISTRIBUTION_KIND=deployment",
+        "_EXAMPLE_MARKER=a^",
+        "is_example_overlay=",
+        "_EXAMPLE_DISTRIBUTION_DIRS=",
+    ):
         output = _make_dry_run("up", "DISTRIBUTION=example", override, cwd=sandbox)
         assert "--no-deps backend" in output, override
         assert "docker volume" not in output, override
@@ -367,17 +378,17 @@ def test_make_selection_preserves_default_and_none_semantics(tmp_path: Path) -> 
     """The example shares a root with real overlays but is never auto-selected.
 
     Both live under distributions/ now, so nothing about the path distinguishes
-    them; DISTRIBUTION_KIND=example does. Without that, a second directory here
+    them; the EXAMPLE_OVERLAY marker does. Without it, a second directory here
     would make a bare `make up` ambiguous and refuse to start anything.
     """
     sandbox = tmp_path / "repo"
     (sandbox / "distributions" / "acme" / "deploy").mkdir(parents=True)
-    (sandbox / "distributions" / "example" / "deploy").mkdir(parents=True)
+    example = sandbox / "distributions" / "example"
+    (example / "deploy").mkdir(parents=True)
     shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
     (sandbox / "distributions" / "acme" / "deploy" / "backend.env").write_text("SITE_NAME=Acme\n")
-    (sandbox / "distributions" / "example" / "deploy" / "backend.env").write_text(
-        "DISTRIBUTION_KIND=example\n"
-    )
+    (example / "deploy" / "backend.env").write_text("SITE_NAME=Example\n")
+    (example / rag_config.EXAMPLE_OVERLAY_MARKER).write_text("teaching artifact\n")
 
     default = _make_dry_run("ps", cwd=sandbox)
     assert "Using distribution 'acme'" in default
@@ -407,6 +418,10 @@ def test_example_make_contract_is_backend_only_and_race_free(tmp_path: Path) -> 
     shutil.copy2(
         EXAMPLE_COMPOSE,
         sandbox / "distributions" / "example" / "deploy" / "docker-compose.yml",
+    )
+    shutil.copy2(
+        EXAMPLE / rag_config.EXAMPLE_OVERLAY_MARKER,
+        sandbox / "distributions" / "example" / rag_config.EXAMPLE_OVERLAY_MARKER,
     )
     (sandbox / ".env").write_text("EXAMPLE_UPSTREAM_MODEL=must-not-win\n")
 

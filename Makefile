@@ -161,24 +161,22 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 #
 # distributions/<name>/deploy/<file>.env -> <name>, deduplicated.
 #
-# An overlay declaring DISTRIBUTION_KIND=example is a teaching artifact rather
+# An overlay containing an EXAMPLE_OVERLAY file is a teaching artifact rather
 # than somebody's deployment, so auto-discovery skips it and it is reachable
-# only when named. The same declaration selects the backend-only startup below.
+# only when named. The same file selects the backend-only startup below.
 #
-# One reading of the marker, everywhere: an overlay is an example when *any*
-# line of *any* deploy/*.env, ignoring surrounding whitespace, is exactly
-# `DISTRIBUTION_KIND=example`. Not the last occurrence, not a value that another
-# line might contradict -- so a directory that declares itself a teaching
-# artifact anywhere can never be auto-started as a deployment, which is the
-# direction that costs something when it is wrong. Reading it two ways here and
-# a third way in the backend is how the same file came to mean three things.
-# apps/backend/serving/rag/config.py implements this rule too, and a test feeds
-# both the same awkward files and fails if they disagree.
-_EXAMPLE_MARKER := ^[[:space:]]*DISTRIBUTION_KIND=example[[:space:]]*$$
-is_example_overlay = $(shell grep -lE '$(_EXAMPLE_MARKER)' $(1)/deploy/*.env 2>/dev/null | head -n 1)
+# Presence, not content: the file is never opened, here or in
+# apps/backend/serving/rag/config.py, so the two readers cannot interpret it
+# differently. A line in deploy/*.env cannot manage that -- it is a dotenv read
+# by Compose, whose parser is not ours. Compose accepts
+# `DISTRIBUTION_KIND = example`, spaces and all, as the value `example`, while a
+# grep for the exact assignment does not, and an overlay that is a teaching
+# artifact to Compose and a deployment to Make is precisely the combination that
+# creates production volumes for the tutorial. Existence has no second reading,
+# and no pattern to interpolate that a command line could then supply.
 _ALL_DISTRIBUTION_DIRS := $(sort $(foreach f,$(wildcard distributions/*/deploy/*.env),$(word 2,$(subst /, ,$(f)))))
 _EXAMPLE_DISTRIBUTION_DIRS := $(sort $(foreach d,$(_ALL_DISTRIBUTION_DIRS),\
-  $(if $(call is_example_overlay,distributions/$(d)),$(d),)))
+  $(if $(wildcard distributions/$(d)/EXAMPLE_OVERLAY),$(d),)))
 _DISTRIBUTION_DIRS := $(filter-out $(_EXAMPLE_DISTRIBUTION_DIRS),$(_ALL_DISTRIBUTION_DIRS))
 ifeq ($(words $(_DISTRIBUTION_DIRS)),1)
 DISTRIBUTION ?= $(_DISTRIBUTION_DIRS)
@@ -204,10 +202,12 @@ $(error DISTRIBUTION=$(DISTRIBUTION) matches no $(DISTRIBUTION_PATH)/deploy/*.en
 endif
 # `override`, because every branch below turns on this one value and a command
 # line must not be able to set it: `make up DISTRIBUTION=example
-# DISTRIBUTION_KIND=deployment` would otherwise create the production volume and
-# start the full stack for the tutorial, and the reverse would give a real
-# deployment the fake upstream. What the overlay declares is the only answer.
-override _IS_EXAMPLE := $(if $(call is_example_overlay,$(DISTRIBUTION_PATH)),yes,)
+# _IS_EXAMPLE=` would otherwise create the production volume and start the full
+# stack for the tutorial, and the reverse would give a real deployment the fake
+# upstream. The path is the only input, and it is the same path everything else
+# resolves through, so redirecting it moves the whole selection together rather
+# than putting one overlay's files behind another's branch.
+override _IS_EXAMPLE := $(if $(wildcard $(DISTRIBUTION_PATH)/EXAMPLE_OVERLAY),yes,)
 ifeq ($(_IS_EXAMPLE),)
 $(info Using distribution '$(DISTRIBUTION)' — its identity is compiled into the console. DISTRIBUTION=none for a neutral stack.)
 endif

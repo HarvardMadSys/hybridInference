@@ -13,6 +13,7 @@ deleted. The list can only shrink.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -175,7 +176,7 @@ def test_no_exported_file_reaches_into_an_excluded_directory(manifest: dict) -> 
 
     rules = manifest["exclude"]
     keep = manifest.get("keep") or []
-    kept = public_export.exported_files()
+    plan = public_export.export_plan()
 
     # Take every string literal inside the call and join them. The path is
     # spelled several ways -- `REPO / "ops" / "release"`,
@@ -187,10 +188,10 @@ def test_no_exported_file_reaches_into_an_excluded_directory(manifest: dict) -> 
     literal = re.compile(r'["\']([A-Za-z0-9_.\-/]+)["\']')
 
     offenders = []
-    for name in kept:
+    for name, source in plan.items():
         if not name.endswith(".py"):
             continue
-        text = (REPO / name).read_text(encoding="utf-8", errors="ignore")
+        text = source.read_text(encoding="utf-8", errors="ignore")
         for args in call.findall(text):
             joined = "/".join(part.strip("/") for part in literal.findall(args))
             if joined and public_export.excluded(joined, rules, keep):
@@ -202,27 +203,54 @@ def test_no_exported_file_reaches_into_an_excluded_directory(manifest: dict) -> 
     )
 
 
-def test_the_audits_see_everything_the_export_publishes(manifest: dict) -> None:
-    """The audit's file list must be the exporter's, not a near-miss of it.
+def test_the_export_plan_is_the_tree_that_gets_published(tmp_path: Path) -> None:
+    """Whatever the audits read has to be the artifact, path for path and byte
+    for byte.
 
-    `keep:` was added to the exporter and not to the audits, which went on
-    rebuilding the selection from `exclude:` alone. The example travelled and
-    was never scanned -- 877 files published, 868 cleared. Comparing the two
-    counts is what would have caught it, so that is what this asserts.
+    Twice now an abstraction has described the export instead of being it. The
+    audits rebuilt the selection from `exclude:` alone and missed `keep:`,
+    clearing 868 files while 877 travelled; then the helper that fixed it
+    returned filtered source files and still missed the seven `overlay:` paths
+    -- five never opened, two read as the content they replace. Both are the
+    same mistake, and only comparing against a materialized tree catches it.
     """
     import public_export
 
-    rules, _undecided, _overlay, keep = public_export.load_manifest()
-    published = set(public_export.exported_files())
-    exclusions_only = {
-        n for n in public_export.tracked_files() if not public_export.excluded(n, rules, [])
-    }
+    rules, _undecided, overlay, keep = public_export.load_manifest()
+    target = tmp_path / "tree"
+    public_export.materialize(public_export.partition_files(rules, keep)[0], overlay, target)
 
-    assert published >= exclusions_only
-    unscanned = published - exclusions_only
-    assert unscanned, "keep: carves nothing out; drop it or the audits are testing a fiction"
-    for name in sorted(unscanned):
-        assert any(public_export._covers(rule, name) for rule in keep), name
+    # materialize() ends in `git init && git add -A`, so the index is the
+    # artifact's own account of itself -- a filesystem walk would also collect
+    # the .git it just created.
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=target, capture_output=True, check=True)
+    written = {name for name in listed.stdout.decode().split("\0") if name}
+    plan = public_export.export_plan()
+
+    assert written == set(plan)
+    mismatched = [
+        n for n, source in plan.items() if (target / n).read_bytes() != source.read_bytes()
+    ]
+    assert not mismatched, (
+        "the plan names a source whose bytes are not what lands at that path, "
+        f"so the audits are reading something the export does not ship: {mismatched}"
+    )
+
+
+def test_the_published_example_still_declares_itself_a_teaching_artifact() -> None:
+    """The marker has to travel, or downstream it is not an example any more.
+
+    Its presence is what keeps `make up` from selecting the tutorial as the
+    deployment to start. Left untracked it would work in this checkout and be
+    absent from the export, where the only overlay present is the example --
+    so a fresh clone would auto-discover it and bring up the full stack.
+    """
+    import public_export
+
+    marker = "distributions/example/EXAMPLE_OVERLAY"
+    assert marker in public_export.export_plan(), (
+        f"{marker} does not travel; the exported tree would treat the tutorial as its deployment"
+    )
 
 
 def test_every_keep_carves_something_out_of_an_exclusion(manifest: dict) -> None:
@@ -233,9 +261,17 @@ def test_every_keep_carves_something_out_of_an_exclusion(manifest: dict) -> None
     for entry in manifest.get("keep") or []:
         path = entry["path"].rstrip("/")
         assert entry.get("reason", "").strip(), f"{path} is kept for no stated reason"
-        assert public_export.excluded(path, rules, []), (
+        covering = public_export.excluded(path, rules, [])
+        assert covering, (
             f"{path} is not excluded by anything, so keeping it changes nothing "
             "— remove the entry rather than leave a rule that looks load-bearing"
+        )
+        # Strictly inside, never equal: `keep: distributions/` would satisfy a
+        # subset check by cancelling the exclusion outright and publishing every
+        # real overlay. A keep is an exception to a boundary, not its removal.
+        assert path != covering.rstrip("/"), (
+            f"{path} cancels the exclusion it claims to be an exception to; "
+            "name the one entry that travels, not the directory"
         )
 
 
@@ -263,8 +299,8 @@ def test_the_exported_tree_grows_no_new_leak(manifest: dict) -> None:
 
     import public_export
 
-    kept = public_export.exported_files()
-    findings = public_export.audit(kept)
+    plan = public_export.export_plan()
+    findings = public_export.audit(list(plan), sources=plan)
 
     allowed = Counter()
     for entry in manifest.get("known_findings") or []:

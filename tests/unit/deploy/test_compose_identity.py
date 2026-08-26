@@ -166,10 +166,10 @@ def test_the_makefile_feeds_the_overlay_too() -> None:
     assert "$(DISTRIBUTION_PATH)/deploy/*.env" in makefile, (
         "the overlay must resolve through DISTRIBUTION, not a bare glob"
     )
-    # One root, and a declared kind -- not a directory name -- decides which
+    # One root, and a marker file -- not a directory name -- decides which
     # overlays auto-discovery is allowed to start.
     assert "distributions/$(DISTRIBUTION)" in makefile
-    assert "DISTRIBUTION_KIND=example" in makefile
+    assert "EXAMPLE_OVERLAY" in makefile
     assert "DISTRIBUTION ?=" in makefile, "DISTRIBUTION must stay overridable"
     assert "ifeq ($(DISTRIBUTION),none)" in makefile, (
         "there must be a way to ask for a stack that names no deployment"
