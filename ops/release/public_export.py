@@ -176,9 +176,16 @@ def tracked_files() -> list[str]:
     return [n.decode() for n in _git(["git", "ls-files", "-z"], cwd=REPO).stdout.split(b"\0") if n]
 
 
-def _covers(rule: dict, name: str) -> bool:
-    p = rule["path"]
-    return name == p.rstrip("/") or name.startswith(p if p.endswith("/") else p + "/")
+def _match_depth(rule: dict, name: str) -> int | None:
+    """Return how specifically ``rule`` covers ``name``, or None if it does not.
+
+    Specificity is the rule's own length in path segments, so a rule naming one
+    file outranks a rule naming the directory above it.
+    """
+    p = rule["path"].rstrip("/")
+    if name == p or name.startswith(p + "/"):
+        return len(p.split("/"))
+    return None
 
 
 def excluded(name: str, rules: list[dict], keep: list[dict]) -> str | None:
@@ -196,14 +203,26 @@ def excluded(name: str, rules: list[dict], keep: list[dict]) -> str | None:
     are the ones the export actually publishes. That is not hypothetical -- the
     security audits called this with two arguments and cleared 868 files while
     877 travelled, leaving the entire example unscanned.
+
+    The most specific rule wins, and an exclusion wins a tie. Checking ``keep``
+    first instead made an exception permanent: with `keep: distributions/example/`
+    in place, an `exclude:` naming one file inside it -- a private env, a key
+    that should never have been committed -- was simply not applied, and the
+    narrower rule sat in the manifest reading as protection.
     """
-    for rule in keep:
-        if _covers(rule, name):
-            return None
+    deepest_keep = max(
+        (depth for rule in keep if (depth := _match_depth(rule, name)) is not None),
+        default=-1,
+    )
+    excluding, deepest_exclude = None, -1
     for rule in rules:
-        if _covers(rule, name):
-            return rule["path"]
-    return None
+        depth = _match_depth(rule, name)
+        if depth is not None and depth > deepest_exclude:
+            excluding, deepest_exclude = rule["path"], depth
+
+    if excluding is None or deepest_exclude < deepest_keep:
+        return None
+    return excluding
 
 
 def partition_files(rules: list[dict], keep: list[dict]) -> tuple[list[str], dict[str, int]]:
@@ -392,6 +411,10 @@ def main() -> int:
         return 2
 
     kept, dropped = partition_files(rules, keep)
+    # Everything the run reports on or audits comes from here, so the CLI cannot
+    # drift from the artifact the way its two entry points had: the default
+    # audit and `--list` both described the filtered source tree.
+    plan = export_plan()
 
     print(f"Tracked files: {len(kept) + sum(dropped.values())}")
     print(f"  exported:    {len(kept)}")
@@ -444,14 +467,19 @@ def main() -> int:
         # point of materialising. Re-running the source audit here silently
         # replaced the result, which is how "the export tree is clean" came to
         # be measured against the wrong tree.
-        findings = audit(kept, root=target, overlay=overlay)
+        findings = audit(list(plan), root=target)
         broken = broken_docker_context(target)
         if broken:
             print("\nThese are COPYed from the build context but the export drops them:")
             for where, src in broken:
                 print(f"  {where}: {src}")
     else:
-        findings = audit(kept)
+        # Same set of published paths, read through the plan so replacements are
+        # scanned as their replacing content. This default path is the one an
+        # operator actually runs, and it was the last place still auditing the
+        # source tree minus exclusions: five overlay-only files never opened,
+        # two read as the content they stand in for.
+        findings = audit(list(plan), sources=plan)
         broken = []
     print()
     if not findings:
@@ -466,7 +494,7 @@ def main() -> int:
 
     if args.list:
         print("\nExported paths:")
-        for name in kept:
+        for name in plan:
             print(f"  {name}")
 
     return 1 if (findings or undecided or broken) else 0

@@ -301,6 +301,35 @@ def test_smoke_url_follows_the_distribution_env_file(
     assert '--base-url "http://localhost:24242"' in smoke
 
 
+def _plant_marker(candidate: Path, kind: str) -> None:
+    marker = candidate / rag_config.EXAMPLE_OVERLAY_MARKER
+    if kind == "file":
+        marker.write_text("teaching artifact\n")
+    elif kind == "directory":
+        marker.mkdir()
+    elif kind == "dangling-symlink":
+        marker.symlink_to(candidate / "nothing-here")
+
+
+@pytest.mark.parametrize("kind", ["directory", "dangling-symlink"])
+def test_only_a_regular_marker_file_counts(tmp_path: Path, kind: str) -> None:
+    """Both readers must say no to the same non-files.
+
+    `$(wildcard)` answers yes to a directory or a dangling symlink of that name
+    while Python's is_file() says no, which would make one overlay a teaching
+    artifact to Make and a deployment to the backend.
+    """
+    sandbox = tmp_path / "repo"
+    candidate = sandbox / "distributions" / "candidate"
+    (candidate / "deploy").mkdir(parents=True)
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    (candidate / "deploy" / "backend.env").write_text("SITE_NAME=Candidate\n")
+    _plant_marker(candidate, kind)
+
+    assert "Using distribution 'candidate'" in _make_dry_run("ps", cwd=sandbox)
+    assert rag_config._is_example_overlay(candidate) is False
+
+
 @pytest.mark.parametrize("is_example", [True, False])
 def test_make_and_backend_read_the_marker_identically(tmp_path: Path, is_example: bool) -> None:
     """One declaration, two readers — they must never disagree about a file.

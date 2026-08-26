@@ -253,6 +253,55 @@ def test_the_published_example_still_declares_itself_a_teaching_artifact() -> No
     )
 
 
+def test_a_narrower_exclusion_beats_a_broader_keep() -> None:
+    """An exception must stay narrowable, or it is a permanent licence.
+
+    With `keep: distributions/example/` matched first, an `exclude:` naming one
+    file inside it was simply not applied -- a private env or a committed key
+    would travel while the manifest carried a rule saying it must not.
+    """
+    import public_export
+
+    rules = [
+        {"path": "distributions/"},
+        {"path": "distributions/example/deploy/private.env"},
+    ]
+    keep = [{"path": "distributions/example/"}]
+
+    assert public_export.excluded("distributions/example/deploy/private.env", rules, keep)
+    assert public_export.excluded("distributions/example/config/models.yaml", rules, keep) is None
+    assert public_export.excluded("distributions/freeinference/x.yaml", rules, keep) == (
+        "distributions/"
+    )
+    # A tie goes to the exclusion: keeping and excluding the same path is a
+    # contradiction, and the safe reading of one is that it does not travel.
+    same = [{"path": "distributions/example/"}]
+    assert public_export.excluded("distributions/example/config/models.yaml", same, keep)
+
+
+def test_the_cli_lists_and_audits_the_same_paths_it_publishes() -> None:
+    """`--list` is what an operator reads before signing off on a publication.
+
+    Both CLI entry points went on describing the filtered source tree after the
+    plan existed, so the default audit cleared five files it never opened and
+    `--list` never mentioned config/models.yaml, which the export does ship.
+    """
+    import public_export
+
+    listed = subprocess.run(
+        [sys.executable, str(REPO / "ops" / "release" / "public_export.py"), "--list"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    printed = {
+        line.strip() for line in listed.split("Exported paths:")[-1].splitlines() if line.strip()
+    }
+
+    assert printed == set(public_export.export_plan())
+
+
 def test_every_keep_carves_something_out_of_an_exclusion(manifest: dict) -> None:
     """A keep that nothing excludes reads as protection it is not providing."""
     import public_export

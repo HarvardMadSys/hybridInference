@@ -165,9 +165,13 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 # than somebody's deployment, so auto-discovery skips it and it is reachable
 # only when named. The same file selects the backend-only startup below.
 #
-# Presence, not content: the file is never opened, here or in
-# apps/backend/serving/rag/config.py, so the two readers cannot interpret it
-# differently. A line in deploy/*.env cannot manage that -- it is a dotenv read
+# Presence of a regular file, and nothing else: the file is never opened, here
+# or in apps/backend/serving/rag/config.py, so the two readers cannot interpret
+# it differently. `test -f` rather than `$(wildcard)` because the latter also
+# answers yes to a directory or a dangling symlink of that name, where Python's
+# is_file() says no -- a difference with no legitimate use and one bad outcome,
+# an overlay that is a teaching artifact to Make and a deployment to the
+# backend. A line in deploy/*.env cannot manage that either -- it is a dotenv read
 # by Compose, whose parser is not ours. Compose accepts
 # `DISTRIBUTION_KIND = example`, spaces and all, as the value `example`, while a
 # grep for the exact assignment does not, and an overlay that is a teaching
@@ -176,7 +180,7 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 # and no pattern to interpolate that a command line could then supply.
 _ALL_DISTRIBUTION_DIRS := $(sort $(foreach f,$(wildcard distributions/*/deploy/*.env),$(word 2,$(subst /, ,$(f)))))
 _EXAMPLE_DISTRIBUTION_DIRS := $(sort $(foreach d,$(_ALL_DISTRIBUTION_DIRS),\
-  $(if $(wildcard distributions/$(d)/EXAMPLE_OVERLAY),$(d),)))
+  $(if $(shell test -f 'distributions/$(d)/EXAMPLE_OVERLAY' && echo yes),$(d),)))
 _DISTRIBUTION_DIRS := $(filter-out $(_EXAMPLE_DISTRIBUTION_DIRS),$(_ALL_DISTRIBUTION_DIRS))
 ifeq ($(words $(_DISTRIBUTION_DIRS)),1)
 DISTRIBUTION ?= $(_DISTRIBUTION_DIRS)
@@ -207,7 +211,7 @@ endif
 # upstream. The path is the only input, and it is the same path everything else
 # resolves through, so redirecting it moves the whole selection together rather
 # than putting one overlay's files behind another's branch.
-override _IS_EXAMPLE := $(if $(wildcard $(DISTRIBUTION_PATH)/EXAMPLE_OVERLAY),yes,)
+override _IS_EXAMPLE := $(shell test -f '$(DISTRIBUTION_PATH)/EXAMPLE_OVERLAY' && echo yes)
 ifeq ($(_IS_EXAMPLE),)
 $(info Using distribution '$(DISTRIBUTION)' — its identity is compiled into the console. DISTRIBUTION=none for a neutral stack.)
 endif
