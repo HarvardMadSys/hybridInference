@@ -13,6 +13,10 @@
 > **2026-08-26 决策更新：** 本文的“导出 manifest / 物化树”归属判断已失效。
 > 现有 HybridInference 仓库本身将公开；不能公开的内容必须迁出或从保留历史
 > 中清理，不能依赖导出规则隐藏。
+> v3(2026-08-26,W6 收口):修正 W5b workflow 身份——四个上游 deploy
+> workflow 是迁移期旧入口,不是 freeInference 的长期归属资产;
+> `sync-main.yml` 留上游。freeInference 的部署与同名 promotion 手势均为
+> 新仓自有实现,不是搬走同一个上游文件。
 
 ## 0. 裁定原则
 
@@ -34,7 +38,7 @@ dispatch 的。
 | 路径 | 类型 | 批次 | 生产影响 | 验证方式 |
 |---|---|---|---|---|
 | `distributions/freeinference/`(26 hits) | 内容+配置 | **W5a** | 高:models/routing/alerts 真值 | 契约测试 + `iter_effective_routes` 路由快照 diff + smoke |
-| 网关部署族 5 个 workflow:`deploy.yml`、`deploy-staging.yml`、`deploy-staging-digest.yml`、`deploy-rollback.yml`、`sync-main.yml` + `ops/deploy/`(它们调用的脚本,同批) | 代码 | **W5b** | 高:部署链路 | §2 矩阵逐行 preflight;staging 先行部署一次 |
+| `ops/deploy/`(由 freeInference 自有 workflow 接线) | 代码 | **W5b** | 高:部署链路 | §2 矩阵逐行 preflight;staging 先行部署一次 |
 | `services/status-monitor-worker/`(12 hits)+ `deploy-status-monitor.yml`(`working-directory` 指向该树,同批) | 代码 | **W5c** | 中:状态页/告警探测 | worker 部署 + 探测记录出现 |
 | `services/alert-control-plane-worker/`(10 hits)+ `alert-control-plane-staging-lifecycle.yml` + `slack-readback-gate.yml`(两者 `working-directory` 均指向该树,同批) | 代码 | **W5c** | 中:告警链路 | lifecycle workflow 全流程 |
 | `services/freeinference-harness/` 站点 targets | 代码 | **W5c** | 低 | harness 对 staging 跑通 |
@@ -53,6 +57,7 @@ dispatch 的。
 | `ops/release/` 中的中立 release 工具 | 上游；filtered-export 工具链已退役 |
 | `ops/ci/`、`ops/admin/brand_residue_sweep.py`、`ops/lib/`* | CI 与中立性守卫(*lib 按消费方跟随,搬迁批 preflight 逐个核) |
 | `.github/workflows/` 三个:`ci.yml`、`ci-observability.yml`、`build-candidates.yml` | 上游 CI 与 release engineering(candidates 是 W4 自动发布的前身) |
+| `.github/workflows/sync-main.yml` | HybridInference 中立的 dev→main/release promotion;freeInference production ancestry gate 仍依赖该上游 promotion。freeInference 的同名手势是新仓自有实现,不是此文件的搬迁副本 |
 | 守卫测试 6 个(test_neutral_startup、contract_settings_defaults、site_identity、compose_identity、brand_residue_sweep、no_personal_data) | 刻意携带 marker 的中立性断言 |
 | `LICENSE`、`README*` 三份、`branding.ts` 注释、compose `NEXT_PUBLIC_GITHUB_URL` 默认、`pyproject/uv.lock` RouteWise URL、`docs/developer` 内 5 个单点提及 | sweep 判定的事实性提及(worked example / 版权归属 / 包源),非品牌残留 |
 | `services/freeinference-harness/` 协议一致性 testkit | §7 既有裁定 |
@@ -75,11 +80,11 @@ dispatch 的。
 
 | workflow | runner | env | secrets | variables | 源码依赖(checkout 后实际执行) | 目的地/批次 |
 |---|---|---|---|---|---|---|
-| Deploy Production | `deploy-production` | production | PROD_HOST, PROD_HOST_KEY, PROD_PORT, PROD_SSH_KEY, PROD_USER, ROUTEWISE_GITHUB_TOKEN | — | `ops/deploy/deploy_production.sh` | freeInference / W5b |
-| Rollback Production | `deploy-production` | production | 同上一行 | — | `ops/deploy/deploy_production.sh` | freeInference / W5b |
-| Deploy Staging | `deploy-staging` | staging | STAGING_HOST, STAGING_HOST_KEY, STAGING_PORT, STAGING_SSH_KEY, STAGING_USER, ROUTEWISE_GITHUB_TOKEN | — | `ops/deploy/deploy_staging.sh` | freeInference / W5b |
-| Deploy Staging by Digest | `deploy-staging` | staging | STAGING_HOST, STAGING_HOST_KEY, STAGING_PORT, STAGING_SSH_KEY, STAGING_USER, GITHUB_TOKEN | — | 无(内联远端脚本) | freeInference / W5b(W4 改造:同源门改断言 `upstream.lock.source_commit`) |
-| Sync dev to main | `trusted-automation` | — | GITHUB_TOKEN | — | 无(纯 git) | freeInference / W5b |
+| Deploy Production(`deploy.yml`,legacy) | `deploy-production` | production | PROD_HOST, PROD_HOST_KEY, PROD_PORT, PROD_SSH_KEY, PROD_USER, ROUTEWISE_GITHUB_TOKEN | — | `ops/deploy/deploy_production.sh` | HybridInference / W6 收口已退役;freeInference 使用新仓自有 workflow |
+| Rollback Production(`deploy-rollback.yml`,legacy) | `deploy-production` | production | 同上一行 | — | `ops/deploy/deploy_production.sh` | HybridInference / W6 收口已退役;freeInference 使用新仓自有 workflow |
+| Deploy Staging(`deploy-staging.yml`,legacy) | `deploy-staging` | staging | STAGING_HOST, STAGING_HOST_KEY, STAGING_PORT, STAGING_SSH_KEY, STAGING_USER, ROUTEWISE_GITHUB_TOKEN | — | `ops/deploy/deploy_staging.sh` | HybridInference / W6 收口已退役;freeInference 使用新仓自有 workflow |
+| Deploy Staging by Digest(`deploy-staging-digest.yml`,legacy) | `deploy-staging` | staging | STAGING_HOST, STAGING_HOST_KEY, STAGING_PORT, STAGING_SSH_KEY, STAGING_USER, GITHUB_TOKEN | — | 无(内联远端脚本) | HybridInference / W6 收口已退役;freeInference 使用新仓自有 workflow |
+| Sync dev to main(`sync-main.yml`,upstream) | `trusted-automation` | — | GITHUB_TOKEN | — | 无(纯 git) | HybridInference / 保留(中立 dev→main/release);freeInference 同名手势非此文件搬迁 |
 | Deploy Status Monitor | `deploy-edge` | staging + process | CLOUDFLARE_API_TOKEN | ALERT_CONTROL_PLANE_STAGING_URL | `working-directory: services/status-monitor-worker`(wrangler deploy/d1 migrations) | freeInference / **W5c(与 worker 同批)** |
 | Alert CP Staging Lifecycle | **ubuntu-22.04(hosted!)** | staging | ALERT_CONTROL_PLANE_PRODUCER_SIGNING_KEY_V1, ALERT_CONTROL_PLANE_ROUTE_KEY_V1, CLOUDFLARE_API_TOKEN, CODEX_ONCALL_SLACK_BOT_TOKEN | ALERT_CONTROL_PLANE_STAGING_URL, ALERT_CONTROL_PLANE_SLACK_CHANNEL_ID | `working-directory: services/alert-control-plane-worker` | freeInference / **W5c(与 worker 同批)** |
 | Slack Readback Gate | **ubuntu-22.04(hosted!)** | — | CODEX_ONCALL_SLACK_BOT_TOKEN | — | `working-directory: services/alert-control-plane-worker` | freeInference / **W5c(与 worker 同批)** |
@@ -117,9 +122,10 @@ dispatch 的。
    该 token 理论上可从全链路删除(CI/deploy/build-candidates 均有
    `|| github.token` 类回退或可加)。在 W5b 前做一次实测(移除后跑通
    CI + staging 部署),能删则新仓少迁一个 secret。
-3. **`deploy-staging-digest` 不是照抄搬迁**:W4 要把同源门从"对齐主机
-   HEAD"改写为"断言 `upstream.lock.source_commit`"(计划 §1 已定),
-   搬的是改造后的版本;上游副本在删除批清除。
+3. **`deploy-staging-digest.yml` 身份修正**:上游文件是 W6 回滚窗保留的
+   legacy 入口,在 W6 收口退役,不作为同一个文件搬迁。freeInference 的
+   digest 部署 workflow 是新仓自有实现,同源门断言
+   `upstream.lock.source_commit`。
 4. **`ops/lib` 与零散共享件**:按消费方跟随;每个搬迁批的 preflight 里
    跑一次"谁 import 它"检查(删代码前先问谁按路径加载它)。
 5. **审计方法(v2 教训)**:只 grep `secrets./vars.` 不构成依赖审计——
@@ -130,10 +136,12 @@ dispatch 的。
 
 ## 5. 执行序摘要
 
-W5a(distributions)→ W5b(网关部署族 5 workflow + ops/deploy + sync-main)
+W5a(distributions)→ W5b(`ops/deploy/` + freeInference 新仓自有 deploy/sync
+手势的接线;不是搬迁上游 5 个 workflow 文件)
 → W5c(三件 services **连同各自的 3 个 workflow**)→ W5d(ops 数据/代理/
 setup + benchmark)→ W5e(docs/developer + Pages 四步硬序)→
 W5f(跨上游代码族:rag-index + codex-oncall + .env.oncall.example,
 经 pin 的上游 checkout 供码)。
 每批:复制+接线 → §2 矩阵 preflight → staging 验证 → 下一批;
-上游删除全部推迟到 W6 观察窗后(计划既定)。
+W6 观察窗后退役上游四个 legacy deploy workflow;上游 `sync-main.yml`
+继续保留。其余上游删除按计划进入独立删除批。
