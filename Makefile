@@ -294,17 +294,19 @@ smoke:  ## Verify the selected distribution's running stack
 	@test -f "$(SMOKE_SCRIPT)" || (echo "No smoke script for DISTRIBUTION=$(DISTRIBUTION)"; exit 1)
 	$(SMOKE_PYTHON) "$(SMOKE_SCRIPT)" --base-url "$(SMOKE_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)"
 
-# Stage 2 deliberately reuses Stage 1's project and provider. Bringing up the
-# two new services does not recreate a provider whose effective configuration
-# is unchanged; backend is then recreated in place with DB/auth enabled.
+# Stage 2 deliberately reuses Stage 1's project and provider. --no-recreate
+# pins that promise: Compose's divergence check can otherwise decide an
+# unchanged service needs recreating (observed in CI whenever the provider
+# image was built without cache) and silently restart it mid-tutorial. Only
+# backend is recreated in place, picking up DB/auth.
 _require-demo:
 	@test -n "$(DISTRIBUTION_PATH)" || (echo "The demo requires an explicit distribution"; exit 1)
 	@test -f "$(DEMO_COMPOSE_FILE)" || (echo "No demo Compose overlay for DISTRIBUTION=$(DISTRIBUTION)"; exit 1)
 
 demo: _require-demo  ## Upgrade the runnable example in place to the full local stack
-	$(DEMO_COMPOSE) up -d --wait $(DEMO_PROVIDER_SERVICE) postgres
+	$(DEMO_COMPOSE) up -d --no-recreate --wait $(DEMO_PROVIDER_SERVICE) postgres
 	$(DEMO_COMPOSE) up -d --no-deps --force-recreate --wait backend
-	$(DEMO_COMPOSE) up -d --no-deps --wait frontend
+	$(DEMO_COMPOSE) up -d --no-deps --no-recreate --wait frontend
 
 # full_smoke keeps the original JWT and API key in memory while this Compose
 # command recreates backend, then proves both still work afterwards. CI can

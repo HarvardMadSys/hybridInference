@@ -621,9 +621,12 @@ def test_demo_make_contract_uses_the_third_layer_without_down_or_forced_build(
     ]
     assert len(commands) == 3
     assert all("-f distributions/example/deploy/docker-compose.demo.yml" in cmd for cmd in commands)
-    assert commands[0].endswith("up -d --wait example-provider postgres")
+    # Regression: promotion must never recreate an already-running provider or
+    # frontend. Compose's own divergence check recreated an unchanged provider
+    # in CI after an uncached image build, so the keep is pinned explicitly.
+    assert commands[0].endswith("up -d --no-recreate --wait example-provider postgres")
     assert commands[1].endswith("up -d --no-deps --force-recreate --wait backend")
-    assert commands[2].endswith("up -d --no-deps --wait frontend")
+    assert commands[2].endswith("up -d --no-deps --no-recreate --wait frontend")
     assert " down" not in output
     assert "--build" not in output
     assert (
