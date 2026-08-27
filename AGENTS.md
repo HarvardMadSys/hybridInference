@@ -27,7 +27,7 @@ apps/
     routing/      # Routing engine: strategies, routers, health, circuit breaker
   frontend/       # Next.js web UI
 config/           # YAML config: models, routing, alerts
-services/         # Sidecar workers (present only where a deployment ships them)
+services/         # Standalone protocol-conformance harnesses and testkits
 tests/
   unit/           # Fast, mocked. Default in CI.
   api/            # Per-provider API surface tests.
