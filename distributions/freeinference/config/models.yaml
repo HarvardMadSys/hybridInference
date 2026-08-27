@@ -181,6 +181,89 @@ models:
           - ${STAGING_API_KEY}
         provider_model_id: "glm-5.3"
 
+  # GLM-5.3-Flash: the 320B-total / 18B-active hybrid-attention sibling of 5.3,
+  # priced like a small model. Z.AI's own numbers put it above GLM-5.2 across
+  # six coding and agentic benchmarks (https://z.ai/blog/glm-5.3-flash) at
+  # roughly a tenth of 5.3's list rate, so it lands in the free tier as its
+  # strongest model rather than as a cheaper compromise.
+  - id: glm-5.3-flash
+    name: GLM-5.3 Flash
+    provider: zai
+    # free, unlike its 5.2/5.3 siblings, on cost: at 0.15 in / 0.50 out (list)
+    # it is the cheapest zai model in this catalogue by ~9x — glm-5.1, already
+    # free here, lists at 1.4/4.4 — so the free tier's exposure per token falls
+    # rather than rises. Worth knowing when reading that against the
+    # note above: this puts a model Z.AI benchmarks above GLM-5.2 on a free
+    # key while glm-5.2 itself stays pro. Flip to pro if that trade is not
+    # wanted; nothing else in the entry depends on it.
+    required_role: free
+    quantization: "fp8"
+    context_length: 1000000
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    # Reasoning is always on, as on 5.3: `thinking.type` accepts only `enabled`
+    # upstream, so a client still sending `disabled` gets an upstream 400, and
+    # `reasoning_effort` is the supported way to dial thinking down.
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking, reasoning_effort]
+    # `reasoning_efforts` deliberately unset. Z.AI documents the flash's text
+    # parameters only as "consistent with GLM-5.3" and publishes no domain of
+    # its own; 5.3's list above was read off the endpoint precisely because the
+    # doc's summary (low/high/max) is narrower than what it actually takes. A
+    # guessed domain here would 400 values the upstream accepts, so declare it
+    # once this endpoint's own answer to a nonsense value is read.
+    #
+    # Text-only on purpose, even though this is the first natively multimodal
+    # GLM-5: upstream it takes images, video and files as `image_url` content
+    # blocks, but the zai adapter drops image blocks silently, so claiming the
+    # modality would accept such a request and answer about nothing. This
+    # deployment's test_model_modalities.py holds that line for every
+    # zai-routed model.
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    # "glm-5.3flash" is the hyphenless spelling people reach for; it resolves
+    # here instead of 404ing.
+    aliases: ["freeinference-glm-5.3-flash", "glm-5.3flash"]
+    # Billed at 2x the Z.AI PAYG rate, the same convention as glm-5.2 and
+    # glm-5.3 (base: prompt 0.15 / completion 0.50 / cache 0.03 —
+    # https://docs.z.ai/guides/overview/pricing).
+    # Deliberately the list rate and not the 50%-off launch promotion that runs
+    # to 2026-09-09 24:00 UTC+8: pricing that tracked the promotion would
+    # silently under-charge the day it lapses, and this way nobody has to
+    # remember to edit it. Charged as USD/M tokens against each user's cost quota.
+    pricing:
+      prompt: "0.3"
+      completion: "1.0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.06"
+      input_cache_writes: "0"
+    route:
+      - kind: zai
+        weight: 1.0
+        base_url: ${ZAI_BASE_URL}
+        api_keys:
+          - ${ZAI_API_KEY}
+          - ${ZAI_API_KEY2}
+        provider_model_id: "glm-5.3-flash"
+      # No Ollama Cloud / Chutes fallback yet: the weights are open (Z.AI calls
+      # this the first open-source frontier model on a hybrid sparse/linear
+      # attention architecture), but neither host is confirmed serving it, and a
+      # route to a model id they do not carry is a 404 generator. Add both once
+      # they do, mirroring glm-5.2.
+      #
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: staging
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "glm-5.3-flash"
+
   - id: glm-5-turbo
     name: GLM-5 Turbo
     required_role: admin
