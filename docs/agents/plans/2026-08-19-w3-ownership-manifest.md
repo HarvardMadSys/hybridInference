@@ -62,6 +62,22 @@ workflow 权威已由
 上游副本与专属 CI 接线已退役；协议一致性 testkit 和
 `agent-loop-local.yaml` 仍按 §1.2 留上游。
 
+**W5d 状态(2026-08-27):已关闭,边界经实证修订。** freeInference 已实际
+接管运营面:production `/etc/cron.d/freeinference-*` 三条 cron 从
+`/srv/freeInference/ops/db/` 执行,spark2 `spark_idle_proxy.service` 指向
+`/srv/freeInference`;两仓逐 blob 比对,工具本体一致、cron/安装器为 fi
+适配版。上游已删除 `ops/db` 运营工具链、`ops/lib`、三个 idle proxy、
+`deploy/systemd` 10 个 proxy/tunnel 模板与配套测试(上游独有的三个测试先由
+[freeInference #53](https://github.com/HarvardMadSys/freeInference/pull/53)
+verbatim 移植)。修订:(a) 顶层 import `serving.*` 的四个分析工具
+(automation score、prompt sample、geo exporter+globe、num_user_turns
+backfill)离开 `apps/backend` 即不可运行,改判**中立后端耦合工具留上游**
+(freeInference 侧同名副本为死代码,已在 #53 注明待清理);
+(b) 行 47 `ops/setup/` 改随 **W5b**(被 `ops/deploy` 脚本调用、
+`test_geoip_deployment` 断言钉住,freeInference 缺 `test_setup_claude_code`
+移植);(c) 行 46 的"主机 systemd 单元指向新路径"验证:spark2 已验,
+h200/rtx6000 无 shell 待 W7 清点(上游 git 删除不影响在跑主机)。
+
 **W5f-RAG 状态(2026-08-27):已关闭。** freeInference current-dev
 验证成功([run 33037428965](https://github.com/HarvardMadSys/freeInference/actions/runs/33037428965)):
 `dev` 为 `e002101f`,pin 的 HybridInference 源为 `bf84c900`;经 `bge-m3`

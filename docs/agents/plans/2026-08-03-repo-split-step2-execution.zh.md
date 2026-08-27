@@ -296,6 +296,37 @@ readback workflow 权威已通过
 退役条件。按 operator 指示,`codex-oncall.yml`、`.env.oncall.example` 与
 cloud-agent/on-call 工作延期,保持未动且未完成。
 
+**W5e 状态(2026-08-27):已关闭。** `docs/developer` 内容与 doc 站 Pages
+切仓已按四步硬序完成:`freeinference-doc` Pages 项目绑定
+`HarvardMadSys/freeInference`(production branch `dev`,根目录
+`distributions/freeinference/content/docs/docs`,自动部署开启),
+production 与 preview 构建均验证通过(operator 于 2026-08-27 在
+Cloudflare Dashboard 复核确认);`internaldoc` 站(`hybridinference`
+Pages 项目)按 2026-08-26 拍板留上游,`docs/developer/` 相应继续留上游
+作为中立内部文档。
+
+**W5d 状态(2026-08-27):已关闭(本 PR)。** 运营接管证据:production
+`/etc/cron.d/freeinference-{backup,backup-health,export-weekly-logs}` 已从
+`/srv/freeInference/ops/db/` 执行;spark2 `spark_idle_proxy.service` 的
+WorkingDirectory/ExecStart 已指向 `/srv/freeInference`;freeInference 与
+上游逐 blob 比对,工具本体一致、cron/安装器为 fi 适配版。上游删除:
+`ops/db` 运营工具链、`ops/lib`、三个 idle proxy、`deploy/systemd` 的
+10 个 proxy/tunnel 单元模板及配套测试(仅上游持有的三个测试文件已先经
+[freeInference #53](https://github.com/HarvardMadSys/freeInference/pull/53)
+verbatim 移植)。**边界修订(实证驱动)**:(a) 顶层 import 后端
+(`serving.*`)的四个分析工具(`user_automation_score`、
+`user_prompt_sample`、`geo_hourly_export`+globe viewer、
+`backfill_num_user_turns`)在无 `apps/backend` 的检出中不可运行——
+freeInference 副本为死代码,故判为中立后端耦合工具留上游
+(`ops/db/README.md` 已改写为 remnant 说明),`test_geo_exporter` 随之留下;
+(b) `ops/setup` 及其测试推迟到 W5b 批(被 `ops/deploy` 脚本调用且
+`test_geoip_deployment` 断言钉住,且 freeInference 缺
+`test_setup_claude_code` 移植);(c) `benchmark/` 为 paper 产物,
+不随本批,去处(paper 仓 vs freeInference)另行拍板。主机残留记入 W7:
+spark2 单元与 production cron 仍借 `/srv/hybridInference` 的
+`.env`/`.venv`;h200/rtx6000 侧单元指向无 shell 可验,待 W7 清点。
+后续排期见 #1323(本批即其 Step 2,连坐项已吸收)。
+
 **上游侧删除不与搬迁同批(2026-08-12 评审修订)**:原文"每批同时在上游侧
 删除对应内容"与 W6"旧链路保留作回滚"自相矛盾——classic staging 部署跟的
 是 dev,W5a 一删 overlay,旧链在 W6 之前就断了,等于边搬边拆自己的回滚梯。

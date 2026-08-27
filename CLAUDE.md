@@ -34,7 +34,7 @@ tests/
   integration/    # Hits a real DB or external service. Marker: dbtest.
   e2e/            # Makefile-driven full-stack runs.
   external/       # Hits live servers. Marker: external.
-ops/              # Operational tooling (deploy, setup, runtime, admin, perf, db, cloudflare)
+ops/              # Operational tooling (ci, admin, release, deploy, setup, backend-coupled db analysis)
 deploy/           # Systemd units, Docker, observability manifests
 distributions/      # Overlays, one directory each. Deployment overlays move
                     # out before publication; example/ remains, see 6.5.

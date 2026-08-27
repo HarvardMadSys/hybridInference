@@ -295,7 +295,8 @@ on `router: routewise` keeps the upstream's default priority, because that
 router has no prefill accounting to compute the discount from. Set it only on routes
 pointing at a server launched with the flag;
 the matching proxy-side config is `priority_scheduling` in
-`ops/local_deployment_proxy/README.md` ("Prioritizing decode over prefill"),
+the distribution repository's `ops/local_deployment_proxy/README.md`
+("Prioritizing decode over prefill"),
 which also explains the tier spacing and how it interacts with
 `chunked_prefill_size`.
 

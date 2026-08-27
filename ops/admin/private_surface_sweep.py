@@ -43,7 +43,6 @@ PENDING: dict[str, str] = {
     "docs/agents/": "historical plans and specs",
     "docs/developer/": "deployment-specific developer documentation",
     "docs/superpowers/": "historical plans and specs",
-    "ops/": "operator scripts awaiting ownership classification",
     "tests/": "production-shaped fixtures awaiting neutralization or migration",
 }
 

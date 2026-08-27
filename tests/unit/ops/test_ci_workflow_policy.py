@@ -179,6 +179,44 @@ def test_w5c_retired_worker_assets_and_ci_wiring_are_absent() -> None:
     assert "alert_control_plane" not in jobs["changes"]["outputs"]
 
 
+def test_w5d_retired_ops_assets_are_absent() -> None:
+    """The distribution repository owns the db toolkit, proxies, and units.
+
+    Production cron and the spark2 proxy unit already execute the consuming
+    repository's copies, so these upstream copies must not come back. The
+    backend-coupled analysis remnant under ops/db/ stays deliberately.
+    """
+    retired_paths = (
+        ROOT / "ops/lib",
+        ROOT / "ops/h200_idle_proxy",
+        ROOT / "ops/spark_idle_proxy",
+        ROOT / "ops/local_deployment_proxy",
+        ROOT / "ops/db/backup.sh",
+        ROOT / "ops/db/restore.sh",
+        ROOT / "ops/db/export_logs.py",
+        ROOT / "ops/db/analysis/trace_viewer",
+        ROOT / "deploy/systemd/spark_idle_proxy.service",
+        ROOT / "deploy/systemd/spark_idle_tunnel@.service",
+        ROOT / "deploy/systemd/h200_idle_proxy.service",
+        ROOT / "deploy/systemd/h200_idle_proxy_b.service",
+        ROOT / "deploy/systemd/h200_idle_tunnel@.service",
+        ROOT / "deploy/systemd/h200_idle_tunnel_b@.service",
+        ROOT / "deploy/systemd/h200_ondemand_proxy.service",
+        ROOT / "deploy/systemd/h200_ondemand_tunnel@.service",
+        ROOT / "deploy/systemd/local_deployment_proxy.service",
+        ROOT / "deploy/systemd/local_deployment_tunnel@.service",
+    )
+
+    assert all(not path.exists() for path in retired_paths)
+    kept_remnant = (
+        ROOT / "ops/db/analysis/user_automation_score.py",
+        ROOT / "ops/db/analysis/user_prompt_sample.py",
+        ROOT / "ops/db/analysis/geo_hourly_export.py",
+        ROOT / "ops/db/backfill_num_user_turns.py",
+    )
+    assert all(path.exists() for path in kept_remnant)
+
+
 def test_backend_matrix_keeps_the_fast_stage_one_smoke() -> None:
     """The full transition supplements rather than replaces the quick smoke."""
     steps = _workflow("ci.yml")["jobs"]["docker-build"]["steps"]
