@@ -20,9 +20,10 @@ const defaultApiBaseByTarget: Record<DeployTarget, string> = {
 
 export const config = {
   // API Configuration
-  // `NEXT_PUBLIC_API_BASE` wins if explicitly provided. Otherwise we derive a
-  // sensible default from the build target.
-  apiBase: process.env.NEXT_PUBLIC_API_BASE || defaultApiBaseByTarget[deployTarget],
+  // `NEXT_PUBLIC_API_BASE` wins if explicitly provided. An explicit empty
+  // string means same-origin requests (for example, through Next rewrites), so
+  // only an absent value falls back to the standalone local backend.
+  apiBase: process.env.NEXT_PUBLIC_API_BASE ?? defaultApiBaseByTarget[deployTarget],
   deployTarget,
 
   // Application Configuration

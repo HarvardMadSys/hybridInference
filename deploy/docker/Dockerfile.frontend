@@ -7,11 +7,16 @@ RUN npm ci
 # ---- Stage 2: build ----
 FROM node:22-alpine AS builder
 WORKDIR /app
-# Every NEXT_PUBLIC_* below is empty by default so an image built straight from
-# this Dockerfile names no deployment; the console's own code supplies a
-# neutral fallback for each. A deployment passes its values as build args --
-# see deploy/docker/docker-compose.yml and distributions/*/deploy/frontend.env.
-ARG NEXT_PUBLIC_API_BASE=
+# Public identity values below are empty by default so an image built straight
+# from this Dockerfile names no deployment. The API base is the one exception:
+# an omitted build arg keeps the established standalone-backend default, while
+# an explicitly supplied empty value opts into same-origin Next.js rewrites.
+# A deployment passes its values as build args -- see
+# deploy/docker/docker-compose.yml and distributions/*/deploy/frontend.env.
+ARG NEXT_PUBLIC_API_BASE=http://localhost:8080
+# Next loads .env files during `next build`, but this explicit process env has
+# higher precedence and pins the server-side rewrite target deterministically.
+ARG BACKEND_INTERNAL_URL=http://backend:8080
 
 # Where the standalone cloud agent is, if this deployment runs one. **Build
 # args, not runtime environment**: Next resolves `rewrites()` at build time and
@@ -48,6 +53,7 @@ ARG NEXT_PUBLIC_TEAM_JSON=
 ARG NEXT_PUBLIC_SPONSORS_JSON=
 ARG NEXT_PUBLIC_TEAM_IMAGE_HOST=
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
+ENV BACKEND_INTERNAL_URL=$BACKEND_INTERNAL_URL
 ENV AGENT_WEB_INTERNAL_URL=$AGENT_WEB_INTERNAL_URL
 ENV AGENT_CONTROL_PLANE_INTERNAL_URL=$AGENT_CONTROL_PLANE_INTERNAL_URL
 ENV NEXT_PUBLIC_DEPLOY_TARGET=$NEXT_PUBLIC_DEPLOY_TARGET

@@ -129,6 +129,37 @@ describe('pgAdmin proxy — forwarding', () => {
     expect(sent).toBe('pga4_session=abc');
   });
 
+  it('strips a deployment-scoped console session cookie', async () => {
+    vi.stubEnv('REFRESH_TOKEN_COOKIE_NAME', 'hybridinference_example_refresh');
+    const { upstream } = stubFetch({ verify: () => new Response(null, { status: 200 }) });
+
+    await GET(
+      request('/pgadmin/', {
+        cookie: 'hybridinference_example_refresh=admin; pga4_session=abc',
+      }),
+    );
+
+    const sent = new Headers(upstream.mock.calls[0][1].headers as HeadersInit).get('cookie');
+    expect(sent).toBe('pga4_session=abc');
+    vi.unstubAllEnvs();
+  });
+
+  it('strips both default and deployment-scoped console sessions', async () => {
+    vi.stubEnv('REFRESH_TOKEN_COOKIE_NAME', 'hybridinference_example_refresh');
+    const { upstream } = stubFetch({ verify: () => new Response(null, { status: 200 }) });
+
+    await GET(
+      request('/pgadmin/', {
+        cookie:
+          'refresh_token=another-stack; hybridinference_example_refresh=admin; pga4_session=abc',
+      }),
+    );
+
+    const sent = new Headers(upstream.mock.calls[0][1].headers as HeadersInit).get('cookie');
+    expect(sent).toBe('pga4_session=abc');
+    vi.unstubAllEnvs();
+  });
+
   it('forwards the method for a non-GET request', async () => {
     const { upstream } = stubFetch({ verify: () => new Response(null, { status: 200 }) });
 

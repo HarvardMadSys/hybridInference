@@ -30,8 +30,10 @@ const PGADMIN_SCRIPT_NAME = '/pgadmin';
 /** Budget for the admin check. Exceeding it denies, it does not admit. */
 const VERIFY_TIMEOUT_MS = 5_000;
 
-/** Session cookie issued by FastAPI; pgAdmin has no use for it. */
-const SESSION_COOKIE = 'refresh_token';
+/** Session cookies issued by FastAPI; pgAdmin has no use for either name. */
+function sessionCookieNames(): Set<string> {
+  return new Set(['refresh_token', process.env.REFRESH_TOKEN_COOKIE_NAME || 'refresh_token']);
+}
 
 /**
  * Hop-by-hop headers apply to a single connection and must not be relayed
@@ -82,10 +84,15 @@ async function verifyAdmin(cookie: string | null): Promise<Verdict> {
 /** Drop the console's own session cookie; pgAdmin keeps its own separately. */
 function cookiesForUpstream(cookie: string | null): string | null {
   if (!cookie) return null;
+  const consoleSessions = sessionCookieNames();
   const kept = cookie
     .split(';')
     .map((part) => part.trim())
-    .filter((part) => part.length > 0 && !part.toLowerCase().startsWith(`${SESSION_COOKIE}=`));
+    .filter((part) => {
+      const separator = part.indexOf('=');
+      const name = (separator === -1 ? part : part.slice(0, separator)).trim();
+      return part.length > 0 && !consoleSessions.has(name);
+    });
   return kept.length > 0 ? kept.join('; ') : null;
 }
 

@@ -495,6 +495,45 @@ class TestRefreshToken:
         assert "access_token" in data
 
     @pytest.mark.asyncio
+    async def test_deployment_scoped_refresh_cookie_name(
+        self,
+        auth_app_client: AsyncClient,
+        test_user,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A side-by-side localhost deployment can isolate its session cookie."""
+        cookie_name = "hybridinference_example_refresh"
+        monkeypatch.setattr(
+            settings_module.settings,
+            "refresh_token_cookie_name",
+            cookie_name,
+        )
+        login_response = await auth_app_client.post(
+            "/auth/login",
+            json={
+                "email": test_user["email"],
+                "password": test_user["password"],
+            },
+        )
+        refresh_token = login_response.cookies.get(cookie_name)
+        assert refresh_token
+        assert login_response.cookies.get("refresh_token") is None
+
+        auth_app_client.cookies.clear()
+        wrong_name = await auth_app_client.post(
+            "/auth/refresh",
+            cookies={"refresh_token": refresh_token},
+        )
+        assert wrong_name.status_code == 401
+
+        response = await auth_app_client.post(
+            "/auth/refresh",
+            cookies={cookie_name: refresh_token},
+        )
+        assert response.status_code == 200
+        assert response.cookies.get(cookie_name)
+
+    @pytest.mark.asyncio
     async def test_refresh_rotates_cookie(self, auth_app_client: AsyncClient, test_user):
         """Refresh must mint a NEW refresh-token cookie and invalidate the old.
 

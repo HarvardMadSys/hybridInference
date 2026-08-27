@@ -1,0 +1,54 @@
+# Stage 2 of the runnable example: add the production Postgres/frontend
+# services to the existing Stage 1 project and recreate only backend.
+services:
+  backend:
+    environment:
+      DB_ENABLED: "true"
+      DB_STORE_FULL_CONTENT: "false"
+      USER_AUTH_ENABLED: "true"
+      DISTRIBUTION_CONFIG_PATH: /app/distributions/example/distribution.demo.yaml
+      DISTRIBUTION_CONFIG_MODE: active
+      SIGNUP_ENABLED: "true"
+      SIGNUP_REQUIRE_EMAIL_VERIFICATION: "false"
+      SIGNUP_ADMIN_NOTIFY_ENABLED: "false"
+      ADMIN_EMAILS: admin@local.dev
+      COOKIE_SECURE: "false"
+      # Cookies ignore ports. A distinct name keeps this localhost demo from
+      # overwriting the session of another HybridInference stack.
+      REFRESH_TOKEN_COOKIE_NAME: hybridinference_example_refresh
+      # Stable by design so sessions and encrypted API keys survive an in-place
+      # backend recreate. These conspicuous defaults are for this local demo
+      # only; scoped shell variables can replace them without touching a file.
+      JWT_SECRET_KEY: ${EXAMPLE_DEMO_JWT_SECRET:-LOCAL-ONLY-example-jwt-secret-never-use-in-production}
+      API_KEY_SECRET: ${EXAMPLE_DEMO_API_KEY_SECRET:-LOCAL-ONLY-example-api-key-secret-never-use-in-production}
+      SITE_PUBLIC_BASE_URL: http://localhost:${FRONTEND_PORT:-13001}
+      BASE_URL: http://localhost:${FRONTEND_PORT:-13001}
+      FRONTEND_URL: http://localhost:${FRONTEND_PORT:-13001}
+      CORS_ALLOWED_ORIGINS: http://localhost:${FRONTEND_PORT:-13001},http://127.0.0.1:${FRONTEND_PORT:-13001}
+
+  frontend:
+    build:
+      args:
+        # Explicit empty means same-origin. The browser reaches every API via
+        # the frontend's Next.js rewrites, including the full smoke below.
+        NEXT_PUBLIC_API_BASE: ""
+        BACKEND_INTERNAL_URL: http://backend:8080
+        NEXT_PUBLIC_APP_NAME: Example Router
+        NEXT_PUBLIC_EXAMPLE_API_BASE: http://localhost:${FRONTEND_PORT:-13001}
+        NEXT_PUBLIC_EXAMPLE_MODEL: example-chat
+        NEXT_PUBLIC_STORAGE_KEY_PREFIX: hybridinference-example
+    container_name: ${EXAMPLE_FRONTEND_CONTAINER_NAME:-hybridinference-example-frontend}
+    environment:
+      REFRESH_TOKEN_COOKIE_NAME: hybridinference_example_refresh
+
+  postgres:
+    container_name: ${EXAMPLE_POSTGRES_CONTAINER_NAME:-hybridinference-example-postgres}
+    # Compose merges service volumes by container target, so this replaces the
+    # base production mount without overriding its explicitly named external
+    # volume. The new key naturally becomes project-scoped.
+    volumes:
+      - example_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  example_postgres_data:
+    driver: local

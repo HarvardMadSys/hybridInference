@@ -3,6 +3,15 @@
 __pycache__
 *.pyc
 
+# Local dotenv files are neither deterministic build inputs nor safe context.
+# In particular, Next automatically loads nested apps/frontend/.env*. The
+# checked-in deployment files are named backend.env/frontend.env and remain
+# available to Compose; only dot-env files are excluded here.
+.env
+.env.*
+**/.env
+**/.env.*
+
 # Frontend build artifacts
 apps/frontend/node_modules
 apps/frontend/.next

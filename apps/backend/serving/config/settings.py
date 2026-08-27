@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     cookie_secure: bool = True
     cookie_domain: str | None = None
     cookie_samesite: str = "lax"
+    # Host-only cookies are still shared by every port on the same hostname.
+    # A second local deployment can choose a distinct name without changing
+    # the production-compatible default.
+    refresh_token_cookie_name: str = "refresh_token"
 
     # Signup
     signup_enabled: bool = True

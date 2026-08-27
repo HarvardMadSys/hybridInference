@@ -4,7 +4,7 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
 from serving.auth.signup_policy import allowlist_is_empty, is_domain_allowed
 from serving.config.settings import get_signup_notify_emails, is_admin_email, settings
@@ -49,7 +49,6 @@ from serving.utils.turnstile import verify_turnstile_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = get_logger(__name__)
-REFRESH_TOKEN_COOKIE = "refresh_token"
 
 
 def get_base_url(request: Request) -> str:
@@ -63,6 +62,11 @@ def get_base_url(request: Request) -> str:
 def hash_refresh_token(token: str) -> str:
     """Hash a refresh token with SHA-256 for storage in the sessions table."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def get_refresh_token_cookie(request: Request) -> str | None:
+    """Read the deployment-scoped refresh cookie from an incoming request."""
+    return request.cookies.get(settings.refresh_token_cookie_name)
 
 
 def _refresh_cookie_options() -> dict[str, object]:
@@ -85,7 +89,7 @@ def set_refresh_token_cookie(response: Response, refresh_token: str) -> None:
     """Set the persistent refresh-token cookie."""
     refresh_token_max_age = get_refresh_token_expire_days() * 24 * 60 * 60
     response.set_cookie(
-        key=REFRESH_TOKEN_COOKIE,
+        key=settings.refresh_token_cookie_name,
         value=refresh_token,
         max_age=refresh_token_max_age,
         expires=datetime.now(timezone.utc) + timedelta(seconds=refresh_token_max_age),
@@ -96,7 +100,7 @@ def set_refresh_token_cookie(response: Response, refresh_token: str) -> None:
 def delete_refresh_token_cookie(response: Response) -> None:
     """Delete the refresh-token cookie using the same domain/path settings."""
     response.delete_cookie(
-        key=REFRESH_TOKEN_COOKIE,
+        key=settings.refresh_token_cookie_name,
         **_refresh_cookie_options(),
     )
 
@@ -459,7 +463,7 @@ async def login(
 @router.post("/logout", response_model=LogoutResponse)
 async def logout(
     response: Response,
-    refresh_token: str | None = Cookie(None),
+    refresh_token: str | None = Depends(get_refresh_token_cookie),
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
 ) -> LogoutResponse:
@@ -488,7 +492,7 @@ async def logout(
 @router.post("/refresh", response_model=RefreshResponse)
 async def refresh(
     response: Response,
-    refresh_token: str | None = Cookie(None),
+    refresh_token: str | None = Depends(get_refresh_token_cookie),
     op_store=Depends(get_operational_store),
 ) -> RefreshResponse:
     """Refresh access token using refresh token from cookie.

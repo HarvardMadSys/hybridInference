@@ -25,7 +25,7 @@ def _true_categories(result: Classification) -> set[str]:
 
 def test_frontend_only_change() -> None:
     result = classify(["apps/frontend/src/app/page.tsx"])
-    assert _true_categories(result) == {"frontend"}
+    assert _true_categories(result) == {"frontend", "tutorial_e2e"}
     assert result.docker_matrix() == ["frontend"]
 
 
@@ -33,7 +33,7 @@ def test_backend_sources_and_tests_map_to_backend() -> None:
     source = classify(["apps/backend/routing/routers.py"])
     tests = classify(["tests/unit/test_router.py"])
 
-    assert _true_categories(source) == {"backend", "python_tests"}
+    assert _true_categories(source) == {"backend", "python_tests", "tutorial_e2e"}
     assert source.docker_matrix() == ["backend"]
     assert _true_categories(tests) == {"backend", "python_tests"}
     assert tests.docker_matrix() == []
@@ -49,15 +49,20 @@ def test_backend_sources_and_tests_map_to_backend() -> None:
         "distributions/example/fixtures/fake-openai-provider/Dockerfile",
     ],
 )
-def test_runnable_example_changes_run_backend_tests_image_and_smoke(path: str) -> None:
+def test_runnable_example_changes_run_both_smoke_layers(path: str) -> None:
     result = classify([path])
-    assert _true_categories(result) == {"backend", "python_tests"}
+    assert _true_categories(result) == {"backend", "python_tests", "tutorial_e2e"}
     assert result.docker_matrix() == ["backend"]
 
 
 def test_oncall_source_also_triggers_backend_tests() -> None:
     result = classify(["apps/backend/serving/oncall/app.py"])
-    assert _true_categories(result) == {"oncall", "backend", "python_tests"}
+    assert _true_categories(result) == {
+        "oncall",
+        "backend",
+        "python_tests",
+        "tutorial_e2e",
+    }
     assert result.docker_matrix() == ["backend", "oncall"]
 
 
@@ -71,7 +76,12 @@ def test_shared_serving_change_triggers_oncall_and_backend() -> None:
     # Dockerfile.oncall COPYs the whole apps/backend/serving tree, so shared
     # serving code (not just serving/oncall) is baked into the on-call image.
     result = classify(["apps/backend/serving/config/settings.py"])
-    assert _true_categories(result) == {"oncall", "backend", "python_tests"}
+    assert _true_categories(result) == {
+        "oncall",
+        "backend",
+        "python_tests",
+        "tutorial_e2e",
+    }
     assert result.docker_matrix() == ["backend", "oncall"]
 
 
@@ -94,7 +104,7 @@ def test_alert_control_plane_change() -> None:
 def test_docker_shared_change() -> None:
     for path in (".dockerignore", "deploy/docker/docker-compose.yml"):
         result = classify([path])
-        assert _true_categories(result) == {"docker_shared", "python_tests"}
+        assert _true_categories(result) == {"docker_shared", "python_tests", "tutorial_e2e"}
         assert result.docker_matrix() == ["frontend", "backend", "oncall"]
 
 
@@ -108,7 +118,10 @@ def test_docker_shared_change() -> None:
 )
 def test_image_specific_dockerfile_change(path: str, category: str, matrix: list[str]) -> None:
     result = classify([path])
-    assert _true_categories(result) == {category, "python_tests"}
+    expected = {category, "python_tests"}
+    if category in {"frontend", "backend"}:
+        expected.add("tutorial_e2e")
+    assert _true_categories(result) == expected
     assert result.docker_matrix() == matrix
 
 
@@ -130,6 +143,13 @@ def test_full_triggers(path: str) -> None:
     assert result.python_tests is True
     assert "full" in _true_categories(result)
     assert result.docker_matrix() == ["frontend", "backend", "oncall"]
+
+
+def test_makefile_full_trigger_also_selects_tutorial_e2e() -> None:
+    result = classify(["Makefile"])
+
+    assert result.full is True
+    assert result.tutorial_e2e is True
 
 
 @pytest.mark.parametrize(
@@ -178,14 +198,72 @@ def test_router_tutorial_reruns_the_contract_it_documents() -> None:
     # still gating the Sphinx build like the rest of docs/developer/.
     result = classify(["docs/developer/router-tutorial.md"])
 
-    assert _true_categories(result) == {"backend", "docs", "python_tests"}
+    assert _true_categories(result) == {
+        "backend",
+        "docs",
+        "python_tests",
+        "tutorial_e2e",
+    }
     assert result.docker_matrix() == ["backend"]
     assert result.full is False
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/frontend/src/app/signup/page.tsx",
+        "apps/frontend/src/app/dashboard/playground/page.tsx",
+        "apps/frontend/src/components/features/admin/AdminTabNav.tsx",
+        "apps/frontend/src/components/ui/InputField.tsx",
+        "apps/frontend/src/lib/api/auth.ts",
+        "apps/frontend/src/lib/utils/errors.ts",
+    ],
+)
+def test_tutorial_frontend_surfaces_select_e2e(path: str) -> None:
+    result = classify([path])
+
+    assert _true_categories(result) == {"frontend", "tutorial_e2e"}
+    assert result.docker_matrix() == ["frontend"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/backend/serving/storage/database.py",
+        "apps/backend/serving/utils/email_blocklist.py",
+        "apps/backend/serving/utils/token_utils.py",
+        "apps/backend/serving/http.py",
+        "apps/backend/serving/servers/routers/auth_routes.py",
+        "apps/backend/serving/servers/routers/completions_cost.py",
+        "apps/backend/serving/servers/routers/routing_info.py",
+        "apps/backend/serving/servers/routers/admin/stats.py",
+        "apps/backend/serving/servers/routers/playground.py",
+        "apps/backend/serving/servers/routers/site_config.py",
+        "apps/backend/serving/observability/tracked_tasks.py",
+        "apps/backend/serving/admin/provider_key_probe.py",
+        "apps/backend/serving/analytics/geo_demand.py",
+    ],
+)
+def test_tutorial_backend_surfaces_select_e2e(path: str) -> None:
+    result = classify([path])
+
+    assert result.backend is True
+    assert result.python_tests is True
+    assert result.tutorial_e2e is True
+    assert result.docker_matrix()[0] == "backend"
+
+
+def test_whole_application_trees_select_tutorial_e2e() -> None:
+    frontend = classify(["apps/frontend/src/app/page.tsx"])
+    oncall = classify(["apps/backend/serving/oncall/app.py"])
+
+    assert frontend.tutorial_e2e is True
+    assert oncall.tutorial_e2e is True
+
+
 def test_docs_build_does_not_suppress_application_categories() -> None:
     result = classify(["docs/developer/routing.md", "apps/frontend/src/app/page.tsx"])
-    assert _true_categories(result) == {"docs", "frontend"}
+    assert _true_categories(result) == {"docs", "frontend", "tutorial_e2e"}
     assert result.docker_matrix() == ["frontend"]
 
 
@@ -230,7 +308,10 @@ def test_mixed_images_use_stable_matrix_order() -> None:
 
 
 def test_path_normalization_strips_leading_dot_slash() -> None:
-    assert _true_categories(classify(["./apps/frontend/src/x.ts"])) == {"frontend"}
+    assert _true_categories(classify(["./apps/frontend/src/x.ts"])) == {
+        "frontend",
+        "tutorial_e2e",
+    }
 
 
 def test_cli_writes_outputs_and_json(tmp_path: Path) -> None:
@@ -303,7 +384,7 @@ def test_compute_changed_files_push_range(tmp_path: Path) -> None:
 
     files = compute_changed_files(tmp_path, "push", None, None, before, head)
     assert files == ["apps/frontend/page.tsx"]
-    assert _true_categories(classify(files)) == {"frontend"}
+    assert _true_categories(classify(files)) == {"frontend", "tutorial_e2e"}
 
 
 def test_compute_changed_files_zero_base_returns_none(tmp_path: Path) -> None:

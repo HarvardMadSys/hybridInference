@@ -97,8 +97,20 @@ def test_pr_non_docs_change_rejects_unexpected_docs_build() -> None:
 def test_pr_backend_source_requires_backend_tests_and_affected_docker() -> None:
     verify_gate(
         "pull_request",
-        _classification(backend=True, python_tests=True, matrix=("backend",)),
-        _results(**{"backend-quality": "success", "test": "success", "docker-build": "success"}),
+        _classification(
+            backend=True,
+            python_tests=True,
+            tutorial_e2e=True,
+            matrix=("backend",),
+        ),
+        _results(
+            **{
+                "backend-quality": "success",
+                "test": "success",
+                "docker-build": "success",
+                "tutorial-e2e": "success",
+            }
+        ),
     )
 
 
@@ -133,9 +145,53 @@ def test_pr_status_monitor_runs_python_contract_tests_without_app_images() -> No
 def test_pr_frontend_dockerfile_runs_frontend_python_tests_and_image() -> None:
     verify_gate(
         "pull_request",
-        _classification(frontend=True, python_tests=True, matrix=("frontend",)),
-        _results(**{"frontend-quality": "success", "test": "success", "docker-build": "success"}),
+        _classification(
+            frontend=True,
+            python_tests=True,
+            tutorial_e2e=True,
+            matrix=("frontend",),
+        ),
+        _results(
+            **{
+                "frontend-quality": "success",
+                "test": "success",
+                "docker-build": "success",
+                "tutorial-e2e": "success",
+            }
+        ),
     )
+
+
+def test_pr_tutorial_change_requires_tutorial_e2e() -> None:
+    verify_gate(
+        "pull_request",
+        _classification(tutorial_e2e=True),
+        _results(**{"tutorial-e2e": "success"}),
+    )
+
+
+def test_pr_tutorial_change_rejects_skipped_e2e() -> None:
+    with pytest.raises(ValueError, match="tutorial-e2e"):
+        verify_gate(
+            "pull_request",
+            _classification(tutorial_e2e=True),
+            _results(),
+        )
+
+
+def test_pr_unrelated_change_rejects_unexpected_tutorial_e2e() -> None:
+    with pytest.raises(ValueError, match="tutorial-e2e"):
+        verify_gate(
+            "pull_request",
+            _classification(frontend=True, matrix=("frontend",)),
+            _results(
+                **{
+                    "frontend-quality": "success",
+                    "docker-build": "success",
+                    "tutorial-e2e": "success",
+                }
+            ),
+        )
 
 
 def test_pr_docker_shared_runs_python_tests_and_all_images() -> None:
@@ -144,9 +200,13 @@ def test_pr_docker_shared_runs_python_tests_and_all_images() -> None:
         _classification(
             docker_shared=True,
             python_tests=True,
+            tutorial_e2e=True,
             matrix=("frontend", "backend", "oncall"),
         ),
-        _results(test="success", **{"docker-build": "success"}),
+        _results(
+            test="success",
+            **{"docker-build": "success", "tutorial-e2e": "success"},
+        ),
     )
 
 
@@ -162,6 +222,7 @@ def test_pr_full_requires_all_application_jobs_and_images() -> None:
                 "alert-control-plane-check": "success",
                 "test": "success",
                 "docker-build": "success",
+                "tutorial-e2e": "success",
             }
         ),
     )
@@ -183,6 +244,23 @@ def test_push_requires_all_app_jobs_and_skips_docker() -> None:
     )
 
 
+def test_push_runs_tutorial_e2e_only_when_classified() -> None:
+    verify_gate(
+        "push",
+        _classification(frontend=True, tutorial_e2e=True, matrix=("frontend",)),
+        _results(
+            **{
+                "backend-quality": "success",
+                "frontend-quality": "success",
+                "docs-build": "success",
+                "alert-control-plane-check": "success",
+                "test": "success",
+                "tutorial-e2e": "success",
+            }
+        ),
+    )
+
+
 @pytest.mark.parametrize("event_name", ["schedule", "workflow_dispatch"])
 def test_schedule_and_manual_require_all_app_jobs_and_docker(event_name: str) -> None:
     verify_gate(
@@ -196,6 +274,7 @@ def test_schedule_and_manual_require_all_app_jobs_and_docker(event_name: str) ->
                 "alert-control-plane-check": "success",
                 "test": "success",
                 "docker-build": "success",
+                "tutorial-e2e": "success",
             }
         ),
     )

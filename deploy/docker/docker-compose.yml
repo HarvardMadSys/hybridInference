@@ -161,11 +161,11 @@ services:
         # in through an env file (distributions/*/deploy/frontend.env, fed to
         # `docker compose --env-file` by ops/deploy/*.sh); the server's .env
         # still overrides any of them.
-        # Explicitly local rather than empty: the console resolves an empty
-        # value through `||`, and with DEPLOY_TARGET defaulting to production
-        # that lands on the upstream author's own gateway. Where requests go
-        # is the one value that must not depend on a fallback elsewhere.
+        # Explicitly local when omitted. An explicitly supplied empty string is
+        # distinct: the console preserves it as a same-origin API base, which
+        # distributions can combine with the Next.js rewrites below.
         NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE-http://localhost:8080}
+        BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL-http://backend:8080}
         NEXT_PUBLIC_DEPLOY_TARGET: ${NEXT_PUBLIC_DEPLOY_TARGET:-production}
         NEXT_PUBLIC_BUILD_SHA: ${BUILD_SHA:-}
         NEXT_PUBLIC_BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-}
@@ -217,6 +217,10 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3001"
+      # The server-side pgAdmin proxy must strip the same session cookie the
+      # backend issues. Production keeps the established default; local
+      # side-by-side deployments can choose a collision-free name.
+      REFRESH_TOKEN_COOKIE_NAME: ${REFRESH_TOKEN_COOKIE_NAME:-refresh_token}
       # Present here as well as in `build.args` above, and the build args are
       # the ones that matter: Next bakes `rewrites()` into
       # `.next/routes-manifest.json`. These exist so `docker inspect` on a

@@ -7,6 +7,8 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,9 @@ EXAMPLE = REPO / "distributions" / "example"
 FAKE_PROVIDER = EXAMPLE / "fixtures" / "fake-openai-provider"
 BASE_COMPOSE = REPO / "deploy" / "docker" / "docker-compose.yml"
 EXAMPLE_COMPOSE = EXAMPLE / "deploy" / "docker-compose.yml"
+DEMO_COMPOSE = EXAMPLE / "deploy" / "docker-compose.demo.yml"
+DEMO_MANIFEST = EXAMPLE / "distribution.demo.yaml"
+FULL_SMOKE = EXAMPLE / "full_smoke.py"
 ACTIVE_CI = REPO / ".github" / "workflows" / "ci.yml"
 TUTORIAL = REPO / "docs" / "developer" / "router-tutorial.md"
 
@@ -29,6 +34,7 @@ def _load_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -52,6 +58,7 @@ def test_example_manifest_and_config_are_self_contained() -> None:
     config = load_distribution_config(EXAMPLE / "distribution.yaml")
     assert config.distribution.id == "example"
     assert config.site.public_base_url == "http://localhost:18080"
+    assert config.features.public_signup is False
     assert Path(config.paths.models) == (EXAMPLE / "config" / "models.yaml").resolve()
     assert Path(config.paths.routing) == (EXAMPLE / "config" / "routing.yaml").resolve()
 
@@ -64,6 +71,18 @@ def test_example_manifest_and_config_are_self_contained() -> None:
     assert route["base_url"] == "${EXAMPLE_UPSTREAM_BASE_URL}"
     assert route["api_key"] == "${EXAMPLE_UPSTREAM_API_KEY}"
     assert route["provider_model_id"] == "${EXAMPLE_UPSTREAM_MODEL}"
+
+
+def test_demo_manifest_enables_signup_without_changing_stage_one() -> None:
+    stage_one = load_distribution_config(EXAMPLE / "distribution.yaml")
+    demo = load_distribution_config(DEMO_MANIFEST)
+
+    assert stage_one.features.public_signup is False
+    assert demo.distribution.id == "example"
+    assert demo.site.public_base_url == "http://localhost:13001"
+    assert demo.features.public_signup is True
+    assert Path(demo.paths.models) == (EXAMPLE / "config" / "models.yaml").resolve()
+    assert Path(demo.paths.routing) == (EXAMPLE / "config" / "routing.yaml").resolve()
 
 
 def test_manifest_only_reference_has_no_dangling_config_paths() -> None:
@@ -131,6 +150,140 @@ def test_example_compose_resolves_public_paths_and_forwards_upstream_env() -> No
     assert environment["USER_AUTH_ENABLED"] == "false"
 
 
+def test_demo_compose_is_an_explicit_full_local_third_layer() -> None:
+    demo = yaml.safe_load(DEMO_COMPOSE.read_text())
+    backend = demo["services"]["backend"]["environment"]
+
+    assert backend["DB_ENABLED"] == "true"
+    assert backend["DB_STORE_FULL_CONTENT"] == "false"
+    assert backend["USER_AUTH_ENABLED"] == "true"
+    assert backend["DISTRIBUTION_CONFIG_PATH"] == (
+        "/app/distributions/example/distribution.demo.yaml"
+    )
+    assert backend["SIGNUP_ENABLED"] == "true"
+    assert backend["SIGNUP_REQUIRE_EMAIL_VERIFICATION"] == "false"
+    assert backend["ADMIN_EMAILS"] == "admin@local.dev"
+    assert backend["REFRESH_TOKEN_COOKIE_NAME"] == "hybridinference_example_refresh"
+    assert backend["JWT_SECRET_KEY"].startswith("${EXAMPLE_DEMO_JWT_SECRET:-LOCAL-ONLY-")
+    assert backend["API_KEY_SECRET"].startswith("${EXAMPLE_DEMO_API_KEY_SECRET:-LOCAL-ONLY-")
+    assert backend["SITE_PUBLIC_BASE_URL"] == "http://localhost:${FRONTEND_PORT:-13001}"
+
+    frontend = demo["services"]["frontend"]
+    assert frontend["container_name"] == (
+        "${EXAMPLE_FRONTEND_CONTAINER_NAME:-hybridinference-example-frontend}"
+    )
+    assert frontend["build"]["args"]["NEXT_PUBLIC_API_BASE"] == ""
+    assert frontend["build"]["args"]["BACKEND_INTERNAL_URL"] == "http://backend:8080"
+    assert demo["services"]["postgres"]["container_name"] == (
+        "${EXAMPLE_POSTGRES_CONTAINER_NAME:-hybridinference-example-postgres}"
+    )
+    assert demo["services"]["postgres"]["volumes"] == [
+        "example_postgres_data:/var/lib/postgresql/data"
+    ]
+    assert demo["volumes"] == {"example_postgres_data": {"driver": "local"}}
+
+
+def test_three_layer_demo_compose_is_isolated_and_shell_overridable() -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("Docker Compose is not installed")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "BACKEND_PORT": "28080",
+            "FRONTEND_PORT": "23001",
+            "DB_PORT": "25432",
+            "EXAMPLE_BACKEND_CONTAINER_NAME": "demo-backend-test",
+            "EXAMPLE_PROVIDER_CONTAINER_NAME": "demo-provider-test",
+            "EXAMPLE_FRONTEND_CONTAINER_NAME": "demo-frontend-test",
+            "EXAMPLE_POSTGRES_CONTAINER_NAME": "demo-postgres-test",
+            "EXAMPLE_UPSTREAM_BASE_URL": "http://host.docker.internal:28001/v1",
+            "EXAMPLE_UPSTREAM_API_KEY": "shell-local-key",
+            "EXAMPLE_UPSTREAM_MODEL": "shell-local-model",
+        }
+    )
+    proc = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(BASE_COMPOSE),
+            "-f",
+            str(EXAMPLE_COMPOSE),
+            "-f",
+            str(DEMO_COMPOSE),
+            "--env-file",
+            str(EXAMPLE / "deploy" / "backend.env"),
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0 and "compose is not a docker command" in proc.stderr.lower():
+        pytest.skip("Docker Compose is not installed")
+    assert proc.returncode == 0, proc.stderr
+    rendered = json.loads(proc.stdout)
+
+    assert rendered["name"] == "hybridinference-example"
+    services = rendered["services"]
+    assert services["backend"]["container_name"] == "demo-backend-test"
+    assert services["example-provider"]["container_name"] == "demo-provider-test"
+    assert services["frontend"]["container_name"] == "demo-frontend-test"
+    assert services["postgres"]["container_name"] == "demo-postgres-test"
+
+    for service, published, target in (
+        ("backend", "28080", 8080),
+        ("frontend", "23001", 3001),
+        ("postgres", "25432", 5432),
+    ):
+        port = services[service]["ports"][0]
+        assert port["host_ip"] == "127.0.0.1"
+        assert port["published"] == published
+        assert port["target"] == target
+
+    backend_env = services["backend"]["environment"]
+    assert backend_env["DB_ENABLED"] == "true"
+    assert backend_env["DB_STORE_FULL_CONTENT"] == "false"
+    assert backend_env["USER_AUTH_ENABLED"] == "true"
+    assert backend_env["ADMIN_EMAILS"] == "admin@local.dev"
+    assert backend_env["REFRESH_TOKEN_COOKIE_NAME"] == "hybridinference_example_refresh"
+    assert backend_env["SITE_PUBLIC_BASE_URL"] == "http://localhost:23001"
+    assert backend_env["FRONTEND_URL"] == "http://localhost:23001"
+    assert backend_env["EXAMPLE_UPSTREAM_BASE_URL"] == ("http://host.docker.internal:28001/v1")
+    assert backend_env["EXAMPLE_UPSTREAM_API_KEY"] == "shell-local-key"
+    assert backend_env["EXAMPLE_UPSTREAM_MODEL"] == "shell-local-model"
+    assert backend_env["JWT_SECRET_KEY"].startswith("LOCAL-ONLY-")
+    assert backend_env["API_KEY_SECRET"].startswith("LOCAL-ONLY-")
+    assert services["frontend"]["build"]["args"]["NEXT_PUBLIC_API_BASE"] == ""
+    assert services["frontend"]["build"]["args"]["BACKEND_INTERNAL_URL"] == ("http://backend:8080")
+    assert services["frontend"]["environment"]["REFRESH_TOKEN_COOKIE_NAME"] == (
+        "hybridinference_example_refresh"
+    )
+
+    backend_mounts = {mount["target"]: mount for mount in services["backend"]["volumes"]}
+    assert backend_mounts["/app/var/data"]["type"] == "tmpfs"
+    postgres_mounts = services["postgres"]["volumes"]
+    assert postgres_mounts == [
+        {
+            "type": "volume",
+            "source": "example_postgres_data",
+            "target": "/var/lib/postgresql/data",
+            "volume": {},
+        }
+    ]
+    assert rendered["volumes"] == {
+        "example_postgres_data": {
+            "name": "hybridinference-example_example_postgres_data",
+            "driver": "local",
+        }
+    }
+
+
 def test_shell_can_override_the_example_upstream_in_compose() -> None:
     if shutil.which("docker") is None:
         pytest.skip("Docker Compose is not installed")
@@ -185,7 +338,11 @@ def test_example_checked_in_port_defaults_match_the_smoke_url(
         monkeypatch.delenv(name, raising=False)
 
     backend_env_file = EXAMPLE / "deploy" / "backend.env"
-    assert "BACKEND_PORT=18080" in backend_env_file.read_text().splitlines()
+    backend_env_lines = backend_env_file.read_text().splitlines()
+    assert "BACKEND_PORT=18080" in backend_env_lines
+    assert "FRONTEND_HOST=127.0.0.1" in backend_env_lines
+    assert "FRONTEND_PORT=13001" in backend_env_lines
+    assert "DB_PORT=15432" in backend_env_lines
 
     smoke = _make_dry_run("smoke", "DISTRIBUTION=example")
     assert '--base-url "http://localhost:18080"' in smoke
@@ -353,9 +510,15 @@ def test_example_make_contract_is_backend_only_and_race_free(tmp_path: Path) -> 
 
     output = _make_dry_run("up", "DISTRIBUTION=example", cwd=sandbox)
     commands = [line for line in output.splitlines() if line.startswith("docker compose")]
-    assert len(commands) == 2
-    assert commands[0].endswith("up -d --wait example-provider")
-    assert commands[1].endswith("up -d --no-deps backend")
+    compose = (
+        "docker compose -f deploy/docker/docker-compose.yml "
+        "-f distributions/example/deploy/docker-compose.yml "
+        "--env-file distributions/example/deploy/backend.env  "
+    )
+    assert commands == [
+        f"{compose} up -d --wait example-provider",
+        f"{compose} up -d --no-deps backend",
+    ]
     assert "--env-file .env" not in output
     assert "docker volume" not in output
 
@@ -388,6 +551,605 @@ def test_example_make_contract_is_backend_only_and_race_free(tmp_path: Path) -> 
         assert "distributions/example/deploy/docker-compose.yml" in target_output
 
 
+def test_distribution_path_cannot_be_detached_from_the_named_distribution(
+    tmp_path: Path,
+) -> None:
+    """A command-line path override must not cross the example/deploy boundary."""
+    sandbox = tmp_path / "repo"
+    for name in ("example", "deployment"):
+        deploy = sandbox / "distributions" / name / "deploy"
+        deploy.mkdir(parents=True)
+        (deploy / "backend.env").write_text(f"SITE_NAME={name}\n")
+        (deploy / "docker-compose.yml").write_text("services: {}\n")
+    (sandbox / "distributions" / "example" / "EXAMPLE_OVERLAY").write_text("teaching artifact\n")
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+
+    example = _make_dry_run(
+        "up",
+        "DISTRIBUTION=example",
+        "DISTRIBUTION_PATH=distributions/deployment",
+        cwd=sandbox,
+    )
+    assert "distributions/example/deploy/backend.env" in example
+    assert "distributions/example/deploy/docker-compose.yml" in example
+    assert "distributions/deployment" not in example
+    assert "docker volume" not in example
+
+    deployment = _make_dry_run(
+        "up",
+        "DISTRIBUTION=deployment",
+        "DISTRIBUTION_PATH=distributions/example",
+        cwd=sandbox,
+    )
+    assert "distributions/deployment/deploy/backend.env" in deployment
+    assert "distributions/deployment/deploy/docker-compose.yml" in deployment
+    assert "distributions/example" not in deployment
+    assert "docker volume" in deployment
+
+    neutral = _make_dry_run(
+        "up",
+        "DISTRIBUTION=",
+        "DISTRIBUTION_PATH=distributions/example",
+        "_IS_EXAMPLE=yes",
+        cwd=sandbox,
+    )
+    assert "distributions/example" not in neutral
+    assert "docker volume" in neutral
+
+
+def test_demo_make_contract_uses_the_third_layer_without_down_or_forced_build(
+    tmp_path: Path,
+) -> None:
+    sandbox = tmp_path / "repo"
+    deploy = sandbox / "distributions" / "example" / "deploy"
+    deploy.mkdir(parents=True)
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    shutil.copy2(EXAMPLE / "deploy" / "backend.env", deploy / "backend.env")
+    shutil.copy2(EXAMPLE_COMPOSE, deploy / "docker-compose.yml")
+    shutil.copy2(DEMO_COMPOSE, deploy / "docker-compose.demo.yml")
+    shutil.copy2(
+        EXAMPLE / "EXAMPLE_OVERLAY",
+        sandbox / "distributions" / "example" / "EXAMPLE_OVERLAY",
+    )
+    shutil.copy2(FULL_SMOKE, sandbox / "distributions" / "example" / "full_smoke.py")
+
+    output = _make_dry_run("demo", "DISTRIBUTION=example", cwd=sandbox)
+    commands = [
+        line
+        for line in output.splitlines()
+        if line.startswith("env COMPOSE_PROFILES= docker compose")
+    ]
+    assert len(commands) == 3
+    assert all("-f distributions/example/deploy/docker-compose.demo.yml" in cmd for cmd in commands)
+    assert commands[0].endswith("up -d --wait example-provider postgres")
+    assert commands[1].endswith("up -d --no-deps --force-recreate --wait backend")
+    assert commands[2].endswith("up -d --no-deps --wait frontend")
+    assert " down" not in output
+    assert "--build" not in output
+    assert (
+        "example-provider"
+        not in (sandbox / "Makefile").read_text().split("demo:", 1)[1].split("demo-smoke:", 1)[0]
+    )
+
+    smoke = _make_dry_run("demo-smoke", "DISTRIBUTION=example", cwd=sandbox)
+    assert 'full_smoke.py" --base-url "http://localhost:13001"' in smoke
+    assert "--recreate-command env COMPOSE_PROFILES= docker compose" in smoke
+    assert "-f distributions/example/deploy/docker-compose.demo.yml" in smoke
+    assert smoke.rstrip().endswith("up -d --no-deps --force-recreate --wait backend")
+    assert "demo-reset" not in smoke
+    assert " down" not in smoke
+
+    overridden = _make_dry_run(
+        "demo-smoke",
+        "DISTRIBUTION=example",
+        "FRONTEND_PORT=23001",
+        cwd=sandbox,
+    )
+    assert '--base-url "http://localhost:23001"' in overridden
+
+    down = _make_dry_run("demo-down", "DISTRIBUTION=example", cwd=sandbox)
+    assert down.rstrip().endswith("down")
+    assert "--volumes" not in down
+
+    reset = _make_dry_run("demo-reset", "DISTRIBUTION=example", cwd=sandbox)
+    assert reset.rstrip().endswith("down --volumes --remove-orphans")
+
+    state_file = "/tmp/example-reset-state.json"
+    stateful_smoke = _make_dry_run(
+        "demo-smoke",
+        "DISTRIBUTION=example",
+        f"DEMO_SMOKE_STATE_FILE={state_file}",
+        cwd=sandbox,
+    )
+    assert f'--write-reset-state "{state_file}"' in stateful_smoke
+
+    resumed_smoke = _make_dry_run(
+        "demo-smoke",
+        "DISTRIBUTION=example",
+        f"DEMO_SMOKE_EXPECT_STATE_FILE={state_file}",
+        cwd=sandbox,
+    )
+    assert f'--expect-existing-state "{state_file}"' in resumed_smoke
+
+
+def test_demo_lifecycle_is_declared_by_artifacts_not_a_known_distribution_name(
+    tmp_path: Path,
+) -> None:
+    sandbox = tmp_path / "repo"
+    deploy = sandbox / "distributions" / "future-project" / "deploy"
+    deploy.mkdir(parents=True)
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    shutil.copy2(EXAMPLE / "deploy" / "backend.env", deploy / "backend.env")
+    shutil.copy2(EXAMPLE_COMPOSE, deploy / "docker-compose.yml")
+    shutil.copy2(DEMO_COMPOSE, deploy / "docker-compose.demo.yml")
+
+    output = _make_dry_run("demo", "DISTRIBUTION=future-project", cwd=sandbox)
+
+    assert "docker-compose.demo.yml" in output
+    assert "full local demo requires DISTRIBUTION=example" not in output
+
+
+def test_stage_one_smoke_enforces_its_site_config_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _load_module("_runnable_example_stage_one_site_config", EXAMPLE / "smoke.py")
+    base_url = "http://localhost:28080"
+    site = {
+        "distribution": {"id": "example"},
+        "features": {"public_signup": False},
+        "site": {"public_base_url": base_url},
+    }
+    responses = {
+        "/health": {"status": "healthy"},
+        "/site-config": site,
+        "/v1/models": {"data": [{"id": smoke.EXPECTED_MODEL}]},
+        "/v1/chat/completions": {"choices": [{"message": {"content": smoke.EXPECTED_CONTENT}}]},
+    }
+    monkeypatch.setattr(
+        smoke,
+        "_request_json",
+        lambda request_base_url, path, payload=None: responses[path],
+    )
+
+    smoke._check(base_url)
+
+    site["features"]["public_signup"] = True
+    with pytest.raises(RuntimeError, match="unexpectedly advertises public signup"):
+        smoke._check(base_url)
+
+    site["features"]["public_signup"] = False
+    site["site"]["public_base_url"] = "http://localhost:18080"
+    with pytest.raises(RuntimeError, match="advertises the wrong public URL"):
+        smoke._check(base_url)
+
+
+def test_full_smoke_enforces_its_site_config_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_site_config", FULL_SMOKE)
+    base_url = "http://localhost:23001"
+    site = {
+        "distribution": {"id": "example"},
+        "features": {"public_signup": True},
+        "site": {"public_base_url": base_url},
+    }
+    responses = {
+        "/health": {
+            "status": "healthy",
+            "database_configured": True,
+            "database_connected": True,
+        },
+        "/site-config": site,
+        "/v1/models": {"data": [{"id": full_smoke.EXPECTED_MODEL}]},
+    }
+    monkeypatch.setattr(
+        full_smoke,
+        "_request_json",
+        lambda request_base_url, path, **kwargs: (200, responses[path]),
+    )
+    monkeypatch.setattr(full_smoke, "_request_page", lambda request_base_url, path: None)
+
+    full_smoke._check_public_surface(base_url)
+
+    site["features"]["public_signup"] = False
+    with pytest.raises(full_smoke.SmokeError, match="does not expose signup"):
+        full_smoke._check_public_surface(base_url)
+
+    site["features"]["public_signup"] = True
+    site["site"]["public_base_url"] = "http://localhost:13001"
+    with pytest.raises(full_smoke.SmokeError, match="publishes the wrong frontend URL"):
+        full_smoke._check_public_surface(base_url)
+
+
+def test_full_smoke_accepts_the_admin_stats_hourly_row_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_admin_stats", FULL_SMOKE)
+    responses = {
+        "/admin/stats": {"period_hours": 24, "filters": {}, "stats": []},
+        "/internal/playground/models": {"models": [{"id": full_smoke.EXPECTED_MODEL}]},
+    }
+    monkeypatch.setattr(
+        full_smoke,
+        "_request_json",
+        lambda base_url, path, **kwargs: (200, responses[path]),
+    )
+
+    full_smoke._check_admin_surfaces("http://localhost:13001", "jwt")
+
+    responses["/admin/stats"]["stats"] = {}
+    with pytest.raises(full_smoke.SmokeError, match="stats API is unavailable"):
+        full_smoke._check_admin_surfaces("http://localhost:13001", "jwt")
+
+
+def test_full_smoke_logs_in_before_it_bootstraps_the_local_admin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_login", FULL_SMOKE)
+    calls: list[tuple[str, str]] = []
+    responses = iter(
+        [
+            (401, {}),
+            (201, {}),
+            (200, {"access_token": "jwt", "user": {"id": "user"}}),
+        ]
+    )
+
+    def fake_request(base_url: str, path: str, **kwargs):
+        calls.append((kwargs.get("method", "GET"), path))
+        return next(responses)
+
+    monkeypatch.setattr(full_smoke, "_request_json", fake_request)
+    _, existed = full_smoke._login_or_signup(
+        "http://localhost:13001",
+        "not-printed",
+        expect_existing=False,
+        cookie_jar=full_smoke.CookieJar(),
+    )
+
+    assert existed is False
+    assert calls == [
+        ("POST", "/auth/login"),
+        ("POST", "/auth/signup"),
+        ("POST", "/auth/login"),
+    ]
+
+    calls.clear()
+    monkeypatch.setattr(
+        full_smoke,
+        "_request_json",
+        lambda base_url, path, **kwargs: (
+            calls.append((kwargs.get("method", "GET"), path))
+            or (200, {"access_token": "jwt", "user": {"id": "user"}})
+        ),
+    )
+    _, existed = full_smoke._login_or_signup(
+        "http://localhost:13001",
+        "not-printed",
+        expect_existing=False,
+        cookie_jar=full_smoke.CookieJar(),
+    )
+
+    assert existed is True
+    assert calls == [("POST", "/auth/login")]
+
+
+def test_full_smoke_proves_an_unconfigured_email_is_not_admin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_smoke = _load_module("_runnable_example_non_admin", FULL_SMOKE)
+    calls: list[tuple[str, str]] = []
+    responses = iter(
+        [
+            (401, {}),
+            (201, {}),
+            (
+                200,
+                {
+                    "access_token": "viewer-jwt",
+                    "user": {
+                        "email": full_smoke.NON_ADMIN_EMAIL,
+                        "role": "free",
+                        "is_admin": False,
+                    },
+                },
+            ),
+            (403, {"detail": "Admin access required"}),
+        ]
+    )
+
+    def fake_request(base_url: str, path: str, **kwargs):
+        calls.append((kwargs.get("method", "GET"), path))
+        return next(responses)
+
+    monkeypatch.setattr(full_smoke, "_request_json", fake_request)
+    monkeypatch.setattr(full_smoke, "_assert_example_refresh_cookie", lambda *args: None)
+
+    full_smoke._check_non_admin_account(
+        "http://localhost:13001",
+        expect_existing=False,
+    )
+
+    assert calls == [
+        ("POST", "/auth/login"),
+        ("POST", "/auth/signup"),
+        ("POST", "/auth/login"),
+        ("GET", "/admin/stats"),
+    ]
+
+
+def test_full_smoke_reuses_the_exact_key_after_backend_recreate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_persistence", FULL_SMOKE)
+    state = full_smoke.DemoState(
+        access_token="original-jwt",
+        api_key="original-api-key",
+        key_prefix="original-pre",
+        user_id="original-user",
+        completion_id="chatcmpl-original",
+        request_id="original-request",
+        refresh_cookies=full_smoke.CookieJar(),
+    )
+    used_keys: list[str] = []
+
+    monkeypatch.setattr(full_smoke, "_wait_for_public_surface", lambda *args: None)
+
+    def fake_request(base_url: str, path: str, **kwargs):
+        if path == "/auth/refresh":
+            return 200, {"access_token": "refreshed-jwt"}
+        return 200, {
+            "keys": [
+                {
+                    "status": "active",
+                    "api_key": state.api_key,
+                    "key_prefix": state.key_prefix,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(full_smoke, "_request_json", fake_request)
+    monkeypatch.setattr(full_smoke, "_assert_example_refresh_cookie", lambda *args: None)
+    monkeypatch.setattr(full_smoke, "_login", lambda *args: (200, {}))
+    monkeypatch.setattr(
+        full_smoke,
+        "_validate_admin_login",
+        lambda login: ("new-jwt", state.user_id),
+    )
+    monkeypatch.setattr(full_smoke, "_check_admin_surfaces", lambda *args: None)
+    monkeypatch.setattr(full_smoke, "_check_current_admin", lambda *args, **kwargs: state.user_id)
+    monkeypatch.setattr(full_smoke, "_wait_for_history", lambda *args, **kwargs: state.request_id)
+    monkeypatch.setattr(full_smoke, "_completion", lambda base_url, key: used_keys.append(key))
+
+    full_smoke._verify_after_recreate(
+        "http://localhost:13001",
+        "not-printed",
+        state,
+        time.monotonic() + 10,
+    )
+
+    assert used_keys == [state.api_key]
+
+
+def test_full_smoke_reset_state_is_private_and_old_credentials_are_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_reset", FULL_SMOKE)
+    state = full_smoke.DemoState(
+        access_token="original-jwt",
+        api_key="original-api-key",
+        key_prefix="original-pre",
+        user_id="original-user",
+        completion_id="chatcmpl-original",
+        request_id="original-request",
+        refresh_cookies=full_smoke.CookieJar(),
+    )
+    state_file = tmp_path / "reset-state.json"
+    full_smoke._write_reset_state(str(state_file), "LocalDemo1", state)
+
+    assert state_file.stat().st_mode & 0o777 == 0o600
+    assert state_file.read_text()
+
+    calls: list[tuple[str, str | None, tuple[int, ...]]] = []
+    monkeypatch.setattr(full_smoke, "_wait_for_public_surface", lambda *args: None)
+    monkeypatch.setattr(full_smoke, "_login", lambda *args: (401, {}))
+
+    def rejected_request(base_url: str, path: str, **kwargs):
+        calls.append((path, kwargs.get("bearer"), kwargs.get("expected_statuses", (200,))))
+        return 401, {}
+
+    monkeypatch.setattr(full_smoke, "_request_json", rejected_request)
+    full_smoke._verify_after_reset(
+        "http://localhost:13001",
+        str(state_file),
+        time.monotonic() + 10,
+    )
+
+    assert calls == [
+        ("/v1/chat/completions", state.api_key, (401,)),
+    ]
+    assert not state_file.exists()
+
+
+def test_full_smoke_reset_state_cannot_be_written_inside_the_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_reset_path", FULL_SMOKE)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(full_smoke.SmokeError, match="outside the checkout"):
+        full_smoke._state_path(str(REPO / "reset-state.json"))
+
+
+def test_full_smoke_reset_state_is_exclusive_and_rejects_symlinks_and_broad_modes(
+    tmp_path: Path,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_reset_security", FULL_SMOKE)
+    state = full_smoke.DemoState(
+        access_token="jwt",
+        api_key="api-key",
+        key_prefix="prefix",
+        user_id="user",
+        completion_id="completion",
+        request_id="request",
+        refresh_cookies=full_smoke.CookieJar(),
+    )
+    state_file = tmp_path / "state.json"
+    full_smoke._write_reset_state(str(state_file), "LocalDemo1", state)
+
+    with pytest.raises(full_smoke.SmokeError, match="could not create"):
+        full_smoke._write_reset_state(str(state_file), "LocalDemo1", state)
+
+    state_file.chmod(0o644)
+    with pytest.raises(full_smoke.SmokeError, match="private regular file"):
+        full_smoke._read_reset_state(str(state_file))
+
+    dangling_target = tmp_path / "dangling-target.json"
+    symlink = tmp_path / "state-link.json"
+    symlink.symlink_to(dangling_target)
+    with pytest.raises(full_smoke.SmokeError, match="could not create"):
+        full_smoke._write_reset_state(str(symlink), "LocalDemo1", state)
+    assert not dangling_target.exists()
+
+    private_target = tmp_path / "private-target.json"
+    full_smoke._write_reset_state(str(private_target), "LocalDemo1", state)
+    read_link = tmp_path / "read-link.json"
+    read_link.symlink_to(private_target)
+    with pytest.raises(full_smoke.SmokeError, match="could not open"):
+        full_smoke._read_reset_state(str(read_link))
+    assert private_target.exists()
+
+
+def test_full_smoke_reset_state_is_removed_when_reset_verification_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_reset_cleanup", FULL_SMOKE)
+    state = full_smoke.DemoState(
+        access_token="jwt",
+        api_key="api-key",
+        key_prefix="prefix",
+        user_id="user",
+        completion_id="completion",
+        request_id="request",
+        refresh_cookies=full_smoke.CookieJar(),
+    )
+    state_file = tmp_path / "state.json"
+    full_smoke._write_reset_state(str(state_file), "LocalDemo1", state)
+    monkeypatch.setattr(full_smoke, "_wait_for_public_surface", lambda *args: None)
+    monkeypatch.setattr(full_smoke, "_login", lambda *args: (200, {}))
+
+    with pytest.raises(full_smoke.SmokeError, match="account survived"):
+        full_smoke._verify_after_reset(
+            "http://localhost:13001",
+            str(state_file),
+            time.monotonic() + 10,
+        )
+
+    assert not state_file.exists()
+
+
+def test_full_smoke_validates_stream_ids_content_and_done() -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_sse", FULL_SMOKE)
+    events = [
+        json.dumps(
+            {
+                "id": "chatcmpl-one",
+                "object": "chat.completion.chunk",
+                "choices": [{"delta": {"role": "assistant", "content": ""}}],
+            }
+        ),
+        # Playground route metadata is an SSE event, but deliberately not an
+        # OpenAI completion chunk and therefore does not carry a completion id.
+        json.dumps({"choices": [], "_playground_route": {"provider": "example"}}),
+        json.dumps(
+            {
+                "id": "chatcmpl-one",
+                "object": "chat.completion.chunk",
+                "choices": [{"delta": {"content": "RUNNABLE_EXAMPLE_OK"}}],
+            }
+        ),
+        "[DONE]",
+    ]
+
+    full_smoke._assert_sse_contract(events, path="/stream")
+
+    mismatched = events.copy()
+    mismatched[2] = mismatched[2].replace("chatcmpl-one", "chatcmpl-two")
+    with pytest.raises(full_smoke.SmokeError, match="changed completion id"):
+        full_smoke._assert_sse_contract(mismatched, path="/stream")
+
+
+def test_full_smoke_waits_for_a_new_request_history_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_smoke_history", FULL_SMOKE)
+    responses = iter(
+        [
+            {"requests": [{"request_id": "old", "model_id": "example-chat", "status_code": 200}]},
+            {
+                "requests": [
+                    {"request_id": "new", "model_id": "example-chat", "status_code": 200},
+                    {"request_id": "old", "model_id": "example-chat", "status_code": 200},
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        full_smoke,
+        "_request_json",
+        lambda *args, **kwargs: (200, next(responses)),
+    )
+    monkeypatch.setattr(full_smoke.time, "sleep", lambda seconds: None)
+
+    request_id = full_smoke._wait_for_history(
+        "http://localhost:13001",
+        "jwt",
+        time.monotonic() + 10,
+        excluded_request_ids={"old"},
+    )
+
+    assert request_id == "new"
+
+
+def test_full_smoke_covers_the_full_ui_contract_without_printing_secrets() -> None:
+    source = FULL_SMOKE.read_text()
+
+    for contract in (
+        "EXAMPLE_DEMO_ADMIN_PASSWORD",
+        "EXAMPLE_DEMO_EXPECT_EXISTING",
+        "admin@local.dev",
+        "viewer@local.dev",
+        "hybridinference_example_refresh",
+        "/auth/login",
+        "/auth/signup",
+        '"/",',
+        '"/login",',
+        '"/signup",',
+        "/user/me",
+        "/user/api-keys/all",
+        "/admin/stats",
+        "/internal/playground/models",
+        "/internal/playground/chat",
+        "/user/recent-requests",
+        "/dashboard/admin",
+        "/dashboard/playground",
+        "--recreate-command",
+        "--write-reset-state",
+        "--expect-existing-state",
+        "--verify-reset-state",
+        "EXAMPLE_FULL_SMOKE_OK",
+        "EXAMPLE_RESET_SMOKE_OK",
+        "excluded_request_ids=prior_request_ids",
+    ):
+        assert contract in source
+    assert source.count("print(") == 2
+    assert "print(SUCCESS_MARKER)" in source
+    assert "print(RESET_SUCCESS_MARKER)" in source
+
+
 def test_fake_provider_builds_a_deterministic_non_streaming_completion() -> None:
     fake = _load_module("_runnable_example_fake", FAKE_PROVIDER / "server.py")
     payload = {
@@ -401,6 +1163,32 @@ def test_fake_provider_builds_a_deterministic_non_streaming_completion() -> None
     assert first["created"] == 0
     assert first["model"] == "example-upstream"
     assert first["choices"][0]["message"]["content"] == "RUNNABLE_EXAMPLE_OK"
+
+
+def test_fake_provider_can_enforce_stage_three_model_key_and_response() -> None:
+    fake = _load_module("_runnable_example_fake_stage_three", FAKE_PROVIDER / "server.py")
+    handler = object.__new__(fake.FakeHandler)
+    handler.path = "/v1/chat/completions"
+    handler.expected_model = "host-fixture-model"
+    handler.expected_api_key = "local-placeholder"
+    handler.response_text = "STAGE3_HOST_FIXTURE_OK"
+    responses: list[tuple[int, dict]] = []
+    handler._send_json = lambda status, payload: responses.append((status, payload))
+
+    handler.headers = {"Authorization": "Bearer wrong"}
+    handler._read_json = lambda: {"model": "host-fixture-model"}
+    handler.do_POST()
+    assert responses[-1][0] == 401
+
+    handler.headers = {"Authorization": "Bearer local-placeholder"}
+    handler._read_json = lambda: {"model": "wrong-model"}
+    handler.do_POST()
+    assert responses[-1][0] == 400
+
+    handler._read_json = lambda: {"model": "host-fixture-model"}
+    handler.do_POST()
+    assert responses[-1][0] == 200
+    assert responses[-1][1]["choices"][0]["message"]["content"] == ("STAGE3_HOST_FIXTURE_OK")
 
 
 def test_fake_provider_builds_deterministic_openai_sse_frames() -> None:
@@ -520,7 +1308,10 @@ def test_active_ci_runs_the_documented_example_contract() -> None:
     ):
         assert command in workflow
         assert command in readme
-    assert 'BACKEND_PORT: "0"' in workflow
+    assert "Select runnable example port" in workflow
+    assert 'echo "BACKEND_PORT=${port}" >> "${GITHUB_ENV}"' in workflow
+    assert 'test "${port}" = "${BACKEND_PORT}"' in workflow
+    assert 'SMOKE_BASE_URL="http://localhost:${port}" make smoke DISTRIBUTION=example' in workflow
     assert "github.run_id" in workflow
     assert "docker image rm" in workflow
 
@@ -528,32 +1319,45 @@ def test_active_ci_runs_the_documented_example_contract() -> None:
 def test_router_tutorial_teaches_what_the_example_actually_serves() -> None:
     """The walkthrough's model id and sentinel must track the shipped example."""
     tutorial = TUTORIAL.read_text()
+    compact = "".join(tutorial.split())
+    linear = " ".join(tutorial.replace("\\\n", " ").split())
 
     for command in (
         "make up DISTRIBUTION=example",
         "make smoke DISTRIBUTION=example",
-        "make down DISTRIBUTION=example",
+        "make demo DISTRIBUTION=example",
+        "make demo-smoke DISTRIBUTION=example",
+        "make demo-down DISTRIBUTION=example",
+        "make demo-reset DISTRIBUTION=example",
     ):
         assert command in tutorial
 
     models = yaml.safe_load((EXAMPLE / "config" / "models.yaml").read_text())["models"]
-    assert f'"model": "{models[0]["id"]}"' in tutorial
+    assert f'"model":"{models[0]["id"]}"' in compact
 
     fake = _load_module("_runnable_example_fake_tutorial", FAKE_PROVIDER / "server.py")
     assert fake.RESPONSE_TEXT in tutorial
 
-    # The port override is useless unless both commands receive it: one
-    # publishes the port, the other connects to it.
-    assert "BACKEND_PORT=28080 make up DISTRIBUTION=example" in tutorial
-    assert "BACKEND_PORT=28080 make smoke DISTRIBUTION=example" in tutorial
+    # The troubleshooting path preserves the same linear Stage 1 -> Stage 2
+    # journey while carrying every port to the commands that consume it.
+    assert (
+        "BACKEND_PORT=28080 FRONTEND_PORT=23001 DB_PORT=25432 make up DISTRIBUTION=example"
+    ) in linear
+    assert "BACKEND_PORT=28080 make smoke DISTRIBUTION=example" in linear
+    assert (
+        "BACKEND_PORT=28080 FRONTEND_PORT=23001 DB_PORT=25432 make demo DISTRIBUTION=example"
+    ) in linear
+    assert "FRONTEND_PORT=23001" in linear
+    assert "make demo-smoke DISTRIBUTION=example" in linear
 
-    # The walkthrough's URLs must address the port the example publishes.
-    published = next(
-        line.split("=", 1)[1]
+    # The walkthrough's URLs must address both ports the example publishes.
+    env_defaults = dict(
+        line.split("=", 1)
         for line in (EXAMPLE / "deploy" / "backend.env").read_text().splitlines()
-        if line.startswith("BACKEND_PORT=")
+        if line and not line.startswith("#") and "=" in line
     )
-    assert f"localhost:{published}/health" in tutorial
+    assert f"localhost:{env_defaults['BACKEND_PORT']}/health" in tutorial
+    assert f"localhost:{env_defaults['FRONTEND_PORT']}/signup" in tutorial
 
 
 def test_router_tutorial_is_reachable_in_the_developer_toctree() -> None:
