@@ -87,7 +87,7 @@ distributions/    # Per-distribution overlays: identity, content, config
                   # (including example/, the public runnable router example)
 services/         # Generic protocol-conformance harness and testkit
 tests/            # Unit, API, integration, e2e, and external tests
-ops/              # Deployment, setup, runtime, admin, perf, DB, Cloudflare tooling
+ops/              # CI classifiers, admin sweeps, release/deploy scripts, backend-coupled DB analysis
 deploy/           # Docker, systemd, observability manifests
 docs/             # Developer docs, agent specs/plans, reviews
 ```
