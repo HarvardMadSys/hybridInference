@@ -25,9 +25,10 @@ def _triggers(workflow: dict) -> dict:
         "deploy-rollback.yml",
         "deploy-staging.yml",
         "deploy-staging-digest.yml",
+        "rag-index.yml",
     ],
 )
-def test_legacy_deploy_workflows_are_retired(workflow_name: str) -> None:
+def test_retired_workflows_are_absent(workflow_name: str) -> None:
     assert not (WORKFLOWS / workflow_name).exists()
 
 

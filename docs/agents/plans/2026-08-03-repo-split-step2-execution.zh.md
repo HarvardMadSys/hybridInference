@@ -277,6 +277,13 @@ main 可能为空,生产 doc 站会对着空树构建);(f) rag-index 的跨仓�
 `chunker.py`/`ingest.py`,v1 在 pin 的上游 checkout 里执行,终态改用带工具的
 上游镜像。
 
+**W5f-RAG 状态(2026-08-27):已关闭。** freeInference current-dev
+验证成功([run 33037428965](https://github.com/HarvardMadSys/freeInference/actions/runs/33037428965)):
+`dev` 为 `e002101f`,pin 的 HybridInference 源为 `bf84c900`;经 `bge-m3`
+从 6 个文件重建 91 chunks,并复现可检索内容,已满足上游 `rag-index.yml`
+退役条件。按 operator 指示,`codex-oncall.yml`、`.env.oncall.example` 与
+cloud-agent/on-call 工作延期,保持未动且未完成。
+
 **上游侧删除不与搬迁同批(2026-08-12 评审修订)**:原文"每批同时在上游侧
 删除对应内容"与 W6"旧链路保留作回滚"自相矛盾——classic staging 部署跟的
 是 dev,W5a 一删 overlay,旧链在 W6 之前就断了,等于边搬边拆自己的回滚梯。

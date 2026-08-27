@@ -50,6 +50,13 @@ dispatch 的。
 | doc 站 Pages Git 集成(freeinference-doc) | 设置 | **W5e**(四步硬序,见计划) | 高:生产 doc 站 | production/preview 双构建验证 |
 | 跨上游代码族:`rag-index.yml`(chunker/ingest)+ `codex-oncall.yml`(`PYTHONPATH=apps/backend` 运行 `serving.oncall.gha`,workflow 行 59/116/127)+ `.env.oncall.example` | 代码+内容 | **W5f** | 中:RAG 索引 + on-call | 两个 workflow 都以 **pin 的上游 checkout** 供代码(v1;终态改带工具的上游镜像),新仓各跑通一次 |
 
+**W5f-RAG 状态(2026-08-27):已关闭。** freeInference current-dev
+验证成功([run 33037428965](https://github.com/HarvardMadSys/freeInference/actions/runs/33037428965)):
+`dev` 为 `e002101f`,pin 的 HybridInference 源为 `bf84c900`;经 `bge-m3`
+从 6 个文件重建 91 chunks,并复现可检索内容,已满足上游 `rag-index.yml`
+退役条件。按 operator 指示,`codex-oncall.yml`、`.env.oncall.example` 与
+cloud-agent/on-call 工作延期,保持未动且未完成。
+
 ### 1.2 留上游(不动)
 
 | 路径 | 理由 |
