@@ -20,29 +20,30 @@ Its job is to exercise the public contract exactly as external clients see it.
 
 ## Quick Start
 
-Set the required environment variables:
+Start the deterministic local fake provider:
 
 ```bash
-export FREEINFERENCE_BASE_URL="https://freeinference.org"
-export FREEINFERENCE_API_KEY="hyi-..."
+python -m freeinference_harness fake-provider --port 8351
 ```
 
-Run a dry-run to inspect target and scenario selection:
+In another shell, run a dry-run to inspect the retained local target and
+agent-loop scenario selection:
 
 ```bash
-python -m freeinference_harness.cli run \
-  --targets configs/targets/freeinference.yaml \
-  --scenarios configs/scenarios/chat-core.yaml \
+python -m freeinference_harness run \
+  --targets configs/targets/agent-loop-local.yaml \
+  --scenarios configs/scenarios/agent-loop-core.yaml \
+  --target fake-direct \
   --dry-run
 ```
 
 Run a target:
 
 ```bash
-python -m freeinference_harness.cli run \
-  --targets configs/targets/freeinference.yaml \
-  --scenarios configs/scenarios/chat-core.yaml \
-  --target glm-5-public
+python -m freeinference_harness run \
+  --targets configs/targets/agent-loop-local.yaml \
+  --scenarios configs/scenarios/agent-loop-core.yaml \
+  --target fake-direct
 ```
 
 Artifacts are written under `outputs/<run_id>/`.

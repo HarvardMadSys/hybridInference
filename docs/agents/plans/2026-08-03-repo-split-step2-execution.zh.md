@@ -277,6 +277,18 @@ main 可能为空,生产 doc 站会对着空树构建);(f) rag-index 的跨仓�
 `chunker.py`/`ingest.py`,v1 在 pin 的上游 checkout 里执行,终态改用带工具的
 上游镜像。
 
+**W5c 状态(2026-08-27):已关闭。** 两个 worker 的源码与部署、lifecycle、
+readback workflow 权威已通过
+[freeInference #22](https://github.com/HarvardMadSys/freeInference/pull/22)
+迁至 freeInference；站点 harness target 由
+[#26](https://github.com/HarvardMadSys/freeInference/pull/26)落位。验证证据为
+[lifecycle 32495280162](https://github.com/HarvardMadSys/freeInference/actions/runs/32495280162)、
+[status-monitor dispatch 32495471487](https://github.com/HarvardMadSys/freeInference/actions/runs/32495471487)、
+[push deploy 32496012192](https://github.com/HarvardMadSys/freeInference/actions/runs/32496012192)与
+[Slack readback 32496095487](https://github.com/HarvardMadSys/freeInference/actions/runs/32496095487)。
+上游收口已退役两棵冻结源码副本、对应 classifier 输出与 alert CI job，并删除
+两个过时站点 target；通用协议 testkit 与 `agent-loop-local.yaml` 继续留上游。
+
 **W5f-RAG 状态(2026-08-27):已关闭。** freeInference current-dev
 验证成功([run 33037428965](https://github.com/HarvardMadSys/freeInference/actions/runs/33037428965)):
 `dev` 为 `e002101f`,pin 的 HybridInference 源为 `bf84c900`;经 `bge-m3`

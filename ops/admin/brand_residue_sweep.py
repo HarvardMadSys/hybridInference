@@ -96,9 +96,9 @@ ALLOWLIST: dict[str, str] = {
     "docs/superpowers/": "historical design docs — review before direct publication",
     "docs/reviews/": "review records — review before direct publication",
     "docs/developer/": "internal doc-site pages — step-2 / neutral wave",
-    "services/freeinference-harness/": "step-2 move/neutralize per ownership inventory",
-    "services/status-monitor-worker/": "step-2 move/neutralize per ownership inventory",
-    "services/alert-control-plane-worker/": "step-2 move/neutralize per ownership inventory",
+    "services/freeinference-harness/": (
+        "generic protocol-conformance testkit; neutral naming is tracked separately"
+    ),
     "ops/": "operator scripts — step-2 classification per ownership inventory",
     "deploy/": "deployment defaults — neutral-defaults flip wave",
     "apps/frontend/": "compile-time branding defaults — neutral-defaults flip wave",

@@ -17,8 +17,6 @@ BOOLEAN_OUTPUTS = (
     "backend",
     "frontend",
     "oncall",
-    "status_monitor",
-    "alert_control_plane",
     "docker_shared",
     "python_tests",
     "docs",
@@ -30,7 +28,6 @@ DOCKER_IMAGES = ("frontend", "backend", "oncall")
 APP_JOB_CATEGORIES = {
     "backend-quality": "backend",
     "frontend-quality": "frontend",
-    "alert-control-plane-check": "alert_control_plane",
     "test": "python_tests",
     "docs-build": "docs",
 }
@@ -120,8 +117,6 @@ def parse_classification(payload: str) -> ClassificationOutputs:
     python_inputs = (
         "backend",
         "oncall",
-        "status_monitor",
-        "alert_control_plane",
         "docker_shared",
     )
     if (booleans["full"] or any(booleans[name] for name in python_inputs)) and not booleans[

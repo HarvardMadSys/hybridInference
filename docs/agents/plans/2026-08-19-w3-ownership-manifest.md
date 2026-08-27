@@ -50,6 +50,18 @@ dispatch 的。
 | doc 站 Pages Git 集成(freeinference-doc) | 设置 | **W5e**(四步硬序,见计划) | 高:生产 doc 站 | production/preview 双构建验证 |
 | 跨上游代码族:`rag-index.yml`(chunker/ingest)+ `codex-oncall.yml`(`PYTHONPATH=apps/backend` 运行 `serving.oncall.gha`,workflow 行 59/116/127)+ `.env.oncall.example` | 代码+内容 | **W5f** | 中:RAG 索引 + on-call | 两个 workflow 都以 **pin 的上游 checkout** 供代码(v1;终态改带工具的上游镜像),新仓各跑通一次 |
 
+**W5c 状态(2026-08-27):已关闭。** worker 源码及其部署、lifecycle、readback
+workflow 权威已由
+[freeInference #22](https://github.com/HarvardMadSys/freeInference/pull/22)
+接管，站点 harness target 由
+[#26](https://github.com/HarvardMadSys/freeInference/pull/26)接管。成功证据：
+[lifecycle 32495280162](https://github.com/HarvardMadSys/freeInference/actions/runs/32495280162)、
+[status-monitor dispatch 32495471487](https://github.com/HarvardMadSys/freeInference/actions/runs/32495471487)、
+[push deploy 32496012192](https://github.com/HarvardMadSys/freeInference/actions/runs/32496012192)、
+[Slack readback 32496095487](https://github.com/HarvardMadSys/freeInference/actions/runs/32496095487)。
+上游副本与专属 CI 接线已退役；协议一致性 testkit 和
+`agent-loop-local.yaml` 仍按 §1.2 留上游。
+
 **W5f-RAG 状态(2026-08-27):已关闭。** freeInference current-dev
 验证成功([run 33037428965](https://github.com/HarvardMadSys/freeInference/actions/runs/33037428965)):
 `dev` 为 `e002101f`,pin 的 HybridInference 源为 `bf84c900`;经 `bge-m3`
