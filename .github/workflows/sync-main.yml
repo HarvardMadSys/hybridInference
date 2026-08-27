@@ -20,7 +20,7 @@ jobs:
     # outright when the account's Actions billing lapses or hits its spending
     # limit, which silently stalls the sync (run 31068821298 left main 29
     # commits behind dev). The `trusted-automation` label already provides the
-    # `gh` CLI this job's release step needs — see rag-index.yml.
+    # `gh` CLI this job's release step needs.
     runs-on: [self-hosted, Linux, trusted-automation]
     steps:
       - uses: actions/checkout@v4
