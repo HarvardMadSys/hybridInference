@@ -85,22 +85,6 @@ def test_shared_serving_change_triggers_oncall_and_backend() -> None:
     assert result.docker_matrix() == ["backend", "oncall"]
 
 
-def test_status_monitor_change() -> None:
-    result = classify(["services/status-monitor-worker/main.py"])
-    assert _true_categories(result) == {
-        "status_monitor",
-        "alert_control_plane",
-        "python_tests",
-    }
-    assert result.docker_matrix() == []
-
-
-def test_alert_control_plane_change() -> None:
-    result = classify(["services/alert-control-plane-worker/src/index.ts"])
-    assert _true_categories(result) == {"alert_control_plane", "python_tests"}
-    assert result.docker_matrix() == []
-
-
 def test_docker_shared_change() -> None:
     for path in (".dockerignore", "deploy/docker/docker-compose.yml"):
         result = classify([path])

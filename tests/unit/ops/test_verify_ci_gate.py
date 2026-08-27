@@ -44,8 +44,6 @@ def _results(**overrides: str) -> str:
         ["apps/frontend/src/app/page.tsx"],
         ["apps/backend/routing/routers.py"],
         ["apps/backend/serving/config/settings.py"],
-        ["services/status-monitor-worker/src/index.ts"],
-        ["services/alert-control-plane-worker/src/index.ts"],
         [".dockerignore"],
         ["unknown/file.txt"],
     ],
@@ -119,26 +117,6 @@ def test_pr_tests_only_runs_backend_without_docker() -> None:
         "pull_request",
         _classification(backend=True, python_tests=True),
         _results(**{"backend-quality": "success", "test": "success"}),
-    )
-
-
-def test_pr_alert_only_runs_alert_checks_without_app_images() -> None:
-    verify_gate(
-        "pull_request",
-        _classification(alert_control_plane=True, python_tests=True),
-        _results(**{"alert-control-plane-check": "success", "test": "success"}),
-    )
-
-
-def test_pr_status_monitor_runs_python_contract_tests_without_app_images() -> None:
-    verify_gate(
-        "pull_request",
-        _classification(
-            status_monitor=True,
-            alert_control_plane=True,
-            python_tests=True,
-        ),
-        _results(**{"alert-control-plane-check": "success", "test": "success"}),
     )
 
 
@@ -219,7 +197,6 @@ def test_pr_full_requires_all_application_jobs_and_images() -> None:
                 "backend-quality": "success",
                 "frontend-quality": "success",
                 "docs-build": "success",
-                "alert-control-plane-check": "success",
                 "test": "success",
                 "docker-build": "success",
                 "tutorial-e2e": "success",
@@ -237,7 +214,6 @@ def test_push_requires_all_app_jobs_and_skips_docker() -> None:
                 "backend-quality": "success",
                 "frontend-quality": "success",
                 "docs-build": "success",
-                "alert-control-plane-check": "success",
                 "test": "success",
             }
         ),
@@ -253,7 +229,6 @@ def test_push_runs_tutorial_e2e_only_when_classified() -> None:
                 "backend-quality": "success",
                 "frontend-quality": "success",
                 "docs-build": "success",
-                "alert-control-plane-check": "success",
                 "test": "success",
                 "tutorial-e2e": "success",
             }
@@ -271,7 +246,6 @@ def test_schedule_and_manual_require_all_app_jobs_and_docker(event_name: str) ->
                 "backend-quality": "success",
                 "frontend-quality": "success",
                 "docs-build": "success",
-                "alert-control-plane-check": "success",
                 "test": "success",
                 "docker-build": "success",
                 "tutorial-e2e": "success",
@@ -289,7 +263,6 @@ def test_schedule_rejects_partial_docker_plan() -> None:
                 **{
                     "backend-quality": "success",
                     "frontend-quality": "success",
-                    "alert-control-plane-check": "success",
                     "test": "success",
                     "docker-build": "success",
                 }
@@ -362,7 +335,7 @@ def test_malformed_classification_is_rejected(classification: dict[str, object])
 
 def test_missing_classification_output_is_rejected() -> None:
     payload = json.loads(_classification(security_only=True))
-    del payload["status_monitor"]
+    del payload["backend"]
     with pytest.raises(ValueError, match="missing"):
         parse_classification(json.dumps(payload))
 

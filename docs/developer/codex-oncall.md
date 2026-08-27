@@ -236,10 +236,12 @@ in sync.
 
 The Cloudflare Worker cannot reach the internal Compose hostname. The relay
 publishes port `8091` only on host loopback; expose it through a restricted TLS
-reverse-proxy route or Cloudflare Tunnel, then set Worker secrets:
+reverse-proxy route or Cloudflare Tunnel. The status-monitor Worker is owned by
+the external [freeInference repository](https://github.com/HarvardMadSys/freeInference);
+set its secrets from that repository's checkout:
 
 ```bash
-cd services/status-monitor-worker
+cd /path/to/freeInference/services/status-monitor-worker
 npx wrangler secret put CODEX_ONCALL_RELAY_URL
 npx wrangler secret put CODEX_ONCALL_RELAY_TOKEN
 npx wrangler secret put SLACK_WEBHOOK_URL

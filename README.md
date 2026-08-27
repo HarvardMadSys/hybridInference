@@ -85,7 +85,7 @@ config/           # Model, routing, and alert configuration
   examples/       # Reference registries, including the OpenRouter quickstart
 distributions/    # Per-distribution overlays: identity, content, config
                   # (including example/, the public runnable router example)
-services/         # status-monitor-worker, freeinference-harness
+services/         # Generic protocol-conformance harness and testkit
 tests/            # Unit, API, integration, e2e, and external tests
 ops/              # Deployment, setup, runtime, admin, perf, DB, Cloudflare tooling
 deploy/           # Docker, systemd, observability manifests

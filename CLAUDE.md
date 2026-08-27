@@ -27,7 +27,7 @@ apps/
     routing/      # Routing engine: strategies, routers, health, circuit breaker
   frontend/       # Next.js web UI
 config/           # YAML config: models, routing, alerts
-services/         # Sidecar workers (present only where a deployment ships them)
+services/         # Standalone protocol-conformance harnesses and testkits
 tests/
   unit/           # Fast, mocked. Default in CI.
   api/            # Per-provider API surface tests.
@@ -172,9 +172,10 @@ Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
 - Alerting has two permanent, independent paths (decision: issue #1103).
   Backend gateway alerts go through `alert_slack()`
   (`apps/backend/serving/observability/alerts.py`) to a Slack webhook;
-  status-monitor alerts go through the alert control plane worker
-  (`services/alert-control-plane-worker/`). Do not wire backend producers
-  to the control plane.
+  status-monitor alerts go through the status monitor and alert control plane
+  workers owned and deployed by the external
+  [freeInference repository](https://github.com/HarvardMadSys/freeInference).
+  Do not wire backend producers to that control plane.
 - Frontend is Next.js in `apps/frontend/` — its quality gates are separate
   from the Python `make` targets.
 

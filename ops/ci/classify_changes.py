@@ -26,8 +26,6 @@ CATEGORIES = (
     "backend",
     "frontend",
     "oncall",
-    "status_monitor",
-    "alert_control_plane",
     "docker_shared",
     "python_tests",
     "docs",
@@ -104,8 +102,6 @@ TUTORIAL_E2E_PREFIXES = (
 # change -- not just serving/oncall -- is baked into the on-call image and must
 # rebuild it. Keep this in sync with that Dockerfile's COPY scope.
 ONCALL_PREFIX = "apps/backend/serving/"
-STATUS_MONITOR_PREFIX = "services/status-monitor-worker/"
-ALERT_CONTROL_PLANE_PREFIX = "services/alert-control-plane-worker/"
 DOCKER_SHARED_FILES = frozenset(
     {
         ".dockerignore",
@@ -139,8 +135,6 @@ class Classification:
     backend: bool = False
     frontend: bool = False
     oncall: bool = False
-    status_monitor: bool = False
-    alert_control_plane: bool = False
     docker_shared: bool = False
     python_tests: bool = False
     docs: bool = False
@@ -280,19 +274,6 @@ def classify(files: Sequence[str] | None) -> Classification:
             hit("oncall", path)
             recognized = True
             result.docker_images.add("oncall")
-        if path.startswith(STATUS_MONITOR_PREFIX):
-            result.status_monitor = True
-            # The alert-control-plane TypeScript contract tests import status
-            # monitor emitters directly, so monitor changes affect both jobs.
-            result.alert_control_plane = True
-            result.python_tests = True
-            hit("status_monitor", path)
-            recognized = True
-        if path.startswith(ALERT_CONTROL_PLANE_PREFIX):
-            result.alert_control_plane = True
-            result.python_tests = True
-            hit("alert_control_plane", path)
-            recognized = True
         if path in DOCKER_SHARED_FILES:
             result.docker_shared = True
             result.python_tests = True
@@ -320,8 +301,6 @@ def classify(files: Sequence[str] | None) -> Classification:
         result.frontend
         or result.backend
         or result.oncall
-        or result.status_monitor
-        or result.alert_control_plane
         or result.docker_shared
         or result.python_tests
         or result.tutorial_e2e
