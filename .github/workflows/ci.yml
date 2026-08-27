@@ -713,7 +713,7 @@ jobs:
         env:
           EXAMPLE_BACKEND_CONTAINER_NAME: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-backend
         run: |
-          port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
+          port="$(docker container inspect --format '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
           test "${port}" = "${BACKEND_PORT}"
           SMOKE_BASE_URL="http://localhost:${port}" make smoke DISTRIBUTION=example
 
@@ -874,12 +874,12 @@ jobs:
       - name: Smoke tutorial Stage 1 and record container state
         id: stage1-state
         run: |
-          port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
+          port="$(docker container inspect --format '{{(index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
           test "${port}" = "${BACKEND_PORT}"
           SMOKE_BASE_URL="http://localhost:${port}" make smoke DISTRIBUTION=example
 
           for absent in "${EXAMPLE_FRONTEND_CONTAINER_NAME}" "${EXAMPLE_POSTGRES_CONTAINER_NAME}"; do
-            if docker inspect "${absent}" >/dev/null 2>&1; then
+            if docker container inspect "${absent}" >/dev/null 2>&1; then
               echo "Stage 1 unexpectedly started ${absent}" >&2
               exit 1
             fi
@@ -900,7 +900,7 @@ jobs:
           }
           trap restore_registry EXIT
 
-          backend_image_before="$(docker inspect --format '{{.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
+          backend_image_before="$(docker container inspect --format '{{.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
           sed -i 's/name: Runnable Example Chat/name: Reloaded Example Chat/' "${registry}"
           grep -q 'name: Reloaded Example Chat' "${registry}"
           make restart s=backend DISTRIBUTION=example
@@ -913,7 +913,7 @@ jobs:
           done
           curl --fail --silent "http://localhost:${port}/v1/models" | \
             python3 -c 'import json, sys; assert json.load(sys.stdin)["data"][0]["name"] == "Reloaded Example Chat"'
-          backend_image_after="$(docker inspect --format '{{.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
+          backend_image_after="$(docker container inspect --format '{{.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
           test "${backend_image_after}" = "${backend_image_before}"
 
           cp "${registry_backup}" "${registry}"
@@ -922,9 +922,9 @@ jobs:
           trap - EXIT
           SMOKE_BASE_URL="http://localhost:${port}" make smoke DISTRIBUTION=example
 
-          provider_id="$(docker inspect --format '{{.Id}}' "${EXAMPLE_PROVIDER_CONTAINER_NAME}")"
-          backend_container_id="$(docker inspect --format '{{.Id}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
-          backend_image_id="$(docker inspect --format '{{.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
+          provider_id="$(docker container inspect --format '{{.Id}}' "${EXAMPLE_PROVIDER_CONTAINER_NAME}")"
+          backend_container_id="$(docker container inspect --format '{{.Id}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
+          backend_image_id="$(docker container inspect --format '{{.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
           loaded_backend_image_id="$(docker image inspect --format '{{.Id}}' "${COMPOSE_PROJECT_NAME}-backend")"
           test "${backend_image_id}" = "${loaded_backend_image_id}"
           {
@@ -938,23 +938,23 @@ jobs:
         run: |
           make demo DISTRIBUTION=example
 
-          provider_id="$(docker inspect --format '{{.Id}}' "${EXAMPLE_PROVIDER_CONTAINER_NAME}")"
-          backend_container_id="$(docker inspect --format '{{.Id}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
-          backend_image_id="$(docker inspect --format '{{.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
-          frontend_image_id="$(docker inspect --format '{{.Image}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
+          provider_id="$(docker container inspect --format '{{.Id}}' "${EXAMPLE_PROVIDER_CONTAINER_NAME}")"
+          backend_container_id="$(docker container inspect --format '{{.Id}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
+          backend_image_id="$(docker container inspect --format '{{.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
+          frontend_image_id="$(docker container inspect --format '{{.Image}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
           loaded_frontend_image_id="$(docker image inspect --format '{{.Id}}' "${COMPOSE_PROJECT_NAME}-frontend")"
 
           test "${provider_id}" = "${{ steps.stage1-state.outputs.provider_id }}"
           test "${backend_container_id}" != "${{ steps.stage1-state.outputs.backend_container_id }}"
           test "${backend_image_id}" = "${{ steps.stage1-state.outputs.backend_image_id }}"
           test "${frontend_image_id}" = "${loaded_frontend_image_id}"
-          docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}" | grep -qx 'DB_ENABLED=true'
-          docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}" | grep -qx 'USER_AUTH_ENABLED=true'
+          docker container inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}" | grep -qx 'DB_ENABLED=true'
+          docker container inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}" | grep -qx 'USER_AUTH_ENABLED=true'
 
       - name: Smoke the full local demo
         id: demo-smoke
         run: |
-          port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
+          port="$(docker container inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
           test "${port}" = "${FRONTEND_PORT}"
           test ! -e "${EXAMPLE_RESET_STATE_FILE}"
           DEMO_SMOKE_STATE_FILE="${EXAMPLE_RESET_STATE_FILE}" \
@@ -984,7 +984,7 @@ jobs:
             "${EXAMPLE_POSTGRES_CONTAINER_NAME}" \
             "${EXAMPLE_BACKEND_CONTAINER_NAME}" \
             "${EXAMPLE_FRONTEND_CONTAINER_NAME}"; do
-            if docker inspect "${removed}" >/dev/null 2>&1; then
+            if docker container inspect "${removed}" >/dev/null 2>&1; then
               echo "demo-down left ${removed} behind" >&2
               exit 1
             fi
@@ -992,7 +992,7 @@ jobs:
 
           make demo DISTRIBUTION=example
           test "$(docker volume inspect --format '{{.CreatedAt}}' "${volume}")" = "${volume_created_at}"
-          port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
+          port="$(docker container inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
           test "${port}" = "${FRONTEND_PORT}"
           DEMO_SMOKE_EXPECT_STATE_FILE="${EXAMPLE_RESET_STATE_FILE}" \
             DEMO_BASE_URL="http://localhost:${port}" \
@@ -1040,12 +1040,12 @@ jobs:
           export EXAMPLE_EXPECTED_CONTENT="STAGE3_HOST_FIXTURE_OK"
           make demo DISTRIBUTION=example
 
-          backend_env="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
+          backend_env="$(docker container inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
           grep -qx "EXAMPLE_UPSTREAM_BASE_URL=${EXAMPLE_UPSTREAM_BASE_URL}" <<< "${backend_env}"
           grep -qx "EXAMPLE_UPSTREAM_API_KEY=${EXAMPLE_UPSTREAM_API_KEY}" <<< "${backend_env}"
           grep -qx "EXAMPLE_UPSTREAM_MODEL=${EXAMPLE_UPSTREAM_MODEL}" <<< "${backend_env}"
 
-          port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
+          port="$(docker container inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
           test "${port}" = "${FRONTEND_PORT}"
           EXAMPLE_DEMO_EXPECT_EXISTING=1 \
             DEMO_BASE_URL="http://localhost:${port}" \
@@ -1071,7 +1071,7 @@ jobs:
           fi
 
           make demo DISTRIBUTION=example
-          port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
+          port="$(docker container inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
           test "${port}" = "${FRONTEND_PORT}"
           python3 distributions/example/full_smoke.py \
             --base-url "http://localhost:${port}" \
@@ -1111,7 +1111,7 @@ jobs:
             "${EXAMPLE_POSTGRES_CONTAINER_NAME}" \
             "${EXAMPLE_BACKEND_CONTAINER_NAME}" \
             "${EXAMPLE_FRONTEND_CONTAINER_NAME}"; do
-            if docker inspect "${leaked}" >/dev/null 2>&1; then
+            if docker container inspect "${leaked}" >/dev/null 2>&1; then
               echo "tutorial cleanup left ${leaked} behind" >&2
               exit 1
             fi

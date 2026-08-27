@@ -250,6 +250,9 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     resume_smoke = by_name["Preserve state across full stop and resume"]["run"]
     reset_smoke = by_name["Verify destructive reset isolation"]["run"]
     reset = by_name["Reset tutorial E2E"]["run"]
+    tutorial_shell = "\n".join(str(step.get("run", "")) for step in steps)
+    assert "docker inspect " not in tutorial_shell
+    assert "docker container inspect" in tutorial_shell
     assert by_name["Start tutorial Stage 1"]["run"] == "make up DISTRIBUTION=example"
     assert "make smoke DISTRIBUTION=example" in stage1
     assert "provider_id=" in stage1
