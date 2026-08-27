@@ -29,6 +29,20 @@ DEPLOY_SCRIPTS = (
     REPO / "ops" / "deploy" / "deploy_staging.sh",
 )
 
+# This file is mirrored into the freeInference repository verbatim and will
+# run there from a checkout that carries the overlay but not upstream's compose
+# or classic deploy scripts. The overlay assertions hold in either tree; the
+# classic-chain assertions skip where their subject files are absent, and they
+# retire together with the classic chain itself (#1323, Step 3).
+_NEEDS_COMPOSE = pytest.mark.skipif(
+    not COMPOSE.exists(),
+    reason="upstream compose absent from this checkout — classic-chain assertion",
+)
+_NEEDS_DEPLOY_SCRIPTS = pytest.mark.skipif(
+    not all(script.exists() for script in DEPLOY_SCRIPTS),
+    reason="classic deploy scripts absent from this checkout — classic-chain assertion",
+)
+
 # ${VAR-default} and ${VAR:-default}
 _INTERPOLATION = re.compile(r"^\$\{(?P<var>[A-Z_]+):?-(?P<default>.*)\}$", re.DOTALL)
 
@@ -178,6 +192,7 @@ def test_staging_overlay_answers_for_every_production_host() -> None:
     assert staging["NEXT_PUBLIC_STATUS_URL"] == "https://status.staging.freeinference.org/"
 
 
+@_NEEDS_DEPLOY_SCRIPTS
 def test_staging_overlay_is_loaded_between_the_shared_files_and_the_host() -> None:
     """Later wins, so the overlay is useless on either side of this window."""
     deploy_script = (REPO / "ops" / "deploy" / "deploy_staging.sh").read_text()
@@ -234,6 +249,7 @@ def test_overlay_states_the_deployment_data_policy() -> None:
 _COMPOSE_OWN_SETTINGS = frozenset({"COMPOSE_PROFILES"})
 
 
+@_NEEDS_COMPOSE
 def test_every_overlay_key_is_actually_read_by_compose() -> None:
     """An overlay key compose never names is a value that silently does nothing."""
     unused = sorted(set(_overlay_values()) - set(_compose_defaults()) - _COMPOSE_OWN_SETTINGS)
@@ -243,6 +259,7 @@ def test_every_overlay_key_is_actually_read_by_compose() -> None:
     )
 
 
+@_NEEDS_COMPOSE
 def test_compose_own_settings_name_a_profile_that_exists() -> None:
     """COMPOSE_PROFILES escapes the check above, so pin what it selects.
 
@@ -280,6 +297,7 @@ def test_overlay_carries_no_secrets() -> None:
     assert not suspicious, f"secrets must live in the server's .env, not here: {suspicious}"
 
 
+@_NEEDS_DEPLOY_SCRIPTS
 @pytest.mark.parametrize("script", DEPLOY_SCRIPTS, ids=lambda p: p.name)
 def test_deploy_script_selects_this_site_for_the_rebuild(script: Path) -> None:
     """`make build` recompiles the console, so it needs the identity too."""
@@ -290,6 +308,7 @@ def test_deploy_script_selects_this_site_for_the_rebuild(script: Path) -> None:
     )
 
 
+@_NEEDS_DEPLOY_SCRIPTS
 @pytest.mark.parametrize("script", DEPLOY_SCRIPTS, ids=lambda p: p.name)
 def test_deploy_script_feeds_the_overlay_before_the_server_env(script: Path) -> None:
     """Without this wiring the site would deploy itself unbranded."""
