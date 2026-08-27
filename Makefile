@@ -1,5 +1,6 @@
 .PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
-       docker-volumes up down restart ps logs build smoke
+       docker-volumes up down restart ps logs build smoke \
+       demo demo-smoke demo-down demo-reset _require-demo
 
 # Default target
 .DEFAULT_GOAL := help
@@ -177,16 +178,23 @@ else
 # identity into another's console, and say nothing while doing it.
 DISTRIBUTION ?= $(error Several distributions carry deploy/*.env ($(_DISTRIBUTION_DIRS)). Name one: make $(MAKECMDGOALS) DISTRIBUTION=<name>, or DISTRIBUTION=none)
 endif
+# These are outputs of DISTRIBUTION selection, never independent inputs.  The
+# initial values also close the neutral/empty-selector branch against command-
+# line injection.
+override DISTRIBUTION_PATH :=
+override DISTRIBUTION_ENV_FILES :=
+override _IS_EXAMPLE :=
 ifeq ($(DISTRIBUTION),none)
-DISTRIBUTION_PATH :=
-DISTRIBUTION_ENV_FILES :=
 else ifneq ($(DISTRIBUTION),)
-DISTRIBUTION_PATH := $(wildcard distributions/$(DISTRIBUTION))
+# DISTRIBUTION_PATH is derived state, not a second selector.  In particular,
+# `DISTRIBUTION=example DISTRIBUTION_PATH=distributions/<deployment>` must not
+# combine the example lifecycle with a deployment's Compose/env files.
+override DISTRIBUTION_PATH := $(wildcard distributions/$(DISTRIBUTION))
 ifeq ($(DISTRIBUTION_PATH),)
 $(error DISTRIBUTION=$(DISTRIBUTION) matches no distributions/$(DISTRIBUTION))
 endif
-_DISTRIBUTION_ENV_PATHS := $(wildcard $(DISTRIBUTION_PATH)/deploy/*.env)
-DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(_DISTRIBUTION_ENV_PATHS))
+override _DISTRIBUTION_ENV_PATHS := $(wildcard $(DISTRIBUTION_PATH)/deploy/*.env)
+override DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(_DISTRIBUTION_ENV_PATHS))
 ifeq ($(DISTRIBUTION_ENV_FILES),)
 $(error DISTRIBUTION=$(DISTRIBUTION) matches no $(DISTRIBUTION_PATH)/deploy/*.env)
 endif
@@ -229,6 +237,15 @@ ifeq ($(_IS_EXAMPLE),yes)
 LOCAL_ENV_ARGS :=
 endif
 COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
+# The full local demo is a third Compose layer on top of the runnable example.
+# Keep COMPOSE above untouched: `make up DISTRIBUTION=example` is the Stage 1
+# contract, while only the explicit demo targets opt into Postgres + frontend.
+DEMO_COMPOSE_FILE := $(if $(DISTRIBUTION_PATH),$(wildcard $(DISTRIBUTION_PATH)/deploy/docker-compose.demo.yml),)
+DEMO_COMPOSE_FILE_ARG := $(if $(DEMO_COMPOSE_FILE),-f $(DEMO_COMPOSE_FILE),)
+# The teaching lifecycle never inherits optional production profiles from a
+# caller's shell. `env` also keeps this usable as full_smoke's argv-based
+# recreate command, where a bare `NAME=value` token would not be executable.
+DEMO_COMPOSE := env COMPOSE_PROFILES= docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
 DOCKER_VOLUMES := hybridinference_postgres_data
 
 docker-volumes:  ## Create external Docker volumes required by production compose
@@ -259,15 +276,48 @@ endif
 # shell override still outranks both, and Compose honours it too.
 _DIST_ENV_FILES := $(if $(DISTRIBUTION_PATH),$(wildcard $(DISTRIBUTION_PATH)/deploy/*.env),)
 _DIST_BACKEND_PORT := $(if $(_DIST_ENV_FILES),$(shell sed -n 's/^BACKEND_PORT=//p' $(_DIST_ENV_FILES) | tail -n 1),)
+_DIST_FRONTEND_PORT := $(if $(_DIST_ENV_FILES),$(shell sed -n 's/^FRONTEND_PORT=//p' $(_DIST_ENV_FILES) | tail -n 1),)
+_DIST_DEMO_PROVIDER_SERVICE := $(if $(_DIST_ENV_FILES),$(shell sed -n 's/^DEMO_PROVIDER_SERVICE=//p' $(_DIST_ENV_FILES) | tail -n 1),)
 BACKEND_PORT ?= $(if $(_DIST_BACKEND_PORT),$(_DIST_BACKEND_PORT),8080)
+FRONTEND_PORT ?= $(if $(_DIST_FRONTEND_PORT),$(_DIST_FRONTEND_PORT),3001)
+DEMO_PROVIDER_SERVICE ?= $(_DIST_DEMO_PROVIDER_SERVICE)
 SMOKE_BASE_URL ?= http://localhost:$(BACKEND_PORT)
+DEMO_BASE_URL ?= http://localhost:$(FRONTEND_PORT)
 SMOKE_TIMEOUT ?= 120
 SMOKE_PYTHON ?= python3
 SMOKE_SCRIPT := $(DISTRIBUTION_PATH)/smoke.py
+DEMO_SMOKE_SCRIPT := $(DISTRIBUTION_PATH)/full_smoke.py
+DEMO_SMOKE_STATE_ARG := $(if $(DEMO_SMOKE_STATE_FILE),--write-reset-state "$(DEMO_SMOKE_STATE_FILE)",)
+DEMO_SMOKE_EXPECT_STATE_ARG := $(if $(DEMO_SMOKE_EXPECT_STATE_FILE),--expect-existing-state "$(DEMO_SMOKE_EXPECT_STATE_FILE)",)
 
 smoke:  ## Verify the selected distribution's running stack
 	@test -f "$(SMOKE_SCRIPT)" || (echo "No smoke script for DISTRIBUTION=$(DISTRIBUTION)"; exit 1)
 	$(SMOKE_PYTHON) "$(SMOKE_SCRIPT)" --base-url "$(SMOKE_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)"
+
+# Stage 2 deliberately reuses Stage 1's project and provider. Bringing up the
+# two new services does not recreate a provider whose effective configuration
+# is unchanged; backend is then recreated in place with DB/auth enabled.
+_require-demo:
+	@test -n "$(DISTRIBUTION_PATH)" || (echo "The demo requires an explicit distribution"; exit 1)
+	@test -f "$(DEMO_COMPOSE_FILE)" || (echo "No demo Compose overlay for DISTRIBUTION=$(DISTRIBUTION)"; exit 1)
+
+demo: _require-demo  ## Upgrade the runnable example in place to the full local stack
+	$(DEMO_COMPOSE) up -d --wait $(DEMO_PROVIDER_SERVICE) postgres
+	$(DEMO_COMPOSE) up -d --no-deps --force-recreate --wait backend
+	$(DEMO_COMPOSE) up -d --no-deps --wait frontend
+
+# full_smoke keeps the original JWT and API key in memory while this Compose
+# command recreates backend, then proves both still work afterwards. CI can
+# opt into a private outside-checkout reset-proof file for a later reset check.
+demo-smoke: _require-demo  ## Verify the full demo through its frontend origin
+	@test -f "$(DEMO_SMOKE_SCRIPT)" || (echo "No full smoke script for DISTRIBUTION=$(DISTRIBUTION)"; exit 1)
+	$(SMOKE_PYTHON) "$(DEMO_SMOKE_SCRIPT)" --base-url "$(DEMO_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)" $(DEMO_SMOKE_STATE_ARG) $(DEMO_SMOKE_EXPECT_STATE_ARG) --recreate-command $(DEMO_COMPOSE) up -d --no-deps --force-recreate --wait backend
+
+demo-down: _require-demo  ## Stop the full demo while preserving its database
+	$(DEMO_COMPOSE) down
+
+demo-reset: _require-demo  ## Stop the full demo and delete its local database
+	$(DEMO_COMPOSE) down --volumes --remove-orphans
 
 down:  ## Stop all services
 	$(COMPOSE) down

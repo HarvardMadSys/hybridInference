@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     if not settings.api_key_secret:
         _sec_logger.critical("api_key_secret is empty — API key generation will be insecure")
     if not settings.admin_token:
-        _sec_logger.warning("admin_token is empty — admin endpoints will be inaccessible")
+        _sec_logger.warning("admin_token is empty — legacy admin-token access is disabled")
 
     services: AppServices = await bootstrap.initialize()
     app.state.services = services  # type: ignore[attr-defined]

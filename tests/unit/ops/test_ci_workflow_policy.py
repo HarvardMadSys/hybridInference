@@ -190,3 +190,157 @@ def test_alert_service_quality_runs_all_checks_in_one_job() -> None:
         if step.get("run") in {"npm run typecheck", "npm test"}
         or str(step.get("run", "")).startswith("npm exec -- wrangler")
     )
+
+
+def test_backend_matrix_keeps_the_fast_stage_one_smoke() -> None:
+    """The full transition supplements rather than replaces the quick smoke."""
+    steps = _workflow("ci.yml")["jobs"]["docker-build"]["steps"]
+    by_name = {step.get("name"): step for step in steps}
+
+    assert by_name["Start runnable router example"]["run"] == ("make up DISTRIBUTION=example")
+    assert "make smoke DISTRIBUTION=example" in by_name["Smoke runnable router example"]["run"]
+    assert by_name["Start runnable router example"]["if"] == "matrix.image == 'backend'"
+    assert by_name["Smoke runnable router example"]["if"] == "matrix.image == 'backend'"
+
+
+def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
+    workflow = _workflow("ci.yml")
+    changes = workflow["jobs"]["changes"]
+    job = workflow["jobs"]["tutorial-e2e"]
+    steps = job["steps"]
+    by_name = {step.get("name"): step for step in steps}
+
+    assert changes["outputs"]["tutorial_e2e"] == "${{ steps.validate.outputs.tutorial_e2e }}"
+    assert "needs.changes.outputs.tutorial_e2e == 'true'" in job["if"]
+    assert "github.event_name != 'pull_request'" not in job["if"]
+    assert job["runs-on"] == ["self-hosted", "Linux", "ARM64", "image-verify-arm64"]
+
+    expected_names = {
+        "EXAMPLE_BACKEND_CONTAINER_NAME",
+        "EXAMPLE_PROVIDER_CONTAINER_NAME",
+        "EXAMPLE_FRONTEND_CONTAINER_NAME",
+        "EXAMPLE_POSTGRES_CONTAINER_NAME",
+    }
+    assert expected_names <= job["env"].keys()
+    assert len({job["env"][name] for name in expected_names}) == 4
+    assert "BACKEND_PORT" not in job["env"]
+    assert "DB_PORT" not in job["env"]
+    tutorial_ports = by_name["Select tutorial ports"]["run"]
+    assert "BACKEND_PORT=${backend_port}" in tutorial_ports
+    assert "FRONTEND_PORT=${frontend_port}" in tutorial_ports
+    assert "DB_PORT=${db_port}" in tutorial_ports
+    assert "EXAMPLE_RESET_STATE_FILE=${RUNNER_TEMP}/hi-tutorial-" in tutorial_ports
+
+    backend_build = by_name["Build exact tutorial backend image"]["with"]
+    frontend_build = by_name["Build exact same-origin tutorial frontend image"]["with"]
+    for build in (backend_build, frontend_build):
+        assert build["load"] is True
+        assert build["push"] is False
+    assert backend_build["file"] == "deploy/docker/Dockerfile.backend"
+    assert backend_build["tags"] == "${{ env.COMPOSE_PROJECT_NAME }}-backend"
+    assert frontend_build["file"] == "deploy/docker/Dockerfile.frontend"
+    assert frontend_build["tags"] == "${{ env.COMPOSE_PROJECT_NAME }}-frontend"
+    assert "NEXT_PUBLIC_API_BASE=" in frontend_build["build-args"]
+    assert "BACKEND_INTERNAL_URL=http://backend:8080" in frontend_build["build-args"]
+
+    stage1 = by_name["Smoke tutorial Stage 1 and record container state"]["run"]
+    promote = by_name["Promote Stage 1 to the full local demo"]["run"]
+    demo_smoke = by_name["Smoke the full local demo"]["run"]
+    stage3 = by_name["Route Stage 3 through a host-side local provider"]["run"]
+    resume_smoke = by_name["Preserve state across full stop and resume"]["run"]
+    reset_smoke = by_name["Verify destructive reset isolation"]["run"]
+    reset = by_name["Reset tutorial E2E"]["run"]
+    assert by_name["Start tutorial Stage 1"]["run"] == "make up DISTRIBUTION=example"
+    assert "make smoke DISTRIBUTION=example" in stage1
+    assert "provider_id=" in stage1
+    assert "backend_container_id=" in stage1
+    assert "backend_image_id=" in stage1
+    assert "Stage 1 unexpectedly started" in stage1
+    assert "Stage 1 unexpectedly created the example database volume" in stage1
+    assert "name: Reloaded Example Chat" in stage1
+    assert "make restart s=backend DISTRIBUTION=example" in stage1
+    assert 'test "${backend_image_after}" = "${backend_image_before}"' in stage1
+    assert "make demo DISTRIBUTION=example" in promote
+    assert 'test "${provider_id}" = "${{ steps.stage1-state.outputs.provider_id }}"' in promote
+    assert (
+        'test "${backend_container_id}" != '
+        '"${{ steps.stage1-state.outputs.backend_container_id }}"' in promote
+    )
+    assert "grep -qx 'DB_ENABLED=true'" in promote
+    assert "grep -qx 'USER_AUTH_ENABLED=true'" in promote
+    assert 'DEMO_BASE_URL="http://localhost:${port}"' in demo_smoke
+    assert 'DEMO_SMOKE_STATE_FILE="${EXAMPLE_RESET_STATE_FILE}"' in demo_smoke
+    assert "make demo-smoke DISTRIBUTION=example" in demo_smoke
+    assert "distributions/example/fixtures/fake-openai-provider/server.py" in stage3
+    assert "--host 0.0.0.0" in stage3
+    assert "--response-text STAGE3_HOST_FIXTURE_OK" in stage3
+    assert "--expected-model host-fixture-model" in stage3
+    assert "--expected-api-key local-placeholder" in stage3
+    assert "trap stop_fixture EXIT" in stage3
+    assert 'kill "${fixture_pid}"' in stage3
+    assert 'wait "${fixture_pid}"' in stage3
+    assert (
+        'EXAMPLE_UPSTREAM_BASE_URL="http://host.docker.internal:${host_provider_port}/v1"' in stage3
+    )
+    assert 'EXAMPLE_UPSTREAM_API_KEY="local-placeholder"' in stage3
+    assert 'EXAMPLE_UPSTREAM_MODEL="host-fixture-model"' in stage3
+    assert 'EXAMPLE_EXPECTED_CONTENT="STAGE3_HOST_FIXTURE_OK"' in stage3
+    assert "make demo DISTRIBUTION=example" in stage3
+    assert "EXAMPLE_DEMO_EXPECT_EXISTING=1" in stage3
+    assert "make demo-smoke DISTRIBUTION=example" in stage3
+    assert "make demo-down DISTRIBUTION=example" in resume_smoke
+    assert resume_smoke.index("tutorial-provider.log") < resume_smoke.index(
+        "make demo-down DISTRIBUTION=example"
+    )
+    assert 'docker volume inspect "${volume}"' in resume_smoke
+    assert "make demo DISTRIBUTION=example" in resume_smoke
+    assert 'DEMO_SMOKE_EXPECT_STATE_FILE="${EXAMPLE_RESET_STATE_FILE}"' in resume_smoke
+    assert "make demo-smoke DISTRIBUTION=example" in resume_smoke
+    assert "make demo-reset DISTRIBUTION=example" in reset_smoke
+    assert reset_smoke.index("tutorial-provider.log") < reset_smoke.index(
+        "make demo-reset DISTRIBUTION=example"
+    )
+    assert '"${COMPOSE_PROJECT_NAME}_example_postgres_data"' in reset_smoke
+    assert "docker volume inspect" in reset_smoke
+    assert "make demo DISTRIBUTION=example" in reset_smoke
+    assert '--verify-reset-state "${EXAMPLE_RESET_STATE_FILE}"' in reset_smoke
+    step_names = [step.get("name") for step in steps]
+    assert step_names.index("Smoke the full local demo") < step_names.index(
+        "Route Stage 3 through a host-side local provider"
+    )
+    assert step_names.index("Preserve state across full stop and resume") < (
+        step_names.index("Route Stage 3 through a host-side local provider")
+    )
+    assert step_names.index("Route Stage 3 through a host-side local provider") < (
+        step_names.index("Verify destructive reset isolation")
+    )
+    assert "make demo-reset DISTRIBUTION=example" in reset
+    assert reset.index('rm -f "${EXAMPLE_RESET_STATE_FILE}"') < reset.index(
+        "make demo-reset DISTRIBUTION=example"
+    )
+    assert "make demo-reset DISTRIBUTION=example || true" not in reset
+    assert "tutorial cleanup left ${leaked} behind" in reset
+    assert '"${COMPOSE_PROJECT_NAME}_example_postgres_data"' in reset
+    assert '"${COMPOSE_PROJECT_NAME}_hybridinference"' in reset
+    assert 'rm -f "${EXAMPLE_RESET_STATE_FILE}"' in reset
+    assert "test ! -e var" in reset
+    assert "git diff --exit-code" in reset
+    assert "git status --porcelain --untracked-files=all" in reset
+    assert "make down" not in "\n".join(str(step.get("run", "")) for step in steps)
+
+    logs = by_name["Show tutorial E2E logs"]["run"]
+    assert all(name in logs for name in expected_names)
+    assert "tutorial-host-provider.log" in logs
+    for service in ("provider", "postgres", "backend", "frontend"):
+        assert f"tutorial-{service}.log" in logs
+    assert by_name["Reset tutorial E2E"]["if"] == "always()"
+
+    gate = workflow["jobs"]["ci-gate"]
+    assert "tutorial-e2e" in gate["needs"]
+    gate_env = next(
+        step["env"]
+        for step in gate["steps"]
+        if step.get("name") == "Verify exact required CI job results"
+    )
+    assert '"tutorial_e2e":' in gate_env["CLASSIFICATION_JSON"]
+    assert '"tutorial-e2e":' in gate_env["JOB_RESULTS_JSON"]

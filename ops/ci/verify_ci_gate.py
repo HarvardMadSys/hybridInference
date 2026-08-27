@@ -22,6 +22,7 @@ BOOLEAN_OUTPUTS = (
     "docker_shared",
     "python_tests",
     "docs",
+    "tutorial_e2e",
     "security_only",
     "full",
 )
@@ -40,6 +41,7 @@ NON_CATEGORY_OUTPUTS = frozenset({"security_only", "full", "docs"})
 REQUIRED_JOBS = (
     "changes",
     *APP_JOB_CATEGORIES,
+    "tutorial-e2e",
     "security",
     "docker-build",
 )
@@ -184,6 +186,12 @@ def verify_gate(event_name: str, classification_payload: str, job_results_payloa
             not classification.booleans["full"] or classification.docker_matrix != DOCKER_IMAGES
         ):
             raise ValueError("scheduled/manual CI must classify as a full three-image run")
+
+    # Unlike the normal quality jobs, this two-image integration check remains
+    # classifier-driven on pushes. Scheduled/manual runs still select it because
+    # their unavailable diff classifies as `full`.
+    should_run_tutorial = classification.booleans["full"] or classification.booleans["tutorial_e2e"]
+    expected["tutorial-e2e"] = "success" if should_run_tutorial else "skipped"
 
     mismatches = [
         f"{job}: expected {wanted}, got {results[job]}"

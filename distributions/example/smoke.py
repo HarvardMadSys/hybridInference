@@ -35,6 +35,10 @@ def _check(base_url: str) -> None:
     site = _request_json(base_url, "/site-config")
     if site.get("distribution", {}).get("id") != "example":
         raise RuntimeError(f"example manifest is not active: {site}")
+    if site.get("features", {}).get("public_signup") is not False:
+        raise RuntimeError(f"Stage 1 unexpectedly advertises public signup: {site}")
+    if site.get("site", {}).get("public_base_url", "").rstrip("/") != base_url.rstrip("/"):
+        raise RuntimeError(f"Stage 1 advertises the wrong public URL: {site}")
 
     models = _request_json(base_url, "/v1/models")
     served = {item.get("id") for item in models.get("data", [])}

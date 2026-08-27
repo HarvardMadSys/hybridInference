@@ -31,6 +31,7 @@ CATEGORIES = (
     "docker_shared",
     "python_tests",
     "docs",
+    "tutorial_e2e",
     "security_only",
     "full",
 )
@@ -76,6 +77,29 @@ BACKEND_EXAMPLE_PREFIX = "distributions/example/"
 # change. Named file rather than a prefix: only this page makes claims CI can
 # check, and it still gates the Sphinx build as ordinary docs/developer/ source.
 BACKEND_TUTORIAL_FILES = frozenset({"docs/developer/router-tutorial.md"})
+# The full runnable tutorial exercises the example's orchestration plus the
+# complete backend and frontend applications. Their internal imports are not a
+# stable public boundary: a shared UI primitive, analytics helper, or logging
+# task can break signup, Admin, completion history, or Playground even when its
+# path does not name that feature. Select the E2E for either whole application
+# tree rather than maintaining another incomplete dependency graph here.
+TUTORIAL_E2E_FILES = frozenset(
+    {
+        ".dockerignore",
+        "Makefile",
+        "deploy/docker/docker-compose.yml",
+        "deploy/docker/Dockerfile.backend",
+        "deploy/docker/Dockerfile.backend.dockerignore",
+        "deploy/docker/Dockerfile.frontend",
+        "deploy/docker/Dockerfile.frontend.dockerignore",
+        "docs/developer/router-tutorial.md",
+    }
+)
+TUTORIAL_E2E_PREFIXES = (
+    BACKEND_EXAMPLE_PREFIX,
+    "apps/backend/",
+    "apps/frontend/",
+)
 # Dockerfile.oncall COPYs the entire apps/backend/serving tree, so any serving
 # change -- not just serving/oncall -- is baked into the on-call image and must
 # rebuild it. Keep this in sync with that Dockerfile's COPY scope.
@@ -120,6 +144,7 @@ class Classification:
     docker_shared: bool = False
     python_tests: bool = False
     docs: bool = False
+    tutorial_e2e: bool = False
     security_only: bool = False
     full: bool = False
     reason: str = ""
@@ -171,6 +196,18 @@ def _is_docs(path: str) -> bool:
     return path.endswith(".md")
 
 
+def _is_tutorial_e2e(path: str) -> bool:
+    if (
+        path.endswith(".md")
+        and path not in TUTORIAL_E2E_FILES
+        and not path.startswith(BACKEND_EXAMPLE_PREFIX)
+    ):
+        return False
+    return path in TUTORIAL_E2E_FILES or any(
+        path.startswith(prefix) for prefix in TUTORIAL_E2E_PREFIXES
+    )
+
+
 def classify(files: Sequence[str] | None) -> Classification:
     """Classify a diff into trigger booleans; ``None`` forces a full run."""
     if files is None:
@@ -192,6 +229,12 @@ def classify(files: Sequence[str] | None) -> Classification:
         matched.setdefault(category, []).append(path)
 
     for path in normalized:
+        # The E2E contract is orthogonal to the ordinary application buckets.
+        # Record it before branches that `continue`, including full triggers
+        # such as Makefile and the runnable tutorial's Markdown.
+        if _is_tutorial_e2e(path):
+            result.tutorial_e2e = True
+            hit("tutorial_e2e", path)
         # 1. Full triggers win outright (broadest blast radius / build inputs).
         if _is_full(path):
             result.full = True
@@ -281,6 +324,7 @@ def classify(files: Sequence[str] | None) -> Classification:
         or result.alert_control_plane
         or result.docker_shared
         or result.python_tests
+        or result.tutorial_e2e
     )
     # `docs` is deliberately absent from `narrow`: it gates the docs build, not
     # an application check, so a docs-only change stays security_only.

@@ -2,9 +2,10 @@
 
 Detailed installation instructions for HybridInference.
 
-To see a gateway answer a request before configuring anything, follow the
-[Router Tutorial](router-tutorial.md) instead: it needs no provider key, no
-database and no `.env` file. This page covers the full stack.
+To see a gateway answer a request before configuring anything, then extend the
+same local project into the Web/Admin Console with accounts and API keys,
+follow the [Router Tutorial](router-tutorial.md). It needs no provider key or
+host `.env`. This page covers configuring a production deployment.
 
 ## Production (Docker)
 
@@ -52,7 +53,7 @@ cp .env.example .env
 # Edit .env with your settings
 
 # Run the backend locally
-uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
+PYTHONPATH=apps/backend uv run uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
 
 # In another terminal — run the frontend
 cd apps/frontend
@@ -86,9 +87,10 @@ Required for production:
 Optional (enable providers as needed):
 
 
-> **Note**: When running locally without Docker, the backend connects to GPU endpoints
-> via `localhost`. In Docker, these are rewritten to `host.docker.internal` in
-> `config/models.yaml`. See the comment at the top of that file.
+> **Note**: A backend running directly on the host can reach a host inference
+> server through `localhost`. A backend in Docker must use a Docker-reachable
+> address such as `host.docker.internal`, written explicitly in the active
+> model registry; HybridInference does not rewrite provider URLs.
 
 ## Verification
 

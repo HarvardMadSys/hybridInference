@@ -29,29 +29,31 @@ curl localhost:8080/v1/chat/completions \
 
 For a deterministic Docker path that needs no provider key, run the public
 [router distribution example](distributions/example/README.md). The
-[Router Tutorial](docs/developer/router-tutorial.md) walks the same path from
-clone to first request, including streaming and how to turn the example into
-your own distribution. CI executes the same contract:
+[Router Tutorial](docs/developer/router-tutorial.md) follows one deployment
+from its first routed request into the Web/Admin Console, accounts, API keys,
+request history, and finally a local vLLM/SGLang/Ollama server. CI executes the
+same Stage 1 → Stage 2 transition and verifies the Stage 3 override against a
+local deterministic fixture. The user journey begins:
 
 ```bash
 make up DISTRIBUTION=example
 make smoke DISTRIBUTION=example
-make down DISTRIBUTION=example
+make demo DISTRIBUTION=example
+
+# Sign up as admin@local.dev with a demo-only password, then reuse it here:
+EXAMPLE_DEMO_ADMIN_PASSWORD='<the same password>' \
+make demo-smoke DISTRIBUTION=example
+
+make demo-down DISTRIBUTION=example
 ```
 
-`DB_ENABLED=false USER_AUTH_ENABLED=false` is the evaluation shortcut: no
-Postgres, and every request is treated as an anonymous admin. A real
-deployment drops both and gets user accounts, API keys, quotas and request
-history — see the [Developer README](README.developer.md).
+Stage 1 uses `DB_ENABLED=false USER_AUTH_ENABLED=false` so the first request
+has only two moving parts. Stage 2 continues the same Compose project with
+Postgres and authentication enabled; it is not a separate deployment mode.
 
-Both config paths matter. Point only `MODELS_CONFIG_PATH` at the example and
-the gateway still reads `config/routing.yaml`, an operator's own deployment
-map, then warns about every machine in it that you do not have.
-
-To route to a local model instead, point the first route of
-`llama-3.1-8b-hybrid` at your own OpenAI-compatible server (Ollama, vLLM or
-SGLang). It is preferred over the OpenRouter route, which stays as automatic
-fallback.
+The example pins its own model registry and minimal routing config. In Stage 3,
+the public model remains `example-chat` while three documented environment
+variables point its route at your local OpenAI-compatible server.
 
 ## Start Here
 

@@ -14,6 +14,12 @@ services:
       EXAMPLE_UPSTREAM_BASE_URL: ${EXAMPLE_UPSTREAM_BASE_URL}
       EXAMPLE_UPSTREAM_API_KEY: ${EXAMPLE_UPSTREAM_API_KEY}
       EXAMPLE_UPSTREAM_MODEL: ${EXAMPLE_UPSTREAM_MODEL}
+      # Keep Stage 1's published identity truthful when the tutorial port is
+      # overridden (including in collision-safe CI runs). Stage 2 replaces
+      # these with the frontend origin in docker-compose.demo.yml.
+      SITE_PUBLIC_BASE_URL: http://localhost:${BACKEND_PORT:-18080}
+      BASE_URL: http://localhost:${BACKEND_PORT:-18080}
+      FRONTEND_URL: http://localhost:${BACKEND_PORT:-18080}
     # Compose merges volumes by target, so naming this one replaces the
     # production bind mount rather than adding to it. `../../var/data` is
     # read-write and `var/**` is gitignored, so Docker created the missing host

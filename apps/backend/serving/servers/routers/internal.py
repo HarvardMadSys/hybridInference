@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from serving.servers.deps import get_operational_store
-from serving.servers.routers.auth_routes import hash_refresh_token
+from serving.servers.routers.auth_routes import get_refresh_token_cookie, hash_refresh_token
 
 router = APIRouter(prefix="/internal", tags=["Internal"])
 
@@ -46,7 +46,7 @@ async def _validate_session(refresh_token: str | None, op_store: Any) -> dict[st
 
 @router.get("/verify-admin")
 async def verify_admin(
-    refresh_token: str | None = Cookie(None),
+    refresh_token: str | None = Depends(get_refresh_token_cookie),
     op_store=Depends(get_operational_store),
 ) -> Response:
     """Verify that the caller has admin role via their refresh_token cookie.

@@ -51,6 +51,7 @@ def make_settings(monkeypatch) -> Callable[[dict[str, str] | None, str | None], 
                     "DB_",
                     "SIGNUP_",
                     "COOKIE_",
+                    "REFRESH_",
                     "SMTP_",
                     "CORS_",
                     "BASE_URL",
@@ -83,6 +84,7 @@ def test_defaults_without_env_file(make_settings) -> None:
     # In production we default to secure cookies; override via env for local HTTP dev if needed.
     assert settings.cookie_secure is True
     assert settings.cookie_samesite == "lax"
+    assert settings.refresh_token_cookie_name == "refresh_token"
     assert settings.db_host == "localhost"
     assert settings.db_port == 5432
 
@@ -93,11 +95,13 @@ def test_env_overrides_ignored_env_file(make_settings) -> None:
         "JWT_ACCESS_TOKEN_EXPIRE_MINUTES": "30",
         "SIGNUP_ENABLED": "0",
         "DB_PORT": "5433",
+        "REFRESH_TOKEN_COOKIE_NAME": "local_example_refresh",
     }
     settings = make_settings(env=env, env_file=None)
     assert settings.jwt_access_token_expire_minutes == 30
     assert settings.signup_enabled is False
     assert settings.db_port == 5433
+    assert settings.refresh_token_cookie_name == "local_example_refresh"
 
 
 def test_env_precedence_env_over_dotenv(tmp_path, make_settings) -> None:

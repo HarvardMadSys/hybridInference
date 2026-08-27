@@ -30,6 +30,8 @@ features:
 def _clean(monkeypatch):
     monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
     monkeypatch.delenv("DISTRIBUTION_CONFIG_MODE", raising=False)
+    monkeypatch.delenv("SITE_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("SITE_SUPPORT_EMAIL", raising=False)
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
     yield
@@ -75,6 +77,31 @@ async def test_serves_manifest_site_identity(client, monkeypatch, tmp_path):
     assert body["site"]["public_base_url"] == "https://gateway.example.com"
     assert body["site"]["support_email"] == "admin@example.com"
     assert body["features"]["routers"] == ["fixed", "routewise"]
+
+
+@pytest.mark.asyncio
+async def test_site_identity_env_overrides_manifest_site_fields(client, monkeypatch, tmp_path):
+    manifest = tmp_path / "distribution.yaml"
+    manifest.write_text(MANIFEST)
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
+    monkeypatch.setenv("SITE_PUBLIC_BASE_URL", "http://localhost:13001")
+    monkeypatch.setenv("SITE_SUPPORT_EMAIL", "support@local.dev")
+    get_settings.cache_clear()
+    get_distribution_config.cache_clear()
+
+    body = (await client.get("/site-config")).json()
+
+    assert body["site"] == {
+        "public_base_url": "http://localhost:13001",
+        "support_email": "support@local.dev",
+    }
+    assert body["distribution"] == {
+        "id": "example-site",
+        "display_name": "Example Site",
+        "release": "2026.07.1",
+    }
+    assert body["features"]["public_signup"] is True
 
 
 @pytest.mark.asyncio

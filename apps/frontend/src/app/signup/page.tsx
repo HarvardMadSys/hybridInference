@@ -6,7 +6,7 @@ import Script from 'next/script';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { buildCombinedUseCase, signupSchema, SignupFormData } from '@/lib/schemas/auth';
-import { signup, SignupResponse } from '@/lib/api/auth';
+import { signup, type SignupResponse } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
@@ -140,11 +140,7 @@ export default function SignupPage() {
           <h1 className="text-2xl font-bold text-gray-900">
             {isPendingApproval ? 'Registration Submitted' : 'Registration Successful!'}
           </h1>
-          <p className="mt-3 text-base text-gray-600">
-            {isPendingApproval
-              ? 'Your registration is pending admin approval. You will receive an email once your account is approved. In the meantime, please verify your email address if you received a verification link.'
-              : "We've sent a verification email to your inbox. Please check and click the link to complete verification."}
-          </p>
+          <p className="mt-3 text-base text-gray-600">{signupResult.message}</p>
           <div className="mt-6">
             <a
               href="/login"

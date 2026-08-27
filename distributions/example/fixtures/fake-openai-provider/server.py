@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -10,7 +11,7 @@ from typing import Any
 RESPONSE_TEXT = "RUNNABLE_EXAMPLE_OK"
 
 
-def build_completion(payload: dict[str, Any]) -> dict[str, Any]:
+def build_completion(payload: dict[str, Any], response_text: str = RESPONSE_TEXT) -> dict[str, Any]:
     """Build a deterministic non-streaming OpenAI completion."""
     model = str(payload.get("model") or "example-upstream")
     return {
@@ -21,7 +22,7 @@ def build_completion(payload: dict[str, Any]) -> dict[str, Any]:
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": RESPONSE_TEXT},
+                "message": {"role": "assistant", "content": response_text},
                 "finish_reason": "stop",
             }
         ],
@@ -29,7 +30,9 @@ def build_completion(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_stream_frames(payload: dict[str, Any]) -> tuple[bytes, ...]:
+def build_stream_frames(
+    payload: dict[str, Any], response_text: str = RESPONSE_TEXT
+) -> tuple[bytes, ...]:
     """Build deterministic OpenAI-compatible SSE frames."""
     model = str(payload.get("model") or "example-upstream")
 
@@ -50,7 +53,7 @@ def build_stream_frames(payload: dict[str, Any]) -> tuple[bytes, ...]:
 
     events = (
         chunk({"role": "assistant", "content": ""}, None),
-        chunk({"content": RESPONSE_TEXT}, None),
+        chunk({"content": response_text}, None),
         chunk({}, "stop"),
     )
     frames = tuple(
@@ -64,6 +67,9 @@ class FakeHandler(BaseHTTPRequestHandler):
     """Serve the minimal health, models, and chat-completions surface."""
 
     protocol_version = "HTTP/1.1"
+    response_text = RESPONSE_TEXT
+    expected_model: str | None = None
+    expected_api_key: str | None = None
 
     def log_message(self, fmt: str, *args: Any) -> None:
         """Keep example output quiet; the gateway logs the routed request."""
@@ -74,11 +80,12 @@ class FakeHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"status": "ok"})
             return
         if self.path == "/v1/models":
+            model = self.expected_model or "example-upstream"
             self._send_json(
                 200,
                 {
                     "object": "list",
-                    "data": [{"id": "example-upstream", "object": "model"}],
+                    "data": [{"id": model, "object": "model"}],
                 },
             )
             return
@@ -96,11 +103,21 @@ class FakeHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": {"message": f"Invalid JSON body: {exc}"}})
             return
 
+        if self.expected_api_key is not None:
+            supplied = self.headers.get("Authorization", "")
+            expected = f"Bearer {self.expected_api_key}"
+            if not hmac.compare_digest(supplied, expected):
+                self._send_json(401, {"error": {"message": "Invalid provider credential"}})
+                return
+        if self.expected_model is not None and payload.get("model") != self.expected_model:
+            self._send_json(400, {"error": {"message": "Unexpected provider model"}})
+            return
+
         if payload.get("stream"):
             self._send_stream(payload)
             return
 
-        self._send_json(200, build_completion(payload))
+        self._send_json(200, build_completion(payload, self.response_text))
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
@@ -130,7 +147,7 @@ class FakeHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
             self.end_headers()
-            for frame in build_stream_frames(payload):
+            for frame in build_stream_frames(payload, self.response_text):
                 self.wfile.write(frame)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
@@ -142,7 +159,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8351)
+    parser.add_argument("--response-text", default=RESPONSE_TEXT)
+    parser.add_argument("--expected-model")
+    parser.add_argument("--expected-api-key")
     args = parser.parse_args()
+    FakeHandler.response_text = args.response_text
+    FakeHandler.expected_model = args.expected_model
+    FakeHandler.expected_api_key = args.expected_api_key
     server = ThreadingHTTPServer((args.host, args.port), FakeHandler)
     server.daemon_threads = True
     print(f"OpenAI-compatible example provider listening on {args.host}:{args.port}", flush=True)
