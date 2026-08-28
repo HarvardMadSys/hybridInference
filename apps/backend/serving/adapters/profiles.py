@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import os
 from enum import Enum
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from serving.utils.logging import get_logger
@@ -33,13 +34,30 @@ class ProviderProfile(str, Enum):
     ZAI = "zai"
 
 
-def get_usage_normalizer(profile: ProviderProfile) -> Callable[[dict[str, Any]], UsageInfo]:
-    """Return the usage normalizer for the given profile."""
+def get_usage_normalizer(
+    profile: ProviderProfile,
+    *,
+    null_cache_details_means_miss: bool = False,
+) -> Callable[[dict[str, Any]], UsageInfo]:
+    """Return the usage normalizer for the given profile.
+
+    ``null_cache_details_means_miss`` is the route's own statement that a null
+    ``*_tokens_details`` block from this endpoint is a reported cache miss
+    rather than silence; see ``ModelConfig.null_cache_details_means_miss``. It
+    is inert for the DeepSeek profile, which reads cache usage from
+    ``prompt_cache_hit_tokens`` / ``prompt_cache_miss_tokens`` and never
+    reaches the nested-details path.
+    """
     if profile == ProviderProfile.DEEPSEEK:
         return normalize_usage_deepseek
-    if profile == ProviderProfile.OPENROUTER:
-        return normalize_usage_openrouter
-    return normalize_usage_default
+    base = (
+        normalize_usage_openrouter
+        if profile == ProviderProfile.OPENROUTER
+        else normalize_usage_default
+    )
+    if not null_cache_details_means_miss:
+        return base
+    return partial(base, null_cache_details_means_miss=True)
 
 
 def filter_response_format(
@@ -295,7 +313,9 @@ def function_call_delta_to_tool_calls(
     return None
 
 
-def normalize_usage_default(usage_data: dict[str, Any]) -> UsageInfo:
+def normalize_usage_default(
+    usage_data: dict[str, Any], *, null_cache_details_means_miss: bool = False
+) -> UsageInfo:
     """Standard OpenAI-compatible usage extraction.
 
     Uses extract_reasoning_tokens and extract_cache_tokens to handle nested
@@ -303,10 +323,15 @@ def normalize_usage_default(usage_data: dict[str, Any]) -> UsageInfo:
     - completion_tokens_details.reasoning_tokens (ZAI, MiniMax, OpenAI o1)
     - prompt_tokens_details.cached_tokens (ZAI, MiniMax, Chutes, OpenAI)
     in addition to top-level fields.
+
+    ``null_cache_details_means_miss`` comes from the route config and licenses
+    reading a null details block as a reported 0.
     """
     from .base import UsageInfo
 
-    cache_read, cache_write = extract_cache_tokens(usage_data)
+    cache_read, cache_write = extract_cache_tokens(
+        usage_data, null_details_means_miss=null_cache_details_means_miss
+    )
 
     return UsageInfo(
         prompt_tokens=usage_data.get("prompt_tokens", 0),
@@ -351,7 +376,9 @@ def normalize_usage_deepseek(usage_data: dict[str, Any]) -> UsageInfo:
     )
 
 
-def normalize_usage_openrouter(usage_data: dict[str, Any]) -> UsageInfo:
+def normalize_usage_openrouter(
+    usage_data: dict[str, Any], *, null_cache_details_means_miss: bool = False
+) -> UsageInfo:
     """Extract usage info from an OpenRouter response (tokens + optional cost).
 
     OpenRouter reports `cost` (USD, per-request) when the request body sets
@@ -359,7 +386,9 @@ def normalize_usage_openrouter(usage_data: dict[str, Any]) -> UsageInfo:
     prompt_tokens_details / completion_tokens_details) are normalized by
     normalize_usage_default via the shared token_utils extractors.
     """
-    base = normalize_usage_default(usage_data)
+    base = normalize_usage_default(
+        usage_data, null_cache_details_means_miss=null_cache_details_means_miss
+    )
 
     cost = usage_data.get("cost")
     if cost is not None:

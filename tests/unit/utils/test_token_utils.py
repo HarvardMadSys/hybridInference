@@ -107,43 +107,66 @@ class TestExtractCacheTokens:
         usage = {"prompt_tokens_details": "not a dict"}
         assert extract_cache_tokens(usage) == (None, None)
 
-    # --- cache read: details present but null (a reported miss) ---
+    # --- cache read: details present but null ---
+    #
+    # The null is ambiguous on the wire: sglang with --enable-cache-report sends
+    # it for a prefix-cache miss, sglang without the flag and vLLM without
+    # --enable-prompt-tokens-details send it on every request. Default is
+    # "unknown"; only a route that declares it reports may read it as 0.
 
-    def test_null_prompt_tokens_details_is_a_reported_zero(self):
-        """sglang answers a prefix-cache miss with a null details block.
+    def test_null_prompt_tokens_details_stays_unknown_by_default(self):
+        """Unlicensed, a null details block must not become a measured 0.
 
-        The key is there, so the provider *did* report -- filing it as None
-        would make a measured miss indistinguishable from a provider that
-        cannot report cache usage at all.
+        Reading it as 0 for an endpoint that never reports would replace an
+        honest NULL in api_logs with a fabricated miss.
         """
         usage = {"prompt_tokens": 415, "prompt_tokens_details": None}
-        assert extract_cache_tokens(usage) == (0, None)
+        assert extract_cache_tokens(usage) == (None, None)
 
-    def test_null_input_tokens_details_is_a_reported_zero(self):
+    def test_null_input_tokens_details_stays_unknown_by_default(self):
+        assert extract_cache_tokens({"input_tokens_details": None}) == (None, None)
+
+    def test_null_input_token_details_stays_unknown_by_default(self):
+        assert extract_cache_tokens({"input_token_details": None}) == (None, None)
+
+    def test_null_prompt_tokens_details_is_a_reported_zero_when_licensed(self):
+        """On a route that declares it reports, the null is a measured miss.
+
+        Filing it as None there would make a measured miss indistinguishable
+        from a provider that cannot report cache usage at all.
+        """
+        usage = {"prompt_tokens": 415, "prompt_tokens_details": None}
+        assert extract_cache_tokens(usage, null_details_means_miss=True) == (0, None)
+
+    def test_null_input_tokens_details_is_a_reported_zero_when_licensed(self):
         usage = {"input_tokens_details": None}
-        assert extract_cache_tokens(usage) == (0, None)
+        assert extract_cache_tokens(usage, null_details_means_miss=True) == (0, None)
 
-    def test_null_input_token_details_is_a_reported_zero(self):
+    def test_null_input_token_details_is_a_reported_zero_when_licensed(self):
         usage = {"input_token_details": None}
-        assert extract_cache_tokens(usage) == (0, None)
+        assert extract_cache_tokens(usage, null_details_means_miss=True) == (0, None)
 
     def test_null_details_does_not_mask_a_populated_sibling(self):
         """A null field must not short-circuit one that carries a real count."""
         usage = {"prompt_tokens_details": None, "input_tokens_details": {"cached_tokens": 64}}
         assert extract_cache_tokens(usage) == (64, None)
+        assert extract_cache_tokens(usage, null_details_means_miss=True) == (64, None)
 
     def test_direct_field_preferred_over_null_details(self):
         usage = {"cached_tokens": 128, "prompt_tokens_details": None}
         assert extract_cache_tokens(usage) == (128, None)
+        assert extract_cache_tokens(usage, null_details_means_miss=True) == (128, None)
 
     def test_no_cache_keys_at_all_stays_none(self):
-        """A provider with no cache reporting must stay None, not become 0."""
+        """No details key at all is unknown even on a licensed route."""
         usage = {"prompt_tokens": 415, "completion_tokens": 64, "total_tokens": 479}
         assert extract_cache_tokens(usage) == (None, None)
+        assert extract_cache_tokens(usage, null_details_means_miss=True) == (None, None)
 
     def test_null_details_does_not_affect_cache_write(self):
         usage = {"prompt_tokens_details": None}
         assert extract_cache_tokens(usage)[1] is None
+        assert extract_cache_tokens(usage, null_details_means_miss=True)[1] is None
 
     # --- cache write ---
 
@@ -251,37 +274,51 @@ class TestNormalizeUsageCacheTokens:
         assert result["reasoning_tokens"] == 20
         assert result["cache_read_tokens"] == 30
 
-    def test_sglang_prefix_cache_miss_flattens_to_zero(self):
-        """Verbatim sglang usage for a cold prompt (h200a, 2026-08-28).
+    def test_sglang_prefix_cache_hit_flattens_to_count(self):
+        """Verbatim sglang usage for a warm prompt (h200a :8003, 2026-08-28)."""
+        usage = {
+            "prompt_tokens": 4817,
+            "total_tokens": 4818,
+            "completion_tokens": 1,
+            "prompt_tokens_details": {"cached_tokens": 4608},
+            "reasoning_tokens": 0,
+        }
+        result = normalize_usage(usage)
+        assert result["cache_read_tokens"] == 4608
 
-        A miss arrives as a null details block, not `{"cached_tokens": 0}`.
-        It must reach api_logs as 0 -- NULL there means "provider does not
-        report cache usage", which is not what happened.
+    def test_null_details_stays_absent_without_route_context(self):
+        """normalize_usage has no route context, so a null block stays unknown.
+
+        Verbatim sglang usage for a cold prompt (h200a :8003, 2026-08-28). Its
+        miss is recorded as 0 by the adapter, which does hold the route's
+        ``null_cache_details_means_miss``; this helper -- used on the gateway's
+        own already-normalized chunks and on the storage path -- must not guess.
         """
         usage = {
-            "prompt_tokens": 37,
-            "total_tokens": 38,
+            "prompt_tokens": 4817,
+            "total_tokens": 4818,
             "completion_tokens": 1,
             "prompt_tokens_details": None,
             "reasoning_tokens": 0,
         }
         result = normalize_usage(usage)
-        assert result["cache_read_tokens"] == 0
+        assert "cache_read_tokens" not in result
 
-    def test_sglang_prefix_cache_hit_flattens_to_count(self):
-        """Same request warm: the paired hit the miss above has to be told from."""
+    def test_adapter_reported_zero_survives_the_storage_path(self):
+        """A 0 already resolved by the adapter must stay 0, not fall back to NULL."""
         usage = {
-            "prompt_tokens": 1430,
-            "total_tokens": 1431,
+            "prompt_tokens": 4817,
+            "total_tokens": 4818,
             "completion_tokens": 1,
-            "prompt_tokens_details": {"cached_tokens": 1280},
-            "reasoning_tokens": 0,
+            "cache_read_tokens": 0,
+            "cached_tokens": 0,
+            "prompt_tokens_details": {"cached_tokens": 0},
         }
         result = normalize_usage(usage)
-        assert result["cache_read_tokens"] == 1280
+        assert result["cache_read_tokens"] == 0
 
     def test_provider_without_cache_reporting_stays_absent(self):
-        """vLLM/diffusiongemma send no cache key at all -- still not a miss."""
+        """A provider that sends no cache key at all is unknown, not a miss."""
         usage = {"prompt_tokens": 415, "completion_tokens": 64, "total_tokens": 479}
         result = normalize_usage(usage)
         assert "cache_read_tokens" not in result

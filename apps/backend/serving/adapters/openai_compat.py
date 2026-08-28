@@ -196,7 +196,14 @@ class OpenAICompatAdapter(BaseAdapter):
             )
         except ValueError:
             self._usage_profile = ProviderProfile.DEFAULT
-        self._usage_normalizer = get_usage_normalizer(self._usage_profile)
+        # Route-level statement that a null details block from this endpoint is
+        # a reported cache miss rather than "no cache reporting at all".
+        self._usage_normalizer = get_usage_normalizer(
+            self._usage_profile,
+            null_cache_details_means_miss=bool(
+                getattr(config, "null_cache_details_means_miss", False)
+            ),
+        )
 
     def _no_usable_key_error(self, provider: str, role: str | None) -> KeyPoolExhausted:
         """Build the pre-flight "no key for this caller" error, typed by cause.

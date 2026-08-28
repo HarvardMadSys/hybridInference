@@ -11,6 +11,7 @@ from serving.adapters.profiles import (
     filter_sampling_params,
     function_call_delta_to_tool_calls,
     get_stream_idle_timeout_seconds,
+    get_usage_normalizer,
     normalize_messages_for_profile,
     normalize_tools_for_profile,
     normalize_usage_deepseek,
@@ -568,3 +569,86 @@ def test_normalize_messages_does_not_mutate_input() -> None:
     snapshot = copy.deepcopy(messages)
     normalize_messages_for_profile(ProviderProfile.MINIMAX, messages)
     assert messages == snapshot
+
+
+# ---------------------------------------------------------------------------
+# null *_tokens_details: unknown by default, a reported miss only when licensed
+# ---------------------------------------------------------------------------
+
+# Verbatim sglang usage for a cold prompt (h200a :8003, 2026-08-28).
+_SGLANG_COLD = {
+    "prompt_tokens": 4817,
+    "total_tokens": 4818,
+    "completion_tokens": 1,
+    "prompt_tokens_details": None,
+    "reasoning_tokens": 0,
+}
+
+
+def test_default_profile_leaves_a_null_details_block_unknown() -> None:
+    info = normalize_usage_default(dict(_SGLANG_COLD))
+
+    assert info.cache_read_reported is False
+    assert "cache_read_tokens" not in info.to_dict()
+
+
+def test_licensed_route_reads_a_null_details_block_as_a_reported_zero() -> None:
+    info = normalize_usage_default(dict(_SGLANG_COLD), null_cache_details_means_miss=True)
+
+    assert info.cache_read_reported is True
+    assert info.cache_read_tokens == 0
+    # to_dict emits the explicit 0 so the storage path records 0, not NULL.
+    assert info.to_dict()["cache_read_tokens"] == 0
+    assert info.to_dict()["prompt_tokens_details"] == {"cached_tokens": 0}
+
+
+def test_licensing_does_not_change_a_reported_hit() -> None:
+    warm = {**_SGLANG_COLD, "prompt_tokens_details": {"cached_tokens": 4608}}
+
+    for licensed in (False, True):
+        info = normalize_usage_default(dict(warm), null_cache_details_means_miss=licensed)
+        assert info.cache_read_tokens == 4608
+        assert info.cache_read_reported is True
+
+
+def test_licensing_does_not_invent_a_zero_without_a_details_key() -> None:
+    usage = {"prompt_tokens": 415, "completion_tokens": 64, "total_tokens": 479}
+
+    info = normalize_usage_default(usage, null_cache_details_means_miss=True)
+
+    assert info.cache_read_reported is False
+
+
+def test_get_usage_normalizer_default_is_unlicensed() -> None:
+    info = get_usage_normalizer(ProviderProfile.DEFAULT)(dict(_SGLANG_COLD))
+
+    assert info.cache_read_reported is False
+
+
+def test_get_usage_normalizer_licensed_reports_the_zero() -> None:
+    normalizer = get_usage_normalizer(ProviderProfile.DEFAULT, null_cache_details_means_miss=True)
+
+    assert normalizer(dict(_SGLANG_COLD)).cache_read_tokens == 0
+
+
+def test_openrouter_profile_keeps_cost_while_threading_the_licence() -> None:
+    normalizer = get_usage_normalizer(
+        ProviderProfile.OPENROUTER, null_cache_details_means_miss=True
+    )
+
+    info = normalizer({**_SGLANG_COLD, "cost": 0.25})
+
+    assert info.upstream_cost_usd == 0.25
+    assert info.cache_read_tokens == 0
+    assert info.cache_read_reported is True
+
+
+def test_deepseek_profile_ignores_the_licence() -> None:
+    # DeepSeek reads prompt_cache_hit_tokens / prompt_cache_miss_tokens and never
+    # reaches the nested-details path, so the flag must be inert rather than
+    # flipping a genuinely unreported request to 0.
+    normalizer = get_usage_normalizer(ProviderProfile.DEEPSEEK, null_cache_details_means_miss=True)
+
+    info = normalizer(dict(_SGLANG_COLD))
+
+    assert info.cache_read_reported is False

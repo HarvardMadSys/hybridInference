@@ -72,6 +72,8 @@ def extract_reasoning_tokens(usage: dict[str, Any] | None) -> int | None:
 
 def extract_cache_tokens(
     usage: dict[str, Any] | None,
+    *,
+    null_details_means_miss: bool = False,
 ) -> tuple[int | None, int | None]:
     """Extract cache read and write tokens from various provider formats.
 
@@ -88,11 +90,14 @@ def extract_cache_tokens(
     - usage["cache_creation_input_tokens"] (Anthropic Claude write)
     - usage["cache_write_tokens"] (direct/normalized)
 
-    A ``*_tokens_details`` key present but null counts as a reported 0 (sglang
-    and vLLM answer a prefix-cache miss that way).
-
     Args:
         usage: Usage dictionary from model response
+        null_details_means_miss: Whether a ``*_tokens_details`` key that is
+            present but null may be read as a reported 0. Off by default,
+            because that null is ambiguous on the wire (see the note above the
+            nested-details loop): only a caller holding route configuration --
+            ``ModelConfig.null_cache_details_means_miss`` -- knows whether the
+            endpoint reports cache usage at all, so only it can license the 0.
 
     Returns:
         Tuple of (cache_read_tokens, cache_write_tokens), each int or None.
@@ -127,18 +132,24 @@ def extract_cache_tokens(
                 pass
 
     # Nested: OpenAI/Azure use prompt_tokens_details; MiniMax may use input token details.
-    # A details key carried as null is the provider *reporting* that nothing was
-    # cached: sglang (with --enable-cache-report) and vLLM answer a prefix-cache
-    # miss with `"prompt_tokens_details": null` rather than `{"cached_tokens": 0}`.
-    # That is the same "supported but no hit" the direct-field branch above already
-    # records as 0, so record it as 0 here too -- otherwise a reported miss is
-    # filed as an unmeasured request and `None` stops meaning the one thing the
-    # rest of the system reads it as (`cache_read_reported=False`, the field
-    # dropped from `UsageInfo.to_dict()`, NULL in `api_logs.cache_read_tokens`),
-    # which is a provider that says nothing about caching at all. Applied only
-    # after every field has had its turn, so a null `prompt_tokens_details` cannot
-    # mask a populated `input_tokens_details` on a provider that sends both.
-    reported_no_cache = False
+    #
+    # A details key carried as null is ambiguous, and nothing in the response
+    # resolves it. sglang started with --enable-cache-report answers a
+    # prefix-cache *miss* with `"prompt_tokens_details": null` rather than
+    # `{"cached_tokens": 0}` -- a reported 0, which the direct-field branch
+    # above would have recorded as 0. But sglang started *without* that flag,
+    # and vLLM without --enable-prompt-tokens-details, send the identical null
+    # on every request, hit or miss (vllm-project/vllm#44377); there the null
+    # means "this server does not report cache usage".
+    #
+    # Reading it as 0 unconditionally would turn the second case into a
+    # fabricated measurement -- worse than the missing value it replaces,
+    # because `None` is the one thing the rest of the system reads as "nothing
+    # was reported" (`cache_read_reported=False`, the field dropped from
+    # `UsageInfo.to_dict()`, NULL in `api_logs.cache_read_tokens`). So the 0 is
+    # only taken when the caller passes ``null_details_means_miss``, i.e. when
+    # route configuration says this endpoint reports.
+    saw_null_details = False
     for details_field in (
         "prompt_tokens_details",
         "input_tokens_details",
@@ -148,7 +159,7 @@ def extract_cache_tokens(
             continue
         details = usage[details_field]
         if details is None:
-            reported_no_cache = True
+            saw_null_details = True
             continue
         if isinstance(details, dict):
             for nested_field in ("cached_tokens", "cache_read_tokens", "cache_hit_tokens"):
@@ -165,7 +176,10 @@ def extract_cache_tokens(
             if cache_read is not None:
                 break
 
-    if cache_read is None and reported_no_cache:
+    # Applied only after every details field has had its turn, so a null
+    # `prompt_tokens_details` cannot mask a populated `input_tokens_details` on
+    # a provider that sends both.
+    if cache_read is None and saw_null_details and null_details_means_miss:
         cache_read = 0
 
     # --- cache write tokens ---
