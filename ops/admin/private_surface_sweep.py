@@ -38,9 +38,7 @@ PATTERNS: dict[str, re.Pattern[str]] = {
 # clean only when this mapping is empty and no unclassified finding remains.
 PENDING: dict[str, str] = {
     "benchmark/": "machine-specific benchmark configuration",
-    "deploy/": "site-specific units and deployment defaults",
     "docs/agents/": "historical plans and specs",
-    "docs/developer/": "deployment-specific developer documentation",
     "docs/superpowers/": "historical plans and specs",
     "tests/": "production-shaped fixtures awaiting neutralization or migration",
 }
@@ -53,6 +51,10 @@ GUARDS = {
 IGNORED_VALUES = {
     "/home/agent",
     "/home/somebody",
+    # Placeholder in docs/developer/staging.md ("/home/to/dir"), not a person.
+    "/home/to",
+    # Synthetic user in test_rag_config.py's parents[4] arithmetic test.
+    "/home/dev",
 }
 
 _SNIFF_BYTES = 8192

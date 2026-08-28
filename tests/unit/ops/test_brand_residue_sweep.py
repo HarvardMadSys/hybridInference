@@ -11,7 +11,7 @@ REPO = Path(__file__).resolve().parents[3]
 
 
 def test_classify_matches_prefixes_and_exact_files() -> None:
-    assert classify("distributions/freeinference/distribution.yaml") == "distributions/"
+    assert classify("docs/agents/plans/some-plan.md") == "docs/agents/"
     assert classify("LICENSE") == "LICENSE"
     assert classify("apps/backend/serving/config/settings.py") == "apps/backend/"
 

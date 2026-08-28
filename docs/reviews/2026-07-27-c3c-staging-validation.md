@@ -43,9 +43,8 @@ model uses, keeping the legacy circuit alert's dedupe key collision-free.
 
 ## Evidence ① — the firing parent
 
-Captured by reading Slack directly (channel `<slack-channel>`,
-`C00000000`), message `1700000000.000000`
-([permalink](https://example.slack.com/archives/C00000000/p0000000000000000)):
+Captured by reading the team alert channel directly (workspace-internal
+permalink withheld from the published record):
 
 ```
 ❌ STAGING · Firing

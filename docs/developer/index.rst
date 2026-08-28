@@ -25,8 +25,7 @@ as a worked example of what that covers.
    automation-score
    rag-chat
    openrouter
-   freeinference
+   client-ip
    claude-code-setup
-   fasrc
    contributing
    staging

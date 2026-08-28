@@ -64,6 +64,13 @@ ATTRIBUTION: dict[str, str] = {
         "the same default, and comments naming this deployment as the example "
         "for why each neutral default is what it is"
     ),
+    "docs/developer/router-tutorial.md": "the clone URL, same as installation.md",
+    "CLAUDE.md": (
+        "links to the public sibling cloud-agent repository, cited the way a dependency is"
+    ),
+    "AGENTS.md": (
+        "links to the public sibling cloud-agent repository, cited the way a dependency is"
+    ),
 }
 
 # GUARDS are files whose job is to notice these markers. They have to contain
@@ -85,13 +92,15 @@ GUARDS: dict[str, str] = {
     "tests/unit/config/test_contract_settings_defaults.py": "asserts no marker in the CORS default",
     "tests/unit/deploy/test_compose_identity.py": "asserts compose defaults name no deployment",
     "tests/unit/test_no_personal_data.py": "carries the address shapes it scans for",
+    "tests/unit/rag/test_rag_config.py": (
+        "its offender scan quotes the marker it forbids in source"
+    ),
 }
 
 # PENDING is residue: a work stream that has not finished moving something out
 # of the neutral upstream. Delete entries as they complete. **An empty PENDING
 # plus a clean --strict run is the criterion-② acceptance.**
 ALLOWLIST: dict[str, str] = {
-    "distributions/": "transitional private deployment overlay — migration pending",
     "docs/agents/": "historical design docs — review before direct publication",
     "docs/superpowers/": "historical design docs — review before direct publication",
     "docs/reviews/": "review records — review before direct publication",
@@ -104,21 +113,14 @@ ALLOWLIST: dict[str, str] = {
     "apps/frontend/": "compile-time branding defaults — neutral-defaults flip wave",
     "apps/backend/": "Settings/RAG deployment defaults + docstrings — neutral-defaults flip wave",
     "tests/": "frozen contract values — flipped together with the neutral-defaults PR",
-    "CLAUDE.md": "mixed agent guide — site lines move with the neutral wave",
-    "AGENTS.md": "mixed agent guide — site lines move with the neutral wave",
-    ".github/workflows/": "FreeInference CD workflows — step-2 move",
+    ".github/workflows/": (
+        "the GHCR namespace, the internal doc-site host, and a runner-billing "
+        "note — neutral-defaults flip wave"
+    ),
     ".env.oncall.example": "on-call site config example — step-2 move",
     ".env.example": "one commented overlay-manifest path, which is the example that works",
-    ".codex/": "agent skill guides — mixed, neutral wave",
-    ".kilo/": "agent skill guides — mixed, neutral wave",
-    ".gitleaks.toml": "site-specific scan allowances — neutral wave",
     "benchmark/": "paper artifacts — step-2 per ownership inventory",
-    "Makefile": (
-        "one pointer to docs/developer/freeinference.md — that doc is itself "
-        "allowlisted and moves in step 2; the reference goes with it, and the "
-        "dangling-path guard fails the pull request that forgets"
-    ),
-    "docs/openrouter.md": "developer note — neutral wave",
+    "Makefile": "a comment naming the sibling cloud-agent repository",
 }
 
 
