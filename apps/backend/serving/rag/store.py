@@ -31,6 +31,109 @@ class Record:
     embedding: list[float]
 
 
+_REQUIRED_RECORD_FIELDS = ("id", "text", "source", "title", "embedding")
+_REQUIRED_TEXT_FIELDS = ("id", "text", "source", "title")
+
+
+def _unscorable_embedding(embedding: list[Any]) -> str | None:
+    """Name the first reason a cosine scan could not score this vector.
+
+    One pass, because the failures compound: a component can be individually
+    finite and still make the running sum of squares overflow, which is how
+    ``[1e308] * dim`` scores every query ``nan`` with every component passing
+    a per-value check.
+    """
+    norm = 0.0
+    for position, value in enumerate(embedding):
+        # bool is an int in Python, and `[True, False, ...]` scores a confident
+        # 1.0 against anything — a corrupt index that looks like a perfect hit
+        # is worse than one that raises.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"has a non-numeric value at position {position}: {value!r}"
+        try:
+            component = float(value)
+        except (OverflowError, ValueError):
+            # A Python int has no bound; `cosine_similarity` raises
+            # OverflowError converting one mid-scan.
+            return f"has a value too large to score at position {position}"
+        if not math.isfinite(component):
+            # NaN and Infinity survive json.loads, survive the scan, and come
+            # out the other side as nan scores: no exception, silently wrong
+            # ranking. This is the shape that must never reach a query.
+            return f"has a non-finite value at position {position}: {value!r}"
+        norm += component * component
+        if not math.isfinite(norm):
+            return f"has a squared norm that overflows by position {position}"
+    # A zero-norm vector is deliberately NOT rejected, although
+    # `cosine_similarity` scores it 0.0 against every query. `HashEmbedder`
+    # produces one for any text whose tokens it cannot see — pure CJK, or
+    # `token12 token59` — so rejecting it would make the builder's own output
+    # unloadable, and `search` returns zero-scored records inside top_k anyway.
+    # Whether the hash embedder should emit such vectors is a question for the
+    # embedder; this validator's contract is that whatever the builder writes,
+    # it accepts.
+    return None
+
+
+def index_document_problem(data: Any) -> str | None:
+    """Say why ``data`` cannot be served as an index, or ``None`` if it can.
+
+    One definition with two callers: :meth:`VectorStore.load` refuses to build a
+    store from a document this rejects, and the ingest freshness check refuses
+    to call such a document current. Keeping the definition here is the point —
+    the two drifted apart twice already. First the check validated only the
+    fields it compared, and passed indexes the loader could not read; then both
+    checked the shape of an embedding but not its contents, and passed indexes
+    that loaded fine and scored every query ``nan``.
+    """
+    if not isinstance(data, dict):
+        return "expected a JSON object"
+
+    dim = data.get("dim")
+    if isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0:
+        return f"declared dim is {dim!r}"
+
+    records = data.get("records")
+    if not isinstance(records, list):
+        return "expected an object with a list of 'records'"
+
+    for position, record in enumerate(records):
+        if not isinstance(record, dict):
+            return f"record at position {position} is not an object"
+        missing = [field for field in _REQUIRED_RECORD_FIELDS if field not in record]
+        if missing:
+            return f"record at position {position} is missing {', '.join(missing)}"
+        # Present is not enough. `source` and `title` are formatted into the
+        # grounding prompt and returned in the sources payload the console
+        # renders; an int or an object travels all the way there intact and
+        # breaks at the far end, where nothing can tell it came from the index.
+        for field in _REQUIRED_TEXT_FIELDS:
+            value = record[field]
+            if not isinstance(value, str):
+                return f"record at position {position} has a non-string {field}: {value!r}"
+            try:
+                # A lone surrogate is a valid `str` and valid JSON input, and
+                # dies at the edge instead: the response carrying it cannot be
+                # encoded, and the request fails with no way back to the index
+                # that caused it.
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                return (
+                    f"record at position {position} has a {field} that is not "
+                    f"UTF-8 encodable: {value!r}"
+                )
+        name = record["id"]
+        embedding = record["embedding"]
+        if not isinstance(embedding, list):
+            return f"record {name!r} has a non-list embedding"
+        if len(embedding) != dim:
+            return f"record {name!r} has embedding dim {len(embedding)} != declared dim {dim}"
+        problem = _unscorable_embedding(embedding)
+        if problem:
+            return f"record {name!r} {problem}"
+    return None
+
+
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity of two equal-length vectors (0.0 on degenerate input)."""
     if not a or not b or len(a) != len(b):
@@ -123,10 +226,17 @@ class VectorStore:
         """Load an index previously written by :meth:`save`."""
         with Path(path).open(encoding="utf-8") as handle:
             data = json.load(handle)
+        # Reject a corrupt index up front rather than letting it degrade cosine
+        # search at query time — and reject it by the same definition the
+        # freshness check uses, so an index called "current" is always one this
+        # can load and score.
+        problem = index_document_problem(data)
+        if problem:
+            raise ValueError(f"{path}: {problem}")
         store = cls(
             embed_model=data.get("embed_model", "unknown"),
             embedder_mode=data.get("embedder_mode", "gateway"),
-            dim=int(data.get("dim", 0)),
+            dim=int(data["dim"]),
         )
         store.records = [
             Record(
@@ -136,14 +246,6 @@ class VectorStore:
                 title=item["title"],
                 embedding=list(item["embedding"]),
             )
-            for item in data.get("records", [])
+            for item in data["records"]
         ]
-        # Reject a corrupt/mismatched index up front rather than letting a wrong
-        # dimension silently degrade cosine search at query time.
-        for record in store.records:
-            if len(record.embedding) != store.dim:
-                raise ValueError(
-                    f"index record {record.id!r} has embedding dim "
-                    f"{len(record.embedding)} != declared dim {store.dim}"
-                )
         return store
