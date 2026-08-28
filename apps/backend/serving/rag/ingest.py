@@ -36,7 +36,7 @@ from pathlib import Path
 from serving.rag.chunker import Chunk, chunk_markdown
 from serving.rag.config import EMBEDDER_MODES, RagSettings, load_rag_settings
 from serving.rag.embedder import build_ingest_embedder, recorded_model_name
-from serving.rag.store import VectorStore
+from serving.rag.store import VectorStore, index_document_problem
 
 
 def _iter_markdown(corpus_dir: Path) -> list[Path]:
@@ -90,10 +90,11 @@ def check_index(settings: RagSettings) -> int:
 
     Two questions, answered in order, because they have different answers:
 
-    *Can this file be served at all?* An index that :meth:`VectorStore.load`
-    would reject is not "current" no matter what its chunks say — reporting 0
-    would leave the gateway loading a file it cannot parse. Every field ``load``
-    reads is checked here, and a failure is 2.
+    *Can this file be served at all?* An index a query could not be scored
+    against is not "current" no matter what its chunks say — reporting 0 would
+    leave the gateway holding it with nothing scheduled to replace it. The
+    question is delegated to :func:`index_document_problem`, which
+    :meth:`VectorStore.load` also asks, and a failure is 2.
 
     *Is it built from this corpus, by this embedder?* Chunk identity and the
     recorded ``embed_model``/``embedder_mode``. Vectors from different models
@@ -113,36 +114,14 @@ def check_index(settings: RagSettings) -> int:
     # Shape faults are unreadable (2), not drifted (1). Answering them with
     # "drifted" sends a caller off to spend a rebuild on a file it could not
     # parse; answering them with "current" leaves the gateway serving one it
-    # cannot load. The fields checked are exactly the ones VectorStore.load
-    # reads — id/text alone would pass an index the gateway rejects.
-    def unreadable(reason: str) -> int:
-        print(f"index at {settings.index_path} cannot be loaded: {reason}", file=sys.stderr)
+    # cannot score. The definition of servable lives with the loader that has
+    # to honour it, so the two cannot drift apart again.
+    problem = index_document_problem(data)
+    if problem:
+        print(f"index at {settings.index_path} cannot be served: {problem}", file=sys.stderr)
         return 2
 
-    records = data.get("records") if isinstance(data, dict) else None
-    if not isinstance(records, list):
-        return unreadable("expected an object with a list of 'records'")
-    required = ("id", "text", "source", "title", "embedding")
-    for position, record in enumerate(records):
-        if not isinstance(record, dict):
-            return unreadable(f"record at position {position} is not an object")
-        missing = [field for field in required if field not in record]
-        if missing:
-            return unreadable(f"record at position {position} is missing {', '.join(missing)}")
-        if not isinstance(record["embedding"], list):
-            return unreadable(f"record {record['id']!r} has a non-list embedding")
-
-    # VectorStore.load raises on any record whose embedding length disagrees
-    # with the declared dim, so an index that trips it is unservable too.
-    dim = data.get("dim")
-    if not isinstance(dim, int) or dim <= 0:
-        return unreadable(f"declared dim is {dim!r}")
-    for record in records:
-        if len(record["embedding"]) != dim:
-            return unreadable(
-                f"record {record['id']!r} has embedding dim "
-                f"{len(record['embedding'])} != declared dim {dim}"
-            )
+    records = data["records"]
 
     if data.get("embedder_mode") != settings.embedder_mode:
         print(

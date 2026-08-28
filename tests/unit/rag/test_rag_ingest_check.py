@@ -10,6 +10,7 @@ check that drifts from the builder is worse than no check at all.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -409,8 +410,13 @@ def test_an_index_load_would_reject_is_unreadable(tmp_path, capsys, edit, says):
     assert _run_check(settings).returncode == 2
 
 
-def test_every_index_the_check_calls_current_is_loadable(tmp_path):
-    """The invariant, stated directly rather than enumerated field by field."""
+def test_every_index_the_check_calls_current_can_be_searched(tmp_path):
+    """The invariant, stated as what actually has to work.
+
+    "Loadable" was too weak: an index of strings, nulls, NaN or booleans loads
+    fine and only fails — or worse, silently misranks — at query time. What
+    ``current`` has to mean is that a query can be scored against this index.
+    """
     settings = _settings(tmp_path)
     _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
     (settings.corpus_dir / "quickstart.md").write_text("# Quick\n\nKey.\n", encoding="utf-8")
@@ -419,7 +425,44 @@ def test_every_index_the_check_calls_current_is_loadable(tmp_path):
     assert ingest.check_index(settings) == 0
     store = VectorStore.load(settings.index_path)
     assert len(store.records) == len(ingest.chunk_corpus(settings))
-    assert all(len(record.embedding) == store.dim for record in store.records)
+
+    results = store.search([0.1] * store.dim, top_k=len(store.records))
+    assert len(results) == len(store.records)
+    assert all(math.isfinite(score) for _, score in results)
+
+
+@pytest.mark.parametrize(
+    "value, says",
+    [
+        ("x", "non-numeric"),
+        (None, "non-numeric"),
+        ([0.1], "non-numeric"),
+        ({"a": 1}, "non-numeric"),
+        (True, "non-numeric"),
+        (float("nan"), "non-finite"),
+        (float("inf"), "non-finite"),
+        (float("-inf"), "non-finite"),
+    ],
+    ids=["string", "null", "nested-list", "object", "bool", "nan", "inf", "-inf"],
+)
+def test_an_embedding_a_query_cannot_be_scored_against_is_unreadable(tmp_path, capsys, value, says):
+    """Shape was checked, contents were not — and contents are what scoring uses.
+
+    ``[True] * dim`` is the nastiest of these: it loads, it scores, and it
+    returns a confident 1.0 against anything. NaN and Infinity are next: no
+    exception at all, every score ``nan``, ranking silently meaningless.
+    """
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+    dim = json.loads(settings.index_path.read_text(encoding="utf-8"))["dim"]
+    _mangle(settings, lambda d: d["records"][0].update(embedding=[value] * dim))
+
+    assert ingest.check_index(settings) == 2
+    assert says in capsys.readouterr().err
+    assert _run_check(settings).returncode == 2
+    with pytest.raises(ValueError):
+        VectorStore.load(settings.index_path)
 
 
 # --- a model change is drift, not a detail ----------------------------------

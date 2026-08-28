@@ -31,6 +31,65 @@ class Record:
     embedding: list[float]
 
 
+_REQUIRED_RECORD_FIELDS = ("id", "text", "source", "title", "embedding")
+
+
+def _bad_component(embedding: list[Any]) -> str | None:
+    """Name the first embedding component a cosine scan could not use."""
+    for position, value in enumerate(embedding):
+        # bool is an int in Python, and `[True, False, ...]` scores a confident
+        # 1.0 against anything — a corrupt index that looks like a perfect hit
+        # is worse than one that raises.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"non-numeric value at position {position}: {value!r}"
+        if not math.isfinite(value):
+            # NaN and Infinity survive json.loads, survive the scan, and come
+            # out the other side as nan scores: no exception, silently wrong
+            # ranking. This is the one shape that must never reach a query.
+            return f"non-finite value at position {position}: {value!r}"
+    return None
+
+
+def index_document_problem(data: Any) -> str | None:
+    """Say why ``data`` cannot be served as an index, or ``None`` if it can.
+
+    One definition with two callers: :meth:`VectorStore.load` refuses to build a
+    store from a document this rejects, and the ingest freshness check refuses
+    to call such a document current. Keeping the definition here is the point —
+    the two drifted apart twice already. First the check validated only the
+    fields it compared, and passed indexes the loader could not read; then both
+    checked the shape of an embedding but not its contents, and passed indexes
+    that loaded fine and scored every query ``nan``.
+    """
+    if not isinstance(data, dict):
+        return "expected a JSON object"
+
+    dim = data.get("dim")
+    if isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0:
+        return f"declared dim is {dim!r}"
+
+    records = data.get("records")
+    if not isinstance(records, list):
+        return "expected an object with a list of 'records'"
+
+    for position, record in enumerate(records):
+        if not isinstance(record, dict):
+            return f"record at position {position} is not an object"
+        missing = [field for field in _REQUIRED_RECORD_FIELDS if field not in record]
+        if missing:
+            return f"record at position {position} is missing {', '.join(missing)}"
+        name = record["id"]
+        embedding = record["embedding"]
+        if not isinstance(embedding, list):
+            return f"record {name!r} has a non-list embedding"
+        if len(embedding) != dim:
+            return f"record {name!r} has embedding dim {len(embedding)} != declared dim {dim}"
+        problem = _bad_component(embedding)
+        if problem:
+            return f"record {name!r} has a {problem}"
+    return None
+
+
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity of two equal-length vectors (0.0 on degenerate input)."""
     if not a or not b or len(a) != len(b):
@@ -123,10 +182,17 @@ class VectorStore:
         """Load an index previously written by :meth:`save`."""
         with Path(path).open(encoding="utf-8") as handle:
             data = json.load(handle)
+        # Reject a corrupt index up front rather than letting it degrade cosine
+        # search at query time — and reject it by the same definition the
+        # freshness check uses, so an index called "current" is always one this
+        # can load and score.
+        problem = index_document_problem(data)
+        if problem:
+            raise ValueError(f"{path}: {problem}")
         store = cls(
             embed_model=data.get("embed_model", "unknown"),
             embedder_mode=data.get("embedder_mode", "gateway"),
-            dim=int(data.get("dim", 0)),
+            dim=int(data["dim"]),
         )
         store.records = [
             Record(
@@ -136,14 +202,6 @@ class VectorStore:
                 title=item["title"],
                 embedding=list(item["embedding"]),
             )
-            for item in data.get("records", [])
+            for item in data["records"]
         ]
-        # Reject a corrupt/mismatched index up front rather than letting a wrong
-        # dimension silently degrade cosine search at query time.
-        for record in store.records:
-            if len(record.embedding) != store.dim:
-                raise ValueError(
-                    f"index record {record.id!r} has embedding dim "
-                    f"{len(record.embedding)} != declared dim {store.dim}"
-                )
         return store
