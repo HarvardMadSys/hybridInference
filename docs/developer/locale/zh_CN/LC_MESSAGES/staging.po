@@ -1,0 +1,505 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/staging.md:1
+msgid "Running a Non-Production Instance"
+msgstr "运行非生产实例"
+
+#: ../developer/staging.md:3
+msgid ""
+"A staging (or preview, or scratch) instance is the same stack as production,"
+" started from the same `deploy/docker/docker-compose.yml`, on a machine you "
+"are willing to break. This page covers the parts that differ from a "
+"production deployment: what the compose file actually starts, how to keep it"
+" off the network, how to get an admin account without opening a privilege-"
+"escalation hole, and how to throw the database away."
+msgstr ""
+"一个 staging（或者预览、临时）实例与生产环境是同一套栈，由同一份 `deploy/docker/docker-compose.yml` "
+"启动，只是跑在一台你不介意弄坏的机器上。本页只讲它与生产部署不同的那些部分：compose "
+"文件实际会启动什么、怎么让它不暴露在网络上、怎么在不开出提权口子的前提下拿到一个管理员账号，以及怎么把数据库整个丢掉。"
+
+#: ../developer/staging.md:10
+msgid ""
+"For the production deployment procedure see [Deployment](deployment.md); for"
+" a zero-dependency tour of the routing engine see the [Router "
+"Tutorial](router-tutorial.md)."
+msgstr ""
+"生产部署的操作流程见[部署](deployment.md)；想零依赖地过一遍路由引擎，见[快速开始](router-tutorial.md)。"
+
+#: ../developer/staging.md:14
+msgid "What the compose file starts"
+msgstr "compose 文件会启动什么"
+
+#: ../developer/staging.md:16
+msgid "`deploy/docker/docker-compose.yml` defines five services:"
+msgstr "`deploy/docker/docker-compose.yml` 定义了五个服务："
+
+#: ../developer/staging.md
+msgid "Service"
+msgstr "服务"
+
+#: ../developer/staging.md
+msgid "Started by default"
+msgstr "默认启动"
+
+#: ../developer/staging.md
+msgid "Notes"
+msgstr "说明"
+
+#: ../developer/staging.md
+msgid "`backend`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "yes"
+msgstr "是"
+
+#: ../developer/staging.md
+msgid "the FastAPI gateway"
+msgstr "FastAPI 网关"
+
+#: ../developer/staging.md
+msgid "`frontend`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "the Next.js console"
+msgstr "Next.js 控制台"
+
+#: ../developer/staging.md
+msgid "`postgres`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "`postgres:16`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "`pgadmin`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "no"
+msgstr "否"
+
+#: ../developer/staging.md
+msgid "Compose profile `admin`"
+msgstr "Compose 的 `admin` profile"
+
+#: ../developer/staging.md
+msgid "`codex-oncall`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "Compose profile `oncall`, see [Codex On-Call](codex-oncall.md)"
+msgstr "Compose 的 `oncall` profile，见 [Codex On-Call](codex-oncall.md)"
+
+#: ../developer/staging.md:26
+msgid ""
+"There are no metrics, tracing, or dashboard services in this file. If you "
+"want observability, you run it yourself alongside the stack."
+msgstr "这份文件里没有 metrics、tracing 或仪表盘服务。要可观测性的话，得自己在这套栈旁边另行部署。"
+
+#: ../developer/staging.md:29
+msgid "Profiles are opted into per invocation or through `.env`:"
+msgstr "profile 按每次调用启用，也可以写进 `.env`："
+
+#: ../developer/staging.md:35
+msgid "Published ports"
+msgstr "发布出来的端口"
+
+#: ../developer/staging.md:37
+msgid ""
+"Every address below is where the port is published *on the host*; the "
+"container-side port is fixed and is not what these variables change."
+msgstr "下面每个地址都是端口在*宿主机上*发布的位置；容器一侧的端口是固定的，这些变量改的不是它。"
+
+#: ../developer/staging.md
+msgid "Default publish address"
+msgstr "默认发布地址"
+
+#: ../developer/staging.md
+msgid "Override"
+msgstr "覆盖用的变量"
+
+#: ../developer/staging.md
+msgid "`127.0.0.1:8080`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "`BACKEND_HOST`, `BACKEND_PORT`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "`0.0.0.0:3001`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "`FRONTEND_HOST`, `FRONTEND_PORT`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "`127.0.0.1:5432`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "`DB_PORT`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "`pgadmin` (profile `admin`)"
+msgstr "`pgadmin`（profile `admin`）"
+
+#: ../developer/staging.md
+msgid "`127.0.0.1:5050`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "`PGADMIN_PORT`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "`codex-oncall` (profile `oncall`)"
+msgstr "`codex-oncall`（profile `oncall`）"
+
+#: ../developer/staging.md
+msgid "`127.0.0.1:8091`"
+msgstr ""
+
+#: ../developer/staging.md
+msgid "`CODEX_ONCALL_PORT`"
+msgstr ""
+
+#: ../developer/staging.md:48
+msgid "The console default is not loopback — change it"
+msgstr "控制台的默认地址不是回环地址——改掉它"
+
+#: ../developer/staging.md:50
+msgid ""
+"The frontend is the one service whose default host is `0.0.0.0`, so out of "
+"the box it answers on every interface of the machine. That is not only a "
+"console exposure: `apps/frontend/next.config.js` rewrites `/v1/*`, "
+"`/anthropic/*`, `/auth/*`, `/user/*`, `/admin/*`, `/health` and several "
+"`/internal/*` paths to `BACKEND_INTERNAL_URL`. Anyone who can reach port "
+"3001 can therefore reach the API that the `127.0.0.1:8080` publish was meant"
+" to keep private."
+msgstr ""
+"frontend 是唯一一个默认 host 为 `0.0.0.0` "
+"的服务，所以开箱状态下它在这台机器的每个网络接口上都应答。被暴露的不只是控制台：`apps/frontend/next.config.js` 会把 "
+"`/v1/*`、`/anthropic/*`、`/auth/*`、`/user/*`、`/admin/*`、`/health` 以及若干 "
+"`/internal/*` 路径重写到 `BACKEND_INTERNAL_URL`。于是任何能连到 3001 端口的人，都能连到那个本想靠 "
+"`127.0.0.1:8080` 这个发布地址保持私有的 API。"
+
+#: ../developer/staging.md:57
+msgid ""
+"If you intend to reach the instance over an SSH tunnel (the next section), "
+"pin the console to loopback as well:"
+msgstr "如果打算通过 SSH 隧道访问这个实例（见下一节），要把控制台也钉在回环地址上："
+
+#: ../developer/staging.md:64
+msgid ""
+"If you instead want the instance reachable on a network, put it behind a "
+"reverse proxy that terminates TLS and authenticates, and treat every "
+"rewritten path above as publicly exposed."
+msgstr ""
+"反过来，如果希望这个实例在网络上可达，就把它放到一个终结 TLS 并做鉴权的反向代理后面，并且把上面每一条被重写的路径都当作已公开暴露来对待。"
+
+#: ../developer/staging.md:68
+msgid "Configuration: which models it serves"
+msgstr "配置：它对外提供哪些模型"
+
+#: ../developer/staging.md:70
+msgid ""
+"There is no `config/models.yaml` or `config/routing.yaml` at the repository "
+"root. The backend resolves each config file in this order "
+"(`apps/backend/serving/config/distribution.py`):"
+msgstr ""
+"仓库根目录下没有 `config/models.yaml`，也没有 `config/routing.yaml`。后端"
+"按以下顺序解析每个配置文件（`apps/backend/serving/config/distribution.py`）："
+
+#: ../developer/staging.md:74
+msgid ""
+"an explicit environment variable — `MODELS_CONFIG_PATH`, "
+"`ROUTING_CONFIG_PATH`, `ALERTS_CONFIG_PATH`;"
+msgstr ""
+"显式指定的环境变量——`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`；"
+
+#: ../developer/staging.md:76
+msgid ""
+"the `paths:` section of the distribution manifest named by "
+"`DISTRIBUTION_CONFIG_PATH`, but **only** when "
+"`DISTRIBUTION_CONFIG_MODE=active` — the default mode `dark` loads and "
+"validates the manifest, logs what it *would* change, and changes nothing;"
+msgstr ""
+"由 `DISTRIBUTION_CONFIG_PATH` 指定的 distribution manifest 里的 `paths:` "
+"段，但**只有**在 `DISTRIBUTION_CONFIG_MODE=active` 时才算数——默认的 `dark` 模式只加载并校验 "
+"manifest，把它*本来会*改动的内容记进日志，实际什么也不改；"
+
+#: ../developer/staging.md:80
+msgid ""
+"the built-in fallbacks, which are `config/examples/models.openrouter.yaml` "
+"and `config/examples/routing.minimal.yaml`."
+msgstr ""
+"内置的回退值，也就是 `config/examples/models.openrouter.yaml` 和 "
+"`config/examples/routing.minimal.yaml`。"
+
+#: ../developer/staging.md:83
+msgid ""
+"So a fresh clone with an empty `.env` starts with the shipped example "
+"registry and needs no config variables at all. A staging instance that "
+"should mirror a real deployment points at that deployment's overlay under "
+"`distributions/<name>/config/`; the compose file mounts `distributions/` "
+"read-only into the container, so the paths you name are container paths such"
+" as `/app/distributions/<name>/config/models.yaml`."
+msgstr ""
+"所以一份全新 clone 配一个空的 `.env`，启动时用的就是随仓库发布的示例注册表，一个配置变量都不用设。若某个 staging "
+"实例要镜像一个真实部署，就把路径指向该部署位于 `distributions/<name>/config/` 下的 overlay；compose "
+"文件会把 `distributions/` 以只读方式挂进容器，所以你写的是容器内路径，例如 "
+"`/app/distributions/<name>/config/models.yaml`。"
+
+#: ../developer/staging.md:90
+msgid ""
+"Two of the three fall back silently when the file is missing — only a "
+"missing model registry is loud, and its symptom is an empty `/v1/models` and"
+" a 404 for every request. Check the backend log on startup."
+msgstr ""
+"三者中有两个在文件缺失时会静默回退——只有模型注册表缺失时才会吵起来，症状是 `/v1/models` 为空、每个请求都返回 404。启动时要看一眼 "
+"backend 日志。"
+
+#: ../developer/staging.md:94
+msgid "Environment"
+msgstr "环境变量"
+
+#: ../developer/staging.md:96
+#, python-brace-format
+msgid ""
+"Compose refuses to start without `DB_NAME`, `DB_USER` and `DB_PASSWORD` "
+"(they are declared `${VAR:?...}`). The gateway itself wants two more "
+"secrets:"
+msgstr ""
+"缺少 `DB_NAME`、`DB_USER` 或 `DB_PASSWORD` 时，Compose 会拒绝启动（它们声明为 "
+"`${VAR:?...}`）。网关自身还要两个密钥："
+
+#: ../developer/staging.md:109
+msgid ""
+"Neither secret is enforced at startup: an empty `JWT_SECRET_KEY` or "
+"`API_KEY_SECRET` logs one `critical` line and the gateway keeps going with "
+"insecure tokens and insecure API-key hashing "
+"(`apps/backend/serving/servers/app.py`). Generate both."
+msgstr ""
+"这两个密钥在启动时都不是强制的：`JWT_SECRET_KEY` 或 `API_KEY_SECRET` 为空时，只会记一行 `critical` "
+"日志，网关照常运行下去，只是 token 不安全、API key "
+"的哈希也不安全（`apps/backend/serving/servers/app.py`）。两个都要生成。"
+
+#: ../developer/staging.md:114
+msgid ""
+"`CORS_ALLOWED_ORIGINS` already defaults to `http://localhost:3000-3002` and "
+"the `127.0.0.1` equivalents, so a tunnelled instance needs no CORS entry. "
+"Add one only when you serve the console from some other origin."
+msgstr ""
+"`CORS_ALLOWED_ORIGINS` 的默认值已经包含 `http://localhost:3000-3002` 以及对应的 "
+"`127.0.0.1` 形式，所以走隧道访问的实例不需要再加 CORS 条目。只有当控制台由别的 origin 提供服务时才需要加。"
+
+#: ../developer/staging.md:118
+msgid "`.env.example` is the full list; copy it and fill in what you need."
+msgstr "`.env.example` 是完整清单；复制一份，按需填写。"
+
+#: ../developer/staging.md:120
+msgid "Accounts, and how not to hand out admin"
+msgstr "账号，以及怎样才不会把管理员权限白送出去"
+
+#: ../developer/staging.md:123
+msgid ""
+"Do not combine `SIGNUP_ENABLED=1`, `SIGNUP_REQUIRE_EMAIL_VERIFICATION=0` and"
+" `ADMIN_EMAILS` on an instance anyone else can reach. Together they are a "
+"privilege-escalation recipe:"
+msgstr ""
+"不要在别人能访问到的实例上同时用 `SIGNUP_ENABLED=1`、`SIGNUP_REQUIRE_EMAIL_VERIFICATION=0` 和 "
+"`ADMIN_EMAILS`。这三者凑在一起就是一份提权配方："
+
+#: ../developer/staging.md:127
+msgid ""
+"with verification disabled, `POST /auth/signup` creates the account with "
+"`email_verified=not require_verification` — that is, already verified — "
+"without ever sending mail to the address "
+"(`apps/backend/serving/servers/routers/auth_routes.py`);"
+msgstr ""
+"关闭验证后，`POST /auth/signup` 创建账号时带的是 `email_verified=not "
+"require_verification`——也就是「已验证」——却从未往那个地址发过邮件（`apps/backend/serving/servers/routers/auth_routes.py`）；"
+
+#: ../developer/staging.md:131
+msgid ""
+"on login *and* on every token refresh, the backend promotes any account "
+"whose address is listed in `ADMIN_EMAILS` from `free` to `admin`, with no "
+"check that the person signing up owns that address (same file, and "
+"`is_admin_email` in `apps/backend/serving/config/settings.py`)."
+msgstr ""
+"登录时*以及*每一次 token 刷新时，后端都会把地址出现在 `ADMIN_EMAILS` 里的账号从 `free` 提升为 "
+"`admin`，并不检查注册的人是否真的拥有那个地址（同一个文件，以及 "
+"`apps/backend/serving/config/settings.py` 里的 `is_admin_email`）。"
+
+#: ../developer/staging.md:136
+msgid ""
+"So a stranger who guesses or reads your `ADMIN_EMAILS` value signs up with "
+"that address and is an admin on their first login."
+msgstr "于是，猜到或看到你 `ADMIN_EMAILS` 取值的陌生人，用那个地址注册，第一次登录就已经是管理员。"
+
+#: ../developer/staging.md:140
+msgid "Pick one of these instead."
+msgstr "改用下面两种做法之一。"
+
+#: ../developer/staging.md:142
+msgid ""
+"**Preferred — create the admin out of band and leave `ADMIN_EMAILS` unset.**"
+" `ops/admin/create_admin.py` writes the row directly: it creates the account"
+" with `role='admin'`, `status='active'`, `email_verified=TRUE`, or promotes "
+"an existing account with the same address. Run it from the repository root "
+"once the backend has started at least once (the backend creates the schema):"
+msgstr ""
+"**推荐——在带外创建管理员，并且不设置 `ADMIN_EMAILS`**。`ops/admin/create_admin.py` "
+"直接写这一行数据：它以 `role='admin'`、`status='active'`、`email_verified=TRUE` "
+"创建账号，或者把同地址的已有账号提升上去。等后端至少启动过一次之后（表结构由后端创建），在仓库根目录运行："
+
+#: ../developer/staging.md:152
+msgid ""
+"Run it inside the project environment (`source .venv/bin/activate` after "
+"`make setup-dev`) so the `serving` package is importable. It reads "
+"`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` from `.env`, "
+"and Postgres publishes on `127.0.0.1:5432`, so it works from the host shell."
+" Omit `--password` and it prompts, keeping the password out of your shell "
+"history. With this in place the instance can run with signup closed:"
+msgstr ""
+"要在项目环境里运行（`make setup-dev` 之后 `source .venv/bin/activate`），这样才 import 得到 "
+"`serving` 包。它从 `.env` 读取 `DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER` 和 "
+"`DB_PASSWORD`，而 Postgres 发布在 `127.0.0.1:5432`，所以在宿主机的 shell 里就能跑。不加 "
+"`--password` 它会交互提示，密码也就不会进入 shell 历史。这样安排好之后，实例就可以关掉注册来运行："
+
+#: ../developer/staging.md:164
+msgid ""
+"**Alternative — keep signup open, but leave verification on.** "
+"`SIGNUP_REQUIRE_EMAIL_VERIFICATION` defaults to `true`, and with it on an "
+"account cannot log in until it has followed a link sent to the address, "
+"which restores the ownership check that `ADMIN_EMAILS` itself does not "
+"perform. This needs working SMTP; without it nobody can complete a signup."
+msgstr ""
+"**备选——保持注册开放，但保留邮箱验证**。`SIGNUP_REQUIRE_EMAIL_VERIFICATION` 默认为 "
+"`true`，开着的时候，账号必须先点开发往该地址的链接才能登录，这就补回了 `ADMIN_EMAILS` 自己不做的所有权检查。这需要一套可用的 "
+"SMTP；没有 SMTP 就没人能完成注册。"
+
+#: ../developer/staging.md:170
+msgid ""
+"`ADMIN_EMAILS` also picks the default recipients for signup approval mail. "
+"To narrow the notification list without changing who holds the admin role, "
+"set `SIGNUP_NOTIFY_EMAILS` (comma-separated); when it is empty, "
+"notifications fall back to `ADMIN_EMAILS` (`get_signup_notify_emails` in "
+"`apps/backend/serving/config/settings.py`)."
+msgstr ""
+"`ADMIN_EMAILS` 同时决定注册审批邮件的默认收件人。要在不改变谁持有管理员角色的前提下缩小通知名单，就设置 "
+"`SIGNUP_NOTIFY_EMAILS`（逗号分隔）；它为空时，通知回退到 "
+"`ADMIN_EMAILS`（`apps/backend/serving/config/settings.py` 里的 "
+"`get_signup_notify_emails`）。"
+
+#: ../developer/staging.md:180
+msgid ""
+"Both `signup_enabled` and `signup_require_email_verification` can also be "
+"flipped at runtime through the settings store, and the runtime value wins "
+"over the environment. A `.env` line is the starting point, not a guarantee."
+msgstr ""
+"`signup_enabled` 和 `signup_require_email_verification` 也都能在运行时通过 settings "
+"store 翻转，而且运行时的值优先于环境变量。`.env` 里的一行只是起点，不是保证。"
+
+#: ../developer/staging.md:184
+msgid "Start it"
+msgstr "启动"
+
+#: ../developer/staging.md:191
+msgid ""
+"`make up` and `make build` first create the external Docker volume "
+"`hybridinference_postgres_data` if it does not exist."
+msgstr ""
+"`make up` 和 `make build` 会先创建外部 Docker 卷 "
+"`hybridinference_postgres_data`（如果它还不存在）。"
+
+#: ../developer/staging.md:194
+msgid "Reach it over an SSH tunnel"
+msgstr "通过 SSH 隧道访问"
+
+#: ../developer/staging.md:196
+msgid ""
+"With both services pinned to loopback on the server, forward them from your "
+"workstation:"
+msgstr "两个服务都在服务器上钉到回环地址之后，从你的工作机把它们转发过来："
+
+#: ../developer/staging.md:203
+msgid ""
+"Then open `http://localhost:3001`. Keep the local end on `localhost` or "
+"`127.0.0.1`: the refresh cookie is issued with the `Secure` flag by default "
+"(`COOKIE_SECURE`), and browsers accept `Secure` cookies only over HTTPS or "
+"from a loopback origin."
+msgstr ""
+"然后打开 `http://localhost:3001`。本地这一端要保持在 `localhost` 或 `127.0.0.1`：刷新用的 cookie"
+" 默认带 `Secure` 标志（`COOKIE_SECURE`），而浏览器只在 HTTPS 或回环 origin 下才接受 `Secure` "
+"cookie。"
+
+#: ../developer/staging.md:208
+msgid ""
+"The console talks to the API at whatever `NEXT_PUBLIC_API_BASE` was baked in"
+" at image build time — `http://localhost:8080` by default — which is why the"
+" tunnel forwards 8080 as well. Changing it is a frontend rebuild, not a "
+"restart."
+msgstr ""
+"控制台访问 API 用的地址，取决于镜像构建时烤进去的 `NEXT_PUBLIC_API_BASE`——默认是 "
+"`http://localhost:8080`——这也是隧道要连 8080 一起转发的原因。改这个值意味着重新构建前端，而不是重启。"
+
+#: ../developer/staging.md:212
+msgid ""
+"VS Code-family editors can manage the same forwards from their ports panel."
+msgstr "VS Code 系列的编辑器可以在自带的端口面板里管理同样的转发。"
+
+#: ../developer/staging.md:214
+msgid "Check the stack answers:"
+msgstr "确认这套栈有应答："
+
+#: ../developer/staging.md:221
+msgid "Day-to-day"
+msgstr "日常操作"
+
+#: ../developer/staging.md:231
+msgid "Reset the database"
+msgstr "重置数据库"
+
+#: ../developer/staging.md:233
+msgid ""
+"`postgres_data` is declared `external: true` in the compose file, which "
+"means `docker compose down -v` will **not** delete it — the volume is owned "
+"by you, not by the project. Removing it takes an explicit step:"
+msgstr ""
+"compose 文件里把 `postgres_data` 声明为 `external: true`，这意味着 `docker compose down "
+"-v` **不会**删除它——这个卷归你所有，不归项目所有。删掉它需要显式的一步："
+
+#: ../developer/staging.md:243
+msgid ""
+"`make up` recreates the empty volume, and the backend rebuilds the schema on"
+" startup. Every account, API key and request log is gone, so re-create the "
+"admin account afterwards."
+msgstr ""
+"`make up` 会重新创建这个空卷，后端则在启动时重建表结构。所有账号、API key 和请求日志都没了，所以之后要重新创建管理员账号。"

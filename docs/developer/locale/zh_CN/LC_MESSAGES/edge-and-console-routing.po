@@ -1,0 +1,555 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/edge-and-console-routing.md:1
+msgid "Edge and Console Routing"
+msgstr "边缘与控制台路由"
+
+#: ../developer/edge-and-console-routing.md:3
+msgid ""
+"HybridInference ships two long-running HTTP services: the FastAPI gateway "
+"(`apps/backend`) and a Next.js console (`apps/frontend`). Only one of them "
+"needs to be reachable from the internet."
+msgstr ""
+"HybridInference 会跑两个长期运行的 HTTP 服务：FastAPI 网关（`apps/backend`）和 Next.js "
+"控制台（`apps/frontend`）。其中只有一个需要能从公网访问到。"
+
+#: ../developer/edge-and-console-routing.md:7
+msgid ""
+"**The console owns the public path table.** It is the process that "
+"terminates public traffic, and its `rewrites()` configuration in "
+"`apps/frontend/next.config.js` decides which paths are proxied on to FastAPI"
+" (or to another service) and which it answers itself. Anything not named "
+"there is served by the console's own pages."
+msgstr ""
+"**公开路径表由控制台掌管**。它是终结公网流量的那个进程，它在 `apps/frontend/next.config.js` 里的 "
+"`rewrites()` 配置决定了哪些路径被代理给 "
+"FastAPI（或另一个服务）、哪些由它自己回答。没有在那里写明的路径，一律由控制台自己的页面提供。"
+
+#: ../developer/edge-and-console-routing.md:13
+msgid ""
+"This is worth stating plainly because it is easy to get wrong from the "
+"outside: adding a public route is an edit to `next.config.js`, not to "
+"whatever reverse proxy or tunnel happens to sit in front. A path missing "
+"from that file is answered by the console's HTML 404 page — which reads to "
+"an API client as \"the gateway is down\" rather than \"this path is not "
+"forwarded\"."
+msgstr ""
+"这一点值得明说，因为从外面看很容易搞错：加一条公开路由是改 "
+"`next.config.js`，而不是改前面碰巧挡着的那层反向代理或隧道。那个文件里没有的路径，会由控制台的 HTML 404 页面来回答——在 "
+"API 客户端看来，这读起来像「网关挂了」，而不是「这个路径没有被转发」。"
+
+#: ../developer/edge-and-console-routing.md:29
+msgid "The path table"
+msgstr "路径表"
+
+#: ../developer/edge-and-console-routing.md:31
+msgid ""
+"The table below is generated from the `rewrites()` function in "
+"`apps/frontend/next.config.js`. That file is the source of truth; if the two"
+" disagree, the file is right. Regenerate this section when you change it."
+msgstr ""
+"下面的表格由 `apps/frontend/next.config.js` 中的 `rewrites()` "
+"函数生成。那个文件才是事实来源；两者不一致时以文件为准。改了它就重新生成本节。"
+
+#: ../developer/edge-and-console-routing.md:35
+msgid ""
+"Destination hosts come from environment variables. Next resolves "
+"`rewrites()` at **build** time and writes the result into `.next/routes-"
+"manifest.json`, so these are build args, not runtime environment: a value "
+"supplied only at `docker run` is read by nothing, and the symptom is the old"
+" table continuing to serve while every variable looks correctly set in "
+"`docker inspect`. See the `frontend` service's `build.args` in "
+"`deploy/docker/docker-compose.yml`."
+msgstr ""
+"目标主机来自环境变量。Next 在**构建**时解析 `rewrites()` 并把结果写进 `.next/routes-"
+"manifest.json`，所以这些是构建参数，而不是运行时环境：只在 `docker run` 时提供的值不会被任何东西读到，症状是 `docker"
+" inspect` 里每个变量看着都设对了，服务的却仍是旧表。见 `deploy/docker/docker-compose.yml` 中 "
+"`frontend` 服务的 `build.args`。"
+
+#: ../developer/edge-and-console-routing.md
+msgid "Variable"
+msgstr "变量"
+
+#: ../developer/edge-and-console-routing.md
+msgid "Default"
+msgstr "默认值"
+
+#: ../developer/edge-and-console-routing.md
+msgid "Points at"
+msgstr "指向"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`BACKEND_INTERNAL_URL`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "`http://backend:8080`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "the FastAPI gateway"
+msgstr "FastAPI 网关"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`AGENT_WEB_INTERNAL_URL`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "*(unset)*"
+msgstr "*（未设置）*"
+
+#: ../developer/edge-and-console-routing.md
+msgid "the standalone cloud agent's web app"
+msgstr "独立部署的 cloud agent 的 web 应用"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`AGENT_CONTROL_PLANE_INTERNAL_URL`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "that agent's control-plane API"
+msgstr "那个 agent 的控制面 API"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`PGADMIN_INTERNAL_URL`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "`http://pgadmin:80`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "pgAdmin (used by the route handler, not a rewrite)"
+msgstr "pgAdmin（由 route handler 使用，不是 rewrite）"
+
+#: ../developer/edge-and-console-routing.md:49
+msgid "`beforeFiles` — the cloud agent proxy"
+msgstr "`beforeFiles`——cloud agent 代理"
+
+#: ../developer/edge-and-console-routing.md:51
+msgid ""
+"Emitted **only when both `AGENT_WEB_INTERNAL_URL` and "
+"`AGENT_CONTROL_PLANE_INTERNAL_URL` are set.** With either unset the array is"
+" empty and `/agents` has no route at all."
+msgstr ""
+"**只有在 `AGENT_WEB_INTERNAL_URL` 和 `AGENT_CONTROL_PLANE_INTERNAL_URL` "
+"都设置了的时候才会生成**。任一未设置，这个数组就是空的，`/agents` 根本没有路由。"
+
+#: ../developer/edge-and-console-routing.md
+msgid "Source"
+msgstr "源路径"
+
+#: ../developer/edge-and-console-routing.md
+msgid "Destination"
+msgstr "目标"
+
+#: ../developer/edge-and-console-routing.md
+msgid "Note"
+msgstr "说明"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/agents/api/:path*`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+#, python-brace-format
+msgid "`${AGENT_CONTROL_PLANE_INTERNAL_URL}/:path*`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid ""
+"prefix **stripped** — the control plane serves its routes at its own root"
+msgstr "前缀被**去掉**——控制面在自己的根路径上提供这些路由"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/agents/:path*`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+#, python-brace-format
+msgid "`${AGENT_WEB_INTERNAL_URL}/agents/:path*`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid ""
+"prefix **kept** — that app is built with `basePath=/agents` and generates "
+"links carrying it"
+msgstr "前缀被**保留**——那个应用是以 `basePath=/agents` 构建的，生成的链接都带着它"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/agents`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+#, python-brace-format
+msgid "`${AGENT_WEB_INTERNAL_URL}/agents`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "bare prefix"
+msgstr "裸前缀"
+
+#: ../developer/edge-and-console-routing.md:61
+msgid "Two ordering facts are load-bearing here:"
+msgstr "这里有两条关于顺序的事实是关键的："
+
+#: ../developer/edge-and-console-routing.md:63
+msgid ""
+"`/agents/api/:path*` must precede `/agents/:path*`. The first is a prefix of"
+" the second, so with the order reversed every API call is answered with the "
+"web app's HTML."
+msgstr ""
+"`/agents/api/:path*` 必须排在 `/agents/:path*` 前面。前者是后者的前缀，顺序反过来的话，每个 API 调用都会被 "
+"web 应用的 HTML 应答。"
+
+#: ../developer/edge-and-console-routing.md:66
+msgid ""
+"These are `beforeFiles`, not a flat array. A rewrite returned in a flat "
+"array is `afterFiles`, which Next checks *after* filesystem routes — "
+"`beforeFiles` keeps the proxy authoritative even if a page later appears "
+"under that prefix."
+msgstr ""
+"这些是 `beforeFiles`，不是一个扁平数组。以扁平数组返回的 rewrite 属于 `afterFiles`，Next "
+"会在文件系统路由*之后*才检查它——`beforeFiles` 则让这个代理保持权威，即便之后在该前缀下出现了某个页面。"
+
+#: ../developer/edge-and-console-routing.md:70
+msgid "`afterFiles` — the gateway"
+msgstr "`afterFiles`——网关"
+
+#: ../developer/edge-and-console-routing.md:72
+#, python-brace-format
+msgid ""
+"Every destination below is `${BACKEND_INTERNAL_URL}` plus the same path."
+msgstr "下面每一条的目标都是 `${BACKEND_INTERNAL_URL}` 加上同样的路径。"
+
+#: ../developer/edge-and-console-routing.md
+msgid "Serves"
+msgstr "服务的内容"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/v1/:path*`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "the OpenAI-compatible API surface"
+msgstr "OpenAI 兼容的 API 接口"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/anthropic/:path*`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "the Anthropic Messages surface"
+msgstr "Anthropic Messages 接口"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/auth/:path*`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "authentication routes"
+msgstr "认证路由"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/user/:path*`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "the user dashboard API"
+msgstr "用户仪表盘 API"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/admin/:path*`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "the admin API"
+msgstr "管理员 API"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/internal/verify-grafana`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "*(see note below)*"
+msgstr "*（见下方说明）*"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/internal/verify-admin`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "cookie-session admin check (used by the pgAdmin handler)"
+msgstr "基于 cookie 会话的管理员校验（由 pgAdmin handler 使用）"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/internal/playground/:path*`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "the admin-only model playground the console's dashboard calls"
+msgstr "控制台仪表盘调用的、仅管理员可用的模型 playground"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/internal/model-catalog`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "model catalog read"
+msgstr "读取模型目录"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/internal/users/:userId/status`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "single-user status read"
+msgstr "读取单个用户的状态"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/internal/agent-grants`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "mint an inference grant (`POST`)"
+msgstr "签发一个推理 grant（`POST`）"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/internal/agent-grants/:path*`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "renew / usage / revoke for one grant"
+msgstr "对单个 grant 的续期 / 用量 / 吊销"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/health`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "health check"
+msgstr "健康检查"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/site-updates`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid "the public site banner"
+msgstr "公开的站点横幅"
+
+#: ../developer/edge-and-console-routing.md
+msgid "`/site-config`"
+msgstr ""
+
+#: ../developer/edge-and-console-routing.md
+msgid ""
+"public deployment identity, consumed by the console's `SiteConfigProvider`"
+msgstr "公开的部署身份，由控制台的 `SiteConfigProvider` 消费"
+
+#: ../developer/edge-and-console-routing.md:92
+msgid ""
+"Note on `/internal`: the entries are named individually rather than "
+"forwarded as a blanket `/internal/:path*`, and that is deliberate. The "
+"prefix is shared — `/internal/verify-*` authenticate a browser session by "
+"cookie — so a blanket rule would publish whatever route lands under "
+"`/internal` next without anyone deciding it should be reachable from "
+"outside. `/internal/agent-grants` is the one exception granted a whole sub-"
+"prefix, because every route on that router carries a dispatch-token "
+"dependency at the router level and so is authorized by construction."
+msgstr ""
+"关于 `/internal` 的说明：这些条目是一条条单独列出的，而不是用一条笼统的 `/internal/:path*` "
+"转发，这是有意的。这个前缀是共用的——`/internal/verify-*` 用 cookie 认证浏览器会话——所以一条笼统的规则会把下一个落到 "
+"`/internal` 下的路由直接公开出去，而没有任何人决定过它应该能从外部访问。`/internal/agent-grants` "
+"是唯一被授予整个子前缀的例外，因为那个 router 上的每条路由都在 router 层带了 dispatch token "
+"依赖，因此在构造上就是已鉴权的。"
+
+#: ../developer/edge-and-console-routing.md:101
+msgid ""
+"Note on `/internal/verify-grafana`: the rewrite exists, but no route "
+"matching that path is registered in `apps/backend` at this revision. It "
+"forwards to a gateway 404."
+msgstr ""
+"关于 `/internal/verify-grafana` 的说明：这条 rewrite 存在，但在当前修订版的 `apps/backend` "
+"里并没有注册与该路径匹配的路由。它转发过去只会得到网关的 404。"
+
+#: ../developer/edge-and-console-routing.md:105
+msgid "Why `/pgadmin` is a route handler and not a rewrite"
+msgstr "为什么 `/pgadmin` 是 route handler 而不是 rewrite"
+
+#: ../developer/edge-and-console-routing.md:107
+msgid "`/pgadmin` is the interesting case, and the reason this page exists."
+msgstr "`/pgadmin` 是这里有意思的一个例子，也是本页存在的理由。"
+
+#: ../developer/edge-and-console-routing.md:109
+msgid ""
+"pgAdmin must only be reachable by an admin. **A rewrite cannot "
+"authenticate** — it is a static mapping evaluated before any of your code "
+"runs, with no way to call out, inspect a session, or refuse. So `/pgadmin` "
+"is not in the table at all. It is an app route, "
+"`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which is a filesystem "
+"route and therefore wins over `afterFiles` rewrites. The handler proxies to "
+"pgAdmin itself, after checking the caller."
+msgstr ""
+"pgAdmin 必须只能被管理员访问到。**rewrite "
+"无法鉴权**——它是一个静态映射，在你的任何代码运行之前就被求值，没有办法向外发起调用、检查会话或者拒绝请求。所以 `/pgadmin` "
+"根本不在上面的表里。它是一条应用路由 "
+"`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`，属于文件系统路由，因此优先于 "
+"`afterFiles` 里的 rewrite。这个 handler 在检查过调用方之后，自己代理到 pgAdmin。"
+
+#: ../developer/edge-and-console-routing.md:117
+msgid ""
+"The handler is a compact worked example of an authenticated reverse proxy in"
+" a Next.js route handler, and every one of its decisions generalizes:"
+msgstr ""
+"这个 handler 是一个紧凑的实例，示范了如何在 Next.js 的 route handler "
+"里写一个带鉴权的反向代理，而且它的每一个决定都可以推广："
+
+#: ../developer/edge-and-console-routing.md:120
+msgid ""
+"**Fail closed.** `verifyAdmin()` calls `GET /internal/verify-admin` on the "
+"gateway with the caller's cookie and a 5-second timeout. Only an explicit "
+"`200` admits. A backend that is down, slow, or answering something "
+"unexpected denies. It assumes it is the only thing standing in front of a "
+"database console, because it cannot tell whether pgAdmin has its own login "
+"(that depends on `PGADMIN_CONFIG_SERVER_MODE`, which defaults to `False`)."
+msgstr ""
+"**失败即拒绝（fail closed）**。`verifyAdmin()` 带着调用方的 cookie、以 5 秒超时调用网关上的 `GET "
+"/internal/verify-admin`。只有明确的 `200` "
+"才放行。后端挂了、慢了、或者答了点意料之外的东西，都拒绝。它假定自己是挡在一个数据库控制台前面的唯一一道关，因为它无法判断 pgAdmin "
+"是否有自己的登录（那取决于 `PGADMIN_CONFIG_SERVER_MODE`，其默认值是 `False`）。"
+
+#: ../developer/edge-and-console-routing.md:126
+msgid ""
+"**Strip the console's own session cookie** before forwarding. pgAdmin has no"
+" use for it, and forwarding a session credential to a proxied app is how "
+"those leak."
+msgstr "转发前**剥掉控制台自己的会话 cookie**。pgAdmin 用不上它，而把会话凭据转发给被代理的应用，正是这类凭据泄漏的方式。"
+
+#: ../developer/edge-and-console-routing.md:129
+msgid ""
+"**Drop hop-by-hop headers** (RFC 9110 §7.6.1) plus `host` and `content-"
+"length`, which `fetch` derives from the outgoing request. Drop `content-"
+"encoding` on the way back, because `fetch` already decompressed the body. "
+"Re-split `Set-Cookie` with `getSetCookie()` — `Headers.forEach` folds "
+"repeated values into one string."
+msgstr ""
+"**丢掉逐跳（hop-by-hop）头**（RFC 9110 §7.6.1），外加 `host` 和 `content-length`——这两个 "
+"`fetch` 会自己从待发出的请求推导。回程要丢掉 `content-encoding`，因为 `fetch` 已经把 body 解压过了。用 "
+"`getSetCookie()` 重新拆分 `Set-Cookie`——`Headers.forEach` 会把重复的值折成一个字符串。"
+
+#: ../developer/edge-and-console-routing.md:134
+msgid ""
+"**Fold upstream-absolute redirects back to bare paths.** When a request "
+"arrives without a trailing slash a route requires, Werkzeug builds an "
+"absolute redirect from the `Host` it saw — here the internal container name,"
+" which resolves nowhere in a browser. `foldUpstreamRedirect()` rewrites "
+"those to a path, matching on hostname rather than origin so it holds "
+"whatever port is on the URL."
+msgstr ""
+"**把上游给出的绝对地址重定向折回成裸路径**。当请求少了某条路由要求的尾斜杠时，Werkzeug 会用它看到的 `Host` "
+"构造一个绝对重定向——这里就是内部容器名，在浏览器里根本解析不了。`foldUpstreamRedirect()` 会把这类地址改写成路径，它匹配的是 "
+"hostname 而不是 origin，所以 URL 上带的是什么端口它都能兜住。"
+
+#: ../developer/edge-and-console-routing.md:140
+msgid ""
+"**Redirect with a bare path, not an absolute URL.** Behind a tunnel the app "
+"sees its own bind address as `Host`, so `new URL('/login', request.nextUrl)`"
+" renders as `https://0.0.0.0:3001/login` and strands the browser. The "
+"handler writes the `Location` header by hand, since "
+"`NextResponse.redirect()` accepts only absolute URLs."
+msgstr ""
+"**重定向要用裸路径，而不是绝对 URL**。在隧道后面，应用把自己的绑定地址当成 `Host`，于是 `new URL('/login', "
+"request.nextUrl)` 会渲染成 `https://0.0.0.0:3001/login`，把浏览器晾在那儿。由于 "
+"`NextResponse.redirect()` 只接受绝对 URL，这个 handler 是自己手写 `Location` 头的。"
+
+#: ../developer/edge-and-console-routing.md:146
+msgid "The trailing-slash interaction"
+msgstr "与尾斜杠的相互作用"
+
+#: ../developer/edge-and-console-routing.md:148
+msgid ""
+"`skipTrailingSlashRedirect: true` is set globally in `next.config.js`, and "
+"it has to be, for this one path. Next normalizes a trailing slash away by "
+"redirecting; pgAdmin (Flask) adds one back the same way. Left on, the two "
+"bounce a browser between them forever the first time anyone opens "
+"`/pgadmin/browser/`. The proxied path has to reach pgAdmin exactly as the "
+"browser asked for it."
+msgstr ""
+"`skipTrailingSlashRedirect: true` 是在 `next.config.js` "
+"里全局设置的，而且为了这一条路径，它必须这么设。Next "
+"会用重定向把尾斜杠规范化掉；pgAdmin（Flask）又会用同样的方式把它加回来。开着它，第一次有人打开 `/pgadmin/browser/` "
+"时，两边就会让浏览器在它们之间无限弹跳。被代理的路径必须原样、按浏览器请求的样子送到 pgAdmin。"
+
+#: ../developer/edge-and-console-routing.md:154
+msgid ""
+"Turning that flag off globally would change every other URL on the site, so "
+"`apps/frontend/src/middleware.ts` reimplements the redirect for everything "
+"*except* the `/pgadmin` prefix — a 308 to the slash-less path, built from "
+"`new URL(request.url)` rather than `nextUrl.clone()` (a cloned `NextURL` "
+"remembers the incoming trailing slash and re-serializes it, redirecting the "
+"request to exactly where it already is)."
+msgstr ""
+"把这个开关全局关掉会改变站点上所有其他 URL，所以 `apps/frontend/src/middleware.ts` 为 `/pgadmin` "
+"前缀*以外*的所有路径重新实现了这个重定向——用 308 跳到去掉尾斜杠的路径，并且是用 `new URL(request.url)` 而不是 "
+"`nextUrl.clone()` 构造的（克隆出来的 `NextURL` 会记住请求里带的尾斜杠并重新序列化出来，把请求重定向到它已经所在的地方）。"
+
+#: ../developer/edge-and-console-routing.md:161
+msgid "Adding a public path"
+msgstr "新增一条公开路径"
+
+#: ../developer/edge-and-console-routing.md:163
+msgid ""
+"Add the rule to `rewrites()` in `apps/frontend/next.config.js`. Put it in "
+"`afterFiles` unless it must outrank a filesystem route."
+msgstr ""
+"在 `apps/frontend/next.config.js` 的 `rewrites()` 里加上规则。除非它必须压过文件系统路由，否则放进 "
+"`afterFiles`。"
+
+#: ../developer/edge-and-console-routing.md:165
+msgid ""
+"Name it specifically. Prefer `/prefix/thing` over `/prefix/:path*` unless "
+"every current and future route under that prefix is authorized by "
+"construction."
+msgstr ""
+"写得具体一点。优先用 `/prefix/thing` 而不是 `/prefix/:path*`，除非该前缀下当前和将来的每一条路由在构造上都是已鉴权的。"
+
+#: ../developer/edge-and-console-routing.md:168
+msgid ""
+"If the path needs a check the destination cannot make for itself, it is a "
+"route handler, not a rewrite."
+msgstr "如果这条路径需要一次目标服务自己做不了的检查，那它就该是 route handler，而不是 rewrite。"
+
+#: ../developer/edge-and-console-routing.md:170
+msgid ""
+"Rebuild the console. The rewrite table is baked into `.next/routes-"
+"manifest.json` at build time, so a backend-only deploy will not pick the "
+"change up. Adopting or rolling back the cloud agent proxy is likewise a "
+"rebuild, not an environment change."
+msgstr ""
+"重新构建控制台。rewrite 表在构建时就被烤进了 `.next/routes-"
+"manifest.json`，所以只部署后端不会带上这个改动。启用或回滚 cloud agent 代理同样是一次重新构建，而不是改一下环境变量。"
+
+#: ../developer/edge-and-console-routing.md:174
+msgid "Regenerate the table above."
+msgstr "重新生成上面的表格。"

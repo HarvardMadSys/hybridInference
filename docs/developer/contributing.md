@@ -217,6 +217,54 @@ Translating a page does not require translating all of it, and there is no
 obligation to keep a language complete — an untranslated paragraph is a
 fallback, not a bug.
 
+#### Translating into Chinese, Japanese or Korean
+
+Four traps, all of them silent — the build stays green and the page is wrong.
+Each was hit while translating this doc set into Chinese.
+
+**A heading that starts with a number is discarded.** Sphinx re-parses a
+translated title, and MyST reads `1. ` as an enumerated-list marker rather than
+text. The structure no longer matches the source, the translation is dropped,
+the English heading is emitted, and nothing warns — not even under `-W`. Escape
+the period:
+
+```po
+msgstr "1\. 申请一个节点"
+```
+
+**In `index.rst`, inline markup that touches a CJK character does not parse.**
+reStructuredText requires whitespace or specific punctuation before an opening
+`*`, and a Chinese character is neither, so `请求的*模型 id*` renders literal
+asterisks. Separate them with an escaped space — written `\\ ` in the catalog,
+which is a backslash-space in the string:
+
+```po
+msgstr "客户端请求的\\ *模型 id*\\ ，与真正服务它的\\ *端点*\\ 是解耦的。"
+```
+
+This applies to `index.rst` only. Markdown pages need no escaping: CommonMark
+treats a CJK character as neither whitespace nor punctuation, so `**模型 id**`
+between Chinese characters is a valid emphasis run.
+
+**One Markdown case does break, though**: a closing `**` preceded by a CJK full
+stop and followed by a CJK character is not right-flanking, so
+`**术语。**后文` leaves literal asterisks. Put the period outside the bold —
+`**术语**。后文` — which is better typography anyway, since bolding punctuation
+is wrong.
+
+**A stale `.mo` masks your edits.** Sphinx skips recompilation when the `.mo` is
+newer than its `.po`, so you can verify a build that never read your changes.
+Before any verification build:
+
+```bash
+find docs/developer/locale -name '*.mo' -delete
+```
+
+The check that catches all four at once is a structural diff against the English
+build: for each page, compare the counts of `<code>`, `<strong>`, `<em>` and
+`<a>`, and the multiset of inline-code literals and link targets. A dropped
+marker or a translated link target shows up there and in no other check.
+
 #### Publishing more than one language
 
 A single-language build is the default and nothing above changes it. To

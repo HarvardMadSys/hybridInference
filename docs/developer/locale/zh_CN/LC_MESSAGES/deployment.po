@@ -1,0 +1,580 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/deployment.md:1
+msgid "Deployment Guide"
+msgstr "部署指南"
+
+#: ../developer/deployment.md:3
+msgid ""
+"Running HybridInference as a long-lived deployment: what starts, how to "
+"operate it, and how to reset it without losing (or accidentally keeping) "
+"data."
+msgstr ""
+"把 HybridInference 作为长期运行的部署来跑：会启动些什么、怎么运维，以及"
+"怎样在不丢数据（也不会意外留下数据）的前提下重置它。"
+
+#: ../developer/deployment.md:6
+msgid ""
+"First-time setup — cloning, filling in `.env`, and the first `make up` — "
+"is in [Installation](installation.md#quick-start-with-docker). This page "
+"assumes the stack already comes up."
+msgstr ""
+"首次搭建——克隆仓库、填写 `.env`、第一次 `make up`——见[安装"
+"](installation.md#quick-start-with-docker)。本"
+"页假定整套服务栈已经能起来。"
+
+#: ../developer/deployment.md:10
+msgid "What the stack is"
+msgstr "这套服务栈是什么"
+
+#: ../developer/deployment.md:12
+msgid "`make up` starts three containers from `deploy/docker/docker-compose.yml`:"
+msgstr "`make up` 会从 `deploy/docker/docker-compose.yml` 启动三个容器："
+
+#: ../developer/deployment.md
+msgid "Service"
+msgstr "服务"
+
+#: ../developer/deployment.md
+msgid "Image / build"
+msgstr "镜像 / 构建"
+
+#: ../developer/deployment.md
+msgid "Published on"
+msgstr "发布地址"
+
+#: ../developer/deployment.md
+msgid "`backend`"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid "built from `deploy/docker/Dockerfile.backend`"
+msgstr "由 `deploy/docker/Dockerfile.backend` 构建"
+
+#: ../developer/deployment.md
+#, python-brace-format
+msgid "`${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8080}`"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid "`frontend`"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid "built from `deploy/docker/Dockerfile.frontend`"
+msgstr "由 `deploy/docker/Dockerfile.frontend` 构建"
+
+#: ../developer/deployment.md
+#, python-brace-format
+msgid "`${FRONTEND_HOST:-0.0.0.0}:${FRONTEND_PORT:-3001}`"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid "`postgres`"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid "`postgres:16`"
+msgstr ""
+
+#: ../developer/deployment.md
+#, python-brace-format
+msgid "`127.0.0.1:${DB_PORT:-5432}`"
+msgstr ""
+
+#: ../developer/deployment.md:20
+msgid ""
+"The frontend defaults to `0.0.0.0` so a reverse proxy on the host can "
+"reach it; the backend and the database default to loopback. All three "
+"join one bridge network defined in the same Compose file, on which the "
+"backend reaches the database as `postgres:5432` — `DB_HOST`/`DB_PORT` "
+"from `.env` control only the host-side port mapping, because the Compose "
+"file pins the container-internal values."
+msgstr ""
+"frontend 默认监听 `0.0.0.0`，好让宿主机上的反向代理能访问到它；"
+"backend 和数据库默认只监听 loopback。三者都加入同一个 Compose "
+"文件里定义的 bridge 网络，backend 在这个网络上以 "
+"`postgres:5432` 访问数据库——`.env` 里的 "
+"`DB_HOST`/`DB_PORT` 只控制宿主机一侧的端口映射，因为 Compose"
+" 文件把容器内部的取值写死了。"
+
+#: ../developer/deployment.md:27
+msgid ""
+"Two more services exist in the same file but start only when their "
+"profile is named: `pgadmin` (profile `admin`) and `codex-oncall` (profile"
+" `oncall`)."
+msgstr ""
+"同一个文件里还有两个服务，只有点名它们的 profile 时才会启动：`pgadmin`"
+"（profile `admin`）和 `codex-oncall`（profile `oncall`）。"
+
+#: ../developer/deployment.md:30
+msgid ""
+"`frontend` and `codex-oncall` depend on `backend` with `condition: "
+"service_started`, not `service_healthy` — deliberately, so that a backend"
+" reporting unhealthy because its database logging is down does not stop "
+"the console from starting."
+msgstr ""
+"`frontend` 和 `codex-oncall` 对 `backend` 的依赖用"
+"的是 `condition: service_started` 而不是 "
+"`service_healthy`——这是有意为之：backend 因为数据库日志写不进"
+"去而报告 unhealthy 时，不应该连带拦住控制台启动。"
+
+#: ../developer/deployment.md:35
+msgid "Putting it on the public internet"
+msgstr "把它放到公网上"
+
+#: ../developer/deployment.md:37
+#, python-brace-format
+msgid ""
+"Nothing in the stack terminates TLS, and this repository ships no "
+"reverse-proxy config to copy: certificates and the proxy in front of the "
+"two published ports are yours to supply. Point it at "
+"`${BACKEND_HOST}:${BACKEND_PORT}` and "
+"`${FRONTEND_HOST}:${FRONTEND_PORT}`."
+msgstr ""
+"这套服务栈里没有任何一环负责终结 TLS，本仓库也不提供可以照抄的反向代理配置：证书，以"
+"及挡在这两个发布端口前面的代理，都要你自己准备。把它指向 "
+"`${BACKEND_HOST}:${BACKEND_PORT}` 和 "
+"`${FRONTEND_HOST}:${FRONTEND_PORT}`。"
+
+#: ../developer/deployment.md:42
+msgid ""
+"Which public paths the console serves itself and which it forwards to the"
+" backend is a separate question, and the answer is in the console's own "
+"`next.config.js` rather than in any proxy config. See [Edge and console "
+"routing](edge-and-console-routing.md)."
+msgstr ""
+"控制台自己响应哪些公网路径、又把哪些转发给后端，是另一个问题，答案在控制台自"
+"己的 `next.config.js` 里，而不在任何代理配置里。见[边缘与控制台路由"
+"](edge-and-console-routing.md)。"
+
+#: ../developer/deployment.md:47
+msgid "Everyday operations"
+msgstr "日常运维"
+
+#: ../developer/deployment.md:49
+msgid "All from the repository root:"
+msgstr "以下命令都在仓库根目录执行："
+
+#: ../developer/deployment.md:63
+msgid ""
+"`make up` and `make build` first run the `docker-volumes` target, which "
+"creates the external volume `hybridinference_postgres_data` when it is "
+"missing."
+msgstr ""
+"`make up` 和 `make build` 会先执行 "
+"`docker-volumes` 目标，在外部卷 "
+"`hybridinference_postgres_data` 不存在时创建它。"
+
+#: ../developer/deployment.md:66
+msgid ""
+"To start an optional profile, pass it on the `make` command line — a "
+"variable set there is exported into the environment of the recipe, and a "
+"shell variable outranks every `--env-file` in Compose:"
+msgstr ""
+"要启动某个可选 profile，就在 `make` 命令行上传入——在那里设置的变量会导"
+"出到 recipe 的环境中，而在 Compose 里 shell 变量的优先级高于任何"
+" `--env-file`："
+
+#: ../developer/deployment.md:74
+msgid ""
+"`COMPOSE_PROFILES` is a comma-separated list, so `admin,oncall` starts "
+"both. It can also be set in `.env` (as `.env.example` notes), but the "
+"command line is the form to reach for when you want certainty about which"
+" profiles are active."
+msgstr ""
+"`COMPOSE_PROFILES` 是逗号分隔的列表，所以 "
+"`admin,oncall` 会把两个都启动。它也可以写在 `.env` 里（"
+"`.env.example` 有说明），但想确定哪些 profile 真的生效时，优先用命令行这种写法。"
+
+#: ../developer/deployment.md:78
+msgid "What a change actually requires"
+msgstr "一次改动到底需要做什么"
+
+#: ../developer/deployment.md:80
+msgid ""
+"Three different answers, and picking the wrong one looks like the change "
+"not taking effect:"
+msgstr "答案有三种，选错的表现就是改动看起来没生效："
+
+#: ../developer/deployment.md
+msgid "You changed"
+msgstr "你改了什么"
+
+#: ../developer/deployment.md
+msgid "Do this"
+msgstr "该怎么做"
+
+#: ../developer/deployment.md
+msgid "A value in `.env`"
+msgstr "`.env` 里的某个值"
+
+#: ../developer/deployment.md
+msgid ""
+"`make up` — a container reads its `env_file` when it is *created*, so "
+"`docker compose restart` keeps the old environment"
+msgstr ""
+"`make up`——容器只在*创建*时读取自己的 `env_file`，所以 "
+"`docker compose restart` 会沿用旧的环境变量"
+
+#: ../developer/deployment.md
+msgid "A model registry or routing YAML"
+msgstr "模型注册表或路由 YAML"
+
+#: ../developer/deployment.md
+msgid ""
+"`make restart s=backend` — `config/` and `distributions/` are bind-"
+"mounted read-only, so no rebuild is needed"
+msgstr ""
+"`make restart s=backend`——`config/` 和 "
+"`distributions/` 是以只读方式 bind-mount 进去的，不需要重新构建"
+
+#: ../developer/deployment.md
+msgid "A `NEXT_PUBLIC_*` or `AGENT_*` console value"
+msgstr "控制台的某个 `NEXT_PUBLIC_*` 或 `AGENT_*` 取值"
+
+#: ../developer/deployment.md
+msgid "`make build s=frontend` — see below"
+msgstr "`make build s=frontend`——见下文"
+
+#: ../developer/deployment.md
+msgid "Backend or frontend source"
+msgstr "后端或前端的源码"
+
+#: ../developer/deployment.md
+msgid "`make build`, or `make build s=<service>`"
+msgstr "`make build`，或 `make build s=<service>`"
+
+#: ../developer/deployment.md:90
+msgid ""
+"The console's identity and its `/agents` rewrites are Next.js **build "
+"args** (`deploy/docker/docker-compose.yml`, `frontend.build.args`), and "
+"Next resolves `rewrites()` at build time into `.next/routes-"
+"manifest.json`. Changing any `NEXT_PUBLIC_*` value or the `AGENT_*` URLs "
+"therefore takes a `make build s=frontend`; a value supplied only at "
+"container start is read by nothing, and the symptom is the old pages "
+"continuing to serve while `docker inspect` shows the new value. Adopting "
+"or rolling back those settings is therefore a rebuild, not a restart."
+msgstr ""
+"控制台的身份标识和它的 `/agents` rewrites 是 Next.js 的 "
+"**build args**（"
+"`deploy/docker/docker-compose.yml` 的 "
+"`frontend.build.args`），而 Next 会在构建时把 "
+"`rewrites()` 解析进 "
+"`.next/routes-manifest.json`。因此改动任何 "
+"`NEXT_PUBLIC_*` 取值或 `AGENT_*` URL 都需要一次 "
+"`make build s=frontend`；只在容器启动时提供的值没有任何东西会去读"
+"，症状就是旧页面照常提供服务，而 `docker inspect` 显示的却是新值。所以"
+"启用或回滚这些设置属于重新构建，不是重启。"
+
+#: ../developer/deployment.md:99
+msgid "Configuration"
+msgstr "配置"
+
+#: ../developer/deployment.md:101
+msgid "Environment"
+msgstr "环境变量"
+
+#: ../developer/deployment.md:103
+msgid ""
+"Everything is in `.env` at the repository root; `.env.example` is the "
+"annotated list. Compose is invoked with `--env-file .env` and the backend"
+" service also loads it as `env_file`. The variables Compose itself "
+"requires, and the two secrets you should not leave blank, are in "
+"[Installation](installation.md#quick-start-with-docker)."
+msgstr ""
+"所有配置都在仓库根目录的 `.env` 里；`.env.example` 是带注释的清单"
+"。Compose 以 `--env-file .env` 调用，backend 服务同时"
+"把它作为 `env_file` 加载。Compose 自身要求的变量，以及不该留空的那两"
+"个密钥，见[安装](installation.md#quick-start-with-docker)。"
+
+#: ../developer/deployment.md:109
+msgid "Config file resolution"
+msgstr "配置文件的解析顺序"
+
+#: ../developer/deployment.md:111
+msgid ""
+"There is no `config/models.yaml` or `config/routing.yaml` in this "
+"repository. `resolve_config_path` "
+"(`apps/backend/serving/config/distribution.py`) picks each file by "
+"precedence: an explicit `MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / "
+"`ALERTS_CONFIG_PATH`, then an active distribution manifest, then the "
+"built-in defaults under `config/examples/`. The full rules, including why"
+" `DISTRIBUTION_CONFIG_MODE` defaults to `dark`, are in "
+"[Installation](installation.md#where-the-config-files-live)."
+msgstr ""
+"本仓库里没有 `config/models.yaml`，也没有 "
+"`config/routing.yaml`。`resolve_config_path`（"
+"`apps/backend/serving/config/distribution.py`"
+"）按优先级挑选每个文件：先看显式的 `MODELS_CONFIG_PATH` / "
+"`ROUTING_CONFIG_PATH` / `ALERTS_CONFIG_PATH`"
+"，再看处于 active 的 distribution manifest，最后是 "
+"`config/examples/` 下的内置默认值。完整规则（包括 "
+"`DISTRIBUTION_CONFIG_MODE` 为什么默认是 `dark`）见[安"
+"装](installation.md#where-the-config-files-live)。"
+
+#: ../developer/deployment.md:119
+msgid "Note that the Compose file passes these through explicitly:"
+msgstr "注意，Compose 文件是显式把它们透传进去的："
+
+#: ../developer/deployment.md:127
+msgid ""
+"An `--env-file` alone does not put a variable into a container's "
+"environment; these lines are what carry it in. Losing one silently swaps "
+"a deployment's routing map or alert thresholds for the defaults — which "
+"is why tests pin them."
+msgstr ""
+"光有 `--env-file` 并不能把变量放进容器的环境里；真正把它带进去的是这几行。"
+"少了一行，就会悄无声息地把一个部署的路由映射或告警阈值换成默认值——这正是测试要把它们钉住的原因。"
+
+#: ../developer/deployment.md:131
+msgid "Local inference servers"
+msgstr "本地推理服务器"
+
+#: ../developer/deployment.md:133
+msgid ""
+"The backend container reaches servers on the host through "
+"`host.docker.internal`, which the Compose file wires with `extra_hosts: "
+"host.docker.internal:host-gateway`. Write that address explicitly in the "
+"model registry:"
+msgstr ""
+"backend 容器通过 `host.docker.internal` 访问宿主机上的服"
+"务器，Compose 文件用 `extra_hosts: "
+"host.docker.internal:host-gateway` 把它接好。要在模型"
+"注册表里显式写上这个地址："
+
+#: ../developer/deployment.md:144
+msgid ""
+"For a backend running directly on the host, use `localhost` instead. The "
+"gateway never rewrites provider URLs. See [Adding a local model](add-"
+"local-model.md)."
+msgstr ""
+"如果 backend 直接跑在宿主机上，就改用 `localhost`。网关从不改写 "
+"provider 的 URL。见[添加本地模型](add-local-model.md)。"
+
+#: ../developer/deployment.md:148
+msgid "Health checks"
+msgstr "健康检查"
+
+#: ../developer/deployment.md:167
+msgid ""
+"`routes_configured` counts published route entries — one per model id in "
+"the active registry, plus one per alias. It is whatever *your* registry "
+"defines."
+msgstr ""
+"`routes_configured` 统计的是已发布的路由条目——生效的注册表里每个模"
+"型 id 一条，每个别名再加一条。它完全取决于*你自己的*注册表定义了什么。"
+
+#: ../developer/deployment.md:169
+msgid ""
+"`database_configured` distinguishes \"this deployment asked for no "
+"database\" from \"the database is down\": with `DB_ENABLED=false` it is "
+"`false` and the status is still `healthy`; with a database configured but"
+" unreachable at startup, `/health` answers **503** with `\"reason\": "
+"\"database_unavailable_at_startup\"`."
+msgstr ""
+"`database_configured` 区分的是「这个部署本来就不要数据库」和「数据"
+"库挂了」：`DB_ENABLED=false` 时它是 `false`，状态仍然是 "
+"`healthy`；而配置了数据库、启动时却连不上时，`/health` 返回 "
+"**503**，并带上 `\"reason\": "
+"\"database_unavailable_at_startup\"`。"
+
+#: ../developer/deployment.md:174
+msgid ""
+"`status` becomes `degraded` — still HTTP 200 — when one configured store "
+"is down but the other is serving. That shape is deliberate: the container"
+" `HEALTHCHECK` uses `curl -f /health`, so returning 503 for partial "
+"degradation would tear down backends that are still answering requests."
+msgstr ""
+"当已配置的两个存储中一个挂了、另一个还在服务时，`status` 变成 "
+"`degraded`——HTTP 状态码仍是 200。这个形态是有意设计的：容器的 "
+"`HEALTHCHECK` 用的是 `curl -f /health`，若对部分降级返回"
+" 503，就会把仍在正常响应请求的 backend 拆掉。"
+
+#: ../developer/deployment.md:179
+msgid ""
+"Use `/health/ready` for a strict readiness probe: it applies AND-logic "
+"across configured stores and returns 503 unless every one of them is up. "
+"`/health/deep` additionally reports per-endpoint health."
+msgstr ""
+"要做严格的就绪探针，请用 `/health/ready`：它对已配置的各个存储取与逻辑，"
+"只要有一个没起来就返回 503。`/health/deep` 还会额外报告每个端点的健康状况。"
+
+#: ../developer/deployment.md:183
+msgid "Alerting"
+msgstr "告警"
+
+#: ../developer/deployment.md:185
+msgid ""
+"The backend has an in-process alert engine that posts to a Slack webhook."
+" It is off unless you turn it on:"
+msgstr "后端内置了一个进程内告警引擎，会向 Slack webhook 推送。不显式打开就是关闭的："
+
+#: ../developer/deployment.md:193
+msgid ""
+"If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to "
+"`SLACK_WEBHOOK_URL`, so one webhook can serve both code paths."
+msgstr ""
+"`SLACK_ALERTS_WEBHOOK_URL` 为空时会回退到 "
+"`SLACK_WEBHOOK_URL`，所以一个 webhook 可以同时服务两条代码路径。"
+
+#: ../developer/deployment.md:196
+msgid ""
+"Rules and thresholds are a deployment's own; this repository ships no "
+"alerts file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and "
+"the built-in thresholds apply. The rule types and evaluation live in "
+"`apps/backend/serving/observability/`."
+msgstr ""
+"规则和阈值属于各个部署自己，本仓库不提供告警文件。把 "
+"`ALERTS_CONFIG_PATH` 指向你自己的文件；或者不设置它，那就使用内置阈"
+"值。规则类型和求值逻辑在 `apps/backend/serving/observability/`。"
+
+#: ../developer/deployment.md:201
+msgid ""
+"For asynchronous read-only Codex investigation of alerts, see [Codex On-"
+"Call](codex-oncall.md)."
+msgstr "要让 Codex 以异步、只读的方式排查告警，见 [Codex On-Call](codex-oncall.md)。"
+
+#: ../developer/deployment.md:204
+msgid "Database"
+msgstr "数据库"
+
+#: ../developer/deployment.md:206
+msgid ""
+"PostgreSQL 16 runs in the `postgres` service with its data in the Docker "
+"volume `hybridinference_postgres_data`. A psql shell:"
+msgstr ""
+"PostgreSQL 16 跑在 `postgres` 服务里，数据放在 Docker "
+"卷 `hybridinference_postgres_data` 中。开一个 psql shell："
+
+#: ../developer/deployment.md:213
+msgid "Schema details are in [Database](database.md)."
+msgstr "表结构细节见[数据库](database.md)。"
+
+#: ../developer/deployment.md:215
+msgid "pgAdmin (optional)"
+msgstr "pgAdmin（可选）"
+
+#: ../developer/deployment.md:221
+msgid ""
+"pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so "
+"an SSH tunnel to that port is enough to reach it. The console can also "
+"proxy it at `/pgadmin/`, gated on an admin session by "
+"`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which denies on "
+"every unexpected condition, including a backend it cannot reach."
+msgstr ""
+"pgAdmin 随后监听 `127.0.0.1:5050`，并带 "
+"`SCRIPT_NAME=/pgadmin`，所以向该端口开一条 SSH 隧道就足以访问"
+"它。控制台也可以在 `/pgadmin/` 下代理它，由 "
+"`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`"
+" 按 admin 会话把关；该文件在任何非预期情况下都拒绝，包括连不上后端的时候。"
+
+#: ../developer/deployment.md:227
+msgid ""
+"One thing to get right: whether pgAdmin *also* asks for its own login is "
+"set by `PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The "
+"Compose service falls back to `False`, which serves pgAdmin with no login"
+" at all; `.env.example` suggests `True`, which turns pgAdmin's own login "
+"on behind the console's gate. `True` is the safer of the two."
+msgstr ""
+"有一点要弄对：pgAdmin 是否*另外*要求它自己的登录，由 "
+"`PGADMIN_CONFIG_SERVER_MODE` 决定，而两处的默认值并不一致。"
+"Compose 服务回退到 `False`，也就是完全不需要登录就能用 pgAdmin；"
+"`.env.example` 建议 `True`，也就是在控制台这道关卡之后再开启 "
+"pgAdmin 自己的登录。两者之中 `True` 更安全。"
+
+#: ../developer/deployment.md:233
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../developer/deployment.md:235
+msgid "A service will not start"
+msgstr "某个服务起不来"
+
+#: ../developer/deployment.md:242
+msgid ""
+"`variable X is missing a value` — Compose stopped at interpolation before"
+" starting anything. `DB_NAME`, `DB_USER` and `DB_PASSWORD` are declared "
+"required."
+msgstr ""
+"`variable X is missing a value`——Compose 在变量"
+"插值阶段就停下了，什么都还没启动。`DB_NAME`、`DB_USER` 和 "
+"`DB_PASSWORD` 被声明为必填。"
+
+#: ../developer/deployment.md:245
+msgid ""
+"Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or "
+"`DB_PORT`."
+msgstr "端口已被占用——覆盖 `BACKEND_PORT`、`FRONTEND_PORT` 或 `DB_PORT`。"
+
+#: ../developer/deployment.md:246
+msgid ""
+"Database connection failed — check `make ps` for the `postgres` health "
+"status."
+msgstr "数据库连接失败——用 `make ps` 查看 `postgres` 的健康状态。"
+
+#: ../developer/deployment.md:248
+msgid "Resetting the stack"
+msgstr "重置这套服务栈"
+
+#: ../developer/deployment.md:250
+msgid "**Stop and start, keeping data:**"
+msgstr "**停止再启动，保留数据：**"
+
+#: ../developer/deployment.md:256
+msgid ""
+"**Destroy the database and start clean.** `docker compose down -v` does "
+"*not* do this. `postgres_data` is declared `external: true` in "
+"`deploy/docker/docker-compose.yml`, and Compose never removes an external"
+" volume — `down -v` returns success and leaves it fully intact, so `make "
+"up` comes back on exactly the same data. Remove it by name:"
+msgstr ""
+"**销毁数据库、从干净状态开始**。`docker compose down -v` "
+"做*不到*这件事。`postgres_data` 在 "
+"`deploy/docker/docker-compose.yml` 里声明为 "
+"`external: true`，而 Compose 从不删除外部卷——`down "
+"-v` 会返回成功，却把卷原封不动地留着，于是 `make up` 又回到完全相同的数据上。要按名字删除它："
+
+#: ../developer/deployment.md:269
+msgid ""
+"`docker volume rm` is irreversible and takes every account, API key and "
+"request log with it. Take a `pg_dump` first if any of it matters."
+msgstr ""
+"`docker volume rm` 不可逆，会连同每一个账户、每一把 API key "
+"和所有请求日志一起带走。只要其中还有任何东西重要，先做一次 `pg_dump`。"
+
+#: ../developer/deployment.md:273
+msgid ""
+"pgAdmin's own volume (`hybridinference_pgadmin_data`) and the on-call "
+"relay's (`hybridinference_codex_oncall_data`) are ordinary local volumes,"
+" so `docker compose ... down -v` does remove those."
+msgstr ""
+"pgAdmin 自己的卷（`hybridinference_pgadmin_data`）"
+"和 on-call relay 的卷（"
+"`hybridinference_codex_oncall_data`）是普通的本地卷，"
+"所以 `docker compose ... down -v` 确实会把它们删掉。"
+
+#: ../developer/deployment.md:277
+msgid "Rebuilding after code changes"
+msgstr "改动代码后重新构建"
+

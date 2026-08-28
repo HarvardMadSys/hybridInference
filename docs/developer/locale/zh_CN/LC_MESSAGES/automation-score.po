@@ -1,0 +1,845 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/automation-score.md:1
+msgid "Automation score (human vs. script)"
+msgstr "自动化评分（人类 vs. 脚本）"
+
+#: ../developer/automation-score.md:3
+msgid ""
+"The **automation score** rates how *script-driven* vs. *human-driven* "
+"each user's API traffic is, on a `0.0`–`1.0` scale:"
+msgstr "**自动化评分**在 `0.0`–`1.0` 区间上刻画每个用户的 API 流量有多少是*脚本驱动*的、有多少是*人类驱动*的："
+
+#: ../developer/automation-score.md:6
+msgid ""
+"**HIGH (→ 1.0)** — traffic is mostly driven by automatic scripts / batch "
+"jobs / cron."
+msgstr "**HIGH（→ 1.0）**——流量主要由自动脚本 / 批处理任务 / cron 驱动。"
+
+#: ../developer/automation-score.md:7
+msgid ""
+"**LOW (→ 0.0)** — a human is using the service interactively (a chat UI, "
+"or a human-driven coding agent such as Claude Code)."
+msgstr "**LOW（→ 0.0）**——有人在交互式地使用服务（聊天界面，或 Claude Code 这类由人驱动的编码 agent）。"
+
+#: ../developer/automation-score.md:10
+msgid ""
+"It is a **heuristic for triage, not a verdict**. Always read it together "
+"with the reported `confidence` and the per-signal breakdown."
+msgstr "它是**用于分诊的启发式判断，不是定论**。务必结合返回的 `confidence` 和逐信号明细一起看。"
+
+#: ../developer/automation-score.md:14
+msgid ""
+"This feature profiles individual users' traffic patterns. Computing a "
+"score reads that user's `api_logs` rows over the window — when they sent "
+"requests, how long their prompts were, which client they used, and "
+"precomputed shape statistics of their newest user message (length, "
+"character entropy, and a hash — see signal 7). It is reachable only from "
+"the admin endpoints and the operator CLI below, never by the user "
+"themselves and never from any public route. A deployment that operates "
+"this on real traffic should say so in its own privacy policy, and should "
+"treat a score as an input to a human decision rather than as grounds for "
+"automated enforcement."
+msgstr ""
+"该功能会刻画单个用户的流量特征。计算一次评分要读取该用户在窗口内的 `api_logs` 行——他们何时发出请求、prompt 有多"
+"长、用的是哪个客户端，以及对其最新一条用户消息预先算好的形态统计（长度、字符熵和一个哈希——见信号 7）。它只能从下文的管理端点和运"
+"维 CLI 触达，用户自己无法访问，任何公开路由也无法访问。在真实流量上启用它的 deployment 应当在自己的隐私政策里说明这"
+"一点，并且应把评分当作人工决策的输入，而不是自动处置的依据。"
+
+#: ../developer/automation-score.md:25
+msgid "Where it lives"
+msgstr "代码位置"
+
+#: ../developer/automation-score.md:13
+msgid "Layer"
+msgstr "层"
+
+#: ../developer/automation-score.md:13
+msgid "Location"
+msgstr "位置"
+
+#: ../developer/automation-score.md:13
+msgid "Core scoring + gather SQL"
+msgstr "核心评分 + 聚合 SQL"
+
+#: ../developer/automation-score.md:13
+msgid "`apps/backend/serving/analytics/automation_score.py`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Store methods"
+msgstr "Store 方法"
+
+#: ../developer/automation-score.md:13
+msgid ""
+"`LogStore.get_user_automation_score` / `get_bulk_user_automation_scores` "
+"(`apps/backend/serving/storage/postgres_log.py`)"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Admin endpoints"
+msgstr "管理端点"
+
+#: ../developer/automation-score.md:13
+#, python-brace-format
+msgid ""
+"`GET /admin/users/{user_id}/automation-score`, `GET /admin/users"
+"/automation-scores` "
+"(`apps/backend/serving/servers/routers/admin/users.py`)"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Admin dashboard"
+msgstr "管理仪表盘"
+
+#: ../developer/automation-score.md:13
+msgid "per-user button + bulk \"Automation\" column in the Users tab"
+msgstr "Users 标签页里的单用户按钮 + 批量「Automation」列"
+
+#: ../developer/automation-score.md:13
+msgid "CLI"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`ops/db/analysis/user_automation_score.py`"
+msgstr ""
+
+#: ../developer/automation-score.md:35
+msgid ""
+"The scoring methodology and the SQL that gathers per-user aggregates live"
+" in **one** module (`serving.analytics.automation_score`), shared by the "
+"admin endpoints and the CLI, so the two can never drift. The pure scoring"
+" functions have no database dependency and are unit-tested in "
+"`tests/unit/test_user_automation_score.py`."
+msgstr ""
+"评分方法和聚合每用户指标的 SQL 都在**同一个**模块里（`serving.analytics.automation_score`）"
+"，由管理端点和 CLI 共用，因此两者绝不会漂移。纯评分函数不依赖数据库，单元测试在 `tests/unit/test_user_automation_score.py`。"
+
+#: ../developer/automation-score.md:40
+msgid "Inputs"
+msgstr "输入"
+
+#: ../developer/automation-score.md:42
+msgid ""
+"The score is computed over a trailing **window** (default 30 days; the "
+"admin endpoints accept `days` in `1..90`). Only `api_logs` rows with a "
+"non-null `user_id` are considered — anonymous traffic is excluded. For "
+"each user the following per-user aggregates are gathered:"
+msgstr ""
+"评分在一个回溯**窗口**内计算（默认 30 天；管理端点接受 `1..90` 之间的 `days`）。只统计 `user_id` "
+"非空的 `api_logs` 行——匿名流量被排除在外。对每个用户聚合以下指标："
+
+#: ../developer/automation-score.md:47
+msgid ""
+"request count `N`, and `n_chat` = rows where `num_user_turns IS NOT NULL`"
+" (chat-style requests; `NULL` for embeddings / raw completions);"
+msgstr ""
+"请求数 `N`，以及 `n_chat` = `num_user_turns IS NOT NULL` 的行数（聊天型请求；embedding "
+"/ 原始 completion 为 `NULL`）；"
+
+#: ../developer/automation-score.md:49
+msgid "one-shot count (`num_user_turns = 1`) and the p90 of `num_user_turns`;"
+msgstr "一次性请求数（`num_user_turns = 1`）以及 `num_user_turns` 的 p90；"
+
+#: ../developer/automation-score.md:50
+msgid "tool-call counts (`num_tool_calls IS NOT NULL`, and `> 0`);"
+msgstr "工具调用计数（`num_tool_calls IS NOT NULL`，以及 `> 0`）；"
+
+#: ../developer/automation-score.md:51
+msgid "the 25/50/75th percentiles of positive `prompt_tokens`;"
+msgstr "正的 `prompt_tokens` 的 25/50/75 分位数；"
+
+#: ../developer/automation-score.md:52
+msgid ""
+"the share of requests carrying a coding-agent opener "
+"(`metadata->>'agent'` present — see the `agent_opener_override` signal "
+"below);"
+msgstr ""
+"带编码 agent 开场白的请求占比（存在 `metadata->>'agent'`——见下文 `agent_opener_override` "
+"信号）；"
+
+#: ../developer/automation-score.md:54
+msgid "a request-weighted breakdown of `metadata->>'user_agent'`;"
+msgstr "按请求加权的 `metadata->>'user_agent'` 分布；"
+
+#: ../developer/automation-score.md:55
+msgid "a UTC hour-of-day histogram (24 buckets);"
+msgstr "UTC 小时直方图（24 个桶）；"
+
+#: ../developer/automation-score.md:56
+msgid ""
+"the 25/50/75th percentiles of the inter-arrival gaps between consecutive "
+"requests."
+msgstr "相邻请求之间到达间隔的 25/50/75 分位数。"
+
+#: ../developer/automation-score.md:59
+msgid "The signals"
+msgstr "各个信号"
+
+#: ../developer/automation-score.md:61
+msgid ""
+"The score blends seven signals. Each maps its raw metric to an "
+"**automation sub-score** in `[0, 1]` (HIGH = looks automated), and has a "
+"default weight. The four signals the feature was originally specified "
+"around are *user turns*, *turn length*, *user-agent*, and *daily "
+"activity*; two small supporting signals disambiguate the main confounder "
+"(a high-volume but human-driven coding agent); and `user_message_shape` "
+"measures the user's own messages specifically."
+msgstr ""
+"评分融合七个信号。每个信号把自己的原始指标映射到 `[0, 1]` 区间内的**自动化子分**（HIGH = 看起来像自动化），并带"
+"一个默认权重。这个功能最初围绕四个信号设计：*用户轮次*、*轮次长度*、*user-agent* 和*日活动形态*；另有两个小的辅助"
+"信号，用来消解主要的混淆项（流量很高但由人驱动的编码 agent）；而 `user_message_shape` 专门衡量用户自己写"
+"的消息。"
+
+#: ../developer/automation-score.md:13
+msgid "Signal"
+msgstr "信号"
+
+#: ../developer/automation-score.md:13
+msgid "Axis"
+msgstr "维度"
+
+#: ../developer/automation-score.md:13
+msgid "Default weight"
+msgstr "默认权重"
+
+#: ../developer/automation-score.md:13
+msgid "Available when"
+msgstr "可用条件"
+
+#: ../developer/automation-score.md:13
+msgid "`turn_pattern`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "user turns"
+msgstr "用户轮次"
+
+#: ../developer/automation-score.md:13
+msgid "0.24"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`n_chat ≥ 5`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`prompt_size_dispersion`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "total prompt size"
+msgstr "prompt 总长度"
+
+#: ../developer/automation-score.md:13
+msgid "0.17"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`n_sz ≥ 8` and median > 0"
+msgstr "`n_sz ≥ 8` 且中位数 > 0"
+
+#: ../developer/automation-score.md:13
+msgid "`user_message_shape`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "user-message size & entropy"
+msgstr "用户消息长度与熵"
+
+#: ../developer/automation-score.md:13
+msgid "0.15"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "≥ 1 part below"
+msgstr "下述分项至少有 1 个可用"
+
+#: ../developer/automation-score.md:13
+msgid "`client_tool_prior`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "user-agent"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "0.16"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "always (≥ 1 request)"
+msgstr "始终（≥ 1 个请求）"
+
+#: ../developer/automation-score.md:13
+msgid "`daily_activity_shape`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "daily activity"
+msgstr "日活动形态"
+
+#: ../developer/automation-score.md:13
+msgid "0.27"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "≥ 1 timing part below"
+msgstr "下述时间分项至少有 1 个可用"
+
+#: ../developer/automation-score.md:13
+msgid "`tool_call_human_tell`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "(support)"
+msgstr "（辅助）"
+
+#: ../developer/automation-score.md:13
+msgid "0.08"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`n_chat ≥ 5` and some tool use"
+msgstr "`n_chat ≥ 5` 且存在工具调用"
+
+#: ../developer/automation-score.md:13
+msgid "`agent_opener_override`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`agent_share ≥ 0.05`"
+msgstr ""
+
+#: ../developer/automation-score.md:78
+msgid ""
+"A signal that lacks enough data for a user is **dropped**, and the "
+"remaining weights are re-normalized over the survivors — a missing signal"
+" is never imputed as `0` (which would falsely pull the score toward "
+"\"human\"). The weights need not sum to `1.0` (they total `1.15`); the "
+"runtime always divides by the available weight. `user_message_shape` was "
+"added later at weight `0.15` **without changing the original six**, so a "
+"user lacking the (newer) user-message columns — e.g. traffic logged "
+"before the migration — drops it and gets the **same blended score as "
+"before**, only a slightly lower `confidence`."
+msgstr ""
+"对某个用户数据不足的信号会被**丢弃**，剩余权重在幸存下来的信号上重新归一化——缺失的信号绝不会被补成 `0`（那会把评分错误地拉"
+"向「人类」）。这些权重不必加起来等于 `1.0`（总和是 `1.15`）；运行时始终除以实际可用的权重。`user_message_shape` "
+"是后来以 `0.15` 的权重加入的，**并没有改动原有的六个**，所以缺少（较新的）用户消息列的用户——例如迁移之前记录下来的流量"
+"——会丢弃它，得到**与之前相同的融合评分**，只是 `confidence` 略低一点。"
+
+#: ../developer/automation-score.md:87
+msgid "1. `turn_pattern` — user turns"
+msgstr "1\\. `turn_pattern`——用户轮次"
+
+#: ../developer/automation-score.md:89
+msgid ""
+"An interactive session resends a growing history, so `num_user_turns` "
+"climbs `1, 2, 3, …`; a script firing independent one-shot completions "
+"emits `num_user_turns = 1` on essentially every request."
+msgstr ""
+"交互式会话每次都会重发不断增长的历史，所以 `num_user_turns` 会 `1, 2, 3, …` 地往上爬；而脚本连打互相"
+"独立的一次性 completion，几乎每个请求都是 `num_user_turns = 1`。"
+
+#: ../developer/automation-score.md:99
+msgid ""
+"The `depth_factor` halves the sub-score for a user who has demonstrably "
+"held deep (`p90 ≥ 3`) multi-turn threads, so a human who *also* fires "
+"many one-shot requests is not branded a script."
+msgstr ""
+"`depth_factor` 会把子分减半，条件是该用户确实有过深度（`p90 ≥ 3`）多轮会话，这样一个*同时*也发大量一次性请"
+"求的人不会被判成脚本。"
+
+#: ../developer/automation-score.md:103
+msgid "2. `prompt_size_dispersion` — length of user turn"
+msgstr "2\\. `prompt_size_dispersion`——用户轮次长度"
+
+#: ../developer/automation-score.md:105
+msgid ""
+"This uses `prompt_tokens`, which (OpenAI semantics) is the **total "
+"input** for the request — the system prompt + the whole conversation "
+"history resent that turn + tool definitions + the latest user message — "
+"not the user message in isolation (`api_logs` has no per-role token "
+"breakdown). It is the only available proxy for \"length of user turn\". "
+"Templated automation assembles each request from a fixed template, so its"
+" total prompt size clusters tightly; an interactive human's requests vary"
+" widely (a one-word follow-up, then a long paste). The discriminator is "
+"therefore the **robust relative dispersion** (IQR / median) of that total"
+" size, which is scale-free and resistant to a single huge pasted prompt:"
+msgstr ""
+"这里用的是 `prompt_tokens`，按 OpenAI 的语义它是该请求的**输入总量**——system prompt + "
+"本轮重发的整段对话历史 + 工具定义 + 最新一条用户消息——而不是孤立的用户消息（`api_logs` 没有按角色拆分的 token "
+"明细）。它是「用户轮次长度」唯一可用的代理指标。模板化的自动化按固定模板拼装每个请求，所以 prompt 总长度聚得很紧；而交互式的"
+"人类，请求长度差异极大（先来一句话追问，接着粘贴一大段）。因此判别依据是这个总长度的**稳健相对离散度**（IQR / 中位数），它"
+"与量纲无关，也不会被单次粘贴的超长 prompt 带偏："
+
+#: ../developer/automation-score.md:120
+msgid "3. `client_tool_prior` — user-agent"
+msgstr "3\\. `client_tool_prior`——user-agent"
+
+#: ../developer/automation-score.md:122
+msgid ""
+"The User-Agent is the most *spoofable* signal, so it is a soft, low-"
+"weight prior, never decisive. Each request's UA is classified into a "
+"client class (a Python port of the frontend `parseClientTool`), with a "
+"per-request automation value:"
+msgstr ""
+"User-Agent 是最容易*伪造*的信号，因此它只是一个软性的低权重先验，从不起决定作用。每个请求的 UA 会被归入一个客户端类"
+"别（前端 `parseClientTool` 的 Python 移植），每个类别对应一个每请求的自动化取值："
+
+#: ../developer/automation-score.md:13
+msgid "Client class"
+msgstr "客户端类别"
+
+#: ../developer/automation-score.md:13
+msgid "Examples"
+msgstr "示例"
+
+#: ../developer/automation-score.md:13
+msgid "Value"
+msgstr "取值"
+
+#: ../developer/automation-score.md:13
+msgid "Interactive / coding agent"
+msgstr "交互式 / 编码 agent"
+
+#: ../developer/automation-score.md:13
+msgid "`claude-code`, `cline`, `cursor`, `codex`, `browser`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`0.10`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Ambiguous SDK"
+msgstr "无法区分的 SDK"
+
+#: ../developer/automation-score.md:13
+msgid "`openai-python`, `openai-node`, `anthropic-python`/`-sdk`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`0.50`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Raw HTTP library / API tool"
+msgstr "原始 HTTP 库 / API 工具"
+
+#: ../developer/automation-score.md:13
+msgid ""
+"`python-requests`, `httpx`, `aiohttp`, `curl`, `wget`, `okhttp`, `axios`,"
+" `go-http`, `postman`, …"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`0.85`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Unknown (recognized leading token)"
+msgstr "未知（能识别出前导 token）"
+
+#: ../developer/automation-score.md:13
+msgid "`myagent/1.0`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`0.60`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Absent / unrecognized UA"
+msgstr "缺失 / 无法识别的 UA"
+
+#: ../developer/automation-score.md:13
+msgid "—"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`0.70`"
+msgstr ""
+
+#: ../developer/automation-score.md:139
+msgid ""
+"SDKs sit at a neutral `0.5` because a human chat UI can sit on top of "
+"`openai-python`. The `agent_share` term lets the coding-agent opener (see"
+" below) pull the prior toward human even behind a scripty UA."
+msgstr ""
+"SDK 停在中性的 `0.5`，因为人用的聊天界面完全可能建在 `openai-python` 之上。`agent_share` 这"
+"一项让编码 agent 开场白（见下文）即便藏在一个很像脚本的 UA 背后，也能把先验拉向人类。"
+
+#: ../developer/automation-score.md:143
+msgid "4. `daily_activity_shape` — daily activity"
+msgstr "4\\. `daily_activity_shape`——日活动形态"
+
+#: ../developer/automation-score.md:145
+msgid ""
+"The behavioral fingerprint hardest to fake at scale. Up to four parts are"
+" fused and re-normalized over whichever pass their data floors. Each is "
+"HIGH = automation:"
+msgstr "这是最难大规模伪造的行为指纹。最多融合四个分项，并在其中数据量达标的那些上重新归一化。每一项都是 HIGH = 自动化："
+
+#: ../developer/automation-score.md:13
+msgid "Part"
+msgstr "分项"
+
+#: ../developer/automation-score.md:13
+msgid "Weight"
+msgstr "权重"
+
+#: ../developer/automation-score.md:13
+msgid "Formula"
+msgstr "公式"
+
+#: ../developer/automation-score.md:13
+msgid "Floor"
+msgstr "数据下限"
+
+#: ../developer/automation-score.md:13
+msgid "Hour coverage"
+msgstr "小时覆盖率"
+
+#: ../developer/automation-score.md:13
+msgid "0.20"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid ""
+"`clamp01((coverage - 0.5) / 0.5)`, `coverage = distinct active UTC hours "
+"/ 24`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`N ≥ 10`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Hour entropy"
+msgstr "小时熵"
+
+#: ../developer/automation-score.md:13
+msgid ""
+"`clamp01((Hnorm - 0.5) / (0.92 - 0.5))`, `Hnorm = ShannonEntropy(hours) /"
+" log2(24)`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Nightly rest gap"
+msgstr "夜间休息间隙"
+
+#: ../developer/automation-score.md:13
+msgid "0.30"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`clamp01(1 - max_quiet_gap_hours / 6)`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Inter-arrival regularity"
+msgstr "到达间隔规律性"
+
+#: ../developer/automation-score.md:13
+msgid "`clamp01(1 - gap_rcv / 1.0)`, `gap_rcv = (p75 - p25) / median` of gaps"
+msgstr ""
+"`clamp01(1 - gap_rcv / 1.0)`，其中 `gap_rcv = (p75 - p25) / median` 取"
+"自到达间隔"
+
+#: ../developer/automation-score.md:13
+msgid "`≥ 3 gaps`"
+msgstr ""
+
+#: ../developer/automation-score.md:155
+msgid ""
+"`max_quiet_gap_hours` is the longest *circular* run of inactive clock-"
+"hours — a human's nightly sleep gap pushes the rest-gap part toward 0, "
+"while 24/7 operation leaves no gap (→ 1). The timezone-invariant parts "
+"(regularity, rest gap, entropy) carry most of the weight, so an unknown "
+"user timezone shifts the histogram without distorting the verdict (hours "
+"are bucketed in **UTC**)."
+msgstr ""
+"`max_quiet_gap_hours` 是不活跃钟点的最长*环形*连续段——人类夜间睡眠形成的间隙会把休息间隙这一分项压向 0，"
+"而 7×24 运行则完全没有间隙（→ 1）。与时区无关的几个分项（规律性、休息间隙、熵）占了大部分权重，所以用户时区未知只会平移直方"
+"图，不会扭曲结论（小时按 **UTC** 分桶）。"
+
+#: ../developer/automation-score.md:161
+msgid "5. `tool_call_human_tell` — supporting"
+msgstr "5\\. `tool_call_human_tell`——辅助信号"
+
+#: ../developer/automation-score.md:163
+msgid ""
+"Agentic tool use (`num_tool_calls > 0`, from OpenAI `tool_calls` / "
+"Anthropic `tool_use` blocks) is the fingerprint of a human-driven coding "
+"loop. It is a **one-directional** human tell: it is *dropped entirely* "
+"when there are no tool calls (absence of tool use is not evidence of "
+"automation), and otherwise can only pull the score toward human, never "
+"raise it:"
+msgstr ""
+"Agentic 的工具调用（`num_tool_calls > 0`，来自 OpenAI 的 `tool_calls` / Anthropic "
+"的 `tool_use` 块）是人驱动编码循环的指纹。它是**单向**的人类证据：没有任何工具调用时它被*整个丢弃*（没有工具调用并"
+"不等于是自动化），而在有工具调用时它只能把评分拉向人类，绝不会抬高评分："
+
+#: ../developer/automation-score.md:173
+msgid "6. `agent_opener_override` — supporting"
+msgstr "6\\. `agent_opener_override`——辅助信号"
+
+#: ../developer/automation-score.md:175
+#, no-python-format
+msgid ""
+"`metadata->>'agent'` is a coding-agent identity parsed from the system-"
+"prompt opener (`\"You are Claude Code, …\"`). Because it is content-"
+"derived (not a header), it is hard to fake incidentally and is treated as"
+" strong human evidence. It is available only when the opener appears on ≥"
+" 5% of requests, so it can only pull toward human; its absence is "
+"uninformative:"
+msgstr ""
+"`metadata->>'agent'` 是从 system prompt 开场白（`\"You are Claude Code, "
+"…\"`）里解析出来的编码 agent 身份。因为它来自内容而不是请求头，很难被无意间伪造，所以被当作强的人类证据。只有当这个开场白"
+"出现在 ≥ 5% 的请求上时它才可用，因此它只能把评分拉向人类；它的缺席不提供任何信息："
+
+#: ../developer/automation-score.md:185
+msgid "It also drives the **hard human clamp** in the combination step."
+msgstr "它同时驱动组合步骤里的**人类硬钳制**。"
+
+#: ../developer/automation-score.md:187
+msgid "7. `user_message_shape` — user-message size & entropy"
+msgstr "7\\. `user_message_shape`——用户消息长度与熵"
+
+#: ../developer/automation-score.md:189
+msgid ""
+"Where `prompt_size_dispersion` looks at the *whole* input, this signal "
+"looks at the **user's own messages**. Three properties of the **newest "
+"user-role message** per request are precomputed at log time (in "
+"`user_message_stats`, alongside `conversation_shape`) as cheap columns — "
+"char length, Shannon character entropy (bits/char), and a stable 64-bit "
+"hash of the stripped text — so the score never de-TOASTs the prompt. "
+"Three parts are fused and re-normalized over whichever pass their floors,"
+" each HIGH = automation:"
+msgstr ""
+"`prompt_size_dispersion` 看的是*整个*输入，而这个信号看的是**用户自己写的消息**。每个请求中**最新一"
+"条 user 角色消息**的三个属性会在写日志时预先算好（存在 `user_message_stats`，与 `conversation_shape` "
+"并列）作为廉价的列——字符长度、香农字符熵（bit/字符），以及剥离后文本的稳定 64 位哈希——这样评分就永远不需要对 prompt "
+"做 de-TOAST。三个分项会被融合，并在其中达到下限的那些上重新归一化，每一项都是 HIGH = 自动化："
+
+#: ../developer/automation-score.md:13
+msgid "Size dispersion"
+msgstr "长度离散度"
+
+#: ../developer/automation-score.md:13
+msgid "0.40"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid ""
+"`clamp01(1 - size_rcv / 0.5)`, `size_rcv = (p75 - p25)/median` of "
+"`last_user_msg_chars`"
+msgstr ""
+"`clamp01(1 - size_rcv / 0.5)`，其中 `size_rcv = (p75 - p25)/median` 取自 "
+"`last_user_msg_chars`"
+
+#: ../developer/automation-score.md:13
+msgid "`≥ 8 sized msgs`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Per-message entropy"
+msgstr "单条消息熵"
+
+#: ../developer/automation-score.md:13
+msgid "0.25"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`clamp01(1 - mean_entropy / 4.0)` (natural language ≈ 4 bits/char)"
+msgstr "`clamp01(1 - mean_entropy / 4.0)`（自然语言 ≈ 4 bit/字符）"
+
+#: ../developer/automation-score.md:13
+msgid "`≥ 5 msgs`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "Cross-message repetition"
+msgstr "跨消息重复度"
+
+#: ../developer/automation-score.md:13
+msgid "0.35"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid ""
+"`clamp01((1 - distinct_ratio) / 0.5)`, `distinct_ratio = "
+"distinct(hash)/count`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`≥ 8 hashed msgs`"
+msgstr ""
+
+#: ../developer/automation-score.md:203
+msgid ""
+"Templated automation sends near-constant-length user messages (low size "
+"dispersion), low-entropy structured payloads, and resends the same "
+"message over and over (low distinct ratio → high repetition); an "
+"interactive human varies all three. Because the columns are populated "
+"only for new traffic, the signal is simply unavailable (dropped) for "
+"users whose requests all predate the migration."
+msgstr ""
+"模板化的自动化发出的用户消息长度几乎恒定（长度离散度低）、载荷是低熵的结构化内容，并且一遍遍重发同一条消息（去重比例低 → 重复度高"
+"）；交互式的人类三者都在变。由于这些列只对新流量填充，对于请求全部早于该次迁移的用户，这个信号直接不可用（被丢弃）。"
+
+#: ../developer/automation-score.md:209
+msgid ""
+"This signal isolates the user input, which the metadata in "
+"`metadata->>'agent'` and the per-message hash make hard to spoof without "
+"actually varying the content."
+msgstr "这个信号把用户输入单独隔离出来，再配合 `metadata->>'agent'` 里的元数据和逐消息哈希，不真正改变内容就很难伪造。"
+
+#: ../developer/automation-score.md:212
+msgid "Combining the signals"
+msgstr "信号的组合"
+
+#: ../developer/automation-score.md:232
+msgid ""
+"**Re-normalization** (`raw`) makes the blend depend only on the signals "
+"that actually had data, so a pure-embeddings batch user — whose "
+"`num_*_turns` columns are all `NULL` — is still scored on its user-agent "
+"and daily-activity shape."
+msgstr ""
+"**重新归一化**（`raw`）让融合只取决于确实有数据的信号，所以一个纯 embedding 的批量用户——它的 `num_*_turns` "
+"列全是 `NULL`——仍然可以凭 user-agent 和日活动形态被评分。"
+
+#: ../developer/automation-score.md:235
+msgid ""
+"**Shrinkage** (`alpha = N / (N + 30)`) pulls users with little traffic "
+"toward the neutral `0.5` prior. Data outweighs the prior at `N = 30` "
+"(`alpha = 0.5`); at `N = 5`, `alpha ≈ 0.14` (the score is pulled ~86% to "
+"`0.5`)."
+msgstr ""
+"**收缩**（`alpha = N / (N + 30)`）把流量很少的用户拉向中性的 `0.5` 先验。在 `N = 30` 时数"
+"据的分量超过先验（`alpha = 0.5`）；在 `N = 5` 时 `alpha ≈ 0.14`（评分被拉向 `0.5` 约 86%）"
+"。"
+
+#: ../developer/automation-score.md:238
+msgid ""
+"**`confidence`** combines the request volume (`alpha`) with the share of "
+"the total signal weight that was actually available (`weight_sum / "
+"TOTAL_WEIGHT`), so sparse verdicts — and users missing the newer signals "
+"— read as lower-confidence."
+msgstr ""
+"**`confidence`** 把请求量（`alpha`）与实际可用的信号权重占比（`weight_sum / TOTAL_WEIGHT`）"
+"结合起来，所以稀疏的结论——以及缺少较新信号的用户——读出来置信度更低。"
+
+#: ../developer/automation-score.md:242
+msgid "Users with `N < 5` requests are flagged **`insufficient_data`**."
+msgstr "请求数 `N < 5` 的用户会被标记为 **`insufficient_data`**。"
+
+#: ../developer/automation-score.md:244
+msgid "Bands"
+msgstr "档位"
+
+#: ../developer/automation-score.md:246
+msgid ""
+"The final score maps to a band label (advisory — always read with "
+"`confidence`):"
+msgstr "最终评分映射到一个档位标签（仅供参考——务必结合 `confidence` 一起读）："
+
+#: ../developer/automation-score.md:13
+msgid "Band"
+msgstr "档位"
+
+#: ../developer/automation-score.md:13
+msgid "Range"
+msgstr "范围"
+
+#: ../developer/automation-score.md:13
+msgid "`likely_human`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`0.00 – 0.35`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`mixed_or_uncertain`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`0.35 – 0.60`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`likely_automated`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`0.60 – 0.80`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`scripted_batch`"
+msgstr ""
+
+#: ../developer/automation-score.md:13
+msgid "`0.80 – 1.00`"
+msgstr ""
+
+#: ../developer/automation-score.md:255
+msgid "Caveats"
+msgstr "注意事项"
+
+#: ../developer/automation-score.md:257
+msgid ""
+"**It's a heuristic.** No single signal is decisive; each is individually "
+"spoofable, so the user-agent is weighted low and behavioral signals "
+"dominate. Treat the score as triage, not proof."
+msgstr ""
+"**这是启发式的**。没有任何单个信号是决定性的；每一个都可以被单独伪造，所以 user-agent 权重很低，行为类信号占主导。把"
+"评分当作分诊线索，而不是证据。"
+
+#: ../developer/automation-score.md:260
+msgid ""
+"**Timezone.** Hour-of-day is bucketed in UTC; the design leans on the "
+"timezone-invariant daily-activity parts so a non-UTC human is not "
+"mislabeled as night-active, but a genuinely multi-timezone account can "
+"inflate hour coverage."
+msgstr ""
+"**时区**。小时按 UTC 分桶；设计上依靠与时区无关的日活动分项，因此非 UTC 时区的人不会被误标成夜间活跃，但一个真正跨多时"
+"区的账号确实会抬高小时覆盖率。"
+
+#: ../developer/automation-score.md:263
+msgid ""
+"**Shared / role accounts.** Shared or team accounts blend human and "
+"script traffic into a mid \"mixed\" score (correct). `internal` / `admin`"
+" accounts may legitimately run automation — the score stays role-"
+"agnostic, so exclude them from any automated enforcement and read the "
+"score with their role in mind."
+msgstr ""
+"**共享 / 角色账号**。共享账号或团队账号会把人类流量与脚本流量混成中间的「mixed」分数（这是对的）。`internal` "
+"/ `admin` 账号运行自动化本身可能完全合理——评分不区分角色，所以要把它们排除在任何自动处置之外，并结合其角色来读评分。"
+
+#: ../developer/automation-score.md:268
+msgid "Reproducing it from the CLI"
+msgstr "用 CLI 复现"
+

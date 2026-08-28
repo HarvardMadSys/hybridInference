@@ -1,0 +1,286 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/hpc-model-host.md:1
+msgid "Serving a Model from an HPC Cluster"
+msgstr "在 HPC 集群上提供模型服务"
+
+#: ../developer/hpc-model-host.md:3
+msgid ""
+"Many self-hosters have GPUs, but not GPUs they own outright: the hardware "
+"sits behind a batch scheduler (Slurm, PBS, LSF) that hands out a compute "
+"node for a few hours at a time. This page covers running an OpenAI-"
+"compatible model server on such a node and attaching it to the gateway."
+msgstr ""
+"很多自建部署者手上有 GPU，但并不完全拥有这些 "
+"GPU：硬件在一个批处理调度器（Slurm、PBS、LSF）后面，每次只发放几个小时的计算节点。本页讲的是如何在这样的节点上运行一个 OpenAI "
+"兼容的模型服务器，并把它接到网关上。"
+
+#: ../developer/hpc-model-host.md:8
+msgid ""
+"Three things make this different from the fixed-host case in [Adding a New "
+"Local Model](add-local-model.md):"
+msgstr "有三点让它不同于 [添加新的本地模型](add-local-model.md) 里那种固定主机的情形："
+
+#: ../developer/hpc-model-host.md:11
+msgid ""
+"**the node is ephemeral.** You get a different hostname on every allocation,"
+" and the job ends whether or not you are finished with it;"
+msgstr "**节点是临时的**。每次分配到的主机名都不一样，而且不管你用完没用完，作业都会结束；"
+
+#: ../developer/hpc-model-host.md:13
+msgid ""
+"**the node is usually not routable** from wherever the gateway runs, and "
+"often cannot reach a container registry either;"
+msgstr "**从网关运行的位置通常路由不到这个节点**，而且它往往也连不上容器镜像仓库；"
+
+#: ../developer/hpc-model-host.md:15
+msgid ""
+"**the allocation costs someone money or queue priority** for as long as you "
+"hold it, so releasing it cleanly is part of the procedure, not an "
+"afterthought."
+msgstr "**只要你还占着这次分配，就一直有人在为它付钱或消耗排队优先级**，所以干净地释放它是流程的一部分，而不是事后才想起来的收尾。"
+
+#: ../developer/hpc-model-host.md:18
+msgid ""
+"The shape that follows from this: the model server binds loopback on the "
+"compute node, an SSH reverse tunnel carries it to a **fixed** loopback port "
+"on the gateway host, and the gateway's route names that fixed port. The "
+"node's changing hostname then never appears in the model registry, and a new"
+" allocation is picked up by restarting the tunnel rather than by editing "
+"config."
+msgstr ""
+"由此得出的形态是：模型服务器在计算节点上绑定 loopback，一条 SSH 反向隧道把它送到网关主机上一个**固定的** loopback "
+"端口，网关的路由则指向这个固定端口。这样，节点每次变化的主机名就不会出现在模型注册表里，换一次分配只需重启隧道，而不必改配置。"
+
+#: ../developer/hpc-model-host.md:34
+msgid ""
+"Every scheduler flag, path and port below is a placeholder. Cluster policy —"
+" partition names, GPU resource names, walltime limits, which container "
+"runtime is installed — is site-specific, and there is no portable default."
+msgstr ""
+"下面所有的调度器参数、路径和端口都是占位符。集群策略——分区名、GPU 资源名、walltime "
+"上限、装的是哪种容器运行时——因站点而异，没有可移植的默认值。"
+
+#: ../developer/hpc-model-host.md:38
+msgid "1. Allocate a node"
+msgstr "1\\. 申请一个节点"
+
+#: ../developer/hpc-model-host.md:40
+msgid ""
+"With Slurm, an interactive allocation looks like this. Fill in the "
+"placeholders from your site's documentation:"
+msgstr "使用 Slurm 时，一次交互式分配大致如下。占位符请照你所在站点的文档填写："
+
+#: ../developer/hpc-model-host.md:52
+msgid ""
+"Many sites also ship a local wrapper around this; use whichever your "
+"documentation names. Note the job ID and the allocated node name — you need "
+"the first to release the allocation and the second to log in:"
+msgstr "很多站点还提供了自己封装的命令；用你们文档里写明的那个。记下作业 ID 和分配到的节点名——前者用于释放这次分配，后者用于登录："
+
+#: ../developer/hpc-model-host.md:61
+msgid ""
+"The node name changes on every allocation. Do not put it in the model "
+"registry."
+msgstr "节点名每次分配都会变。不要把它写进模型注册表。"
+
+#: ../developer/hpc-model-host.md:63
+msgid "2. Make the container image available offline"
+msgstr "2\\. 让容器镜像可以离线取用"
+
+#: ../developer/hpc-model-host.md:65
+msgid ""
+"Compute nodes frequently have no outbound network, so pulling the serving "
+"image on the node fails. Pull it once somewhere that does have network, "
+"export it to shared storage that the compute nodes can read, and import it "
+"there."
+msgstr "计算节点常常没有出网，因此在节点上拉取服务镜像会失败。要在有网络的地方拉取一次，导出到计算节点能读到的共享存储，再在节点上导入。"
+
+#: ../developer/hpc-model-host.md:69
+msgid ""
+"Pin an exact tag (or a digest) rather than `:latest`. `:latest` means a "
+"different image every time you export, which turns \"it worked last week\" "
+"into an unreproducible report."
+msgstr ""
+"要固定一个确切的 tag（或 digest），而不是用 `:latest`。`:latest` "
+"意味着每次导出拿到的都是不同的镜像，会把「上周还是好的」变成一份无法复现的报告。"
+
+#: ../developer/hpc-model-host.md:84
+msgid ""
+"`docker save` / `docker load` take the same arguments if that is the runtime"
+" your site provides."
+msgstr "如果你所在站点提供的运行时是 Docker，`docker save` / `docker load` 接受同样的参数。"
+
+#: ../developer/hpc-model-host.md:87
+msgid "3. Start the model server"
+msgstr "3\\. 启动模型服务器"
+
+#: ../developer/hpc-model-host.md:105
+msgid "Points worth understanding rather than copying:"
+msgstr "以下几点值得理解，而不是照抄："
+
+#: ../developer/hpc-model-host.md:107
+msgid ""
+"**`--publish 127.0.0.1:8000:8000`** keeps the server off the cluster's "
+"internal network. A bare `-p 8000:8000` publishes on every interface of a "
+"node you share with other tenants, with no authentication in front of it. "
+"The reverse tunnel in the next step is all the reachability you need."
+msgstr ""
+"**`--publish 127.0.0.1:8000:8000`** 让服务器不暴露在集群内网上。裸写 `-p 8000:8000` "
+"会把它发布到这台与其他租户共享的节点的每一个网络接口上，前面还没有任何鉴权。下一步的反向隧道已经提供了你需要的全部可达性。"
+
+#: ../developer/hpc-model-host.md:111
+msgid ""
+"**`--host 0.0.0.0`** is the *container's* interface, not the node's. The "
+"process must listen on the container's external interface for the loopback "
+"publish above to reach it; binding `127.0.0.1` inside the container would "
+"make the published port answer nothing."
+msgstr ""
+"**`--host 0.0.0.0`** 指的是*容器*的接口，不是节点的。进程必须监听容器的对外接口，上面那条 loopback "
+"发布才能把请求送进来；在容器内绑定 `127.0.0.1` 会让发布出去的端口什么也答不了。"
+
+#: ../developer/hpc-model-host.md:115
+msgid ""
+"**`--tensor-parallel-size`** must match the number of GPUs visible in the "
+"allocation. Two GPUs, `2`. Requesting more shards than GPUs fails at "
+"startup."
+msgstr ""
+"**`--tensor-parallel-size`** 必须与本次分配中可见的 GPU 数量一致。两块 GPU 就写 `2`。要求的分片数多于 GPU"
+" 数会在启动时失败。"
+
+#: ../developer/hpc-model-host.md:117
+msgid ""
+"**`--ipc=host`** gives vLLM's tensor-parallel worker processes the host's "
+"shared-memory segment; the container default is too small for them. Set a "
+"large `--shm-size` instead if your site disallows `--ipc=host`."
+msgstr ""
+"**`--ipc=host`** 把宿主机的共享内存段交给 vLLM 的张量并行 worker "
+"进程使用；容器的默认值对它们来说太小。如果你所在站点不允许 `--ipc=host`，改为设置一个较大的 `--shm-size`。"
+
+#: ../developer/hpc-model-host.md:120
+msgid ""
+"**`--device nvidia.com/gpu=all`** is Podman's CDI syntax. Docker uses "
+"`--gpus all`."
+msgstr ""
+"**`--device nvidia.com/gpu=all`** 是 Podman 的 CDI 写法。Docker 用 `--gpus all`。"
+
+#: ../developer/hpc-model-host.md:122
+msgid ""
+"**`:Z`** on the volume relabels the mount for SELinux and is Podman/Docker "
+"specific; drop it where SELinux is not enforced."
+msgstr ""
+"**`:Z`** 加在卷上，为 SELinux 重新打标签，是 Podman/Docker 特有的；没有启用 SELinux 的地方去掉它。"
+
+#: ../developer/hpc-model-host.md:124
+msgid ""
+"**`--served-model-name`** gives the model a stable short id. Without it the "
+"served id is the filesystem path from `--model`, which is what the gateway "
+"would then have to send as `provider_model_id`."
+msgstr ""
+"**`--served-model-name`** 给模型一个稳定的短 id。不加它的话，对外提供的 id 就是 `--model` "
+"里那个文件系统路径，网关随后就得把这个路径作为 `provider_model_id` 发出去。"
+
+#: ../developer/hpc-model-host.md:128
+msgid "Confirm on the node before going further:"
+msgstr "继续之前，先在节点上确认："
+
+#: ../developer/hpc-model-host.md:134
+msgid "4. Tunnel it to the gateway host"
+msgstr "4\\. 把它隧道到网关主机"
+
+#: ../developer/hpc-model-host.md:136
+msgid ""
+"From the compute node, open a reverse tunnel to a fixed loopback port on the"
+" gateway host. Record the PID so you can close it later:"
+msgstr "从计算节点开一条反向隧道，连到网关主机上一个固定的 loopback 端口。记下 PID，以便之后关闭："
+
+#: ../developer/hpc-model-host.md:149
+msgid ""
+"**Bind the remote end to `127.0.0.1`.** `-R 0.0.0.0:8001:...` asks the "
+"gateway host to publish an unauthenticated model server to every network it "
+"is on. It also only works if the gateway's `sshd` sets `GatewayPorts yes`; "
+"leaving that off is the safer configuration."
+msgstr ""
+"**远端要绑定到 `127.0.0.1`**。`-R 0.0.0.0:8001:...` "
+"等于要求网关主机把一个没有鉴权的模型服务器发布到它所在的每一个网络上。它还只有在网关的 `sshd` 设了 `GatewayPorts yes` "
+"时才生效；不开这个选项才是更安全的配置。"
+
+#: ../developer/hpc-model-host.md:153
+msgid ""
+"**`ExitOnForwardFailure=yes`** makes the tunnel fail loudly when port 8001 "
+"on the gateway host is still held by a previous allocation's forwarding, "
+"instead of connecting and quietly forwarding nothing."
+msgstr ""
+"**`ExitOnForwardFailure=yes`** 让隧道在网关主机的 8001 "
+"端口仍被上一次分配的转发占着时大声失败，而不是连上之后悄悄什么都不转发。"
+
+#: ../developer/hpc-model-host.md:156
+msgid ""
+"The tunnel dies with the allocation. To ride out network blips, wrap the "
+"same command in `autossh`, a systemd user unit, or a shell retry loop — but "
+"nothing will survive the job ending."
+msgstr ""
+"隧道会随这次分配一起消失。要扛过网络抖动，可以把同一条命令包进 `autossh`、一个 systemd 用户单元或一个 shell "
+"重试循环——但作业一结束，什么都活不下来。"
+
+#: ../developer/hpc-model-host.md:160
+msgid ""
+"Verify **from the gateway host**, which is where the gateway will resolve "
+"it:"
+msgstr "要**在网关主机上**验证，因为网关正是在那里解析它的："
+
+#: ../developer/hpc-model-host.md:166
+msgid "5. Register the route"
+msgstr "5\\. 注册路由"
+
+#: ../developer/hpc-model-host.md:168
+msgid ""
+"The gateway now sees an ordinary OpenAI-compatible server at "
+"`http://127.0.0.1:8001/v1`. Registering it is not special — [Adding a New "
+"Local Model](add-local-model.md) is the authority on the registry entry, the"
+" `openai_compat` route fields, and verifying the model through the public "
+"`/v1` API. Use the fixed tunnel port as `base_url` and your `--served-model-"
+"name` as `provider_model_id`."
+msgstr ""
+"现在网关看到的就是 `http://127.0.0.1:8001/v1` 上一个普通的 OpenAI "
+"兼容服务器。注册它没有任何特别之处——[添加新的本地模型](add-local-model.md) 才是注册表条目、`openai_compat` "
+"路由字段以及通过公开 `/v1` API 验证模型的权威说明。把固定的隧道端口填成 `base_url`，把你的 `--served-model-"
+"name` 填成 `provider_model_id`。"
+
+#: ../developer/hpc-model-host.md:175
+msgid "6. Release everything when you are done"
+msgstr "6\\. 用完后释放所有东西"
+
+#: ../developer/hpc-model-host.md:177
+msgid ""
+"Skipping this leaves a job burning its walltime, a dead route in the "
+"registry, and a stale listener on the gateway host that will make the next "
+"allocation's tunnel fail."
+msgstr ""
+"跳过这一步，会留下一个仍在烧 walltime 的作业、注册表里一条已死的路由，以及网关主机上一个陈旧的监听——它会让下一次分配的隧道建立失败。"
+
+#: ../developer/hpc-model-host.md:194
+msgid ""
+"Then confirm from the gateway host that the port is genuinely free — the "
+"following should now fail to connect:"
+msgstr "然后从网关主机确认端口确实空了出来——下面这条现在应该连不上："

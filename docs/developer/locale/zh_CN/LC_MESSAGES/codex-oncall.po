@@ -1,0 +1,518 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/codex-oncall.md:1
+msgid "Codex On-Call"
+msgstr ""
+
+#: ../developer/codex-oncall.md:3
+msgid ""
+"The Codex On-Call pipeline turns structured alerts — from the gateway's "
+"own alert engine, or from any other producer that speaks the event "
+"contract below — into read-only Codex investigations. A small always-on "
+"relay receives alerts, posts the original message to Slack immediately, "
+"and hands the analysis to one of two backends "
+"(`CODEX_ONCALL_DISPATCH_BACKEND`):"
+msgstr ""
+"Codex On-Call 流水线把结构化告警——来自网关自身的告警引擎，或任何遵循下文事件契约的其他生产者——变成只读的 Codex "
+"调查。一个常驻的小型中继服务（relay）接收告警，立即把原始消息发到 Slack，然后把分析工作交给两个后端之一（`CODEX_ONCALL_DISPATCH_BACKEND`）"
+"："
+
+#: ../developer/codex-oncall.md:9
+msgid ""
+"**`github`** — a GitHub Actions workflow checks out the current `dev` "
+"branch, runs `codex exec` against the relay-configured Responses API "
+"endpoint (the gateway), and replies in the same Slack thread itself."
+msgstr ""
+"**`github`**——一个 GitHub Actions workflow 检出当前的 `dev` 分支，针对 relay 所配置的 Responses API "
+"端点（即网关）运行 `codex exec`，并自己在同一条 Slack thread 里回复。"
+
+#: ../developer/codex-oncall.md:12
+msgid ""
+"**`cloud-agent`** — the relay creates a job on a cloud agent control "
+"plane (any service that implements the `/v1/agent/service/oncall/*` "
+"contract in `apps/backend/serving/oncall/agent_backend.py`); that "
+"platform's own runner host executes Codex in a sandbox with a per-attempt"
+" inference grant, and the relay polls the job, validates the result, and "
+"posts it into the thread itself. No GitHub-hosted minutes — an Actions "
+"outage cannot take the analysis path down with it — no long-lived model "
+"key in Actions secrets, spend attributed in `api_logs.agent_job_id`, and "
+"the checkout pinned to the commit `CODEX_ONCALL_AGENT_BASE_REF` named at "
+"job creation."
+msgstr ""
+"**`cloud-agent`**——relay 在某个 cloud agent 控制面上创建一个 job（该控制面可以是任何实现了 "
+"`apps/backend/serving/oncall/agent_backend.py` 中 `/v1/agent/service/oncall/*` "
+"契约的服务）；该平台自己的 runner 主机在沙箱里执行 Codex，并带一份按次签发的推理 grant，而 relay "
+"轮询这个 job、校验结果，并自己把它发进 thread。不消耗 GitHub 托管的分钟数——Actions "
+"故障不会连带把分析链路一起拖下水——Actions secret 里没有长期有效的模型密钥，花费记在 "
+"`api_logs.agent_job_id` 上，检出也钉死在创建 job 时指定的 `CODEX_ONCALL_AGENT_BASE_REF` commit 上。"
+
+#: ../developer/codex-oncall.md:42
+msgid "Split of responsibilities:"
+msgstr "职责划分："
+
+#: ../developer/codex-oncall.md:44
+msgid ""
+"**Relay (Docker, always on):** authenticates producers, posts the "
+"original alert immediately, deduplicates incidents in SQLite, queues one "
+"durable hand-off per firing alert, and falls back loudly when GitHub is "
+"unreachable. It runs no Codex, holds no model credentials, and contains "
+"no repository snapshot."
+msgstr ""
+"**Relay（Docker，常驻）**：认证生产者，立即发出原始告警，在 SQLite 里对事件去重，为每次告警触发排入一次持久化"
+"的交接，并在 GitHub 不可达时大声回退。它不运行 Codex，不持有模型凭据，也不包含任何仓库快照。"
+
+#: ../developer/codex-oncall.md:49
+msgid ""
+"**Workflow (GitHub Actions, per alert):** ephemeral runner checks out the"
+" live `dev` branch (no image-staleness), installs a pinned Codex CLI, "
+"runs the read-only investigation, and posts the structured analysis (or "
+"its own failure notice) into the original Slack thread. The runner VM is "
+"destroyed after each run."
+msgstr ""
+"**Workflow（GitHub Actions，每次告警一轮）**：临时 runner 检出实时的 `dev` 分支（不存在镜像"
+"陈旧问题），安装钉死版本的 Codex CLI，跑只读调查，并把结构化分析（或它自己的失败通知）发进原始的 Slack thread。"
+"runner 虚拟机在每次运行后销毁。"
+
+#: ../developer/codex-oncall.md:55
+msgid ""
+"The analysis is read-only by construction. The relay's GitHub token is "
+"only powerful enough to send `repository_dispatch`; the workflow job runs"
+" with `permissions: contents: read`; nothing in the pipeline can create "
+"issues, branches, pull requests, or merges. The structured result carries"
+" `issue_recommendation` and `draft_pr_recommendation` fields "
+"(`apps/backend/serving/oncall/models.py`) that a human acts on. Giving "
+"the pipeline write actions would mean separate credentials and explicit "
+"policy gates, and is deliberately not part of this feature."
+msgstr ""
+"分析在构造上就是只读的。relay 的 GitHub token 的权力仅够发送 `repository_dispatch`；workflow "
+"job 以 `permissions: contents: read` 运行；流水线里没有任何东西能创建 issue、分支、pull "
+"request 或合并。结构化结果里带有 `issue_recommendation` 和 `draft_pr_recommendation` "
+"两个字段（`apps/backend/serving/oncall/models.py`），交由人来处理。让流水线拥有写操作意味着另"
+"一套凭据和明确的策略闸门，这是刻意不做进本功能的。"
+
+#: ../developer/codex-oncall.md:64
+msgid "Runtime boundaries"
+msgstr "运行时边界"
+
+#: ../developer/codex-oncall.md:66
+msgid ""
+"Alert delivery never waits for Codex. The relay returns `202` after Slack"
+" accepts the original alert and the durable SQLite job is queued."
+msgstr "告警投递从不等待 Codex。Slack 接受原始告警、持久化的 SQLite job 入队之后，relay 就返回 `202`。"
+
+#: ../developer/codex-oncall.md:68
+msgid ""
+"Producers keep their existing incoming webhook as a fallback. A relay "
+"timeout or non-2xx response therefore does not drop the page."
+msgstr "生产者保留其原有的 incoming webhook 作为回退。因此 relay 超时或返回非 2xx 不会让这次呼叫丢失。"
+
+#: ../developer/codex-oncall.md:70
+msgid ""
+"The dispatch payload contains only the sanitized, bounded alert (secrets "
+"redacted, `slack_text` stripped) plus Slack thread coordinates and the "
+"model configuration. Payload values are treated as untrusted in the "
+"workflow: they reach disk through env indirection and are never "
+"interpolated into shell scripts."
+msgstr ""
+"分发载荷只包含经过脱敏和长度限制的告警（密钥已抹除、`slack_text` 已剥离），外加 Slack thread 坐标和模型配"
+"置。载荷中的值在 workflow 里一律按不可信数据对待：它们通过环境变量间接落盘，绝不会被插值进 shell 脚本。"
+
+#: ../developer/codex-oncall.md:75
+msgid ""
+"The workflow job runs with a read-only `GITHUB_TOKEN` (`permissions: "
+"contents: read`) and step-scoped secrets: the gateway API key is visible "
+"only to the Codex step, the Slack bot token only to the posting steps."
+msgstr ""
+"workflow job 以只读的 `GITHUB_TOKEN`（`permissions: contents: read`）运行，"
+"secret 按步骤划分作用域：网关 API key 只对 Codex 那一步可见，Slack bot token 只对发消息的步骤"
+"可见。"
+
+#: ../developer/codex-oncall.md:78
+msgid ""
+"`codex exec` runs with user config, rules, hooks, apps, subagents, and "
+"web search disabled, and a shell environment restricted to "
+"`PATH/HOME/LANG/LC_ALL`. A sandbox self-check picks `--sandbox read-only`"
+" when the runner supports it and otherwise falls back — with a visible "
+"workflow warning — to the ephemeral VM as the isolation boundary."
+msgstr ""
+"`codex exec` 运行时禁用了用户配置、rules、hooks、apps、subagents 和联网搜索，shell 环境被"
+"限制为 `PATH/HOME/LANG/LC_ALL`。一次沙箱自检会在 runner 支持时选择 `--sandbox read-only`，"
+"否则回退——并附带一条可见的 workflow 警告——改以临时虚拟机作为隔离边界。"
+
+#: ../developer/codex-oncall.md:83
+msgid ""
+"One workflow run per incident fingerprint at a time (Actions concurrency "
+"group); duplicates queue instead of racing."
+msgstr "同一个事件指纹同一时间只跑一次 workflow（Actions 并发组）；重复的会排队，而不是互相竞争。"
+
+#: ../developer/codex-oncall.md:85
+msgid ""
+"The relay retries only the hand-off itself. After a successful dispatch "
+"the workflow owns the outcome and posts its own failure notice (with the "
+"run URL) if the analysis fails; if the dispatch itself finally fails, the"
+" relay posts the failure notice."
+msgstr ""
+"relay 只重试交接本身。分发成功之后，结果就归 workflow 负责：分析失败时它会自己发出失败通知（带上 run URL）；"
+"如果分发本身最终失败，则由 relay 发出失败通知。"
+
+#: ../developer/codex-oncall.md:89
+msgid ""
+"Fingerprints deduplicate transport retries. Recovery events close the "
+"active incident and reply in its original Slack thread."
+msgstr "指纹用于对传输层的重试去重。恢复事件会关闭当前事件，并在其原始 Slack thread 里回复。"
+
+#: ../developer/codex-oncall.md:92
+msgid "Configure GitHub"
+msgstr "配置 GitHub"
+
+#: ../developer/codex-oncall.md:94
+msgid ""
+"Ensure `.github/workflows/codex-oncall.yml` exists on the default branch "
+"so `repository_dispatch` can trigger it."
+msgstr ""
+"确认 `.github/workflows/codex-oncall.yml` 存在于默认分支上，这样 `repository_dispatch` "
+"才能触发它。"
+
+#: ../developer/codex-oncall.md:96
+msgid "Create two **Actions secrets** in the repository:"
+msgstr "在仓库里创建两个 **Actions secret**："
+
+#: ../developer/codex-oncall.md
+msgid "Secret"
+msgstr "密钥"
+
+#: ../developer/codex-oncall.md
+msgid "Purpose"
+msgstr "用途"
+
+#: ../developer/codex-oncall.md
+msgid "`CODEX_ONCALL_MODEL_API_KEY`"
+msgstr ""
+
+#: ../developer/codex-oncall.md
+msgid ""
+"HybridInference `hyi-...` key the workflow uses against the gateway's "
+"Responses API. It must be able to see `CODEX_ONCALL_CODEX_MODEL`; if the "
+"deployment role-gates that model "
+"(`apps/backend/serving/config/model_visibility.py`), issue the key with a"
+" role that can. Not an upstream provider key — Codex cannot call "
+"providers directly (see below)."
+msgstr ""
+"workflow 用来访问网关 Responses API 的 HybridInference `hyi-...` key。它必须能看到 "
+"`CODEX_ONCALL_CODEX_MODEL`；如果该 deployment "
+"对这个模型做了角色门控（`apps/backend/serving/config/model_visibility.py`），就要用一个能看到它的角色"
+"来签发这把 key。这不是上游 provider 的 key——Codex 无法直接调用 provider（见下文）。"
+
+#: ../developer/codex-oncall.md
+msgid "`CODEX_ONCALL_SLACK_BOT_TOKEN`"
+msgstr ""
+
+#: ../developer/codex-oncall.md
+msgid ""
+"Same Slack bot token the relay uses (`chat:write`, invited to the "
+"channel)."
+msgstr "relay 使用的同一把 Slack bot token（需要 `chat:write`，并且已被邀请进频道）。"
+
+#: ../developer/codex-oncall.md:103
+msgid ""
+"Create a **fine-grained PAT** for the relay with *Contents: read & write*"
+" on this repository only — that is the permission `repository_dispatch` "
+"requires. It goes into `.env.oncall` below, not into Actions secrets."
+msgstr ""
+"为 relay 创建一个**细粒度 PAT**，只对本仓库授予 *Contents: read & write*——这正是 `repository_dispatch` "
+"所需的权限。它写进下文的 `.env.oncall`，不要放进 Actions secret。"
+
+#: ../developer/codex-oncall.md:107
+msgid "Configure the relay"
+msgstr "配置 relay"
+
+#: ../developer/codex-oncall.md:109
+msgid ""
+"Create the relay-only environment file. Do not put these secrets in the "
+"shared backend `.env`, because the backend container loads that whole "
+"file."
+msgstr ""
+"创建 relay 专用的环境文件。不要把这些密钥放进共享的 backend `.env`，因为 backend "
+"容器会加载整个文件。"
+
+#: ../developer/codex-oncall.md:118
+msgid "Populate `.env.oncall`:"
+msgstr "填写 `.env.oncall`："
+
+#: ../developer/codex-oncall.md:130
+msgid ""
+"`CODEX_ONCALL_CODEX_MODEL` and `CODEX_ONCALL_MODEL_BASE_URL` are "
+"forwarded in each dispatch payload, so model policy is controlled from "
+"one place — changing the model is an `.env.oncall` edit plus a relay "
+"restart, no code or workflow change (the API key is the one exception: it"
+" lives in the `CODEX_ONCALL_MODEL_API_KEY` Actions secret). The base URL "
+"must be reachable from GitHub-hosted runners — use the public gateway, "
+"not a Compose-internal hostname."
+msgstr ""
+"`CODEX_ONCALL_CODEX_MODEL` 和 `CODEX_ONCALL_MODEL_BASE_URL` 会随每次分发载"
+"荷一起转发，所以模型策略集中在一处控制——换模型只需改 `.env.oncall` 再重启 relay，不用改代码或 workflow（"
+"API key 是唯一的例外：它放在 `CODEX_ONCALL_MODEL_API_KEY` 这个 Actions secret "
+"里）。base URL 必须能从 GitHub 托管的 runner 访问到——要用公网网关地址，不能用 Compose 内部主机名"
+"。"
+
+#: ../developer/codex-oncall.md:138
+msgid ""
+"Why the base URL must be the gateway: Codex speaks only the OpenAI "
+"Responses API — chat-wire support was removed upstream "
+"([openai/codex#7782](https://github.com/openai/codex/discussions/7782)) —"
+" and most OpenAI-compatible provider endpoints serve only Chat "
+"Completions, not `/v1/responses`. The gateway's northbound Responses "
+"router (`apps/backend/serving/servers/routers/responses.py`) is what "
+"makes those models reachable for Codex at all; pointing the workflow "
+"straight at a provider fails at config load. To pay for analysis tokens "
+"through a specific provider, wire that provider into the model registry "
+"the gateway loads and keep the workflow on the gateway. That registry is "
+"whatever `MODELS_CONFIG_PATH` names, else the `paths.models` entry of an "
+"active distribution manifest (`DISTRIBUTION_CONFIG_PATH` with "
+"`DISTRIBUTION_CONFIG_MODE=active`), else the shipped reference registry "
+"`config/examples/models.openrouter.yaml`."
+msgstr ""
+"为什么 base URL 必须指向网关：Codex 只讲 OpenAI Responses API——上游已经移除了 chat 协议"
+"支持（[openai/codex#7782](https://github.com/openai/codex/discussions/7782)"
+"）——而大多数 OpenAI 兼容的 provider 端点只提供 Chat Completions，没有 `/v1/responses`。"
+"正是网关的北向 Responses 路由（`apps/backend/serving/servers/routers/responses.py`）"
+"才让这些模型对 Codex 可达；把 workflow 直接指向某个 provider 会在加载配置时失败。如果要通过某个特定 provider "
+"来支付分析所耗的 token，就把该 provider 接进网关加载的模型注册表，而 workflow 仍然指向网关。这个注册表就是"
+" `MODELS_CONFIG_PATH` 所指的文件；没有它则取生效中的 distribution manifest（`DISTRIBUTION_CONFIG_PATH` "
+"配合 `DISTRIBUTION_CONFIG_MODE=active`）里的 `paths.models` 条目；再没有则用随仓库"
+"发布的参考注册表 `config/examples/models.openrouter.yaml`。"
+
+#: ../developer/codex-oncall.md:153
+msgid ""
+"Model choice: any model the gateway serves and that survives an agentic "
+"loop will do. Two practical constraints: the model must tolerate multi-"
+"turn tool calling (an analysis run drives `codex exec` through many shell"
+" steps), and each run sends tens of thousands of prompt tokens, so per-"
+"token price matters more here than latency. `.env.oncall.example` names "
+"`llama-3.3-70b`, the model the reference registry registers; a deployment"
+" with its own catalogue names one of its own."
+msgstr ""
+"模型选择：网关提供的、能扛住一轮 agentic 循环的任何模型都可以。有两条实际约束：模型必须经得起多轮工具调用（一次分析会驱动 "
+"`codex exec` 走很多步 shell），并且每次运行会发出数万个 prompt token，所以单 token 价格在这里"
+"比延迟更重要。`.env.oncall.example` 里写的是 `llama-3.3-70b`，也就是参考注册表登记的那个模型；"
+"有自己模型目录的 deployment 则填自己的。"
+
+#: ../developer/codex-oncall.md:161
+msgid ""
+"The Slack app needs `chat:write` and must be added to the target channel."
+" The relay uses `chat.postMessage` so the workflow can reply in the "
+"original alert thread."
+msgstr ""
+"Slack app 需要 `chat:write`，并且必须被加进目标频道。relay 使用 `chat.postMessage`，"
+"这样 workflow 才能在原始告警 thread 里回复。"
+
+#: ../developer/codex-oncall.md:165
+msgid "Backend: cloud agent"
+msgstr "后端：cloud agent"
+
+#: ../developer/codex-oncall.md:167
+msgid ""
+"The `cloud-agent` backend replaces the whole GitHub half above — no "
+"Actions secrets, no `repository_dispatch` PAT, no workflow. Instead:"
+msgstr ""
+"`cloud-agent` 后端把上面整个 GitHub 那一半都替换掉了——不需要 Actions secret，不需要 `repository_dispatch` "
+"用的 PAT，也不需要 workflow。取而代之的是："
+
+#: ../developer/codex-oncall.md:170
+msgid ""
+"**On the gateway** create (or reuse) a service account for on-call "
+"analyses. Its role decides which models the job's grant may carry, so it "
+"must be able to see `CODEX_ONCALL_CODEX_MODEL`; its daily quota is what "
+"the analyses spend."
+msgstr ""
+"**在网关上**创建（或复用）一个用于 on-call 分析的服务账号。它的角色决定 job 的 grant 能带哪些模型，所以它必"
+"须能看到 `CODEX_ONCALL_CODEX_MODEL`；它的每日配额就是这些分析能花的额度。"
+
+#: ../developer/codex-oncall.md:174
+msgid ""
+"**On the cloud agent control plane**, following that platform's own "
+"documentation. The relay expects it to accept an on-call dispatch token, "
+"to attribute jobs to the gateway user id of the service account above, "
+"and to allow the repository the analysis checks out. The GitHub App the "
+"platform holds must be installed on that repository — the runner clones "
+"with a read-only installation token."
+msgstr ""
+"**在 cloud agent 控制面上**，按该平台自己的文档来配置。relay 期望它接受一个 on-call 分发 token、"
+"把 job 归属到上述服务账号的网关用户 id，并允许分析所要检出的那个仓库。该平台持有的 GitHub App 必须安装在那个仓库"
+"上——runner 用只读的 installation token 克隆。"
+
+#: ../developer/codex-oncall.md:180
+msgid "**In `.env.oncall`**:"
+msgstr "**在 `.env.oncall` 中**："
+
+#: ../developer/codex-oncall.md:190
+#, python-brace-format
+msgid ""
+"`CODEX_ONCALL_CODEX_MODEL` keeps meaning what it meant; the model must "
+"resolve for the service account. `CODEX_ONCALL_GITHUB_*` and "
+"`CODEX_ONCALL_MODEL_BASE_URL` are unused on this backend — the platform "
+"injects its own gateway address into the sandbox. "
+"`CODEX_ONCALL_AGENT_CONSOLE_URL` is only a link template: the relay "
+"substitutes `{job_id}` and posts the result into Slack, so the path has "
+"to be whatever the agent console uses for a job page. Leave it unset and "
+"Slack carries the bare job id instead."
+msgstr ""
+"`CODEX_ONCALL_CODEX_MODEL` 的含义保持不变；模型必须能被该服务账号解析到。`CODEX_ONCALL_GITHUB_*` "
+"和 `CODEX_ONCALL_MODEL_BASE_URL` 在这个后端上不使用——平台会把自己的网关地址注入沙箱。`CODEX_ONCALL_AGENT_CONSOLE_URL` "
+"只是一个链接模板：relay 会替换其中的 `{job_id}` 再把结果发到 Slack，所以路径必须与 agent 控制台的 job "
+"页面一致。不设置它，Slack 里就只带一个裸的 job id。"
+
+#: ../developer/codex-oncall.md:199
+msgid ""
+"Runtime behaviour: the relay's worker parks each dispatched analysis in "
+"an `await_result` stage (SQLite, restart-safe), polls the platform every "
+"`CODEX_ONCALL_AGENT_POLL_SECONDS`, and cancels jobs that outlive "
+"`CODEX_ONCALL_AGENT_TIMEOUT_SECONDS`. A result is posted only if the "
+"normalized event log contains at least one successful command execution "
+"and the final message parses as exactly one schema-valid analysis — the "
+"same groundedness rule the workflow's posting step enforces. Only one "
+"analysis per incident fingerprint is in flight at a time; re-fires during"
+" it update the incident but do not enqueue another job."
+msgstr ""
+"运行时行为：relay 的 worker 会把每个已分发的分析停在 `await_result` 阶段（SQLite，重启安全），每"
+" `CODEX_ONCALL_AGENT_POLL_SECONDS` 轮询一次平台，并取消存活超过 `CODEX_ONCALL_AGENT_TIMEOUT_SECONDS` "
+"的 job。只有当归一化后的事件日志里至少有一次成功的命令执行、并且最后一条消息恰好解析成一份符合 schema 的分析时，结果才会"
+"被发出——这与 workflow 发消息那一步强制执行的落地性规则相同。同一事件指纹同一时间只有一份分析在跑；期间的重复触发只更新事"
+"件，不会再排入新的 job。"
+
+#: ../developer/codex-oncall.md:209
+msgid ""
+"Rollback is one edit: set `CODEX_ONCALL_DISPATCH_BACKEND=github` (with "
+"the GitHub values still present) and restart the relay. Jobs parked in "
+"`await_result` at that moment fail closed with a notice in their thread —"
+" the GitHub backend cannot poll them."
+msgstr ""
+"回滚只需改一处：设置 `CODEX_ONCALL_DISPATCH_BACKEND=github`（GitHub 那几个值仍然保留）"
+"，然后重启 relay。此刻停在 `await_result` 的 job 会失败关闭，并在各自的 thread 里留下通知——GitHub "
+"后端无法轮询它们。"
+
+#: ../developer/codex-oncall.md:214
+msgid "Enable the Compose profile"
+msgstr "启用 Compose profile"
+
+#: ../developer/codex-oncall.md:216
+msgid ""
+"Set the producer values in the shared backend `.env`. The relay token "
+"must match `.env.oncall`."
+msgstr "在共享的 backend `.env` 里设置生产者相关的值。relay token 必须与 `.env.oncall` 一致。"
+
+#: ../developer/codex-oncall.md:226
+msgid ""
+"Set `ALERTS_ENABLED=true` as well when enabling the gateway's rule-based "
+"alert engine. Other existing gateway alert producers use the relay "
+"automatically when the URL and token are present."
+msgstr ""
+"启用网关基于规则的告警引擎时，还要设置 `ALERTS_ENABLED=true`。只要 URL 和 token 都在，网关现有的其"
+"他告警生产者会自动改用 relay。"
+
+#: ../developer/codex-oncall.md:230
+msgid "Build and start the existing Compose stack:"
+msgstr "构建并启动现有的 Compose 栈："
+
+#: ../developer/codex-oncall.md:237
+msgid ""
+"The health response must contain `\"ready\":true`. The relay image "
+"contains only the FastAPI service — the Codex CLI version is pinned "
+"inside `.github/workflows/codex-oncall.yml` (`CODEX_CLI_VERSION`), and "
+"each workflow run analyzes a fresh checkout of `dev`, so there is no "
+"image snapshot to keep in sync."
+msgstr ""
+"健康检查响应中必须包含 `\"ready\":true`。relay 镜像里只有 FastAPI 服务——Codex CLI 的版本"
+"钉死在 `.github/workflows/codex-oncall.yml` 里（`CODEX_CLI_VERSION`），而每"
+"次 workflow 运行分析的都是一份新检出的 `dev`，所以没有需要保持同步的镜像快照。"
+
+#: ../developer/codex-oncall.md:243
+msgid "Producers outside the Compose network"
+msgstr "Compose 网络之外的生产者"
+
+#: ../developer/codex-oncall.md:245
+msgid ""
+"The gateway backend reaches the relay over the Compose network, so `http"
+"://codex-oncall:8091` is enough for it. A producer running anywhere else "
+"— an external monitor, a scheduled job on another host — cannot resolve "
+"that name, and the Compose service publishes port `8091` on host loopback"
+" only (`deploy/docker/docker-compose.yml`). Put a restricted TLS route in"
+" front of that loopback port and give the external producer the public "
+"URL plus the same `CODEX_ONCALL_RELAY_TOKEN`; the relay authenticates "
+"every `POST /v1/alerts` with a constant-time comparison against it and "
+"answers `401` otherwise."
+msgstr ""
+"网关后端通过 Compose 网络访问 relay，所以对它来说 `http://codex-oncall:8091` 就够了。跑在"
+"别处的生产者——外部监控、另一台主机上的定时任务——解析不了这个名字，而且 Compose 服务只把端口 `8091` 发布在宿主机"
+"的 loopback 上（`deploy/docker/docker-compose.yml`）。要在那个 loopback 端口前"
+"面放一条受限的 TLS 路由，把公网 URL 连同同一个 `CODEX_ONCALL_RELAY_TOKEN` 交给外部生产者；relay "
+"会用常数时间比较对每个 `POST /v1/alerts` 做认证，不通过则回 `401`。"
+
+#: ../developer/codex-oncall.md:254
+msgid ""
+"Keep the producer's existing Slack webhook configured alongside the relay"
+" URL. The relay is a best-effort accelerator: the webhook is what still "
+"pages when the relay is unreachable."
+msgstr ""
+"在配置 relay URL 的同时，保留生产者原有的 Slack webhook。relay 只是一个尽力而为的加速器：relay "
+"不可达时，仍然靠 webhook 把人呼起来。"
+
+#: ../developer/codex-oncall.md:258
+msgid "Smoke test"
+msgstr "冒烟测试"
+
+#: ../developer/codex-oncall.md:260
+msgid ""
+"Send a synthetic event from the Compose host, using the token from "
+"`.env.oncall`:"
+msgstr "在 Compose 宿主机上，用 `.env.oncall` 里的 token 发一个合成事件："
+
+#: ../developer/codex-oncall.md:283
+#, python-brace-format
+msgid ""
+"A successful request returns `202` with `{\"accepted\": ..., "
+"\"duplicate\": ..., \"fingerprint\": ..., \"slack_thread_ts\": ...}` and "
+"posts the synthetic alert to Slack immediately. On the `github` backend "
+"it then starts a `Codex On-Call` run under the repository's Actions tab; "
+"on the `cloud-agent` backend it creates a job on the control plane. "
+"Either way the analysis reply lands in the alert's Slack thread when the "
+"run finishes."
+msgstr ""
+"请求成功会返回 `202`，body 为 `{\"accepted\": ..., \"duplicate\": ..., \"fingerprint\": "
+"..., \"slack_thread_ts\": ...}`，并立即把这条合成告警发到 Slack。在 `github` 后端上，"
+"它接着会在仓库的 Actions 标签页下启动一次 `Codex On-Call` 运行；在 `cloud-agent` 后端上，它"
+"会在控制面上创建一个 job。两种情况下，运行结束后分析回复都会落进该告警的 Slack thread。"
+
+#: ../developer/codex-oncall.md:290
+msgid ""
+"Reusing the same fingerprint inside the dedupe window "
+"(`dedupe_window_seconds` in the payload, default `300`) returns "
+"`duplicate: true` without another top-level message. On the first live "
+"run of the `github` backend, check the workflow log for the sandbox self-"
+"check result — it says whether Codex got its own read-only sandbox or "
+"fell back to the ephemeral runner VM."
+msgstr ""
+"在去重窗口内（载荷中的 `dedupe_window_seconds`，默认 `300`）重复使用同一个指纹，会返回 `duplicate: "
+"true`，且不再发一条新的顶层消息。第一次在 `github` 后端上真跑时，检查 workflow 日志里的沙箱自检结果——它会"
+"说明 Codex 是拿到了自己的只读沙箱，还是回退到了临时 runner 虚拟机。"
+

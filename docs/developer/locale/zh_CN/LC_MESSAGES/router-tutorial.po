@@ -1,0 +1,714 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/router-tutorial.md:1
+msgid "Quickstart"
+msgstr "快速开始"
+
+#: ../developer/router-tutorial.md:3
+msgid ""
+"This is the first thing to do with a fresh clone of HybridInference. It "
+"takes one local gateway through three stages:"
+msgstr ""
+"刚 clone 下 HybridInference 之后，第一件要做的事就是"
+"这个。它把一个本地网关依次带过三个阶段："
+
+#: ../developer/router-tutorial.md:6
+msgid "prove the routing chain with a deterministic fake provider;"
+msgstr "用一个结果确定的假 provider 验证整条路由链路；"
+
+#: ../developer/router-tutorial.md:7
+msgid ""
+"continue the same running Compose project into the Web Console, Admin "
+"Console, Postgres, accounts, API keys, and request history;"
+msgstr ""
+"在同一个正在运行的 Compose 项目上继续，接入 Web Console"
+"（Web 控制台）、Admin Console（管理控制台）、Postgre"
+"s、账号、API key 与请求历史；"
+
+#: ../developer/router-tutorial.md:9
+msgid ""
+"replace the fake provider with a local OpenAI-compatible vLLM, SGLang, or"
+" Ollama server."
+msgstr ""
+"把假 provider 换成本地的 OpenAI 兼容服务器——vLLM、S"
+"GLang 或 Ollama。"
+
+#: ../developer/router-tutorial.md:12
+msgid ""
+"You do not choose between a router-only product and a full-stack product."
+" The small router is the first checkpoint on one path, so you see a "
+"successful request before adding the parts that have more ways to fail."
+msgstr ""
+"不需要在「纯路由」和「全栈」两种产品之间做选择。小 router 只是同一条"
+"路径上的第一个检查点：先看到一次成功的请求，再去添加那些失败方式更多的部件。"
+
+#: ../developer/router-tutorial.md:16
+msgid ""
+"No provider account, host `.env`, GPU, SMTP service, or paid API key is "
+"needed for the first two stages. The repository's CI runs this same `make"
+" up` → `make smoke` → `make demo` → `make demo-smoke` sequence (the "
+"*Tutorial E2E* job in `.github/workflows/ci.yml`), so the commands below "
+"are executed on every change that touches them."
+msgstr ""
+"前两个阶段不需要 provider 账号、主机上的 `.env`、GPU、S"
+"MTP 服务或付费 API key。仓库的 CI 会跑同一串 `make u"
+"p` → `make smoke` → `make demo` → `mak"
+"e demo-smoke`（`.github/workflows/ci.ym"
+"l` 里的 *Tutorial E2E* job），因此下面这些命令在每一次"
+"改动到它们的提交上都被真正执行过。"
+
+#: ../developer/router-tutorial.md:22
+msgid ""
+"If you would rather run the gateway from a source checkout without "
+"Docker, and against real models, see [Installation](installation.md) — "
+"but come back here first if you have never seen this gateway serve a "
+"request."
+msgstr ""
+"如果更想不用 "
+"Docker、直接从源码检出运行网关并对接真实模型，见[安装](installation.md)——但如"
+"果还没见过这个网关真正服务一次请求，先回到这里。"
+
+#: ../developer/router-tutorial.md:26
+msgid "What you need"
+msgstr "需要准备什么"
+
+#: ../developer/router-tutorial.md:28
+msgid "Docker Engine 24+ with Compose v2. Check with `docker compose version`."
+msgstr ""
+"Docker Engine 24+，带 Compose v2。用 `dock"
+"er compose version` 确认。"
+
+#: ../developer/router-tutorial.md:29
+msgid ""
+"A running Docker daemon. On macOS, start Docker Desktop or Colima; "
+"`docker info` must succeed, and the directory you clone into must be one "
+"Docker is allowed to share into containers."
+msgstr ""
+"一个正在运行的 Docker daemon。在 macOS 上先启动 Doc"
+"ker Desktop 或 Colima；`docker info` 必须成"
+"功，并且 clone 进的目录必须是 Docker 允许共享进容器的目录。"
+
+#: ../developer/router-tutorial.md:32
+msgid ""
+"Git, curl, GNU Make, and Python 3.10–3.13 (3.12 recommended). The smoke "
+"clients use only the Python standard library, so there is no `pip "
+"install` step."
+msgstr ""
+"Git、curl、GNU Make 和 Python 3.10–3.13（推"
+"荐 3.12）。smoke 客户端只用 Python 标准库，所以没有 `p"
+"ip install` 这一步。"
+
+#: ../developer/router-tutorial.md:35
+msgid ""
+"Several GB of free disk for the backend, frontend, Postgres image, and "
+"local database volume."
+msgstr ""
+"几 GB 的空闲磁盘，用于 backend、frontend、Postgre"
+"s 镜像和本地数据库卷。"
+
+#: ../developer/router-tutorial.md:37
+msgid ""
+"These loopback ports free: backend `18080`, frontend `13001`, and "
+"Postgres `15432`. See [Port already in use](#port-already-in-use) to "
+"override them."
+msgstr ""
+"以下回环端口需要空闲：backend `18080`、frontend `1"
+"3001`、Postgres `15432`。要覆盖它们，见[端口已被占用]"
+"(#port-already-in-use)。"
+
+#: ../developer/router-tutorial.md:40
+msgid ""
+"Node.js is not required because the frontend is built in Docker. A GPU is"
+" only needed if you continue to Stage 3 with a GPU-backed local server."
+msgstr ""
+"不需要 Node.js，因为 frontend 是在 Docker 里构建的"
+"。只有在阶段 3 使用带 GPU 的本地服务器时才需要 GPU。"
+
+#: ../developer/router-tutorial.md:43
+msgid "Stage 1: prove the router works"
+msgstr "阶段 1：证明 router 能正常工作"
+
+#: ../developer/router-tutorial.md:45
+msgid "Clone the repository and start the runnable distribution:"
+msgstr "clone 仓库，启动这个可运行的 distribution："
+
+#: ../developer/router-tutorial.md:54
+msgid ""
+"Two containers start: `example-provider`, a deterministic OpenAI-"
+"compatible upstream, and `backend`, the HybridInference gateway. Postgres"
+" and the frontend remain stopped; accounts and authentication are "
+"disabled at this checkpoint."
+msgstr ""
+"会启动两个容器：`example-provider`——一个结果确定的 Op"
+"enAI 兼容上游，以及 `backend`——HybridInferenc"
+"e 网关。Postgres 和 frontend 保持停止；在这个检查点上账"
+"号与鉴权都是关闭的。"
+
+#: ../developer/router-tutorial.md:58
+msgid "Run the automated check:"
+msgstr "运行自动检查："
+
+#: ../developer/router-tutorial.md:68
+msgid ""
+"The smoke waits for startup and verifies `/health`, `/site-config`, "
+"`/v1/models`, and a routed completion."
+msgstr ""
+"smoke 会等待启动完成，然后验证 `/health`、`/site-co"
+"nfig`、`/v1/models` 以及一次经过路由的 completio"
+"n。"
+
+#: ../developer/router-tutorial.md:71
+msgid "Inspect the gateway yourself"
+msgstr "自己动手检查网关"
+
+#: ../developer/router-tutorial.md:73
+msgid "Check health:"
+msgstr "查看健康状态："
+
+#: ../developer/router-tutorial.md:88
+msgid "List models:"
+msgstr "列出模型："
+
+#: ../developer/router-tutorial.md:94
+msgid ""
+"The response contains the public model id `example-chat`. Its registry "
+"entry is in `distributions/example/config/models.yaml`, which the backend"
+" finds through the distribution manifest "
+"`distributions/example/distribution.yaml` — see "
+"[Configuration](configuration.md) for how that resolution works."
+msgstr ""
+"响应里含有对外的模型 id `example-chat`。它的注册表条目在 "
+"`distributions/example/config/models.yaml`，后端通过 distribution manifest "
+"`distributions/example/distribution.yaml` "
+"找到这个文件——这套解析过程见[配置](configuration.md)。"
+
+#: ../developer/router-tutorial.md:99
+msgid ""
+"That file is mounted read-only into the backend; it is not baked into the"
+" image. To prove the reload path, temporarily change the model's `name` "
+"to `Reloaded Example Chat`, run `make restart s=backend "
+"DISTRIBUTION=example`, and list the models again. The new label appears "
+"without an image rebuild. Restore `Runnable Example Chat` and restart the"
+" backend once more before continuing."
+msgstr ""
+"该文件是只读挂载进 backend 的，并没有烤进镜像。要验证重新加载这条路"
+"径，可以临时把模型的 `name` 改成 `Reloaded Example"
+" Chat`，运行 `make restart s=backend DIST"
+"RIBUTION=example`，再列一次模型。不用重建镜像，新的名字就会"
+"出现。继续之前把它改回 `Runnable Example Chat`，再重"
+"启一次 backend。"
+
+#: ../developer/router-tutorial.md:106
+msgid "Send a completion:"
+msgstr "发送一次 completion："
+
+#: ../developer/router-tutorial.md:114
+msgid "The assistant content is:"
+msgstr "assistant 的内容是："
+
+#: ../developer/router-tutorial.md:120
+msgid ""
+"That fixed reply proves the request passed through HybridInference "
+"routing to the bundled upstream. Clients address `example-chat`; the "
+"route maps it to the upstream's own model id."
+msgstr ""
+"这个固定回复证明请求确实经过 HybridInference 的路由到达了随"
+"附的上游。客户端寻址的是 `example-chat`；路由把它映射到上游自"
+"己的模型 id。"
+
+#: ../developer/router-tutorial.md:124
+msgid "Streaming uses the same endpoint:"
+msgstr "流式用的是同一个端点："
+
+#: ../developer/router-tutorial.md:132
+msgid ""
+"Every `chat.completion.chunk` frame in one response repeats one "
+"completion id, and the stream ends with the literal `data: [DONE]` "
+"sentinel."
+msgstr ""
+"同一个响应里的每个 `chat.completion.chunk` 帧都重复"
+"同一个 completion id，流以字面量 `data: [DONE]`"
+" 哨兵结束。"
+
+#: ../developer/router-tutorial.md:135
+msgid "To see the route the gateway just used, ask it:"
+msgstr "想知道网关刚才走了哪条路由，直接问它："
+
+#: ../developer/router-tutorial.md:141
+msgid ""
+"This is an unauthenticated endpoint that reports each model's upstream "
+"base URLs and weights. That is what you want on a laptop and not what you"
+" want on a public host — see the warning in [Routing](routing.md#api-"
+"endpoints)."
+msgstr ""
+"这是一个无需鉴权的端点，会报出每个模型的上游 base URL 和权重。在笔"
+"记本上这正是你想要的，在公网主机上则不是——见[路由](routing.md"
+"#api-endpoints)里的警告。"
+
+#: ../developer/router-tutorial.md:145
+msgid ""
+"Do not run `make down` here. Stage 2 extends this same Compose project in"
+" place."
+msgstr ""
+"这里不要运行 `make down`。阶段 2 是在同一个 Compose "
+"项目上原地扩展的。"
+
+#: ../developer/router-tutorial.md:148
+msgid "Stage 2: continue into the Web and Admin Consoles"
+msgstr "阶段 2：继续接入 Web Console 与 Admin Console"
+
+#: ../developer/router-tutorial.md:150
+msgid ""
+"Add Postgres and the frontend, and recreate the backend with "
+"authentication enabled:"
+msgstr ""
+"加上 Postgres 和 frontend，并在开启鉴权的情况下重建 ba"
+"ckend："
+
+#: ../developer/router-tutorial.md:157
+msgid ""
+"This is an in-place transition, not a second deployment. The bundled "
+"provider keeps running in the existing project and network. Postgres is "
+"added with an example-owned persistent volume, the backend is recreated "
+"against it, and the frontend is added last."
+msgstr ""
+"这是一次原地过渡，不是第二次部署。随附的 provider 继续在原有项目和"
+"网络里运行。Postgres 带着一个归 example 所有的持久卷被加进"
+"来，backend 针对它重建，frontend 最后加入。"
+
+#: ../developer/router-tutorial.md:162
+msgid "Open <http://localhost:13001/signup> and complete the browser flow:"
+msgstr ""
+"打开 <http://localhost:13001/signup>，在浏览"
+"器里走完整个流程："
+
+#: ../developer/router-tutorial.md:164
+msgid ""
+"Sign up with `admin@local.dev`, a username, and a password with at least "
+"eight characters, uppercase, lowercase, and a number. Use a demo-only "
+"password that you do not reuse elsewhere, then accept the terms."
+msgstr ""
+"用 `admin@local.dev`、一个用户名，以及一个至少八位、含大写"
+"、小写和数字的密码注册。用一个只给这个 demo 用、不会在别处复用的密码，"
+"然后接受条款。"
+
+#: ../developer/router-tutorial.md:167
+msgid ""
+"Select **Back to Login**, then sign in with the same email and password. "
+"Email verification is disabled for this loopback-only example."
+msgstr ""
+"点 **Back to Login**，再用同一个邮箱和密码登录。这个只跑在"
+"回环地址上的示例关闭了邮箱验证。"
+
+#: ../developer/router-tutorial.md:169
+msgid ""
+"On the dashboard, create an API key, then reveal and copy it for the API "
+"call below."
+msgstr "在仪表盘上创建一个 API key，然后显示并复制它，下面的 API 调用要用。"
+
+#: ../developer/router-tutorial.md:171
+msgid ""
+"Open **API Playground**, select `example-chat`, and send a message. The "
+"reply is `RUNNABLE_EXAMPLE_OK`."
+msgstr ""
+"打开 **API Playground**，选择 `example-chat"
+"`，发一条消息。回复是 `RUNNABLE_EXAMPLE_OK`。"
+
+#: ../developer/router-tutorial.md:173
+msgid ""
+"Open **Admin Console**. This account is an admin because its email "
+"matches the example's explicit `ADMIN_EMAILS` value in "
+"`distributions/example/deploy/docker-compose.demo.yml`."
+msgstr ""
+"打开 **Admin Console**。这个账号之所以是管理员，是因为它的"
+"邮箱匹配了 `distributions/example/deploy/do"
+"cker-compose.demo.yml` 里 example 显式设置的"
+" `ADMIN_EMAILS`。"
+
+#: ../developer/router-tutorial.md:177
+msgid ""
+"The UI and API share one origin. Requests to `/v1`, `/auth`, `/user`, and"
+" `/admin` on port `13001` are rewritten by the frontend to the backend "
+"inside the Compose network (`apps/frontend/next.config.js`)."
+msgstr ""
+"UI 和 API 共用一个 origin。发往 `13001` 端口上 "
+"`/v1`、`/auth`、`/user`、`/admin` 的请求，由前端重写到 Compose "
+"网络内部的后端（`apps/frontend/next.config.js`）。"
+
+#: ../developer/router-tutorial.md:181
+msgid "Use the copied key for a normal authenticated request through that origin:"
+msgstr "用刚复制的 key，通过这个 origin 发一次正常的带鉴权请求："
+
+#: ../developer/router-tutorial.md:192
+msgid ""
+"Now return to the dashboard's **Recent Requests** section. This API-key "
+"completion appears in history once asynchronous logging completes. The "
+"Playground is a separate UI routing proof and deliberately bypasses the "
+"normal completion logger, so do not use its message as the history check."
+msgstr ""
+"现在回到仪表盘的 **Recent Requests** 区块。异步日志写完后，这次用 API key "
+"发出的 completion 会出现在历史里。Playground 是另一条独立的 UI "
+"路由验证，它有意绕过了正常的 completion "
+"日志器，所以不要拿它发的消息来检查历史。"
+
+#: ../developer/router-tutorial.md:197
+msgid ""
+"The dashboard may also render cards for optional services such as Agents "
+"or pgAdmin. They are not part of this example and their routes are "
+"unavailable unless you deploy those services separately."
+msgstr ""
+"仪表盘上还可能出现 Agents、pgAdmin "
+"这类可选服务的卡片。它们不属于本示例；除非单独部署这些服务，否则它们的路由是"
+"不可用的。"
+
+#: ../developer/router-tutorial.md:201
+msgid ""
+"Use the password you chose above to run the deterministic full-stack "
+"check:"
+msgstr "用上面选的密码运行这个结果确定的全栈检查："
+
+#: ../developer/router-tutorial.md:212
+msgid ""
+"The check logs into the existing account (creating it if you skipped the "
+"browser flow), creates or reuses an API key, calls normal and streaming "
+"completions through the frontend origin, exercises the Playground and "
+"Admin APIs, proves a second local user receives `403` from the Admin API,"
+" verifies request history, recreates the backend, and then proves the "
+"same account, refresh-cookie session, and API key still work. It does not"
+" print any secret and does not reset the database."
+msgstr ""
+"这个检查会登录已有账号（如果跳过了浏览器流程就先创建它），创建或复用一个 "
+"API key，通过前端 origin 调用普通和流式 completion，跑一遍 Playground 与 "
+"Admin API，验证第二个本地用户从 Admin API 拿到 `403`，核对请求历史，重建 "
+"backend，再证明同一个账号、refresh cookie 会话和 API key "
+"仍然可用。它不会打印任何密钥，也不会重置数据库。"
+
+#: ../developer/router-tutorial.md:220
+msgid "Stage 3: replace the fake provider with local inference"
+msgstr "阶段 3：把假 provider 换成本地推理"
+
+#: ../developer/router-tutorial.md:222
+msgid ""
+"Start an OpenAI-compatible vLLM, SGLang, Ollama, or similar server on the"
+" host. It must listen on a Docker-reachable address such as "
+"`0.0.0.0:8000`; a server bound only to host `127.0.0.1` is not reachable "
+"from the backend container. Binding to `0.0.0.0` can expose an "
+"unauthenticated model server to your LAN, so restrict the port with a "
+"host firewall or bind a Docker-reachable private interface instead when "
+"your runtime supports it."
+msgstr ""
+"在主机上启动一个 OpenAI 兼容的 vLLM、SGLang、Ollama"
+" 或同类服务器。它必须监听一个 Docker 能访问到的地址，例如 `0.0"
+".0.0:8000`；只绑定在主机 `127.0.0.1` 上的服务器，ba"
+"ckend 容器访问不到。绑定 `0.0.0.0` 可能把一个无鉴权的模型服"
+"务器暴露到局域网，因此要用主机防火墙限制该端口；如果运行时支持，也可以改为绑"
+"定一个 Docker 能访问的内网接口。"
+
+#: ../developer/router-tutorial.md:229
+msgid "Then point the same public model at that server:"
+msgstr "然后把同一个对外模型指向那台服务器："
+
+#: ../developer/router-tutorial.md:238
+msgid ""
+"`make demo` recreates the backend so the new upstream settings take "
+"effect, while preserving the account, API key, frontend, and Postgres "
+"volume. Clients and the Playground still request `example-chat`; only the"
+" route behind it has changed. `curl -s localhost:18080/routing` now "
+"reports the new `base_url`."
+msgstr ""
+"`make demo` 会重建 backend，让新的上游设置生效，同时保留"
+"账号、API key、frontend 和 Postgres 卷。客户端和 "
+"Playground 请求的仍然是 `example-chat`，变的只是它"
+"背后那条路由。`curl -s localhost:18080/routin"
+"g` 现在会报出新的 `base_url`。"
+
+#: ../developer/router-tutorial.md:243
+msgid ""
+"`EXAMPLE_UPSTREAM_API_KEY` is the credential the gateway presents to that"
+" provider. It is not the `HYBRIDINFERENCE_API_KEY` minted in Stage 2, "
+"which is the client credential presented to the gateway."
+msgstr ""
+"`EXAMPLE_UPSTREAM_API_KEY` 是网关向那个 prov"
+"ider 出示的凭据。它不是阶段 2 里签发的 `HYBRIDINFEREN"
+"CE_API_KEY`——后者是客户端向网关出示的凭据。"
+
+#: ../developer/router-tutorial.md:247
+msgid ""
+"Use the Playground or the authenticated `curl` from Stage 2 to test the "
+"real model. Do not run either bundled smoke against it: both checks "
+"deliberately assert the fake provider's exact sentinel, which a real "
+"model should not be expected to produce."
+msgstr ""
+"用 Playground 或阶段 2 里那条带鉴权的 `curl` 测试真实"
+"模型。不要拿随附的两个 smoke 去测它：这两个检查都刻意断言假 prov"
+"ider 那个精确的哨兵，而真实模型不应被期待产出它。"
+
+#: ../developer/router-tutorial.md:252
+msgid "What the example contains"
+msgstr "示例里有什么"
+
+#: ../developer/router-tutorial.md:254
+msgid "The example is one distribution directory:"
+msgstr "这个示例就是一个 distribution 目录："
+
+#: ../developer/router-tutorial.md:273
+msgid ""
+"`distribution.yaml` describes the Stage 1 capability with public signup "
+"off. `distribution.demo.yaml` describes the same distribution after auth "
+"and the frontend are enabled. Both reuse the same model and routing "
+"files; they do not duplicate a registry."
+msgstr ""
+"`distribution.yaml` 描述阶段 1 的能力，公开注册是关闭"
+"的。`distribution.demo.yaml` 描述同一个 distr"
+"ibution 在开启鉴权和 frontend 之后的样子。两者复用同一套模"
+"型与路由文件，不会复制出第二份注册表。"
+
+#: ../developer/router-tutorial.md:278
+msgid ""
+"The two Compose overlays follow the same progression. The first adds the "
+"fake provider and makes the backend-only start deterministic. The second "
+"adds the database/frontend settings and an example-scoped database "
+"volume. Nothing in the example uses the production "
+"`hybridinference_postgres_data` volume."
+msgstr ""
+"两个 Compose overlay 遵循同样的递进。第一个加入假 prov"
+"ider，让只启动 backend 的这一步结果确定。第二个加入数据库/fr"
+"ontend 设置和一个 example 作用域的数据库卷。示例里没有任何东"
+"西会用到生产的 `hybridinference_postgres_data"
+"` 卷。"
+
+#: ../developer/router-tutorial.md:283
+msgid ""
+"`EXAMPLE_OVERLAY` marks the directory as a teaching artifact, so bare "
+"distribution discovery does not mistake it for a real deployment. It is "
+"not a Stage 1/Stage 2 switch; only the explicit `demo` targets add the "
+"third Compose layer."
+msgstr ""
+"`EXAMPLE_OVERLAY` 把这个目录标记为教学用产物，这样裸的 d"
+"istribution 发现流程就不会把它误认成一个真实部署。它不是阶段 1"
+"/阶段 2 的开关；只有显式的 `demo` 目标才会加上第三层 Compo"
+"se。"
+
+#: ../developer/router-tutorial.md:288
+msgid "Where to go next"
+msgstr "接下来去哪里"
+
+#: ../developer/router-tutorial.md:290
+msgid ""
+"To build your own deployment, copy this directory shape, remove the "
+"teaching marker and the fake provider, replace every local-only identity "
+"and secret, and add the deployment controls your environment needs."
+msgstr ""
+"要搭建自己的部署，照着这个目录形状复制一份，去掉教学标记和假 provide"
+"r，替换掉每一个仅本地可用的身份与密钥，再加上你的环境需要的部署控制项。"
+
+#: ../developer/router-tutorial.md:293
+msgid ""
+"[Configuration](configuration.md) — settings, environment variables, and "
+"how a deployment supplies its own files."
+msgstr ""
+"[配置](configuration.md)——设置项、环境变量，以及一个部"
+"署如何提供自己的文件。"
+
+#: ../developer/router-tutorial.md:295
+msgid ""
+"[Adding Models](adding-models.md) — the model registry entry and its "
+"`route:` list."
+msgstr ""
+"[添加模型](adding-models.md)——模型注册表条目及其 `r"
+"oute:` 列表。"
+
+#: ../developer/router-tutorial.md:297
+msgid ""
+"[Routing](routing.md) — weighted selection, fallback, circuit breaking, "
+"session affinity, and how to add your own routing strategy."
+msgstr ""
+"[路由](routing.md)——加权选择、回退、熔断、会话亲和，以及如何"
+"加入自己的路由策略。"
+
+#: ../developer/router-tutorial.md:299
+msgid ""
+"[Installation](installation.md) — running the gateway from a source "
+"checkout against real providers."
+msgstr "[安装](installation.md)——从源码检出运行网关，对接真实 provider。"
+
+#: ../developer/router-tutorial.md:302
+msgid "Stop, resume, and reset"
+msgstr "停止、恢复与重置"
+
+#: ../developer/router-tutorial.md:304
+msgid ""
+"After Stage 2 or Stage 3, stop all four services while keeping the "
+"account, API key, and request history:"
+msgstr ""
+"在阶段 2 或阶段 3 之后，停掉全部四个服务，同时保留账号、API key"
+" 和请求历史："
+
+#: ../developer/router-tutorial.md:311
+msgid ""
+"Resume Stage 2 with `make demo DISTRIBUTION=example`. To resume Stage 3, "
+"first restore the three `EXAMPLE_UPSTREAM_*` exports from that stage, "
+"then run the same command; those shell overrides are not stored in the "
+"database. To stop the stack and delete this example project's data:"
+msgstr ""
+"用 `make demo DISTRIBUTION=example` 恢复阶"
+"段 2。要恢复阶段 3，先把那一阶段的三个 `EXAMPLE_UPSTREA"
+"M_*` export 重新设置好，再运行同一条命令；这些 shell 覆盖"
+"值不会存进数据库。要停掉整套栈并删除这个示例项目的数据："
+
+#: ../developer/router-tutorial.md:320
+msgid ""
+"`demo-reset` is destructive for the example data, but it cannot delete "
+"the production database volume. If you intentionally stop after Stage 1 "
+"instead, use `make down DISTRIBUTION=example`."
+msgstr ""
+"`demo-reset` 对示例数据是破坏性的，但它删不掉生产数据库卷。如果"
+"是有意在阶段 1 之后就停下，用 `make down DISTRIBUTI"
+"ON=example`。"
+
+#: ../developer/router-tutorial.md:324
+msgid ""
+"Once Stage 2 has started, do not use plain `make up DISTRIBUTION=example`"
+" to try to downgrade the running project: that command only applies the "
+"Stage 1 Compose inputs and can leave the full-stack services in a mixed "
+"state. Use `make demo-reset DISTRIBUTION=example`, then begin again at "
+"Stage 1."
+msgstr ""
+"一旦阶段 2 已经启动，就不要再用单独的 `make up DISTRIBU"
+"TION=example` 试图把正在运行的项目降回去：那条命令只会应用阶段"
+" 1 的 Compose 输入，可能让全栈服务停在混合状态。改用 `make"
+" demo-reset DISTRIBUTION=example`，然后从阶"
+"段 1 重新开始。"
+
+#: ../developer/router-tutorial.md:329
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../developer/router-tutorial.md:331
+msgid "Port already in use"
+msgstr "端口已被占用"
+
+#: ../developer/router-tutorial.md:333
+msgid "Repeat the same overrides on each command in the linear journey:"
+msgstr "在这条线性路径的每一条命令上重复同样的覆盖设置："
+
+#: ../developer/router-tutorial.md:349
+msgid ""
+"Then use backend port `28080` in Stage 1 and frontend port `23001` in "
+"Stages 2 and 3. The published site identity follows the frontend "
+"override. Keep the same three port assignments on every later `make demo`"
+" or `make demo-smoke`, including the Stage 3 command; both commands can "
+"recreate containers."
+msgstr ""
+"之后在阶段 1 用 backend 端口 `28080`，在阶段 2 和阶段"
+" 3 用 frontend 端口 `23001`。对外发布的站点身份跟随 f"
+"rontend 的覆盖值。后面每一次 `make demo` 或 `make"
+" demo-smoke`（包括阶段 3 的那条命令）都要保持这三个端口分配一"
+"致；这两条命令都可能重建容器。"
+
+#: ../developer/router-tutorial.md:354
+msgid "Cannot connect to the Docker daemon"
+msgstr "无法连接 Docker daemon"
+
+#: ../developer/router-tutorial.md:356
+msgid ""
+"Start Docker Desktop or Colima first. `docker info` must print a server "
+"section before `make up` can work."
+msgstr ""
+"先启动 Docker Desktop 或 Colima。`docker in"
+"fo` 必须能打印出 server 段，`make up` 才能工作。"
+
+#: ../developer/router-tutorial.md:359
+msgid "Empty `/v1/models` and `routes_configured: 0`"
+msgstr ""
+"`/v1/models` 为空，且 `routes_configured: "
+"0`"
+
+#: ../developer/router-tutorial.md:361
+msgid ""
+"The backend could not read the example's config. The most common cause on"
+" macOS is a checkout outside Docker's shared file paths: the "
+"`distributions/` bind mount then resolves to an empty directory inside "
+"the VM, the manifest at `/app/distributions/example/distribution.yaml` is"
+" missing, and `make logs s=backend DISTRIBUTION=example` says so "
+"explicitly. Move the checkout under a shared path (or add yours in Docker"
+" Desktop's *File sharing* settings) and run `make up "
+"DISTRIBUTION=example` again."
+msgstr ""
+"backend 读不到示例的配置。在 macOS 上最常见的原因是检出落在 Docker "
+"的共享文件路径之外：这时 `distributions/` 这个 bind mount "
+"在虚拟机里解析成一个空目录，`/app/distributions/example/distribution.yaml` "
+"这份 manifest 不存在，`make logs s=backend DISTRIBUTION=example` "
+"会明确说出这一点。把检出移到共享路径之下（或者在 Docker Desktop 的 *File "
+"sharing* 设置里把你的路径加进去），再运行一次 `make up "
+"DISTRIBUTION=example`。"
+
+#: ../developer/router-tutorial.md:369
+msgid "`make up` chose another distribution"
+msgstr "`make up` 选中了别的 distribution"
+
+#: ../developer/router-tutorial.md:371
+msgid ""
+"Always pass `DISTRIBUTION=example` while following this tutorial. A bare "
+"`make up` may discover a real deployment overlay in your checkout; the "
+"example marker deliberately prevents the tutorial from being selected "
+"implicitly."
+msgstr ""
+"跟着本教程走时，始终要传 `DISTRIBUTION=example`。裸的 `make up` "
+"可能发现检出里真实的部署 overlay；示例标记就是为了不让这个教程被隐式选中。"
+
+#: ../developer/router-tutorial.md:375
+msgid "Start over after a partial run"
+msgstr "跑到一半后重新开始"
+
+#: ../developer/router-tutorial.md:377
+msgid ""
+"Use `make demo-reset DISTRIBUTION=example`, then begin again at Stage 1. "
+"Do not delete Docker volumes by broad name or prune unrelated projects."
+msgstr ""
+"用 `make demo-reset DISTRIBUTION=exampl"
+"e`，然后从阶段 1 重新开始。不要按宽泛的名字去删 Docker 卷，也不"
+"要 prune 无关的项目。"
+
+#: ../developer/router-tutorial.md:380
+msgid "Inspect a failed service"
+msgstr "查看出问题的服务"
+
+#: ../developer/router-tutorial.md:382
+msgid ""
+"`make logs DISTRIBUTION=example` sees the running services in the shared "
+"Compose project at every stage. To inspect one service after Stage 2, "
+"use:"
+msgstr ""
+"`make logs DISTRIBUTION=example` 在每个阶段"
+"都能看到共享 Compose 项目里正在运行的服务。阶段 2 之后要单看某一"
+"个服务，用："
+
+#: ../developer/router-tutorial.md:389
+msgid ""
+"Replace `backend` with `frontend`, `postgres`, or `example-provider` as "
+"needed."
+msgstr ""
+"按需要把 `backend` 换成 `frontend`、`postgres"
+"` 或 `example-provider`。"
+
