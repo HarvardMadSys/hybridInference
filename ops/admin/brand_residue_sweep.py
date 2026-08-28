@@ -30,17 +30,13 @@ BRAND_MARKERS = ("freeinference", "harvard", "madsys", "junchengyang")
 # them is residue.
 #
 # ATTRIBUTION is where naming the origin is correct and permanent: a copyright
-# holder, a dependency's repository, the deployment this project runs for. It
-# never empties, and asking it to was a mistake — with LICENSE and the RouteWise
-# dependency URL in the same list as the acceptance criterion, criterion ② could
-# not be met by any amount of work, so it could never signal anything either.
+# holder, an authors field, the deployment this project runs for. It never
+# empties, and asking it to was a mistake — with LICENSE in the same list as the
+# acceptance criterion, criterion ② could not be met by any amount of work, so
+# it could never signal anything either.
 ATTRIBUTION: dict[str, str] = {
     "LICENSE": "MIT, (c) Harvard SEAS — the copyright holder is required attribution",
-    "pyproject.toml": (
-        "the `authors` field, and the RouteWise dependency's git URL — the "
-        "org name is how the package is fetched, from a public repository"
-    ),
-    "uv.lock": "the same RouteWise URL, resolved",
+    "pyproject.toml": "the `authors` field",
     "README.md": (
         "names the deployment this gateway runs for, and points at it as a "
         "worked example — true, useful to a reader, and not a leak"
