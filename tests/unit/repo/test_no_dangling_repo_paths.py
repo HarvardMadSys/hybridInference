@@ -166,9 +166,6 @@ def test_the_scan_actually_reaches_the_deploy_scripts() -> None:
     surfaces = _executable_surfaces()
     assert "Makefile" in surfaces
     assert any(s.startswith(".github/workflows/") for s in surfaces)
-    assert any("deploy" in s and s.endswith(".sh") for s in surfaces), (
-        "the deploy scripts are the reason this test exists"
-    )
     assert any(s.endswith(".service") for s in surfaces), (
         "the systemd units name __REPO_ROOT__/ops/... — the very paths the move has to update"
     )

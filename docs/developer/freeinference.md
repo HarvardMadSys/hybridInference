@@ -12,7 +12,7 @@ Client ──▶ Cloudflare Tunnel ──▶ Console (:3001) ──┬──▶ 
 
 | Layer | Role |
 |-------|------|
-| **Cloudflare** | CDN, DDoS protection, edge SSL termination. A Cloudflare Tunnel (`cloudflared`, see `ops/setup/setup_cloudflared.sh`) carries requests to the host, so the origin needs no inbound port. `CF-Connecting-IP` carries the real client IP, and is what the gateway reads first (see [Client IP resolution](#client-ip-resolution)). |
+| **Cloudflare** | CDN, DDoS protection, edge SSL termination. A Cloudflare Tunnel (`cloudflared`; setup script in the freeInference repository's `ops/setup/`) carries requests to the host, so the origin needs no inbound port. `CF-Connecting-IP` carries the real client IP, and is what the gateway reads first (see [Client IP resolution](#client-ip-resolution)). |
 | **Console** | Path routing, via the rewrite table in `apps/frontend/next.config.js` plus the pgAdmin route below. Anything it does not forward, it serves itself. |
 | **FastAPI** | API logic — request authentication, model routing, backpressure, Qdrant proxy, and observability. Listens on `127.0.0.1:8080`. |
 
