@@ -15,7 +15,7 @@ Exports:
     ProviderEventSink  -- Deprecated compatibility protocol for outcome recorders.
 """
 
-from routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
+from llm_routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
 
 from .candidates import (
     CandidatePricing,

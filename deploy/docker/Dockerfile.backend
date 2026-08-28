@@ -3,30 +3,13 @@
 # ---- Stage 1: build ----
 FROM python:3.12-slim AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
-
 RUN pip install uv
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 # --no-install-project: only install dependencies, not the project itself.
 # The project source is copied in the runtime stage and used via PYTHONPATH.
-# -s: only configure auth when the secret exists AND is non-empty -- compose
-# passes an empty secret when GITHUB_TOKEN is unset (local dev), and an empty
-# x-access-token would break even anonymous fetches.
-RUN --mount=type=secret,id=github_token \
-    if [ -s /run/secrets/github_token ]; then \
-        token="$(cat /run/secrets/github_token)" && \
-        git config --global \
-            url."https://x-access-token:${token}@github.com/".insteadOf \
-            "https://github.com/"; \
-    fi && \
-    uv sync --frozen --no-dev --no-install-project && \
-    if [ -s /run/secrets/github_token ]; then \
-        git config --global --unset-all \
-            url."https://x-access-token:${token}@github.com/".insteadOf || true; \
-    fi
+RUN uv sync --frozen --no-dev --no-install-project
 
 # ---- Stage 2: runtime ----
 FROM python:3.12-slim

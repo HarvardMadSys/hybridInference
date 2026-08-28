@@ -102,9 +102,6 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          # Match the dependency-token fallback used by canonical CI builds.
-          secrets: |
-            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
 
       - name: Candidate summary
         env:

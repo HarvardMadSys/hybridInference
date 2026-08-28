@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
     from routing.endpoint_health import EndpointHealthRegistry
 
-from routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
+from llm_routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
 
 from routing.endpoints import endpoint_id_for_adapter
 from routing.streaming import has_non_empty_content

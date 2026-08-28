@@ -47,7 +47,7 @@ def test_oncall_image_is_a_slim_relay_without_codex():
     assert "FROM node" not in dockerfile
     assert "npm install" not in dockerfile
     assert "repository-snapshot" not in dockerfile
-    assert "--no-install-package routewise" in dockerfile
+    assert "--no-install-package llm-routewise" in dockerfile
     assert "COPY apps/backend/serving /app/apps/backend/serving" in dockerfile
     assert "USER oncall" in dockerfile
     assert ".env.*" in dockerignore

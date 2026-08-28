@@ -94,7 +94,7 @@ cloud-agent/on-call 工作延期,保持未动且未完成。
 | `.github/workflows/` 三个:`ci.yml`、`ci-observability.yml`、`build-candidates.yml` | 上游 CI 与 release engineering(candidates 是 W4 自动发布的前身) |
 | `.github/workflows/sync-main.yml` | HybridInference 中立的 dev→main/release promotion;freeInference production ancestry gate 仍依赖该上游 promotion。freeInference 的同名手势是新仓自有实现,不是此文件的搬迁副本 |
 | 守卫测试 6 个(test_neutral_startup、contract_settings_defaults、site_identity、compose_identity、brand_residue_sweep、no_personal_data) | 刻意携带 marker 的中立性断言 |
-| `LICENSE`、`README*` 三份、`branding.ts` 注释、compose `NEXT_PUBLIC_GITHUB_URL` 默认、`pyproject/uv.lock` RouteWise URL、`docs/developer` 内 5 个单点提及 | sweep 判定的事实性提及(worked example / 版权归属 / 包源),非品牌残留 |
+| `LICENSE`、`README*` 三份、`branding.ts` 注释、compose `NEXT_PUBLIC_GITHUB_URL` 默认、`pyproject.toml` 的 `authors`、`docs/developer` 内 5 个单点提及 | sweep 判定的事实性提及(worked example / 版权归属 / 包源),非品牌残留 |
 | `services/freeinference-harness/` 协议一致性 testkit | §7 既有裁定 |
 
 ### 1.3 上游中立化批(代码工作,非搬迁;W5a 之后执行)
@@ -115,9 +115,9 @@ cloud-agent/on-call 工作延期,保持未动且未完成。
 
 | workflow | runner | env | secrets | variables | 源码依赖(checkout 后实际执行) | 目的地/批次 |
 |---|---|---|---|---|---|---|
-| Deploy Production(`deploy.yml`,legacy) | `deploy-production` | production | PROD_HOST, PROD_HOST_KEY, PROD_PORT, PROD_SSH_KEY, PROD_USER, ROUTEWISE_GITHUB_TOKEN | — | `ops/deploy/deploy_production.sh` | HybridInference / W6 收口已退役;freeInference 使用新仓自有 workflow |
+| Deploy Production(`deploy.yml`,legacy) | `deploy-production` | production | PROD_HOST, PROD_HOST_KEY, PROD_PORT, PROD_SSH_KEY, PROD_USER | — | `ops/deploy/deploy_production.sh` | HybridInference / W6 收口已退役;freeInference 使用新仓自有 workflow |
 | Rollback Production(`deploy-rollback.yml`,legacy) | `deploy-production` | production | 同上一行 | — | `ops/deploy/deploy_production.sh` | HybridInference / W6 收口已退役;freeInference 使用新仓自有 workflow |
-| Deploy Staging(`deploy-staging.yml`,legacy) | `deploy-staging` | staging | STAGING_HOST, STAGING_HOST_KEY, STAGING_PORT, STAGING_SSH_KEY, STAGING_USER, ROUTEWISE_GITHUB_TOKEN | — | `ops/deploy/deploy_staging.sh` | HybridInference / W6 收口已退役;freeInference 使用新仓自有 workflow |
+| Deploy Staging(`deploy-staging.yml`,legacy) | `deploy-staging` | staging | STAGING_HOST, STAGING_HOST_KEY, STAGING_PORT, STAGING_SSH_KEY, STAGING_USER | — | `ops/deploy/deploy_staging.sh` | HybridInference / W6 收口已退役;freeInference 使用新仓自有 workflow |
 | Deploy Staging by Digest(`deploy-staging-digest.yml`,legacy) | `deploy-staging` | staging | STAGING_HOST, STAGING_HOST_KEY, STAGING_PORT, STAGING_SSH_KEY, STAGING_USER, GITHUB_TOKEN | — | 无(内联远端脚本) | HybridInference / W6 收口已退役;freeInference 使用新仓自有 workflow |
 | Sync dev to main(`sync-main.yml`,upstream) | `trusted-automation` | — | GITHUB_TOKEN | — | 无(纯 git) | HybridInference / 保留(中立 dev→main/release);freeInference 同名手势非此文件搬迁 |
 | Deploy Status Monitor | `deploy-edge` | staging + process | CLOUDFLARE_API_TOKEN | ALERT_CONTROL_PLANE_STAGING_URL | `working-directory: services/status-monitor-worker`(wrangler deploy/d1 migrations) | freeInference / **W5c(与 worker 同批)** |
@@ -125,9 +125,9 @@ cloud-agent/on-call 工作延期,保持未动且未完成。
 | Slack Readback Gate | **ubuntu-22.04(hosted!)** | — | CODEX_ONCALL_SLACK_BOT_TOKEN | — | `working-directory: services/alert-control-plane-worker` | freeInference / **W5c(与 worker 同批)** |
 | Codex On-Call | **ubuntu-22.04(hosted!)** | — | CODEX_ONCALL_MODEL_API_KEY, CODEX_ONCALL_SLACK_BOT_TOKEN | — | **`PYTHONPATH=apps/backend` + `python -m serving.oncall.gha`(上游代码,行 59/116/127)** | freeInference / **W5f(经 pin 的上游 checkout 供码)** |
 | RAG Index | `trusted-automation` | — | RAG_GATEWAY_API_KEY, GITHUB_TOKEN | — | 上游 chunker/ingest(计划既定) | freeInference / W5f |
-| CI | `ci-general`, `image-verify-arm64` | — | DEEPSEEK_API_KEY, GEMINI_API_KEY, ZAI_API_KEY, ROUTEWISE_GITHUB_TOKEN | — | 全树 | 上游 |
+| CI | `ci-general`, `image-verify-arm64` | — | DEEPSEEK_API_KEY, GEMINI_API_KEY, ZAI_API_KEY | — | 全树 | 上游 |
 | CI Observability | **ubuntu-latest(hosted!)** | — | — | — | 无 | 上游 |
-| Build Candidate Images | `arm64-docker` | — | GITHUB_TOKEN, ROUTEWISE_GITHUB_TOKEN | — | `deploy/docker/Dockerfile.backend` + 全树构建上下文 | 上游(W4 演化为自动发布) |
+| Build Candidate Images | `arm64-docker` | — | GITHUB_TOKEN | — | `deploy/docker/Dockerfile.backend` + 全树构建上下文 | 上游(W4 演化为自动发布) |
 
 ## 3. 新仓资产缺口清单(对照 08-11 已迁项)
 
@@ -139,9 +139,10 @@ cloud-agent/on-call 工作延期,保持未动且未完成。
   `ALERT_CONTROL_PLANE_STAGING_URL`、`ALERT_CONTROL_PLANE_SLACK_CHANNEL_ID`
   是 **environment/repo variables 不是 secrets**(08-11 只迁了 secrets,
   variables 走 `gh variable set`,值可从旧仓直接读出:`gh variable list`)。
-- **repo 级 secrets 4 项待迁**:`RAG_GATEWAY_API_KEY`、
-  `CODEX_ONCALL_MODEL_API_KEY`、`CODEX_ONCALL_SLACK_BOT_TOKEN`、
-  `ROUTEWISE_GITHUB_TOKEN`(最后一项先做 §4-2 核实,能删则不迁)。
+- **repo 级 secrets 3 项待迁**:`RAG_GATEWAY_API_KEY`、
+  `CODEX_ONCALL_MODEL_API_KEY`、`CODEX_ONCALL_SLACK_BOT_TOKEN`。
+  `ROUTEWISE_GITHUB_TOKEN` 的 §4-2 核实已完成:依赖链已删除,不迁;
+  旧仓的 GitHub secret 本体尚未回收,见 §4-2。
 - **package Actions access**:backend 包已诞生(2026-08-19),给
   freeInference 授 read 现在即可执行(原 W4 项,可提前)。
 
@@ -153,10 +154,18 @@ cloud-agent/on-call 工作延期,保持未动且未完成。
    CI Observability)。选项:修账单,或迁去自建标签(oncall 族低负载,
    `trusted-automation` 可承接)。搬迁时必须显式选择,不能默认照抄
    `ubuntu-22.04`。
-2. **`ROUTEWISE_GITHUB_TOKEN` 核实项**(计划 §2-3):RouteWise 仓已公开,
-   该 token 理论上可从全链路删除(CI/deploy/build-candidates 均有
-   `|| github.token` 类回退或可加)。在 W5b 前做一次实测(移除后跑通
-   CI + staging 部署),能删则新仓少迁一个 secret。
+2. ~~**`ROUTEWISE_GITHUB_TOKEN` 核实项**(计划 §2-3)~~ **已收口**:该
+   token 存在只为拉取 `routewise` 这条 git 依赖。依赖改从 PyPI 安装
+   (`llm-routewise`)后,`uv.lock` 再无任何 git source,构建也就不再需要
+   VCS 凭据。`Dockerfile.backend` 的 secret mount 与 `url.insteadOf` 改写、
+   `docker-compose.yml` 的 secret 定义、`ci.yml`(6 处)与
+   `build-candidates.yml`(1 处)的 build secret 已全部删除;后端镜像已实测
+   可在无 git、无 token 的情况下构建。
+
+   **状态区分**:代码侧引用已全部删除,该 secret 不必迁往新仓。GitHub 上
+   旧仓的 secret 本体**尚未删除**——本 PR 不碰仓库设置。合并且确认没有
+   workflow 再引用它之后,在旧仓 Settings → Secrets 手工删除,该项才算完全
+   收口。
 3. **`deploy-staging-digest.yml` 身份修正**:上游文件是 W6 回滚窗保留的
    legacy 入口,在 W6 收口退役,不作为同一个文件搬迁。freeInference 的
    digest 部署 workflow 是新仓自有实现,同源门断言

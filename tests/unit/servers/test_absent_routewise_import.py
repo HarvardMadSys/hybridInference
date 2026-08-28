@@ -1,4 +1,9 @@
-"""The backend must import (and wire routers) without the RouteWise package."""
+"""The backend must import (and wire routers) without the RouteWise package.
+
+RouteWise is a required dependency, so this never happens in a correct
+install. The contract exists so that a partial install degrades to a clear
+configuration error instead of an import crash at boot.
+"""
 
 from __future__ import annotations
 
@@ -9,17 +14,17 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# Blocks the *external* private package only; the in-repo routing.routewise
-# wrappers then fail organically through their own imports, exactly as they
-# would in a neutral environment installed without the optional extra.
+# Blocks the *external* llm_routewise distribution only; the in-repo
+# routing.routewise wrappers then fail organically through their own imports,
+# exactly as they would in an environment missing the dependency.
 _SCRIPT = """
 import sys
 
 
 class _BlockRouteWise:
     def find_spec(self, fullname, path=None, target=None):
-        if fullname == "routewise" or fullname.startswith("routewise."):
-            raise ImportError("blocked: optional routewise package")
+        if fullname == "llm_routewise" or fullname.startswith("llm_routewise."):
+            raise ImportError("blocked: llm_routewise package")
         return None
 
 

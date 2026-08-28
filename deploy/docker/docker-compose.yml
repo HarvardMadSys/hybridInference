@@ -22,11 +22,6 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.backend
-      secrets:
-        # Token for installing the private routewise git dependency. Sourced
-        # from the GITHUB_TOKEN env var of the compose invocation (the deploy
-        # workflows export ROUTEWISE_GITHUB_TOKEN); empty when unset locally.
-        - github_token
     container_name: hybridinference-backend
     restart: unless-stopped
     # Source-revision stamp on the running container. The classic deploy
@@ -327,7 +322,3 @@ volumes:
 networks:
   hybridinference:
     driver: bridge
-
-secrets:
-  github_token:
-    environment: GITHUB_TOKEN

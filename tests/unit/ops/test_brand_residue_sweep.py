@@ -38,8 +38,8 @@ def test_file_has_marker_is_case_insensitive_and_skips_binary(tmp_path) -> None:
 def test_attribution_is_not_counted_as_residue() -> None:
     """Criterion ② has to be reachable, or it signals nothing.
 
-    LICENSE names the copyright holder; pyproject.toml and uv.lock name the
-    org a public dependency is fetched from; the READMEs name the deployment
+    LICENSE names the copyright holder; pyproject.toml names the authors; the
+    READMEs name the deployment
     this gateway runs for and point at it as a worked example. None of that can
     be removed, and all of it sat in the list whose emptiness was the
     acceptance criterion — so no amount of work could ever meet it.

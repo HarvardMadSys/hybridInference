@@ -36,7 +36,7 @@ from serving.servers.routers.admin import (
 
 try:
     from serving.servers.routers.admin import routewise
-except ImportError:  # optional RouteWise extra not installed
+except ImportError:  # RouteWise absent from a partial install
     routewise = None
 
 from serving.servers.routers.admin.metrics import _decode_throughput_tps
