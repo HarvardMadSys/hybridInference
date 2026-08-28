@@ -13,7 +13,7 @@ import time
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, TypeVar
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -1336,26 +1336,42 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
     return values
 
 
-def _canonical_base_url(base_url: str | None) -> str:
+def _canonical_base_url(base_url: str | None) -> str | None:
     """Normalize a base URL down to what actually decides the upstream request.
 
     Adapters do ``base_url.rstrip("/")`` before appending the chat path, and
     scheme and host are case-insensitive, so two spellings that build the same
-    request must compare equal. Otherwise a credential-only edit that happens to
-    add or drop a trailing slash reads as a repointing and silently revokes an
-    endpoint fact the route is still entitled to.
+    request must compare equal -- otherwise a credential-only edit that happens
+    to add or drop a trailing slash reads as a repointing and silently revokes
+    an endpoint fact the route is still entitled to.
+
+    Everything else has to survive, because the adapter sends the base URL
+    verbatim: ``urlsplit`` (not ``urlparse``) so an RFC 3986 ``;params`` segment
+    stays part of the path -- ``/v1;blue`` and ``/v1;green`` build different
+    requests and must not collapse together.
+
+    Returns ``None`` for anything that cannot be canonicalized -- no input, or a
+    ``?``/``#`` the adapter would carry into the request path. ``None`` never
+    compares equal, so an unresolvable spelling drops the fact rather than
+    risking carrying it to a different endpoint.
     """
     if not base_url:
-        return ""
+        return None
     cleaned = base_url.strip()
-    parsed = urlparse(cleaned)
-    if not parsed.scheme:
+    if "?" in cleaned or "#" in cleaned:
+        # _validate_base_url rejects a *non-empty* query or fragment, so what
+        # reaches here is the empty `?`/`#` form. urlsplit drops the bare
+        # separator while the adapter keeps it, which would make two different
+        # request paths look identical.
+        return None
+    parts = urlsplit(cleaned)
+    if not parts.scheme:
         return cleaned.rstrip("/")
-    scheme = parsed.scheme.lower()
-    netloc = parsed.netloc.lower()
-    if (scheme, parsed.port) in {("https", 443), ("http", 80)}:
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc.lower()
+    if (scheme, parts.port) in {("https", 443), ("http", 80)}:
         netloc = netloc.rsplit(":", 1)[0]
-    return urlunparse((scheme, netloc, parsed.path.rstrip("/"), "", "", ""))
+    return urlunsplit((scheme, netloc, parts.path.rstrip("/"), "", ""))
 
 
 def _carry_endpoint_facts_if_unmoved(
@@ -1381,7 +1397,8 @@ def _carry_endpoint_facts_if_unmoved(
         return
     if cfg.get("endpoint_id") != getattr(current, "endpoint_id", None):
         return
-    if _canonical_base_url(base_url) != _canonical_base_url(getattr(current, "base_url", None)):
+    canonical = _canonical_base_url(base_url)
+    if canonical is None or canonical != _canonical_base_url(getattr(current, "base_url", None)):
         return
     for name in _UNCLONEABLE_ENDPOINT_FACTS:
         value = getattr(current, name, None)

@@ -5063,4 +5063,52 @@ def test_canonical_base_url_folds_only_request_equivalent_spellings():
     assert canonical("https://llm.chutes.ai/v2") != canonical("https://llm.chutes.ai/v1")
     assert canonical("https://other.chutes.ai/v1") != canonical("https://llm.chutes.ai/v1")
     assert canonical("https://llm.chutes.ai:8443/v1") != canonical("https://llm.chutes.ai/v1")
-    assert canonical(None) == ""
+
+
+def test_canonical_base_url_keeps_rfc3986_params_in_the_path():
+    """`urlparse` splits `;params` off the path; the adapter does not.
+
+    `/v1;blue` and `/v1;green` build different upstream requests, so folding
+    them together would carry an endpoint fact across two different endpoints --
+    and a remote `endpoint_id` is only `<service>-api`, so it cannot catch it.
+    """
+    canonical = provider_routes._canonical_base_url
+
+    assert canonical("https://llm.chutes.ai/v1;blue") != canonical("https://llm.chutes.ai/v1;green")
+    assert canonical("https://llm.chutes.ai/v1;blue") != canonical("https://llm.chutes.ai/v1")
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        None,
+        "",
+        "https://llm.chutes.ai/v1?",
+        "https://llm.chutes.ai/v1#",
+    ],
+)
+def test_canonical_base_url_refuses_what_it_cannot_resolve(spelling):
+    """An unresolvable spelling yields None, which never compares equal.
+
+    A bare `?`/`#` survives `_validate_base_url` (it only rejects a *non-empty*
+    query or fragment) and the adapter carries it into the request path, while
+    urlsplit drops it -- so the safe answer is to refuse rather than fold.
+    """
+    assert provider_routes._canonical_base_url(spelling) is None
+
+
+def test_unresolvable_url_drops_the_licence_rather_than_carrying_it():
+    cfg = {"endpoint_id": "m:chutes-api"}
+    current = SimpleNamespace(
+        endpoint_id="m:chutes-api",
+        base_url="https://llm.chutes.ai/v1?",
+        null_cache_details_means_miss=True,
+    )
+
+    provider_routes._carry_endpoint_facts_if_unmoved(
+        cfg,
+        current_adapter=SimpleNamespace(config=current),
+        base_url="https://llm.chutes.ai/v1?",
+    )
+
+    assert "null_cache_details_means_miss" not in cfg

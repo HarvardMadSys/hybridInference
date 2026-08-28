@@ -9,12 +9,18 @@ identically, and both are worth pinning:
   ``cached_tokens`` / ``prompt_tokens_details`` never reach the client;
 * streaming chunks are assembled by hand and carry all three.
 
-A third path is pinned too: with ``force_chat_completions_streaming`` on, a
+A third path differs from both: with ``force_chat_completions_streaming`` on, a
 non-streaming client is served by ``StreamingResponse(media_type=
-"application/json")``, which FastAPI never runs through the response model. It
-nonetheless renders the same usage as the plain non-streaming path, and that
-equivalence is the property worth keeping -- the same request must not report
-differently depending on a runtime switch no caller can see.
+"application/json")``, which FastAPI never runs through the response model. So a
+client that asked for a plain JSON body gets the *streaming* usage shape -- all
+three spellings -- decided by a runtime switch it cannot see.
+
+That last test overrides the dependency through ``app.dependency_overrides``
+rather than monkeypatching the module attribute: ``Depends(get_runtime_settings)``
+captured the original function when the route was declared, so patching
+``completions.get_runtime_settings`` leaves the running app on the ordinary
+non-streaming path and the test passes for the wrong reason. It asserts the
+forced branch was actually entered before asserting anything about usage.
 
 Both are driven end to end here rather than asserted on ``UsageInfo.to_dict()``,
 because the response model is exactly what makes them differ.
@@ -33,6 +39,7 @@ from httpx import ASGITransport, AsyncClient
 from routing.executor import RouteExecutor
 from serving.adapters.base import ModelConfig
 from serving.adapters.openai_compat import OpenAICompatAdapter
+from serving.config.runtime_settings import get_runtime_settings
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import completions
@@ -104,7 +111,7 @@ async def client_for(monkeypatch, mock_db_logger, mock_log_store):
 
     clients: list[AsyncClient] = []
 
-    async def _build(*, licensed: bool) -> tuple[AsyncClient, OpenAICompatAdapter]:
+    async def _build(*, licensed: bool) -> tuple[AsyncClient, FastAPI, OpenAICompatAdapter]:
         adapter = _adapter(licensed=licensed)
         _install_stream(adapter)
         router = RouteExecutor()
@@ -119,7 +126,7 @@ async def client_for(monkeypatch, mock_db_logger, mock_log_store):
 
         client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
         clients.append(client)
-        return client, adapter
+        return client, app, adapter
 
     yield _build
 
@@ -152,7 +159,7 @@ async def _post(client: AsyncClient, *, stream: bool) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_non_streaming_surfaces_the_zero_as_cache_read_tokens_only(client_for):
-    client, _ = await client_for(licensed=True)
+    client, _app, _ = await client_for(licensed=True)
 
     usage = await _post(client, stream=False)
 
@@ -165,7 +172,7 @@ async def test_non_streaming_surfaces_the_zero_as_cache_read_tokens_only(client_
 
 @pytest.mark.asyncio
 async def test_streaming_surfaces_the_zero_in_all_three_spellings(client_for):
-    client, _ = await client_for(licensed=True)
+    client, _app, _ = await client_for(licensed=True)
 
     usage = await _post(client, stream=True)
 
@@ -178,7 +185,7 @@ async def test_streaming_surfaces_the_zero_in_all_three_spellings(client_for):
 @pytest.mark.parametrize("stream", [False, True])
 async def test_unlicensed_route_reports_nothing_on_either_surface(client_for, stream):
     """The control: same upstream bytes, no declaration, so the miss stays unknown."""
-    client, _ = await client_for(licensed=False)
+    client, _app, _ = await client_for(licensed=False)
 
     usage = await _post(client, stream=stream)
 
@@ -188,7 +195,7 @@ async def test_unlicensed_route_reports_nothing_on_either_surface(client_for, st
 
 
 @pytest.mark.asyncio
-async def test_forced_streaming_json_bypasses_the_response_model(client_for, monkeypatch):
+async def test_forced_streaming_json_bypasses_the_response_model(client_for):
     """A non-stream client sees the same usage whether or not streaming is forced.
 
     This path returns a StreamingResponse with an application/json media type,
@@ -201,21 +208,21 @@ async def test_forced_streaming_json_bypasses_the_response_model(client_for, mon
         async def get_bool(self, key: str) -> bool:
             return key == "force_chat_completions_streaming"
 
-    monkeypatch.setattr(
-        "serving.servers.routers.completions.get_runtime_settings",
-        lambda request: _ForcedStreaming(),
-    )
-    client, _ = await client_for(licensed=True)
+    client, app, _ = await client_for(licensed=True)
+    app.dependency_overrides[get_runtime_settings] = lambda: _ForcedStreaming()
 
     resp = await client.post(
         "/v1/chat/completions",
         json={"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert resp.status_code == status.HTTP_200_OK
+    # Prove the forced branch was taken before reading anything from the body:
+    # only that branch returns a keepalive-friendly application/json stream.
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.headers["X-Accel-Buffering"] == "no"
+
     usage = json.loads(resp.text.lstrip())["usage"]
 
     assert usage["cache_read_tokens"] == 0
-    # Not filtered by a response model, yet still matching the plain
-    # non-streaming surface rather than the streaming one.
-    assert "cached_tokens" not in usage
-    assert "prompt_tokens_details" not in usage
+    assert usage["cached_tokens"] == 0
+    assert usage["prompt_tokens_details"] == {"cached_tokens": 0}
