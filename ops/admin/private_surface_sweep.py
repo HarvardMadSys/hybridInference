@@ -40,7 +40,6 @@ PENDING: dict[str, str] = {
     "benchmark/": "machine-specific benchmark configuration",
     "deploy/": "site-specific units and deployment defaults",
     "docs/agents/": "historical plans and specs",
-    "docs/developer/": "deployment-specific developer documentation",
     "docs/superpowers/": "historical plans and specs",
     "tests/": "production-shaped fixtures awaiting neutralization or migration",
 }

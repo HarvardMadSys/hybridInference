@@ -47,15 +47,6 @@ ATTRIBUTION: dict[str, str] = {
     ),
     "README.user.md": "the same, plus the clone URL",
     "README.developer.md": "the clone URL, and the same worked example",
-    "docs/developer/conf.py": "the documentation's own copyright line",
-    "docs/developer/installation.md": "the clone URL",
-    "docs/developer/deployment.md": "the clone URL",
-    "docs/developer/adding-models.md": (
-        "a link to this repository's own pull request, and the FreeInference "
-        "doc site labelled as the worked example it is"
-    ),
-    "docs/developer/claude-code-setup.md": "the same worked example, labelled",
-    "docs/developer/index.rst": "the same worked example, labelled",
     "deploy/docker/docker-compose.yml": (
         "NEXT_PUBLIC_GITHUB_URL defaults to this repository, which is where "
         "the console's source link should point"
@@ -95,7 +86,6 @@ ALLOWLIST: dict[str, str] = {
     "docs/agents/": "historical design docs — review before direct publication",
     "docs/superpowers/": "historical design docs — review before direct publication",
     "docs/reviews/": "review records — review before direct publication",
-    "docs/developer/": "internal doc-site pages — step-2 / neutral wave",
     "services/freeinference-harness/": (
         "generic protocol-conformance testkit; neutral naming is tracked separately"
     ),
@@ -114,9 +104,8 @@ ALLOWLIST: dict[str, str] = {
     ".gitleaks.toml": "site-specific scan allowances — neutral wave",
     "benchmark/": "paper artifacts — step-2 per ownership inventory",
     "Makefile": (
-        "one pointer to docs/developer/freeinference.md — that doc is itself "
-        "allowlisted and moves in step 2; the reference goes with it, and the "
-        "dangling-path guard fails the pull request that forgets"
+        "one target that starts the cloud-agent stack, whose repository is "
+        "named for the deployment that operates it"
     ),
     "docs/openrouter.md": "developer note — neutral wave",
 }

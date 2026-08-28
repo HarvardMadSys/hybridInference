@@ -1,193 +1,177 @@
-# OpenRouter-Compatible API Gateway
+# Routing through OpenRouter
 
-A FastAPI-based gateway that serves OpenRouter-compatible traffic, fans out to local and remote LLM adapters, and exposes observability interfaces for operations. In production the application runs as a Docker container on port 8080 behind Nginx; for local development it can run on any port via `uvicorn` directly.
+[OpenRouter](https://openrouter.ai) is one of the providers HybridInference can
+route to, and it is the one a fresh checkout uses by default. This page covers
+the OpenRouter adapter specifically. For how routing works in general, see
+[Architecture](architecture.md); for the model-registry syntax, see
+[Adding models](adding-models.md).
 
-## Architecture
+## The default catalogue
 
-```
-hybridInference/
-├── docs/                       # Deployment and integration guides
-├── serving/
-│   ├── servers/
-│   │   ├── app.py              # FastAPI entry point (exposes /v1/*)
-│   │   ├── bootstrap.py        # Service bootstrap: models, routing, DB
-│   │   └── routers/            # API routers (health, models, completions, admin, ...)
-│   ├── adapters/               # Provider adapters: openai_compat.py (vllm/sglang/
-│   │                           #   ollama/chutes/featherless/deepseek/zai/minimax),
-│   │                           #   openrouter.py, gemini.py, anthropic.py, claude.py,
-│   │                           #   plus shared profiles.py
-│   ├── storage/                # PostgreSQL-backed operational and log stores
-│   ├── observability/          # Structured request logging
-│   └── utils/                  # Logging, configuration helpers
-├── routing/                    # Routing manager and execution strategies
-├── config/
-│   ├── models.yaml             # Canonical model definitions + adapters
-│   └── routing.yaml (optional) # Weighted routing configuration
-└── deploy/docker/      # Dockerfiles and docker-compose.yml
-```
-
-### Key Components
-- **FastAPI app (`serving.servers.app:create_app`)**: Hosts OpenRouter-compatible endpoints plus admin and metrics routes.
-- **Bootstrap (`serving.servers.bootstrap`)**: Loads environment, registers models, applies routing weights, and wires database logging.
-- **Adapters (`serving.adapters.*`)**: Translate requests to providers — `OpenAICompatAdapter` (vLLM, SGLang, Ollama, DeepSeek, Zhipu, MiniMax, Chutes, Featherless), `OpenRouterAdapter`, `GeminiAdapter`, `AnthropicAdapter`, `ClaudeAdapter` (Vertex).
-- **Routing (`routing.*`)**: Supports fixed-ratio and future strategies for splitting traffic across adapters.
-- **Observability (`serving.observability`)**: Structured request logging.
-
-## Features
-
-- **OpenRouter API compatibility**: Implements `/v1/chat/completions`, `/v1/models`, and related schemas.
-- **Hybrid routing**: Combine local VLLM workers with hosted APIs.
-- **Resilient adapters**: Automatic retry/fallback when a provider returns errors.
-- **Usage accounting**: Prompt/completion token tracking and persisted request logs.
-- **Streaming responses**: Server-Sent Events (SSE) for incremental output.
-- **Observability hooks**: Structured request logs in PostgreSQL.
-
-## Development Setup
-
-### Prerequisites
-- Python 3.10-3.13 (3.12 recommended)
-- [uv](https://github.com/astral-sh/uv) (recommended) or conda
-
-### Create Environment
-```bash
-# Clone and bootstrap
-git clone <repository-url>
-cd hybridInference
-uv venv -p 3.12
-source .venv/bin/activate
-uv sync
-```
-
-### Local Environment Variables
-Create `.env` from the template:
-```bash
-cp .env.example .env
-```
-Populate it with provider credentials and runtime configuration:
-```bash
-LOCAL_DEPLOYMENT_URL=http://host.docker.internal:8001/v1
-DEEPSEEK_API_KEY=your-deepseek-api-key
-GEMINI_API_KEY=your-gemini-api-key
-DB_HOST=localhost
-DB_NAME=hybridinference
-DB_USER=postgres
-DB_PASSWORD=postgres
-JWT_SECRET_KEY=replace-me
-API_KEY_SECRET=replace-me
-```
-
-### Run Locally
-```bash
-# Development server with reload on port 8080
-uvicorn serving.servers.app:app --reload --host 0.0.0.0 --port 8080
-
-# Alternate: respect PORT env var
-PORT=9000 uvicorn serving.servers.app:app --host 0.0.0.0 --port $PORT
-```
-
-When the app starts it will:
-1. Load environment variables (dotenv).
-2. Register models from `config/models.yaml`.
-3. Apply routing overrides from `config/routing.yaml` if present.
-4. Initialize the PostgreSQL database logger and operational store.
-
-### Quick Checks
-```bash
-# Health
-curl http://localhost:8080/health
-
-# Models (OpenRouter schema)
-curl http://localhost:8080/v1/models | jq
-
-# Chat completion
-env \
-  http_proxy= \
-  curl -X POST http://localhost:8080/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{
-          "messages": [{"role": "user", "content": "Ping"}],
-          "max_tokens": 64
-        }'
-```
-
-## Production Deployment
-
-All services run via Docker Compose. Nginx on the host terminates TLS;
-Cloudflare provides CDN and DDoS protection in front of Nginx.
+With no environment variables and no deployment overlay, config resolution falls
+through to `config/examples/models.openrouter.yaml`, which registers three
+models against OpenRouter — two direct and one demonstrating a local-first
+hybrid route with OpenRouter as the fallback leg. Supplying one API key is
+enough to get a working gateway:
 
 ```bash
-make up      # Start all services
-make ps      # Verify health
+source .venv/bin/activate            # the env `make setup-dev` creates
+export OPENROUTER_API_KEY=sk-or-...
+uvicorn serving.servers.app:app --host 127.0.0.1 --port 8080
 ```
 
-Runtime operations:
-- Restart: `make restart` or `make restart s=backend`
-- Logs: `make logs` or `make logs s=backend`
-
-See [Deployment](deployment.md) for the full guide.
-- Health: `curl https://<your-gateway>/health`
-
-## API Surface
-
-| Method | Path | Auth | Description |
-| ------ | ---- | ---- | ----------- |
-| GET | `/v1/models` | API key | Enumerate available models with OpenRouter metadata |
-| POST | `/v1/chat/completions` | API key | OpenRouter/OpenAI-compatible chat completion |
-| GET | `/health` | Public | Liveness and dependency checks |
-| GET | `/routing` | Public | Current routing weights for each model |
-| GET | `/admin/routing` | Admin | Admin-authenticated alias of `/routing` |
-| GET | `/admin/stats` | Admin | Aggregated usage statistics. The previous unauthenticated `/stats` alias has been removed; use this endpoint instead. |
-
-### Example Requests
-```bash
-# Streaming response
-env \
-  http_proxy= \
-  curl -N -X POST http://localhost:8080/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{
-          "model": "glm-5.1",
-          "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Describe the architecture."}
-          ],
-          "stream": true,
-          "temperature": 0.7,
-          "max_tokens": 256
-        }'
-```
-
-## Logging and Metrics
-
-Logs and operational state go to PostgreSQL. Connection parameters come from
-`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`.
-
-- **Metrics**: Prometheus instrumentation has been removed; structured logs in the configured database are the supported observability surface today.
-
-Inspect logs (PostgreSQL backend):
-```bash
-docker exec -it hybridinference-postgres psql -U $DB_USER -d $DB_NAME \
-  -c "SELECT model_id, COUNT(*) FROM api_logs GROUP BY model_id;"
-```
-
-## Testing
+Run it from the repository root: the default paths are relative, and the boot
+log confirms which registry was chosen with a line like
+`Registered 3 routes from config/examples/models.openrouter.yaml`.
 
 ```bash
-# Fast unit/integration tests
-pytest -m "not external" -q
-
-# Focused server tests
-pytest tests/servers/test_bootstrap.py -q
+curl -s --noproxy '*' http://127.0.0.1:8080/routing
 ```
+
+The catalogue is a starting point, not a fixture: OpenRouter's model slugs move,
+and the pricing figures in that file are approximate and used only for the
+gateway's own usage accounting. Copy it and edit freely.
+
+## Route syntax
+
+An OpenRouter route is an entry in a model's `route:` list. There are two forms
+of `kind:`.
+
+### `kind: openrouter`
+
+OpenRouter picks the upstream provider itself, under its own default policy.
+
+```yaml
+- kind: openrouter
+  weight: 1.0
+  base_url: https://openrouter.ai/api/v1
+  api_keys:
+    - ${OPENROUTER_API_KEY}
+  provider_model_id: meta-llama/llama-3.3-70b-instruct
+```
+
+`provider_model_id` is OpenRouter's own slug for the model. The `id:` your
+clients ask for is the gateway's; the two are independent on purpose.
+
+### `kind: openrouter[<slug>]`
+
+Pins every request on that leg to one OpenRouter upstream, by sending
+`provider: {order: [<slug>], allow_fallbacks: false}`.
+
+```yaml
+- kind: openrouter[deepinfra]
+  weight: 1.0
+  base_url: https://openrouter.ai/api/v1
+  api_keys:
+    - ${OPENROUTER_API_KEY}
+  provider_model_id: meta-llama/llama-3.3-70b-instruct
+```
+
+The slug must match `[A-Za-z0-9_.-]+`, optionally with `/`-separated segments
+(`deepinfra`, `deepinfra/turbo`). A malformed bracket form — empty pin,
+whitespace, nested or unmatched brackets — raises at registration rather than
+being silently ignored. OpenRouter's list of provider slugs is at
+<https://openrouter.ai/docs/features/provider-routing>.
+
+Two legs that share a `base_url` but pin different upstreams still get distinct
+`endpoint_id`s, because the bracketed kind survives into the identifier. Their
+circuit-breaker and availability state therefore stay isolated: one flaky
+upstream does not take the other out. In `api_logs`, though, both forms record
+`provider = "openrouter"`, so analytics sees a single OpenRouter cohort.
+
+### Sort policy
+
+An OpenRouter route created through the admin provider-routes API may carry an
+`openrouter_sort` policy of `price`, `throughput`, or `latency`, which is sent
+as `provider: {sort: <policy>}`. It applies only to *unpinned* routes — a route
+with a bracket-form pin sends `order` instead, and the pin wins. The API
+rejects the field with `422` on a non-OpenRouter route or an unrecognised value.
+
+## What the adapter sends
+
+`OpenRouterAdapter` (`apps/backend/serving/adapters/openrouter.py`) is a thin
+subclass of the generic OpenAI-compatible adapter. On top of the normal request
+it adds:
+
+- **Attribution headers.** `X-Title` carries the site name and `HTTP-Referer`
+  the site's public base URL, both resolved from the site identity
+  (`SITE_NAME` / `SITE_PUBLIC_BASE_URL`, else the active distribution manifest,
+  else the neutral default). OpenRouter attributes traffic to whoever these
+  name, for leaderboard placement and free-tier limits. A header with no value
+  is omitted rather than sent blank, so an undeclared `SITE_PUBLIC_BASE_URL`
+  means no `HTTP-Referer` at all; `X-Title` always goes out, falling back to the
+  literal `HybridInference` when no site name is set. Declare `SITE_NAME` if you
+  want your own account credited.
+- **`usage: {include: true}`** on every request, so OpenRouter returns its
+  per-request `cost` field.
+- **`stream_options: {include_usage: true}`** on streaming requests, so the
+  final SSE chunk carries the usage block.
+- **`provider: {...}`** for the pinned and sort cases described above.
+
+## Cost accounting
+
+Two numbers, deliberately kept apart:
+
+| Column in `api_logs` | Meaning |
+| --- | --- |
+| `cost_usd` | What the caller is charged: tokens × the pricing declared for the model in your registry. Unaffected by OpenRouter |
+| `upstream_cost_usd` | What OpenRouter reported it charged you for that request |
+
+`upstream_cost_usd` is `NULL` for non-OpenRouter routes, and `NULL` for an
+OpenRouter route when the response carried no cost figure.
+
+## API keys
+
+A route's `api_keys:` is a list. With a single entry — the usual case — the
+adapter uses it directly. With several, the inherited key-pool logic rotates:
+a key that hits a key-specific or transient failure (429, 401/402/403, 408/425,
+5xx, or a timeout) is muted for five minutes and the request advances to the
+next key. Request-scoped failures such as `400` and `422` fail identically on
+every key, so they propagate immediately instead of burning the pool.
+
+An `api_keys:` entry that expands from an unset environment variable is treated
+as absent. A route marked `optional: true` is then skipped with a warning naming
+the model and kind; any other route raises `MissingEnvBackedKeyError` and
+startup fails. Either way a route is never registered pointing at an endpoint it
+cannot authenticate to.
+
+## Error handling
+
+OpenRouter errors travel the same path as any other OpenAI-compatible
+provider's. Two mechanisms handle them, and they are independent:
+
+**Fallback.** When a request to an OpenRouter leg fails for any reason, the
+router records the failure and tries the model's remaining legs in route order,
+skipping any that are admin-disabled, modality-incompatible, or circuit-open.
+The exception is a request the caller explicitly pinned with `X-Route-Pin`,
+which never falls back. If every leg fails, the first error is what the client
+sees. Failure status codes do not select between "fall back" and "propagate" —
+that decision is only about whether another leg is available.
+
+**The circuit breaker.** Failures accumulate per `endpoint_id`; after
+`CIRCUIT_FAILURE_THRESHOLD` consecutive failures (default 3) the endpoint stops
+receiving traffic for `CIRCUIT_COOLDOWN_SECONDS` (default 30) before a half-open
+probe. Client errors are exempt: a 4xx other than 408, 429, 401, and 407 is the
+caller's request being wrong, and letting it open the circuit would take the
+endpoint away from everyone else. 408 and 429 mean OpenRouter is overloaded and
+do count; 401 and 407 mean *your* `OPENROUTER_API_KEY` was rejected, which no
+user can work around, so they count and additionally page.
 
 ## Troubleshooting
 
-- **Port already in use**: `sudo lsof -ti :80 | xargs sudo kill -9`
-- **Missing models**: Verify `config/models.yaml` contains the expected entries and that `LOCAL_DEPLOYMENT_URL` is reachable.
-- **No logs written**: Confirm PostgreSQL is reachable and the configured database credentials are correct.
+**Every OpenRouter request returns 401.** The gateway's key was rejected, not
+the caller's. Check `OPENROUTER_API_KEY` in the environment the backend process
+actually sees. A key that is unset entirely never gets that far — the route is
+skipped or startup fails, as above — so a 401 means a key was present and
+OpenRouter refused it.
 
-## Related Docs
+**The model is missing from `/v1/models`.** Confirm the registry the gateway
+loaded: the boot log emits `Registered N routes from <path>`, which is the file
+the resolution chain chose. If it is not the file you edited, an explicit
+`MODELS_CONFIG_PATH` or a distribution manifest is winning over it — see
+[Configuration](configuration.md).
 
-- [Deployment](deployment.md): running the gateway behind a CDN and a reverse proxy.
-- [Routing](routing.md): Detailed routing manager configuration and strategy extension guide.
-- [Adding Models](adding-models.md): How to add new models (YAML) and integrate new providers (adapter) in one place.
+**Requests reach the wrong upstream.** Use `GET /routing` to see the effective
+weight distribution per model. Note that this endpoint is unauthenticated and
+discloses upstream base URLs; see the warning in
+[Architecture](architecture.md#http-surface).

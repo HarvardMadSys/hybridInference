@@ -1,6 +1,7 @@
-# Router Tutorial
+# Quickstart
 
-This tutorial takes one local HybridInference deployment through three stages:
+This is the first thing to do with a fresh clone of HybridInference. It takes
+one local gateway through three stages:
 
 1. prove the routing chain with a deterministic fake provider;
 2. continue the same running Compose project into the Web Console, Admin
@@ -13,14 +14,21 @@ small router is the first checkpoint on one path, so you see a successful
 request before adding the parts that have more ways to fail.
 
 No provider account, host `.env`, GPU, SMTP service, or paid API key is needed
-for the first two stages. CI runs the same `make up` → `make smoke` →
-`make demo` → `make demo-smoke` transition whenever this contract changes.
+for the first two stages. The repository's CI runs this same `make up` →
+`make smoke` → `make demo` → `make demo-smoke` sequence (the *Tutorial E2E* job
+in `.github/workflows/ci.yml`), so the commands below are executed on every
+change that touches them.
+
+If you would rather run the gateway from a source checkout without Docker, and
+against real models, see [Installation](installation.md) — but come back here
+first if you have never seen this gateway serve a request.
 
 ## What you need
 
 - Docker Engine 24+ with Compose v2. Check with `docker compose version`.
 - A running Docker daemon. On macOS, start Docker Desktop or Colima; `docker
-  info` must succeed.
+  info` must succeed, and the directory you clone into must be one Docker is
+  allowed to share into containers.
 - Git, curl, GNU Make, and Python 3.10–3.13 (3.12 recommended). The smoke
   clients use only the Python standard library, so there is no `pip install`
   step.
@@ -37,8 +45,8 @@ needed if you continue to Stage 3 with a GPU-backed local server.
 Clone the repository and start the runnable distribution:
 
 ```bash
-git clone https://github.com/HarvardMadSys/hybridInference.git
-cd hybridInference
+git clone <repository-url> hybridinference
+cd hybridinference
 
 make up DISTRIBUTION=example
 ```
@@ -84,7 +92,9 @@ curl -s localhost:18080/v1/models
 ```
 
 The response contains the public model id `example-chat`. Its registry entry is
-in `distributions/example/config/models.yaml`.
+in `distributions/example/config/models.yaml`, which the backend finds through
+the distribution manifest `distributions/example/distribution.yaml` — see
+[Configuration](configuration.md) for how that resolution works.
 
 That file is mounted read-only into the backend; it is not baked into the
 image. To prove the reload path, temporarily change the model's `name` to
@@ -122,6 +132,16 @@ curl -sN localhost:18080/v1/chat/completions \
 Every `chat.completion.chunk` frame in one response repeats one completion id,
 and the stream ends with the literal `data: [DONE]` sentinel.
 
+To see the route the gateway just used, ask it:
+
+```bash
+curl -s localhost:18080/routing
+```
+
+This is an unauthenticated endpoint that reports each model's upstream base
+URLs and weights. That is what you want on a laptop and not what you want on a
+public host — see the warning in [Routing](routing.md#api-endpoints).
+
 Do not run `make down` here. Stage 2 extends this same Compose project in
 place.
 
@@ -151,11 +171,12 @@ Open <http://localhost:13001/signup> and complete the browser flow:
 4. Open **API Playground**, select `example-chat`, and send a message. The reply
    is `RUNNABLE_EXAMPLE_OK`.
 5. Open **Admin Console**. This account is an admin because its email matches
-   the example's explicit `ADMIN_EMAILS` value.
+   the example's explicit `ADMIN_EMAILS` value in
+   `distributions/example/deploy/docker-compose.demo.yml`.
 
 The UI and API share one origin. Requests to `/v1`, `/auth`, `/user`, and
-`/admin` on port `13001` are proxied by the frontend to the backend inside the
-Compose network.
+`/admin` on port `13001` are rewritten by the frontend to the backend inside
+the Compose network (`apps/frontend/next.config.js`).
 
 Use the copied key for a normal authenticated request through that origin:
 
@@ -188,12 +209,13 @@ make demo-smoke DISTRIBUTION=example
 EXAMPLE_FULL_SMOKE_OK
 ```
 
-The check logs into the existing account, creates or reuses an API key, calls
-normal and streaming completions through the frontend origin, exercises the
-Playground and Admin APIs, proves a second local user receives `403` from the
-Admin API, verifies request history, recreates the backend, and then proves the
-same account, refresh-cookie session, and API key still work. It does not print
-any secret and does not reset the database.
+The check logs into the existing account (creating it if you skipped the
+browser flow), creates or reuses an API key, calls normal and streaming
+completions through the frontend origin, exercises the Playground and Admin
+APIs, proves a second local user receives `403` from the Admin API, verifies
+request history, recreates the backend, and then proves the same account,
+refresh-cookie session, and API key still work. It does not print any secret
+and does not reset the database.
 
 ## Stage 3: replace the fake provider with local inference
 
@@ -216,7 +238,7 @@ make demo DISTRIBUTION=example
 `make demo` recreates the backend so the new upstream settings take effect,
 while preserving the account, API key, frontend, and Postgres volume. Clients
 and the Playground still request `example-chat`; only the route behind it has
-changed.
+changed. `curl -s localhost:18080/routing` now reports the new `base_url`.
 
 `EXAMPLE_UPSTREAM_API_KEY` is the credential the gateway presents to that
 provider. It is not the `HYBRIDINFERENCE_API_KEY` minted in Stage 2, which is
@@ -263,11 +285,19 @@ distribution discovery does not mistake it for a real deployment. It is not a
 Stage 1/Stage 2 switch; only the explicit `demo` targets add the third Compose
 layer.
 
-To create a project distribution, copy this shape, remove the teaching marker
-and fake provider, replace every local-only identity and secret, and add the
-deployment controls your environment needs. See [Configuration](configuration.md),
-[Adding Models](adding-models.md), and [Routing](routing.md) for the relevant
-contracts.
+## Where to go next
+
+- To build your own deployment, copy this directory shape, remove the teaching
+  marker and the fake provider, replace every local-only identity and secret,
+  and add the deployment controls your environment needs.
+- [Configuration](configuration.md) — settings, environment variables, and how
+  a deployment supplies its own files.
+- [Adding Models](adding-models.md) — the model registry entry and its `route:`
+  list.
+- [Routing](routing.md) — weighted selection, fallback, circuit breaking,
+  session affinity, and how to add your own routing strategy.
+- [Installation](installation.md) — running the gateway from a source checkout
+  against real providers.
 
 ## Stop, resume, and reset
 
@@ -325,6 +355,16 @@ including the Stage 3 command; both commands can recreate containers.
 
 Start Docker Desktop or Colima first. `docker info` must print a server section
 before `make up` can work.
+
+### Empty `/v1/models` and `routes_configured: 0`
+
+The backend could not read the example's config. The most common cause on
+macOS is a checkout outside Docker's shared file paths: the `distributions/`
+bind mount then resolves to an empty directory inside the VM, the manifest at
+`/app/distributions/example/distribution.yaml` is missing, and
+`make logs s=backend DISTRIBUTION=example` says so explicitly. Move the
+checkout under a shared path (or add yours in Docker Desktop's *File sharing*
+settings) and run `make up DISTRIBUTION=example` again.
 
 ### `make up` chose another distribution
 

@@ -1,4 +1,4 @@
-.PHONY: help format lint test test-verbose test-cov setup-dev clean check all \
+.PHONY: help format lint test test-verbose test-cov docs setup-dev clean check all \
        docker-volumes up down restart ps logs build smoke \
        demo demo-smoke demo-down demo-reset _require-demo
 
@@ -62,6 +62,13 @@ test-all:  ## Run all tests except external (includes db-dependent)
 
 test-e2e: ## Run external/E2E tests (may require local server)
 	$(UV_RUN) pytest -m external -vv
+
+docs:  ## Build the developer docs site into docs/build/html
+	@echo "$(YELLOW)Building developer docs...$(RESET)"
+	@# Same command and flags as the "Docs Build" CI job: warnings are errors,
+	@# --keep-going reports all of them instead of stopping at the first.
+	$(UV_RUN) sphinx-build -b html docs/developer docs/build/html -W --keep-going
+	@echo "$(GREEN)OK Docs built: docs/build/html/index.html$(RESET)"
 
 rag-ingest:  ## Build the docs RAG index (real bge-m3; RAG_EMBEDDER=hash for offline)
 	@echo "$(YELLOW)Building docs RAG index...$(RESET)"

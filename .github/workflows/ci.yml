@@ -225,6 +225,10 @@ jobs:
   docs-build:
     name: Docs Build
     needs: changes
+    # The whole job is a dependency install plus one sphinx-build that takes
+    # seconds; without this it would inherit the 360-minute default and could
+    # hold a shared self-hosted runner for hours if a step hangs.
+    timeout-minutes: 5
     if: >-
       always() &&
       (github.event_name != 'pull_request' ||
@@ -260,17 +264,26 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
+          # Own key namespace: this job's venv holds only the `dev` group, so
+          # sharing the `venv-` key with the jobs that install the full
+          # application closure would let whichever job misses first publish a
+          # venv the others then have to repair.
+          key: docs-venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
           restore-keys: |
-            venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-
+            docs-venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-
 
       - name: Install dependencies
+        # --only-group: this job runs sphinx-build and nothing else, so it
+        # needs the `dev` group (which carries sphinx, myst-parser and
+        # sphinx-rtd-theme) but not the project or its runtime dependencies --
+        # including the git-sourced one, whose clone this job would otherwise
+        # pay for on every run.
         run: |
           set -euo pipefail
           uv venv
           # Bounded retry for residual install-time cache ENOENT.
           for attempt in 1 2 3; do
-            if uv sync --group dev; then
+            if uv sync --only-group dev; then
               exit 0
             fi
             if [ "${attempt}" -lt 3 ]; then
@@ -281,15 +294,15 @@ jobs:
           echo "uv sync failed after 3 attempts" >&2
           exit 1
 
-      - name: Build internal docs (warnings are errors)
-        # Mirrors the Cloudflare Pages build command for the `hybridinference`
-        # project (internaldoc.freeinference.org), which runs `sphinx-build -W`
-        # and therefore fails its deploy on any Sphinx warning. Preview
-        # deployments are effectively disabled for non-production branches, so
-        # without this job a broken toctree or xref only surfaces after merge,
-        # as a stale site. Sphinx/myst-parser/sphinx-rtd-theme come from the
-        # `dev` dependency group so the versions track uv.lock.
-        run: uv run sphinx-build -b html docs/developer docs/build/html -W --keep-going
+      - name: Build developer docs (warnings are errors)
+        # Same command as `make docs`, and the same `-W` the published site
+        # builds with, so a toctree or xref break fails here rather than
+        # silently leaving the site stale. Sphinx, myst-parser and
+        # sphinx-rtd-theme come from the `dev` dependency group, so the
+        # versions track uv.lock.
+        # --no-sync: plain `uv run` would re-sync the environment and pull the
+        # full project closure back in, undoing the narrowed install above.
+        run: uv run --no-sync sphinx-build -b html docs/developer docs/build/html -W --keep-going
 
   test:
     # No custom name: skipped jobs do not expand matrix expressions in names;

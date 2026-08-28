@@ -1,8 +1,9 @@
-"""Sphinx configuration for the HybridInference documentation site.
+"""Sphinx configuration for the HybridInference developer documentation.
 
-This module configures Sphinx extensions, HTML theme, source parsers,
-and autodoc defaults used to build the docs. It also adjusts the Python
-path so that project modules can be imported for API documentation.
+The site is plain MyST Markdown -- no page uses autodoc, so nothing here
+imports the application. That keeps the build hermetic: `sphinx-build` needs
+only Sphinx, myst-parser and the theme, and makes no network requests, so an
+offline contributor gets the same result as CI.
 """
 
 # Configuration file for the Sphinx documentation builder.
@@ -11,29 +12,19 @@ path so that project modules can be imported for API documentation.
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 import os
-import sys
-
-# Add project root to sys.path for autodoc
-sys.path.insert(0, os.path.abspath("../.."))
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "HybridInference"
-copyright = "2025-2026, Harvard System Lab"
-author = "Harvard System Lab"
+copyright = "2026, The HybridInference contributors"
+author = "The HybridInference contributors"
 release = "0.1.0"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 extensions = [
-    "sphinx.ext.autodoc",  # Auto-generate docs from docstrings
-    "sphinx.ext.napoleon",  # Support for Google/NumPy style docstrings
-    "sphinx.ext.viewcode",  # Add links to source code
-    "sphinx.ext.intersphinx",  # Link to other project's documentation
-    "sphinx.ext.todo",  # Support for todo items
-    "sphinx.ext.coverage",  # Check documentation coverage
     "myst_parser",  # Support for Markdown files
 ]
 
@@ -46,39 +37,9 @@ myst_enable_extensions = [
 
 # Generate implicit anchors for h1-h3 headings so GitHub-style in-page links
 # (`[text](#some-heading)`) resolve. Without this the Markdown renders fine on
-# GitHub but Sphinx reports `myst.xref_missing`, which the Cloudflare Pages
-# build turns into a failure (it runs `sphinx-build -W`).
+# GitHub but Sphinx reports `myst.xref_missing`, which fails the build (CI and
+# the published site both run `sphinx-build -W`).
 myst_heading_anchors = 3
-
-# Napoleon settings for Google-style docstrings
-napoleon_google_docstring = True
-napoleon_numpy_docstring = False
-napoleon_include_init_with_doc = True
-napoleon_include_private_with_doc = False
-napoleon_include_special_with_doc = True
-napoleon_use_admonition_for_examples = True
-napoleon_use_admonition_for_notes = True
-napoleon_use_admonition_for_references = False
-napoleon_use_ivar = False
-napoleon_use_param = True
-napoleon_use_rtype = True
-napoleon_preprocess_types = True
-
-# Autodoc settings
-autodoc_default_options = {
-    "members": True,
-    "member-order": "bysource",
-    "special-members": "__init__",
-    "undoc-members": True,
-    "exclude-members": "__weakref__",
-}
-
-# Intersphinx mapping
-intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
-    "fastapi": ("https://fastapi.tiangolo.com", None),
-    "pydantic": ("https://docs.pydantic.dev/latest/", None),
-}
 
 templates_path = ["_templates"]
 exclude_patterns = []
@@ -109,5 +70,24 @@ html_css_files = [
     "custom.css",
 ]
 
-# Show todo items
-todo_include_todos = True
+# -- Optional analytics ------------------------------------------------------
+# Off unless whoever publishes the site opts in with their own Statcounter
+# ids, the same arrangement the console uses
+# (`apps/frontend/src/config/branding.ts`). A shipped default would report
+# every third-party build's traffic into one project's analytics account.
+# `_templates/layout.html` emits nothing when the project id is empty.
+_statcounter_project_id = os.environ.get("DOCS_STATCOUNTER_PROJECT_ID", "").strip()
+_statcounter_security_key = os.environ.get("DOCS_STATCOUNTER_SECURITY_KEY", "").strip()
+
+# Both values are interpolated into a <script> body and an image URL, so accept
+# only the shapes Statcounter issues (a numeric project id, an alphanumeric
+# security key). Anything else is dropped, which turns analytics off.
+if not _statcounter_project_id.isdigit():
+    _statcounter_project_id = ""
+if not _statcounter_security_key.isalnum():
+    _statcounter_security_key = ""
+
+html_context = {
+    "statcounter_project_id": _statcounter_project_id,
+    "statcounter_security_key": _statcounter_security_key,
+}

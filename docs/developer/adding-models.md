@@ -1,28 +1,67 @@
-# Adding a New Model (OpenRouter-Compatible)
+# Adding a New Model
 
-This guide explains how to add support for new LLM models and providers to the hybridInference gateway while keeping full OpenRouter/OpenAI API compatibility.
-
-Reference PR for provider integration example: https://github.com/HarvardMadSys/hybridInference/pull/34
-
-## Overview
+This guide explains how to add LLM models and providers to the HybridInference
+gateway while keeping the OpenAI-compatible API surface that clients see.
 
 There is a single guide for both needs. Depending on your case, follow one of:
-1) Use an existing provider adapter — only YAML + env changes.
-2) Integrate a new provider — add an adapter class + small registration changes, then YAML + env.
 
-## Quick Start
+1. Use an existing provider adapter — only registry YAML plus environment changes.
+2. Integrate a new provider — add or wire an adapter, then the registry YAML and
+   environment.
 
-### Adding a Model with an Existing Provider
+For a model you serve yourself on vLLM, SGLang, or Ollama, see
+[Adding a New Local Model](add-local-model.md), which owns route registration for
+local servers.
 
-If the provider is already supported, you only need to add configuration.
+## Where your model registry lives
 
-1. **Add model configuration** in `config/models.yaml`:
+**There is no `config/models.yaml` in this repository.** The backend resolves the
+registry path at startup in
+`apps/backend/serving/config/distribution.py`
+(`resolve_config_path("models")`), with this precedence:
+
+1. **`MODELS_CONFIG_PATH`** (legacy alias `MODELS_CONFIG`). An explicit path
+   always wins.
+2. **A distribution manifest's `paths.models`** — used only when
+   `DISTRIBUTION_CONFIG_PATH` names a manifest *and* `DISTRIBUTION_CONFIG_MODE=active`.
+   Relative values in the manifest resolve against the manifest's own directory.
+   `DISTRIBUTION_CONFIG_MODE` defaults to `dark`, where the manifest is loaded,
+   validated, and logged for comparison but never applied.
+3. **`config/examples/models.openrouter.yaml`** — the bundled reference registry a
+   fresh checkout serves when nothing else is configured.
+
+Routing configuration follows the same chain (`ROUTING_CONFIG_PATH` /
+`paths.routing`, defaulting to `config/examples/routing.minimal.yaml`).
+
+So a self-hoster has two shapes to choose from:
+
+- **Point at a file.** Keep your registry wherever you like and set
+  `MODELS_CONFIG_PATH=/path/to/models.yaml`. This is what the quickstart in
+  `README.md` does.
+- **Ship an overlay.** Create `distributions/<name>/` containing a
+  `distribution.yaml` manifest and a `config/models.yaml`, then set
+  `DISTRIBUTION_CONFIG_PATH=distributions/<name>/distribution.yaml` and
+  `DISTRIBUTION_CONFIG_MODE=active`. `distributions/example/` is a working
+  overlay you can copy; `config/examples/distribution.example.yaml` is an
+  annotated manifest.
+
+Throughout this guide, "your model registry" means whichever file that
+resolution picks.
+
+If no registry is found at the resolved path, the backend logs an error, serves
+an empty `/v1/models`, and reports every model as not found.
+
+## Quick Start: adding a model to an existing provider
+
+If the provider already has an adapter, you only need configuration.
+
+1. **Add a model entry** to your model registry:
 
 ```yaml
 models:
   - id: your-model-id
     name: Your Model Display Name
-    provider: existing_provider  # e.g., "gemini", "deepseek"
+    provider: existing_provider  # e.g. "gemini", "deepseek"
     provider_model_id: "actual-provider-model-id"
     base_url: ${PROVIDER_BASE_URL}
     api_key: ${PROVIDER_API_KEY}
@@ -48,32 +87,75 @@ models:
         api_key: ${PROVIDER_API_KEY}
 ```
 
-2. **Configure environment variables** in `.env`:
+2. **Set the environment variables** in `.env` at the repository root (the
+   backend's settings loader reads that file):
 
 ```bash
-PROVIDER_BASE_URL=https://api.provider.com/v1
+PROVIDER_BASE_URL=https://api.provider.example/v1
 PROVIDER_API_KEY=your-api-key
 ```
 
-3. **Restart the server** to load the new model.
+3. **Restart the backend** to load the new model.
 
-4. **Verify**:
-```bash
-curl http://localhost:8080/v1/models | jq
-curl -s -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"your-model-id","messages":[{"role":"user","content":"Hello"}]}' | jq
-```
+4. **Verify** (see [Step 5: verify through the gateway](#step-5-verify-through-the-gateway)).
 
-Note on aliases: If you want the model to appear under an OpenRouter-style slug (e.g., a local vLLM path), add it in `aliases` so clients can call either name.
+Note on aliases: to let clients also call the model under a second name — an
+OpenRouter-style vendor slug, or the raw model path your serving runtime uses —
+list those names in `aliases`. They resolve to the same routes.
 
 ## Adding a New Provider
 
-If you need to integrate a completely new provider, follow these steps:
+### Step 1: decide whether you need an adapter at all
 
-### Step 1: Create Provider Adapter
+Most new providers expose an OpenAI-style `/chat/completions` endpoint. For
+those, **do not write an adapter class.** Register a provider profile and add
+the kind to the OpenAI-compat dispatch tuple in
+`apps/backend/serving/servers/registry.py` (`_make_adapter`):
 
-Create a new file in `serving/adapters/` (e.g., `serving/adapters/your_provider.py`):
+```python
+elif kind == "your_provider":
+    cfg = {**cfg, "provider_profile": "your_provider"}
+
+# ...further down in the same function:
+if kind in (
+    "vllm",
+    "sglang",
+    "chutes",
+    "featherless",
+    "ollama",
+    "cliproxy",
+    "openai_compat",
+    "staging",
+    "deepseek",
+    "kimi",
+    "minimax",
+    "your_provider",  # <-- add it here
+):
+    return OpenAICompatAdapter(model_cfg)
+```
+
+This is how `deepseek`, `kimi`, and `minimax` are integrated today: a
+per-provider profile in `apps/backend/serving/adapters/profiles.py` carries the
+usage-metric or path quirks, and `OpenAICompatAdapter` does the rest. `zai` and
+`kimi_coding` use the same profile mechanism but are gated on a coding-tool
+identity, so `_make_adapter` short-circuits them to `CodingIdentityAdapter` (a
+thin `OpenAICompatAdapter` subclass) before reaching that tuple.
+
+Write a dedicated adapter only when the provider speaks a genuinely non-OpenAI
+wire format — Gemini's `generateContent`, the Anthropic Messages API,
+OpenRouter's provider-pinning body fields. `gemini`, `claude`, `anthropic`, and
+`openrouter` all follow that pattern, each with its own dispatch branch:
+
+```python
+if kind == "your_provider":
+    return YourProviderAdapter(model_cfg)
+```
+
+### Step 2: write the adapter (custom protocols only)
+
+Create a new file under `apps/backend/serving/adapters/`, for example
+`apps/backend/serving/adapters/your_provider.py`. The backend package root is
+`apps/backend`, so imports are written as `serving.…` / `routing.…`:
 
 ```python
 import json
@@ -104,44 +186,40 @@ class YourProviderAdapter(BaseAdapter):
         Returns:
             OpenAI-compatible response dictionary.
         """
-        # Validate and filter parameters
+        # Validate and clamp parameters against this model's declared support.
         validated_params = self.validate_params(params)
 
-        # Build provider-specific request payload
+        # Build the provider-specific request payload.
         payload = {
             "model": self.config.provider_model_id or self.config.id,
             "messages": messages,
             **validated_params,
         }
 
-        # Add optional features
         if params.get("tools"):
             payload["tools"] = params["tools"]
 
         if params.get("response_format", {}).get("type") == "json_object":
             payload["response_format"] = {"type": "json_object"}
 
-        # Set up authentication headers
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}",
         }
 
-        # Make API request
         data = await self.http.json_post_with_retry(
             f"{self.config.base_url}/chat/completions",
             json=payload,
             headers=headers,
         )
 
-        # Extract usage information
         usage = UsageInfo(
             prompt_tokens=data.get("usage", {}).get("prompt_tokens", 0),
             completion_tokens=data.get("usage", {}).get("completion_tokens", 0),
             total_tokens=data.get("usage", {}).get("total_tokens", 0),
         )
 
-        # Fallback to estimation if provider doesn't return usage
+        # Fall back to estimation when the provider reports no usage.
         if usage.total_tokens == 0:
             content = data["choices"][0]["message"].get("content", "")
             prompt_tokens = estimate_prompt_tokens(messages)
@@ -152,12 +230,10 @@ class YourProviderAdapter(BaseAdapter):
                 total_tokens=int(prompt_tokens + completion_tokens),
             )
 
-        # Extract tool calls if present
         tool_calls = None
         if "tool_calls" in data["choices"][0]["message"]:
             tool_calls = data["choices"][0]["message"]["tool_calls"]
 
-        # Return normalized response
         return self.format_response(
             content=data["choices"][0]["message"].get("content", ""),
             model=self.config.id,
@@ -207,7 +283,7 @@ class YourProviderAdapter(BaseAdapter):
                 continue
 
             if line == "data: [DONE]":
-                # Emit final usage chunk using shared helper for consistency
+                # Emit the final usage chunk with the shared helper.
                 yield make_final_usage_chunk(
                     model=self.config.id,
                     messages=messages,
@@ -221,11 +297,9 @@ class YourProviderAdapter(BaseAdapter):
             try:
                 chunk_data = json.loads(line[6:])
 
-                # Extract usage if available
                 if "usage" in chunk_data:
                     prompt_tokens = chunk_data["usage"].get("prompt_tokens", prompt_tokens)
 
-                # Extract and yield content delta
                 if chunk_data["choices"][0]["delta"].get("content"):
                     content = chunk_data["choices"][0]["delta"]["content"]
                     total_content += content
@@ -234,9 +308,7 @@ class YourProviderAdapter(BaseAdapter):
                 continue
 ```
 
-### Step 2: Register the Adapter
-
-1. **Update `serving/adapters/__init__.py`**:
+Export it from `apps/backend/serving/adapters/__init__.py`:
 
 ```python
 from .your_provider import YourProviderAdapter
@@ -247,9 +319,8 @@ __all__ = [
 ]
 ```
 
-2. **Update `serving/servers/registry.py`**:
+and import it at the top of `apps/backend/serving/servers/registry.py`:
 
-Add the import at the top:
 ```python
 from serving.adapters import (
     # ... existing imports
@@ -257,43 +328,7 @@ from serving.adapters import (
 )
 ```
 
-Wire the new kind into `_make_adapter`. There are two patterns, depending on the protocol:
-
-**A) OpenAI-compatible providers (preferred when possible).** Most new providers expose an OpenAI-style `/chat/completions` endpoint. In that case do NOT add a custom adapter class — instead, register a `provider_profile` and add the `kind` to the OpenAI-compat dispatch tuple. Example for a hypothetical "your_provider":
-
-```python
-elif kind == "your_provider":
-    cfg = {**cfg, "provider_profile": "your_provider"}
-
-# ...further down in the same function:
-if kind in (
-    "vllm",
-    "sglang",
-    "chutes",
-    "featherless",
-    "ollama",
-    "openai_compat",
-    "deepseek",
-    "minimax",
-    "your_provider",  # <-- add it here
-):
-    return OpenAICompatAdapter(model_cfg)
-```
-
-This is how `deepseek` and `minimax` are integrated today: a per-provider profile in `serving/adapters/profiles.py` carries any usage-metric or path quirks, and `OpenAICompatAdapter` does the rest. `zai` and `kimi_coding` follow the same profile pattern but are gated on a coding-tool identity, so they short-circuit to `CodingIdentityAdapter` (a thin `OpenAICompatAdapter` subclass) before reaching this dispatch tuple — see `serving/servers/registry.py:_make_adapter`.
-
-**B) Genuinely custom protocols.** If the provider speaks a non-OpenAI wire format (e.g., Gemini's `generateContent`, the Anthropic Messages API, OpenRouter's provider-pinning header), add a dedicated adapter class and a dispatch branch:
-
-```python
-if kind == "your_provider":
-    return YourProviderAdapter(model_cfg)
-```
-
-`gemini`, `claude`, `anthropic`, and `openrouter` all follow this pattern.
-
-### Step 3: Add Model Configuration
-
-Add your model to `config/models.yaml`:
+### Step 3: add the model to your registry
 
 ```yaml
 models:
@@ -326,38 +361,63 @@ models:
         api_key: ${YOUR_PROVIDER_API_KEY}
 ```
 
-### Step 4: Configure Environment Variables
+### Step 4: configure environment variables
 
 Add to `.env`:
 
 ```bash
-YOUR_PROVIDER_BASE_URL=https://api.yourprovider.com/v1
+YOUR_PROVIDER_BASE_URL=https://api.yourprovider.example/v1
 YOUR_PROVIDER_API_KEY=your-api-key-here
 ```
 
-### Step 5: Test the Integration
+A route whose `${VAR}`-backed `api_key`, `api_keys`, or `base_url` resolves to
+empty is not registered. By default that drops the whole model, and the backend
+logs which models were skipped and which variables were unset. Mark a route
+`optional: true` to have only that route be skipped instead, leaving the rest of
+the model registered.
+
+### Step 5: verify through the gateway
+
+Start the backend. From a checkout, the quickstart form is:
 
 ```bash
-# Start the server (Docker)
-make build s=backend
-# Or locally without Docker:
-# uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
+PYTHONPATH=apps/backend \
+  MODELS_CONFIG_PATH=/path/to/your/models.yaml \
+  uv run uvicorn serving.servers.app:app --port 8080
+```
 
-# List available models
-curl http://localhost:8080/v1/models
+With the bundled Docker Compose setup, `make build s=backend` rebuilds and
+restarts the backend instead.
 
-# Test chat completion
-curl http://localhost:8080/v1/chat/completions \
+`GET /v1/models` accepts an anonymous request — it resolves an API key only to
+decide whether to include admin-visible entries:
+
+```bash
+curl -s http://localhost:8080/v1/models | jq
+```
+
+`POST /v1/chat/completions` runs through `verify_api_key`, so **it returns 401
+without a valid gateway API key** unless the backend is running with
+`USER_AUTH_ENABLED=false`. Send the key you issued for your own gateway (this is
+the gateway's key, not the upstream provider's):
+
+```bash
+export GATEWAY_API_KEY=<your gateway API key>
+
+curl -s -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "your-model-id",
     "messages": [{"role": "user", "content": "Hello!"}]
-  }'
+  }' | jq
 ```
 
 Streaming test:
+
 ```bash
 curl -N -s -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "your-model-id",
@@ -369,32 +429,46 @@ curl -N -s -X POST http://localhost:8080/v1/chat/completions \
 
 ## Configuration Reference
 
-### ModelConfig Fields
+### Model fields
+
+These keys are read from a model entry and passed to `ModelConfig`
+(`apps/backend/serving/adapters/base.py`). Every one of them can also be set per
+route, where the route value wins.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `id` | string | Yes | Unique model identifier |
+| `id` | string | Yes | Unique model identifier; the name clients send |
 | `name` | string | Yes | Display name |
-| `provider` | string | Yes | Provider/adapter kind |
+| `provider` | string | Yes | Provider/adapter kind; also the default `route[].kind` when no `route:` list is given |
 | `base_url` | string | Yes | API endpoint base URL |
 | `api_key` | string | No | API authentication key |
-| `provider_model_id` | string | No | Provider's model identifier (overrides `id`) |
+| `provider_model_id` | string | No | Provider's model identifier (overrides `id` on the wire) |
+| `model_type` | string | No | `"chat"` (default) or `"embedding"`. Spelled `type:` it works the same; embedding models bypass the weighted router and use their routes as an ordered fallback chain |
 | `aliases` | list[string] | No | Alternative names for routing |
-| `quantization` | string | No | Quantization format (default: "bf16") |
-| `input_modalities` | list[string] | No | Input types: "text", "image" |
-| `output_modalities` | list[string] | No | Output types: "text" |
+| `quantization` | string | No | Quantization format (default: `"bf16"`) |
+| `input_modalities` | list[string] | No | Input types: `"text"`, `"image"` |
+| `output_modalities` | list[string] | No | Output types: `"text"` |
 | `context_length` | int | No | Maximum context window (default: 8192) |
-| `max_output_length` | int | No | Maximum output tokens (default: 4096) |
+| `max_output_length` | int | No | Maximum output tokens (default: 4096); `max_tokens` is clamped to it |
 | `supports_tools` | bool | No | Function calling support (default: false) |
-| `on_demand` | bool | No | Model is lazily loaded on shared GPUs (started on first request, stopped when idle). Exposed in `/v1/models`; synthetic monitors skip chat-probing such models, and the RouteWise background latency prober skips their endpoints (default: false) |
 | `supports_structured_output` | bool | No | JSON mode support (default: false) |
-| `supported_params` | list[string] | No | Allowed parameter names |
-| `pricing` | dict | No | Base cost information per 1M tokens/request |
-| `pricing_schedule` | dict | No | Optional UTC activation time plus recurring daily price windows; `pricing` remains active before `effective_at`, `default` applies afterward outside each half-open `[start, end)` window, and each window's `pricing` overrides the base fields |
+| `supported_params` | list[string] | No | Allowed parameter names (default: `temperature`, `top_p`, `max_tokens`) |
+| `reasoning_efforts` | list[string] | No | The values this model's `reasoning_effort` accepts. Meaningful only when `reasoning_effort` is in `supported_params`; empty means "not offered". There is deliberately no default — the accepted set differs per model, so a guessed one would advertise a value the upstream rejects |
+| `on_demand` | bool | No | Model is lazily loaded on shared GPUs (started on first request, stopped when idle). Exposed in `/v1/models`, and the RouteWise background latency prober never probes such endpoints (default: false) |
+| `processor` | string | No | Output-processor override for `OpenAICompatAdapter`, bypassing model-ID auto-detection. Accepted: `"default"`, `"glm"`, `"qwen_coder"`, `"think_block"` |
+| `extra_body` | dict | No | Default fields merged into OpenAI-compatible upstream request bodies. Core fields and validated client parameters win |
+| `priority_scheduling` | bool | No | The endpoint runs an sglang server started with `--enable-priority-scheduling`; see [Prioritizing decode on an sglang route](add-local-model.md#prioritizing-decode-on-an-sglang-route). Normally set per route, not per model |
+| `route_metadata` | dict | No | Free-form per-route metadata consumed by routing strategies |
+| `pricing` | dict | No | Base cost information, USD per 1M tokens (and per request) |
+| `pricing_schedule` | dict | No | UTC-only activation time plus recurring daily price windows: `pricing` stays active before `effective_at`; afterwards `default` applies outside each half-open `[start, end)` window, and a window's own `pricing` overrides the base fields |
 
-### Route Configuration
+A few model-entry keys are not `ModelConfig` fields and are consumed elsewhere:
+`route` (below), `router` and `router_params` (per-model router selection),
+`admin_only`, and `required_role`.
 
-Routes allow multiple endpoints for a single model with weighted distribution:
+### Route configuration
+
+Routes give one model several endpoints with weighted distribution:
 
 ```yaml
 route:
@@ -407,66 +481,80 @@ route:
   # Remote API fallback
   - kind: your_provider
     weight: 0.3  # 30% of traffic
-    base_url: https://api.provider.com
+    base_url: https://api.provider.example
     api_key: ${API_KEY}
 ```
 
+Beyond the model fields above, a route entry accepts:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | string | Adapter kind (see below). Defaults to the model's `provider` |
+| `weight` | float | Relative share of traffic (default 1.0). `0` keeps the route configured but unselected |
+| `api_keys` | list[string] | Key pool for this endpoint, instead of `api_key`. Setting both is an error. The whole pool is one endpoint for latency and quota accounting; split genuinely separate resources into separate routes |
+| `optional` | bool | When a `${VAR}`-backed key or `base_url` resolves empty, skip just this route instead of dropping the model |
+| `provider` / `provider_display_name` | string | Analytics label override — see [Naming a route in the dashboard](add-local-model.md#naming-a-route-in-the-dashboard) |
+| `provider_type` | string | RouteWise cost category: `on_demand`, `quota`, or `concurrency` |
+| `routewise_pool`, `quota_pool`, `concurrency_pool`, `quota_source`, `quota`, `concurrency` | — | RouteWise pool and budget metadata |
+
 A route reports its `kind` as the provider label — the value recorded in
 `api_logs.provider` and grouped on by every provider-scoped admin view. Two
-routes of the same kind therefore share one dashboard row. Add `provider:` (and
-optionally `provider_display_name:`) to a route to give it its own label and
-name; see
-[Naming a route in the dashboard](add-local-model.md#naming-a-route-in-the-dashboard).
+routes of the same kind therefore share one dashboard row; `provider:` splits
+them.
 
-### Supported Adapter Kinds
+### Supported adapter kinds
 
-The `kind` field in each route entry selects the backend adapter. All kinds marked **OpenAI-compat** share the same `OpenAICompatAdapter` implementation with provider-specific profiles applied automatically.
+The `kind` field in each route entry selects the backend adapter. All kinds
+marked **OpenAI-compat** share the same `OpenAICompatAdapter` implementation,
+with provider-specific profiles applied automatically.
 
 | Kind | Category | Notes |
 |------|----------|-------|
 | `openai_compat` | OpenAI-compat | Generic OpenAI-compatible endpoint; use when no specific kind fits |
-| `staging` | OpenAI-compat | Clone of `openai_compat` with its own provider label, so a second generic OpenAI-compatible endpoint can be tracked separately in metrics/analytics |
+| `staging` | OpenAI-compat | Clone of `openai_compat` with its own provider label, so a second generic endpoint can be tracked separately in metrics |
 | `vllm` | OpenAI-compat | Local vLLM inference server |
 | `sglang` | OpenAI-compat | Local SGLang inference server |
 | `ollama` | OpenAI-compat | Local or remote Ollama server |
 | `chutes` | OpenAI-compat | Chutes.ai hosted inference |
 | `featherless` | OpenAI-compat | Featherless.ai hosted inference |
-| `deepseek` | OpenAI-compat | DeepSeek API (applies DeepSeek usage profile) |
-| `zai` | OpenAI-compat | Z.AI API (uses non-`/v1` chat path); dispatches to `CodingIdentityAdapter`, which presents a coding-tool `User-Agent` and leading OpenCode system message for the coding-plan endpoint |
-| `kimi` | OpenAI-compat | Moonshot/Kimi pay-per-token API (applies Kimi usage profile) |
-| `kimi_coding` | OpenAI-compat | Kimi Code coding-plan subscription endpoint; also dispatches to `CodingIdentityAdapter` |
-| `minimax` | OpenAI-compat | MiniMax API (applies MiniMax usage profile) |
 | `cliproxy` | OpenAI-compat | CLI proxy endpoint for OpenAI-compatible models |
-| `openrouter` | Custom | OpenRouter aggregator. Use the bracket form `openrouter[<slug>]` (e.g. `openrouter[deepinfra]`) to pin a sub-provider. |
+| `deepseek` | OpenAI-compat | DeepSeek API (applies the DeepSeek usage profile) |
+| `kimi` | OpenAI-compat | Moonshot/Kimi pay-per-token API (applies the Kimi usage profile) |
+| `kimi_coding` | OpenAI-compat | Kimi coding-plan endpoint; dispatches to `CodingIdentityAdapter` |
+| `zai` | OpenAI-compat | Z.AI GLM coding plan: non-`/v1` chat path, and dispatches to `CodingIdentityAdapter`, which presents a coding-tool `User-Agent` and a leading system message |
+| `minimax` | OpenAI-compat | MiniMax API (applies the MiniMax usage profile) |
+| `openrouter` | Custom | OpenRouter aggregator. Use the bracket form `openrouter[<slug>]` to pin a sub-provider |
 | `gemini` | Custom | Google Gemini API (message format translation) |
-| `claude` | Custom | Anthropic Claude API (direct API key, not subscription) |
-| `anthropic` | Custom | Generic Anthropic Messages API client |
+| `claude` | Custom | Anthropic Claude via Google Vertex |
+| `anthropic` | Custom | Direct Anthropic Messages API client |
 
-### Hybrid Routing
+Any other `kind` raises `ValueError: Unknown adapter kind` during registry load.
 
-- Weighted routes are applied at registration time. You can further adjust weights or override distribution centrally using `config/routing.yaml` (loaded by the `RoutingManager`).
+### Hybrid routing
 
-## BaseAdapter API Reference
+Weighted routes are applied at registration time. The routing config file
+(resolved via `ROUTING_CONFIG_PATH` / the manifest's `paths.routing`) can then
+adjust weights centrally through `RoutingManager`. See
+[Routing Configuration](routing.md).
 
-All adapters must inherit from `BaseAdapter` and implement:
+## BaseAdapter API reference
 
-### Required Methods
+All adapters inherit from `BaseAdapter`
+(`apps/backend/serving/adapters/base.py`) and implement:
 
 ```python
 async def chat_completion(
     self, messages: list[dict[str, Any]], **params
 ) -> dict[str, Any]:
     """Execute non-streaming chat completion."""
-    pass
 
 async def stream_chat_completion(
     self, messages: list[dict[str, Any]], **params
 ) -> AsyncGenerator[str, None]:
     """Execute streaming chat completion."""
-    pass
 ```
 
-### Utility Methods
+Utility methods provided by the base class:
 
 ```python
 def validate_params(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -474,48 +562,56 @@ def validate_params(self, params: dict[str, Any]) -> dict[str, Any]:
 
 def format_response(
     self,
-    content: str,
+    content: str | None,
     model: str,
     usage: UsageInfo | None = None,
     tool_calls: list[dict] | None = None,
+    reasoning_content: str | None = None,
     finish_reason: str = "stop",
 ) -> dict[str, Any]:
     """Format response in OpenAI-compatible format."""
 
 def format_stream_chunk(
-    self, content: str, model: str, finish_reason: str | None = None
+    self,
+    content: str,
+    model: str,
+    finish_reason: str | None = None,
+    role: str | None = None,
 ) -> str:
-    """Format SSE chunk for streaming responses."""
+    """Format an SSE chunk for streaming responses."""
+
+def format_tool_chunk(self, tool_calls: list[dict[str, Any]], model: str) -> str:
+    """Format tool calls into an OpenAI-compatible streaming chunk."""
 ```
 
-### Available Attributes
+Available attributes:
 
 ```python
 self.config       # ModelConfig instance
-self.http         # AsyncHTTPClient for API requests
+self.http         # AsyncHTTPClient (apps/backend/serving/http.py), shared
 ```
 
-## Advanced Features
+## Advanced features
 
-### Multi-Modal Support
+### Multi-modal support
 
-For models supporting images:
+For models accepting images:
 
 ```yaml
 input_modalities: ["text", "image"]
 ```
 
-Implement image handling in your adapter's `chat_completion` method.
+Handle the image content blocks in your adapter's `chat_completion`. A route may
+declare narrower `input_modalities` than the model, so a text-only fallback never
+receives media.
 
-### Tool/Function Calling
-
-For models supporting function calls:
+### Tool / function calling
 
 ```yaml
 supports_tools: true
 ```
 
-Parse and include `tool_calls` in the response:
+Parse the provider's tool calls into OpenAI shape and pass them through:
 
 ```python
 tool_calls = []
@@ -537,80 +633,106 @@ return self.format_response(
 )
 ```
 
-### Structured Output (JSON Mode)
-
-For models supporting JSON schema:
+### Structured output (JSON mode)
 
 ```yaml
 supports_structured_output: true
 ```
 
-Handle `response_format` parameter:
+Handle the `response_format` parameter:
 
 ```python
 if params.get("response_format", {}).get("type") == "json_object":
     payload["response_format"] = {"type": "json_object"}
 ```
 
-### Rate Limiting (Optional)
+### Rate limiting
 
-`serving/servers/bootstrap.py` does not currently configure per-provider rate limiters; the only in-process limiter wired there is `UserConcurrencyLimiter`. Static limits live in `serving/config/settings.py` (see the `signup_rate_limit_*` and `login_rate_limit_*` fields). If you need a per-provider token-bucket or quota, add it to `serving/admin/provider_quotas.py` (or a new module) and surface it through `serving/servers/deps.py`.
+`apps/backend/serving/servers/bootstrap.py` does not configure per-provider rate
+limiters. The only in-process limiter wired there is `UserConcurrencyLimiter`.
+Static auth-flow limits live in `apps/backend/serving/config/settings.py` (the
+`signup_rate_limit_*` and `login_rate_limit_*` fields). A per-provider
+token-bucket or quota would go in
+`apps/backend/serving/admin/provider_quotas.py` (or a new module) and be surfaced
+through `apps/backend/serving/servers/deps.py`.
 
 ## Examples
 
-### Example 1: OpenAI-Compatible Provider
-
-DeepSeek does not have its own adapter file. It is wired through `OpenAICompatAdapter` by setting `provider_profile = "deepseek"` in `serving/servers/registry.py:_make_adapter`; the profile itself lives in `serving/adapters/profiles.py`. Follow that pattern for any new OpenAI-compatible provider.
-
-### Example 2: Custom API Format
-
-See `serving/adapters/gemini.py` for handling non-standard API formats with message conversion.
-
-### Example 3: Local Deployment
-
-Local vLLM and SGLang servers reuse `serving/adapters/openai_compat.py` (`OpenAICompatAdapter`). The `vllm` and `sglang` kinds just dispatch to the same class — local-vs-remote routing is handled by `base_url` and the `RoutingManager`, not by a dedicated adapter file.
+- **OpenAI-compatible provider.** DeepSeek has no adapter file. `_make_adapter`
+  in `apps/backend/serving/servers/registry.py` sets
+  `provider_profile = "deepseek"` and returns `OpenAICompatAdapter`; the profile
+  lives in `apps/backend/serving/adapters/profiles.py`.
+- **Custom API format.** See `apps/backend/serving/adapters/gemini.py` for
+  message conversion against a non-OpenAI wire format.
+- **Local deployment.** vLLM and SGLang reuse
+  `apps/backend/serving/adapters/openai_compat.py`. The `vllm` and `sglang` kinds
+  dispatch to the same class; local-vs-remote behaviour comes from `base_url`
+  and the routing layer, not from a dedicated adapter.
 
 ## Troubleshooting
 
-### Model Not Appearing in `/v1/models`
+### Model not appearing in `/v1/models`
 
-- Check `config/models.yaml` syntax
-- Verify environment variables are set
-- Check server logs for configuration errors
-- If using `aliases`, verify the canonical `id` appears exactly once and aliases do not collide with other model IDs.
+- Confirm the registry the backend actually loaded. It logs
+  `Registered N routes from <path>` at startup, and logs an error naming the
+  path when no registry is there.
+- Check the YAML syntax and indentation under `models:`.
+- Check for skipped models: a route whose `${VAR}`-backed key or `base_url`
+  resolves empty drops the model, and the log names both the model and the unset
+  variable.
+- If using `aliases`, verify the canonical `id` appears exactly once and aliases
+  do not collide with another model's. A duplicate alias resolves to whichever
+  model loads last, and is logged as a warning.
 
-### Authentication Failures
+### Authentication failures
 
-- Verify API key in `.env`
-- Check if `${ENV_VAR}` expansion is working
-- Ensure `base_url` is correct
+- A 401 from the gateway means your **gateway** API key was missing or invalid,
+  or auth is enabled and you sent no `Authorization` header.
+- A 401 surfaced from the route means the **upstream** key is wrong. The backend
+  logs it as `upstream_auth_misconfig` with the endpoint id and the upstream's
+  own error body.
+- Check that `${ENV_VAR}` expansion resolved: only a value of exactly the form
+  `${NAME}` is expanded, and only for `base_url`, `api_key`, `api_keys`, and
+  `provider_model_id`.
 
-### Response Format Errors
+### Response format errors
 
-- Ensure `format_response()` returns OpenAI-compatible structure
-- Validate `UsageInfo` fields are integers
-- Check `finish_reason` is valid: "stop", "length", "content_filter"
- - For streaming, ensure the first non-empty content chunk is emitted as soon as available so TTFT metrics record properly.
+- Ensure `format_response()` returns the OpenAI-compatible structure.
+- Validate that `UsageInfo` fields are integers.
+- Check `finish_reason` is one of `stop`, `length`, `content_filter`,
+  `tool_calls`.
+- For streaming, emit the first non-empty content chunk as soon as it is
+  available so time-to-first-token is recorded accurately.
 
-### Streaming Issues
+### Streaming issues
 
-- Ensure chunks are SSE-formatted: `data: {json}\n\n`
-- Send final usage chunk before `data: [DONE]`
-- Handle JSON parsing errors gracefully
+- Ensure chunks are SSE-formatted: `data: {json}\n\n`.
+- Send the final usage chunk before `data: [DONE]`.
+- Handle JSON parsing errors gracefully.
 
-## Best Practices
+## Best practices
 
-1. **Error handling**: Use `self.http.json_post_with_retry()` and handle provider faults gracefully with useful messages.
-2. **Usage accounting**: Prefer provider usage when available; otherwise fall back to `estimate_prompt_tokens()`/`estimate_text_tokens()`.
-3. **Streaming helpers**: Use `format_stream_chunk()`, `make_final_usage_chunk()`, and `done_sentinel()` for consistent SSE.
-4. **Type safety**: Provide full type hints and keep request/response shapes aligned with `serving/schemas.py`.
-5. **Testing**: Exercise both streaming and non-streaming paths, and try large prompts to validate token clamping.
-6. **Docs & style**: Keep adapter docstrings and comments in English (Google style). Avoid provider-specific logic in shared code.
-7. **Env expansion**: Use `${ENV_VAR}` in YAML instead of hardcoding secrets or endpoints; let dotenv load `.env`.
+1. **Error handling** — use `self.http.json_post_with_retry()` and surface
+   provider faults with useful messages.
+2. **Usage accounting** — prefer provider-reported usage; fall back to
+   `estimate_prompt_tokens()` / `estimate_text_tokens()`.
+3. **Streaming helpers** — use `format_stream_chunk()`,
+   `make_final_usage_chunk()`, and `done_sentinel()` for consistent SSE.
+4. **Type safety** — full type hints, and keep request/response shapes aligned
+   with `apps/backend/serving/schemas.py`.
+5. **Testing** — exercise both streaming and non-streaming paths, and try large
+   prompts to validate token clamping.
+6. **Docs & style** — Google-style docstrings in English; keep provider-specific
+   logic out of shared code.
+7. **Secrets** — use `${ENV_VAR}` in YAML rather than hardcoding keys or
+   endpoints, and keep the values in `.env`.
 
-## See Also
+## See also
 
-- [OpenRouter Gateway Overview](openrouter.md) — Architecture and endpoints
-- [Routing Configuration](routing.md) — Central weight overrides and strategy
-- [Configuration Guide](configuration.md) — Environment and YAML configuration
-- [API Reference](https://doc.freeinference.org/) — the FreeInference deployment's user docs, as a worked example of what this generates
+- [Adding a New Local Model](add-local-model.md) — registering a self-hosted
+  vLLM/SGLang/Ollama server
+- [Router Tutorial](router-tutorial.md) — a runnable deployment from first
+  request to local server
+- [OpenRouter Gateway Overview](openrouter.md) — architecture and endpoints
+- [Routing Configuration](routing.md) — central weight overrides and strategies
+- [Configuration Guide](configuration.md) — environment and YAML configuration

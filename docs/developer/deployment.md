@@ -1,202 +1,282 @@
 # Deployment Guide
 
-Guide for deploying HybridInference in production.
+Running HybridInference as a long-lived deployment: what starts, how to operate
+it, and how to reset it without losing (or accidentally keeping) data.
 
-## Quick Start (Docker)
+First-time setup — cloning, filling in `.env`, and the first `make up` — is in
+[Installation](installation.md#quick-start-with-docker). This page assumes the
+stack already comes up.
+
+## What the stack is
+
+`make up` starts three containers from `deploy/docker/docker-compose.yml`:
+
+| Service | Image / build | Published on |
+|---|---|---|
+| `backend` | built from `deploy/docker/Dockerfile.backend` | `${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8080}` |
+| `frontend` | built from `deploy/docker/Dockerfile.frontend` | `${FRONTEND_HOST:-0.0.0.0}:${FRONTEND_PORT:-3001}` |
+| `postgres` | `postgres:16` | `127.0.0.1:${DB_PORT:-5432}` |
+
+The frontend defaults to `0.0.0.0` so a reverse proxy on the host can reach it;
+the backend and the database default to loopback. All three join one bridge
+network defined in the same Compose file, on which the backend reaches the
+database as `postgres:5432` — `DB_HOST`/`DB_PORT` from `.env` control only the
+host-side port mapping, because the Compose file pins the container-internal
+values.
+
+Two more services exist in the same file but start only when their profile is
+named: `pgadmin` (profile `admin`) and `codex-oncall` (profile `oncall`).
+
+`frontend` and `codex-oncall` depend on `backend` with `condition:
+service_started`, not `service_healthy` — deliberately, so that a backend
+reporting unhealthy because its database logging is down does not stop the
+console from starting.
+
+### Putting it on the public internet
+
+Nothing in the stack terminates TLS, and this repository ships no reverse-proxy
+config to copy: certificates and the proxy in front of the two published ports
+are yours to supply. Point it at `${BACKEND_HOST}:${BACKEND_PORT}` and
+`${FRONTEND_HOST}:${FRONTEND_PORT}`.
+
+Which public paths the console serves itself and which it forwards to the
+backend is a separate question, and the answer is in the console's own
+`next.config.js` rather than in any proxy config. See
+[Edge and console routing](edge-and-console-routing.md).
+
+## Everyday operations
+
+All from the repository root:
 
 ```bash
-# 1. Clone and configure
-git clone https://github.com/HarvardMadSys/hybridInference.git
-cd hybridInference
-cp .env.example .env
-# Edit .env — fill in DB_PASSWORD, JWT_SECRET_KEY, API_KEY_SECRET, and provider API keys
-
-# 2. Start all services
-make up
-
-# 3. Verify
-make ps
-curl http://localhost:8080/health
+make up                  # start everything
+make down                # stop everything (data survives; see below)
+make restart             # restart everything
+make restart s=backend   # restart one service
+make ps                  # services and health status
+make logs                # tail all logs
+make logs s=backend      # tail one service
+make build               # rebuild images and restart
+make build s=frontend    # rebuild one service
 ```
 
-This starts 3 containers: backend (FastAPI), frontend (Next.js), and
-PostgreSQL. Backend and PostgreSQL bind to `127.0.0.1` by default; the
-frontend binds to `0.0.0.0` (override with the `FRONTEND_HOST` env var)
-so it can be reached by Nginx on the host. pgAdmin is available but
-requires the `admin` profile (see below).
+`make up` and `make build` first run the `docker-volumes` target, which creates
+the external volume `hybridinference_postgres_data` when it is missing.
 
-## Prerequisites
-
-- Docker Engine 24+ and Docker Compose v2+
-- User in the `docker` group (`sudo usermod -aG docker $USER`)
-- Nginx on the host for SSL termination (not containerized)
-
-## Service Architecture
-
-```
-Client ──▶ Cloudflare (CDN + DDoS) ──▶ Nginx (:443) ──┬──▶ backend  (:8080)
-                                                        └──▶ frontend (:3001)
-
-Docker internal network:
-  backend ──▶ postgres (:5432)
-  backend ──▶ host.docker.internal (GPU SSH tunnels on host)
-```
-
-## Common Operations
-
-All commands run from the project root via `make`:
+To start an optional profile, pass it on the `make` command line — a variable
+set there is exported into the environment of the recipe, and a shell variable
+outranks every `--env-file` in Compose:
 
 ```bash
-make up                  # Start all services
-make down                # Stop all services
-make restart             # Restart all services
-make restart s=backend   # Restart a single service
-make ps                  # Show running services and health status
-make logs                # Tail logs (all services)
-make logs s=backend      # Tail logs for one service
-make build               # Rebuild images and restart
-make build s=frontend    # Rebuild one service
+make up COMPOSE_PROFILES=admin
 ```
+
+`COMPOSE_PROFILES` is a comma-separated list, so `admin,oncall` starts both. It
+can also be set in `.env` (as `.env.example` notes), but the command line is the
+form to reach for when you want certainty about which profiles are active.
+
+### What a change actually requires
+
+Three different answers, and picking the wrong one looks like the change not
+taking effect:
+
+| You changed | Do this |
+|---|---|
+| A value in `.env` | `make up` — a container reads its `env_file` when it is *created*, so `docker compose restart` keeps the old environment |
+| A model registry or routing YAML | `make restart s=backend` — `config/` and `distributions/` are bind-mounted read-only, so no rebuild is needed |
+| A `NEXT_PUBLIC_*` or `AGENT_*` console value | `make build s=frontend` — see below |
+| Backend or frontend source | `make build`, or `make build s=<service>` |
+
+The console's identity and its `/agents` rewrites are Next.js **build args**
+(`deploy/docker/docker-compose.yml`, `frontend.build.args`), and Next resolves
+`rewrites()` at build time into `.next/routes-manifest.json`. Changing any
+`NEXT_PUBLIC_*` value or the `AGENT_*` URLs therefore takes a `make build
+s=frontend`; a value supplied only at container start is read by nothing, and
+the symptom is the old pages continuing to serve while `docker inspect` shows
+the new value. Adopting or rolling back those settings is therefore a rebuild,
+not a restart.
 
 ## Configuration
 
-### Environment Variables
+### Environment
 
-All secrets and configuration live in `.env` at the project root. See `.env.example` for
-the full list with comments. Key variables:
+Everything is in `.env` at the repository root; `.env.example` is the annotated
+list. Compose is invoked with `--env-file .env` and the backend service also
+loads it as `env_file`. The variables Compose itself requires, and the two
+secrets you should not leave blank, are in
+[Installation](installation.md#quick-start-with-docker).
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Yes | PostgreSQL credentials |
-| `JWT_SECRET_KEY` | Yes | JWT signing key (generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`) |
-| `API_KEY_SECRET` | Yes | HMAC key for API key hashing |
+### Config file resolution
 
-### Local GPU Endpoints
+There is no `config/models.yaml` or `config/routing.yaml` in this repository.
+`resolve_config_path` (`apps/backend/serving/config/distribution.py`) picks each
+file by precedence: an explicit `MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` /
+`ALERTS_CONFIG_PATH`, then an active distribution manifest, then the built-in
+defaults under `config/examples/`. The full rules, including why
+`DISTRIBUTION_CONFIG_MODE` defaults to `dark`, are in
+[Installation](installation.md#where-the-config-files-live).
 
-If you run local inference servers (sglang, vLLM) on the host or via SSH tunnels,
-`config/models.yaml` references them as `host.docker.internal:<port>`. This DNS name
-resolves to the host machine from inside Docker containers.
+Note that the Compose file passes these through explicitly:
 
-For bare-metal development without Docker, replace `host.docker.internal` with `localhost`.
-
-## Nginx and HTTPS
-
-Nginx runs on the host (not in Docker) to terminate TLS. The example config
-that used to ship under `deploy/nginx/` was removed from the
-repo; write a host-level site config yourself, then:
-
-```bash
-sudo nginx -t && sudo systemctl reload nginx
+```yaml
+ROUTING_CONFIG_PATH: ${ROUTING_CONFIG_PATH-}
+MODELS_CONFIG_PATH: ${MODELS_CONFIG_PATH-}
+DISTRIBUTION_CONFIG_PATH: ${DISTRIBUTION_CONFIG_PATH-}
 ```
 
-This assumes:
-- Backend: `127.0.0.1:8080`, Frontend: `127.0.0.1:3001`
-- HTTPS certificates from Let's Encrypt
+An `--env-file` alone does not put a variable into a container's environment;
+these lines are what carry it in. Losing one silently swaps a deployment's
+routing map or alert thresholds for the defaults — which is why tests pin them.
 
-### Cloudflare
+### Local inference servers
 
-Behind a CDN, two settings matter whichever one you use:
-- **SSL/TLS mode**: full verification to the origin
-- **Caching**: disabled for API paths (`/v1/*`) — streamed responses must not
-  be cached, and a cached completion is served to the wrong user
+The backend container reaches servers on the host through
+`host.docker.internal`, which the Compose file wires with
+`extra_hosts: host.docker.internal:host-gateway`. Write that address explicitly
+in the model registry:
 
-## Monitoring
-
-### Health Checks
-
-```bash
-curl http://localhost:8080/health
-# {"status":"healthy","routes_configured":17,"database_connected":true}
+```yaml
+route:
+  - kind: openai_compat
+    base_url: http://host.docker.internal:8001/v1
 ```
 
-### Alerting
+For a backend running directly on the host, use `localhost` instead. The gateway
+never rewrites provider URLs. See
+[Adding a local model](add-local-model.md).
 
-The backend ships with an in-process alert engine that posts to Slack
-directly. Configuration lives in `config/alerts.yaml`; rules and
-thresholds are described in `apps/backend/serving/observability/`.
-Set `ALERTS_ENABLED=true` and `SLACK_ALERTS_WEBHOOK_URL=...` in `.env`
-to enable.
+## Health checks
 
-For asynchronous read-only Codex investigation and threaded Slack results, see
-[Codex On-Call](codex-oncall.md). Keep the existing Slack webhook as
-a fallback during rollout.
+```bash
+curl -s http://localhost:8080/health
+```
+
+```json
+{
+  "status": "healthy",
+  "routes_configured": 3,
+  "database_configured": true,
+  "database_connected": true,
+  "stores": {
+    "operational_store": {"status": "ok", "backend": "postgres", "cache": "in_memory"},
+    "log_store": {"status": "ok", "backend": "postgres"}
+  }
+}
+```
+
+- `routes_configured` counts published route entries — one per model id in the
+  active registry, plus one per alias. It is whatever *your* registry defines.
+- `database_configured` distinguishes "this deployment asked for no database"
+  from "the database is down": with `DB_ENABLED=false` it is `false` and the
+  status is still `healthy`; with a database configured but unreachable at
+  startup, `/health` answers **503** with `"reason":
+  "database_unavailable_at_startup"`.
+- `status` becomes `degraded` — still HTTP 200 — when one configured store is
+  down but the other is serving. That shape is deliberate: the container
+  `HEALTHCHECK` uses `curl -f /health`, so returning 503 for partial degradation
+  would tear down backends that are still answering requests.
+
+Use `/health/ready` for a strict readiness probe: it applies AND-logic across
+configured stores and returns 503 unless every one of them is up.
+`/health/deep` additionally reports per-endpoint health.
+
+## Alerting
+
+The backend has an in-process alert engine that posts to a Slack webhook. It is
+off unless you turn it on:
+
+```bash
+ALERTS_ENABLED=true
+SLACK_ALERTS_WEBHOOK_URL=https://hooks.slack.com/services/...
+```
+
+If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to `SLACK_WEBHOOK_URL`, so
+one webhook can serve both code paths.
+
+Rules and thresholds are a deployment's own; this repository ships no alerts
+file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and the built-in
+thresholds apply. The rule types and evaluation live in
+`apps/backend/serving/observability/`.
+
+For asynchronous read-only Codex investigation of alerts, see
+[Codex On-Call](codex-oncall.md).
 
 ## Database
 
-PostgreSQL runs in Docker with data persisted to a named volume (`hybridinference_postgres_data`).
-
-To access the database directly:
-
-```bash
-docker exec -it hybridinference-postgres psql -U $DB_USER -d $DB_NAME
-```
-
-For pgAdmin (optional):
+PostgreSQL 16 runs in the `postgres` service with its data in the Docker volume
+`hybridinference_postgres_data`. A psql shell:
 
 ```bash
-# Start with admin profile
-docker compose -f deploy/docker/docker-compose.yml --env-file .env --profile admin up -d
-# Access at http://localhost:5050
+docker exec -it hybridinference-postgres psql -U "${DB_USER}" -d "${DB_NAME}"
 ```
 
-A deployment that wants pgAdmin reachable through the console instead sets the
-profile in an env file the deploy reads, rather than passing the flag by hand —
-`distributions/freeinference/deploy/compose.env` is the worked example. The
-console then serves it at `/pgadmin/`, gated on an admin session by
-`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`.
+Schema details are in [Database](database.md).
 
-Two things to know before relying on it:
+### pgAdmin (optional)
 
-- Whether pgAdmin **also** asks for a login is a per-host choice, and the two
-  defaults disagree: the Compose service falls back to
-  `PGADMIN_CONFIG_SERVER_MODE=False`, which serves it with no login at all,
-  while `.env.example` suggests `True`, which turns pgAdmin's own login on.
-  `True` is the safer of the two — it puts a second gate behind the console's.
-  The route handler assumes it is the only one either way, and denies on every
-  unexpected condition, including a backend it cannot reach.
-- The deploy scripts do not rely on `--env-file` to carry that profile:
-  Compose ignored `COMPOSE_PROFILES` there from 2.27.1 until the fix for
-  [docker/compose#11856](https://github.com/docker/compose/issues/11856). They
-  read the overlay themselves and export the union of it and whatever the
-  host's `.env` selects, so a host that also runs `oncall` keeps it. Running
-  Compose by hand is the exception — on an affected version a host `.env` that
-  sets `COMPOSE_PROFILES` wins outright, so list every profile you want. The
-  deploy scripts warn when pgAdmin ends up not running either way.
+```bash
+make up COMPOSE_PROFILES=admin
+```
 
-See [Database](database.md) for schema details.
+pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so an SSH
+tunnel to that port is enough to reach it. The console can also proxy it at
+`/pgadmin/`, gated on an admin session by
+`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which denies on every
+unexpected condition, including a backend it cannot reach.
+
+One thing to get right: whether pgAdmin *also* asks for its own login is set by
+`PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The Compose service
+falls back to `False`, which serves pgAdmin with no login at all; `.env.example`
+suggests `True`, which turns pgAdmin's own login on behind the console's gate.
+`True` is the safer of the two.
 
 ## Troubleshooting
 
-### Service won't start
+### A service will not start
 
 ```bash
-make logs s=backend      # Check service-specific logs
-make ps                  # Check health status
+make logs s=backend
+make ps
 ```
 
-Common issues:
-- Missing required env vars in `.env` → compose will error with `variable X is missing a value`
-- Port already in use → check `ss -tlnp | grep <port>`
-- Database connection failed → ensure postgres is healthy: `make ps`
+- `variable X is missing a value` — Compose stopped at interpolation before
+  starting anything. `DB_NAME`, `DB_USER` and `DB_PASSWORD` are declared
+  required.
+- Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT`.
+- Database connection failed — check `make ps` for the `postgres` health status.
 
-### Rebuild after code changes
+### Resetting the stack
 
-```bash
-make build               # Rebuild all images
-make build s=backend     # Rebuild just backend
-```
-
-### Full reset (preserves data)
+**Stop and start, keeping data:**
 
 ```bash
 make down && make up
 ```
 
-### Full reset (destroy data)
+**Destroy the database and start clean.** `docker compose down -v` does *not* do
+this. `postgres_data` is declared `external: true` in
+`deploy/docker/docker-compose.yml`, and Compose never removes an external
+volume — `down -v` returns success and leaves it fully intact, so `make up`
+comes back on exactly the same data. Remove it by name:
 
 ```bash
-docker compose -f deploy/docker/docker-compose.yml --env-file .env down -v
-make up
+make down
+docker volume rm hybridinference_postgres_data
+make up   # docker-volumes recreates it empty; Postgres re-initialises
 ```
 
-> **Warning**: `-v` deletes all named volumes including the database.
+```{warning}
+`docker volume rm` is irreversible and takes every account, API key and request
+log with it. Take a `pg_dump` first if any of it matters.
+```
+
+pgAdmin's own volume (`hybridinference_pgadmin_data`) and the on-call relay's
+(`hybridinference_codex_oncall_data`) are ordinary local volumes, so
+`docker compose ... down -v` does remove those.
+
+### Rebuilding after code changes
+
+```bash
+make build               # all images
+make build s=backend     # one service
+```
