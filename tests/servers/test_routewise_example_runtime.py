@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -60,6 +61,13 @@ def _commented_reference_routes() -> list[dict]:
     return routes
 
 
+def _free_port() -> int:
+    """Reserve a port the OS is not currently using, then release it."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
 def _start_example_fixture(port: int, response_text: str, delay_ms: float):
     """Run the example's own provider fixture in-process on loopback."""
     spec = importlib.util.spec_from_file_location(
@@ -86,29 +94,56 @@ def _start_example_fixture(port: int, response_text: str, delay_ms: float):
     return server
 
 
+def _rebind_example_to(text: str, ports: list[int]) -> str:
+    """Point the shipped example's upstreams at ports this process owns.
+
+    The example hardcodes 18351/18352 because a reader copy-pasting the README
+    needs URLs that already work. A test cannot take those ports: four runner
+    services share each CI host and `concurrency:` is keyed on the ref, so two
+    unrelated pull requests can be running this file at the same moment.
+    Binding them anyway would turn somebody else's CI red; skipping on a busy
+    port would turn the guard off exactly there. So the test rewrites the URLs
+    and asserts it rewrote precisely the lines it meant to -- the substitution
+    tracks the shipped file, and a route that moves or is renamed is caught
+    here rather than silently untested.
+    """
+    lines = text.splitlines()
+    rewritten, hits = [], 0
+    for line in lines:
+        match = re.match(r"^(\s*base_url: http://127\.0\.0\.1:)(\d+)(/v1\s*)$", line)
+        if match and hits < len(ports):
+            rewritten.append(f"{match.group(1)}{ports[hits]}{match.group(3)}")
+            hits += 1
+        else:
+            rewritten.append(line)
+    assert hits == len(ports), (
+        f"expected {len(ports)} loopback base_url lines in the example, rewrote {hits}. "
+        "The routes moved, and this test is no longer driving what it thinks it is."
+    )
+    return "\n".join(rewritten) + "\n"
+
+
 @contextlib.contextmanager
-def _example_providers():
-    """Bring up the two upstreams the example's base URLs point at."""
+def _example_providers(tmp_path: Path):
+    """Start the two upstreams and yield an example config pointed at them."""
     routes = _example_model()["route"]
-    ports = [int(urlparse(route["base_url"]).port) for route in routes]
+    assert len(routes) == 2, "the demo needs exactly two upstreams to choose between"
+    for route in routes:
+        parsed = urlparse(route["base_url"])
+        assert parsed.hostname == "127.0.0.1", (
+            f"the example must stay runnable with no account: {route['base_url']}"
+        )
+
+    ports = [_free_port(), _free_port()]
     servers = []
     try:
         for port, (text, delay) in zip(
             ports, [("ROUTED_TO_PREMIUM", 0.0), ("ROUTED_TO_BUDGET", 400.0)], strict=True
         ):
-            try:
-                servers.append(_start_example_fixture(port, text, delay))
-            except OSError as exc:  # pragma: no cover - environment, not logic
-                # Deliberately not a skip. These ports are named by the shipped
-                # example, and a skip here is indistinguishable from a pass: the
-                # guard silently stops guarding on exactly the machines where
-                # something else is already listening.
-                raise RuntimeError(
-                    f"port {port} is in use, so the RouteWise example's upstream "
-                    f"cannot be started and its guarantees cannot be checked. "
-                    f"Free it and re-run: {exc}"
-                ) from exc
-        yield
+            servers.append(_start_example_fixture(port, text, delay))
+        config = tmp_path / "models.routewise.bound.yaml"
+        config.write_text(_rebind_example_to(_EXAMPLE.read_text(), ports))
+        yield config
     finally:
         for server in servers:
             server.shutdown()
@@ -340,14 +375,14 @@ def _boot_and_ask(config: Path, expect: str, deadline_sec: float = 25.0) -> dict
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def _example_with_alpha(tmp_path: Path, alpha: float, probe_interval: float) -> Path:
-    """The shipped example with only budget_alpha and the probe interval moved.
+def _example_with_alpha(source: Path, tmp_path: Path, alpha: float, probe_interval: float) -> Path:
+    """`source` with only budget_alpha and the probe interval moved.
 
     The interval is shortened so the test does not sit through the deployment
     default; whether probing works at all is what is under test, and the
     shipped value is asserted separately.
     """
-    text = _EXAMPLE.read_text()
+    text = source.read_text()
     text = text.replace("      budget_alpha: 0.0", f"      budget_alpha: {alpha}", 1)
     text = text.replace(
         "      routewise_probe_interval_sec: 5.0",
@@ -377,9 +412,9 @@ class TestRouteWiseExampleProbeLifecycle:
         assert 0 < float(params["routewise_probe_interval_sec"]) <= 30.0
 
     def test_alpha_zero_serves_budget_and_a_restart_at_one_serves_premium(self, tmp_path):
-        with _example_providers():
+        with _example_providers(tmp_path) as bound:
             cheap = _boot_and_ask(
-                _example_with_alpha(tmp_path, 0.0, probe_interval=1.0),
+                _example_with_alpha(bound, tmp_path, 0.0, probe_interval=1.0),
                 expect="ROUTED_TO_BUDGET",
             )
             assert cheap["error"] is None, cheap["error"]
@@ -390,7 +425,7 @@ class TestRouteWiseExampleProbeLifecycle:
             # A separate process: the restart the README asks for, with none of
             # the first run's measurements carried over.
             fast = _boot_and_ask(
-                _example_with_alpha(tmp_path, 1.0, probe_interval=1.0),
+                _example_with_alpha(bound, tmp_path, 1.0, probe_interval=1.0),
                 expect="ROUTED_TO_PREMIUM",
             )
             assert fast["error"] is None, fast["error"]
@@ -414,8 +449,9 @@ class TestExampleFixtureLatencyContract:
         import urllib.request
 
         delay_ms = 400.0
-        immediate = _start_example_fixture(18361, "IMMEDIATE", 0.0)
-        delayed = _start_example_fixture(18362, "DELAYED", delay_ms)
+        fast_port, slow_port = _free_port(), _free_port()
+        immediate = _start_example_fixture(fast_port, "IMMEDIATE", 0.0)
+        delayed = _start_example_fixture(slow_port, "DELAYED", delay_ms)
         try:
 
             def _timed(port: int) -> float:
@@ -432,8 +468,8 @@ class TestExampleFixtureLatencyContract:
                     response.read()
                 return (time.monotonic() - started) * 1000.0
 
-            fast_ms = _timed(18361)
-            slow_ms = _timed(18362)
+            fast_ms = _timed(fast_port)
+            slow_ms = _timed(slow_port)
         finally:
             for server in (immediate, delayed):
                 server.shutdown()
