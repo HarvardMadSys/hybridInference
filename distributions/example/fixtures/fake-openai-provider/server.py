@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -70,6 +71,7 @@ class FakeHandler(BaseHTTPRequestHandler):
     response_text = RESPONSE_TEXT
     expected_model: str | None = None
     expected_api_key: str | None = None
+    ttft_delay_ms: float = 0.0
 
     def log_message(self, fmt: str, *args: Any) -> None:
         """Keep example output quiet; the gateway logs the routed request."""
@@ -112,6 +114,13 @@ class FakeHandler(BaseHTTPRequestHandler):
         if self.expected_model is not None and payload.get("model") != self.expected_model:
             self._send_json(400, {"error": {"message": "Unexpected provider model"}})
             return
+
+        # A deterministic stand-in for provider TTFT. Applied before either
+        # response path so streaming and non-streaming see the same delay, and
+        # so a RouteWise example can give two upstreams distinguishable latency
+        # without depending on real network conditions.
+        if self.ttft_delay_ms > 0:
+            time.sleep(self.ttft_delay_ms / 1000.0)
 
         if payload.get("stream"):
             self._send_stream(payload)
@@ -162,10 +171,17 @@ def main() -> None:
     parser.add_argument("--response-text", default=RESPONSE_TEXT)
     parser.add_argument("--expected-model")
     parser.add_argument("--expected-api-key")
+    parser.add_argument(
+        "--ttft-delay-ms",
+        type=float,
+        default=0.0,
+        help="Deterministic delay before the first response byte, in milliseconds.",
+    )
     args = parser.parse_args()
     FakeHandler.response_text = args.response_text
     FakeHandler.expected_model = args.expected_model
     FakeHandler.expected_api_key = args.expected_api_key
+    FakeHandler.ttft_delay_ms = args.ttft_delay_ms
     server = ThreadingHTTPServer((args.host, args.port), FakeHandler)
     server.daemon_threads = True
     print(f"OpenAI-compatible example provider listening on {args.host}:{args.port}", flush=True)

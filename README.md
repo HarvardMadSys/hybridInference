@@ -1,6 +1,6 @@
 # HybridInference
 
-HybridInference is an open-source LLM inference gateway for routing requests across local inference servers and remote OpenAI-compatible providers. It powers FreeInference, but it can also be self-hosted as a standalone gateway for teams that need provider fallback, local/remote routing, observability, and a familiar API surface.
+HybridInference is an open-source multi-provider LLM gateway, and the production reference integration of [RouteWise](#routewise), the cost--latency routing system from our EuroSys '27 paper. It routes requests across local inference servers and remote OpenAI-compatible providers, and turns RouteWise's per-request decision into a deployable system: provider adapters, an OpenAI-compatible API, health-aware fallback, observability, configuration, and a control plane. It powers FreeInference, and can be self-hosted as a standalone gateway.
 
 ## Quickstart
 
@@ -69,8 +69,87 @@ variables point its route at your local OpenAI-compatible server.
 - Exposes an OpenAI-compatible API for chat/completions workflows.
 - Routes traffic across local backends such as vLLM, SGLang, and Ollama.
 - Connects to remote providers through provider-specific and OpenAI-compatible adapters.
+- Runs [RouteWise](#routewise), a cost- and latency-aware router that picks
+  between providers serving the same model under an explicit cost budget.
 - Supports weighted routing, health-aware fallback, circuit breaking, and per-model routing configuration.
 - Includes a FastAPI backend, a Next.js dashboard, storage integrations, operational tooling, and documentation sites.
+
+## RouteWise
+
+**RouteWise** is the router that decides which provider serves each request:
+given a cost budget you set, it picks a point on the cost--latency Pareto
+frontier across the providers that can serve the model.
+
+`router: fixed` splits traffic by weights you choose. `router: routewise`
+instead solves a small cost-budgeted linear program per request over every
+provider that can serve the model, using their prices and the time-to-first-token
+it has measured from each one, samples that solution to pick one, and can
+dispatch a hedged backup when the primary looks unlikely to meet the latency
+target. One knob, `budget_alpha`, moves the policy from "never spend more than
+the cheapest provider" to "spend up to the dearest one if it buys latency".
+
+RouteWise is developed by the [Harvard MadSys Lab](https://juncheng.seas.harvard.edu/)
+and published separately as the MIT-licensed
+[`llm-routewise`](https://github.com/HarvardMadSys/RouteWise) library, which
+this gateway takes as a required dependency. The library is deliberately
+gateway-agnostic: it performs no network I/O and reads no credentials, so any
+application can use it to choose a provider and report the outcome back.
+Everything needed to run that decision against real providers — adapters,
+credentials, dispatch, health, hedged execution, accounting — is what this
+repository adds.
+
+### Try it
+
+Two copies of the bundled example fixture stand in for two providers serving
+one model: premium answers immediately and costs more, budget is cheap and
+400 ms slower. No account, no database.
+
+```bash
+F=distributions/example/fixtures/fake-openai-provider/server.py
+uv run python $F --port 18351 --response-text ROUTED_TO_PREMIUM &
+uv run python $F --port 18352 --response-text ROUTED_TO_BUDGET --ttft-delay-ms 400 &
+
+PYTHONPATH=apps/backend \
+  MODELS_CONFIG_PATH=config/examples/models.routewise.yaml \
+  ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
+  DB_ENABLED=false USER_AUTH_ENABLED=false \
+  uv run uvicorn serving.servers.app:app --port 8080
+```
+
+Give it about ten seconds to measure both endpoints, then ask for a completion.
+The reply text names the provider RouteWise picked:
+
+```bash
+curl localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "routewise-demo", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+The example ships `budget_alpha: 0.0`, so every reply is `ROUTED_TO_BUDGET`:
+the LP may not spend more than the cheapest eligible provider. Set it to `1.0`
+in `config/examples/models.routewise.yaml`, restart, and — after another ten
+seconds, since the restart drops the measurements with the process — every
+reply becomes `ROUTED_TO_PREMIUM`: the wider cost budget lets the policy buy
+the 400 ms. That one edit is the cost/latency tradeoff the paper is about.
+
+That registry doubles as the annotated reference for every RouteWise option;
+the [routing guide](docs/developer/routing.md#routewise-cost-aware-routing)
+explains the configuration contract.
+
+### Citation
+
+The design is described in *RouteWise: Latency--Cost Optimization for
+Multi-Provider LLM Routing*, to appear at
+[EuroSys '27](https://2027.eurosys.org/):
+
+```bibtex
+@inproceedings{tian2027routewise,
+  title     = {{RouteWise}: Latency--Cost Optimization for Multi-Provider LLM Routing},
+  author    = {Muxin Tian and Haoran Ni and Yiyan Zhai and Yangsun Park and Juncheng Yang},
+  booktitle = {Proceedings of the 22nd European Conference on Computer Systems (EuroSys '27)},
+  year      = {2027}
+}
+```
 
 ## Repository Map
 

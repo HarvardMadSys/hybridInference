@@ -1,0 +1,234 @@
+# RouteWise reference registry: cost-aware routing across two providers.
+#
+# RouteWise is the gateway's cost- and latency-aware router, published as the
+# MIT-licensed `llm-routewise` library and described in "RouteWise:
+# Latency--Cost Optimization for Multi-Provider LLM Routing" (EuroSys '27).
+# `router: fixed` splits traffic by static weights; `router: routewise` solves
+# a small cost-budgeted LP per request instead, over the providers that can
+# serve the model, using their prices and the TTFT it has measured from each
+# endpoint. It then samples the LP's weight vector to pick one.
+#
+# Usage (no provider account required). The bundled example fixture is an
+# OpenAI-compatible server, so two copies of it stand in for two providers
+# that serve the same model at different prices and speeds -- premium is
+# dearer and answers immediately, budget is cheap and 400 ms slower:
+#
+#   F=distributions/example/fixtures/fake-openai-provider/server.py
+#   python $F --port 18351 --response-text ROUTED_TO_PREMIUM &
+#   python $F --port 18352 --response-text ROUTED_TO_BUDGET --ttft-delay-ms 400 &
+#
+#   PYTHONPATH=apps/backend \
+#     MODELS_CONFIG_PATH=config/examples/models.routewise.yaml \
+#     ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
+#     DB_ENABLED=false USER_AUTH_ENABLED=false \
+#     uv run uvicorn serving.servers.app:app --port 8080
+#
+# Wait ~10 s for the first active probe cycle to measure both endpoints, then:
+#
+#   curl localhost:8080/v1/chat/completions \
+#     -H 'Content-Type: application/json' \
+#     -d '{"model": "routewise-demo", "messages": [{"role": "user", "content": "hi"}]}'
+#
+# The reply text names the provider RouteWise chose. `budget_alpha` below is
+# the knob: at 0.0 the LP may spend no more than the cheapest eligible
+# provider and every reply is ROUTED_TO_BUDGET; set it to 1.0 and restart, and
+# every reply is ROUTED_TO_PREMIUM, because the wider budget lets the LP buy
+# the 400 ms. Latency profiles live in the process, so wait out another probe
+# cycle after each restart before reading the result.
+#
+# That contrast depends on RouteWise having TTFT evidence for both endpoints,
+# which is why this example turns the active prober on. Without it nothing
+# ever measures the endpoint the policy is not already using: the two
+# unprofiled endpoints tie on latency, `cost_tiebroken_objective` breaks the
+# tie on price, and the LP returns a one-hot solution on the budget provider
+# at every alpha. Real deployments usually get that evidence from live traffic
+# and from `db_bootstrap_enabled` replaying recent `api_logs` at startup, and
+# keep the prober on its defaults (every 300 s, idle endpoints only) rather
+# than the aggressive settings used here.
+#
+# The loopback URLs and key below are literals so this file runs unedited. For
+# a real provider, substitute an environment variable: `base_url` and
+# `api_key` accept the bare `${VAR}` form only -- the registry's expansion does
+# not understand `${VAR:-default}`, and a model whose credential does not
+# resolve is skipped with an empty /v1/models.
+#
+# See docs/developer/routing.md for the full RouteWise configuration contract.
+
+models:
+  - id: routewise-demo
+    name: RouteWise Demo (two providers, one model)
+    provider: openai_compat
+    context_length: 8192
+    max_output_length: 2048
+    supports_tools: false
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    # Model-level catalog pricing. RouteWise routes on the per-route
+    # `pricing:` blocks below and ignores this one.
+    #
+    # GET /v1/models reports neither faithfully when routes disagree: it
+    # renders whichever route is listed first, so this model advertises the
+    # premium prices even while RouteWise is serving from the budget route.
+    # Treat the catalog price as a label, not as what a request cost.
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+
+    # Opt this model into RouteWise. Without it the model uses `default_router`
+    # from routing.yaml.
+    router: routewise
+
+    # Algorithm knobs only. Resource semantics (quota windows, concurrency
+    # slots) are route-level configuration -- see the commented blocks below.
+    #
+    # Note: `${VAR}` interpolation does NOT reach inside router_params. Every
+    # value here is parsed as its declared type -- number, bool, string enum
+    # such as `latency_hedge_mode`, or list such as
+    # `envelope_bootstrap_donor_models` -- so all of them must be literals.
+    router_params:
+      # LP cost budget, interpolating c_min + alpha * (c_max - c_min).
+      # 0.0 = never spend more than the cheapest eligible provider.
+      # 1.0 = free to spend up to the most expensive one to cut latency.
+      budget_alpha: 0.0
+
+      # Active latency probing. Off by default; this example needs it so the
+      # endpoint the policy is not using still gets measured. The prober runs
+      # in-process and needs no database -- persisting samples to an
+      # operational store is an optimization, not a precondition. A real
+      # deployment wants the defaults: every 300 s, idle endpoints only.
+      routewise_probe_enabled: true
+      routewise_probe_interval_sec: 5.0
+      routewise_probe_idle_only: false
+
+      # Every remaining option, with its built-in default. Uncomment to tune.
+      #
+      # Determinism and startup state
+      # random_seed: null                   # fixes the LP-weight sampler
+      # reference_api_price: null
+      # db_bootstrap_enabled: true          # warm state from recent api_logs
+      # db_bootstrap_max_rows: 50000
+      # stateful_providers_single_worker_only: true
+      #
+      # Output-length estimator (drives predicted completion cost)
+      # output_default_tokens: 512.0
+      # output_min_bucket_samples: 3
+      # output_min_model_samples: 3
+      # output_min_global_samples: 3
+      #
+      # Quota accounting and the cost envelope behind the quota shadow price
+      # quota_snapshot_refresh_interval_sec: 60.0
+      # envelope_window_hours: 24
+      # envelope_lower_percentile: 10.0
+      # envelope_upper_percentile: 90.0
+      # envelope_min_samples: 1
+      # envelope_bootstrap_donor_models: null
+      #
+      # Latency profile and the best-effort TTFT target
+      # latency_slo_sec: 3.0
+      # latency_window_sec: 900.0
+      # latency_history_prior_window_sec: 86400.0
+      # latency_max_samples_per_profile: 5000
+      # latency_min_samples: 10
+      # latency_unprofiled_ttft_ms: 5000.0
+      # latency_hedge_mode: disabled        # or: probability_target
+      # fallback_mode: policy               # or: strict
+      #
+      # Remaining probe settings
+      # routewise_probe_timeout_sec: 30.0
+      # routewise_probe_idle_threshold_sec: 900.0
+      # routewise_probe_max_concurrency: 1
+      #
+      # Prefix-cache-aware cost adjustment
+      # prefix_cache_cost_adjustment_enabled: false
+
+    route:
+      # Premium: answers immediately, costs more.
+      #
+      # RouteWise profiles latency per endpoint_id, which the registry derives
+      # as `{model_id}:{location}`: `local-{port}` for a local host (here
+      # `routewise-demo:local-18351`), otherwise a name taken from the
+      # hostname for the generic adapter kinds, or `{kind}-api` for the rest.
+      # Only an edit that changes that derived part renames the endpoint and
+      # restarts its latency profile -- a new port here, a new vendor hostname
+      # in production; moving between local hosts on the same port does not.
+      # Static YAML cannot override it: `route_id:` is an admin-API field and
+      # is ignored in this file.
+      - kind: openai_compat
+        weight: 1.0
+        base_url: http://127.0.0.1:18351/v1
+        api_key: example-local-key
+        provider_model_id: example-upstream
+        # Omitted `provider_type:` defaults to on_demand -- billed per token,
+        # no capacity ceiling. USD per 1M tokens.
+        #
+        # Quote these. RouteWise parses either form, but the same values reach
+        # the catalog schema behind GET /v1/models, which requires strings: a
+        # bare number boots and serves completions, then 500s the model list.
+        pricing:
+          prompt: "3.00"
+          completion: "12.00"
+
+      # Budget: 400 ms slower, much cheaper.
+      - kind: openai_compat
+        weight: 1.0
+        base_url: http://127.0.0.1:18352/v1
+        api_key: example-local-key
+        provider_model_id: example-upstream
+        pricing:
+          prompt: "0.10"
+          completion: "0.40"
+
+      # The other two provider kinds RouteWise prices. Both are route-level
+      # because they describe a contract with a provider, not an algorithm
+      # setting. The blocks below mirror the shape a real deployment uses.
+      #
+      # A prepaid subscription, drawn down until the window resets.
+      # `quota_source` is a selector, not a fetcher: RouteWise matches all
+      # three of `provider` / `usage_label` / `unit` exactly against the usage
+      # records a built-in provider fetcher returns, and only two fetchers are
+      # registered (`ProviderQuotaSnapshotStore` in
+      # routing/routewise/quota.py): `chutes` and `minimax`.
+      #
+      # The `kind:` and the credential are part of that contract. Each quota
+      # fetcher discovers its own keys by provider -- `fetch_chutes` looks for
+      # `CHUTES_API_KEY` and for keys bound to `chutes` routes -- so a route
+      # served through the generic `openai_compat` adapter under an unrelated
+      # key never joins that pool. Inference would still authenticate, and the
+      # quota snapshot would sit at `not_configured` forever. Match the kind to
+      # the provider, and use the provider's own key variable.
+      #
+      # `usage_label` is the fetcher's own label string, not a name you pick:
+      # the Chutes fetcher emits exactly "Daily requests". A source that never
+      # resolves leaves the route unready and skipped, with nothing logged --
+      # there is no mismatch warning -- so copy these rather than invent them.
+      # - kind: chutes
+      #   weight: 1.0
+      #   base_url: ${CHUTES_BASE_URL}
+      #   api_keys:
+      #     - ${CHUTES_API_KEY}
+      #   provider_model_id: "SomeOrg/Some-Model"
+      #   provider_type: quota
+      #   quota_pool: chutes-demo-daily    # share one plan across routes
+      #   quota:
+      #     limit: 5000                    # cross-checks the reported limit
+      #   quota_source:
+      #     provider: chutes
+      #     usage_label: "Daily requests"
+      #     unit: requests
+      #
+      # A fixed number of in-flight requests; ineligible while its slots are
+      # full rather than billed per token. No usage API is involved, so any
+      # adapter kind works and the credential is only used for inference.
+      # - kind: featherless
+      #   weight: 1.0
+      #   base_url: ${FEATHERLESS_BASE_URL}
+      #   api_keys:
+      #     - ${FEATHERLESS_API_KEY}
+      #   provider_model_id: "SomeOrg/Some-Model"
+      #   provider_type: concurrency
+      #   concurrency_pool: featherless-demo
+      #   concurrency:
+      #     limit: 1
