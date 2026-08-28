@@ -35,7 +35,7 @@ from pathlib import Path
 
 from serving.rag.chunker import Chunk, chunk_markdown
 from serving.rag.config import EMBEDDER_MODES, RagSettings, load_rag_settings
-from serving.rag.embedder import build_ingest_embedder, recorded_model_name
+from serving.rag.embedder import build_ingest_embedder, recorded_dim, recorded_model_name
 from serving.rag.store import VectorStore, index_document_problem
 
 
@@ -133,6 +133,21 @@ def check_index(settings: RagSettings) -> int:
         print(
             f"embedder mode drift: index={data.get('embedder_mode')!r} "
             f"settings={settings.embedder_mode!r}",
+            file=sys.stderr,
+        )
+        return 1
+
+    expected_dim = recorded_dim(mode=settings.embedder_mode)
+    if expected_dim is not None and data["dim"] != expected_dim:
+        # An index can be entirely self-consistent — a coherent dim with
+        # matching embeddings, real ids and texts — and still not be what this
+        # builder produces. The serving path trusts the recorded dim and embeds
+        # the query in that space (`servers/routers/rag.py`), so retrieval
+        # "works" while running in a feature space nothing here would generate.
+        # Only asked where the answer is knowable offline: a gateway index's
+        # dimension belongs to the remote model.
+        print(
+            f"embedding dim drift: index={data['dim']} settings would record {expected_dim}",
             file=sys.stderr,
         )
         return 1

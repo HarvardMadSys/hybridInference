@@ -22,7 +22,12 @@ import pytest
 
 from serving.rag import ingest
 from serving.rag.config import EMBEDDER_MODES, RagSettings, load_rag_settings
-from serving.rag.embedder import build_ingest_embedder, recorded_model_name
+from serving.rag.embedder import (
+    HashEmbedder,
+    build_ingest_embedder,
+    recorded_dim,
+    recorded_model_name,
+)
 from serving.rag.pipeline import format_context, sources_payload
 from serving.rag.store import VectorStore, index_document_problem
 
@@ -785,3 +790,84 @@ def test_text_that_cannot_be_encoded_is_unreadable(tmp_path, capsys, value):
     assert "not UTF-8 encodable" in capsys.readouterr().err
     with pytest.raises(ValueError):
         VectorStore.load(settings.index_path)
+
+
+# --- Internally valid, but not what this builder makes -----------------------
+#
+# The third direction, and the one the other two are blind to by construction:
+#
+#   the hostile search   corrupts a built index  -> finds a validator too LAX
+#   the round trip       builds and never edits  -> finds a validator too STRICT
+#   this                 builds a DIFFERENT but coherent index
+#                                                -> finds "runs, but is not ours"
+#
+# An index can be entirely self-consistent — coherent dim, matching embeddings,
+# real ids and texts — and still be built by an embedder this checkout would
+# not produce. It loads, it scores, and it retrieves in a feature space nothing
+# here generates. That is drift, not a fault: the answer is to rebuild.
+
+
+def _rebuild_in_another_space(settings: RagSettings, dim: int) -> None:
+    """Rewrite the index coherently at a different dimension."""
+    data = json.loads(settings.index_path.read_text(encoding="utf-8"))
+    other = HashEmbedder(dim=dim, model=data["embed_model"])
+    data["dim"] = dim
+    for record in data["records"]:
+        record["embedding"] = other.embed_query(record["text"])
+    settings.index_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+@pytest.mark.parametrize("dim", [64, 128, 512])
+def test_a_coherent_index_in_another_dimension_is_drift(tmp_path, capsys, dim):
+    """Self-consistent is not the same as current.
+
+    Nothing here is malformed: `index_document_problem` passes it, `load`
+    accepts it, and `servers/routers/rag.py` embeds the query at the recorded
+    dimension so retrieval runs. It is simply not the space this builder makes.
+    """
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons about things.\n")
+    _build(settings)
+    assert ingest.check_index(settings) == 0
+
+    _rebuild_in_another_space(settings, dim)
+    document = json.loads(settings.index_path.read_text(encoding="utf-8"))
+    assert index_document_problem(document) is None, "the index must stay well-formed"
+    assert VectorStore.load(settings.index_path).dim == dim
+
+    assert ingest.check_index(settings) == 1
+    assert "embedding dim drift" in capsys.readouterr().err
+    assert _run_check(settings).returncode == 1
+
+
+@pytest.mark.parametrize("mode", sorted(EMBEDDER_MODES))
+def test_recorded_dim_matches_what_a_build_would_write(tmp_path, mode):
+    """Pin the expected spec to the builder, and pin gateway as unknowable.
+
+    Hardcoding 1024 for bge-m3 would be a number that goes stale the first time
+    the deployment changes embedding model, and `--check` would then report
+    drift on every correct index. The honest answer offline is None.
+    """
+    expected = recorded_dim(mode=mode)
+    if mode == "gateway":
+        assert expected is None
+        return
+
+    settings = _settings(tmp_path, embedder_mode=mode)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons about things.\n")
+    _build(settings)
+    written = json.loads(settings.index_path.read_text(encoding="utf-8"))
+    assert written["dim"] == expected
+    assert ingest.check_index(settings) == 0
+
+
+def test_a_gateway_index_is_not_judged_on_its_dimension(tmp_path):
+    """Whatever dimension the remote model returned has to be accepted."""
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons about things.\n")
+    _build(settings)
+    _rebuild_in_another_space(settings, 1024)
+    _mangle(settings, lambda d: d.update(embedder_mode="gateway", embed_model="bge-m3"))
+
+    gateway = replace(settings, embedder_mode="gateway", embed_model="bge-m3")
+    assert ingest.check_index(gateway) == 0

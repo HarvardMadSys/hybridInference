@@ -152,3 +152,18 @@ def recorded_model_name(*, mode: str, embed_model: str) -> str:
     if mode == "hash":
         return HashEmbedder().model
     return embed_model
+
+
+def recorded_dim(*, mode: str) -> int | None:
+    """Name the ``dim`` a build with this mode would record, when it is knowable.
+
+    ``None`` means "not knowable without embedding": a gateway index's dimension
+    is whatever the remote model returns, and guessing it offline would be a
+    hardcoded number that goes stale the first time a model changes. The hash
+    embedder's dimension is a property of this code, so it is knowable — and
+    taken from the embedder rather than restated, for the same reason
+    :func:`recorded_model_name` is.
+    """
+    if mode == "hash":
+        return HashEmbedder().dim
+    return None
