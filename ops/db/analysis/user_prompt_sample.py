@@ -13,7 +13,7 @@ dedicated ``prompt`` column, falling back to the ``messages`` copy that older ro
 still keep inside ``request_payload``.
 
 Usage:
-    python ops/db/analysis/user_prompt_sample.py fred@mccullough.digital --model minimax
+    python ops/db/analysis/user_prompt_sample.py user@example.com --model minimax
     python ops/db/analysis/user_prompt_sample.py a@x.com --limit 20 --max-chars 800
     python ops/db/analysis/user_prompt_sample.py a@x.com --json
 """
