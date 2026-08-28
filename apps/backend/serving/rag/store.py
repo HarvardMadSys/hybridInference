@@ -64,12 +64,14 @@ def _unscorable_embedding(embedding: list[Any]) -> str | None:
         norm += component * component
         if not math.isfinite(norm):
             return f"has a squared norm that overflows by position {position}"
-    if norm == 0.0:
-        # `cosine_similarity` returns 0.0 on a zero-norm vector, so this record
-        # can never be retrieved by any query. Same class as a length mismatch:
-        # not a crash, just permanently invisible, which is not what an index
-        # called "current" may contain.
-        return "has a zero-norm embedding: no query could ever retrieve it"
+    # A zero-norm vector is deliberately NOT rejected, although
+    # `cosine_similarity` scores it 0.0 against every query. `HashEmbedder`
+    # produces one for any text whose tokens it cannot see — pure CJK, or
+    # `token12 token59` — so rejecting it would make the builder's own output
+    # unloadable, and `search` returns zero-scored records inside top_k anyway.
+    # Whether the hash embedder should emit such vectors is a question for the
+    # embedder; this validator's contract is that whatever the builder writes,
+    # it accepts.
     return None
 
 
@@ -106,8 +108,20 @@ def index_document_problem(data: Any) -> str | None:
         # renders; an int or an object travels all the way there intact and
         # breaks at the far end, where nothing can tell it came from the index.
         for field in _REQUIRED_TEXT_FIELDS:
-            if not isinstance(record[field], str):
-                return f"record at position {position} has a non-string {field}: {record[field]!r}"
+            value = record[field]
+            if not isinstance(value, str):
+                return f"record at position {position} has a non-string {field}: {value!r}"
+            try:
+                # A lone surrogate is a valid `str` and valid JSON input, and
+                # dies at the edge instead: the response carrying it cannot be
+                # encoded, and the request fails with no way back to the index
+                # that caused it.
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                return (
+                    f"record at position {position} has a {field} that is not "
+                    f"UTF-8 encodable: {value!r}"
+                )
         name = record["id"]
         embedding = record["embedding"]
         if not isinstance(embedding, list):

@@ -104,7 +104,13 @@ def check_index(settings: RagSettings) -> int:
     name regardless of what was asked, and comparing the requested name would
     report drift on every offline build.
     """
-    expected = [(chunk.id, chunk.text) for chunk in chunk_corpus(settings)]
+    # All four are chunker-derived — `source` is the file name and `title` the
+    # heading breadcrumb — so all four are things a rebuild would change and a
+    # hand-edit would break. Comparing only id and text called an index current
+    # while it carried a `source` naming a file the corpus no longer has.
+    expected = [
+        (chunk.id, (chunk.text, chunk.source, chunk.title)) for chunk in chunk_corpus(settings)
+    ]
     try:
         data = json.loads(settings.index_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -144,7 +150,9 @@ def check_index(settings: RagSettings) -> int:
         )
         return 1
 
-    actual = [(record["id"], record["text"]) for record in records]
+    actual = [
+        (record["id"], (record["text"], record["source"], record["title"])) for record in records
+    ]
     if expected == actual:
         print(f"index current: {len(expected)} chunks")
         return 0
@@ -154,7 +162,7 @@ def check_index(settings: RagSettings) -> int:
     for label, ids in (
         ("missing from index", [k for k in exp if k not in act]),
         ("stale in index", [k for k in act if k not in exp]),
-        ("text changed", [k for k in exp if k in act and exp[k] != act[k]]),
+        ("content changed", [k for k in exp if k in act and exp[k] != act[k]]),
     ):
         if ids:
             shown = ", ".join(ids[:10])

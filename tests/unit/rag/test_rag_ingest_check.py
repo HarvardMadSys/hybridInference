@@ -436,20 +436,20 @@ def test_every_index_the_check_calls_current_can_be_searched(tmp_path):
 @pytest.mark.parametrize(
     "embedding, says",
     [
-        (lambda dim: [0.0] * dim, "zero-norm"),
-        (lambda dim: [-0.0] * dim, "zero-norm"),
         (lambda dim: [1e308] * dim, "squared norm that overflows"),
         (lambda dim: [10**400] * dim, "too large to score"),
     ],
-    ids=["all-zero", "negative-zero", "norm-overflow", "int-too-large"],
+    ids=["norm-overflow", "int-too-large"],
 )
 def test_a_vector_no_query_could_use_is_unreadable(tmp_path, capsys, embedding, says):
     """Finite components are not enough; the vector has to be usable.
 
     ``[1e308] * dim`` has every component finite and scores every query ``nan``
-    once the squares are summed. ``[0.0] * dim`` scores a finite 0.0 and is
-    simply unreachable forever — no crash, no signal, just a chunk the index
-    claims to hold and can never return.
+    once the squares are summed; ``10**400`` cannot even be converted mid-scan.
+
+    An all-zero vector is *not* here on purpose: `HashEmbedder` emits one for
+    text it cannot tokenise, so it is something the builder legitimately writes
+    and the validator must accept.
     """
     settings = _settings(tmp_path)
     _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
@@ -607,16 +607,15 @@ def _hostile_documents(base: dict, seed: int, count: int):
         if kind == "delete":
             record.pop(field, None)
         elif field == "embedding" and rng.random() < 0.15:
-            # Whole-vector rewrites: 1-3 poisoned positions cannot produce an
-            # all-zero embedding, and an all-zero one is scoreable, finite, and
-            # permanently unretrievable.
+            # Whole-vector rewrites: poisoning 1-3 positions cannot produce a
+            # wrong-length vector, and length is what a per-component check
+            # cannot see.
             record["embedding"] = rng.choice(
                 [
-                    [0.0] * len(record["embedding"]),
-                    [-0.0] * len(record["embedding"]),
                     [],
                     record["embedding"][:-1],
                     record["embedding"] + [0.1],
+                    [0.0] * len(record["embedding"]),
                 ]
             )
         elif field == "embedding" and rng.random() < 0.7:
@@ -665,14 +664,10 @@ def test_anything_the_validator_accepts_can_actually_be_served(tmp_path):
         assert all(math.isfinite(score) for _, score in results), (
             f"validator accepted a document scoring non-finitely: {doc['records']}"
         )
-        # `cosine_similarity` answers a length mismatch or a zero-norm vector
-        # with a finite 0.0 — no crash, and no way for that record to ever be
-        # retrieved. "Scores finitely" is too weak a promise on its own; every
-        # record has to be reachable. A dense query scores exactly 0.0 against
-        # a well-formed record only by accident this generator cannot arrange.
-        assert all(score != 0.0 for _, score in results), (
-            f"validator accepted a document with an unreachable record: {doc['records']}"
-        )
+        # A zero score is NOT a violation: `search` ranks and returns
+        # zero-scored records inside top_k, and `HashEmbedder` legitimately
+        # produces zero vectors. An earlier version asserted `score != 0.0` and
+        # was simply wrong about retrieval.
         for payload in sources_payload(results):
             assert isinstance(payload["source"], str)
             assert isinstance(payload["title"], str)
@@ -680,3 +675,113 @@ def test_anything_the_validator_accepts_can_actually_be_served(tmp_path):
 
     # A generator that never produces an accepted document would assert nothing.
     assert accepted >= 20, f"only {accepted} of 600 documents were accepted"
+
+
+# --- The builder's output is always acceptable -------------------------------
+#
+# The property search above starts from an index built normally and then
+# corrupts it, so it can only ever find validators that are too LAX. It cannot
+# see one that is too STRICT — and a validator rejecting what the builder just
+# wrote is the worse failure: `make rag-ingest` succeeds, the index is
+# committed, and the check that decides whether to rebuild says the fresh index
+# is unservable. That is exactly what a zero-norm rejection did here, because
+# `HashEmbedder` emits a zero vector for text it cannot tokenise.
+
+# ruff's ambiguous-character rule fires on the CJK punctuation below. That
+# punctuation is the point: this corpus exists to prove the builder's output
+# survives text the hash embedder cannot tokenise, and normalising it to ASCII
+# would quietly delete the case.
+_ROUND_TRIP_CORPORA = {
+    "english": "# Models\n\nglm-5.3 reasons about hard problems.\n",
+    "chinese": "# 网关\n\n网关支持多种模型，包括 glm-5.3。\n",  # noqa: RUF001
+    "mixed": "# Models 模型\n\nglm-5.3 与 glm-5.3-flash 都会推理。\n",
+    "hash-collision": "# T\n\ntoken12 token59\n",
+    "emoji": "# Models 🙂\n\nglm-5.3 reasons 🚀\n",
+    "punctuation-only": "# ...\n\n--- *** ---\n",
+    "long-section": "# Models\n\n" + ("glm-5.3 reasons. " * 400),
+    "many-headings": "".join(f"# H{n}\n\nbody {n}\n\n" for n in range(12)),
+    "code-fence": "# Models\n\n```bash\n# not a heading\ncurl -H 'x: y'\n```\n",
+    "nested-dirs": "# Quick\n\nGet a key.\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_ROUND_TRIP_CORPORA))
+def test_a_freshly_built_index_is_always_servable(tmp_path, name):
+    """corpus -> build -> save -> check == 0 -> load -> search, for real.
+
+    No mangling anywhere. If the validator and the builder ever disagree about
+    what a valid index is, this is where it shows, and it shows in the
+    direction the corruption-based search is blind to.
+    """
+    settings = _settings(tmp_path)
+    body = _ROUND_TRIP_CORPORA[name]
+    if name == "nested-dirs":
+        nested = settings.corpus_dir / "guides" / "deep"
+        nested.mkdir(parents=True)
+        (nested / "quickstart.md").write_text(body, encoding="utf-8")
+        _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    else:
+        _write(settings, "doc.md", body)
+
+    ingest.build_index(settings).save(settings.index_path)
+
+    assert (
+        index_document_problem(json.loads(settings.index_path.read_text(encoding="utf-8"))) is None
+    )
+    assert ingest.check_index(settings) == 0
+    assert _run_check(settings).returncode == 0
+
+    store = VectorStore.load(settings.index_path)
+    results = store.search([0.1] * store.dim, top_k=len(store.records))
+    assert len(results) == len(store.records)
+    assert all(math.isfinite(score) for _, score in results)
+    for payload in sources_payload(results):
+        assert isinstance(payload["source"], str)
+    format_context(results).encode("utf-8")
+
+
+def test_the_hash_embedder_really_does_emit_zero_vectors(tmp_path):
+    """Pin the fact that made a zero-norm rejection wrong, so nobody re-adds it."""
+    settings = _settings(tmp_path)
+    _write(settings, "doc.md", "# 网关\n\n网关支持多种模型。\n")
+    ingest.build_index(settings).save(settings.index_path)
+
+    store = VectorStore.load(settings.index_path)
+    assert any(all(component == 0.0 for component in record.embedding) for record in store.records)
+    assert ingest.check_index(settings) == 0
+
+
+def test_a_hand_edited_source_or_title_is_drift(tmp_path, capsys):
+    """`source` and `title` are chunker output, so an edited one is stale."""
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+    assert ingest.check_index(settings) == 0
+
+    _mangle(settings, lambda d: d["records"][0].update(source="somewhere-else.md"))
+    assert ingest.check_index(settings) == 1
+    assert "content changed" in capsys.readouterr().err
+
+    _build(settings)
+    _mangle(settings, lambda d: d["records"][0].update(title="Not The Heading"))
+    assert ingest.check_index(settings) == 1
+
+
+@pytest.mark.parametrize(
+    "value", ["\ud800", "a\udfffb", "\udbff\udbff"], ids=["lone-high", "lone-low", "two-highs"]
+)
+def test_text_that_cannot_be_encoded_is_unreadable(tmp_path, capsys, value):
+    """A lone surrogate is a valid `str` and valid JSON, and dies at the edge.
+
+    It reaches the response encoder, which fails there — far from the index
+    that produced it and with nothing pointing back to it.
+    """
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+    _mangle(settings, lambda d: d["records"][0].update(source=value))
+
+    assert ingest.check_index(settings) == 2
+    assert "not UTF-8 encodable" in capsys.readouterr().err
+    with pytest.raises(ValueError):
+        VectorStore.load(settings.index_path)
