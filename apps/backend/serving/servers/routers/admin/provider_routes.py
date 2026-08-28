@@ -1304,18 +1304,62 @@ def _base_url_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> b
     )
 
 
+# Fields that describe the *server behind* a route rather than the route's
+# policy, and so must never ride a clone to a different endpoint. Both admin
+# paths build a new config by cloning an existing route's and overriding a fixed
+# set of fields; anything not in that override set is inherited silently.
+#
+# ``null_cache_details_means_miss`` is a probe result -- "this endpoint was
+# started with sglang's --enable-cache-report, so its null details block is a
+# measured miss". On the models that carry it the licensed sglang route is the
+# first one, i.e. the clone template for every fallback an admin adds, so
+# inheriting it is precisely how an unprobed OpenRouter/Chutes endpoint would
+# begin recording fabricated measured misses. Dropped here so the default is
+# "unlicensed"; the update path re-applies it only when the route still points
+# at the same endpoint.
+_UNCLONEABLE_ENDPOINT_FACTS = ("null_cache_details_means_miss",)
+
+
 def _config_to_dict(config: Any) -> dict[str, Any]:
     if is_dataclass(config):
         values = asdict(config)
         # ``asdict`` recursively converts PricingSchedule into its internal
         # dataclass shape, which ModelConfig does not accept as config input.
         values["pricing_schedule"] = getattr(config, "pricing_schedule", None)
-        return values
-    values: dict[str, Any] = {}
-    for field in fields(ModelConfig):
-        if hasattr(config, field.name):
-            values[field.name] = getattr(config, field.name)
+    else:
+        values = {}
+        for field in fields(ModelConfig):
+            if hasattr(config, field.name):
+                values[field.name] = getattr(config, field.name)
+    for name in _UNCLONEABLE_ENDPOINT_FACTS:
+        values.pop(name, None)
     return values
+
+
+def _carry_endpoint_facts_if_unmoved(
+    cfg: dict[str, Any],
+    *,
+    current_adapter: Any,
+    base_url: str,
+) -> None:
+    """Re-apply endpoint-specific facts when an edit did not repoint the route.
+
+    Rotating a credential leaves the route pointing at the same server, so a
+    probe result taken against it still holds. Anything that changes the kind or
+    the base URL points it somewhere unprobed, and the fact is dropped -- the
+    caller re-declares it in config once the new endpoint has been probed.
+    """
+    current = getattr(current_adapter, "config", None)
+    if current is None:
+        return
+    if cfg.get("endpoint_id") != getattr(current, "endpoint_id", None):
+        return
+    if base_url != getattr(current, "base_url", None):
+        return
+    for name in _UNCLONEABLE_ENDPOINT_FACTS:
+        value = getattr(current, name, None)
+        if value:
+            cfg[name] = value
 
 
 def _unique(values: list[str]) -> list[str]:
@@ -2066,6 +2110,11 @@ async def _prepare_route_update(
     provider_for_cfg = _model_config_provider_for_target(target)
     cfg["provider"] = provider_for_cfg
     _apply_target_adapter_defaults(cfg, target)
+    _carry_endpoint_facts_if_unmoved(
+        cfg,
+        current_adapter=current_adapter,
+        base_url=cleaned_base_url,
+    )
     _preserve_route_semantics(
         cfg,
         current_adapter=current_adapter,

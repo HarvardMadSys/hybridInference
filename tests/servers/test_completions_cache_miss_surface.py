@@ -9,6 +9,13 @@ identically, and both are worth pinning:
   ``cached_tokens`` / ``prompt_tokens_details`` never reach the client;
 * streaming chunks are assembled by hand and carry all three.
 
+A third path is pinned too: with ``force_chat_completions_streaming`` on, a
+non-streaming client is served by ``StreamingResponse(media_type=
+"application/json")``, which FastAPI never runs through the response model. It
+nonetheless renders the same usage as the plain non-streaming path, and that
+equivalence is the property worth keeping -- the same request must not report
+differently depending on a runtime switch no caller can see.
+
 Both are driven end to end here rather than asserted on ``UsageInfo.to_dict()``,
 because the response model is exactly what makes them differ.
 """
@@ -176,5 +183,39 @@ async def test_unlicensed_route_reports_nothing_on_either_surface(client_for, st
     usage = await _post(client, stream=stream)
 
     assert "cache_read_tokens" not in usage
+    assert "cached_tokens" not in usage
+    assert "prompt_tokens_details" not in usage
+
+
+@pytest.mark.asyncio
+async def test_forced_streaming_json_bypasses_the_response_model(client_for, monkeypatch):
+    """A non-stream client sees the same usage whether or not streaming is forced.
+
+    This path returns a StreamingResponse with an application/json media type,
+    so `ChatCompletionResponse` never filters it -- the equivalence below is a
+    property of how the stream session assembles usage, not something the
+    response model enforces, which is exactly why it needs a test.
+    """
+
+    class _ForcedStreaming:
+        async def get_bool(self, key: str) -> bool:
+            return key == "force_chat_completions_streaming"
+
+    monkeypatch.setattr(
+        "serving.servers.routers.completions.get_runtime_settings",
+        lambda request: _ForcedStreaming(),
+    )
+    client, _ = await client_for(licensed=True)
+
+    resp = await client.post(
+        "/v1/chat/completions",
+        json={"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert resp.status_code == status.HTTP_200_OK
+    usage = json.loads(resp.text.lstrip())["usage"]
+
+    assert usage["cache_read_tokens"] == 0
+    # Not filtered by a response model, yet still matching the plain
+    # non-streaming surface rather than the streaming one.
     assert "cached_tokens" not in usage
     assert "prompt_tokens_details" not in usage
