@@ -5,6 +5,34 @@
    DOCS_STATCOUNTER_SECURITY_KEY); see the html_context block in conf.py.
    Upstream builds -- and anyone else's fork -- ship no tracker. #}
 
+{# Language switcher. Renders only when DOCS_LANGUAGES names two or more
+   languages (see conf.py); a single-language build emits nothing at all.
+
+   Every language builds from the same source tree, so the page set is
+   identical across languages and the same relative path always exists in the
+   sibling tree. `pagename` is the current page without its extension, so the
+   depth prefix walks out of the current language directory before entering
+   the other one. #}
+
+{% block sidebartitle %}
+  {{ super() }}
+  {%- if doc_languages %}
+  {#- Sphinx exposes the current language in BCP-47 form (`zh-CN`) while a
+      locale directory is named `zh_CN`, so normalise before comparing. -#}
+  {%- set _current = language|replace('-', '_')|lower %}
+  {%- set _up = '../' * (pagename.count('/') + 1) %}
+  <div class="doc-language-switcher" role="navigation" aria-label="Language">
+    {%- for lang in doc_languages %}
+    {%- if lang.code|lower == _current %}
+    <span class="current" aria-current="true">{{ lang.label }}</span>
+    {%- else %}
+    <a href="{{ _up }}{{ lang.code }}/{{ pagename }}.html" hreflang="{{ lang.code }}">{{ lang.label }}</a>
+    {%- endif %}
+    {%- endfor %}
+  </div>
+  {%- endif %}
+{% endblock %}
+
 {% block extrahead %}
   {{ super() }}
   {% if statcounter_project_id %}

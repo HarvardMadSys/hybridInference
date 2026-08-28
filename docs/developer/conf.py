@@ -41,6 +41,44 @@ myst_enable_extensions = [
 # the published site both run `sphinx-build -W`).
 myst_heading_anchors = 3
 
+# -- Translations ------------------------------------------------------------
+# The docs are written in English and translated with Sphinx's gettext
+# workflow: `make docs-gettext` extracts one catalog per page, a translator
+# fills in the `msgstr` entries, and `make docs-lang DOCS_LANG=<code>` builds
+# that language. Every string without a translation falls back to the English
+# source, so a partly-translated language still builds a complete site -- and
+# when an English paragraph changes, its `msgid` changes with it, gettext marks
+# the old translation `fuzzy`, and the page falls back to English rather than
+# serving a translation that no longer matches. See the Translations section of
+# contributing.md.
+language = os.environ.get("DOCS_LANGUAGE", "en").strip() or "en"
+locale_dirs = ["locale"]
+
+# One catalog per source file rather than one per directory: a pull request
+# then shows which page a translation touches, and a renamed page renames its
+# catalog with it.
+gettext_compact = False
+
+# Languages the *published* site offers, as `code:endonym` pairs, in the order
+# they should appear -- for example
+# `DOCS_LANGUAGES="en:English,zh_CN:简体中文"`. The switcher in
+# `_templates/layout.html` assumes each language is published as a sibling
+# directory named for its code (`<root>/en/`, `<root>/zh_CN/`), which is what
+# `make docs-site` produces.
+#
+# Unset is the default, and means a single-language site: no switcher is
+# rendered and nothing about the current publication layout changes.
+_languages = []
+for _entry in os.environ.get("DOCS_LANGUAGES", "").split(","):
+    _code, _, _label = _entry.strip().partition(":")
+    # A code reaches an href, so accept only the shape a locale code has.
+    if _code.replace("_", "").isalnum() and _label.strip():
+        _languages.append({"code": _code, "label": _label.strip()})
+if len(_languages) < 2:
+    # One language needs no switcher, and a malformed value must not render a
+    # half-built one.
+    _languages = []
+
 templates_path = ["_templates"]
 exclude_patterns = []
 
@@ -88,6 +126,7 @@ if not _statcounter_security_key.isalnum():
     _statcounter_security_key = ""
 
 html_context = {
+    "doc_languages": _languages,
     "statcounter_project_id": _statcounter_project_id,
     "statcounter_security_key": _statcounter_security_key,
 }

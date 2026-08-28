@@ -180,6 +180,63 @@ the `dev` dependency group, so `make setup-dev` is enough to build.
 Add a new page to `docs/developer/index.rst` as well as writing it; an orphan
 file is a warning, and warnings are errors in CI.
 
+### Translations
+
+The pages are written in English and translated with Sphinx's gettext
+workflow, so a translation is attached to *each paragraph of source text*
+rather than to a whole file. That is what makes a partial translation safe:
+any string without one falls back to English, and the site still builds
+complete.
+
+```bash
+make docs-gettext                      # extract one catalog template per page
+make docs-translate DOCS_LANG=zh_CN    # create or update that language's catalogs
+# edit docs/developer/locale/zh_CN/LC_MESSAGES/*.po -- fill in msgstr
+make docs-lang DOCS_LANG=zh_CN         # build it and read the result
+```
+
+A catalog entry pairs the English source with its translation:
+
+```po
+#: ../index.rst:4
+msgid "HybridInference is an open-source LLM inference gateway."
+msgstr "HybridInference 是一个开源的 LLM 推理网关。"
+```
+
+Because the English text *is* the lookup key, editing a paragraph invalidates
+its translation automatically: the next `make docs-translate` marks that entry
+`#, fuzzy`, the build stops using it, and the page falls back to English rather
+than serving a translation that no longer matches what the code does. A
+translator only has to revisit the entries that are marked. **This is the
+reason to use catalogs instead of parallel `.zh.md` files**, which drift
+silently and give a reader no signal that what they are reading is out of date.
+
+Commit the `.po` files. `docs/gettext/` is generated and ignored.
+
+Translating a page does not require translating all of it, and there is no
+obligation to keep a language complete — an untranslated paragraph is a
+fallback, not a bug.
+
+#### Publishing more than one language
+
+A single-language build is the default and nothing above changes it. To
+publish several, set `DOCS_LANGUAGES` to `code:endonym` pairs and build the
+whole set:
+
+```bash
+make docs-site DOCS_LANGUAGES="en:English,zh_CN:简体中文"
+```
+
+That writes `docs/build/site/<code>/` — one directory per language, siblings
+under a common root — and renders a language switcher in the sidebar that
+links to the same page in each other language. The switcher assumes exactly
+that layout. It renders nothing when `DOCS_LANGUAGES` names fewer than two
+languages, so a single-language site never shows a dead control.
+
+Serving that layout is a publication-side decision: it changes the site's URLs
+(`/en/…` rather than `/…`), so whoever owns the deploy has to move to it
+deliberately.
+
 ## Proposing a change
 
 - **Branch off `dev`, not `main`.** Pull requests target `dev`; CI runs on pull
