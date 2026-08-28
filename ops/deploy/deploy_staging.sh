@@ -9,26 +9,14 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/health}"
 FRONTEND_HEALTH_URL="${FRONTEND_HEALTH_URL:-http://127.0.0.1:3001/}"
 TARGET_BRANCH="${TARGET_BRANCH:-dev}"
 DEPLOY_SHA="${DEPLOY_SHA:-}"
-# This deployment's public identity — site name, links, CORS, console build
-# args — lives in the distribution overlay, because the upstream defaults name
-# no deployment. Without these files the stack would come up unbranded. `.env`
-# is passed last so it wins, keeping per-host overrides working; secrets live
-# only in `.env`, never in the checked-in overlay.
+# W6 flip (hybridInference#1323): the distribution overlay moved to the
+# freeInference repository, which owns both environments' lock deploys and
+# their rollback path. Without the overlay this classic path could only start
+# an unbranded stack, so it refuses instead of deploying the wrong thing.
+echo "classic staging deploy retired: the site overlay lives in the freeInference repository now" >&2
+exit 1
+
 COMPOSE=(docker compose -f deploy/docker/docker-compose.yml)
-for env_file in "$APP_DIR"/distributions/freeinference/deploy/*.env; do
-  if [[ -f "$env_file" ]]; then
-    COMPOSE+=(--env-file "$env_file")
-  fi
-done
-# The files above are the site's, and their values are production's. Anything
-# that has to differ on staging belongs in deploy/staging/, which is read after
-# them and before `.env` — so it can be reviewed in the repository rather than
-# living only on the host.
-for env_file in "$APP_DIR"/distributions/freeinference/deploy/staging/*.env; do
-  if [[ -f "$env_file" ]]; then
-    COMPOSE+=(--env-file "$env_file")
-  fi
-done
 COMPOSE+=(--env-file .env)
 
 log() {
@@ -70,10 +58,8 @@ trap dump_diagnostics EXIT
 # here: the overlay's selection plus the host's own. Runs after the checkout,
 # so it reads the revision being deployed rather than the one on disk.
 export_compose_profiles() {
-  local overlay host combined
-  overlay="$(read_compose_profiles distributions/freeinference/deploy/compose.env)"
-  host="$(read_compose_profiles .env)"
-  combined="${overlay}${overlay:+${host:+,}}${host}"
+  local combined
+  combined="$(read_compose_profiles .env)"
 
   if [[ -n "$combined" ]]; then
     export COMPOSE_PROFILES="$combined"
@@ -215,8 +201,7 @@ main() {
   # as build args. Make builds its own Compose command, so pass the staging
   # files explicitly rather than relying on the diagnostic COMPOSE array above.
   make build DISTRIBUTION=freeinference \
-    CLOUD_AGENT_NETWORK="$CLOUD_AGENT_NETWORK" \
-    COMPOSE_EXTRA_ENV_FILES='distributions/freeinference/deploy/staging/*.env'
+    CLOUD_AGENT_NETWORK="$CLOUD_AGENT_NETWORK"
 
   log "Current service state:"
   "${COMPOSE[@]}" ps

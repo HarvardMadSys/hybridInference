@@ -291,8 +291,8 @@ services:
   # SCRIPT_NAME means changing the path the route handler serves.
   #
   # The `admin` profile means nothing starts this unless a profile is named:
-  # `make up COMPOSE_PROFILES=admin`, or an env file the deploy reads (see
-  # distributions/freeinference/deploy/compose.env).
+  # `make up COMPOSE_PROFILES=admin`, or an env file the deploy reads (a
+  # distribution's `deploy/compose.env`).
   pgadmin:
     image: dpage/pgadmin4:8
     container_name: hybridinference-pgadmin
