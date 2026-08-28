@@ -138,3 +138,17 @@ def build_ingest_embedder(
     if mode == "hash":
         return HashEmbedder()
     return GatewayHTTPEmbedder(gateway_base_url, gateway_api_key, embed_model)
+
+
+def recorded_model_name(*, mode: str, embed_model: str) -> str:
+    """Name the ``embed_model`` a build with these settings would record.
+
+    :func:`build_ingest_embedder` decides it, and the hash embedder substitutes
+    its own name for whatever was requested. Anything that wants the answer
+    without constructing a client — a freshness check must not open an HTTP
+    session — needs it from here, beside the decision it mirrors, rather than
+    re-deriving it and drifting.
+    """
+    if mode == "hash":
+        return HashEmbedder().model
+    return embed_model

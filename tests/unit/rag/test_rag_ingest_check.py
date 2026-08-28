@@ -19,7 +19,9 @@ from pathlib import Path
 import pytest
 
 from serving.rag import ingest
-from serving.rag.config import RagSettings, load_rag_settings
+from serving.rag.config import EMBEDDER_MODES, RagSettings, load_rag_settings
+from serving.rag.embedder import build_ingest_embedder, recorded_model_name
+from serving.rag.store import VectorStore
 
 
 def _settings(tmp_path, **overrides) -> RagSettings:
@@ -348,3 +350,113 @@ def test_exit_1_is_never_silent(tmp_path, capsys):
     err = capsys.readouterr().err
     assert err.strip(), "exit 1 explained nothing"
     assert "different order" in err
+
+
+# --- "current" must mean servable -------------------------------------------
+#
+# `--check` returning 0 makes freeInference's workflow skip the rebuild. If the
+# committed index is one `VectorStore.load` rejects, that verdict leaves the
+# gateway holding a file it cannot parse and nothing scheduled to replace it.
+
+
+def _mangle(settings: RagSettings, edit) -> None:
+    data = json.loads(settings.index_path.read_text(encoding="utf-8"))
+    edit(data)
+    settings.index_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+@pytest.mark.parametrize("field", ["source", "title", "embedding"])
+def test_a_record_missing_a_field_load_needs_is_unreadable(tmp_path, field):
+    """id and text are what the check compares; they are not what load reads."""
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+    _mangle(settings, lambda d: d["records"][0].pop(field))
+
+    assert ingest.check_index(settings) == 2
+    assert _run_check(settings).returncode == 2
+    with pytest.raises((KeyError, ValueError, TypeError)):
+        VectorStore.load(settings.index_path)
+
+
+@pytest.mark.parametrize(
+    "edit, says",
+    [
+        (lambda d: d.update(dim=d["dim"] + 1), "!= declared dim"),
+        (lambda d: d.pop("dim"), "declared dim is None"),
+        (lambda d: d.update(dim=0), "declared dim is 0"),
+        (lambda d: d.update(dim="1024"), "declared dim is '1024'"),
+        (lambda d: d["records"][0].update(embedding="not-a-list"), "non-list embedding"),
+    ],
+    ids=["dim-disagrees", "dim-missing", "dim-zero", "dim-not-an-int", "embedding-not-a-list"],
+)
+def test_an_index_load_would_reject_is_unreadable(tmp_path, capsys, edit, says):
+    """The message is asserted, not just the code.
+
+    A bad ``dim`` is caught twice over — the per-record length comparison
+    reports it even with the explicit check removed — so only the wording
+    distinguishes "this index declares no dimension" from "record 7 is the
+    wrong length". Pinning the code alone would leave that guard untested and
+    free to rot.
+    """
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+    _mangle(settings, edit)
+
+    assert ingest.check_index(settings) == 2
+    assert says in capsys.readouterr().err
+    assert _run_check(settings).returncode == 2
+
+
+def test_every_index_the_check_calls_current_is_loadable(tmp_path):
+    """The invariant, stated directly rather than enumerated field by field."""
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    (settings.corpus_dir / "quickstart.md").write_text("# Quick\n\nKey.\n", encoding="utf-8")
+    _build(settings)
+
+    assert ingest.check_index(settings) == 0
+    store = VectorStore.load(settings.index_path)
+    assert len(store.records) == len(ingest.chunk_corpus(settings))
+    assert all(len(record.embedding) == store.dim for record in store.records)
+
+
+# --- a model change is drift, not a detail ----------------------------------
+
+
+def test_a_gateway_embed_model_change_is_drift(tmp_path, capsys):
+    """Vectors from different models are not comparable, so this must rebuild.
+
+    In gateway mode the builder records `settings.embed_model` verbatim, so an
+    index built for one model and settings asking for another is stale even
+    though every chunk id and text still matches.
+    """
+    settings = _settings(tmp_path, embedder_mode="gateway", embed_model="bge-m3")
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    # Build offline, then relabel as a gateway/bge-m3 index so only the model
+    # question is under test.
+    _build(replace(settings, embedder_mode="hash", embed_model="hash-256"))
+    _mangle(settings, lambda d: d.update(embedder_mode="gateway", embed_model="bge-m3"))
+    assert ingest.check_index(settings) == 0
+
+    assert ingest.check_index(replace(settings, embed_model="bge-m4")) == 1
+    assert "embed model drift" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("mode", sorted(EMBEDDER_MODES))
+def test_recorded_model_name_matches_the_embedder_that_gets_built(mode):
+    """The check's expectation and the builder's behaviour must not drift.
+
+    `check_index` cannot construct a GatewayHTTPEmbedder to ask — that opens an
+    HTTP client — so it asks `recorded_model_name` instead. This pins the two
+    together for every mode that exists.
+    """
+    embedder = build_ingest_embedder(
+        mode=mode,
+        embed_model="bge-m3",
+        gateway_base_url="http://localhost:9/v1",
+        gateway_api_key="unused",
+    )
+    assert embedder.model == recorded_model_name(mode=mode, embed_model="bge-m3")
+    assert embedder.mode == mode

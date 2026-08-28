@@ -35,7 +35,7 @@ from pathlib import Path
 
 from serving.rag.chunker import Chunk, chunk_markdown
 from serving.rag.config import EMBEDDER_MODES, RagSettings, load_rag_settings
-from serving.rag.embedder import build_ingest_embedder
+from serving.rag.embedder import build_ingest_embedder, recorded_model_name
 from serving.rag.store import VectorStore
 
 
@@ -88,13 +88,20 @@ def check_index(settings: RagSettings) -> int:
     index file are — no gateway, no API key, milliseconds. Rebuilding is the
     expensive half; deciding whether to rebuild must not be.
 
-    Scope is chunk identity plus ``embedder_mode``. It deliberately does not
-    compare ``embed_model``: the builder records the *embedder's* model, and
-    the hash embedder hardcodes its own (``hash-256``) regardless of what was
-    requested, so that comparison would report drift on every offline build.
-    A false positive here costs a full rebuild, and the mode check already
-    catches the case that matters — an index built offline while the settings
-    ask for real gateway vectors.
+    Two questions, answered in order, because they have different answers:
+
+    *Can this file be served at all?* An index that :meth:`VectorStore.load`
+    would reject is not "current" no matter what its chunks say — reporting 0
+    would leave the gateway loading a file it cannot parse. Every field ``load``
+    reads is checked here, and a failure is 2.
+
+    *Is it built from this corpus, by this embedder?* Chunk identity and the
+    recorded ``embed_model``/``embedder_mode``. Vectors from different models
+    are not comparable, so a model change is genuine drift and must rebuild.
+    The expected model name comes from :func:`recorded_model_name` rather than
+    from ``settings.embed_model`` directly — the hash embedder records its own
+    name regardless of what was asked, and comparing the requested name would
+    report drift on every offline build.
     """
     expected = [(chunk.id, chunk.text) for chunk in chunk_corpus(settings)]
     try:
@@ -103,24 +110,57 @@ def check_index(settings: RagSettings) -> int:
         print(f"index unreadable at {settings.index_path}: {exc}", file=sys.stderr)
         return 2
 
-    # Shape faults are unreadable (2), not drifted (1). Only valid JSON of the
-    # wrong shape reaches here, and answering it with "drifted" would send a
-    # caller off to spend a rebuild on a file it could not parse.
-    records = data.get("records") if isinstance(data, dict) else None
-    if not isinstance(records, list) or not all(
-        isinstance(record, dict) and "id" in record and "text" in record for record in records
-    ):
-        print(
-            f"index at {settings.index_path} is valid JSON but not an index: "
-            f"expected an object with a list of records carrying 'id' and 'text'",
-            file=sys.stderr,
-        )
+    # Shape faults are unreadable (2), not drifted (1). Answering them with
+    # "drifted" sends a caller off to spend a rebuild on a file it could not
+    # parse; answering them with "current" leaves the gateway serving one it
+    # cannot load. The fields checked are exactly the ones VectorStore.load
+    # reads — id/text alone would pass an index the gateway rejects.
+    def unreadable(reason: str) -> int:
+        print(f"index at {settings.index_path} cannot be loaded: {reason}", file=sys.stderr)
         return 2
+
+    records = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(records, list):
+        return unreadable("expected an object with a list of 'records'")
+    required = ("id", "text", "source", "title", "embedding")
+    for position, record in enumerate(records):
+        if not isinstance(record, dict):
+            return unreadable(f"record at position {position} is not an object")
+        missing = [field for field in required if field not in record]
+        if missing:
+            return unreadable(f"record at position {position} is missing {', '.join(missing)}")
+        if not isinstance(record["embedding"], list):
+            return unreadable(f"record {record['id']!r} has a non-list embedding")
+
+    # VectorStore.load raises on any record whose embedding length disagrees
+    # with the declared dim, so an index that trips it is unservable too.
+    dim = data.get("dim")
+    if not isinstance(dim, int) or dim <= 0:
+        return unreadable(f"declared dim is {dim!r}")
+    for record in records:
+        if len(record["embedding"]) != dim:
+            return unreadable(
+                f"record {record['id']!r} has embedding dim "
+                f"{len(record['embedding'])} != declared dim {dim}"
+            )
 
     if data.get("embedder_mode") != settings.embedder_mode:
         print(
             f"embedder mode drift: index={data.get('embedder_mode')!r} "
             f"settings={settings.embedder_mode!r}",
+            file=sys.stderr,
+        )
+        return 1
+
+    expected_model = recorded_model_name(
+        mode=settings.embedder_mode, embed_model=settings.embed_model
+    )
+    if data.get("embed_model") != expected_model:
+        # Vectors from different models are not comparable (see embedder.py),
+        # so the index has to be rebuilt — this is drift, not a fault.
+        print(
+            f"embed model drift: index={data.get('embed_model')!r} "
+            f"settings would record {expected_model!r}",
             file=sys.stderr,
         )
         return 1
