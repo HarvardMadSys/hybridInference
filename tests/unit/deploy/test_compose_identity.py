@@ -25,10 +25,6 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 COMPOSE = REPO / "deploy" / "docker" / "docker-compose.yml"
-DEPLOY_SCRIPTS = (
-    REPO / "ops" / "deploy" / "deploy_production.sh",
-    REPO / "ops" / "deploy" / "deploy_staging.sh",
-)
 
 sys.path.insert(0, str(REPO / "apps" / "backend"))
 
