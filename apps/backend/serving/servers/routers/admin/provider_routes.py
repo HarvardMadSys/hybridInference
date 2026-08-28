@@ -13,7 +13,7 @@ import time
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, TypeVar
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlunparse
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -1336,6 +1336,28 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
     return values
 
 
+def _canonical_base_url(base_url: str | None) -> str:
+    """Normalize a base URL down to what actually decides the upstream request.
+
+    Adapters do ``base_url.rstrip("/")`` before appending the chat path, and
+    scheme and host are case-insensitive, so two spellings that build the same
+    request must compare equal. Otherwise a credential-only edit that happens to
+    add or drop a trailing slash reads as a repointing and silently revokes an
+    endpoint fact the route is still entitled to.
+    """
+    if not base_url:
+        return ""
+    cleaned = base_url.strip()
+    parsed = urlparse(cleaned)
+    if not parsed.scheme:
+        return cleaned.rstrip("/")
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+    if (scheme, parsed.port) in {("https", 443), ("http", 80)}:
+        netloc = netloc.rsplit(":", 1)[0]
+    return urlunparse((scheme, netloc, parsed.path.rstrip("/"), "", "", ""))
+
+
 def _carry_endpoint_facts_if_unmoved(
     cfg: dict[str, Any],
     *,
@@ -1348,13 +1370,18 @@ def _carry_endpoint_facts_if_unmoved(
     probe result taken against it still holds. Anything that changes the kind or
     the base URL points it somewhere unprobed, and the fact is dropped -- the
     caller re-declares it in config once the new endpoint has been probed.
+
+    Both halves are needed. ``endpoint_id`` alone is too coarse: it collapses to
+    ``<service>-api`` for a remote provider, so two different hosts on the same
+    service share one. A raw base-URL comparison is too fine: it would read a
+    re-spelling as a move.
     """
     current = getattr(current_adapter, "config", None)
     if current is None:
         return
     if cfg.get("endpoint_id") != getattr(current, "endpoint_id", None):
         return
-    if base_url != getattr(current, "base_url", None):
+    if _canonical_base_url(base_url) != _canonical_base_url(getattr(current, "base_url", None)):
         return
     for name in _UNCLONEABLE_ENDPOINT_FACTS:
         value = getattr(current, name, None)

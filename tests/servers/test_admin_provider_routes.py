@@ -5011,3 +5011,56 @@ async def test_route_update_keeps_the_licence_for_a_same_endpoint_key_rotation(a
     assert response.status_code == 200, response.text
     updated = route_executor.routes["minimax-fast"].raw_adapters[0][0]
     assert updated.config.null_cache_details_means_miss is True
+
+
+@pytest.mark.asyncio
+async def test_route_update_keeps_the_licence_across_an_equivalent_url_spelling(admin_client):
+    """A trailing slash is not a repointing.
+
+    Adapters strip it before building the request URL, so the edit still points
+    at the probed server; a raw string comparison would silently revoke the
+    licence and send that endpoint's misses back to NULL.
+    """
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _license_first_route(route_executor)
+    op_store.get_provider_key_full.return_value = ("chutes", "chutes-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-chutes",
+            provider="chutes",
+            key_prefix="chutes...7890",
+            label="rotated",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "chutes",
+            "base_url": "https://llm.chutes.ai/v1/",
+            "api_key_id": "db-chutes",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    updated = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert updated.config.null_cache_details_means_miss is True
+
+
+def test_canonical_base_url_folds_only_request_equivalent_spellings():
+    canonical = provider_routes._canonical_base_url
+
+    # Same upstream request -> same key.
+    assert canonical("https://llm.chutes.ai/v1/") == canonical("https://llm.chutes.ai/v1")
+    assert canonical("https://LLM.Chutes.AI/v1") == canonical("https://llm.chutes.ai/v1")
+    assert canonical("https://llm.chutes.ai:443/v1") == canonical("https://llm.chutes.ai/v1")
+
+    # Different upstream -> different key. A path or host change is a move.
+    assert canonical("https://llm.chutes.ai/v2") != canonical("https://llm.chutes.ai/v1")
+    assert canonical("https://other.chutes.ai/v1") != canonical("https://llm.chutes.ai/v1")
+    assert canonical("https://llm.chutes.ai:8443/v1") != canonical("https://llm.chutes.ai/v1")
+    assert canonical(None) == ""
