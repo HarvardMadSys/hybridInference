@@ -9,7 +9,12 @@ check that drifts from the builder is worse than no check at all.
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -202,3 +207,144 @@ def test_empty_corpus_still_raises_the_guidance_error(tmp_path):
     settings = _settings(tmp_path)
     with pytest.raises(FileNotFoundError, match="RAG_CORPUS_DIR"):
         ingest.check_index(settings)
+
+
+# --- The surface the workflows actually consume -----------------------------
+#
+# freeInference's RAG Index workflow and its CI both run
+# `python -m serving.rag.ingest --check` as a subprocess and branch on the
+# process exit code. Everything above calls the functions directly, which
+# leaves the translation from return value to exit status untested — and that
+# translation is where an exit-2 fault silently becomes "drifted, go spend a
+# rebuild". These run the real command line.
+
+
+def _run_check(settings: RagSettings, **env_extra) -> subprocess.CompletedProcess:
+    repo_root = Path(ingest.__file__).resolve().parents[4]
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(repo_root / "apps" / "backend"),
+        "RAG_EMBEDDER": settings.embedder_mode,
+        "RAG_CORPUS_DIR": str(settings.corpus_dir),
+        "RAG_INDEX_PATH": str(settings.index_path),
+        **env_extra,
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "serving.rag.ingest", "--check"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=repo_root,
+    )
+
+
+def test_subprocess_exit_codes_are_the_contract(tmp_path):
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+    assert _run_check(settings).returncode == 0
+
+    _write(settings, "models.md", "# Models\n\nglm-5.3 and glm-5.3-flash reason.\n")
+    assert _run_check(settings).returncode == 1
+
+    settings.index_path.unlink()
+    assert _run_check(settings).returncode == 2
+
+
+def test_a_corpus_fault_exits_2_not_1(tmp_path):
+    """A missing corpus must not read as "drifted".
+
+    Exit 1 tells freeInference's workflow to spend a gateway rebuild, and tells
+    a PR author their index is stale. Neither is true when the corpus path is
+    simply wrong — which is exactly what a docs-tree reshuffle produces, and
+    the RAG Index workflow watches that tree.
+    """
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+
+    missing = replace(settings, corpus_dir=tmp_path / "gone")
+    assert _run_check(missing).returncode == 2
+
+    (settings.corpus_dir / "binary.md").write_bytes(b"# Models\n\n\xff\xfe not utf-8\n")
+    assert _run_check(settings).returncode == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '["not", "an", "object"]',
+        '{"embedder_mode": "hash", "records": {"a": 1}}',
+        '{"embedder_mode": "hash", "records": [{"id": "a"}]}',
+        '{"embedder_mode": "hash"}',
+    ],
+    ids=["top-level-list", "records-not-a-list", "record-missing-text", "no-records-key"],
+)
+def test_an_index_of_the_wrong_shape_exits_2(tmp_path, payload):
+    """Valid JSON that is not an index is unreadable, not drifted."""
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    settings.index_path.write_text(payload, encoding="utf-8")
+
+    assert ingest.check_index(settings) == 2
+    assert _run_check(settings).returncode == 2
+
+
+def test_the_cli_reconstructs_every_settings_field(tmp_path, monkeypatch):
+    """`main` hand-copies 14 fields into a fresh RagSettings.
+
+    A field added to RagSettings and forgotten here is invisible until the run
+    behaves differently from the module's own defaults — the silent-dropped-field
+    shape this repository has been bitten by before (#911 was exactly that).
+    """
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+
+    seen: list[RagSettings] = []
+    monkeypatch.setattr(ingest, "check_index", lambda config: seen.append(config) or 0)
+    monkeypatch.setenv("RAG_CORPUS_DIR", str(settings.corpus_dir))
+    monkeypatch.setenv("RAG_INDEX_PATH", str(settings.index_path))
+    ingest.main(["--check"])
+
+    assert seen, "main did not reach check_index"
+    assert seen[0] == replace(
+        load_rag_settings(), corpus_dir=settings.corpus_dir, index_path=settings.index_path
+    )
+
+
+def test_a_nested_corpus_is_walked(tmp_path):
+    """The corpus is `rglob`ed. A Sphinx tree with subdirectories is normal."""
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    nested = settings.corpus_dir / "guides"
+    nested.mkdir()
+    (nested / "quickstart.md").write_text("# Quick start\n\nGet a key.\n", encoding="utf-8")
+    _build(settings)
+    assert ingest.check_index(settings) == 0
+
+    (nested / "quickstart.md").write_text("# Quick start\n\nGet two keys.\n", encoding="utf-8")
+    assert ingest.check_index(settings) == 1
+
+
+def test_exit_1_is_never_silent(tmp_path, capsys):
+    """Same ids, different order: the id-keyed explanation finds nothing to say.
+
+    Two files sharing a basename collide, because chunk ids are built from
+    `path.name`. Exiting 1 with no output sends the reader hunting for content
+    that did not change.
+    """
+    settings = _settings(tmp_path)
+    _write(settings, "a.md", "# A\n\nfirst.\n")
+    (settings.corpus_dir / "sub").mkdir()
+    (settings.corpus_dir / "sub" / "b.md").write_text("# B\n\nsecond.\n", encoding="utf-8")
+    _build(settings)
+
+    data = json.loads(settings.index_path.read_text(encoding="utf-8"))
+    data["records"] = list(reversed(data["records"]))
+    settings.index_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert ingest.check_index(settings) == 1
+    err = capsys.readouterr().err
+    assert err.strip(), "exit 1 explained nothing"
+    assert "different order" in err

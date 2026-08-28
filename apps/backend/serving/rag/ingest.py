@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from itertools import zip_longest
 from pathlib import Path
 
 from serving.rag.chunker import Chunk, chunk_markdown
@@ -81,6 +82,8 @@ def check_index(settings: RagSettings) -> int:
     """Report whether the committed index still matches the corpus.
 
     Returns 0 when current, 1 when drifted, 2 when the index cannot be read.
+    Corpus-side faults raise through; ``main`` turns those into 2 as well, so
+    that 1 always means a comparison actually happened.
     Never embeds and never calls out, so this runs anywhere the corpus and the
     index file are — no gateway, no API key, milliseconds. Rebuilding is the
     expensive half; deciding whether to rebuild must not be.
@@ -100,6 +103,20 @@ def check_index(settings: RagSettings) -> int:
         print(f"index unreadable at {settings.index_path}: {exc}", file=sys.stderr)
         return 2
 
+    # Shape faults are unreadable (2), not drifted (1). Only valid JSON of the
+    # wrong shape reaches here, and answering it with "drifted" would send a
+    # caller off to spend a rebuild on a file it could not parse.
+    records = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(records, list) or not all(
+        isinstance(record, dict) and "id" in record and "text" in record for record in records
+    ):
+        print(
+            f"index at {settings.index_path} is valid JSON but not an index: "
+            f"expected an object with a list of records carrying 'id' and 'text'",
+            file=sys.stderr,
+        )
+        return 2
+
     if data.get("embedder_mode") != settings.embedder_mode:
         print(
             f"embedder mode drift: index={data.get('embedder_mode')!r} "
@@ -108,12 +125,13 @@ def check_index(settings: RagSettings) -> int:
         )
         return 1
 
-    actual = [(record["id"], record["text"]) for record in data.get("records", [])]
+    actual = [(record["id"], record["text"]) for record in records]
     if expected == actual:
         print(f"index current: {len(expected)} chunks")
         return 0
 
     exp, act = dict(expected), dict(actual)
+    reported = False
     for label, ids in (
         ("missing from index", [k for k in exp if k not in act]),
         ("stale in index", [k for k in act if k not in exp]),
@@ -123,6 +141,25 @@ def check_index(settings: RagSettings) -> int:
             shown = ", ".join(ids[:10])
             more = f" (+{len(ids) - 10} more)" if len(ids) > 10 else ""
             print(f"{label} ({len(ids)}): {shown}{more}", file=sys.stderr)
+            reported = True
+
+    if not reported:
+        # The verdict is an ordered comparison; the explanation above is keyed
+        # by id. They disagree when the same ids appear in a different order —
+        # a corpus subdirectory moving, or two files sharing a basename, since
+        # chunk ids are built from `path.name`. Saying nothing while exiting 1
+        # would send someone hunting for content that did not change.
+        first = next(
+            index
+            for index, (want, have) in enumerate(zip_longest(expected, actual, fillvalue=None))
+            if want != have
+        )
+        print(
+            f"same chunk ids in a different order: first difference at position {first} "
+            f"(corpus has {expected[first][0] if first < len(expected) else '<end>'}, "
+            f"index has {actual[first][0] if first < len(actual) else '<end>'})",
+            file=sys.stderr,
+        )
     return 1
 
 
@@ -137,7 +174,7 @@ def build_index(settings: RagSettings) -> VectorStore:
         gateway_api_key=settings.gateway_api_key,
     )
     print(
-        f"Embedding {len(chunks)} chunks from {len({chunk.source for chunk in chunks})} files "
+        f"Embedding {len(chunks)} chunks from {len(_iter_markdown(settings.corpus_dir))} files "
         f"via '{embedder.mode}' (model={embedder.model})...",
         file=sys.stderr,
     )
@@ -167,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "verify the committed index against the corpus and exit "
-            "(0 current, 1 drifted, 2 unreadable); never embeds, never calls out"
+            "(0 current, 1 drifted, 2 not checked); never embeds, never calls out"
         ),
     )
     args = parser.parse_args(argv)
@@ -190,7 +227,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.check:
-        return check_index(settings)
+        try:
+            return check_index(settings)
+        except Exception as exc:
+            # `check_index` raises through for corpus-side faults: a missing or
+            # renamed RAG_CORPUS_DIR, a file that is not UTF-8. Letting those
+            # reach the interpreter would exit 1, which callers read as "drifted,
+            # go rebuild" — a confident, actionable and wrong instruction, and
+            # the same conflation that made this workflow's CI warning lie.
+            # Only a real comparison may return 1.
+            print(f"index not checked: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
 
     store = build_index(settings)
     store.save(settings.index_path)
