@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import random
 import subprocess
 import sys
 from dataclasses import replace
@@ -22,7 +23,8 @@ import pytest
 from serving.rag import ingest
 from serving.rag.config import EMBEDDER_MODES, RagSettings, load_rag_settings
 from serving.rag.embedder import build_ingest_embedder, recorded_model_name
-from serving.rag.store import VectorStore
+from serving.rag.pipeline import format_context, sources_payload
+from serving.rag.store import VectorStore, index_document_problem
 
 
 def _settings(tmp_path, **overrides) -> RagSettings:
@@ -432,6 +434,37 @@ def test_every_index_the_check_calls_current_can_be_searched(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "embedding, says",
+    [
+        (lambda dim: [0.0] * dim, "zero-norm"),
+        (lambda dim: [-0.0] * dim, "zero-norm"),
+        (lambda dim: [1e308] * dim, "squared norm that overflows"),
+        (lambda dim: [10**400] * dim, "too large to score"),
+    ],
+    ids=["all-zero", "negative-zero", "norm-overflow", "int-too-large"],
+)
+def test_a_vector_no_query_could_use_is_unreadable(tmp_path, capsys, embedding, says):
+    """Finite components are not enough; the vector has to be usable.
+
+    ``[1e308] * dim`` has every component finite and scores every query ``nan``
+    once the squares are summed. ``[0.0] * dim`` scores a finite 0.0 and is
+    simply unreachable forever — no crash, no signal, just a chunk the index
+    claims to hold and can never return.
+    """
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    _build(settings)
+    dim = json.loads(settings.index_path.read_text(encoding="utf-8"))["dim"]
+    _mangle(settings, lambda d: d["records"][0].update(embedding=embedding(dim)))
+
+    assert ingest.check_index(settings) == 2
+    assert says in capsys.readouterr().err
+    assert _run_check(settings).returncode == 2
+    with pytest.raises(ValueError):
+        VectorStore.load(settings.index_path)
+
+
+@pytest.mark.parametrize(
     "value, says",
     [
         ("x", "non-numeric"),
@@ -503,3 +536,147 @@ def test_recorded_model_name_matches_the_embedder_that_gets_built(mode):
     )
     assert embedder.model == recorded_model_name(mode=mode, embed_model="bge-m3")
     assert embedder.mode == mode
+
+
+# --- The invariant, searched for rather than enumerated ----------------------
+#
+# Three rounds of review found three gaps here, each of the same kind: the
+# check validated the shapes someone had thought of. Enumerating cases is
+# always a step behind. What follows searches the space the validator ACCEPTS
+# for a document that breaks the thing "current" is supposed to promise.
+#
+# Deterministic on purpose — a seeded generator, no new dependency, the same
+# corpus every run — so a failure is reproducible rather than a CI flake.
+
+_HOSTILE_SCALARS = [
+    "ok",
+    "",
+    "\x00",
+    "🙂",
+    0,
+    1,
+    -1,
+    True,
+    False,
+    None,
+    [],
+    [0.1],
+    {},
+    {"a": 1},
+]
+
+_HOSTILE_COMPONENTS = [
+    0.0,
+    -0.0,
+    1.0,
+    -1.0,
+    1e-320,
+    5e-324,  # subnormals
+    1e308,
+    -1e308,
+    5e307,
+    1.7976931348623157e308,  # finite, squares overflow
+    float("nan"),
+    float("inf"),
+    float("-inf"),
+    10**200,
+    10**400,
+    -(10**400),  # unbounded Python ints
+    True,
+    False,
+    "0.1",
+    None,
+    [0.1],
+    {"a": 1},
+]
+
+
+def _hostile_documents(base: dict, seed: int, count: int):
+    """Yield documents built by pushing hostile values into a valid index."""
+    rng = random.Random(seed)
+    fields = ["id", "text", "source", "title", "embedding"]
+    for _ in range(count):
+        doc = json.loads(json.dumps(base))
+        index = rng.randrange(len(doc["records"]))
+        record = doc["records"][index]
+        field = rng.choice(fields)
+        # Deleting matters as much as replacing: a first version of this
+        # generator only ever substituted values, so it never produced a record
+        # missing `source`, and could not see that guard removed.
+        kind = rng.choice(["replace", "replace", "replace", "delete"])
+        if kind == "delete":
+            record.pop(field, None)
+        elif field == "embedding" and rng.random() < 0.15:
+            # Whole-vector rewrites: 1-3 poisoned positions cannot produce an
+            # all-zero embedding, and an all-zero one is scoreable, finite, and
+            # permanently unretrievable.
+            record["embedding"] = rng.choice(
+                [
+                    [0.0] * len(record["embedding"]),
+                    [-0.0] * len(record["embedding"]),
+                    [],
+                    record["embedding"][:-1],
+                    record["embedding"] + [0.1],
+                ]
+            )
+        elif field == "embedding" and rng.random() < 0.7:
+            embedding = list(record["embedding"])
+            for _ in range(rng.randint(1, 3)):
+                embedding[rng.randrange(len(embedding))] = rng.choice(_HOSTILE_COMPONENTS)
+            record["embedding"] = embedding
+        elif field == "embedding":
+            record["embedding"] = rng.choice(_HOSTILE_SCALARS)
+        else:
+            record[field] = rng.choice(_HOSTILE_SCALARS)
+        if rng.random() < 0.10:
+            doc["records"][index] = rng.choice(_HOSTILE_SCALARS)
+        if rng.random() < 0.10:
+            doc["records"] = rng.choice([[], {}, "records", None, doc["records"]])
+        if rng.random() < 0.15:
+            doc["dim"] = rng.choice([0, -1, None, "1024", 1.5, True, doc["dim"] + 1])
+        yield doc
+
+
+def test_anything_the_validator_accepts_can_actually_be_served(tmp_path):
+    """`index_document_problem(d) is None` must imply the index works.
+
+    "Works" is load, score every record finitely, and render a sources payload
+    — the three things a `/v1/rag/chat` request does. Each of the three bugs
+    this file has guarded against would fail here without being named: an
+    unloadable record, a `nan` score, a non-string `source` reaching the
+    payload.
+    """
+    settings = _settings(tmp_path)
+    _write(settings, "models.md", "# Models\n\nglm-5.3 reasons.\n")
+    (settings.corpus_dir / "quickstart.md").write_text("# Quick\n\nKey.\n", encoding="utf-8")
+    _build(settings)
+    base = json.loads(settings.index_path.read_text(encoding="utf-8"))
+
+    accepted = 0
+    for doc in _hostile_documents(base, seed=20260828, count=600):
+        if index_document_problem(doc) is not None:
+            continue
+        accepted += 1
+        settings.index_path.write_text(json.dumps(doc), encoding="utf-8")
+
+        store = VectorStore.load(settings.index_path)
+        query = [0.1 + 0.001 * position for position in range(store.dim)]
+        results = store.search(query, top_k=len(store.records))
+        assert all(math.isfinite(score) for _, score in results), (
+            f"validator accepted a document scoring non-finitely: {doc['records']}"
+        )
+        # `cosine_similarity` answers a length mismatch or a zero-norm vector
+        # with a finite 0.0 — no crash, and no way for that record to ever be
+        # retrieved. "Scores finitely" is too weak a promise on its own; every
+        # record has to be reachable. A dense query scores exactly 0.0 against
+        # a well-formed record only by accident this generator cannot arrange.
+        assert all(score != 0.0 for _, score in results), (
+            f"validator accepted a document with an unreachable record: {doc['records']}"
+        )
+        for payload in sources_payload(results):
+            assert isinstance(payload["source"], str)
+            assert isinstance(payload["title"], str)
+        assert isinstance(format_context(results), str)
+
+    # A generator that never produces an accepted document would assert nothing.
+    assert accepted >= 20, f"only {accepted} of 600 documents were accepted"

@@ -32,21 +32,44 @@ class Record:
 
 
 _REQUIRED_RECORD_FIELDS = ("id", "text", "source", "title", "embedding")
+_REQUIRED_TEXT_FIELDS = ("id", "text", "source", "title")
 
 
-def _bad_component(embedding: list[Any]) -> str | None:
-    """Name the first embedding component a cosine scan could not use."""
+def _unscorable_embedding(embedding: list[Any]) -> str | None:
+    """Name the first reason a cosine scan could not score this vector.
+
+    One pass, because the failures compound: a component can be individually
+    finite and still make the running sum of squares overflow, which is how
+    ``[1e308] * dim`` scores every query ``nan`` with every component passing
+    a per-value check.
+    """
+    norm = 0.0
     for position, value in enumerate(embedding):
         # bool is an int in Python, and `[True, False, ...]` scores a confident
         # 1.0 against anything — a corrupt index that looks like a perfect hit
         # is worse than one that raises.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return f"non-numeric value at position {position}: {value!r}"
-        if not math.isfinite(value):
+            return f"has a non-numeric value at position {position}: {value!r}"
+        try:
+            component = float(value)
+        except (OverflowError, ValueError):
+            # A Python int has no bound; `cosine_similarity` raises
+            # OverflowError converting one mid-scan.
+            return f"has a value too large to score at position {position}"
+        if not math.isfinite(component):
             # NaN and Infinity survive json.loads, survive the scan, and come
             # out the other side as nan scores: no exception, silently wrong
-            # ranking. This is the one shape that must never reach a query.
-            return f"non-finite value at position {position}: {value!r}"
+            # ranking. This is the shape that must never reach a query.
+            return f"has a non-finite value at position {position}: {value!r}"
+        norm += component * component
+        if not math.isfinite(norm):
+            return f"has a squared norm that overflows by position {position}"
+    if norm == 0.0:
+        # `cosine_similarity` returns 0.0 on a zero-norm vector, so this record
+        # can never be retrieved by any query. Same class as a length mismatch:
+        # not a crash, just permanently invisible, which is not what an index
+        # called "current" may contain.
+        return "has a zero-norm embedding: no query could ever retrieve it"
     return None
 
 
@@ -78,15 +101,22 @@ def index_document_problem(data: Any) -> str | None:
         missing = [field for field in _REQUIRED_RECORD_FIELDS if field not in record]
         if missing:
             return f"record at position {position} is missing {', '.join(missing)}"
+        # Present is not enough. `source` and `title` are formatted into the
+        # grounding prompt and returned in the sources payload the console
+        # renders; an int or an object travels all the way there intact and
+        # breaks at the far end, where nothing can tell it came from the index.
+        for field in _REQUIRED_TEXT_FIELDS:
+            if not isinstance(record[field], str):
+                return f"record at position {position} has a non-string {field}: {record[field]!r}"
         name = record["id"]
         embedding = record["embedding"]
         if not isinstance(embedding, list):
             return f"record {name!r} has a non-list embedding"
         if len(embedding) != dim:
             return f"record {name!r} has embedding dim {len(embedding)} != declared dim {dim}"
-        problem = _bad_component(embedding)
+        problem = _unscorable_embedding(embedding)
         if problem:
-            return f"record {name!r} has a {problem}"
+            return f"record {name!r} {problem}"
     return None
 
 
