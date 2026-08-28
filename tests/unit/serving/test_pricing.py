@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import datetime as dt
-from pathlib import Path
 
 import pytest
-import yaml
 
 from serving.adapters.base import ModelConfig
 from serving.pricing import PricingSchedule, effective_pricing
@@ -14,13 +12,6 @@ from serving.utils import context as req_ctx
 
 UTC = dt.timezone.utc
 ACTIVATION = dt.datetime(2026, 8, 16, 16, 0, tzinfo=UTC)
-MODELS_YAML = (
-    Path(__file__).resolve().parents[3]
-    / "distributions"
-    / "freeinference"
-    / "config"
-    / "models.yaml"
-)
 
 
 def _at(day: int, hour: int, minute: int = 0) -> dt.datetime:
@@ -165,34 +156,3 @@ def test_schedule_supports_window_across_midnight() -> None:
     assert schedule.resolve(base, at=_at(17, 23))["prompt"] == "0.44"
     assert schedule.resolve(base, at=_at(18, 1))["prompt"] == "0.44"
     assert schedule.resolve(base, at=_at(18, 2))["prompt"] == "0.22"
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("model_id", "peak"),
-    [
-        ("deepseek-v4-flash", ("0.44", "0.014", "1.32")),
-        ("deepseek-v4-pro", ("1.32", "0.044", "3.96")),
-    ],
-)
-def test_shipped_deepseek_prices_are_the_flat_peak_rate(
-    model_id: str,
-    peak: tuple[str, str, str],
-) -> None:
-    """DeepSeek is billed at the upstream peak rate every hour.
-
-    DeepSeek itself charges peak/off-peak (off-peak is half), but this
-    deployment deliberately does not track the split: it ships the peak rate
-    as a flat price so accounting never under-charges. A ``pricing_schedule``
-    here would reintroduce the hour-by-hour behaviour, so its absence is part
-    of what this asserts.
-    """
-    document = yaml.safe_load(MODELS_YAML.read_text())
-    raw = next(model for model in document["models"] if model["id"] == model_id)
-
-    assert "pricing_schedule" not in raw
-    assert (
-        raw["pricing"]["prompt"],
-        raw["pricing"]["input_cache_reads"],
-        raw["pricing"]["completion"],
-    ) == peak

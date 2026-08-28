@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from serving.rag.config import DEFAULT_INDEX_PATH, _repo_root_for, load_rag_settings
+from serving.rag.config import _repo_root_for, load_rag_settings
 
 
 def test_repo_root_survives_flattened_docker_layout():
@@ -29,17 +29,26 @@ def test_repo_root_uses_parents4_in_repo_layout():
     assert _repo_root_for(repo_path) == Path("/home/dev/hybridInference")
 
 
-def test_index_path_resolves_to_the_overlay_in_this_checkout():
-    # The index is distribution content: the default must resolve into the
-    # overlay, never into the serving package. The runnable example is skipped
-    # by its EXAMPLE_OVERLAY marker, leaving the one real overlay unambiguous.
-    assert DEFAULT_INDEX_PATH.parts[-4:] == (
-        "freeinference",
+def test_index_path_resolves_under_distributions_in_this_checkout(monkeypatch):
+    # The index is distribution content: the default must resolve under
+    # distributions/, never into the serving package. Since the FreeInference
+    # overlay moved to its own repository (and the runnable example is skipped
+    # by its EXAMPLE_OVERLAY marker), this checkout has no overlay, and the
+    # resolver's documented no-overlay fallback is the distributions root.
+    # Recomputed rather than read from the import-time constant: a host `.env`
+    # naming DISTRIBUTION_CONFIG_PATH taints that constant with another tree.
+    from serving.rag import config as rag_config
+
+    monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
+    assert rag_config._distribution_root() is None
+    resolved = rag_config._default_index_path()
+    assert resolved.parts[-4:] == (
+        "distributions",
         "content",
         "rag",
         "docs_index.json",
     )
-    assert "serving" not in DEFAULT_INDEX_PATH.parts
+    assert "serving" not in resolved.parts
 
 
 def test_path_resolution_names_no_distribution():

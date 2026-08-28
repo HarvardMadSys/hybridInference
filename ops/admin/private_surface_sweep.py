@@ -39,7 +39,6 @@ PATTERNS: dict[str, re.Pattern[str]] = {
 PENDING: dict[str, str] = {
     "benchmark/": "machine-specific benchmark configuration",
     "deploy/": "site-specific units and deployment defaults",
-    "distributions/freeinference/": "private deployment overlay",
     "docs/agents/": "historical plans and specs",
     "docs/developer/": "deployment-specific developer documentation",
     "docs/superpowers/": "historical plans and specs",
