@@ -88,11 +88,18 @@ def extract_cache_tokens(
     - usage["cache_creation_input_tokens"] (Anthropic Claude write)
     - usage["cache_write_tokens"] (direct/normalized)
 
+    A ``*_tokens_details`` key present but null counts as a reported 0 (sglang
+    and vLLM answer a prefix-cache miss that way).
+
     Args:
         usage: Usage dictionary from model response
 
     Returns:
         Tuple of (cache_read_tokens, cache_write_tokens), each int or None.
+        ``None`` means the provider reported nothing about caching; ``0`` means
+        it reported a miss. Callers distinguish the two -- ``UsageInfo`` drops
+        the field for ``None`` and ``api_logs.cache_read_tokens`` stores NULL --
+        so a provider that cannot report cache usage is not scored as a miss.
     """
     if not usage or not isinstance(usage, dict):
         return None, None
@@ -120,6 +127,18 @@ def extract_cache_tokens(
                 pass
 
     # Nested: OpenAI/Azure use prompt_tokens_details; MiniMax may use input token details.
+    # A details key carried as null is the provider *reporting* that nothing was
+    # cached: sglang (with --enable-cache-report) and vLLM answer a prefix-cache
+    # miss with `"prompt_tokens_details": null` rather than `{"cached_tokens": 0}`.
+    # That is the same "supported but no hit" the direct-field branch above already
+    # records as 0, so record it as 0 here too -- otherwise a reported miss is
+    # filed as an unmeasured request and `None` stops meaning the one thing the
+    # rest of the system reads it as (`cache_read_reported=False`, the field
+    # dropped from `UsageInfo.to_dict()`, NULL in `api_logs.cache_read_tokens`),
+    # which is a provider that says nothing about caching at all. Applied only
+    # after every field has had its turn, so a null `prompt_tokens_details` cannot
+    # mask a populated `input_tokens_details` on a provider that sends both.
+    reported_no_cache = False
     for details_field in (
         "prompt_tokens_details",
         "input_tokens_details",
@@ -128,6 +147,9 @@ def extract_cache_tokens(
         if cache_read is not None or details_field not in usage:
             continue
         details = usage[details_field]
+        if details is None:
+            reported_no_cache = True
+            continue
         if isinstance(details, dict):
             for nested_field in ("cached_tokens", "cache_read_tokens", "cache_hit_tokens"):
                 val = details.get(nested_field)
@@ -142,6 +164,9 @@ def extract_cache_tokens(
                     pass
             if cache_read is not None:
                 break
+
+    if cache_read is None and reported_no_cache:
+        cache_read = 0
 
     # --- cache write tokens ---
     cache_write: int | None = None
