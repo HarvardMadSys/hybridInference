@@ -4887,3 +4887,228 @@ def test_openrouter_pin_is_not_mistaken_for_an_analytics_label():
         route_id="minimax-fast:deepinfra-api",
     )
     assert cfg["provider"] == "chutes"
+
+
+# ---------------------------------------------------------------------------
+# null_cache_details_means_miss must not travel by clone
+# ---------------------------------------------------------------------------
+#
+# Both admin paths build a new ModelConfig by cloning an existing route's --
+# the first route for a new candidate, the edited route for an update -- and
+# then overriding a fixed set of fields. The cache-report licence is a probe
+# result about one endpoint ("this server was started with
+# --enable-cache-report"), so inheriting it is exactly how an unprobed endpoint
+# would start recording fabricated measured misses. On the four models that
+# carry it in production the licensed sglang route is the *first* one, so it is
+# the clone template for every fallback an admin adds.
+
+
+def _license_first_route(route_executor, model_id: str = "minimax-fast"):
+    """Stand in for a model whose first route is a licensed sglang node."""
+    adapter = route_executor.routes[model_id].raw_adapters[0][0]
+    adapter.config.null_cache_details_means_miss = True
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_route_candidate_does_not_inherit_the_cache_report_licence(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _license_first_route(route_executor)
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    added = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert added.config.endpoint_id == "minimax-fast:openrouter[parasail]-api"
+    assert added.config.null_cache_details_means_miss is False
+
+
+@pytest.mark.asyncio
+async def test_route_update_drops_the_licence_when_the_endpoint_changes(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _license_first_route(route_executor)
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": 5000,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    updated = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert updated.config.null_cache_details_means_miss is False
+
+
+@pytest.mark.asyncio
+async def test_route_update_keeps_the_licence_for_a_same_endpoint_key_rotation(admin_client):
+    """Rotating the credential does not repoint the route, so the probe still holds."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _license_first_route(route_executor)
+    op_store.get_provider_key_full.return_value = ("chutes", "chutes-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-chutes",
+            provider="chutes",
+            key_prefix="chutes...7890",
+            label="rotated",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "chutes",
+            "base_url": "https://llm.chutes.ai/v1",
+            "api_key_id": "db-chutes",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    updated = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert updated.config.null_cache_details_means_miss is True
+
+
+@pytest.mark.asyncio
+async def test_route_update_keeps_the_licence_across_an_equivalent_url_spelling(admin_client):
+    """A trailing slash is not a repointing.
+
+    Adapters strip it before building the request URL, so the edit still points
+    at the probed server; a raw string comparison would silently revoke the
+    licence and send that endpoint's misses back to NULL.
+    """
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _license_first_route(route_executor)
+    op_store.get_provider_key_full.return_value = ("chutes", "chutes-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-chutes",
+            provider="chutes",
+            key_prefix="chutes...7890",
+            label="rotated",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "chutes",
+            "base_url": "https://llm.chutes.ai/v1/",
+            "api_key_id": "db-chutes",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    updated = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert updated.config.null_cache_details_means_miss is True
+
+
+def test_canonical_base_url_folds_only_request_equivalent_spellings():
+    canonical = provider_routes._canonical_base_url
+
+    # Same upstream request -> same key.
+    assert canonical("https://llm.chutes.ai/v1/") == canonical("https://llm.chutes.ai/v1")
+    assert canonical("https://LLM.Chutes.AI/v1") == canonical("https://llm.chutes.ai/v1")
+    assert canonical("https://llm.chutes.ai:443/v1") == canonical("https://llm.chutes.ai/v1")
+
+    # Different upstream -> different key. A path or host change is a move.
+    assert canonical("https://llm.chutes.ai/v2") != canonical("https://llm.chutes.ai/v1")
+    assert canonical("https://other.chutes.ai/v1") != canonical("https://llm.chutes.ai/v1")
+    assert canonical("https://llm.chutes.ai:8443/v1") != canonical("https://llm.chutes.ai/v1")
+
+
+def test_canonical_base_url_keeps_rfc3986_params_in_the_path():
+    """`urlparse` splits `;params` off the path; the adapter does not.
+
+    `/v1;blue` and `/v1;green` build different upstream requests, so folding
+    them together would carry an endpoint fact across two different endpoints --
+    and a remote `endpoint_id` is only `<service>-api`, so it cannot catch it.
+    """
+    canonical = provider_routes._canonical_base_url
+
+    assert canonical("https://llm.chutes.ai/v1;blue") != canonical("https://llm.chutes.ai/v1;green")
+    assert canonical("https://llm.chutes.ai/v1;blue") != canonical("https://llm.chutes.ai/v1")
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        None,
+        "",
+        "https://llm.chutes.ai/v1?",
+        "https://llm.chutes.ai/v1#",
+    ],
+)
+def test_canonical_base_url_refuses_what_it_cannot_resolve(spelling):
+    """An unresolvable spelling yields None, which never compares equal.
+
+    A bare `?`/`#` survives `_validate_base_url` (it only rejects a *non-empty*
+    query or fragment) and the adapter carries it into the request path, while
+    urlsplit drops it -- so the safe answer is to refuse rather than fold.
+    """
+    assert provider_routes._canonical_base_url(spelling) is None
+
+
+def test_unresolvable_url_drops_the_licence_rather_than_carrying_it():
+    cfg = {"endpoint_id": "m:chutes-api"}
+    current = SimpleNamespace(
+        endpoint_id="m:chutes-api",
+        base_url="https://llm.chutes.ai/v1?",
+        null_cache_details_means_miss=True,
+    )
+
+    provider_routes._carry_endpoint_facts_if_unmoved(
+        cfg,
+        current_adapter=SimpleNamespace(config=current),
+        base_url="https://llm.chutes.ai/v1?",
+    )
+
+    assert "null_cache_details_means_miss" not in cfg

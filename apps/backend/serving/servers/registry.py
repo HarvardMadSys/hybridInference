@@ -652,6 +652,38 @@ def register_from_models_yaml(
                 elif "priority_scheduling" in adapter_cfg:
                     adapter_cfg["priority_scheduling"] = bool(adapter_cfg["priority_scheduling"])
 
+                # Whether a null `*_tokens_details` block from this endpoint is a
+                # reported cache miss (0) rather than "no cache reporting" (NULL).
+                #
+                # Route-level ONLY -- deliberately not inheritable from the model,
+                # unlike priority_scheduling. The declaration is a claim about one
+                # server's startup flags that someone verified by probing it, and a
+                # model-level claim would silently ride along to every fallback,
+                # including a synthesized shorthand route with no `route:` block to
+                # review. Fabricating a measured 0 on an endpoint that reports
+                # nothing is the failure this whole field exists to prevent, so an
+                # inheritable spelling is refused rather than quietly honored.
+                if "null_cache_details_means_miss" in m:
+                    raise ValueError(
+                        f"null_cache_details_means_miss for model {top_cfg.get('id')!r} "
+                        "must be declared on a route, not on the model: it states that "
+                        "one server was started with cache reporting on, which cannot "
+                        "be true of every route a model has."
+                    )
+                if "null_cache_details_means_miss" in r:
+                    flag = r["null_cache_details_means_miss"]
+                    if not isinstance(flag, bool):
+                        # `bool("false")` is True: a quoted YAML scalar would turn an
+                        # explicit opt-out into an opt-in, silently.
+                        raise ValueError(
+                            "null_cache_details_means_miss for route "
+                            f"{r.get('base_url')!r} on model {top_cfg.get('id')!r} must "
+                            f"be a YAML boolean, got {type(flag).__name__} ({flag!r})"
+                        )
+                    adapter_cfg["null_cache_details_means_miss"] = flag
+                else:
+                    adapter_cfg.pop("null_cache_details_means_miss", None)
+
                 # Route-level input_modalities override (default: inherit the
                 # model-level declaration). Lets a narrower fallback (e.g. a
                 # text-only mirror of a vision model) advertise fewer modalities
