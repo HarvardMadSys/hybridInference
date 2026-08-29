@@ -5,7 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from routewise.core import (
+from llm_routewise.core import (
     BudgetLPCandidate,
     cost_tiebroken_objective,
     quota_effective_cost,

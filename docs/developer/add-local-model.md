@@ -347,6 +347,60 @@ Set it only on routes pointing at a server launched with the flag. A server
 without it ignores the field, but a remote provider that validates its request
 body strictly would not.
 
+### Recording a Prefix-Cache Miss on an sglang Route
+
+An sglang server started with `--enable-cache-report` answers a prefix-cache
+**miss** with `"prompt_tokens_details": null` rather than
+`{"cached_tokens": 0}`. Left alone, the gateway reads that null as "this
+provider says nothing about caching" and stores `NULL` in
+`api_logs.cache_read_tokens` — the same value it stores for a provider that
+cannot report at all, so a measured miss disappears from any hit-rate
+denominator computed off that column.
+
+A route can declare that its server does report, which turns the null into the
+0 it means:
+
+```yaml
+    route:
+      - kind: sglang
+        weight: 1.0
+        base_url: ${LOCAL_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        null_cache_details_means_miss: true
+```
+
+**Verify before setting it.** The null is ambiguous: sglang *without*
+`--enable-cache-report`, and vLLM without `--enable-prompt-tokens-details`,
+send the identical null on every request — hit or miss
+([vllm-project/vllm#44377](https://github.com/vllm-project/vllm/issues/44377)).
+Declaring the flag there would replace an honest `NULL` with a fabricated
+"measured miss", which is harder to notice later than the missing value it
+replaces. The check is one cold request and one warm repeat of the same prompt
+against the endpoint:
+
+```bash
+curl -s "$BASE_URL/chat/completions" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"<a long, freshly generated prompt>"}],"max_tokens":1}' | jq .usage
+```
+
+Run it twice. The route qualifies only if the second call returns
+`{"cached_tokens": N}` with `N > 0` while the first returned `null`. If both
+return `null`, the server is not reporting — leave the flag off.
+
+Two loader rules keep a wrong declaration from passing quietly:
+
+- **Route-level only.** Declaring it on the model (including a shorthand model
+  with no `route:` block) is a config error, because the claim is about one
+  server's startup flags and inheritance would carry it to every fallback.
+- **Real YAML booleans only.** A quoted `"false"` is a config error rather than
+  a surprise opt-in, since `bool("false")` is `True`.
+
+What the client sees differs by surface: a non-streaming response carries
+`cache_read_tokens: 0` (the `Usage` response model drops the rest), while a
+streaming final chunk also carries `cached_tokens: 0` and
+`prompt_tokens_details: {"cached_tokens": 0}`. `/v1/messages` reports it as
+`cache_read_input_tokens: 0`.
+
 ## Troubleshooting
 
 ### Model Does Not Appear in `/v1/models`

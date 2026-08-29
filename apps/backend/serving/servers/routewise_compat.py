@@ -1,10 +1,17 @@
-"""Import-tolerant access to the optional RouteWise integration.
+"""Import-tolerant access to the RouteWise integration.
 
-RouteWise is heading for an optional install (its core is a private
-package). Serving code that merely *checks* for RouteWise routers — the
-boot path and the generic provider admin — imports these names from here so
-the backend stays importable without the package. With RouteWise installed
-every re-export is the real object and behavior is byte-identical.
+RouteWise is a required dependency: the public, MIT-licensed
+``llm-routewise`` distribution on PyPI, published by the same lab as this
+gateway. A correctly installed backend therefore always takes the real
+import path below.
+
+This module covers the case where it is nevertheless absent — a partial
+install, or a build that deliberately drops the strategy — because no single
+routing algorithm should decide whether HybridInference can start. Serving
+code that merely *checks* for RouteWise routers — the boot path and the
+generic provider admin — imports these names from here so the backend stays
+importable either way. With RouteWise installed every re-export is the real
+object and behavior is byte-identical.
 
 Without the package the stand-ins are inert by design:
 
@@ -29,8 +36,8 @@ from __future__ import annotations
 from typing import Any
 
 _MISSING = (
-    "RouteWise is not installed; install the optional 'routewise' extra "
-    "(uv sync --extra routewise) to use RouteWise features"
+    "RouteWise is not installed; reinstall the gateway dependencies "
+    "(uv sync) to restore the required 'llm-routewise' distribution"
 )
 
 try:

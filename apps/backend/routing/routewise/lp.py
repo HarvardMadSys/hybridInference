@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from routewise.core import (
+from llm_routewise.core import (
     BudgetLPCandidate,
     cost_tiebroken_objective,
     solve_budget_lp,
@@ -34,7 +34,7 @@ def solve_cost_budgeted_mean_ttft(
     *,
     alpha: float,
 ) -> LPSolution:
-    """Solve the RouteWise selection LP through ``routewise.core``.
+    """Solve the RouteWise selection LP through ``llm_routewise.core``.
 
     Objective:
         minimize ``sum_j pi_j * (mean_ttft_j + 1e-6 * normalized_cost_j)``

@@ -43,9 +43,8 @@ model uses, keeping the legacy circuit alert's dedupe key collision-free.
 
 ## Evidence ① — the firing parent
 
-Captured by reading Slack directly (channel `#free-inference-alert`,
-`C09F2UER4R2`), message `1785156080.485409`
-([permalink](https://harvardmadsys.slack.com/archives/C09F2UER4R2/p1785156080485409)):
+Captured by reading the team alert channel directly (workspace-internal
+permalink withheld from the published record):
 
 ```
 ❌ STAGING · Firing

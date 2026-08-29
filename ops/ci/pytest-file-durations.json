@@ -1,6 +1,5 @@
 {
   "durations": {
-    "distributions/freeinference/tests/test_overlay_manifest.py": 0.025937,
     "tests/api/admin/test_geo_endpoint.py": 0.282546,
     "tests/api/admin/test_quota_routes.py": 0.066372,
     "tests/api/test_signup_role_quota.py": 0.06164,

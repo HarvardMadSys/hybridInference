@@ -108,25 +108,6 @@ html_css_files = [
     "custom.css",
 ]
 
-# -- Optional analytics ------------------------------------------------------
-# Off unless whoever publishes the site opts in with their own Statcounter
-# ids, the same arrangement the console uses
-# (`apps/frontend/src/config/branding.ts`). A shipped default would report
-# every third-party build's traffic into one project's analytics account.
-# `_templates/layout.html` emits nothing when the project id is empty.
-_statcounter_project_id = os.environ.get("DOCS_STATCOUNTER_PROJECT_ID", "").strip()
-_statcounter_security_key = os.environ.get("DOCS_STATCOUNTER_SECURITY_KEY", "").strip()
-
-# Both values are interpolated into a <script> body and an image URL, so accept
-# only the shapes Statcounter issues (a numeric project id, an alphanumeric
-# security key). Anything else is dropped, which turns analytics off.
-if not _statcounter_project_id.isdigit():
-    _statcounter_project_id = ""
-if not _statcounter_security_key.isalnum():
-    _statcounter_security_key = ""
-
 html_context = {
     "doc_languages": _languages,
-    "statcounter_project_id": _statcounter_project_id,
-    "statcounter_security_key": _statcounter_security_key,
 }

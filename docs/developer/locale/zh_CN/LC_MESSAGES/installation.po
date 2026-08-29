@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"POT-Creation-Date: 2026-08-29 10:19+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -28,9 +28,7 @@ msgstr "安装"
 msgid ""
 "How to get a HybridInference gateway running, either as the Docker stack "
 "or as a source checkout you can edit."
-msgstr ""
-"如何把一个 HybridInference 网关跑起来——可以用 Docker 服务栈，"
-"也可以用一份能直接改的源码检出。"
+msgstr "如何把一个 HybridInference 网关跑起来——可以用 Docker 服务栈，也可以用一份能直接改的源码检出。"
 
 #: ../developer/installation.md:6
 msgid ""
@@ -40,10 +38,9 @@ msgid ""
 "and no `.env` at all. This page is the next step: your own deployment, "
 "with your own providers."
 msgstr ""
-"如果你更想先看到网关真的应答一次请求、再去配置别的，那就从[快速开始"
-"](router-tutorial.md)开始。它跑的是一个确定性的假 provider"
-"，不需要 provider 账号、不需要 API key，连 `.env` 都不需要。本"
-"页是下一步：用你自己的 provider，搭你自己的部署。"
+"如果你更想先看到网关真的应答一次请求、再去配置别的，那就从[快速开始](router-tutorial.md)开始。它跑的是一个确定性的假 "
+"provider，不需要 provider 账号、不需要 API key，连 `.env` 都不需要。本页是下一步：用你自己的 "
+"provider，搭你自己的部署。"
 
 #: ../developer/installation.md:11
 msgid "What you need"
@@ -74,8 +71,8 @@ msgid ""
 "Python 3.10–3.13 (3.12 recommended, per `pyproject.toml`) and "
 "[uv](https://github.com/astral-sh/uv)"
 msgstr ""
-"Python 3.10–3.13（按 `pyproject.toml`，推荐 3.12）"
-"与 [uv](https://github.com/astral-sh/uv)"
+"Python 3.10–3.13（按 `pyproject.toml`，推荐 3.12）与 [uv](https://github.com"
+"/astral-sh/uv)"
 
 #: ../developer/installation.md
 msgid "Running the console outside Docker"
@@ -87,27 +84,24 @@ msgstr "Node.js 22（CI 安装的版本）"
 
 #: ../developer/installation.md:19
 msgid ""
-"Linux or macOS. `uv sync` fetches one dependency (`routewise`) from a Git"
-" URL declared in `pyproject.toml`, so the install needs network access to"
-" that repository."
+"Linux or macOS. Every dependency resolves from PyPI, so a plain `uv sync`"
+" needs nothing but network access to the index."
 msgstr ""
-"Linux 或 macOS。`uv sync` 会从 `pyproject.toml` "
-"里声明的一个 Git URL 拉取 `routewise` 这一个依赖，所以安装过程需要能访问那个仓库。"
+"Linux 或 macOS。所有依赖都来自 PyPI，所以一次普通的 `uv sync` 除了能访问索引之外别无要求。"
 
-#: ../developer/installation.md:23
+#: ../developer/installation.md:22
 msgid "Quick start with Docker"
 msgstr "用 Docker 快速开始"
 
-#: ../developer/installation.md:31
+#: ../developer/installation.md:30
 msgid ""
 "Now edit `.env`. **`make up` aborts before starting anything unless these"
 " three have values** — `deploy/docker/docker-compose.yml` declares them "
 "with Compose's `:?` required form, and Compose fails at interpolation, "
 "not at runtime:"
 msgstr ""
-"接下来编辑 `.env`。**这三个变量没有值时，`make up` 会在启动任何东西之"
-"前中止**——`deploy/docker/docker-compose.yml` 用 "
-"Compose 的 `:?` 必填写法声明了它们，而 Compose 是在变量插值阶段失败，不是在运行时："
+"接下来编辑 `.env`。**这三个变量没有值时，`make up` 会在启动任何东西之前中止**——`deploy/docker/docker-"
+"compose.yml` 用 Compose 的 `:?` 必填写法声明了它们，而 Compose 是在变量插值阶段失败，不是在运行时："
 
 #: ../developer/installation.md
 msgid "Variable"
@@ -137,7 +131,7 @@ msgstr "**为空；必须自己填**"
 msgid "`DB_PASSWORD`"
 msgstr ""
 
-#: ../developer/installation.md:41
+#: ../developer/installation.md:40
 msgid ""
 "Two more are not enforced by Compose but should be set before anyone "
 "signs up: `JWT_SECRET_KEY` and `API_KEY_SECRET`. Both ship empty, and "
@@ -145,17 +139,15 @@ msgid ""
 "running with insecure tokens and insecure API-key hashing if they stay "
 "that way. Generate each one:"
 msgstr ""
-"还有两个 Compose 不强制、但在有人注册之前就该设好："
-"`JWT_SECRET_KEY` 和 `API_KEY_SECRET`。两者出厂都是空的"
-"；如果一直空着，`apps/backend/serving/servers/app.py`"
-" 会打一条 `CRITICAL` 日志，然后带着不安全的 token 和不安全的 API"
-" key 哈希继续运行。各生成一个："
+"还有两个 Compose 不强制、但在有人注册之前就该设好：`JWT_SECRET_KEY` 和 "
+"`API_KEY_SECRET`。两者出厂都是空的；如果一直空着，`apps/backend/serving/servers/app.py` "
+"会打一条 `CRITICAL` 日志，然后带着不安全的 token 和不安全的 API key 哈希继续运行。各生成一个："
 
-#: ../developer/installation.md:51
+#: ../developer/installation.md:50
 msgid "Then start the stack:"
 msgstr "然后启动这套服务栈："
 
-#: ../developer/installation.md:59
+#: ../developer/installation.md:58
 msgid ""
 "`make up` runs the Makefile's `docker-volumes` target first, which "
 "creates the Docker volume `hybridinference_postgres_data` if it does not "
@@ -164,13 +156,12 @@ msgid ""
 "[Deployment](deployment.md#resetting-the-stack) before you try to wipe "
 "the database."
 msgstr ""
-"`make up` 会先执行 Makefile 的 `docker-volumes` 目"
-"标，在 Docker 卷 `hybridinference_postgres_data`"
-" 不存在时创建它。这个卷在 Compose 文件里声明为 `external: "
-"true`，所以 Compose 自身从不创建、也不删除它——想清空数据库之前，先看[部"
-"署](deployment.md#resetting-the-stack)。"
+"`make up` 会先执行 Makefile 的 `docker-volumes` 目标，在 Docker 卷 "
+"`hybridinference_postgres_data` 不存在时创建它。这个卷在 Compose 文件里声明为 `external: "
+"true`，所以 Compose 自身从不创建、也不删除它——想清空数据库之前，先看[部署](deployment.md#resetting-"
+"the-stack)。"
 
-#: ../developer/installation.md:66
+#: ../developer/installation.md:65
 msgid "Three containers start:"
 msgstr "会启动三个容器："
 
@@ -222,20 +213,20 @@ msgstr ""
 msgid "override with `DB_PORT`"
 msgstr "用 `DB_PORT` 覆盖"
 
-#: ../developer/installation.md:74
+#: ../developer/installation.md:73
 msgid ""
 "pgAdmin and the Codex on-call relay are in the Compose file too but are "
 "gated behind profiles, so nothing starts them unless you ask (see "
 "[Deployment](deployment.md))."
 msgstr ""
-"pgAdmin 和 Codex on-call relay 也在 Compose 文件里"
-"，但被 profile 挡着，不主动要求就不会有东西启动它们（见[部署](deployment.md)）。"
+"pgAdmin 和 Codex on-call relay 也在 Compose 文件里，但被 profile "
+"挡着，不主动要求就不会有东西启动它们（见[部署](deployment.md)）。"
 
-#: ../developer/installation.md:78
+#: ../developer/installation.md:77
 msgid "Which models the fresh stack serves"
 msgstr "全新的服务栈会提供哪些模型"
 
-#: ../developer/installation.md:80
+#: ../developer/installation.md:79
 msgid ""
 "A clone with no model registry of its own is not empty. When neither "
 "`MODELS_CONFIG_PATH` nor an active distribution manifest names a file, "
@@ -246,16 +237,15 @@ msgid ""
 " registry routes through [OpenRouter](https://openrouter.ai) and needs "
 "exactly one credential:"
 msgstr ""
-"一份没有自带模型注册表的克隆并不是空的。当 `MODELS_CONFIG_PATH` 和"
-"处于 active 的 distribution manifest 都没有点名某个文件时"
-"，后端会回退到内置的参考注册表 "
-"`config/examples/models.openrouter.yaml`，并搭配"
-" `config/examples/routing.minimal.yaml`（见 "
-"`apps/backend/serving/config/distribution.py`"
-" 的 `_LEGACY_DEFAULTS`）。这份注册表通过 "
-"[OpenRouter](https://openrouter.ai) 路由，只需要一个凭据："
+"一份没有自带模型注册表的克隆并不是空的。当 `MODELS_CONFIG_PATH` 和处于 active 的 distribution "
+"manifest 都没有点名某个文件时，后端会回退到内置的参考注册表 "
+"`config/examples/models.openrouter.yaml`，并搭配 "
+"`config/examples/routing.minimal.yaml`（见 "
+"`apps/backend/serving/config/distribution.py` 的 "
+"`_LEGACY_DEFAULTS`）。这份注册表通过 [OpenRouter](https://openrouter.ai) "
+"路由，只需要一个凭据："
 
-#: ../developer/installation.md:93
+#: ../developer/installation.md:92
 msgid ""
 "Run `make up` again afterwards, not `make restart`: a container reads its"
 " `env_file` when it is created, so `docker compose restart` leaves the "
@@ -264,87 +254,79 @@ msgid ""
 " see [Configuration](#configuration) below and [Adding models](adding-"
 "models.md)."
 msgstr ""
-"改完之后要再跑一次 `make up`，而不是 `make restart`：容器只在创"
-"建时读取自己的 `env_file`，所以 `docker compose "
-"restart` 会原样保留旧的环境变量，而 `up` 会把配置有变动的服务重建。要让网"
-"关改用你自己的注册表，见下面的[配置](#configuration)和[添加模型"
-"](adding-models.md)。"
+"改完之后要再跑一次 `make up`，而不是 `make restart`：容器只在创建时读取自己的 `env_file`，所以 `docker"
+" compose restart` 会原样保留旧的环境变量，而 `up` "
+"会把配置有变动的服务重建。要让网关改用你自己的注册表，见下面的[配置](#configuration)和[添加模型](adding-"
+"models.md)。"
 
-#: ../developer/installation.md:100
+#: ../developer/installation.md:99
 msgid "Development checkout (no Docker)"
 msgstr "开发用检出（不用 Docker）"
 
-#: ../developer/installation.md:109
+#: ../developer/installation.md:108
 msgid ""
 "`make setup-dev` creates `.venv` on Python 3.12 (and refuses to continue "
 "if an existing `.venv` is on a different minor version), installs the "
 "project editable, syncs the `dev` dependency group and installs the pre-"
 "commit hooks. To do it by hand:"
 msgstr ""
-"`make setup-dev` 会用 Python 3.12 创建 `.venv`（如"
-"果已有的 `.venv` 是别的次版本，它会拒绝继续），以可编辑方式安装本项目，同步 "
-"`dev` 依赖组，并装好 pre-commit hooks。手动来做的话："
+"`make setup-dev` 会用 Python 3.12 创建 `.venv`（如果已有的 `.venv` "
+"是别的次版本，它会拒绝继续），以可编辑方式安装本项目，同步 `dev` 依赖组，并装好 pre-commit hooks。手动来做的话："
 
-#: ../developer/installation.md:120
+#: ../developer/installation.md:119
 msgid ""
 "Run the gateway from the repository root — the backend packages live "
 "under `apps/backend/`, which is why `PYTHONPATH` is set:"
-msgstr ""
-"在仓库根目录运行网关——后端的包在 `apps/backend/` 下面，所"
-"以才要设置 `PYTHONPATH`："
+msgstr "在仓库根目录运行网关——后端的包在 `apps/backend/` 下面，所以才要设置 `PYTHONPATH`："
 
-#: ../developer/installation.md:129
+#: ../developer/installation.md:128
 msgid "Run the console in a second terminal:"
 msgstr "在另一个终端里运行控制台："
 
-#: ../developer/installation.md:137
+#: ../developer/installation.md:136
 msgid ""
 "To develop against Postgres without running the whole stack, start just "
 "the database container:"
 msgstr "想在不启动整套服务栈的情况下对着 Postgres 开发，就只起数据库容器："
 
-#: ../developer/installation.md:144
+#: ../developer/installation.md:143
 msgid ""
 "Or set `DB_ENABLED=false` in `.env` and run with no database at all: the "
 "gateway still routes requests, and `/health` reports "
 "`\"database_configured\": false`. Accounts, API keys and request history "
 "need the database."
 msgstr ""
-"或者在 `.env` 里设 `DB_ENABLED=false`，完全不带数据库运行：网"
-"关照样路由请求，`/health` 会报告 "
+"或者在 `.env` 里设 `DB_ENABLED=false`，完全不带数据库运行：网关照样路由请求，`/health` 会报告 "
 "`\"database_configured\": false`。账户、API key 和请求历史则需要数据库。"
 
-#: ../developer/installation.md:148
+#: ../developer/installation.md:147
 msgid "Configuration"
 msgstr "配置"
 
-#: ../developer/installation.md:150
+#: ../developer/installation.md:149
 msgid "Environment variables"
 msgstr "环境变量"
 
-#: ../developer/installation.md:152
+#: ../developer/installation.md:151
 msgid "`.env` at the repository root is the single file. Two things read it:"
 msgstr "仓库根目录的 `.env` 就是那唯一的一个文件。有两处会读它："
 
-#: ../developer/installation.md:154
+#: ../developer/installation.md:153
 msgid ""
 "the backend process, when you start it from the repository root "
 "(`Settings.Config.env_file = \".env\"` in "
 "`apps/backend/serving/config/settings.py`);"
 msgstr ""
-"backend 进程，当你从仓库根目录启动它时（"
-"`apps/backend/serving/config/settings.py` 里的"
-" `Settings.Config.env_file = \".env\"`）；"
+"backend 进程，当你从仓库根目录启动它时（`apps/backend/serving/config/settings.py` 里的 "
+"`Settings.Config.env_file = \".env\"`）；"
 
-#: ../developer/installation.md:157
+#: ../developer/installation.md:156
 msgid ""
 "the containers, because Compose is invoked with `--env-file .env` and the"
 " backend service also lists it as `env_file`."
-msgstr ""
-"各个容器，因为 Compose 以 `--env-file .env` 调用，而 "
-"backend 服务也把它列为 `env_file`。"
+msgstr "各个容器，因为 Compose 以 `--env-file .env` 调用，而 backend 服务也把它列为 `env_file`。"
 
-#: ../developer/installation.md:160
+#: ../developer/installation.md:159
 msgid ""
 "Beyond the five variables in the quick start, everything in "
 "`.env.example` is optional. The ones you are most likely to want:"
@@ -426,11 +408,11 @@ msgstr ""
 msgid "whether `X-Forwarded-For` / `X-Real-IP` are believed"
 msgstr "是否信任 `X-Forwarded-For` / `X-Real-IP`"
 
-#: ../developer/installation.md:175
+#: ../developer/installation.md:174
 msgid "Provider credentials"
 msgstr "Provider 凭据"
 
-#: ../developer/installation.md:177
+#: ../developer/installation.md:176
 #, python-brace-format
 msgid ""
 "There is no fixed list of provider variables in the code. A model "
@@ -439,27 +421,24 @@ msgid ""
 "provider credentials a deployment needs are exactly the variables its own"
 " registry names:"
 msgstr ""
-"代码里并没有一份固定的 provider 变量清单。模型注册表在加载时会对 "
-"`${VAR}` 和 `${VAR:-default}` 做插值（"
-"`apps/backend/routing/config.py` 里的 "
-"`_expand_env_value`），所以一个部署需要哪些 provider 凭据，"
-"正好就是它自己的注册表点名的那些变量："
+"代码里并没有一份固定的 provider 变量清单。模型注册表在加载时会对 `${VAR}` 和 `${VAR:-default}` "
+"做插值（`apps/backend/routing/config.py` 里的 `_expand_env_value`），所以一个部署需要哪些 "
+"provider 凭据，正好就是它自己的注册表点名的那些变量："
 
-#: ../developer/installation.md:190
+#: ../developer/installation.md:189
 msgid ""
 "`.env.example` ships blank placeholders for the providers this project "
 "has adapters or examples for; add your own names freely. The bundled "
 "default registry needs only `OPENROUTER_API_KEY`."
 msgstr ""
-"`.env.example` 为本项目有 adapter 或示例的那些 provider"
-" 提供了空白占位；你也可以随意添加自己的变量名。内置的默认注册表只需要 "
-"`OPENROUTER_API_KEY`。"
+"`.env.example` 为本项目有 adapter 或示例的那些 provider "
+"提供了空白占位；你也可以随意添加自己的变量名。内置的默认注册表只需要 `OPENROUTER_API_KEY`。"
 
-#: ../developer/installation.md:194
+#: ../developer/installation.md:193
 msgid "Where the config files live"
 msgstr "配置文件在哪里"
 
-#: ../developer/installation.md:196
+#: ../developer/installation.md:195
 msgid ""
 "There is no `config/models.yaml` or `config/routing.yaml` in this "
 "repository. `resolve_config_path` in "
@@ -467,23 +446,20 @@ msgid ""
 "in this order:"
 msgstr ""
 "本仓库里没有 `config/models.yaml`，也没有 "
-"`config/routing.yaml`。"
-"`apps/backend/serving/config/distribution.py`"
-" 里的 `resolve_config_path` 按以下顺序解析每个配置文件："
+"`config/routing.yaml`。`apps/backend/serving/config/distribution.py` 里的 "
+"`resolve_config_path` 按以下顺序解析每个配置文件："
 
-#: ../developer/installation.md:200
+#: ../developer/installation.md:199
 msgid ""
 "**an explicit environment variable** — `MODELS_CONFIG_PATH`, "
 "`ROUTING_CONFIG_PATH`, `ALERTS_CONFIG_PATH` (the older `MODELS_CONFIG` "
 "and `ROUTING_CONFIG` spellings are still accepted; the `*_CONFIG_PATH` "
 "name wins when both are set);"
 msgstr ""
-"**显式的环境变量**——`MODELS_CONFIG_PATH`、"
-"`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`（旧"
-"的 `MODELS_CONFIG` 和 `ROUTING_CONFIG` 写法仍然接受；"
-"两者都设置时以 `*_CONFIG_PATH` 为准）；"
+"**显式的环境变量**——`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`（旧的"
+" `MODELS_CONFIG` 和 `ROUTING_CONFIG` 写法仍然接受；两者都设置时以 `*_CONFIG_PATH` 为准）；"
 
-#: ../developer/installation.md:204
+#: ../developer/installation.md:203
 msgid ""
 "**a distribution manifest** — `DISTRIBUTION_CONFIG_PATH` pointing at a "
 "`distributions/<name>/distribution.yaml`, whose `paths:` section names "
@@ -491,134 +467,134 @@ msgid ""
 "`DISTRIBUTION_CONFIG_MODE=active`; the default `dark` loads and validates"
 " it and logs what it *would* change while resolution stays as it was;"
 msgstr ""
-"**distribution manifest**——"
-"`DISTRIBUTION_CONFIG_PATH` 指向某个 "
-"`distributions/<name>/distribution.yaml`，其中的"
-" `paths:` 一节点名了各个文件。该 manifest 只在 "
-"`DISTRIBUTION_CONFIG_MODE=active` 时才生效；默认的 "
-"`dark` 只加载并校验它、记录它*本来会*改动什么，而解析结果保持原样；"
+"**distribution manifest**——`DISTRIBUTION_CONFIG_PATH` 指向某个 "
+"`distributions/<name>/distribution.yaml`，其中的 `paths:` 一节点名了各个文件。该 "
+"manifest 只在 `DISTRIBUTION_CONFIG_MODE=active` 时才生效；默认的 `dark` "
+"只加载并校验它、记录它*本来会*改动什么，而解析结果保持原样；"
 
-#: ../developer/installation.md:209
+#: ../developer/installation.md:208
 msgid ""
 "**the built-in defaults** — `config/examples/models.openrouter.yaml` and "
 "`config/examples/routing.minimal.yaml`. There is no default alerts file, "
 "and its absence means the built-in thresholds apply."
 msgstr ""
-"**内置默认值**——"
-"`config/examples/models.openrouter.yaml` 和 "
-"`config/examples/routing.minimal.yaml`。没有默认的"
-"告警文件，它的缺席意味着内置阈值生效。"
+"**内置默认值**——`config/examples/models.openrouter.yaml` 和 "
+"`config/examples/routing.minimal.yaml`。没有默认的告警文件，它的缺席意味着内置阈值生效。"
 
-#: ../developer/installation.md:213
+#: ../developer/installation.md:212
 msgid ""
 "Paths are relative to the working directory (`/app` in the container). "
 "The Compose file mounts both `config/` and `distributions/` read-only "
 "into the backend, so editing either on the host and restarting the "
 "backend is enough — no image rebuild."
 msgstr ""
-"路径相对于工作目录（容器里是 `/app`）。Compose 文件把 `config/`"
-" 和 `distributions/` 都以只读方式挂进 backend，所以在宿主机上"
-"改动其中任意一个再重启 backend 就够了——不必重新构建镜像。"
+"路径相对于工作目录（容器里是 `/app`）。Compose 文件把 `config/` 和 `distributions/` 都以只读方式挂进 "
+"backend，所以在宿主机上改动其中任意一个再重启 backend 就够了——不必重新构建镜像。"
 
-#: ../developer/installation.md:218
+#: ../developer/installation.md:217
 msgid ""
 "See [Configuration](configuration.md) for what goes *inside* those files,"
 " and [Router Tutorial](router-tutorial.md) for a worked overlay."
 msgstr ""
-"这些文件*里面*该写什么，见[配置](configuration.md)；一个完整走通的"
-" overlay 示例见[快速开始](router-tutorial.md)。"
+"这些文件*里面*该写什么，见[配置](configuration.md)；一个完整走通的 overlay 示例见[快速开始](router-"
+"tutorial.md)。"
 
-#: ../developer/installation.md:222
+#: ../developer/installation.md:221
 msgid ""
 "A backend running directly on the host can reach a host inference server "
 "through `localhost`. A backend in Docker must use a Docker-reachable "
 "address such as `host.docker.internal`, written explicitly in the model "
 "registry; HybridInference does not rewrite provider URLs."
 msgstr ""
-"直接跑在宿主机上的 backend 可以通过 `localhost` 访问宿主机上的推理"
-"服务器。而 Docker 里的 backend 必须用 Docker 能访问到的地址，例"
-"如 `host.docker.internal`，并在模型注册表里显式写出来；"
-"HybridInference 不会改写 provider 的 URL。"
+"直接跑在宿主机上的 backend 可以通过 `localhost` 访问宿主机上的推理服务器。而 Docker 里的 backend 必须用 "
+"Docker 能访问到的地址，例如 `host.docker.internal`，并在模型注册表里显式写出来；HybridInference "
+"不会改写 provider 的 URL。"
 
-#: ../developer/installation.md:228
+#: ../developer/installation.md:227
 msgid "Verifying the install"
 msgstr "验证安装"
 
-#: ../developer/installation.md:237
+#: ../developer/installation.md:236
 msgid "End to end, against a running gateway:"
 msgstr "对着运行中的网关做一次端到端验证："
 
-#: ../developer/installation.md:248
+#: ../developer/installation.md:247
 msgid ""
 "Drop the `Authorization` header if you set `USER_AUTH_ENABLED=0`. Use a "
 "model id that `/v1/models` actually listed."
 msgstr ""
-"如果设了 `USER_AUTH_ENABLED=0`，就去掉 "
-"`Authorization` 头。模型 id 要用 `/v1/models` 真的列出来的那些。"
+"如果设了 `USER_AUTH_ENABLED=0`，就去掉 `Authorization` 头。模型 id 要用 `/v1/models` "
+"真的列出来的那些。"
 
-#: ../developer/installation.md:251
+#: ../developer/installation.md:250
 msgid "Documentation"
 msgstr "文档"
 
-#: ../developer/installation.md:253
+#: ../developer/installation.md:252
 msgid ""
 "These developer docs are MyST Markdown built with Sphinx from "
 "`docs/developer/`. Building them locally and the checks that gate them "
 "are covered in [Contributing](contributing.md#documentation)."
 msgstr ""
-"这份开发者文档是 MyST Markdown，由 Sphinx 从 "
-"`docs/developer/` 构建。本地构建方式以及为其把关的检查，见[贡献指南"
-"](contributing.md#documentation)。"
+"这份开发者文档是 MyST Markdown，由 Sphinx 从 `docs/developer/` "
+"构建。本地构建方式以及为其把关的检查，见[贡献指南](contributing.md#documentation)。"
 
-#: ../developer/installation.md:257
+#: ../developer/installation.md:256
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/installation.md:259
+#: ../developer/installation.md:258
 msgid ""
 "**`required variable DB_USER is missing a value`** — Compose stopped at "
 "interpolation. Fill in `DB_USER` and `DB_PASSWORD` in `.env`; see the "
 "table above."
 msgstr ""
-"**`required variable DB_USER is missing a "
-"value`**——Compose 在变量插值阶段就停了。在 `.env` 里填上 "
-"`DB_USER` 和 `DB_PASSWORD`，见上面的表格。"
+"**`required variable DB_USER is missing a value`**——Compose 在变量插值阶段就停了。在 "
+"`.env` 里填上 `DB_USER` 和 `DB_PASSWORD`，见上面的表格。"
 
-#: ../developer/installation.md:263
+#: ../developer/installation.md:262
 msgid ""
 "**`env file ... .env not found`** — the backend service reads "
 "`../../.env` relative to `deploy/docker/`, i.e. `.env` at the repository "
 "root. `cp .env.example .env` before `make up`."
 msgstr ""
-"**`env file ... .env not found`**——backend 服"
-"务读的是相对 `deploy/docker/` 的 `../../.env`，也就是仓库"
-"根目录的 `.env`。在 `make up` 之前先 `cp .env.example .env`。"
+"**`env file ... .env not found`**——backend 服务读的是相对 `deploy/docker/` 的 "
+"`../../.env`，也就是仓库根目录的 `.env`。在 `make up` 之前先 `cp .env.example .env`。"
 
-#: ../developer/installation.md:267
+#: ../developer/installation.md:266
 msgid ""
 "**Import errors when running from source** — run from the repository root"
 " with `PYTHONPATH=apps/backend`, and make sure the virtualenv is active "
 "(or use `uv run`)."
 msgstr ""
-"**从源码运行时报导入错误**——请在仓库根目录、带上 "
-"`PYTHONPATH=apps/backend` 运行，并确认虚拟环境已激活（或改用 `uv run`）。"
+"**从源码运行时报导入错误**——请在仓库根目录、带上 `PYTHONPATH=apps/backend` 运行，并确认虚拟环境已激活（或改用 "
+"`uv run`）。"
 
-#: ../developer/installation.md:271
+#: ../developer/installation.md:270
 msgid ""
 "**Every request 404s with an empty `/v1/models`** — the registry loaded "
 "nothing. On startup the backend logs either `Registered N routes from "
 "<path>` or an error naming the registry path it could not find; compare "
 "that path against the precedence list above."
 msgstr ""
-"**所有请求都 404，且 `/v1/models` 为空**——说明注册表什么都没加载"
-"进来。启动时 backend 要么打印 `Registered N routes "
-"from <path>`，要么打印一条指出它找不到的注册表路径的错误；把那个路径和上面的优先级列表对一下。"
+"**所有请求都 404，且 `/v1/models` 为空**——说明注册表什么都没加载进来。启动时 backend 要么打印 "
+"`Registered N routes from "
+"<path>`，要么打印一条指出它找不到的注册表路径的错误；把那个路径和上面的优先级列表对一下。"
 
-#: ../developer/installation.md:276
+#: ../developer/installation.md:275
 msgid ""
 "**Port already in use** — override `BACKEND_PORT`, `FRONTEND_PORT` or "
 "`DB_PORT` in `.env`."
-msgstr ""
-"**端口已被占用**——在 `.env` 里覆盖 `BACKEND_PORT`、"
-"`FRONTEND_PORT` 或 `DB_PORT`。"
+msgstr "**端口已被占用**——在 `.env` 里覆盖 `BACKEND_PORT`、`FRONTEND_PORT` 或 `DB_PORT`。"
+
+#~ msgid ""
+#~ "Linux or macOS. `uv sync` fetches "
+#~ "one dependency (`routewise`) from a Git"
+#~ " URL declared in `pyproject.toml`, so "
+#~ "the install needs network access to "
+#~ "that repository."
+#~ msgstr ""
+#~ "Linux 或 macOS。`uv sync` 会从 "
+#~ "`pyproject.toml` 里声明的一个 Git URL 拉取 "
+#~ "`routewise` 这一个依赖，所以安装过程需要能访问那个仓库。"
 

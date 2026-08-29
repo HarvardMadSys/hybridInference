@@ -165,7 +165,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`h-full ${crimsonText.variable}`}>
       <head>
         <Script id="statcounter-config" strategy="afterInteractive">
-          {"var sc_project=13224568; var sc_invisible=1; var sc_security='2d8ab84a';"}
+          {"var sc_project=0000000; var sc_invisible=1; var sc_security='REDACTED';"}
         </Script>
         <Script
           id="statcounter-loader"
@@ -226,7 +226,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     className="statcounter"
-                    src="https://c.statcounter.com/13224568/0/2d8ab84a/1/"
+                    src="https://c.statcounter.com/0000000/0/REDACTED/1/"
                     alt="Web Analytics"
                     referrerPolicy="no-referrer-when-downgrade"
                   />

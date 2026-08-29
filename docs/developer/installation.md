@@ -16,9 +16,8 @@ This page is the next step: your own deployment, with your own providers.
 | A source checkout | Python 3.10–3.13 (3.12 recommended, per `pyproject.toml`) and [uv](https://github.com/astral-sh/uv) |
 | Running the console outside Docker | Node.js 22 (the version CI installs) |
 
-Linux or macOS. `uv sync` fetches one dependency (`routewise`) from a Git URL
-declared in `pyproject.toml`, so the install needs network access to that
-repository.
+Linux or macOS. Every dependency resolves from PyPI, so a plain `uv sync`
+needs nothing but network access to the index.
 
 ## Quick start with Docker
 

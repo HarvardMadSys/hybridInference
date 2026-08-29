@@ -188,13 +188,13 @@ from routing.strategies import fixed  # noqa: F401
 
 try:
     from routing.strategies import routewise  # noqa: F401
-except ImportError:  # pragma: no cover - exercised only without the extra
-    # RouteWise is heading for an optional install (private package). Keep
-    # the neutral registry importable and surface the gap at configuration
-    # validation time instead of at backend import time.
+except ImportError:  # pragma: no cover - exercised by the absent-package test
+    # RouteWise is a required dependency, but a partial install must not break
+    # backend import. Keep the registry importable and surface the gap at
+    # configuration validation time instead.
     register_missing_strategy(
         "routewise",
-        "router strategy 'routewise' is configured but the optional RouteWise "
-        "package is not installed; install the 'routewise' extra "
-        "(uv sync --extra routewise) or select a different router in models.yaml",
+        "router strategy 'routewise' is configured but the RouteWise package "
+        "is not installed; reinstall dependencies (uv sync) to restore "
+        "'llm-routewise', or select a different router in models.yaml",
     )

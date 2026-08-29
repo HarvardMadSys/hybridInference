@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Literal
 
-from routewise.core import quota_effective_cost
+from llm_routewise.core import quota_effective_cost
 
 ProviderTypeName = Literal["on_demand", "quota", "concurrency"]
 

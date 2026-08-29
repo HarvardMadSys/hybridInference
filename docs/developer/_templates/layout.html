@@ -1,10 +1,5 @@
 {% extends "!layout.html" %}
 
-{# Optional web analytics. Nothing is emitted unless whoever publishes the
-   site sets DOCS_STATCOUNTER_PROJECT_ID (and, for the no-JS pixel,
-   DOCS_STATCOUNTER_SECURITY_KEY); see the html_context block in conf.py.
-   Upstream builds -- and anyone else's fork -- ship no tracker. #}
-
 {# Language switcher. Renders only when DOCS_LANGUAGES names two or more
    languages (see conf.py); a single-language build emits nothing at all.
 
@@ -31,38 +26,4 @@
     {%- endfor %}
   </div>
   {%- endif %}
-{% endblock %}
-
-{% block extrahead %}
-  {{ super() }}
-  {% if statcounter_project_id %}
-  <script type="text/javascript">
-    var sc_project = {{ statcounter_project_id }};
-    var sc_invisible = 1;
-    var sc_security = '{{ statcounter_security_key }}';
-  </script>
-  <script
-    type="text/javascript"
-    src="https://www.statcounter.com/counter/counter.js"
-    async
-  ></script>
-  {% endif %}
-{% endblock %}
-
-{% block footer %}
-  {{ super() }}
-  {% if statcounter_project_id %}
-  <noscript>
-    <div class="statcounter">
-      <a title="Web Analytics" href="https://statcounter.com/" target="_blank" rel="noopener">
-        <img
-          class="statcounter"
-          src="https://c.statcounter.com/{{ statcounter_project_id }}/0/{{ statcounter_security_key }}/1/"
-          alt="Web Analytics"
-          referrerpolicy="no-referrer-when-downgrade"
-        />
-      </a>
-    </div>
-  </noscript>
-  {% endif %}
 {% endblock %}

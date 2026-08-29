@@ -158,6 +158,15 @@ key's hash, then an inference-grant id (`grant:<id>`), then
 helpers rather than on a router so that every surface dispatching to a pooled
 adapter derives the caller identity the same way.
 
+### An IPv6 client on an IPv4-only origin is normal
+
+Seeing IPv6 addresses in the logs does not mean the origin gained IPv6. A CDN
+that publishes an AAAA record accepts the client over IPv6 and then opens a
+separate IPv4 connection to the origin, carrying the original address in the
+forwarding header. The client's address family is decoupled from the origin's,
+so for an IPv4-only origin it is an IPv6 `peer_ip` — not an IPv6 `remote_ip` —
+that would be the genuine surprise.
+
 ## What is logged
 
 `apps/backend/serving/servers/middleware/request_log.py` emits one structured

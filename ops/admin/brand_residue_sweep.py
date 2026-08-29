@@ -30,17 +30,13 @@ BRAND_MARKERS = ("freeinference", "harvard", "madsys", "junchengyang")
 # them is residue.
 #
 # ATTRIBUTION is where naming the origin is correct and permanent: a copyright
-# holder, a dependency's repository, the deployment this project runs for. It
-# never empties, and asking it to was a mistake — with LICENSE and the RouteWise
-# dependency URL in the same list as the acceptance criterion, criterion ② could
-# not be met by any amount of work, so it could never signal anything either.
+# holder, an authors field, the deployment this project runs for. It never
+# empties, and asking it to was a mistake — with LICENSE in the same list as the
+# acceptance criterion, criterion ② could not be met by any amount of work, so
+# it could never signal anything either.
 ATTRIBUTION: dict[str, str] = {
     "LICENSE": "MIT, (c) Harvard SEAS — the copyright holder is required attribution",
-    "pyproject.toml": (
-        "the `authors` field, and the RouteWise dependency's git URL — the "
-        "org name is how the package is fetched, from a public repository"
-    ),
-    "uv.lock": "the same RouteWise URL, resolved",
+    "pyproject.toml": "the `authors` field",
     "README.md": (
         "names the deployment this gateway runs for, and points at it as a "
         "worked example — true, useful to a reader, and not a leak"
@@ -54,6 +50,13 @@ ATTRIBUTION: dict[str, str] = {
     "apps/frontend/src/config/branding.ts": (
         "the same default, and comments naming this deployment as the example "
         "for why each neutral default is what it is"
+    ),
+    "docs/developer/router-tutorial.md": "the clone URL, same as installation.md",
+    "CLAUDE.md": (
+        "links to the public sibling cloud-agent repository, cited the way a dependency is"
+    ),
+    "AGENTS.md": (
+        "links to the public sibling cloud-agent repository, cited the way a dependency is"
     ),
 }
 
@@ -76,13 +79,15 @@ GUARDS: dict[str, str] = {
     "tests/unit/config/test_contract_settings_defaults.py": "asserts no marker in the CORS default",
     "tests/unit/deploy/test_compose_identity.py": "asserts compose defaults name no deployment",
     "tests/unit/test_no_personal_data.py": "carries the address shapes it scans for",
+    "tests/unit/rag/test_rag_config.py": (
+        "its offender scan quotes the marker it forbids in source"
+    ),
 }
 
 # PENDING is residue: a work stream that has not finished moving something out
 # of the neutral upstream. Delete entries as they complete. **An empty PENDING
 # plus a clean --strict run is the criterion-② acceptance.**
 ALLOWLIST: dict[str, str] = {
-    "distributions/": "transitional private deployment overlay — migration pending",
     "docs/agents/": "historical design docs — review before direct publication",
     "docs/superpowers/": "historical design docs — review before direct publication",
     "docs/reviews/": "review records — review before direct publication",
@@ -94,20 +99,14 @@ ALLOWLIST: dict[str, str] = {
     "apps/frontend/": "compile-time branding defaults — neutral-defaults flip wave",
     "apps/backend/": "Settings/RAG deployment defaults + docstrings — neutral-defaults flip wave",
     "tests/": "frozen contract values — flipped together with the neutral-defaults PR",
-    "CLAUDE.md": "mixed agent guide — site lines move with the neutral wave",
-    "AGENTS.md": "mixed agent guide — site lines move with the neutral wave",
-    ".github/workflows/": "FreeInference CD workflows — step-2 move",
+    ".github/workflows/": (
+        "the GHCR namespace, the internal doc-site host, and a runner-billing "
+        "note — neutral-defaults flip wave"
+    ),
     ".env.oncall.example": "on-call site config example — step-2 move",
     ".env.example": "one commented overlay-manifest path, which is the example that works",
-    ".codex/": "agent skill guides — mixed, neutral wave",
-    ".kilo/": "agent skill guides — mixed, neutral wave",
-    ".gitleaks.toml": "site-specific scan allowances — neutral wave",
     "benchmark/": "paper artifacts — step-2 per ownership inventory",
-    "Makefile": (
-        "one target that starts the cloud-agent stack, whose repository is "
-        "named for the deployment that operates it"
-    ),
-    "docs/openrouter.md": "developer note — neutral wave",
+    "Makefile": "a comment naming the sibling cloud-agent repository",
 }
 
 

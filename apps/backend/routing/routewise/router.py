@@ -31,7 +31,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
-from routewise.core import (
+from llm_routewise.core import (
     HEDGE_SUCCESS_TARGET,
     BackupCandidate,
     CheckpointBackupDispatch,

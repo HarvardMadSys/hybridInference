@@ -147,6 +147,19 @@ class ModelConfig:
     # (higher integer first): vLLM's priority policy reads the opposite way, and
     # a remote provider has no reason to accept the field at all.
     priority_scheduling: bool = False
+    # Whether a ``*_tokens_details`` key that arrives null from this endpoint
+    # means "measured, nothing cached" (0) rather than "this server does not
+    # report cache usage" (None). The two are identical on the wire: sglang with
+    # --enable-cache-report answers a prefix-cache miss with
+    # `"prompt_tokens_details": null`, while sglang without the flag -- and vLLM
+    # without --enable-prompt-tokens-details -- send that same null on every
+    # request, hit or miss. Only the route's own configuration settles which one
+    # this endpoint is, so it is opt-in per route and defaults to off: turning it
+    # on for a server that does not report replaces an honest NULL with a
+    # fabricated measured miss, which is the harder error to notice later. The
+    # loader accepts it only on a route (never inherited from the model) and only
+    # as a real YAML boolean; see servers/registry.py.
+    null_cache_details_means_miss: bool = False
     # Provider profile for usage extraction (e.g. "deepseek" for cache hit/miss semantics).
     # When set, OpenAICompatAdapter uses profile-specific usage normalization.
     provider_profile: str | None = None

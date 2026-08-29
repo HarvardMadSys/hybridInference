@@ -275,9 +275,8 @@ jobs:
       - name: Install dependencies
         # --only-group: this job runs sphinx-build and nothing else, so it
         # needs the `dev` group (which carries sphinx, myst-parser and
-        # sphinx-rtd-theme) but not the project or its runtime dependencies --
-        # including the git-sourced one, whose clone this job would otherwise
-        # pay for on every run.
+        # sphinx-rtd-theme) but not the project or its runtime dependencies,
+        # which this job never imports.
         run: |
           set -euo pipefail
           uv venv
@@ -636,8 +635,6 @@ jobs:
           # this exact image. Other cells only need build verification.
           load: ${{ matrix.image == 'backend' }}
           tags: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.image }}
-          secrets: |
-            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=min,scope=${{ matrix.image }}
 
@@ -654,8 +651,6 @@ jobs:
           push: false
           load: ${{ matrix.image == 'backend' }}
           tags: hi-example-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.image }}
-          secrets: |
-            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=min,scope=${{ matrix.image }}
 
@@ -761,8 +756,6 @@ jobs:
           push: false
           load: true
           tags: ${{ env.COMPOSE_PROJECT_NAME }}-backend
-          secrets: |
-            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
           cache-from: |
             type=gha,scope=backend
             type=gha,scope=tutorial-e2e-backend
@@ -781,8 +774,6 @@ jobs:
           push: false
           load: true
           tags: ${{ env.COMPOSE_PROJECT_NAME }}-backend
-          secrets: |
-            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
           cache-from: |
             type=gha,scope=backend
             type=gha,scope=tutorial-e2e-backend
@@ -1253,8 +1244,6 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          secrets: |
-            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
           cache-from: type=gha,scope=backend-arm64
           cache-to: type=gha,mode=min,scope=backend-arm64
 
@@ -1304,8 +1293,6 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          secrets: |
-            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
           cache-from: type=gha,scope=backend-amd64
           cache-to: type=gha,mode=min,scope=backend-amd64
 
