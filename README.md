@@ -125,6 +125,13 @@ curl localhost:8080/v1/chat/completions \
   -d '{"model": "routewise-demo", "messages": [{"role": "user", "content": "hi"}]}'
 ```
 
+When you are done, stop the two fixtures — they hold 18351 and 18352, and a
+second run of the block above would fail to bind:
+
+```bash
+pkill -f fake-openai-provider/server.py
+```
+
 The example ships `budget_alpha: 0.0`, so every reply is `ROUTED_TO_BUDGET`:
 the LP may not spend more than the cheapest eligible provider. Set it to `1.0`
 in `config/examples/models.routewise.yaml`, restart, and — after another ten

@@ -12,7 +12,6 @@ import importlib.util
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 import threading
@@ -26,8 +25,9 @@ import pytest
 import yaml
 
 from routing.routers import FixedRouter
-from routing.routewise.candidates import QuotaPolicy, QuotaSource
-from routing.routewise.quota import ProviderQuotaSnapshotStore, QuotaPool
+from routing.routewise.candidates import QuotaSource
+from routing.routewise.config import RouteWiseConfig
+from routing.routewise.router import RouteWiseRouter
 from serving.admin import provider_quotas
 from serving.servers.registry import register_from_models_yaml
 
@@ -61,17 +61,16 @@ def _commented_reference_routes() -> list[dict]:
     return routes
 
 
-def _free_port() -> int:
-    """Reserve a port the OS is not currently using, then release it."""
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
+def _start_example_fixture(response_text: str, delay_ms: float):
+    """Run the example's own provider fixture on a port the OS hands us.
 
-
-def _start_example_fixture(port: int, response_text: str, delay_ms: float):
-    """Run the example's own provider fixture in-process on loopback."""
+    Port 0 and then `server_port`: reserving a port and releasing it before
+    binding leaves a window in which a concurrent job -- four runner services
+    share each CI host -- or even the next call in this same test can take it.
+    Holding the listening socket from the start removes the window entirely.
+    """
     spec = importlib.util.spec_from_file_location(
-        f"_example_fixture_{port}",
+        f"_example_fixture_{id(response_text):x}",
         _REPO_ROOT
         / "distributions"
         / "example"
@@ -84,14 +83,14 @@ def _start_example_fixture(port: int, response_text: str, delay_ms: float):
     # Per-server subclass: the fixture keeps its settings on the handler class,
     # so two servers with different delays cannot share one handler.
     handler = type(
-        f"_Handler{port}",
+        f"_Handler{id(response_text):x}",
         (module.FakeHandler,),
         {"response_text": response_text, "ttft_delay_ms": delay_ms},
     )
-    server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server
+    return server, int(server.server_port)
 
 
 def _rebind_example_to(text: str, ports: list[int]) -> str:
@@ -123,6 +122,34 @@ def _rebind_example_to(text: str, ports: list[int]) -> str:
     return "\n".join(rewritten) + "\n"
 
 
+def _start_fixture_cli(script: Path, response_text: str, delay_ms: float | None):
+    """Launch the fixture the way the README does, and wait for it to answer.
+
+    Port 0 makes the OS choose; the fixture prints the address it bound, which
+    is also how a reader would confirm it came up.
+    """
+    argv = [
+        sys.executable,
+        str(script),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
+        "--response-text",
+        response_text,
+    ]
+    if delay_ms is not None:
+        argv += ["--ttft-delay-ms", str(delay_ms)]
+    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    banner = process.stdout.readline()
+    match = re.search(r"127\.0\.0\.1:(\d+)", banner)
+    if match is None:  # pragma: no cover - the fixture failed to start
+        process.terminate()
+        raise RuntimeError(f"fixture did not announce its port: {banner!r}")
+    return process, int(match.group(1))
+
+
 @contextlib.contextmanager
 def _example_providers(tmp_path: Path):
     """Start the two upstreams and yield an example config pointed at them."""
@@ -134,13 +161,12 @@ def _example_providers(tmp_path: Path):
             f"the example must stay runnable with no account: {route['base_url']}"
         )
 
-    ports = [_free_port(), _free_port()]
-    servers = []
+    servers, ports = [], []
     try:
-        for port, (text, delay) in zip(
-            ports, [("ROUTED_TO_PREMIUM", 0.0), ("ROUTED_TO_BUDGET", 400.0)], strict=True
-        ):
-            servers.append(_start_example_fixture(port, text, delay))
+        for text, delay in (("ROUTED_TO_PREMIUM", 0.0), ("ROUTED_TO_BUDGET", 400.0)):
+            server, port = _start_example_fixture(text, delay)
+            servers.append(server)
+            ports.append(port)
         config = tmp_path / "models.routewise.bound.yaml"
         config.write_text(_rebind_example_to(_EXAMPLE.read_text(), ports))
         yield config
@@ -173,9 +199,11 @@ class _FakeSession:
     payloads, so a change in how any of them parses breaks the test.
     """
 
-    def __init__(self, routes: dict[str, object]) -> None:
+    def __init__(self, routes: dict[str, object], *, expected_key: str) -> None:
         self._routes = routes
+        self._expected_key = expected_key
         self.requested: list[str] = []
+        self.seen_keys: set[str] = set()
 
     async def __aenter__(self):
         return self
@@ -183,8 +211,15 @@ class _FakeSession:
     async def __aexit__(self, *exc):
         return False
 
-    def get(self, url: str, **_kwargs):
+    def get(self, url: str, **kwargs):
         self.requested.append(url)
+        # The fetcher must arrive holding the route's own key. Accepting any
+        # Authorization header would let the quota chain pass while wired to a
+        # credential the route never declared.
+        supplied = (kwargs.get("headers") or {}).get("Authorization", "")
+        self.seen_keys.add(supplied)
+        if supplied != f"Bearer {self._expected_key}":
+            return _FakeResponse(401, {"error": "unauthorized"})
         if url not in self._routes:
             return _FakeResponse(404, {})
         return _FakeResponse(200, self._routes[url])
@@ -249,10 +284,12 @@ class TestRouteWiseExampleQuotaCredentialChain:
         source = QuotaSource.from_raw(route["quota_source"])
         daily_cap = int(route["quota"]["limit"])
 
+        route_key = "sk-chutes-from-the-route"
+
         # Only the variables the example itself names. A route that asks for a
         # variable nothing sets resolves to nothing and never registers.
         monkeypatch.setenv("CHUTES_BASE_URL", "https://llm.chutes.ai/v1")
-        monkeypatch.setenv("CHUTES_API_KEY", "sk-chutes-test")
+        monkeypatch.setenv("CHUTES_API_KEY", route_key)
         monkeypatch.setenv("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1")
         monkeypatch.setenv("FEATHERLESS_API_KEY", "sk-featherless-test")
 
@@ -266,15 +303,33 @@ class TestRouteWiseExampleQuotaCredentialChain:
             "not resolve, and the quota fetcher would never see this route."
         )
 
-        session = _FakeSession(_chutes_wire_payloads(daily_cap, requests_today=7))
+        # Take the variable away now that registration is done. Whatever the
+        # fetcher finds from here has to come from the pool the route itself
+        # registered -- which is the only thing that ties the credential the
+        # gateway infers with to the credential it accounts quota against.
+        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
+
+        session = _FakeSession(
+            _chutes_wire_payloads(daily_cap, requests_today=7), expected_key=route_key
+        )
         monkeypatch.setattr(
             provider_quotas.aiohttp,
             "ClientSession",
             lambda *a, **k: session,
         )
 
-        # The real fetcher, discovering the real key from the real env var.
-        store = ProviderQuotaSnapshotStore()
+        # The router's own pools, not a hand-built stand-in: this is the object
+        # that decides at route time whether the quota leg is eligible.
+        router = RouteWiseRouter(route_table=fixed, config=RouteWiseConfig())
+        pool_id = route["quota_pool"]
+        assert pool_id in router.quota_pools, (
+            f"the router built no quota pool for {pool_id!r}: {sorted(router.quota_pools)}"
+        )
+        pool = router.quota_pools[pool_id]
+        assert pool.source == source, f"pool bound to {pool.source}, example documents {source}"
+        assert pool.ready is False, "a pool cannot be ready before its first snapshot lands"
+
+        store = router.quota_snapshots
         assert source.provider in store._fetchers, (
             f"{source.provider!r} has no registered fetcher; RouteWise registers "
             f"{sorted(store._fetchers)}"
@@ -282,6 +337,11 @@ class TestRouteWiseExampleQuotaCredentialChain:
         await store.refresh_once([source])
 
         assert session.requested, "the real fetcher never reached the wire"
+        assert session.seen_keys == {f"Bearer {route_key}"}, (
+            f"the fetcher authenticated with {session.seen_keys}, not the key the "
+            f"example's route declares. Inference and quota accounting would then "
+            "be running on different credentials."
+        )
         snapshot = store.get(source)
         assert snapshot is not None, (
             f"the example documents quota_source {(source.provider, source.usage_label, source.unit)}, "
@@ -290,12 +350,11 @@ class TestRouteWiseExampleQuotaCredentialChain:
         assert snapshot.limit == float(daily_cap)
         assert snapshot.used == 7.0
 
-        pool = QuotaPool(
-            store,
-            source,
-            policy=QuotaPolicy.from_raw(route["quota"], context="quota"),
+        assert pool.ready is True, (
+            "the router's quota pool never became ready, so RouteWise would keep "
+            "skipping this provider as unpriceable"
         )
-        assert pool.ready is True
+        assert pool.remaining == daily_cap - 7
 
 
 # Booted in a subprocess so each budget_alpha gets a genuinely fresh process:
@@ -304,43 +363,62 @@ class TestRouteWiseExampleQuotaCredentialChain:
 # nothing about the restart the README tells the reader to perform.
 _BOOT_AND_ASK = """
 import json, os, sys, time
+from collections import Counter
 
 from fastapi.testclient import TestClient
 
 from serving.servers.app import app
 
+expect = os.environ["DEMO_EXPECT"]
+settle = int(os.environ["DEMO_SETTLE_REQUESTS"])
 deadline = time.monotonic() + float(os.environ["DEMO_DEADLINE_SEC"])
-served = None
 error = None
+
+
+def ask(client):
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "routewise-demo", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    if response.status_code != 200:
+        return None, f"completion {response.status_code}: {response.text[:200]}"
+    return response.json()["choices"][0]["message"]["content"], None
+
+
 # TestClient as a context manager runs the real lifespan: bootstrap builds the
 # routers, starts them, and the RouteWise probe loop begins polling upstreams.
 with TestClient(app) as client:
     models = client.get("/v1/models")
     if models.status_code != 200 or not models.json().get("data"):
-        print(json.dumps({"served": None, "error": f"/v1/models {models.status_code}"}))
+        print(json.dumps({"settled": None, "error": f"/v1/models {models.status_code}"}))
         sys.exit(0)
+
+    # Before the first probe cycle both endpoints are unprofiled and cost breaks
+    # the tie, so wait for the measurements rather than judging the cold answer.
+    seen = None
     while time.monotonic() < deadline:
-        response = client.post(
-            "/v1/chat/completions",
-            json={"model": "routewise-demo", "messages": [{"role": "user", "content": "hi"}]},
-        )
-        if response.status_code != 200:
-            error = f"completion {response.status_code}: {response.text[:200]}"
-            time.sleep(0.5)
-            continue
-        served = response.json()["choices"][0]["message"]["content"]
-        error = None
-        if served == os.environ["DEMO_EXPECT"]:
+        seen, error = ask(client)
+        if seen == expect:
             break
-        # Before the first probe cycle both endpoints are unprofiled and cost
-        # breaks the tie; keep asking until the measurements land.
         time.sleep(0.5)
-print(json.dumps({"served": served, "error": error}))
+
+    # Then require the choice to be STABLE. One sighting proves nothing: a mixed
+    # policy lands on both providers, so a single hit passes at any alpha.
+    counts = Counter()
+    for _ in range(settle):
+        served, error = ask(client)
+        if error:
+            break
+        counts[served] += 1
+
+print(json.dumps({"settled": dict(counts), "first_seen": seen, "error": error}))
 """
 
 
-def _boot_and_ask(config: Path, expect: str, deadline_sec: float = 25.0) -> dict:
-    """Boot the real app against `config` and return what upstream answered."""
+def _boot_and_ask(
+    config: Path, expect: str, deadline_sec: float = 25.0, settle_requests: int = 8
+) -> dict:
+    """Boot the real app against `config` and report where a batch of requests went."""
     env = {
         **os.environ,
         "PYTHONPATH": str(_REPO_ROOT / "apps" / "backend"),
@@ -350,6 +428,7 @@ def _boot_and_ask(config: Path, expect: str, deadline_sec: float = 25.0) -> dict
         "USER_AUTH_ENABLED": "false",
         "DEMO_EXPECT": expect,
         "DEMO_DEADLINE_SEC": str(deadline_sec),
+        "DEMO_SETTLE_REQUESTS": str(settle_requests),
         # A loopback test must not be routed through an ambient proxy.
         "NO_PROXY": "*",
         "no_proxy": "*",
@@ -376,22 +455,42 @@ def _boot_and_ask(config: Path, expect: str, deadline_sec: float = 25.0) -> dict
 
 
 def _example_with_alpha(source: Path, tmp_path: Path, alpha: float, probe_interval: float) -> Path:
-    """`source` with only budget_alpha and the probe interval moved.
+    """`source` with budget_alpha and the probe interval set, and verified set.
 
-    The interval is shortened so the test does not sit through the deployment
-    default; whether probing works at all is what is under test, and the
+    Written through the YAML rather than by text substitution: a `str.replace`
+    that misses -- because the shipped default moved -- leaves both variants
+    identical, and a mixed-alpha policy still lands on each provider often
+    enough to satisfy a test that only looks for one hit. The interval is
+    shortened so the suite does not sit through the deployment default; the
     shipped value is asserted separately.
     """
-    text = source.read_text()
-    text = text.replace("      budget_alpha: 0.0", f"      budget_alpha: {alpha}", 1)
-    text = text.replace(
-        "      routewise_probe_interval_sec: 5.0",
-        f"      routewise_probe_interval_sec: {probe_interval}",
-        1,
-    )
+    document = yaml.safe_load(source.read_text())
+    params = document["models"][0]["router_params"]
+    params["budget_alpha"] = alpha
+    params["routewise_probe_interval_sec"] = probe_interval
+
     path = tmp_path / f"models.alpha{alpha}.yaml"
-    path.write_text(text)
+    path.write_text(yaml.safe_dump(document, sort_keys=False))
+
+    written = yaml.safe_load(path.read_text())["models"][0]["router_params"]
+    assert written["budget_alpha"] == alpha, written
+    assert written["routewise_probe_interval_sec"] == probe_interval, written
+    assert written["routewise_probe_enabled"] is True, (
+        "the rendered config must keep probing on, or alpha cannot matter"
+    )
     return path
+
+
+def _assert_settled_on(result: dict, expected: str, *, alpha: float) -> None:
+    """Every settled request must have gone to one provider, not merely some."""
+    assert result["error"] is None, result["error"]
+    settled = result["settled"] or {}
+    assert settled, f"no settled requests at budget_alpha={alpha}: {result}"
+    assert set(settled) == {expected}, (
+        f"budget_alpha={alpha} should serve every request from {expected}, but the "
+        f"settled batch split {settled}. A mixture means the budget sits between "
+        "the two providers rather than pinned to one end."
+    )
 
 
 @pytest.mark.integration
@@ -405,8 +504,13 @@ class TestRouteWiseExampleProbeLifecycle:
     dispatch regression all turn this red.
     """
 
-    def test_shipped_example_enables_probing_on_a_sane_interval(self):
+    def test_shipped_example_matches_what_the_readme_promises(self):
+        """The behavioural test sets alpha itself, so the default needs its own guard."""
         params = _example_model()["router_params"]
+        assert params["budget_alpha"] == 0.0, (
+            "README.md tells the reader the example ships budget_alpha: 0.0 and that "
+            f"every reply is ROUTED_TO_BUDGET; the example says {params['budget_alpha']}"
+        )
         assert params["routewise_probe_enabled"] is True
         assert params["routewise_probe_idle_only"] is False
         assert 0 < float(params["routewise_probe_interval_sec"]) <= 30.0
@@ -417,10 +521,7 @@ class TestRouteWiseExampleProbeLifecycle:
                 _example_with_alpha(bound, tmp_path, 0.0, probe_interval=1.0),
                 expect="ROUTED_TO_BUDGET",
             )
-            assert cheap["error"] is None, cheap["error"]
-            assert cheap["served"] == "ROUTED_TO_BUDGET", (
-                f"budget_alpha=0.0 must not spend above the cheapest provider, got {cheap}"
-            )
+            _assert_settled_on(cheap, "ROUTED_TO_BUDGET", alpha=0.0)
 
             # A separate process: the restart the README asks for, with none of
             # the first run's measurements carried over.
@@ -428,11 +529,7 @@ class TestRouteWiseExampleProbeLifecycle:
                 _example_with_alpha(bound, tmp_path, 1.0, probe_interval=1.0),
                 expect="ROUTED_TO_PREMIUM",
             )
-            assert fast["error"] is None, fast["error"]
-            assert fast["served"] == "ROUTED_TO_PREMIUM", (
-                "budget_alpha=1.0 should buy the faster provider once the probe "
-                f"has measured both, got {fast}"
-            )
+            _assert_settled_on(fast, "ROUTED_TO_PREMIUM", alpha=1.0)
 
 
 @pytest.mark.integration
@@ -446,12 +543,25 @@ class TestExampleFixtureLatencyContract:
     """
 
     def test_ttft_delay_actually_delays_the_first_byte(self):
+        """Driven through the CLI the README tells the reader to type.
+
+        Setting the handler attribute in-process would leave `--ttft-delay-ms`
+        itself — the argparse wiring and the class assignment behind it —
+        untested, and that flag is the public surface here.
+        """
         import urllib.request
 
         delay_ms = 400.0
-        fast_port, slow_port = _free_port(), _free_port()
-        immediate = _start_example_fixture(fast_port, "IMMEDIATE", 0.0)
-        delayed = _start_example_fixture(slow_port, "DELAYED", delay_ms)
+        fixture = (
+            _REPO_ROOT
+            / "distributions"
+            / "example"
+            / "fixtures"
+            / "fake-openai-provider"
+            / "server.py"
+        )
+        immediate, fast_port = _start_fixture_cli(fixture, "IMMEDIATE", None)
+        delayed, slow_port = _start_fixture_cli(fixture, "DELAYED", delay_ms)
         try:
 
             def _timed(port: int) -> float:
@@ -471,9 +581,9 @@ class TestExampleFixtureLatencyContract:
             fast_ms = _timed(fast_port)
             slow_ms = _timed(slow_port)
         finally:
-            for server in (immediate, delayed):
-                server.shutdown()
-                server.server_close()
+            for process in (immediate, delayed):
+                process.terminate()
+                process.wait(timeout=10)
 
         assert slow_ms - fast_ms > delay_ms * 0.5, (
             f"--ttft-delay-ms is not delaying the response: {fast_ms:.0f} ms vs "

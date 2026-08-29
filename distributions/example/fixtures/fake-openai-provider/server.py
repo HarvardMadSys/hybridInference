@@ -184,7 +184,10 @@ def main() -> None:
     FakeHandler.ttft_delay_ms = args.ttft_delay_ms
     server = ThreadingHTTPServer((args.host, args.port), FakeHandler)
     server.daemon_threads = True
-    print(f"OpenAI-compatible example provider listening on {args.host}:{args.port}", flush=True)
+    # Report the bound port, not the requested one: `--port 0` lets the OS pick,
+    # and echoing the 0 back would leave the caller with no way to reach us.
+    host, port = server.server_address[:2]
+    print(f"OpenAI-compatible example provider listening on {host}:{port}", flush=True)
     server.serve_forever()
 
 
