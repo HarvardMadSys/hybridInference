@@ -140,7 +140,7 @@ reply becomes `ROUTED_TO_PREMIUM`: the wider cost budget lets the policy buy
 the 400 ms. That one edit is the cost/latency tradeoff the paper is about.
 
 That registry doubles as the annotated reference for every RouteWise option;
-the [routing guide](docs/developer/routing.md#routewise-cost-aware-routing)
+the [routing guide](docs/developer/routing.md#routewise)
 explains the configuration contract.
 
 ### Citation
