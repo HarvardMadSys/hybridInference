@@ -565,10 +565,33 @@ mean-TTFT linear program over them, and samples a primary from the resulting
 sparse mixture. It is a per-model opt-in (`router: routewise`), and each
 opted-in model gets its own `RouteWiseRouter` instance.
 
-Its implementation is a separate Python package. When that package is not
-installed, `apps/backend/routing/strategies/__init__.py` registers `routewise` as a *missing*
-strategy: selecting it fails configuration validation with an actionable
-message rather than breaking backend import.
+Its implementation lives in a separate package: the MIT-licensed
+[`llm-routewise`](https://github.com/HarvardMadSys/RouteWise), which this
+gateway takes as a required dependency and which any application can use to
+choose a provider — it performs no network I/O and reads no credentials. The
+design is described in *RouteWise: Latency--Cost Optimization for
+Multi-Provider LLM Routing* (EuroSys '27).
+
+Required, but not load-bearing for startup. When the package is absent —
+a partial install, or a build that deliberately drops the strategy —
+`apps/backend/routing/strategies/__init__.py` registers `routewise` as a
+*missing* strategy: selecting it fails configuration validation with an
+actionable message rather than breaking backend import. No single routing
+algorithm decides whether the gateway can start.
+
+For a registry you can run unedited against two loopback providers, with every
+option annotated, see
+[`config/examples/models.routewise.yaml`](../../config/examples/models.routewise.yaml).
+
+**Latency evidence.** The policy only trades latency against cost where it has
+measurements. Two endpoints with no TTFT samples tie on the latency objective,
+`cost_tiebroken_objective` breaks that tie on price, and the LP returns a
+one-hot solution on the cheaper one at every cost budget — so nothing ever
+measures the endpoint the policy is avoiding. Evidence comes from live traffic,
+from `db_bootstrap_enabled` replaying recent `api_logs` at startup, and from
+the active prober (`routewise_probe_enabled`), which runs in-process and does
+not require an operational store; persisting probe samples is an optimization
+on top.
 
 Configuration splits by ownership:
 
@@ -580,13 +603,58 @@ Configuration splits by ownership:
   predictor, and the prefix-cache flag.
 - **Route entries (per provider)** — resource semantics: `provider_type:
   on_demand | quota | concurrency`, `pricing:`, `quota: {limit}` plus a
-  `quota_source:` block naming the provider usage API that is the quota truth,
-  `concurrency: {limit}`, and optional `quota_pool:` / `concurrency_pool:` ids
-  for routes that share one subscription.
+  `quota_source:` block, `concurrency: {limit}`, and optional `quota_pool:` /
+  `concurrency_pool:` ids for routes that share one subscription.
 
 Resource limits used to live in `router_params:`. Those keys are now rejected
 at boot with a message naming their route-level replacement, so a stale
 registry fails loudly rather than silently using defaults.
+
+**Quota sources.** `quota_source:` is a selector, not a fetcher. It names
+`provider` / `usage_label` / `unit`, and `_find_usage` matches all three
+exactly against the usage records a provider fetcher returns. RouteWise calls
+those fetchers itself through `ProviderQuotaSnapshotStore`
+(`apps/backend/routing/routewise/quota.py`) rather than reading the admin
+poller's cache, and only two are registered: `chutes` and `minimax`.
+`usage_label` is the fetcher's own label string, not an operator-chosen name —
+the Chutes fetcher emits `Daily requests` with `unit: requests`.
+
+The route's `kind:` and credential belong to the same contract. Each fetcher
+discovers its own keys by provider — `fetch_chutes` looks for `CHUTES_API_KEY`
+and for keys bound to `chutes` routes — so a quota route served through the
+generic `openai_compat` adapter under an unrelated key never joins that pool:
+inference authenticates, and the quota snapshot stays `not_configured`. Match
+`kind:` to the provider and use the provider's own key variable.
+
+A `provider` outside the registered pair, or a mistyped label, simply never
+resolves. Nothing warns about it — the only quota log lines are a refresh
+failure and a provider/route limit mismatch — so the route stays unready and is
+skipped in silence. Verify a new quota source against the fetcher before
+shipping it.
+
+The `local` provider seen in admin-created routes is not a third fetcher: it is
+a gateway-side per-request counter installed through
+`configure_local_fallbacks`. Naming `provider: local` in a `quota_source:` does
+not arm it, but static YAML can still reach it — `_uses_local_quota_fallback`
+selects a quota route whose `route_metadata` sets `local_quota_fallback: true`,
+or whose `route_provider` and `upstream_provider` differ. Know what it is
+before relying on it: the count lives in the worker process, so it starts at
+zero on every restart and does not add up across workers; it increments by one
+per request, so it can only express a **request-count** allowance, never tokens
+or spend; and it resets at the next **server-local midnight**, so it models a
+daily cap and nothing else. A four-hour window, a monthly window, or a plan
+whose reset the provider decides all need a real `quota_source`.
+
+**Endpoint identity.** Latency profiles, availability tracking and request logs
+share one key per route, derived by `registry._make_provider_id` as
+`{model_id}:{location}`. `location` is `local-{port}` for a base URL on a local
+host, otherwise a name taken from the hostname (`api.minimax.io` →
+`minimax-api`) for the generic adapter kinds, and `{kind}-api` for the rest. So
+an edit that changes that derived part — a new port locally, a new vendor
+hostname remotely — renames the endpoint and restarts its latency profile,
+while one that does not (moving between local hosts on the same port) keeps it.
+A `route_id:` in a static `models.yaml` never overrides it; that field belongs
+to the admin provider-routes API.
 
 **Cold start.** A quota-bearing route needs a calibrated cost envelope, built
 from recent request history. A model whose quota route sits alongside a
