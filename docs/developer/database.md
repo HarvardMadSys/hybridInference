@@ -64,7 +64,7 @@ is: start it and the tables appear. Booting this revision against a blank
 
 Two properties are worth knowing before you operate this:
 
-**Schema DDL is catalog-gated.** Each startup reads `pg_attribute` / `pg_indexes`
+**Schema DDL is gated on the Postgres system catalogs.** Each startup reads `pg_attribute` / `pg_indexes`
 first and issues only the `ALTER`/`CREATE INDEX` statements that are actually
 missing, so a steady-state restart takes no strong table locks. This matters
 because `ALTER TABLE` acquires `ACCESS EXCLUSIVE` *before* Postgres evaluates

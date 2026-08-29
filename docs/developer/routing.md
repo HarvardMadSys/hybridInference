@@ -9,7 +9,7 @@ warm.
 This page describes the engine, its knobs, and how to add a routing strategy of
 your own. For where the config files live and how they are found, see
 [Configuration](configuration.md); for the shape of a model entry and its
-`route:` list, see [Adding Models](adding-models.md).
+`route:` list, see [Adding a New Model](adding-models.md).
 
 ## Architecture
 
@@ -117,8 +117,8 @@ Successful responses carry a `_routing` blob (`provider`, `base_url`,
 `endpoint_id`, plus `fallback` and `failed_attempts` when a fallback ran) so
 the serving layer can attribute the request to the endpoint that really served
 it. Streaming does the same in-band through a synthetic chunk built by
-`apps/backend/routing/telemetry.py::routing_chunk`, which the completions router strips
-before forwarding. Clients never see either.
+`routing_chunk()` in `apps/backend/routing/telemetry.py`, which the completions
+router strips before forwarding. Clients never see either.
 
 ## Endpoint health and circuit breaking
 
@@ -140,8 +140,12 @@ failure re-opens it. All four knobs read the environment first:
 
 `GET /health/deep` reports this registry: per-endpoint availability, circuit
 state, and a consecutive-upstream-auth-rejection counter that degrades the
-endpoint from the first rejection, because an upstream refusing the gateway's
-credential fails every request without moving an availability average.
+endpoint from the first rejection. An auth rejection does feed the availability
+EWMA like any other failure, but the EWMA is deliberately slow: an endpoint
+sitting at full availability needs four consecutive failures at the default
+`alpha` of `0.1` to fall under the `0.7` floor. A rejected credential is fatal
+for every caller from the first request, so the counter reports it without
+waiting for the average to catch up.
 
 State is per process. Each backend worker keeps its own breakers.
 
@@ -163,7 +167,8 @@ selection signal.
   endpoint holding less prefill. A route weighted 10× is still drawn about 10×
   as often, but the draw is unlikely to land on the endpoint buried in prefill.
 - The tie-break only engages once the heavier draw carries at least
-  `ROUTING_PREFILL_INTERVENE_TOKENS`; below that, configured weights decide
+  `ROUTING_PREFILL_INTERVENE_TOKENS` of un-cached prompt tokens queued for
+  prefill on that endpoint; below that, configured weights decide
   alone, because weights encode cost and provider preference and not only
   capacity.
 - Very large prompts ("elephants") additionally skip endpoints already at the
@@ -638,7 +643,10 @@ Each key in a `KeyPool` (`apps/backend/serving/adapters/key_pool.py`) carries a
 - **Affinity.** The pool's own five-minute key binding is honoured only for the
   role that created it, and any change to what the pool holds — a tier moving,
   a key added, re-enabled, or removed — drops every binding whose *preferred*
-  key moved. A binding to a merely muted key survives, because that state is
+  key moved. *Muted* here is `KeyPool`'s own term for a key it has temporarily
+  taken out of rotation after a key-specific failure (401/402/403/429); the key
+  stays declared and comes back on its own. A binding to a merely muted key
+  survives, because that state is
   transient and `acquire` re-picks around it; a binding to a removed key always
   goes. Only a declaration change triggers this, so ordinary traffic never
   loses prompt-cache warmth to it.

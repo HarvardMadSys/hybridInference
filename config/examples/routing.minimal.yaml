@@ -6,9 +6,11 @@
 #   ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
 #   ...
 #
-# Without this, the gateway falls back to config/routing.yaml — the operator's
-# own deployment map — and reports every endpoint in it as unset, which buries
-# the one message that matters in warnings about machines you do not have.
+# This file is also the built-in default for `routing` (_LEGACY_DEFAULTS in
+# apps/backend/serving/config/distribution.py), so a checkout that sets nothing
+# lands here. It declares empty endpoint pools, which is what keeps the weights
+# in the model registry in charge instead of overriding them with warnings about
+# machines you do not have.
 #
 # Routing behaviour for the example models comes from their own `route:` lists
 # in models.openrouter.yaml. Nothing here needs to name a host.

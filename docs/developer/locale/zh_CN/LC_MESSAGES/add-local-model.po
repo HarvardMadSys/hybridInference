@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-29 10:19+0800\n"
+"POT-Creation-Date: 2026-08-29 10:34+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -126,14 +126,27 @@ msgid "Step 1: Start the Local Model Server"
 msgstr "第 1 步：启动本地模型服务器"
 
 #: ../developer/add-local-model.md:71
-msgid "Start the model with your preferred serving runtime. Example with vLLM:"
-msgstr "用你惯用的推理运行时启动模型。以 vLLM 为例："
+msgid ""
+"Start the model with your preferred serving runtime. The rest of this "
+"guide registers the server as `kind: sglang`, so the example starts one:"
+msgstr ""
+"用你惯用的推理运行时启动模型。本指南后面把这台服务器注册为 `kind: sglang`，所以示例就起一个 sglang："
 
-#: ../developer/add-local-model.md:80
+#: ../developer/add-local-model.md:82
+msgid ""
+"vLLM and Ollama work the same way — `vllm serve <hf-org>/<hf-model> "
+"--port 8007` is the equivalent command. All three dispatch to the same "
+"`OpenAICompatAdapter`; the `kind` you register selects the metrics label "
+"and the provider profile, so use the one that matches the runtime you "
+"actually started."
+msgstr ""
+"vLLM 和 Ollama 的做法完全一样——`vllm serve <hf-org>/<hf-model> --port 8007` 就是等价的命令。三者都分发到同一个 `OpenAICompatAdapter`；你注册的 `kind` 决定的是指标标签和 provider profile，所以填你实际启动的那个运行时。"
+
+#: ../developer/add-local-model.md:87
 msgid "Check that the local server responds before touching the gateway config:"
 msgstr "在动网关配置之前，先确认本地服务器有响应："
 
-#: ../developer/add-local-model.md:93
+#: ../developer/add-local-model.md:100
 msgid ""
 "Local inference servers usually do not require an API key, which is why "
 "these two calls carry no `Authorization` header. The gateway's own API "
@@ -142,7 +155,7 @@ msgstr ""
 "本地推理服务器通常不需要 API key，所以上面这两个调用都没有带 `Authorization` 头。网关自己的 API 则需要——见[第 5"
 " 步](#step-5-verify-through-the-gateway)。"
 
-#: ../developer/add-local-model.md:97
+#: ../developer/add-local-model.md:104
 msgid ""
 "If the gateway runs in Docker, use `http://host.docker.internal:<port>` "
 "in your registry so the container can reach the host. If it runs directly"
@@ -152,25 +165,25 @@ msgstr ""
 "`http://host.docker.internal:<port>`，容器才能访问宿主机。如果网关直接跑在宿主机上，用 "
 "`http://localhost:<port>` 即可。"
 
-#: ../developer/add-local-model.md:101
+#: ../developer/add-local-model.md:108
 msgid "Step 2: Add the Model to Your Registry"
 msgstr "第 2 步：把模型加进注册表"
 
-#: ../developer/add-local-model.md:103
+#: ../developer/add-local-model.md:110
 msgid ""
 "Add a new entry under `models:`. Keep the public `id` short and stable, "
 "because clients send it in the `model` field."
 msgstr "在 `models:` 下新增一条条目。公开的 `id` 要短、要稳定，因为客户端会在 `model` 字段里发送它。"
 
-#: ../developer/add-local-model.md:136
+#: ../developer/add-local-model.md:143
 msgid "Use these fields carefully:"
 msgstr "这几个字段要小心填写："
 
-#: ../developer/add-local-model.md:138
+#: ../developer/add-local-model.md:145
 msgid "`id`: Public model ID returned by `/v1/models` and used by clients."
 msgstr "`id`：`/v1/models` 返回、客户端使用的公开模型 id。"
 
-#: ../developer/add-local-model.md:139
+#: ../developer/add-local-model.md:146
 msgid ""
 "`provider`: Top-level provider label for metadata, and the default "
 "`route[].kind` when no `route:` list is given. For local OpenAI-"
@@ -180,7 +193,7 @@ msgstr ""
 "`route[].kind`。本地 OpenAI 兼容服务器用 `vllm`、`sglang`、`ollama` 或 "
 "`openai_compat`。"
 
-#: ../developer/add-local-model.md:142
+#: ../developer/add-local-model.md:149
 msgid ""
 "`route[].kind`: Adapter kind used by the gateway. Local OpenAI-compatible"
 " services can use `vllm`, `sglang`, `ollama`, or `openai_compat`."
@@ -188,13 +201,13 @@ msgstr ""
 "`route[].kind`：网关使用的 adapter 类型。本地 OpenAI 兼容服务可以用 "
 "`vllm`、`sglang`、`ollama` 或 `openai_compat`。"
 
-#: ../developer/add-local-model.md:144
+#: ../developer/add-local-model.md:151
 msgid ""
 "`base_url`: The local server root. It may include `/v1`, but does not "
 "have to."
 msgstr "`base_url`：本地服务器的根地址。可以带 `/v1`，但不是必须。"
 
-#: ../developer/add-local-model.md:145
+#: ../developer/add-local-model.md:152
 msgid ""
 "`provider_model_id`: Model name sent to the local server. It must match "
 "the serving runtime's model name (vLLM's `--served-model-name`, the "
@@ -203,7 +216,7 @@ msgstr ""
 "`provider_model_id`：发给本地服务器的模型名。它必须与推理运行时的模型名一致（vLLM 的 `--served-model-"
 "name`、Ollama 的 tag，等等）。"
 
-#: ../developer/add-local-model.md:148
+#: ../developer/add-local-model.md:155
 msgid ""
 "`aliases`: Optional extra public names that resolve to the same gateway "
 "model. They must not collide with another model's `id` or aliases — a "
@@ -213,11 +226,11 @@ msgstr ""
 "`aliases`：可选的额外公开名称，解析到同一个网关模型。它们不能与另一个模型的 `id` "
 "或别名冲突——重名会解析到最后加载的那个模型，后端会记一条警告。"
 
-#: ../developer/add-local-model.md:151
+#: ../developer/add-local-model.md:158
 msgid "`supported_params`: Only include parameters the local runtime accepts."
 msgstr "`supported_params`：只填本地运行时接受的参数。"
 
-#: ../developer/add-local-model.md:152
+#: ../developer/add-local-model.md:159
 msgid ""
 "`route[].provider`: Optional analytics label override — see [Naming a "
 "Route in the Dashboard](#naming-a-route-in-the-dashboard)."
@@ -225,13 +238,13 @@ msgstr ""
 "`route[].provider`：可选的分析标签覆盖——见[在仪表盘中给路由命名](#naming-a-route-in-the-"
 "dashboard)。"
 
-#: ../developer/add-local-model.md:154
+#: ../developer/add-local-model.md:161
 msgid ""
 "`route[].provider_display_name`: Optional human-readable name for that "
 "label."
 msgstr "`route[].provider_display_name`：该标签可选的可读名称。"
 
-#: ../developer/add-local-model.md:156
+#: ../developer/add-local-model.md:163
 msgid ""
 "The full field reference, including everything a route entry accepts, is "
 "in [Adding a New Model](adding-models.md#configuration-reference)."
@@ -239,11 +252,11 @@ msgstr ""
 "完整的字段参考（包括一条路由条目接受的全部内容）见[添加新模型](adding-models.md#configuration-"
 "reference)。"
 
-#: ../developer/add-local-model.md:159
+#: ../developer/add-local-model.md:166
 msgid "Naming a Route in the Dashboard"
 msgstr "在仪表盘中给路由命名"
 
-#: ../developer/add-local-model.md:161
+#: ../developer/add-local-model.md:168
 msgid ""
 "By default a route reports its `kind` as the provider label, and that "
 "label is what `api_logs.provider` records and what every provider-scoped "
@@ -257,13 +270,13 @@ msgstr ""
 "Observability、provider 禁用开关，以及 provider 注册表。因此两台都由 `kind: vllm` "
 "提供服务的本地机器会落在同一行里，无法互相比较。"
 
-#: ../developer/add-local-model.md:167
+#: ../developer/add-local-model.md:174
 msgid ""
 "Give each route its own label to split them, and optionally a display "
 "name:"
 msgstr "给每条路由各自的标签就能把它们拆开，还可以再给一个显示名："
 
-#: ../developer/add-local-model.md:185
+#: ../developer/add-local-model.md:192
 msgid ""
 "The dashboard then shows `Local box A · local-a` and `Local box B · "
 "local-b` as separate providers, each with its own error rate, cache-hit "
@@ -272,42 +285,42 @@ msgstr ""
 "仪表盘随后会把 `Local box A · local-a` 和 `Local box B · local-b` 显示为两个独立的 "
 "provider，各自有自己的错误率、缓存命中率、token 总量和启用/禁用开关。"
 
-#: ../developer/add-local-model.md:189
+#: ../developer/add-local-model.md:196
 msgid ""
 "Only the analytics label changes. The route still talks to the upstream "
-"its `kind` selects, `endpoint_id` is still derived from the model id and "
-"the route's base URL, and API keys stay pooled under the kind — so one "
-"`LOCAL_API_KEY` continues to serve both boxes."
+"its `kind` selects, `endpoint_id` is still derived from the model id, the"
+" route's `kind`, and its base URL (`_make_provider_id` in "
+"`apps/backend/serving/servers/registry.py`), and API keys stay pooled "
+"under the kind — so one `LOCAL_API_KEY` continues to serve both boxes."
 msgstr ""
-"变的只有分析标签。路由仍然与它的 `kind` 所选的上游通信，`endpoint_id` 仍由模型 id 和该路由的 base URL "
-"推导，API key 仍按 kind 汇集在一起——所以一个 `LOCAL_API_KEY` 依然同时服务两台机器。"
+"变的只有分析标签。路由仍然与它的 `kind` 所选的上游通信，`endpoint_id` 仍由模型 id、该路由的 `kind` 和它的 base URL 一起推导（`apps/backend/serving/servers/registry.py` 里的 `_make_provider_id`），API key 仍按 kind 汇集在一起——所以一个 `LOCAL_API_KEY` 依然同时服务两台机器。"
 
-#: ../developer/add-local-model.md:194
+#: ../developer/add-local-model.md:202
 msgid "Rules and caveats:"
 msgstr "规则与注意事项："
 
-#: ../developer/add-local-model.md:196
+#: ../developer/add-local-model.md:204
 msgid ""
 "The label must be lowercase letters, numbers, dashes, or underscores (max"
 " 64 characters), and may not borrow a built-in provider's name (`vllm`, "
 "`zai`, `openrouter`, …). Reusing one would fold this route's traffic into"
 " that provider's quota reporting and disable switch. A malformed or "
 "reserved label raises during the registry load, so the backend comes up "
-"with an incomplete model list — logged as `Failed to load models.yaml` — "
-"rather than silently mislabelling traffic."
+"with an incomplete model list rather than silently mislabelling traffic. "
+"Note the line is `Failed to load models.yaml` at **WARNING** level "
+"(`bootstrap.py`, inside a broad `except Exception`) — grepping for an "
+"error will not find it, unlike the missing-registry case, which logs at "
+"ERROR."
 msgstr ""
-"标签只能由小写字母、数字、短横线或下划线组成（最多 64 个字符），并且不能借用内置 provider "
-"的名字（`vllm`、`zai`、`openrouter` 等）。借用会把这条路由的流量并进那个 provider "
-"的配额统计和禁用开关。格式非法或占用保留名的标签会在加载注册表时抛错，于是后端起来时模型列表是不完整的——日志里记为 `Failed to "
-"load models.yaml`——而不是悄悄给流量贴错标签。"
+"标签只能由小写字母、数字、短横线或下划线组成（最多 64 个字符），并且不能借用内置 provider 的名字（`vllm`、`zai`、`openrouter` 等）。借用会把这条路由的流量并进那个 provider 的配额统计和禁用开关。格式非法或占用保留名的标签会在加载注册表时抛错，于是后端起来时模型列表是不完整的，而不是悄悄给流量贴错标签。注意这条日志是 **WARNING** 级的 `Failed to load models.yaml`（`bootstrap.py`，在一个很宽的 `except Exception` 里面）——按 error 去 grep 是找不到的，这一点和注册表缺失的情况不同，后者记在 ERROR 级。"
 
-#: ../developer/add-local-model.md:203
+#: ../developer/add-local-model.md:213
 msgid ""
 "`provider_display_name` works on its own too, if you want to rename a "
 "provider in the dashboard without splitting it."
 msgstr "`provider_display_name` 也可以单独使用：只想在仪表盘里给某个 provider 改名、而不拆分它时。"
 
-#: ../developer/add-local-model.md:205
+#: ../developer/add-local-model.md:215
 msgid ""
 "A label reserves its slug against custom providers created in the "
 "Providers tab. If a custom provider with that slug already exists, the "
@@ -319,7 +332,7 @@ msgstr ""
 "已经存在，那么自定义 provider 保留它的 key 和路由目标，冲突会在启动时记为一条 error——请给标签改名，否则两者会汇报到同一个 "
 "provider 名下。"
 
-#: ../developer/add-local-model.md:209
+#: ../developer/add-local-model.md:219
 msgid ""
 "Renaming does not rewrite history. Rows already written under the old "
 "label keep it, so both labels appear until the old data ages out of "
@@ -329,21 +342,21 @@ msgstr ""
 "改名不会重写历史。已经以旧标签写入的数据行仍保留旧标签，因此两个标签会同时出现，直到旧数据从 `provider_hourly_stats` "
 "中过期（30 天清理）——改名之后，新标签的图表会有一段空档。"
 
-#: ../developer/add-local-model.md:213
+#: ../developer/add-local-model.md:223
 msgid ""
 "Per-model route weight overrides key on `endpoint_id`, not the label, so "
 "a rename leaves them intact."
 msgstr "按模型的路由权重覆盖以 `endpoint_id` 为键，而不是标签，所以改名不会动到它们。"
 
-#: ../developer/add-local-model.md:216
+#: ../developer/add-local-model.md:226
 msgid "Step 3: Add Optional Remote Fallbacks"
 msgstr "第 3 步：添加可选的远程回退"
 
-#: ../developer/add-local-model.md:218
+#: ../developer/add-local-model.md:228
 msgid "For automatic fallback, add another route with a lower or equal weight:"
 msgstr "要实现自动回退，再加一条权重更低或相等的路由："
 
-#: ../developer/add-local-model.md:239
+#: ../developer/add-local-model.md:249
 msgid ""
 "Set a fallback's `weight` to `0` to keep the route configured but "
 "unselected. Set it above `0` to allow weighted routing and failover. "
@@ -354,38 +367,38 @@ msgstr ""
 "则允许按权重路由和故障切换。`config/examples/models.openrouter.yaml` "
 "里就带了一条完全按这种方式写成、可直接使用的本地优先混合条目。"
 
-#: ../developer/add-local-model.md:244
+#: ../developer/add-local-model.md:254
 msgid "Step 4: Restart the Gateway"
 msgstr "第 4 步：重启网关"
 
-#: ../developer/add-local-model.md:246
+#: ../developer/add-local-model.md:256
 msgid ""
 "Restart the backend so it reloads the registry. With the bundled Docker "
 "Compose setup:"
 msgstr "重启 backend，让它重新加载注册表。使用仓库自带的 Docker Compose 时："
 
-#: ../developer/add-local-model.md:253
+#: ../developer/add-local-model.md:263
 msgid "For local development without Docker, start it directly:"
 msgstr "本地开发不用 Docker 时，直接启动："
 
-#: ../developer/add-local-model.md:261
+#: ../developer/add-local-model.md:271
 msgid ""
 "At startup the backend logs `Registered N routes from <path>`. That line "
 "is the fastest way to confirm which registry file it actually loaded."
 msgstr "启动时后端会记录 `Registered N routes from <path>`。这一行是确认它实际加载了哪个注册表文件最快的办法。"
 
-#: ../developer/add-local-model.md:264
+#: ../developer/add-local-model.md:274
 msgid "Step 5: Verify Through the Gateway"
 msgstr "第 5 步：通过网关验证"
 
-#: ../developer/add-local-model.md:266
+#: ../developer/add-local-model.md:276
 msgid ""
 "List registered models. `GET /v1/models` accepts an anonymous request — "
 "it resolves an API key only to decide whether to include admin-visible "
 "entries:"
 msgstr "列出已注册的模型。`GET /v1/models` 接受匿名请求——它解析 API key 只是为了决定要不要包含仅管理员可见的条目："
 
-#: ../developer/add-local-model.md:273
+#: ../developer/add-local-model.md:283
 msgid ""
 "`POST /v1/chat/completions` goes through `verify_api_key`, so **it "
 "returns 401 without a valid gateway API key** unless the backend runs "
@@ -395,32 +408,30 @@ msgstr ""
 "`POST /v1/chat/completions` 会走 `verify_api_key`，所以**没有有效的网关 API key 时它返回 "
 "401**，除非后端以 `USER_AUTH_ENABLED=false` 运行。这里用的是你的网关签发的 key，不是本地服务器的 key："
 
-#: ../developer/add-local-model.md:291
+#: ../developer/add-local-model.md:301
 msgid "Test streaming:"
 msgstr "测试流式："
 
-#: ../developer/add-local-model.md:305
+#: ../developer/add-local-model.md:315
 msgid "Routing Notes"
 msgstr "路由说明"
 
-#: ../developer/add-local-model.md:307
+#: ../developer/add-local-model.md:317
 msgid ""
 "When a routing config file is present, `RoutingManager` can adjust route "
 "weights after models are registered. Its path resolves the same way the "
 "registry does — `ROUTING_CONFIG_PATH`, then a manifest's `paths.routing`,"
 " then `config/examples/routing.minimal.yaml`. Without one, the gateway "
-"uses the weights written in the model registry. See [Routing "
-"Configuration](routing.md)."
+"uses the weights written in the model registry. See "
+"[Routing](routing.md)."
 msgstr ""
-"存在路由配置文件时，`RoutingManager` 可以在模型注册之后调整路由权重。它的路径解析方式与注册表相同——先 "
-"`ROUTING_CONFIG_PATH`，再 manifest 的 `paths.routing`，最后 "
-"`config/examples/routing.minimal.yaml`。没有这个文件时，网关使用模型注册表里写的权重。见[路由配置](routing.md)。"
+"存在路由配置文件时，`RoutingManager` 可以在模型注册之后调整路由权重。它的路径解析方式与注册表相同——先 `ROUTING_CONFIG_PATH`，再 manifest 的 `paths.routing`，最后 `config/examples/routing.minimal.yaml`。没有这个文件时，网关使用模型注册表里写的权重。见[路由](routing.md)。"
 
-#: ../developer/add-local-model.md:313
+#: ../developer/add-local-model.md:323
 msgid "Prioritizing Decode on an sglang Route"
 msgstr "在 sglang 路由上优先调度 decode"
 
-#: ../developer/add-local-model.md:315
+#: ../developer/add-local-model.md:325
 msgid ""
 "A route whose server was started with sglang's `--enable-priority-"
 "scheduling` can declare that, and the gateway will stamp a per-request "
@@ -430,7 +441,7 @@ msgstr ""
 "如果一条路由指向的服务器是带 sglang 的 `--enable-priority-scheduling` "
 "启动的，就可以声明这一点，网关会在发往上游的请求体上逐请求打上 `priority`，让超大 prefill 排在交互流量之后，而不是之前："
 
-#: ../developer/add-local-model.md:336
+#: ../developer/add-local-model.md:346
 msgid ""
 "Priority is derived from the estimated *un-cached* prefill — the prompt "
 "size minus the prefix this endpoint is expected to have cached. The three"
@@ -449,19 +460,18 @@ msgstr ""
 "都会打上它。使用 `router: routewise` 的模型则保留上游的默认优先级，因为该 router 没有 prefill "
 "记账、算不出这个折扣——所以 `priority_scheduling: true` 在那里是不起作用的。"
 
-#: ../developer/add-local-model.md:346
+#: ../developer/add-local-model.md:356
 msgid ""
 "Set it only on routes pointing at a server launched with the flag. A "
 "server without it ignores the field, but a remote provider that validates"
 " its request body strictly would not."
 msgstr "只在指向带该 flag 启动的服务器的路由上设置它。没带该 flag 的服务器会忽略这个字段，但严格校验请求体的远程 provider 不会。"
 
-#: ../developer/add-local-model.md:350
+#: ../developer/add-local-model.md:360
 msgid "Recording a Prefix-Cache Miss on an sglang Route"
-msgstr ""
-"在 sglang 路由上记录前缀缓存未命中"
+msgstr "在 sglang 路由上记录前缀缓存未命中"
 
-#: ../developer/add-local-model.md:352
+#: ../developer/add-local-model.md:362
 #, python-brace-format
 msgid ""
 "An sglang server started with `--enable-cache-report` answers a prefix-"
@@ -472,16 +482,19 @@ msgid ""
 "that cannot report at all, so a measured miss disappears from any hit-"
 "rate denominator computed off that column."
 msgstr ""
-"带 `--enable-cache-report` 启动的 sglang 服务器，对前缀缓存**未命中**的应答是 `\"prompt_tokens_details\": null`，而不是 `{\"cached_tokens\": 0}`。不加处理的话，网关会把这个 null 读成「这个 provider 对缓存只字未提」，于是往 `api_logs.cache_read_tokens` 里存 `NULL`——和一个根本无法上报的 provider 存的是同一个值，于是一次实测到的未命中，会从任何基于该列计算的命中率分母里消失。"
+"带 `--enable-cache-report` 启动的 sglang 服务器，对前缀缓存**未命中**的应答是 "
+"`\"prompt_tokens_details\": null`，而不是 `{\"cached_tokens\": "
+"0}`。不加处理的话，网关会把这个 null 读成「这个 provider 对缓存只字未提」，于是往 "
+"`api_logs.cache_read_tokens` 里存 `NULL`——和一个根本无法上报的 provider "
+"存的是同一个值，于是一次实测到的未命中，会从任何基于该列计算的命中率分母里消失。"
 
-#: ../developer/add-local-model.md:360
+#: ../developer/add-local-model.md:370
 msgid ""
 "A route can declare that its server does report, which turns the null "
 "into the 0 it means:"
-msgstr ""
-"路由可以声明自己的服务器确实会上报，从而把这个 null 变回它真正代表的 0："
+msgstr "路由可以声明自己的服务器确实会上报，从而把这个 null 变回它真正代表的 0："
 
-#: ../developer/add-local-model.md:373
+#: ../developer/add-local-model.md:383
 msgid ""
 "**Verify before setting it.** The null is ambiguous: sglang *without* "
 "`--enable-cache-report`, and vLLM without `--enable-prompt-tokens-"
@@ -492,39 +505,46 @@ msgid ""
 "value it replaces. The check is one cold request and one warm repeat of "
 "the same prompt against the endpoint:"
 msgstr ""
-"**设置之前先验证**。这个 null 是有歧义的：*没有* `--enable-cache-report` 的 sglang，以及没有 `--enable-prompt-tokens-details` 的 vLLM，对每一个请求都发同一个 null——命中未命中都一样（[vllm-project/vllm#44377](https://github.com/vllm-project/vllm/issues/44377)）。在那种服务器上声明这个 flag，等于把一个诚实的 `NULL` 换成一个编造出来的「实测未命中」，而后者比它替换掉的那个缺失值更难在事后被察觉。验证方法是对该端点发一次冷请求、再发一次同样 prompt 的热请求："
+"**设置之前先验证**。这个 null 是有歧义的：*没有* `--enable-cache-report` 的 sglang，以及没有 "
+"`--enable-prompt-tokens-details` 的 vLLM，对每一个请求都发同一个 null——命中未命中都一样（[vllm-"
+"project/vllm#44377](https://github.com/vllm-"
+"project/vllm/issues/44377)）。在那种服务器上声明这个 flag，等于把一个诚实的 `NULL` "
+"换成一个编造出来的「实测未命中」，而后者比它替换掉的那个缺失值更难在事后被察觉。验证方法是对该端点发一次冷请求、再发一次同样 prompt "
+"的热请求："
 
-#: ../developer/add-local-model.md:386
+#: ../developer/add-local-model.md:396
 #, python-brace-format
 msgid ""
 "Run it twice. The route qualifies only if the second call returns "
 "`{\"cached_tokens\": N}` with `N > 0` while the first returned `null`. If"
 " both return `null`, the server is not reporting — leave the flag off."
 msgstr ""
-"跑两次。只有当第二次返回 `{\"cached_tokens\": N}` 且 `N > 0`、而第一次返回 `null` 时，这条路由才算合格。如果两次都返回 `null`，说明服务器并没有在上报——别开这个 flag。"
+"跑两次。只有当第二次返回 `{\"cached_tokens\": N}` 且 `N > 0`、而第一次返回 `null` "
+"时，这条路由才算合格。如果两次都返回 `null`，说明服务器并没有在上报——别开这个 flag。"
 
-#: ../developer/add-local-model.md:390
+#: ../developer/add-local-model.md:400
 msgid "Two loader rules keep a wrong declaration from passing quietly:"
-msgstr ""
-"有两条加载器规则，防止一个错误的声明悄悄通过："
+msgstr "有两条加载器规则，防止一个错误的声明悄悄通过："
 
-#: ../developer/add-local-model.md:392
+#: ../developer/add-local-model.md:402
 msgid ""
 "**Route-level only.** Declaring it on the model (including a shorthand "
 "model with no `route:` block) is a config error, because the claim is "
 "about one server's startup flags and inheritance would carry it to every "
 "fallback."
 msgstr ""
-"**只能写在路由级**。写在模型上（包括没有 `route:` 块的简写模型）是配置错误，因为这个声明说的是某一台服务器的启动参数，而继承会把它带到每一条回退路由上。"
+"**只能写在路由级**。写在模型上（包括没有 `route:` "
+"块的简写模型）是配置错误，因为这个声明说的是某一台服务器的启动参数，而继承会把它带到每一条回退路由上。"
 
-#: ../developer/add-local-model.md:395
+#: ../developer/add-local-model.md:405
 msgid ""
 "**Real YAML booleans only.** A quoted `\"false\"` is a config error "
 "rather than a surprise opt-in, since `bool(\"false\")` is `True`."
 msgstr ""
-"**只接受真正的 YAML 布尔值**。带引号的 `\"false\"` 会被判为配置错误，而不是变成一次意外的开启——因为 `bool(\"false\")` 的结果是 `True`。"
+"**只接受真正的 YAML 布尔值**。带引号的 `\"false\"` 会被判为配置错误，而不是变成一次意外的开启——因为 "
+"`bool(\"false\")` 的结果是 `True`。"
 
-#: ../developer/add-local-model.md:398
+#: ../developer/add-local-model.md:408
 #, python-brace-format
 msgid ""
 "What the client sees differs by surface: a non-streaming response carries"
@@ -533,17 +553,20 @@ msgid ""
 "`prompt_tokens_details: {\"cached_tokens\": 0}`. `/v1/messages` reports "
 "it as `cache_read_input_tokens: 0`."
 msgstr ""
-"客户端看到什么取决于接口：非流式响应里带 `cache_read_tokens: 0`（`Usage` 响应模型会丢掉其余字段），而流式的最后一个 chunk 还会带上 `cached_tokens: 0` 和 `prompt_tokens_details: {\"cached_tokens\": 0}`。`/v1/messages` 则把它报成 `cache_read_input_tokens: 0`。"
+"客户端看到什么取决于接口：非流式响应里带 `cache_read_tokens: 0`（`Usage` 响应模型会丢掉其余字段），而流式的最后一个"
+" chunk 还会带上 `cached_tokens: 0` 和 `prompt_tokens_details: "
+"{\"cached_tokens\": 0}`。`/v1/messages` 则把它报成 `cache_read_input_tokens: "
+"0`。"
 
-#: ../developer/add-local-model.md:404
+#: ../developer/add-local-model.md:414
 msgid "Troubleshooting"
 msgstr "排障"
 
-#: ../developer/add-local-model.md:406
+#: ../developer/add-local-model.md:416
 msgid "Model Does Not Appear in `/v1/models`"
 msgstr "模型没有出现在 `/v1/models` 中"
 
-#: ../developer/add-local-model.md:408
+#: ../developer/add-local-model.md:418
 msgid ""
 "Confirm which registry the backend loaded, from the `Registered N routes "
 "from <path>` startup log line. If no registry is found at the resolved "
@@ -554,19 +577,19 @@ msgstr ""
 "一行确认后端加载了哪个注册表。如果解析出的路径下找不到注册表，它会记一条 error 并指出该路径，`/v1/models` "
 "为空，而且每个请求都会报模型不存在。"
 
-#: ../developer/add-local-model.md:412
+#: ../developer/add-local-model.md:422
 msgid "Check YAML indentation under `models:`."
 msgstr "检查 `models:` 下的 YAML 缩进。"
 
-#: ../developer/add-local-model.md:413
+#: ../developer/add-local-model.md:423
 msgid "Restart the backend after editing the registry."
 msgstr "编辑注册表之后要重启后端。"
 
-#: ../developer/add-local-model.md:414
+#: ../developer/add-local-model.md:424
 msgid "Confirm `id` and `aliases` do not collide with another model."
 msgstr "确认 `id` 和 `aliases` 没有与其他模型冲突。"
 
-#: ../developer/add-local-model.md:415
+#: ../developer/add-local-model.md:425
 #, python-brace-format
 msgid ""
 "A route whose `${VAR}`-backed `api_key`, `api_keys`, or `base_url` "
@@ -577,51 +600,51 @@ msgstr ""
 "一条路由中由 `${VAR}` 提供的 `api_key`、`api_keys` 或 `base_url` "
 "若解析为空，整个模型都会被丢弃；日志会列出被跳过的模型和未设置的变量。把这条路由标记为 `optional: true`，可以只跳过该路由。"
 
-#: ../developer/add-local-model.md:419
+#: ../developer/add-local-model.md:429
 msgid "Gateway Cannot Reach the Local Server"
 msgstr "网关访问不到本地服务器"
 
-#: ../developer/add-local-model.md:421
+#: ../developer/add-local-model.md:431
 msgid "From Docker, use `host.docker.internal` instead of `localhost`."
 msgstr "在 Docker 里用 `host.docker.internal` 代替 `localhost`。"
 
-#: ../developer/add-local-model.md:422
+#: ../developer/add-local-model.md:432
 msgid "From bare metal, use `localhost` or the host IP."
 msgstr "在裸机上用 `localhost` 或主机 IP。"
 
-#: ../developer/add-local-model.md:423
+#: ../developer/add-local-model.md:433
 msgid ""
 "For private remote servers, use a private IP/hostname or a private tunnel"
 " endpoint; avoid public internet exposure."
 msgstr "私有的远程服务器用私有 IP/主机名或私有隧道端点；不要暴露到公网。"
 
-#: ../developer/add-local-model.md:425
+#: ../developer/add-local-model.md:435
 msgid ""
 "Confirm the local server listens on `0.0.0.0`, not only `127.0.0.1`, if "
 "it has to be reached from a container."
 msgstr "如果需要从容器里访问，确认本地服务器监听在 `0.0.0.0`，而不只是 `127.0.0.1`。"
 
-#: ../developer/add-local-model.md:427
+#: ../developer/add-local-model.md:437
 msgid ""
 "Verify `curl <base_url>/v1/models` works from the same environment as the"
 " backend."
 msgstr "在与后端相同的环境里验证 `curl <base_url>/v1/models` 能通。"
 
-#: ../developer/add-local-model.md:430
+#: ../developer/add-local-model.md:440
 msgid "Requests Fail After Registration"
 msgstr "注册之后请求失败"
 
-#: ../developer/add-local-model.md:432
+#: ../developer/add-local-model.md:442
 msgid ""
 "Make sure `provider_model_id` matches the model name exposed by the local"
 " runtime."
 msgstr "确认 `provider_model_id` 与本地运行时对外暴露的模型名一致。"
 
-#: ../developer/add-local-model.md:434
+#: ../developer/add-local-model.md:444
 msgid "Remove unsupported request params from `supported_params`."
 msgstr "把本地运行时不支持的请求参数从 `supported_params` 里去掉。"
 
-#: ../developer/add-local-model.md:435
+#: ../developer/add-local-model.md:445
 msgid ""
 "If the runtime's base URL already ends in `/v1`, keep it that way; the "
 "adapter appends `/chat/completions` under that base."
@@ -629,31 +652,31 @@ msgstr ""
 "如果运行时的 base URL 已经以 `/v1` 结尾，就保持原样；adapter 会在该 base 之下追加 "
 "`/chat/completions`。"
 
-#: ../developer/add-local-model.md:437
+#: ../developer/add-local-model.md:447
 msgid ""
 "Set `supports_tools` and `supports_structured_output` only when the local"
 " runtime actually supports them."
 msgstr "只有在本地运行时确实支持时，才设置 `supports_tools` 和 `supports_structured_output`。"
 
-#: ../developer/add-local-model.md:440
+#: ../developer/add-local-model.md:450
 msgid "See Also"
 msgstr "另请参阅"
 
-#: ../developer/add-local-model.md:442
+#: ../developer/add-local-model.md:452
 msgid ""
 "[Adding a New Model](adding-models.md) — the full field reference, "
 "adapter kinds, and how to integrate a new remote provider"
 msgstr "[添加新模型](adding-models.md)——完整的字段参考、adapter 类型，以及如何接入一个新的远程 provider"
 
-#: ../developer/add-local-model.md:444
+#: ../developer/add-local-model.md:454
 msgid ""
-"[Router Tutorial](router-tutorial.md) — a runnable deployment that ends "
-"by pointing at your own local vLLM/SGLang/Ollama server"
-msgstr "[快速开始](router-tutorial.md)——一个可直接运行的部署，最后会指向你自己的本地 vLLM/SGLang/Ollama 服务器"
+"[Quickstart](router-tutorial.md) — a runnable deployment that ends by "
+"pointing at your own local vLLM/SGLang/Ollama server"
+msgstr ""
+"[快速开始](router-tutorial.md)——一个可直接运行的部署，最后会指向你自己的本地 vLLM/SGLang/Ollama 服务器"
 
-#: ../developer/add-local-model.md:446
-msgid ""
-"[Routing Configuration](routing.md) — weights, health checks, and "
-"strategies"
-msgstr "[路由配置](routing.md)——权重、健康检查与策略"
+#: ../developer/add-local-model.md:456
+msgid "[Routing](routing.md) — weights, health checks, and strategies"
+msgstr ""
+"[路由](routing.md)——权重、健康检查与策略"
 

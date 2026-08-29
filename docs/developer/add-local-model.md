@@ -68,14 +68,21 @@ curl http://127.0.0.1:8001/v1/models | jq
 
 ## Step 1: Start the Local Model Server
 
-Start the model with your preferred serving runtime. Example with vLLM:
+Start the model with your preferred serving runtime. The rest of this guide
+registers the server as `kind: sglang`, so the example starts one:
 
 ```bash
-vllm serve <hf-org>/<hf-model> \
+python -m sglang.launch_server \
+  --model-path <hf-org>/<hf-model> \
   --host 0.0.0.0 \
   --port 8007 \
   --served-model-name my-local-model
 ```
+
+vLLM and Ollama work the same way — `vllm serve <hf-org>/<hf-model> --port 8007`
+is the equivalent command. All three dispatch to the same `OpenAICompatAdapter`;
+the `kind` you register selects the metrics label and the provider profile, so
+use the one that matches the runtime you actually started.
 
 Check that the local server responds before touching the gateway config:
 
@@ -187,8 +194,9 @@ separate providers, each with its own error rate, cache-hit rate, token totals,
 and enable/disable switch.
 
 Only the analytics label changes. The route still talks to the upstream its
-`kind` selects, `endpoint_id` is still derived from the model id and the
-route's base URL, and API keys stay
+`kind` selects, `endpoint_id` is still derived from the model id, the route's
+`kind`, and its base URL (`_make_provider_id` in
+`apps/backend/serving/servers/registry.py`), and API keys stay
 pooled under the kind — so one `LOCAL_API_KEY` continues to serve both boxes.
 
 Rules and caveats:
@@ -198,8 +206,10 @@ Rules and caveats:
   `openrouter`, …). Reusing one would fold this route's traffic into that
   provider's quota reporting and disable switch. A malformed or reserved label
   raises during the registry load, so the backend comes up with an incomplete
-  model list — logged as `Failed to load models.yaml` — rather than silently
-  mislabelling traffic.
+  model list rather than silently mislabelling traffic. Note the line is
+  `Failed to load models.yaml` at **WARNING** level (`bootstrap.py`, inside a
+  broad `except Exception`) — grepping for an error will not find it, unlike the
+  missing-registry case, which logs at ERROR.
 - `provider_display_name` works on its own too, if you want to rename a provider
   in the dashboard without splitting it.
 - A label reserves its slug against custom providers created in the Providers
@@ -308,7 +318,7 @@ When a routing config file is present, `RoutingManager` can adjust route weights
 after models are registered. Its path resolves the same way the registry does —
 `ROUTING_CONFIG_PATH`, then a manifest's `paths.routing`, then
 `config/examples/routing.minimal.yaml`. Without one, the gateway uses the weights
-written in the model registry. See [Routing Configuration](routing.md).
+written in the model registry. See [Routing](routing.md).
 
 ### Prioritizing Decode on an sglang Route
 
@@ -441,6 +451,6 @@ streaming final chunk also carries `cached_tokens: 0` and
 
 - [Adding a New Model](adding-models.md) — the full field reference, adapter
   kinds, and how to integrate a new remote provider
-- [Router Tutorial](router-tutorial.md) — a runnable deployment that ends by
+- [Quickstart](router-tutorial.md) — a runnable deployment that ends by
   pointing at your own local vLLM/SGLang/Ollama server
-- [Routing Configuration](routing.md) — weights, health checks, and strategies
+- [Routing](routing.md) — weights, health checks, and strategies

@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-29 10:19+0800\n"
+"POT-Creation-Date: 2026-08-29 10:34+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -197,12 +197,15 @@ msgid ""
 "**The socket peer** (`request.client.host`, or the literal `\"unknown\"` "
 "when Starlette reports no client). Source `socket`. This is both the "
 "direct- connection case and the last resort when no forwarded hop was "
-"usable."
+"usable. Like rung 1, it is *not* passed through the routability filter — "
+"so on the ordinary Docker-behind-nginx deployment with "
+"`TRUST_PROXY_HEADERS` off, this rung reports the bridge address. That is "
+"a separate, pre-existing pollution class the filter deliberately leaves "
+"alone; only rungs 2 and 3 are filtered."
 msgstr ""
-"**socket 对端**（`request.client.host`；当 Starlette 报告没有 client 时，则是字面量 "
-"`\"unknown\"`）。source 为 `socket`。这既是直连的情形，也是所有转发跳都不可用时的兜底。"
+"**套接字对端**（`request.client.host`；当 Starlette 报告没有 client 时，是字面量 `\"unknown\"`）。来源标为 `socket`。它既是直连的情形，也是没有任何可用转发跳时的兜底。和第 1 级一样，它*不*经过可路由性过滤——所以在 `TRUST_PROXY_HEADERS` 关闭、nginx 后面跑 Docker 的常见部署里，这一级报出来的是网桥地址。那是一类另外的、早已存在的污染，过滤器有意不去管它；只有第 2、3 级会被过滤。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:69
+#: ../developer/trusted-proxies-and-client-ips.md:73
 msgid ""
 "`CF-Connecting-IP` is checked before `X-Forwarded-For` deliberately: "
 "Cloudflare overwrites its own header on every request, but it *appends* "
@@ -214,23 +217,23 @@ msgstr ""
 "每个请求都会覆写自己的那个头，但对客户端自带的 `X-Forwarded-For` "
 "只是*追加*，所以从那里读最左边一项，等于让任何调用方都能指定网关用来记日志和限流的地址。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:74
+#: ../developer/trusted-proxies-and-client-ips.md:78
 msgid "What counts as routable"
 msgstr "什么算可路由"
 
-#: ../developer/trusted-proxies-and-client-ips.md:76
+#: ../developer/trusted-proxies-and-client-ips.md:80
 msgid ""
 "`_is_reportable_ip()` rejects anything unparseable, plus loopback, link-"
 "local, multicast and unspecified addresses, and these networks:"
 msgstr "`_is_reportable_ip()` 会拒绝任何无法解析的值，以及回环、链路本地、组播和未指定地址，还有这些网段："
 
-#: ../developer/trusted-proxies-and-client-ips.md:85
+#: ../developer/trusted-proxies-and-client-ips.md:89
 msgid ""
 "An IPv4-mapped IPv6 literal is judged by its embedded IPv4 address, so a "
 "mapped private peer is still rejected."
 msgstr "IPv4-mapped 的 IPv6 字面量按其内嵌的 IPv4 地址判定，因此映射过来的私有对端同样会被拒绝。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:88
+#: ../developer/trusted-proxies-and-client-ips.md:92
 msgid ""
 "Skipping these hops is the point of the left-to-right scan: an "
 "intermediary that inserts its own internal address as the leftmost hop "
@@ -238,22 +241,31 @@ msgid ""
 " client."
 msgstr "跳过这些跳正是从左往右扫描的意义所在：某个中间设备若把自己的内网地址插在最左边一跳，不这样跳过的话，那个内网地址就会被当作客户端上报——并写进日志。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:92
+#: ../developer/trusted-proxies-and-client-ips.md:96
 msgid ""
 "The list is written out explicitly rather than delegating to "
 "`ipaddress.is_private` / `is_global`, because those reclassified the "
-"documentation and benchmark ranges between CPython 3.12.4 and 3.13; hard-"
+"documentation (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and "
+"benchmark (`198.18.0.0/15`) ranges between CPython 3.12.4 and 3.13; hard-"
 "coding the stable RFC ranges keeps IP resolution from depending on the "
 "interpreter version."
 msgstr ""
-"这份清单是显式写死的，而不是交给 `ipaddress.is_private` / `is_global`，因为在 CPython 3.12.4 "
-"与 3.13 之间，它们把文档用途和基准测试用途的网段重新分了类；硬编码稳定的 RFC 网段，可以让 IP 解析不依赖解释器版本。"
+"这份清单是显式写死的，而不是交给 `ipaddress.is_private` / `is_global`，因为在 CPython 3.12.4 与 3.13 之间，它们把文档用途（`192.0.2.0/24`、`198.51.100.0/24`、`203.0.113.0/24`）和基准测试用途（`198.18.0.0/15`）的网段重新分了类；硬编码稳定的 RFC 网段，可以让 IP 解析不依赖解释器版本。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:98
+#: ../developer/trusted-proxies-and-client-ips.md:103
+msgid ""
+"The consequence is worth stating, because it is what the explicit list "
+"buys: a documentation or benchmark address is **routable** under this "
+"filter and will be reported as a client. That is why `::ffff:192.0.2.1` "
+"works as the example below even though `is_private` would reject it."
+msgstr ""
+"这么做的后果值得明说，因为它正是显式清单换来的东西：在这个过滤器下，文档用途或基准测试用途的地址是**可路由的**，会被当作客户端地址报出来。这也是为什么下面拿 `::ffff:192.0.2.1` 当例子是成立的，尽管 `is_private` 会把它判掉。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:108
 msgid "Known limitation"
 msgstr "已知限制"
 
-#: ../developer/trusted-proxies-and-client-ips.md:100
+#: ../developer/trusted-proxies-and-client-ips.md:110
 msgid ""
 "A spoofed *public* leftmost `X-Forwarded-For` entry is still taken at "
 "face value. Stripping it correctly requires a configured trusted-proxy "
@@ -269,17 +281,19 @@ msgstr ""
 "docstring 里写明了这一点，这项加固尚未实现。如果你需要它，要么在你的代理上终结 `X-Forwarded-"
 "For`（覆写而不是追加），要么只信任一个你确知代理会覆写的边缘请求头。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:109
+#: ../developer/trusted-proxies-and-client-ips.md:119
 msgid "Cloudflare Pseudo IPv4"
 msgstr ""
+"Cloudflare Pseudo IPv4"
 
-#: ../developer/trusted-proxies-and-client-ips.md:111
+#: ../developer/trusted-proxies-and-client-ips.md:121
 msgid ""
-"`CF-Connecting-IPv6` outranks `CF-Connecting-IP`, but **only when the two"
-" corroborate each other**."
-msgstr "`CF-Connecting-IPv6` 的优先级高于 `CF-Connecting-IP`，但**只在两者互相印证时**才成立。"
+"Within rung 1, `CF-Connecting-IPv6` wins over `CF-Connecting-IP` — it is "
+"not a rung of its own — but **only when the two corroborate each other**."
+msgstr ""
+"在第 1 级内部，`CF-Connecting-IPv6` 优先于 `CF-Connecting-IP`——它不是独立的一级——但**只在两者互相印证时**才成立。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:114
+#: ../developer/trusted-proxies-and-client-ips.md:124
 msgid ""
 "Cloudflare emits `CF-Connecting-IPv6` solely when [Pseudo "
 "IPv4](https://developers.cloudflare.com/network/pseudo-ipv4/) is set to "
@@ -295,7 +309,7 @@ msgstr ""
 "E（`240.0.0.0/4`）地址，而不是访问者真实的地址。优先采用这个合成地址，会把 IPv6 客户端推进 IPv4 "
 "的分桶路径，让每一个轮换出来的隐私地址各占一个限流桶，也就废掉了下面按 `/64` 的归组。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:122
+#: ../developer/trusted-proxies-and-client-ips.md:132
 msgid ""
 "The corroboration matters because with Pseudo IPv4 off the header is "
 "*absent* rather than cleared, so any caller can supply one. "
@@ -314,11 +328,11 @@ msgstr ""
 " 掌控，而真实的客户端地址绝不会取自保留的 Class E 段，所以这个组合无法从外部伪造。其余情况下仍以 `CF-Connecting-IP` "
 "为准。两个原始请求头都会挂在 `ClientIpInfo` 上并写进日志，因此一个合成地址——或者一次伪造尝试——事后依然看得见。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:132
+#: ../developer/trusted-proxies-and-client-ips.md:142
 msgid "Bucketing: why IPv6 folds to a /64"
 msgstr "分桶：为什么 IPv6 要折叠到 /64"
 
-#: ../developer/trusted-proxies-and-client-ips.md:134
+#: ../developer/trusted-proxies-and-client-ips.md:144
 msgid ""
 "A single IPv6 client is typically delegated an entire prefix (a `/64` at "
 "minimum, often a `/56` or `/48`), and RFC 4941 privacy addresses rotate "
@@ -328,21 +342,21 @@ msgstr ""
 "一个 IPv6 客户端通常会被分到整段前缀（最少 `/64`，常常是 `/56` 或 `/48`），而 RFC 4941 "
 "的隐私地址就在这段前缀内不断轮换。因此完整的 IPv6 地址是个很差的身份键：一个客户端能拿出来的不同地址实际上是无限多的。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:139
+#: ../developer/trusted-proxies-and-client-ips.md:149
 msgid ""
 "`normalize_ip_bucket()` is the grouping key used wherever an address has "
 "to stand in for a caller:"
 msgstr "凡是需要用一个地址来代表某个调用方的地方，用的都是 `normalize_ip_bucket()` 给出的归组键："
 
-#: ../developer/trusted-proxies-and-client-ips.md:142
+#: ../developer/trusted-proxies-and-client-ips.md:152
 msgid "IPv6 → the `/64` network it sits in (`IPV6_BUCKET_PREFIXLEN = 64`)."
 msgstr "IPv6 → 它所在的 `/64` 网段（`IPV6_BUCKET_PREFIXLEN = 64`）。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:143
+#: ../developer/trusted-proxies-and-client-ips.md:153
 msgid "IPv4 → the address itself."
 msgstr "IPv4 → 地址本身。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:144
+#: ../developer/trusted-proxies-and-client-ips.md:154
 msgid ""
 "IPv4-mapped literals (`::ffff:192.0.2.1`, which a dual-stack listener "
 "reports for IPv4 peers) → the embedded IPv4 address. Folding these by "
@@ -351,13 +365,13 @@ msgstr ""
 "IPv4-mapped 字面量（`::ffff:192.0.2.1`，双栈监听器对 IPv4 对端报告的就是这种形式）→ 内嵌的那个 IPv4 "
 "地址。若按前缀折叠，所有 IPv4 客户端都会被塌进同一个 `::/64`。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:147
+#: ../developer/trusted-proxies-and-client-ips.md:157
 msgid ""
 "Anything unparseable (including the `\"unknown\"` fallback and scoped "
 "literals) → returned unchanged."
 msgstr "任何无法解析的值（包括 `\"unknown\"` 这个回退值和带 scope 的字面量）→ 原样返回。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:150
+#: ../developer/trusted-proxies-and-client-ips.md:160
 msgid ""
 "Logs and analytics keep the full address; only the buckets fold. Callers "
 "of `normalize_ip_bucket()` at this revision are signup rate limiting, "
@@ -367,7 +381,7 @@ msgstr ""
 "日志和分析保留完整地址，折叠的只是分桶。在当前这个版本里，调用 `normalize_ip_bucket()` "
 "的有：注册限流、登录限流、重复认证失败黑名单，以及路由亲和性。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:154
+#: ../developer/trusted-proxies-and-client-ips.md:164
 msgid ""
 "`derive_affinity_key()` is the sticky-routing variant. It falls through "
 "caller identities in order of how precisely each names one caller: the "
@@ -381,12 +395,11 @@ msgstr ""
 "`ip:<bucket>`。它放在这些 IP 辅助函数旁边而不是挂在某个 router 上，是为了让每一个把请求分发到池化 adapter "
 "的接口面，都以同样的方式推导调用方身份。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:161
+#: ../developer/trusted-proxies-and-client-ips.md:171
 msgid "An IPv6 client on an IPv4-only origin is normal"
-msgstr ""
-"纯 IPv4 源站上出现 IPv6 客户端是正常的"
+msgstr "纯 IPv4 源站上出现 IPv6 客户端是正常的"
 
-#: ../developer/trusted-proxies-and-client-ips.md:163
+#: ../developer/trusted-proxies-and-client-ips.md:173
 msgid ""
 "Seeing IPv6 addresses in the logs does not mean the origin gained IPv6. A"
 " CDN that publishes an AAAA record accepts the client over IPv6 and then "
@@ -395,13 +408,15 @@ msgid ""
 "decoupled from the origin's, so for an IPv4-only origin it is an IPv6 "
 "`peer_ip` — not an IPv6 `remote_ip` — that would be the genuine surprise."
 msgstr ""
-"日志里出现 IPv6 地址，并不意味着源站支持了 IPv6。发布了 AAAA 记录的 CDN 会用 IPv6 接下客户端，再另开一条 IPv4 连接回源，把原始地址放在转发头里带过来。客户端的地址族与源站的是解耦的——所以在纯 IPv4 源站上，真正该觉得意外的是 IPv6 的 `peer_ip`，而不是 IPv6 的 `remote_ip`。"
+"日志里出现 IPv6 地址，并不意味着源站支持了 IPv6。发布了 AAAA 记录的 CDN 会用 IPv6 接下客户端，再另开一条 IPv4 "
+"连接回源，把原始地址放在转发头里带过来。客户端的地址族与源站的是解耦的——所以在纯 IPv4 源站上，真正该觉得意外的是 IPv6 的 "
+"`peer_ip`，而不是 IPv6 的 `remote_ip`。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:170
+#: ../developer/trusted-proxies-and-client-ips.md:180
 msgid "What is logged"
 msgstr "会写进日志的内容"
 
-#: ../developer/trusted-proxies-and-client-ips.md:172
+#: ../developer/trusted-proxies-and-client-ips.md:182
 msgid ""
 "`apps/backend/serving/servers/middleware/request_log.py` emits one "
 "structured `http_request` line per request carrying the resolved address "
@@ -414,14 +429,14 @@ msgstr ""
 "`http_request`，其中既带解析出的地址，*也*带它的来历：`remote_ip`、`peer_ip`、`ip_source`、`x_forwarded_for`、`x_real_ip`、`cf_connecting_ip`、`cf_connecting_ipv6`，以及"
 " `user_agent`、`host`、`origin`、`referer`、`request_id` 和 `session_id`。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:178
+#: ../developer/trusted-proxies-and-client-ips.md:188
 msgid ""
 "Keeping the raw headers next to the verdict is what makes a wrong address"
 " diagnosable: you can see which rung fired and what the alternatives "
 "said."
 msgstr "把原始请求头和判定结果放在一起，才让一个错误的地址是可以诊断的：你能看到是哪一级命中的，以及其他几级各自说了什么。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:181
+#: ../developer/trusted-proxies-and-client-ips.md:191
 msgid ""
 "At `DEBUG` the middleware additionally emits an `http_request_headers` "
 "line with every request header, truncated to 256 characters each and with"
@@ -430,17 +445,17 @@ msgstr ""
 "在 `DEBUG` 级别下，中间件还会额外输出一行 `http_request_headers`，带上全部请求头，每个截断到 256 个字符，并把"
 " `authorization` 和 `x-api-key` 替换成 `***`。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:185
+#: ../developer/trusted-proxies-and-client-ips.md:195
 msgid "What is persisted"
 msgstr "会持久化的内容"
 
-#: ../developer/trusted-proxies-and-client-ips.md:187
+#: ../developer/trusted-proxies-and-client-ips.md:197
 msgid ""
 "The output of this module does not stay in the log file. It is written to"
 " the database."
 msgstr "这个模块的输出并不止步于日志文件，它还会写进数据库。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:190
+#: ../developer/trusted-proxies-and-client-ips.md:200
 msgid ""
 "**`api_logs.metadata`** (a JSONB column; see "
 "`apps/backend/serving/storage/log_schema.py` and the insert in "
@@ -500,16 +515,15 @@ msgstr ""
 msgid "`ip`"
 msgstr ""
 
-#: ../developer/trusted-proxies-and-client-ips.md:200
+#: ../developer/trusted-proxies-and-client-ips.md:210
 msgid ""
 "The Anthropic surface stores the full provenance, not just the verdict — "
 "so a disputed address can be re-derived from the row. The two `CF-"
-"Connecting-*` headers are logged but not persisted on either surface."
+"Connecting-*` headers are logged but not persisted on any surface."
 msgstr ""
-"Anthropic 这个接口面存下的是完整来历，而不只是判定结果——因此有争议的地址可以从这一行里重新推导出来。两个 `CF-"
-"Connecting-*` 头会写日志，但在两个接口面上都不会持久化。"
+"Anthropic 这个接口面存下的是完整来历，而不只是判定结果——因此有争议的地址可以从这一行里重新推导出来。两个 `CF-Connecting-*` 头会写日志，但在任何接口面上都不会持久化。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:204
+#: ../developer/trusted-proxies-and-client-ips.md:214
 msgid ""
 "**`login_events`** "
 "(`apps/backend/serving/storage/postgres_operational.py`) stores `ip` and "
@@ -518,35 +532,35 @@ msgstr ""
 "**`login_events`**（`apps/backend/serving/storage/postgres_operational.py`）为每次登录尝试存下"
 " `ip` 和 `user_agent`，以及这次尝试的结果。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:207
+#: ../developer/trusted-proxies-and-client-ips.md:217
 msgid "Retention is yours to set"
 msgstr "保留期由你自己定"
 
-#: ../developer/trusted-proxies-and-client-ips.md:209
+#: ../developer/trusted-proxies-and-client-ips.md:219
 msgid ""
 "Nothing in this repository expires either table on a timer. The only "
 "deletions that exist are operator-initiated:"
 msgstr "本仓库里没有任何东西会按定时器让这两张表过期。现有的删除操作全部由运维方主动发起："
 
-#: ../developer/trusted-proxies-and-client-ips.md:212
+#: ../developer/trusted-proxies-and-client-ips.md:222
 msgid ""
 "`DELETE /admin/login-events?older_than_days=N` — purge `login_events` by "
 "age."
 msgstr "`DELETE /admin/login-events?older_than_days=N`——按时间清理 `login_events`。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:213
+#: ../developer/trusted-proxies-and-client-ips.md:223
 msgid "`DELETE /admin/login-events?user_id=...` — purge one user's login events."
 msgstr "`DELETE /admin/login-events?user_id=...`——清理某一个用户的登录事件。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:214
+#: ../developer/trusted-proxies-and-client-ips.md:224
 msgid "`hard_delete_user_data(user_id)` — wipes that user's `api_logs` rows."
 msgstr "`hard_delete_user_data(user_id)`——抹掉该用户的 `api_logs` 行。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:215
+#: ../developer/trusted-proxies-and-client-ips.md:225
 msgid "`delete_recent_error_requests(hours=N)` — drops recent error rows."
 msgstr "`delete_recent_error_requests(hours=N)`——删掉近期的错误行。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:217
+#: ../developer/trusted-proxies-and-client-ips.md:227
 msgid ""
 "If your deployment is subject to a data-protection regime, or you simply "
 "do not want to hold client addresses indefinitely, you must decide on and"
@@ -554,17 +568,17 @@ msgid ""
 "and does not pick a default on your behalf."
 msgstr "如果你的部署要受某种数据保护法规约束，或者你只是不想无限期地保存客户端地址，那就必须自己决定并实现一套保留策略。本项目不附带这样的策略，也不替你选一个默认值。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:222
+#: ../developer/trusted-proxies-and-client-ips.md:232
 msgid "Two knobs that reduce what there is to retain in the first place:"
 msgstr "有两个开关能从源头上减少需要保留的数据："
 
-#: ../developer/trusted-proxies-and-client-ips.md:224
+#: ../developer/trusted-proxies-and-client-ips.md:234
 msgid ""
 "Leaving both trust flags at `0` where no proxy is in front means only the"
 " socket peer is ever recorded."
 msgstr "在前面没有代理的情况下把两个信任开关都留在 `0`，那么被记录下来的就只有 socket 对端。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:226
+#: ../developer/trusted-proxies-and-client-ips.md:236
 msgid ""
 "Prompt and response content is governed separately by "
 "`DB_STORE_FULL_CONTENT` (default `false`, which hashes content rather "
@@ -573,11 +587,11 @@ msgstr ""
 "prompt 和响应的内容由 `DB_STORE_FULL_CONTENT` 单独控制（默认 `false`，即对内容做哈希而不是原样存下；见 "
 "`apps/backend/serving/config/settings.py`）。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:230
+#: ../developer/trusted-proxies-and-client-ips.md:240
 msgid "Testing your setup"
 msgstr "验证你的配置"
 
-#: ../developer/trusted-proxies-and-client-ips.md:232
+#: ../developer/trusted-proxies-and-client-ips.md:242
 msgid ""
 "`tests/unit/utils/test_request_ip.py` covers the resolution table, the "
 "Pseudo IPv4 corroboration and the bucketing rules; "
@@ -587,10 +601,22 @@ msgstr ""
 "`tests/unit/utils/test_request_ip.py` 覆盖解析顺序表、Pseudo IPv4 "
 "的互相印证以及分桶规则；`tests/unit/middleware/test_request_log.py` 覆盖日志字段。运行方式："
 
-#: ../developer/trusted-proxies-and-client-ips.md:241
+#: ../developer/trusted-proxies-and-client-ips.md:251
 msgid ""
 "To check a live gateway, send a request with a deliberately absurd "
 "forwarded header and look at the `ip_source` in the resulting log line — "
 "it tells you which rung the gateway actually believed."
 msgstr "要检查一个正在运行的网关，就发一个带着刻意离谱的转发头的请求，然后看产生的那行日志里的 `ip_source`——它会告诉你网关实际相信的是哪一级。"
+
+#~ msgid ""
+#~ "**The socket peer** (`request.client.host`, or"
+#~ " the literal `\"unknown\"` when Starlette"
+#~ " reports no client). Source `socket`. "
+#~ "This is both the direct- connection "
+#~ "case and the last resort when no"
+#~ " forwarded hop was usable."
+#~ msgstr ""
+#~ "**socket 对端**（`request.client.host`；当 Starlette 报告没有"
+#~ " client 时，则是字面量 `\"unknown\"`）。source 为 "
+#~ "`socket`。这既是直连的情形，也是所有转发跳都不可用时的兜底。"
 

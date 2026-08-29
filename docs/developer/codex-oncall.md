@@ -16,8 +16,9 @@ one of two backends (`CODEX_ONCALL_DISPATCH_BACKEND`):
   relay polls the job, validates the result, and posts it into the thread
   itself. No GitHub-hosted minutes — an Actions outage cannot take the analysis
   path down with it — no long-lived model key in Actions secrets, spend
-  attributed in `api_logs.agent_job_id`, and the checkout pinned to the commit
-  `CODEX_ONCALL_AGENT_BASE_REF` named at job creation.
+  attributed in `api_logs.agent_job_id`, and the checkout pinned to whatever
+  commit the `CODEX_ONCALL_AGENT_BASE_REF` ref resolved to at job creation
+  (the ref is a branch name — it defaults to `dev` — not a sha).
 
 ```text
 off-host alert producer ──── restricted HTTPS ─┐
@@ -39,7 +40,7 @@ gateway backend ─────────────────────�
      <model-id> (CODEX_ONCALL_CODEX_MODEL)             gateway /v1/responses
 ```
 
-Split of responsibilities:
+Split of responsibilities, on the `github` backend:
 
 - **Relay (Docker, always on):** authenticates producers, posts the original
   alert immediately, deduplicates incidents in SQLite, queues one durable
@@ -52,10 +53,14 @@ Split of responsibilities:
   failure notice) into the original Slack thread. The runner VM is destroyed
   after each run.
 
-The analysis is read-only by construction. The relay's GitHub token is only
-powerful enough to send `repository_dispatch`; the workflow job runs with
-`permissions: contents: read`; nothing in the pipeline can create issues,
-branches, pull requests, or merges. The structured result carries
+The analysis is read-only by construction: the workflow job runs with
+`permissions: contents: read`, so nothing the analysis itself does can create
+issues, branches, pull requests, or merges. The relay's own GitHub token is a
+weaker claim than that. It is scoped to sending `repository_dispatch`, but
+GitHub grants that through *Contents: read & write* (see Configure GitHub step 3
+below), and a token with Contents:write can also push commits. Treat it as a
+write credential for this repository and scope the PAT to this repository
+alone. The structured result carries
 `issue_recommendation` and `draft_pr_recommendation` fields
 (`apps/backend/serving/oncall/models.py`) that a human acts on. Giving the
 pipeline write actions would mean separate credentials and explicit policy
@@ -155,7 +160,7 @@ will do. Two practical constraints: the model must tolerate multi-turn tool
 calling (an analysis run drives `codex exec` through many shell steps), and
 each run sends tens of thousands of prompt tokens, so per-token price matters
 more here than latency. `.env.oncall.example` names `llama-3.3-70b`, the model
-the reference registry registers; a deployment with its own catalogue names one
+the reference registry registers; a deployment with its own catalog names one
 of its own.
 
 The Slack app needs `chat:write` and must be added to the target channel. The
@@ -227,7 +232,8 @@ Set `ALERTS_ENABLED=true` as well when enabling the gateway's rule-based alert
 engine. Other existing gateway alert producers use the relay automatically when
 the URL and token are present.
 
-Build and start the existing Compose stack:
+Build and start the existing Compose stack — `make build` is
+`docker compose up -d --build`, so it does both:
 
 ```bash
 make build

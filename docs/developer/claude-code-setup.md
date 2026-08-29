@@ -38,12 +38,18 @@ belongs to Claude Code, not to the gateway. See Anthropic's current
 ## Model Families and Aliases
 
 Claude Code sends Anthropic family IDs such as `claude-sonnet-4-6` or
-`claude-opus-4-7` rather than a gateway model id. The gateway resolves those
-through the `aliases:` list on a model entry in the registry it loads —
-whatever `MODELS_CONFIG_PATH` names, else the `paths.models` entry of an active
-distribution manifest, else the shipped `config/examples/models.openrouter.yaml`.
-Nothing guarantees a given family ID is registered on a given deployment, so
-query `GET /v1/models` first.
+`claude-opus-4-7` rather than a gateway model id. Those two are in the fixed
+compatibility table described below, which rewrites them to `claude-sonnet-4.6`
+and `claude-opus-4.7` — so **the id a deployment registers is the rewritten
+one**, not the id Claude Code sent. Registering `claude-sonnet-4-6` as a model
+id or an alias gets you a 404.
+
+An id the table does not know passes through untouched and is looked up in the
+registry as sent; that is what a model entry's own `aliases:` list is for. Which
+registry is loaded is whatever `MODELS_CONFIG_PATH` names, else the
+`paths.models` entry of an active distribution manifest, else the shipped
+`config/examples/models.openrouter.yaml`. Nothing guarantees a given family ID
+is registered on a given deployment, so query `GET /v1/models` first.
 
 Claude Code also appends a bracketed context-window marker to the model id when
 the user opts into a long-context variant (`claude-sonnet-4-6[1m]`). The
@@ -66,8 +72,9 @@ does not read any of these variables — Claude Code resolves them locally and
 sends the resulting id — so Anthropic's model-configuration documentation
 linked above is the authority on which ones your version supports.
 
-Legacy and dated Anthropic IDs (`claude-3-5-sonnet-latest`,
-`claude-sonnet-4-5`, `claude-3-opus-20240229`, …) first pass through a fixed
+Anthropic IDs — current family selectors (`claude-sonnet-4-6`,
+`claude-opus-4-7`) as well as legacy and dated ones (`claude-3-5-sonnet-latest`,
+`claude-sonnet-4-5`, `claude-3-opus-20240229`, …) — first pass through a fixed
 compatibility table in
 `apps/backend/serving/adapters/anthropic_aliases.py`, which rewrites them to
 this project's canonical ids (`claude-sonnet-4.6`, `claude-opus-4.6`,
