@@ -105,9 +105,11 @@ podman run --rm \
 Points worth understanding rather than copying:
 
 - **`--publish 127.0.0.1:8000:8000`** keeps the server off the cluster's
-  internal network. A bare `-p 8000:8000` publishes on every interface of a node
-  you share with other tenants, with no authentication in front of it. The
-  reverse tunnel in the next step is all the reachability you need.
+  internal network. A bare `-p 8000:8000` publishes on every interface of the
+  node, with no authentication in front of it — and the node's cluster-internal
+  interfaces are reachable from every other machine on the fabric, whether or
+  not the allocation gives you the node exclusively. The reverse tunnel in the
+  next step is all the reachability you need.
 - **`--host 0.0.0.0`** is the *container's* interface, not the node's. The
   process must listen on the container's external interface for the loopback
   publish above to reach it; binding `127.0.0.1` inside the container would make
@@ -144,6 +146,10 @@ ssh -N \
   -R 127.0.0.1:8001:127.0.0.1:8000 \
   <user>@<gateway-host> &
 echo $! > ~/model-tunnel.pid
+
+# Confirm it is actually up: with ExitOnForwardFailure the ssh may already be
+# gone, and the line above would have recorded a dead PID.
+sleep 1 && kill -0 "$(cat ~/model-tunnel.pid)" && echo tunnel up
 ```
 
 - **Bind the remote end to `127.0.0.1`.** `-R 0.0.0.0:8001:...` asks the gateway
@@ -152,7 +158,16 @@ echo $! > ~/model-tunnel.pid
   off is the safer configuration.
 - **`ExitOnForwardFailure=yes`** makes the tunnel fail loudly when port 8001 on
   the gateway host is still held by a previous allocation's forwarding, instead
-  of connecting and quietly forwarding nothing.
+  of connecting and quietly forwarding nothing. When that happens, the thing
+  holding the port is the *previous* allocation's `ssh`, which lives on the
+  **gateway host**, not on your current node — your local PID file is useless
+  for it. Clear it there:
+
+  ```bash
+  # on the gateway host
+  ss -lntp 'sport = :8001'      # or: lsof -nP -iTCP:8001 -sTCP:LISTEN
+  kill <the sshd/ssh pid it names>
+  ```
 - The tunnel dies with the allocation. To ride out network blips, wrap the same
   command in `autossh`, a systemd user unit, or a shell retry loop — but nothing
   will survive the job ending.

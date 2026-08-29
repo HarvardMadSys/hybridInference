@@ -7,9 +7,9 @@ deployment: what the compose file actually starts, how to keep it off the
 network, how to get an admin account without opening a privilege-escalation
 hole, and how to throw the database away.
 
-For the production deployment procedure see [Deployment](deployment.md); for a
+For the production deployment procedure see [Deployment Guide](deployment.md); for a
 zero-dependency tour of the routing engine see the
-[Router Tutorial](router-tutorial.md).
+[Quickstart](router-tutorial.md).
 
 ## What the compose file starts
 
@@ -44,6 +44,10 @@ container-side port is fixed and is not what these variables change.
 | `postgres` | `127.0.0.1:5432` | `DB_PORT` |
 | `pgadmin` (profile `admin`) | `127.0.0.1:5050` | `PGADMIN_PORT` |
 | `codex-oncall` (profile `oncall`) | `127.0.0.1:8091` | `CODEX_ONCALL_PORT` |
+
+Only `backend` and `frontend` take a host override. The other three have
+`127.0.0.1` hard-coded in the Compose file, so their `*_PORT` variable moves the
+port but never the bind address.
 
 ### The console default is not loopback — change it
 
@@ -111,9 +115,11 @@ Neither secret is enforced at startup: an empty `JWT_SECRET_KEY` or
 insecure tokens and insecure API-key hashing
 (`apps/backend/serving/servers/app.py`). Generate both.
 
-`CORS_ALLOWED_ORIGINS` already defaults to `http://localhost:3000-3002` and the
-`127.0.0.1` equivalents, so a tunnelled instance needs no CORS entry. Add one
-only when you serve the console from some other origin.
+`CORS_ALLOWED_ORIGINS` already defaults to eight origins — ports 3000, 3001 and
+3002 on both `http://localhost` and `http://127.0.0.1`, plus
+`https://localhost:8443` and `https://127.0.0.1:8443`
+(`Settings.cors_allowed_origins`) — so a tunnelled instance needs no CORS entry.
+Add one only when you serve the console from some other origin.
 
 `.env.example` is the full list; copy it and fill in what you need.
 
@@ -125,8 +131,8 @@ Do not combine `SIGNUP_ENABLED=1`, `SIGNUP_REQUIRE_EMAIL_VERIFICATION=0` and
 privilege-escalation recipe:
 
 - with verification disabled, `POST /auth/signup` creates the account with
-  `email_verified=not require_verification` — that is, already verified —
-  without ever sending mail to the address
+  `email_verified` set to the negation of `require_verification` — that is,
+  already verified — without ever sending mail to the address
   (`apps/backend/serving/servers/routers/auth_routes.py`);
 - on login *and* on every token refresh, the backend promotes any account whose
   address is listed in `ADMIN_EMAILS` from `free` to `admin`, with no check
@@ -231,14 +237,18 @@ make down                  # stop everything, keep the data
 ## Reset the database
 
 `postgres_data` is declared `external: true` in the compose file, which means
-`docker compose down -v` will **not** delete it — the volume is owned by you,
-not by the project. Removing it takes an explicit step:
+neither `docker compose down -v` nor `make down` (which passes no `--volumes` at
+all) will delete it — a reset relying on either silently leaves every row in
+place. Removing it takes an explicit step:
 
 ```bash
 make down
 docker volume rm hybridinference_postgres_data
 make up
 ```
+
+[Database](database.md#reset) is the canonical copy of this procedure, including
+what the backend rebuilds afterwards.
 
 `make up` recreates the empty volume, and the backend rebuilds the schema on
 startup. Every account, API key and request log is gone, so re-create the admin

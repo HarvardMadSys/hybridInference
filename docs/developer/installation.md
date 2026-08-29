@@ -4,7 +4,7 @@ How to get a HybridInference gateway running, either as the Docker stack or as
 a source checkout you can edit.
 
 If you would rather see a gateway answer a request before configuring anything,
-start with the [Router Tutorial](router-tutorial.md). It runs a deterministic
+start with the [Quickstart](router-tutorial.md). It runs a deterministic
 fake provider and needs no provider account, no API key and no `.env` at all.
 This page is the next step: your own deployment, with your own providers.
 
@@ -72,7 +72,7 @@ Three containers start:
 
 pgAdmin and the Codex on-call relay are in the Compose file too but are gated
 behind profiles, so nothing starts them unless you ask (see
-[Deployment](deployment.md)).
+[Deployment Guide](deployment.md)).
 
 ### Which models the fresh stack serves
 
@@ -94,7 +94,7 @@ Run `make up` again afterwards, not `make restart`: a container reads its
 environment in place, while `up` recreates the service whose configuration
 changed. To point the gateway at your own registry instead, see
 [Configuration](#configuration) below and
-[Adding models](adding-models.md).
+[Adding a New Model](adding-models.md).
 
 ## Development checkout (no Docker)
 
@@ -156,8 +156,9 @@ Accounts, API keys and request history need the database.
 - the containers, because Compose is invoked with `--env-file .env` and the
   backend service also lists it as `env_file`.
 
-Beyond the five variables in the quick start, everything in `.env.example` is
-optional. The ones you are most likely to want:
+Beyond the five required variables in the quick start (`DB_NAME`, `DB_USER`,
+`DB_PASSWORD`, `JWT_SECRET_KEY`, `API_KEY_SECRET`) and the `OPENROUTER_API_KEY`
+the default registry needs, everything in `.env.example` is optional. The ones you are most likely to want:
 
 | Variable | Effect |
 |---|---|
@@ -215,7 +216,7 @@ backend, so editing either on the host and restarting the backend is enough —
 no image rebuild.
 
 See [Configuration](configuration.md) for what goes *inside* those files, and
-[Router Tutorial](router-tutorial.md) for a worked overlay.
+[Quickstart](router-tutorial.md) for a worked overlay.
 
 ```{note}
 A backend running directly on the host can reach a host inference server
@@ -230,7 +231,7 @@ HybridInference does not rewrite provider URLs.
 make lint     # ruff format --check, ruff check, pydocstyle
 make test     # pytest, excluding the external and dbtest tiers
 make check    # lint + test
-make format   # ruff format, then ruff check --fix
+make format   # ruff format, then ruff check --fix --unsafe-fixes
 ```
 
 End to end, against a running gateway:
@@ -255,8 +256,8 @@ Building them locally and the checks that gate them are covered in
 
 ## Troubleshooting
 
-**`required variable DB_USER is missing a value`** — Compose stopped at
-interpolation. Fill in `DB_USER` and `DB_PASSWORD` in `.env`; see the table
+**`required variable DB_USER is missing a value: DB_USER must be set in .env
+file`** — Compose stopped at interpolation. Fill in `DB_USER` and `DB_PASSWORD` in `.env`; see the table
 above.
 
 **`env file ... .env not found`** — the backend service reads `../../.env`

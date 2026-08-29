@@ -71,10 +71,13 @@ The Makefile honors a `UV_RUN` override: `make lint UV_RUN="uv run --active"`.
 
 | Command | What it does |
 |---|---|
-| `make format` | `ruff format .` then `ruff check --fix .` |
-| `make lint`   | `ruff check --no-fix .` and `pydocstyle` |
-| `make test`   | `pytest -q -m "not external and not dbtest"` |
+| `make format` | `ruff format .` then `ruff check --fix --unsafe-fixes .` |
+| `make lint`   | `ruff format --check .`, `ruff check --no-fix .`, and `pydocstyle` |
+| `make test`   | `pytest -q -m "not external and not dbtest" -n auto --dist loadfile` |
 | `make all`    | format + lint + test |
+
+[docs/developer/contributing.md](docs/developer/contributing.md) is the
+canonical reference for the gates and the test tiers.
 
 Pre-commit hooks are installed by `make setup-dev`.
 

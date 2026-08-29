@@ -3,22 +3,24 @@
 This page explains how a running gateway finds its configuration: which files it
 reads, where those files live, and which layer wins when more than one names the
 same file. It is the conceptual companion to
-[Adding Models](adding-models.md) (the field-by-field model registry reference)
+[Adding a New Model](adding-models.md) (the field-by-field model registry reference)
 and [Routing](routing.md) (what the routing engine does with the result).
 
 ## What the gateway reads at startup
 
 | Kind | Holds | Read by |
 |---|---|---|
-| `models` | The model registry: every model ID the gateway serves and the upstream routes behind it | `register_from_models_yaml` in `apps/backend/serving/servers/registry.py` |
+| `models` | The model registry: every model id the gateway serves and the upstream routes behind it | `register_from_models_yaml` in `apps/backend/serving/servers/registry.py` |
 | `routing` | Deployment-wide routing behaviour: local/remote split, health probing | `RoutingManager` in `apps/backend/routing/manager.py` |
 | `alerts` | Alert rules and thresholds | `load_alert_config` in `apps/backend/serving/observability/alert_config.py` |
 | Environment | Everything secret or host-specific: credentials, database connection, feature switches | `Settings` in `apps/backend/serving/config/settings.py` |
 
 Only the model registry is load-bearing. Without it the gateway starts, serves
 `/health`, and answers `GET /v1/models` with an empty list. Without a routing
-file the registry's own per-route weights stand. Without an alerts file the
-built-in thresholds apply.
+file the registry's own per-route weights stand — which is also what a fresh
+clone gets, because the built-in default `config/examples/routing.minimal.yaml`
+declares empty endpoint pools rather than overriding anything. Without an alerts
+file the built-in thresholds apply.
 
 A fourth kind, `mcp`, is accepted by the resolver and by the distribution
 manifest schema, but nothing at this revision reads it.
@@ -31,7 +33,7 @@ that are meant to be copied or pointed at:
 
 ```text
 config/examples/
-├── models.openrouter.yaml     # neutral default catalogue (llama-3.3-70b, ...)
+├── models.openrouter.yaml     # neutral default catalog (llama-3.3-70b, ...)
 ├── routing.minimal.yaml       # companion routing file, names no hosts
 └── distribution.example.yaml  # annotated manifest reference
 ```
@@ -71,7 +73,7 @@ each config kind independently, in this order:
    wins when both are set.) `ALERTS_CONFIG_PATH` counts as an override only when
    you actually set it: it has a non-empty built-in default, so the resolver
    tracks whether you supplied the value rather than testing it against `""`.
-2. **The active distribution manifest's `paths:` section** — only when
+2. **The distribution manifest's `paths:` section** — only when
    `DISTRIBUTION_CONFIG_MODE=active`; see below.
 3. **The built-in default**, which points at the reference examples:
    `config/examples/models.openrouter.yaml` and
@@ -154,7 +156,7 @@ not load is logged and skipped. In active mode the manifest *is* where the paths
 come from, so a manifest that will not load — a lost overlay mount, a YAML error
 — refuses to start rather than quietly serving a different registry.
 
-### Identity, and what the manifest may not contain
+### Identity, and what the manifest must not contain
 
 `site:` and `features:` are served as a public subset by `GET /site-config`, and
 `distribution.display_name` / `site:` feed backend-rendered content (transactional
@@ -173,7 +175,7 @@ manifest values.
 `distributions/example/` is a complete, runnable overlay kept in the repository
 as a teaching artifact: a manifest, a one-model registry pointing at a bundled
 fake provider that needs no credential, Compose overlays, and smoke scripts.
-Walk through it with the [Router Tutorial](router-tutorial.md):
+Walk through it with the [Quickstart](router-tutorial.md):
 
 ```bash
 make up DISTRIBUTION=example
@@ -222,7 +224,7 @@ with your own registry once you know what you want to serve.
 
 ## The model registry
 
-[Adding Models](adding-models.md) is the field reference. Three things belong
+[Adding a New Model](adding-models.md) is the field reference. Three things belong
 here because they are properties of *configuration loading* rather than of any
 one field:
 
@@ -253,8 +255,12 @@ handling. Anything else raises `ValueError: Unknown adapter kind: <kind>` at
 startup. To re-derive the list from the code rather than trusting this table:
 
 ```bash
-grep -n 'if kind\|elif kind\|Unknown adapter kind' apps/backend/serving/servers/registry.py
+sed -n '/def _make_adapter/,/Unknown adapter kind/p' apps/backend/serving/servers/registry.py
 ```
+
+A `grep` for `if kind` misses most of it: the OpenAI-compat arm is a single
+`if kind in (` followed by the eleven names on their own lines, so none of them
+appear in the output.
 
 The neighbouring `RESERVED_PROVIDER_LABELS` set in the same module is a
 different, larger list — the labels a route may not borrow as a custom

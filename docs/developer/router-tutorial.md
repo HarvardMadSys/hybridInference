@@ -35,7 +35,9 @@ first if you have never seen this gateway serve a request.
 - Several GB of free disk for the backend, frontend, Postgres image, and local
   database volume.
 - These loopback ports free: backend `18080`, frontend `13001`, and Postgres
-  `15432`. See [Port already in use](#port-already-in-use) to override them.
+  `15432`. Only `18080` is used in Stage 1 — `make up` on this overlay starts
+  the backend with `--no-deps`, so the frontend and Postgres stay stopped until
+  Stage 2. See [Port already in use](#port-already-in-use) to override them.
 
 Node.js is not required because the frontend is built in Docker. A GPU is only
 needed if you continue to Stage 3 with a GPU-backed local server.
@@ -97,8 +99,8 @@ the distribution manifest `distributions/example/distribution.yaml` — see
 [Configuration](configuration.md) for how that resolution works.
 
 That file is mounted read-only into the backend; it is not baked into the
-image. To prove the reload path, temporarily change the model's `name` to
-`Reloaded Example Chat`, run
+image. To prove the reload path, temporarily change the model's `name` — it ships as
+`Runnable Example Chat` — to `Reloaded Example Chat`, run
 `make restart s=backend DISTRIBUTION=example`, and list the models again. The
 new label appears without an image rebuild. Restore `Runnable Example Chat`
 and restart the backend once more before continuing.
@@ -159,7 +161,8 @@ keeps running in the existing project and network. Postgres is added with an
 example-owned persistent volume, the backend is recreated against it, and the
 frontend is added last.
 
-Open <http://localhost:13001/signup> and complete the browser flow:
+Open <http://localhost:13001/signup> — or your own `FRONTEND_PORT` if you
+overrode it — and complete the browser flow:
 
 1. Sign up with `admin@local.dev`, a username, and a password with at least
    eight characters, uppercase, lowercase, and a number. Use a demo-only
@@ -238,7 +241,8 @@ make demo DISTRIBUTION=example
 `make demo` recreates the backend so the new upstream settings take effect,
 while preserving the account, API key, frontend, and Postgres volume. Clients
 and the Playground still request `example-chat`; only the route behind it has
-changed. `curl -s localhost:18080/routing` now reports the new `base_url`.
+changed. `curl -s localhost:18080/routing` now reports the new `base_url`
+(substitute your own `BACKEND_PORT` here too if you overrode it).
 
 `EXAMPLE_UPSTREAM_API_KEY` is the credential the gateway presents to that
 provider. It is not the `HYBRIDINFERENCE_API_KEY` minted in Stage 2, which is
@@ -292,7 +296,7 @@ layer.
   and add the deployment controls your environment needs.
 - [Configuration](configuration.md) — settings, environment variables, and how
   a deployment supplies its own files.
-- [Adding Models](adding-models.md) — the model registry entry and its `route:`
+- [Adding a New Model](adding-models.md) — the model registry entry and its `route:`
   list.
 - [Routing](routing.md) — weighted selection, fallback, circuit breaking,
   session affinity, and how to add your own routing strategy.
@@ -347,7 +351,10 @@ make demo-smoke DISTRIBUTION=example
 ```
 
 Then use backend port `28080` in Stage 1 and frontend port `23001` in Stages 2
-and 3. The published site identity follows the frontend override. Keep the
+and 3. The published site identity follows whichever port fronts the stack: the
+backend one in Stage 1, and the frontend one from Stage 2 on, where
+`docker-compose.demo.yml` repoints `SITE_PUBLIC_BASE_URL`, `BASE_URL` and
+`FRONTEND_URL` at `FRONTEND_PORT`. Keep the
 same three port assignments on every later `make demo` or `make demo-smoke`,
 including the Stage 3 command; both commands can recreate containers.
 

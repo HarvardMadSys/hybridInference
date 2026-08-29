@@ -48,7 +48,9 @@ following per-user aggregates are gathered:
   (chat-style requests; `NULL` for embeddings / raw completions);
 - one-shot count (`num_user_turns = 1`) and the p90 of `num_user_turns`;
 - tool-call counts (`num_tool_calls IS NOT NULL`, and `> 0`);
-- the 25/50/75th percentiles of positive `prompt_tokens`;
+- the 25/50/75th percentiles of positive `prompt_tokens`, and `n_sz` = the
+  number of rows with `prompt_tokens > 0` (the availability count for the
+  prompt-size signals);
 - the share of requests carrying a coding-agent opener (`metadata->>'agent'`
   present — see the `agent_opener_override` signal below);
 - a request-weighted breakdown of `metadata->>'user_agent'`;
@@ -148,7 +150,7 @@ and re-normalized over whichever pass their data floors. Each is HIGH = automati
 | Part | Weight | Formula | Floor |
 |---|---|---|---|
 | Hour coverage | 0.20 | `clamp01((coverage - 0.5) / 0.5)`, `coverage = distinct active UTC hours / 24` | `N ≥ 10` |
-| Hour entropy | 0.20 | `clamp01((Hnorm - 0.5) / (0.92 - 0.5))`, `Hnorm = ShannonEntropy(hours) / log2(24)` | `N ≥ 10` |
+| Hour entropy | 0.20 | `clamp01((Hnorm - 0.5) / (0.92 - 0.5))`, `Hnorm = ShannonEntropy(hours) / log2(24)`. The `0.92` is the ceiling at which this part saturates — a hand-set tuning constant with no derivation in the code, unlike the other numbers on this page | `N ≥ 10` |
 | Nightly rest gap | 0.30 | `clamp01(1 - max_quiet_gap_hours / 6)` | `N ≥ 10` |
 | Inter-arrival regularity | 0.30 | `clamp01(1 - gap_rcv / 1.0)`, `gap_rcv = (p75 - p25) / median` of gaps | `≥ 3 gaps` |
 
@@ -245,12 +247,16 @@ confidence = alpha * (weight_sum / TOTAL_WEIGHT)
 
 The final score maps to a band label (advisory — always read with `confidence`):
 
+The lower bound is inclusive and the upper bound exclusive (`SCORE_BANDS` is
+scanned top-down with `score >= lower`), so `0.35`, `0.60` and `0.80` each fall
+in the band above:
+
 | Band | Range |
 |---|---|
-| `likely_human` | `0.00 – 0.35` |
-| `mixed_or_uncertain` | `0.35 – 0.60` |
-| `likely_automated` | `0.60 – 0.80` |
-| `scripted_batch` | `0.80 – 1.00` |
+| `likely_human` | `0.00 ≤ s < 0.35` |
+| `mixed_or_uncertain` | `0.35 ≤ s < 0.60` |
+| `likely_automated` | `0.60 ≤ s < 0.80` |
+| `scripted_batch` | `0.80 ≤ s ≤ 1.00` |
 
 ## Caveats
 

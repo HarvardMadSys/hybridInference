@@ -24,6 +24,11 @@ gateway's **own** public API **as a user** for the model work.
    user (verified by JWT at /v1/rag/chat), not on the shared RAG_API_KEY account.
 ```
 
+In prose: both inner calls are ordinary authenticated gateway requests carrying
+`RAG_API_KEY`, so they are logged to `api_logs` and counted toward cost, quota
+and concurrency like any other traffic; `X-On-Behalf-Of` moves that attribution
+from the shared RAG account to the JWT-verified end user.
+
 - **Corpus:** the active distribution overlay's documentation source
   (`<overlay>/content/docs/docs/source/*.md`) — the same markdown that builds
   that deployment's public doc site. A checkout with no overlay has no corpus;
@@ -159,7 +164,8 @@ All optional; sensible defaults resolve relative to the repo root.
 | `RAG_EMBEDDER` | `gateway` | `gateway` (a real embedding model, via `RAG_EMBED_MODEL`) or `hash` (offline) |
 | `RAG_GATEWAY_BASE_URL` | `http://localhost:8080/v1` | Gateway used by **ingest** (gateway mode) |
 | `RAG_EMBED_MODEL` | `bge-m3` | Embedding model id (gateway mode) |
-| `RAG_CHAT_MODEL` | see `apps/backend/serving/rag/config.py` | Answer-generation model. The built-in default is a leftover deployment-specific id, so set this to a model your gateway actually serves. |
+| `RAG_CHAT_MODEL` | `qwen3.6-35b` | Answer-generation model. That default is a leftover deployment-specific id rather than anything this repository serves, so set it to a model your own gateway registers. |
+| `RAG_GATEWAY_API_KEY` | falls back to `LOCAL_API_KEY` | User API key **ingest** presents to `RAG_GATEWAY_BASE_URL`; must be valid on *that* gateway |
 | `RAG_TOP_K` | `4` | Chunks retrieved per query |
 | `RAG_MAX_TOKENS` | `1024` | Answer token budget |
 | `RAG_TEMPERATURE` | `0.3` | Generation temperature |

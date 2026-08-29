@@ -289,7 +289,7 @@ errors in a shape the router understands. Adapters live in
 provider-specific configuration — a usage profile, a non-standard chat path, or
 whether it is safe to send `stream_options: {include_usage: true}`. Adding a
 provider that is already OpenAI-compatible usually means adding a `kind` here
-rather than writing a new class; see [Adding models](adding-models.md).
+rather than writing a new class; see [Adding a New Model](adding-models.md).
 
 Key rotation is an adapter concern. When a route declares `api_keys:` (plural),
 `OpenAICompatAdapter` draws from a pool: a key that hits a key-specific or
@@ -317,7 +317,9 @@ three-step precedence:
 3. **Built-in defaults** — `config/examples/models.openrouter.yaml` and
    `config/examples/routing.minimal.yaml`. This is what a fresh clone with no
    environment and no overlay gets: supply one `OPENROUTER_API_KEY` and the
-   gateway serves a working catalog.
+   gateway serves a working catalog. The alert default is `config/alerts.yaml`,
+   a path this repository deliberately does not ship — with no alert file
+   present the built-in thresholds apply.
 
 The manifest is opt-in and defaults to a dry run. With `DISTRIBUTION_CONFIG_PATH`
 set but `DISTRIBUTION_CONFIG_MODE` unset, the mode is `dark`: the manifest is
@@ -327,13 +329,13 @@ logging a per-file digest comparison — while resolution stays unchanged. Setti
 mode a manifest that fails to load stops the process rather than quietly serving
 a different registry than the deployment named.
 
-Both YAML files support environment interpolation: `${VAR}` and
+All three YAML files support environment interpolation: `${VAR}` and
 `${VAR:-default}`. A route whose `api_key`, `api_keys`, or `base_url` expands to
 nothing is either skipped (if the route is marked optional) or fails startup —
 never registered as a dead endpoint.
 
 See [Configuration](configuration.md) for the field-by-field reference and
-[Router tutorial](router-tutorial.md) for a working end-to-end example.
+[Quickstart](router-tutorial.md) for a working end-to-end example.
 
 ## Storage
 
@@ -398,7 +400,7 @@ Client-facing groups, all served by the same app:
 | --- | --- | --- |
 | OpenAI-compatible inference | `POST /v1/chat/completions`, `POST /v1/completions`, `POST /completion`, `POST /v1/embeddings`, `POST /v1/responses` | API key |
 | Anthropic-compatible inference | `POST /v1/messages`, `POST /anthropic/v1/messages`, `…/count_tokens` | API key |
-| Model catalogue | `GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET /anthropic/v1/models` | Optional — a key only widens what is listed |
+| Model catalog | `GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET /anthropic/v1/models` | Optional — a key only widens what is listed |
 | Health | `GET /health`, `/health/ready`, `/health/deep` | None |
 | Routing disclosure | `GET /routing`, `GET /admin/routing` | **None at this commit** |
 | Admin | `GET /admin/stats` and the rest of `/admin/*` | Admin |
@@ -431,7 +433,7 @@ proxy config — are the public path table; see
 [Edge and console routing](edge-and-console-routing.md). The frontend has its
 own toolchain and quality gates, separate from the Python `make` targets.
 
-See [Deployment](deployment.md) to run it, [Installation](installation.md) for a
+See [Deployment Guide](deployment.md) to run it, [Installation](installation.md) for a
 local checkout, and [Contributing](contributing.md) before sending a change.
 
 ## Design principles

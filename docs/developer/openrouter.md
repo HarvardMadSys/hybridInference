@@ -4,9 +4,9 @@
 route to, and it is the one a fresh checkout uses by default. This page covers
 the OpenRouter adapter specifically. For how routing works in general, see
 [Architecture](architecture.md); for the model-registry syntax, see
-[Adding models](adding-models.md).
+[Adding a New Model](adding-models.md).
 
-## The default catalogue
+## The default catalog
 
 With no environment variables and no deployment overlay, config resolution falls
 through to `config/examples/models.openrouter.yaml`, which registers three
@@ -28,7 +28,7 @@ log confirms which registry was chosen with a line like
 curl -s --noproxy '*' http://127.0.0.1:8080/routing
 ```
 
-The catalogue is a starting point, not a fixture: OpenRouter's model slugs move,
+The catalog is a starting point, not a fixture: OpenRouter's model slugs move,
 and the pricing figures in that file are approximate and used only for the
 gateway's own usage accounting. Copy it and edit freely.
 
@@ -151,11 +151,22 @@ that decision is only about whether another leg is available.
 **The circuit breaker.** Failures accumulate per `endpoint_id`; after
 `CIRCUIT_FAILURE_THRESHOLD` consecutive failures (default 3) the endpoint stops
 receiving traffic for `CIRCUIT_COOLDOWN_SECONDS` (default 30) before a half-open
-probe. Client errors are exempt: a 4xx other than 408, 429, 401, and 407 is the
-caller's request being wrong, and letting it open the circuit would take the
-endpoint away from everyone else. 408 and 429 mean OpenRouter is overloaded and
-do count; 401 and 407 mean *your* `OPENROUTER_API_KEY` was rejected, which no
-user can work around, so they count and additionally page.
+probe. Client errors are exempt: a 4xx other than 408, 429, 401, and 407 does
+not open the circuit, because letting one caller's bad request take the endpoint
+away from everyone else is the cascade the exemption exists to prevent. 408 and
+429 mean OpenRouter is overloaded and do count. 401 and 407 mean the *gateway's*
+configured credential was rejected — 401 the `OPENROUTER_API_KEY`, 407 an egress
+proxy demanding its own — which no caller can work around, so they count and
+additionally page.
+
+402 and 403 are the awkward pair: they are exempt from the circuit here, but
+`KeyPool` still treats them as key-specific and mutes the key that saw them
+(`_KEY_SPECIFIC_STATUSES`). An unfunded account answering 402 to everything
+therefore mutes every key, and the resulting `KeyPoolExhausted` carries no HTTP
+status, is not exempt, and opens the circuit anyway. 403 is deliberately kept
+out of the auth-escalation set because remote providers overload it for
+per-request rejections — content policy, region blocks — where the upstream is
+healthy; see the rationale in `apps/backend/routing/endpoint_health.py`.
 
 ## Troubleshooting
 

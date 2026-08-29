@@ -113,6 +113,12 @@ Markers are the contract; directories are a convention. The markers declared in
 `testpaths` is `["tests", "distributions"]`, so overlay-owned tests run in the
 default suite alongside `tests/`.
 
+`tests/e2e/` is not a separate marker tier: its files carry
+`pytestmark = pytest.mark.external` like everything in `tests/external/`, so
+`make test-e2e` (`pytest -m external`) selects both. What distinguishes it is
+its own `tests/e2e/Makefile`, which stands up the stack the phase tests expect
+before running them.
+
 ```bash
 make test                              # the default suite
 make test-verbose                      # same selection, serial, -vv
@@ -264,6 +270,12 @@ The check that catches all four at once is a structural diff against the English
 build: for each page, compare the counts of `<code>`, `<strong>`, `<em>` and
 `<a>`, and the multiset of inline-code literals and link targets. A dropped
 marker or a translated link target shows up there and in no other check.
+
+One more, which at least fails loudly: `make docs-translate` can append
+`python-format` to an entry you had annotated `no-python-format` — a source
+string containing something like `≥ 5%` looks like a format string to gettext —
+and `msgfmt -c` then rejects the contradictory pair. Delete the added
+`python-format` and keep `no-python-format`.
 
 #### Publishing more than one language
 

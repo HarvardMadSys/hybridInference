@@ -20,14 +20,17 @@ stack already comes up.
 The frontend defaults to `0.0.0.0` so a reverse proxy on the host can reach it;
 the backend and the database default to loopback. All three join one bridge
 network defined in the same Compose file, on which the backend reaches the
-database as `postgres:5432` — `DB_HOST`/`DB_PORT` from `.env` control only the
-host-side port mapping, because the Compose file pins the container-internal
-values.
+database as `postgres:5432`. Only `DB_PORT` from `.env` reaches this file, and
+only as the host half of the mapping (`127.0.0.1:${DB_PORT:-5432}:5432`); the
+host-side bind address is hard-coded to loopback. `DB_HOST` is pinned to
+`postgres` in the Compose file and is ignored under Compose — it matters only
+for a backend started directly from source.
 
 Two more services exist in the same file but start only when their profile is
 named: `pgadmin` (profile `admin`) and `codex-oncall` (profile `oncall`).
 
-`frontend` and `codex-oncall` depend on `backend` with `condition:
+`frontend` and `codex-oncall` — the latter one of the profile-gated services
+above, so it normally does not run — depend on `backend` with `condition:
 service_started`, not `service_healthy` — deliberately, so that a backend
 reporting unhealthy because its database logging is down does not stop the
 console from starting.
@@ -143,7 +146,7 @@ route:
 
 For a backend running directly on the host, use `localhost` instead. The gateway
 never rewrites provider URLs. See
-[Adding a local model](add-local-model.md).
+[Adding a New Local Model](add-local-model.md).
 
 ## Health checks
 
@@ -239,9 +242,11 @@ make logs s=backend
 make ps
 ```
 
-- `variable X is missing a value` — Compose stopped at interpolation before
-  starting anything. `DB_NAME`, `DB_USER` and `DB_PASSWORD` are declared
-  required.
+- `required variable DB_NAME is missing a value: DB_NAME must be set in .env
+  file` — Compose stopped at interpolation before starting anything. `DB_NAME`,
+  `DB_USER` and `DB_PASSWORD` are declared required with the `${VAR:?message}`
+  form, so the half after the colon is the Compose file's own text and the most
+  greppable part of the line.
 - Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT`.
 - Database connection failed — check `make ps` for the `postgres` health status.
 
@@ -271,8 +276,11 @@ log with it. Take a `pg_dump` first if any of it matters.
 ```
 
 pgAdmin's own volume (`hybridinference_pgadmin_data`) and the on-call relay's
-(`hybridinference_codex_oncall_data`) are ordinary local volumes, so
-`docker compose ... down -v` does remove those.
+(`hybridinference_codex_oncall_data`) are ordinary local volumes, so a `down -v`
+*would* remove those. Note that `make down` is a plain `docker compose down`
+with no `--volumes`, so nothing here passes `-v` on your behalf — you have to
+run `docker compose --profile admin --profile oncall down -v` yourself, or
+remove the volumes by name as above.
 
 ### Rebuilding after code changes
 

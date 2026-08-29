@@ -83,9 +83,11 @@ models:
     route:
       - kind: existing_provider
         weight: 1.0
-        base_url: ${PROVIDER_BASE_URL}
-        api_key: ${PROVIDER_API_KEY}
 ```
+
+The route inherits `base_url` and `api_key` from the model, so it only has to
+carry what differs. Repeat them on a route entry when a second route points
+somewhere else.
 
 2. **Set the environment variables** in `.env` at the repository root (the
    backend's settings loader reads that file):
@@ -112,7 +114,12 @@ those, **do not write an adapter class.** Register a provider profile and add
 the kind to the OpenAI-compat dispatch tuple in
 `apps/backend/serving/servers/registry.py` (`_make_adapter`):
 
+`_make_adapter` is one long `if kind ...` / `elif kind ...` chain over the
+route's `kind`. Add an arm to it for the profile, then add the kind to the
+OpenAI-compat tuple further down the same function:
+
 ```python
+# ...among the per-kind arms of _make_adapter:
 elif kind == "your_provider":
     cfg = {**cfg, "provider_profile": "your_provider"}
 
@@ -432,18 +439,19 @@ curl -N -s -X POST http://localhost:8080/v1/chat/completions \
 ### Model fields
 
 These keys are read from a model entry and passed to `ModelConfig`
-(`apps/backend/serving/adapters/base.py`). Every one of them can also be set per
-route, where the route value wins.
+(`apps/backend/serving/adapters/base.py`). Most of them can also be set on a
+route entry, where the route value wins; `id` and `name` identify the model
+itself and are read only at the model level.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | Yes | Unique model identifier; the name clients send |
 | `name` | string | Yes | Display name |
-| `provider` | string | Yes | Provider/adapter kind; also the default `route[].kind` when no `route:` list is given |
+| `provider` | string | Yes | Provider/adapter kind; also the default `route[].kind` when no `route:` list is given. Note the collision: at the model level `provider:` selects an adapter, while `provider:` on a *route* is only an analytics label — see the route-fields table |
 | `base_url` | string | Yes | API endpoint base URL |
 | `api_key` | string | No | API authentication key |
 | `provider_model_id` | string | No | Provider's model identifier (overrides `id` on the wire) |
-| `model_type` | string | No | `"chat"` (default) or `"embedding"`. Spelled `type:` it works the same; embedding models bypass the weighted router and use their routes as an ordered fallback chain |
+| `model_type` | string | No | `"chat"` (default) or `"embedding"`. The alias `type:` is equivalent; embedding models bypass the weighted router and use their routes as an ordered fallback chain |
 | `aliases` | list[string] | No | Alternative names for routing |
 | `quantization` | string | No | Quantization format (default: `"bf16"`) |
 | `input_modalities` | list[string] | No | Input types: `"text"`, `"image"` |
@@ -459,7 +467,7 @@ route, where the route value wins.
 | `extra_body` | dict | No | Default fields merged into OpenAI-compatible upstream request bodies. Core fields and validated client parameters win |
 | `priority_scheduling` | bool | No | The endpoint runs an sglang server started with `--enable-priority-scheduling`; see [Prioritizing decode on an sglang route](add-local-model.md#prioritizing-decode-on-an-sglang-route). Normally set per route, not per model |
 | `route_metadata` | dict | No | Free-form per-route metadata consumed by routing strategies |
-| `pricing` | dict | No | Base cost information, USD per 1M tokens (and per request) |
+| `pricing` | dict | No | Base cost information. `prompt`, `completion`, `input_cache_reads` and `input_cache_writes` are USD per 1M tokens; `request` is USD per request and `image` USD per image |
 | `pricing_schedule` | dict | No | UTC-only activation time plus recurring daily price windows: `pricing` stays active before `effective_at`; afterwards `default` applies outside each half-open `[start, end)` window, and a window's own `pricing` overrides the base fields |
 
 A few model-entry keys are not `ModelConfig` fields and are consumed elsewhere:
@@ -493,7 +501,7 @@ Beyond the model fields above, a route entry accepts:
 | `weight` | float | Relative share of traffic (default 1.0). `0` keeps the route configured but unselected |
 | `api_keys` | list[string] | Key pool for this endpoint, instead of `api_key`. Setting both is an error. The whole pool is one endpoint for latency and quota accounting; split genuinely separate resources into separate routes |
 | `optional` | bool | When a `${VAR}`-backed key or `base_url` resolves empty, skip just this route instead of dropping the model |
-| `provider` / `provider_display_name` | string | Analytics label override — see [Naming a route in the dashboard](add-local-model.md#naming-a-route-in-the-dashboard) |
+| `provider` / `provider_display_name` | string | Analytics label override only — it renames the row in the dashboard and does **not** select an adapter; that is `kind`. See [Naming a route in the dashboard](add-local-model.md#naming-a-route-in-the-dashboard) |
 | `provider_type` | string | RouteWise cost category: `on_demand`, `quota`, or `concurrency` |
 | `routewise_pool`, `quota_pool`, `concurrency_pool`, `quota_source`, `quota`, `concurrency` | — | RouteWise pool and budget metadata |
 
@@ -521,7 +529,7 @@ with provider-specific profiles applied automatically.
 | `deepseek` | OpenAI-compat | DeepSeek API (applies the DeepSeek usage profile) |
 | `kimi` | OpenAI-compat | Moonshot/Kimi pay-per-token API (applies the Kimi usage profile) |
 | `kimi_coding` | OpenAI-compat | Kimi coding-plan endpoint; dispatches to `CodingIdentityAdapter` |
-| `zai` | OpenAI-compat | Z.AI GLM coding plan: non-`/v1` chat path, and dispatches to `CodingIdentityAdapter`, which presents a coding-tool `User-Agent` and a leading system message |
+| `zai` | OpenAI-compat | Z.AI GLM coding plan: the chat path is `/chat/completions` appended to the base URL rather than the default `/v1/chat/completions`, because Z.AI's base URL already carries its version segment (`profiles.default_chat_path`). Dispatches to `CodingIdentityAdapter`, which presents a coding-tool `User-Agent` and a leading system message |
 | `minimax` | OpenAI-compat | MiniMax API (applies the MiniMax usage profile) |
 | `openrouter` | Custom | OpenRouter aggregator. Use the bracket form `openrouter[<slug>]` to pin a sub-provider |
 | `gemini` | Custom | Google Gemini API (message format translation) |
@@ -535,7 +543,7 @@ Any other `kind` raises `ValueError: Unknown adapter kind` during registry load.
 Weighted routes are applied at registration time. The routing config file
 (resolved via `ROUTING_CONFIG_PATH` / the manifest's `paths.routing`) can then
 adjust weights centrally through `RoutingManager`. See
-[Routing Configuration](routing.md).
+[Routing](routing.md).
 
 ## BaseAdapter API reference
 
@@ -646,10 +654,11 @@ if params.get("response_format", {}).get("type") == "json_object":
     payload["response_format"] = {"type": "json_object"}
 ```
 
-### Rate limiting
+### Rate limiting (there is none per provider)
 
-`apps/backend/serving/servers/bootstrap.py` does not configure per-provider rate
-limiters. The only in-process limiter wired there is `UserConcurrencyLimiter`.
+There is no per-provider rate limiter to turn on; this section records where one
+would go. `apps/backend/serving/servers/bootstrap.py` does not configure
+per-provider rate limiters. The only in-process limiter wired there is `UserConcurrencyLimiter`.
 Static auth-flow limits live in `apps/backend/serving/config/settings.py` (the
 `signup_rate_limit_*` and `login_rate_limit_*` fields). A per-provider
 token-bucket or quota would go in
@@ -731,8 +740,8 @@ through `apps/backend/serving/servers/deps.py`.
 
 - [Adding a New Local Model](add-local-model.md) — registering a self-hosted
   vLLM/SGLang/Ollama server
-- [Router Tutorial](router-tutorial.md) — a runnable deployment from first
+- [Quickstart](router-tutorial.md) — a runnable deployment from first
   request to local server
-- [OpenRouter Gateway Overview](openrouter.md) — architecture and endpoints
-- [Routing Configuration](routing.md) — central weight overrides and strategies
-- [Configuration Guide](configuration.md) — environment and YAML configuration
+- [Routing through OpenRouter](openrouter.md) — architecture and endpoints
+- [Routing](routing.md) — central weight overrides and strategies
+- [Configuration](configuration.md) — environment and YAML configuration

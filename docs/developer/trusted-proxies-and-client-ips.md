@@ -64,7 +64,11 @@ the rung that won. First match wins:
 3. **`X-Real-IP`**, when it is routable. Source `x-real-ip`.
 4. **The socket peer** (`request.client.host`, or the literal `"unknown"` when
    Starlette reports no client). Source `socket`. This is both the direct-
-   connection case and the last resort when no forwarded hop was usable.
+   connection case and the last resort when no forwarded hop was usable. Like
+   rung 1, it is *not* passed through the routability filter — so on the
+   ordinary Docker-behind-nginx deployment with `TRUST_PROXY_HEADERS` off, this
+   rung reports the bridge address. That is a separate, pre-existing pollution
+   class the filter deliberately leaves alone; only rungs 2 and 3 are filtered.
 
 `CF-Connecting-IP` is checked before `X-Forwarded-For` deliberately: Cloudflare
 overwrites its own header on every request, but it *appends* to a client-supplied
@@ -91,9 +95,15 @@ internal address reported — and logged — as the client.
 
 The list is written out explicitly rather than delegating to
 `ipaddress.is_private` / `is_global`, because those reclassified the
-documentation and benchmark ranges between CPython 3.12.4 and 3.13; hard-coding
+documentation (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and
+benchmark (`198.18.0.0/15`) ranges between CPython 3.12.4 and 3.13; hard-coding
 the stable RFC ranges keeps IP resolution from depending on the interpreter
 version.
+
+The consequence is worth stating, because it is what the explicit list buys: a
+documentation or benchmark address is **routable** under this filter and will be
+reported as a client. That is why `::ffff:192.0.2.1` works as the example below
+even though `is_private` would reject it.
 
 ### Known limitation
 
@@ -108,8 +118,8 @@ proxy is known to overwrite.
 
 ### Cloudflare Pseudo IPv4
 
-`CF-Connecting-IPv6` outranks `CF-Connecting-IP`, but **only when the two
-corroborate each other**.
+Within rung 1, `CF-Connecting-IPv6` wins over `CF-Connecting-IP` — it is not a
+rung of its own — but **only when the two corroborate each other**.
 
 Cloudflare emits `CF-Connecting-IPv6` solely when
 [Pseudo IPv4](https://developers.cloudflare.com/network/pseudo-ipv4/) is set to
@@ -199,7 +209,7 @@ database.
 
 The Anthropic surface stores the full provenance, not just the verdict — so a
 disputed address can be re-derived from the row. The two `CF-Connecting-*`
-headers are logged but not persisted on either surface.
+headers are logged but not persisted on any surface.
 
 **`login_events`** (`apps/backend/serving/storage/postgres_operational.py`)
 stores `ip` and `user_agent` per login attempt alongside the outcome.
