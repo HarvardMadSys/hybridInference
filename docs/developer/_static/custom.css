@@ -62,3 +62,36 @@ table.docutils tbody tr:hover {
 .rst-content ul li, .rst-content ol li {
     margin-bottom: 8px;
 }
+
+/* Language switcher (rendered only on a multi-language build; see
+   _templates/layout.html). Sits under the project title in the sidebar. */
+.wy-side-nav-search .doc-language-switcher {
+    margin-top: 0.6em;
+    font-size: 85%;
+}
+
+.wy-side-nav-search .doc-language-switcher a,
+.wy-side-nav-search .doc-language-switcher .current {
+    color: #fcfcfc;
+    padding: 0 0.4em;
+}
+
+.wy-side-nav-search .doc-language-switcher a {
+    text-decoration: underline;
+    opacity: 0.85;
+}
+
+.wy-side-nav-search .doc-language-switcher a:hover {
+    opacity: 1;
+}
+
+.wy-side-nav-search .doc-language-switcher .current {
+    font-weight: bold;
+}
+
+.wy-side-nav-search .doc-language-switcher a + a::before,
+.wy-side-nav-search .doc-language-switcher .current + a::before,
+.wy-side-nav-search .doc-language-switcher a + .current::before {
+    content: "\00b7";
+    opacity: 0.5;
+}

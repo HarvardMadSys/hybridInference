@@ -37,7 +37,7 @@ models:
       request: "0"
     route:
       # Bare `kind: openrouter` lets OpenRouter pick the upstream provider;
-      # `kind: openrouter[<slug>]` pins one (see docs/openrouter.md).
+      # `kind: openrouter[<slug>]` pins one (see docs/developer/openrouter.md).
       - kind: openrouter
         weight: 1.0
         base_url: https://openrouter.ai/api/v1

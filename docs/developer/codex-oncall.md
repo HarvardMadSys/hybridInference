@@ -1,6 +1,7 @@
 # Codex On-Call
 
-The Codex On-Call pipeline turns structured gateway and status-monitor alerts
+The Codex On-Call pipeline turns structured alerts — from the gateway's own
+alert engine, or from any other producer that speaks the event contract below —
 into read-only Codex investigations. A small always-on relay receives alerts,
 posts the original message to Slack immediately, and hands the analysis to
 one of two backends (`CODEX_ONCALL_DISPATCH_BACKEND`):
@@ -8,17 +9,18 @@ one of two backends (`CODEX_ONCALL_DISPATCH_BACKEND`):
 - **`github`** — a GitHub Actions workflow checks out the current `dev`
   branch, runs `codex exec` against the relay-configured Responses API
   endpoint (the gateway), and replies in the same Slack thread itself.
-- **`cloud-agent`** — the relay creates a job on the FreeInference cloud
-  agent control plane; the platform's own runner host executes Codex in a
-  sandbox with a per-attempt inference grant, and the relay polls the job,
-  validates the result, and posts it into the thread itself. No GitHub-hosted
-  minutes (the 2026-08-05 Actions billing outage took the analysis path down
-  with it), no long-lived model key in Actions secrets, spend attributed in
-  `api_logs.agent_job_id`, and the checkout pinned to the commit `dev` named
-  at creation.
+- **`cloud-agent`** — the relay creates a job on a cloud agent control plane
+  (any service that implements the `/v1/agent/service/oncall/*` contract in
+  `apps/backend/serving/oncall/agent_backend.py`); that platform's own runner
+  host executes Codex in a sandbox with a per-attempt inference grant, and the
+  relay polls the job, validates the result, and posts it into the thread
+  itself. No GitHub-hosted minutes — an Actions outage cannot take the analysis
+  path down with it — no long-lived model key in Actions secrets, spend
+  attributed in `api_logs.agent_job_id`, and the checkout pinned to the commit
+  `CODEX_ONCALL_AGENT_BASE_REF` named at job creation.
 
 ```text
-Cloudflare status-monitor ── restricted HTTPS ─┐
+off-host alert producer ──── restricted HTTPS ─┐
                                                │
 Docker Compose network                         ▼
 gateway backend ───────────────────────► codex-oncall relay ──► Slack alert
@@ -31,10 +33,10 @@ gateway backend ─────────────────────�
         checkout dev → codex exec                        job create + poll
                    │ Responses API                               │ claim + grant
                    ▼                                             ▼
-       https://freeinference.org/v1                    runner host: codex sandbox
+  https://your-gateway.example/v1                      runner host: codex sandbox
                    │                                             │ Responses API
                    ▼                                             ▼
-        glm-5.2 (CODEX_ONCALL_CODEX_MODEL)              gateway /v1/responses
+     <model-id> (CODEX_ONCALL_CODEX_MODEL)             gateway /v1/responses
 ```
 
 Split of responsibilities:
@@ -50,10 +52,14 @@ Split of responsibilities:
   failure notice) into the original Slack thread. The runner VM is destroyed
   after each run.
 
-This first phase does not hold GitHub write credentials beyond
-`repository_dispatch`, and cannot create issues, branches, pull requests, or
-merges. The structured result only recommends whether an issue or draft PR
-would be appropriate for human follow-up.
+The analysis is read-only by construction. The relay's GitHub token is only
+powerful enough to send `repository_dispatch`; the workflow job runs with
+`permissions: contents: read`; nothing in the pipeline can create issues,
+branches, pull requests, or merges. The structured result carries
+`issue_recommendation` and `draft_pr_recommendation` fields
+(`apps/backend/serving/oncall/models.py`) that a human acts on. Giving the
+pipeline write actions would mean separate credentials and explicit policy
+gates, and is deliberately not part of this feature.
 
 ## Runtime boundaries
 
@@ -91,7 +97,7 @@ would be appropriate for human follow-up.
 
    | Secret | Purpose |
    |---|---|
-   | `CODEX_ONCALL_MODEL_API_KEY` | HybridInference `hyi-...` key the workflow uses against the gateway's Responses API. Must see the configured model (`glm-5.2` and `deepseek-v4-flash` are internal-only, so an `internal`/`admin` service key). Not an upstream provider key — Codex cannot call providers directly (see below). |
+   | `CODEX_ONCALL_MODEL_API_KEY` | HybridInference `hyi-...` key the workflow uses against the gateway's Responses API. It must be able to see `CODEX_ONCALL_CODEX_MODEL`; if the deployment role-gates that model (`apps/backend/serving/config/model_visibility.py`), issue the key with a role that can. Not an upstream provider key — Codex cannot call providers directly (see below). |
    | `CODEX_ONCALL_SLACK_BOT_TOKEN` | Same Slack bot token the relay uses (`chat:write`, invited to the channel). |
 
 3. Create a **fine-grained PAT** for the relay with *Contents: read & write*
@@ -116,9 +122,9 @@ CODEX_ONCALL_RELAY_TOKEN=<random shared bearer token>
 CODEX_ONCALL_SLACK_BOT_TOKEN=xoxb-...
 CODEX_ONCALL_SLACK_CHANNEL_ID=C0123456789
 CODEX_ONCALL_GITHUB_TOKEN=github_pat_...
-CODEX_ONCALL_GITHUB_REPOSITORY=HarvardMadSys/hybridInference
-CODEX_ONCALL_CODEX_MODEL=glm-5.2
-CODEX_ONCALL_MODEL_BASE_URL=https://freeinference.org/v1
+CODEX_ONCALL_GITHUB_REPOSITORY=<owner>/<repo>
+CODEX_ONCALL_CODEX_MODEL=llama-3.3-70b
+CODEX_ONCALL_MODEL_BASE_URL=https://your-gateway.example/v1
 ```
 
 `CODEX_ONCALL_CODEX_MODEL` and `CODEX_ONCALL_MODEL_BASE_URL` are forwarded in
@@ -132,22 +138,25 @@ hostname.
 Why the base URL must be the gateway: Codex speaks only the OpenAI Responses
 API — chat-wire support was removed upstream
 ([openai/codex#7782](https://github.com/openai/codex/discussions/7782)) — and
-provider chat endpoints (DeepSeek, ZAI, Tencent Token Plan, …) do not serve
-`/v1/responses`. The gateway's northbound Responses translator is what makes
-those models reachable for Codex at all; pointing the workflow straight at a
-provider fails at config load. To pay for analysis tokens through a specific
-provider, wire that provider into the gateway's `config/models.yaml` routes
-instead and keep the workflow on the gateway.
+most OpenAI-compatible provider endpoints serve only Chat Completions, not
+`/v1/responses`. The gateway's northbound Responses router
+(`apps/backend/serving/servers/routers/responses.py`) is what makes those
+models reachable for Codex at all; pointing the workflow straight at a provider
+fails at config load. To pay for analysis tokens through a specific provider,
+wire that provider into the model registry the gateway loads and keep the
+workflow on the gateway. That registry is whatever
+`MODELS_CONFIG_PATH` names, else the `paths.models` entry of an active
+distribution manifest (`DISTRIBUTION_CONFIG_PATH` with
+`DISTRIBUTION_CONFIG_MODE=active`), else the shipped reference registry
+`config/examples/models.openrouter.yaml`.
 
-Model choice: `glm-5.2` is the launch default because it is verified working
-end-to-end through the Responses API today. The intended steady-state model is
-`deepseek-v4-flash` (local H200 sglang route with the official DeepSeek API as
-fallback, roughly one-third the official per-token price of `deepseek-v4-pro` —
-each analysis run sends tens of thousands of prompt tokens through an agentic
-loop). It is blocked on the H200 V4 parser fix (PR #939): until that
-deployment is restarted and verified, the model returns empty `content` and
-unparsed tool calls, which breaks the agentic loop. Flip the env var once
-verified.
+Model choice: any model the gateway serves and that survives an agentic loop
+will do. Two practical constraints: the model must tolerate multi-turn tool
+calling (an analysis run drives `codex exec` through many shell steps), and
+each run sends tens of thousands of prompt tokens, so per-token price matters
+more here than latency. `.env.oncall.example` names `llama-3.3-70b`, the model
+the reference registry registers; a deployment with its own catalogue names one
+of its own.
 
 The Slack app needs `chat:write` and must be added to the target channel. The
 relay uses `chat.postMessage` so the workflow can reply in the original alert
@@ -159,34 +168,33 @@ The `cloud-agent` backend replaces the whole GitHub half above — no Actions
 secrets, no `repository_dispatch` PAT, no workflow. Instead:
 
 1. **On the gateway** create (or reuse) a service account for on-call
-   analyses. Its role decides which models the job's grant may carry —
-   `glm-5.2` and `deepseek-v4-flash` are internal-only, so role `internal` or
-   `admin` — and its daily quota is what the analyses spend.
-2. **On the cloud agent control plane** (see `ENVIRONMENT.md` in
-   [freeinference-cloud-agent](https://github.com/HarvardMadSys/freeinference-cloud-agent)):
-
-   ```text
-   AGENT_ONCALL_DISPATCH_TOKEN=<random 32 bytes, shared with the relay>
-   AGENT_ONCALL_USER_ID=<the service account's user id>
-   AGENT_REPO_ALLOWLIST=<must cover the repo below, e.g. HarvardMadSys/*>
-   ```
-
-   The GitHub App the platform holds must be installed on the target
-   repository — the runner clones with a read-only installation token.
+   analyses. Its role decides which models the job's grant may carry, so it
+   must be able to see `CODEX_ONCALL_CODEX_MODEL`; its daily quota is what the
+   analyses spend.
+2. **On the cloud agent control plane**, following that platform's own
+   documentation. The relay expects it to accept an on-call dispatch token, to
+   attribute jobs to the gateway user id of the service account above, and to
+   allow the repository the analysis checks out. The GitHub App the platform
+   holds must be installed on that repository — the runner clones with a
+   read-only installation token.
 3. **In `.env.oncall`**:
 
    ```text
    CODEX_ONCALL_DISPATCH_BACKEND=cloud-agent
-   CODEX_ONCALL_AGENT_BASE_URL=<control plane origin>
+   CODEX_ONCALL_AGENT_BASE_URL=https://your-agent-control-plane.example
    CODEX_ONCALL_AGENT_DISPATCH_TOKEN=<same token as the control plane>
    CODEX_ONCALL_AGENT_BASE_REF=dev
-   CODEX_ONCALL_AGENT_CONSOLE_URL=https://freeinference.org/agents/{job_id}
+   CODEX_ONCALL_AGENT_CONSOLE_URL=https://your-agent-console.example/agents/jobs/{job_id}
    ```
 
    `CODEX_ONCALL_CODEX_MODEL` keeps meaning what it meant; the model must
    resolve for the service account. `CODEX_ONCALL_GITHUB_*` and
    `CODEX_ONCALL_MODEL_BASE_URL` are unused on this backend — the platform
    injects its own gateway address into the sandbox.
+   `CODEX_ONCALL_AGENT_CONSOLE_URL` is only a link template: the relay
+   substitutes `{job_id}` and posts the result into Slack, so the path has to
+   be whatever the agent console uses for a job page. Leave it unset and Slack
+   carries the bare job id instead.
 
 Runtime behaviour: the relay's worker parks each dispatched analysis in an
 `await_result` stage (SQLite, restart-safe), polls the platform every
@@ -232,24 +240,20 @@ the FastAPI service — the Codex CLI version is pinned inside
 run analyzes a fresh checkout of `dev`, so there is no image snapshot to keep
 in sync.
 
-## Configure the status monitor
+## Producers outside the Compose network
 
-The Cloudflare Worker cannot reach the internal Compose hostname. The relay
-publishes port `8091` only on host loopback; expose it through a restricted TLS
-reverse-proxy route or Cloudflare Tunnel. The status-monitor Worker is owned by
-the external [freeInference repository](https://github.com/HarvardMadSys/freeInference);
-set its secrets from that repository's checkout:
+The gateway backend reaches the relay over the Compose network, so
+`http://codex-oncall:8091` is enough for it. A producer running anywhere else —
+an external monitor, a scheduled job on another host — cannot resolve that
+name, and the Compose service publishes port `8091` on host loopback only
+(`deploy/docker/docker-compose.yml`). Put a restricted TLS route in front of
+that loopback port and give the external producer the public URL plus the same
+`CODEX_ONCALL_RELAY_TOKEN`; the relay authenticates every `POST /v1/alerts`
+with a constant-time comparison against it and answers `401` otherwise.
 
-```bash
-cd /path/to/freeInference/services/status-monitor-worker
-npx wrangler secret put CODEX_ONCALL_RELAY_URL
-npx wrangler secret put CODEX_ONCALL_RELAY_TOKEN
-npx wrangler secret put SLACK_WEBHOOK_URL
-```
-
-Use the restricted HTTPS URL for `CODEX_ONCALL_RELAY_URL` and retain
-`SLACK_WEBHOOK_URL` during rollout. The webhook is used only when the relay
-cannot confirm delivery.
+Keep the producer's existing Slack webhook configured alongside the relay URL.
+The relay is a best-effort accelerator: the webhook is what still pages when
+the relay is unreachable.
 
 ## Smoke test
 
@@ -276,25 +280,16 @@ curl -i http://127.0.0.1:8091/v1/alerts \
   }'
 ```
 
-A successful request returns `202`, posts the synthetic alert immediately, and
-starts a `Codex On-Call` run under the repository's Actions tab; the
+A successful request returns `202` with
+`{"accepted": ..., "duplicate": ..., "fingerprint": ..., "slack_thread_ts": ...}`
+and posts the synthetic alert to Slack immediately. On the `github` backend it
+then starts a `Codex On-Call` run under the repository's Actions tab; on the
+`cloud-agent` backend it creates a job on the control plane. Either way the
 analysis reply lands in the alert's Slack thread when the run finishes.
-Reusing the same fingerprint inside the dedupe window returns
-`duplicate: true` without another top-level message. On the first live run,
-check the workflow log for the sandbox self-check result.
 
-## Rollout
+Reusing the same fingerprint inside the dedupe window (`dedupe_window_seconds`
+in the payload, default `300`) returns `duplicate: true` without another
+top-level message. On the first live run of the `github` backend, check the
+workflow log for the sandbox self-check result — it says whether Codex got its
+own read-only sandbox or fell back to the ephemeral runner VM.
 
-1. Configure the GitHub secrets, enable the `oncall` profile on staging, and
-   configure only one producer.
-2. Confirm raw-alert latency, analysis usefulness, workflow duration, and
-   false conclusions for at least one week.
-3. Enable the production gateway producer while retaining webhook fallback.
-4. Add status-monitor delivery after the restricted public TLS route is ready.
-5. After the H200 V4 parser fix (PR #939) is deployed (sglang container
-   restarted) and verified — non-empty `content`, populated `tool_calls`, and
-   `/v1/responses` returning message items — set
-   `CODEX_ONCALL_CODEX_MODEL=deepseek-v4-flash` and re-run the smoke test.
-6. Consider GitHub Issue and Draft PR actions in a separate change with
-   separate credentials, explicit policy gates, and branch protection.
-   Automatic merge remains out of scope.

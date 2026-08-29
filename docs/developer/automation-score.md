@@ -10,13 +10,25 @@ API traffic is, on a `0.0`–`1.0` scale:
 It is a **heuristic for triage, not a verdict**. Always read it together with the
 reported `confidence` and the per-signal breakdown.
 
+```{note}
+This feature profiles individual users' traffic patterns. Computing a score
+reads that user's `api_logs` rows over the window — when they sent requests,
+how long their prompts were, which client they used, and precomputed shape
+statistics of their newest user message (length, character entropy, and a hash
+— see signal 7). It is reachable only from the admin endpoints and the
+operator CLI below, never by the user themselves and never from any public
+route. A deployment that operates this on real traffic should say so in its
+own privacy policy, and should treat a score as an input to a human decision
+rather than as grounds for automated enforcement.
+```
+
 ## Where it lives
 
 | Layer | Location |
 |---|---|
 | Core scoring + gather SQL | `apps/backend/serving/analytics/automation_score.py` |
-| Store methods | `LogStore.get_user_automation_score` / `get_bulk_user_automation_scores` (`serving/storage/postgres_log.py`) |
-| Admin endpoints | `GET /admin/users/{user_id}/automation-score`, `GET /admin/users/automation-scores` (`serving/servers/routers/admin/users.py`) |
+| Store methods | `LogStore.get_user_automation_score` / `get_bulk_user_automation_scores` (`apps/backend/serving/storage/postgres_log.py`) |
+| Admin endpoints | `GET /admin/users/{user_id}/automation-score`, `GET /admin/users/automation-scores` (`apps/backend/serving/servers/routers/admin/users.py`) |
 | Admin dashboard | per-user button + bulk "Automation" column in the Users tab |
 | CLI | `ops/db/analysis/user_automation_score.py` |
 
@@ -260,5 +272,5 @@ The final score maps to a band label (advisory — always read with `confidence`
 python ops/db/analysis/user_automation_score.py --min-requests 20
 
 # full per-signal breakdown for one user
-python ops/db/analysis/user_automation_score.py --email a@x.com
+python ops/db/analysis/user_automation_score.py --email user@example.com
 ```

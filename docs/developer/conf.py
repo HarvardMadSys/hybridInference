@@ -1,8 +1,9 @@
-"""Sphinx configuration for the HybridInference documentation site.
+"""Sphinx configuration for the HybridInference developer documentation.
 
-This module configures Sphinx extensions, HTML theme, source parsers,
-and autodoc defaults used to build the docs. It also adjusts the Python
-path so that project modules can be imported for API documentation.
+The site is plain MyST Markdown -- no page uses autodoc, so nothing here
+imports the application. That keeps the build hermetic: `sphinx-build` needs
+only Sphinx, myst-parser and the theme, and makes no network requests, so an
+offline contributor gets the same result as CI.
 """
 
 # Configuration file for the Sphinx documentation builder.
@@ -11,29 +12,19 @@ path so that project modules can be imported for API documentation.
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 import os
-import sys
-
-# Add project root to sys.path for autodoc
-sys.path.insert(0, os.path.abspath("../.."))
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "HybridInference"
-copyright = "2025-2026, Harvard System Lab"
-author = "Harvard System Lab"
+copyright = "2026, The HybridInference contributors"
+author = "The HybridInference contributors"
 release = "0.1.0"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 extensions = [
-    "sphinx.ext.autodoc",  # Auto-generate docs from docstrings
-    "sphinx.ext.napoleon",  # Support for Google/NumPy style docstrings
-    "sphinx.ext.viewcode",  # Add links to source code
-    "sphinx.ext.intersphinx",  # Link to other project's documentation
-    "sphinx.ext.todo",  # Support for todo items
-    "sphinx.ext.coverage",  # Check documentation coverage
     "myst_parser",  # Support for Markdown files
 ]
 
@@ -46,39 +37,47 @@ myst_enable_extensions = [
 
 # Generate implicit anchors for h1-h3 headings so GitHub-style in-page links
 # (`[text](#some-heading)`) resolve. Without this the Markdown renders fine on
-# GitHub but Sphinx reports `myst.xref_missing`, which the Cloudflare Pages
-# build turns into a failure (it runs `sphinx-build -W`).
+# GitHub but Sphinx reports `myst.xref_missing`, which fails the build (CI and
+# the published site both run `sphinx-build -W`).
 myst_heading_anchors = 3
 
-# Napoleon settings for Google-style docstrings
-napoleon_google_docstring = True
-napoleon_numpy_docstring = False
-napoleon_include_init_with_doc = True
-napoleon_include_private_with_doc = False
-napoleon_include_special_with_doc = True
-napoleon_use_admonition_for_examples = True
-napoleon_use_admonition_for_notes = True
-napoleon_use_admonition_for_references = False
-napoleon_use_ivar = False
-napoleon_use_param = True
-napoleon_use_rtype = True
-napoleon_preprocess_types = True
+# -- Translations ------------------------------------------------------------
+# The docs are written in English and translated with Sphinx's gettext
+# workflow: `make docs-gettext` extracts one catalog per page, a translator
+# fills in the `msgstr` entries, and `make docs-lang DOCS_LANG=<code>` builds
+# that language. Every string without a translation falls back to the English
+# source, so a partly-translated language still builds a complete site -- and
+# when an English paragraph changes, its `msgid` changes with it, gettext marks
+# the old translation `fuzzy`, and the page falls back to English rather than
+# serving a translation that no longer matches. See the Translations section of
+# contributing.md.
+language = os.environ.get("DOCS_LANGUAGE", "en").strip() or "en"
+locale_dirs = ["locale"]
 
-# Autodoc settings
-autodoc_default_options = {
-    "members": True,
-    "member-order": "bysource",
-    "special-members": "__init__",
-    "undoc-members": True,
-    "exclude-members": "__weakref__",
-}
+# One catalog per source file rather than one per directory: a pull request
+# then shows which page a translation touches, and a renamed page renames its
+# catalog with it.
+gettext_compact = False
 
-# Intersphinx mapping
-intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
-    "fastapi": ("https://fastapi.tiangolo.com", None),
-    "pydantic": ("https://docs.pydantic.dev/latest/", None),
-}
+# Languages the *published* site offers, as `code:endonym` pairs, in the order
+# they should appear -- for example
+# `DOCS_LANGUAGES="en:English,zh_CN:简体中文"`. The switcher in
+# `_templates/layout.html` assumes each language is published as a sibling
+# directory named for its code (`<root>/en/`, `<root>/zh_CN/`), which is what
+# `make docs-site` produces.
+#
+# Unset is the default, and means a single-language site: no switcher is
+# rendered and nothing about the current publication layout changes.
+_languages = []
+for _entry in os.environ.get("DOCS_LANGUAGES", "").split(","):
+    _code, _, _label = _entry.strip().partition(":")
+    # A code reaches an href, so accept only the shape a locale code has.
+    if _code.replace("_", "").isalnum() and _label.strip():
+        _languages.append({"code": _code, "label": _label.strip()})
+if len(_languages) < 2:
+    # One language needs no switcher, and a malformed value must not render a
+    # half-built one.
+    _languages = []
 
 templates_path = ["_templates"]
 exclude_patterns = []
@@ -109,5 +108,6 @@ html_css_files = [
     "custom.css",
 ]
 
-# Show todo items
-todo_include_todos = True
+html_context = {
+    "doc_languages": _languages,
+}

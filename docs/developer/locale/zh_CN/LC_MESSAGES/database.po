@@ -1,0 +1,686 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/database.md:1
+msgid "Database"
+msgstr "数据库"
+
+#: ../developer/database.md:3
+msgid ""
+"The gateway uses PostgreSQL for request logs, user accounts, API keys, and "
+"every admin/runtime setting that outlives a restart. This page covers what "
+"is stored, how the schema comes into existence, and how to back it up, "
+"restore it, and reset it."
+msgstr ""
+"网关用 PostgreSQL 存放请求日志、用户账号、API "
+"key，以及每一项要跨重启存活的管理/运行时设置。本页讲清楚存了什么、表结构是怎么产生的，以及如何备份、恢复和重置。"
+
+#: ../developer/database.md:8
+msgid "Is a database required?"
+msgstr "数据库是必需的吗？"
+
+#: ../developer/database.md:10
+msgid ""
+"No. `DB_ENABLED` defaults to `true`, but a gateway started with "
+"`DB_ENABLED=false` routes requests normally — it simply has no request "
+"history, no user accounts, no API-key issuance, and no admin surfaces backed"
+" by stored settings."
+msgstr ""
+"不是。`DB_ENABLED` 默认为 `true`，但以 `DB_ENABLED=false` "
+"启动的网关照样正常路由请求——只是没有请求历史、没有用户账号、签发不了 API key，那些依赖已存设置的管理界面也都没有。"
+
+#: ../developer/database.md:14
+msgid ""
+"The distinction matters when reading `/health`, because the two \"no "
+"database\" states are not the same answer:"
+msgstr "读 `/health` 时这个区别很重要，因为两种「没有数据库」的状态给出的并不是同一个答案："
+
+#: ../developer/database.md:22
+msgid ""
+"The first is a deployment that asked for no database. The second asked for "
+"one and did not get it, and reports unhealthy so a load balancer takes it "
+"out of rotation."
+msgstr "第一种是这个部署本来就没要数据库。第二种是它要了却没拿到，于是报 unhealthy，好让负载均衡器把它摘出轮转。"
+
+#: ../developer/database.md:26
+msgid "Connection settings"
+msgstr "连接设置"
+
+#: ../developer/database.md:28
+msgid ""
+"Read by `Settings` in `apps/backend/serving/config/settings.py`, from `.env`"
+" or the process environment."
+msgstr ""
+"由 `apps/backend/serving/config/settings.py` 里的 `Settings` 从 `.env` 或进程环境读取。"
+
+#: ../developer/database.md
+msgid "Variable"
+msgstr "变量"
+
+#: ../developer/database.md
+msgid "Default"
+msgstr "默认值"
+
+#: ../developer/database.md
+msgid "Notes"
+msgstr "说明"
+
+#: ../developer/database.md
+msgid "`DB_ENABLED`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "`true`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "Any of `false` / `0` / `no` disables the database entirely."
+msgstr "`false` / `0` / `no` 中任意一个都会彻底禁用数据库。"
+
+#: ../developer/database.md
+msgid "`DB_HOST`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "`localhost`"
+msgstr ""
+
+#: ../developer/database.md
+msgid ""
+"The Compose stack overrides this to `postgres` inside the backend container."
+msgstr "Compose 栈在 backend 容器内把它覆盖为 `postgres`。"
+
+#: ../developer/database.md
+msgid "`DB_PORT`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "`5432`"
+msgstr ""
+
+#: ../developer/database.md
+msgid ""
+"In Compose this is the **host** port mapping; the container always talks to "
+"5432."
+msgstr "在 Compose 里这是**宿主机**一侧的端口映射；容器内部始终连 5432。"
+
+#: ../developer/database.md
+msgid "`DB_NAME`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "`hybridinference`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "Required by Compose (`DB_NAME must be set in .env file`)."
+msgstr "Compose 必需（`DB_NAME must be set in .env file`）。"
+
+#: ../developer/database.md
+msgid "`DB_USER`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "`postgres`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "Required by Compose."
+msgstr "Compose 必需。"
+
+#: ../developer/database.md
+msgid "`DB_PASSWORD`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "*(empty)*"
+msgstr "*（空）*"
+
+#: ../developer/database.md
+msgid "`DB_STORE_FULL_CONTENT`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "`false`"
+msgstr ""
+
+#: ../developer/database.md
+msgid ""
+"Whether prompts and responses are stored verbatim. See [Request logging and "
+"privacy](#request-logging-and-privacy)."
+msgstr "是否原样存储 prompt 和响应。见[请求日志与隐私](#request-logging-and-privacy)。"
+
+#: ../developer/database.md:41
+#, python-brace-format
+msgid ""
+"The bundled stack (`deploy/docker/docker-compose.yml`) runs `postgres:16`, "
+"initialised with `-E UTF8 --locale=C.UTF-8`, and publishes it on "
+"`127.0.0.1:${DB_PORT:-5432}` — loopback only. Reach it from another machine "
+"with an SSH tunnel, not by widening that binding."
+msgstr ""
+"自带的这套栈（`deploy/docker/docker-compose.yml`）跑的是 `postgres:16`，以 `-E UTF8 "
+"--locale=C.UTF-8` 初始化，并发布在 `127.0.0.1:${DB_PORT:-5432}`——只监听回环。要从别的机器访问它，用 "
+"SSH 隧道，而不是把这个绑定放宽。"
+
+#: ../developer/database.md:46
+msgid "How the schema is created"
+msgstr "表结构是怎么创建出来的"
+
+#: ../developer/database.md:48
+msgid ""
+"There is no migration tool in this repository — no Alembic, no SQL migration"
+" directory. The schema is created and migrated **by the application at "
+"startup**, idempotently. Every statement is `CREATE TABLE IF NOT EXISTS`, so"
+" the builders below overlap harmlessly where two of them define the same "
+"table:"
+msgstr ""
+"这个仓库里没有迁移工具——没有 Alembic，也没有 SQL 迁移目录。表结构由**应用在启动时**创建并迁移，而且是幂等的。每条语句都是 "
+"`CREATE TABLE IF NOT EXISTS`，所以下面这些构建器即便有两个定义了同一张表，重叠也无害："
+
+#: ../developer/database.md
+msgid "Code"
+msgstr "代码"
+
+#: ../developer/database.md
+msgid "Creates"
+msgstr "创建什么"
+
+#: ../developer/database.md
+msgid ""
+"`ensure_api_logs_schema` in `apps/backend/serving/storage/log_schema.py`"
+msgstr ""
+"`apps/backend/serving/storage/log_schema.py` 里的 `ensure_api_logs_schema`"
+
+#: ../developer/database.md
+msgid "`api_logs` and `api_stats_hourly`, with their columns and indexes"
+msgstr "`api_logs` 和 `api_stats_hourly`，连同它们的列和索引"
+
+#: ../developer/database.md
+msgid ""
+"`DatabaseLogger._create_tables` in "
+"`apps/backend/serving/storage/database.py`"
+msgstr ""
+"`apps/backend/serving/storage/database.py` 里的 "
+"`DatabaseLogger._create_tables`"
+
+#: ../developer/database.md
+msgid "Calls the above, then the auth/admin tables"
+msgstr "先调用上面那个，再建认证/管理相关的表"
+
+#: ../developer/database.md
+msgid ""
+"`PostgresOperationalStore.initialize` in "
+"`apps/backend/serving/storage/postgres_operational.py`"
+msgstr ""
+"`apps/backend/serving/storage/postgres_operational.py` 里的 "
+"`PostgresOperationalStore.initialize`"
+
+#: ../developer/database.md
+msgid "The operational tables (settings, overrides, provider registry)"
+msgstr "运行时数据表（设置、覆盖项、provider 注册表）"
+
+#: ../developer/database.md
+msgid ""
+"`ResponseStore.initialize` in "
+"`apps/backend/serving/storage/responses_store.py`"
+msgstr ""
+"`apps/backend/serving/storage/responses_store.py` 里的 "
+"`ResponseStore.initialize`"
+
+#: ../developer/database.md
+msgid "`openai_responses`"
+msgstr ""
+
+#: ../developer/database.md
+msgid ""
+"`apps/backend/serving/grants.py` and "
+"`apps/backend/serving/admin/geo_demand_rollup.py`"
+msgstr ""
+"`apps/backend/serving/grants.py` 和 "
+"`apps/backend/serving/admin/geo_demand_rollup.py`"
+
+#: ../developer/database.md
+msgid "`agent_grants`; the `geo_hourly_*` rollup tables"
+msgstr "`agent_grants`；以及 `geo_hourly_*` 汇总表"
+
+#: ../developer/database.md:61
+msgid ""
+"Pointing a gateway at an empty database is therefore all the \"migration\" "
+"there is: start it and the tables appear. Booting this revision against a "
+"blank `postgres:16` database creates 33 tables in `public`."
+msgstr ""
+"所以把网关指向一个空数据库，就是全部的「迁移」了：启动它，表就出现了。用本版本对着一个空的 `postgres:16` 数据库启动，会在 "
+"`public` 里建出 33 张表。"
+
+#: ../developer/database.md:65
+msgid "Two properties are worth knowing before you operate this:"
+msgstr "上手运维之前，有两个特性值得先知道："
+
+#: ../developer/database.md:67
+msgid ""
+"**Schema DDL is catalog-gated.** Each startup reads `pg_attribute` / "
+"`pg_indexes` first and issues only the `ALTER`/`CREATE INDEX` statements "
+"that are actually missing, so a steady-state restart takes no strong table "
+"locks. This matters because `ALTER TABLE` acquires `ACCESS EXCLUSIVE` "
+"*before* Postgres evaluates `IF NOT EXISTS`, and a queued exclusive lock "
+"parks every reader behind it."
+msgstr ""
+"**表结构 DDL 由系统目录把关**。每次启动先读 `pg_attribute` / `pg_indexes`，只发出真正缺失的那些 "
+"`ALTER`/`CREATE INDEX` 语句，所以稳态下的重启不会拿任何强表锁。这一点之所以重要，是因为 `ALTER TABLE` 是在 "
+"Postgres 求值 `IF NOT EXISTS` *之前*就取得 `ACCESS EXCLUSIVE` "
+"锁的，而一个排队中的排他锁会把它身后的每个读者都堵住。"
+
+#: ../developer/database.md:73
+msgid ""
+"**A migration that cannot get its lock is deferred, not fatal.** The DDL "
+"phase runs under a 3-second `lock_timeout` and raises "
+"`SchemaLockUnavailable` rather than waiting; the caller retries it in the "
+"background and startup proceeds. The usual lock holder is a long-running "
+"`pg_dump`, which can hold `ACCESS SHARE` over `api_logs` for hours. If you "
+"take backups on a schedule, expect an occasional deferred-migration line in "
+"the log after a deploy that adds a column."
+msgstr ""
+"**拿不到锁的迁移会被推迟，而不是致命失败**。DDL 阶段跑在 3 秒的 `lock_timeout` 之下，拿不到就抛 "
+"`SchemaLockUnavailable`，而不是干等；调用方在后台重试，启动流程继续往下走。常见的持锁者是跑得很久的 `pg_dump`，它可能在"
+" `api_logs` 上持有 `ACCESS SHARE` "
+"好几个小时。如果备份是按计划跑的，那么在一次新增列的部署之后，日志里偶尔出现一行迁移被推迟是正常的。"
+
+#: ../developer/database.md:80
+msgid ""
+"If you are contributing a column to `api_logs`, add it in `log_schema.py` "
+"only. That module exists because the DDL was once duplicated across two "
+"builders, they drifted, and the builder that actually runs at boot never "
+"created the new columns."
+msgstr ""
+"如果你要给 `api_logs` 加一列，只在 `log_schema.py` 里加。这个模块之所以存在，是因为当初 DDL "
+"在两个构建器里各写了一份、两份逐渐漂移，而启动时真正跑的那一个从来没建出新列。"
+
+#: ../developer/database.md:85
+msgid "What the tables hold"
+msgstr "各张表存了什么"
+
+#: ../developer/database.md
+msgid "Group"
+msgstr "分组"
+
+#: ../developer/database.md
+msgid "Tables"
+msgstr "表"
+
+#: ../developer/database.md
+msgid "Holds"
+msgstr "存放的内容"
+
+#: ../developer/database.md
+msgid "Request history"
+msgstr "请求历史"
+
+#: ../developer/database.md
+msgid "`api_logs`, `api_stats_hourly`, `provider_hourly_stats`"
+msgstr ""
+
+#: ../developer/database.md
+msgid ""
+"One row per request (model, provider, tokens, latency, TTFT, status, cost) "
+"plus hourly rollups used by the dashboards"
+msgstr "每个请求一行（模型、provider、token、延迟、TTFT、状态、成本），外加仪表盘用的小时级汇总"
+
+#: ../developer/database.md
+msgid "Accounts and auth"
+msgstr "账号与认证"
+
+#: ../developer/database.md
+msgid ""
+"`users`, `api_keys`, `auth_sessions`, `login_events`, "
+"`email_verification_tokens`, `password_reset_tokens`, `identity_auth_codes`"
+msgstr ""
+
+#: ../developer/database.md
+msgid ""
+"User records, hashed API keys and their quotas, refresh sessions, sign-in "
+"history"
+msgstr "用户记录、哈希后的 API key 及其配额、刷新会话、登录历史"
+
+#: ../developer/database.md
+msgid "Admin actions"
+msgstr "管理操作"
+
+#: ../developer/database.md
+msgid ""
+"`admin_audit_log`, `signup_allowed_domains`, `site_settings`, "
+"`site_updates`, `email_broadcasts`, `email_broadcast_recipients`"
+msgstr ""
+
+#: ../developer/database.md
+msgid ""
+"Audited admin changes, signup policy, runtime settings, announcements, "
+"broadcast delivery state"
+msgstr "受审计的管理变更、注册策略、运行时设置、公告、群发投递状态"
+
+#: ../developer/database.md
+msgid "Runtime routing overrides"
+msgstr "运行时路由覆盖项"
+
+#: ../developer/database.md
+msgid ""
+"`provider_definitions`, `provider_api_keys`, `provider_route_configs`, "
+"`provider_route_candidates`, `provider_weight_overrides`, "
+"`disabled_providers`, `disabled_provider_env_keys`, "
+"`provider_env_key_min_roles`, `model_visibility_overrides`, "
+"`model_concurrency_exemptions`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "Everything the admin UI can change about routing without editing YAML"
+msgstr "管理界面不用改 YAML 就能调整的全部路由相关内容"
+
+#: ../developer/database.md
+msgid "Cost and quota"
+msgstr "成本与配额"
+
+#: ../developer/database.md
+msgid "`user_daily_cost`"
+msgstr ""
+
+#: ../developer/database.md
+msgid "Per-user daily spend used for quota enforcement"
+msgstr "用于执行配额的按用户每日花费"
+
+#: ../developer/database.md
+msgid "RouteWise"
+msgstr ""
+
+#: ../developer/database.md
+msgid "`routewise_probe_samples`, `routewise_probe_leases`"
+msgstr ""
+
+#: ../developer/database.md
+msgid ""
+"Latency probe samples and the lease that stops two workers probing at once"
+msgstr "延迟探测样本，以及防止两个 worker 同时探测的租约"
+
+#: ../developer/database.md
+msgid "Responses API"
+msgstr ""
+
+#: ../developer/database.md
+msgid "Stored `/v1/responses` state, when content storage is enabled"
+msgstr "启用内容存储时保存下来的 `/v1/responses` 状态"
+
+#: ../developer/database.md
+msgid "Geo analytics"
+msgstr "地理分析"
+
+#: ../developer/database.md
+msgid "`geo_hourly_coverage`, `geo_hourly_demand`"
+msgstr ""
+
+#: ../developer/database.md
+msgid ""
+"Hourly per-country request and token counts; aggregate only, no IP addresses"
+" stored"
+msgstr "按国家统计的小时级请求数和 token 数；只有聚合值，不存储 IP 地址"
+
+#: ../developer/database.md
+msgid "Agent grants"
+msgstr ""
+
+#: ../developer/database.md
+msgid "`agent_grants`"
+msgstr ""
+
+#: ../developer/database.md
+msgid ""
+"Short-lived, model-scoped capabilities this gateway mints for an external "
+"agent control plane"
+msgstr "本网关为外部 agent 控制平面签发的、短时效且限定模型范围的能力凭据"
+
+#: ../developer/database.md:99
+msgid ""
+"`\\dt` on a live database is the authoritative list; the code paths above "
+"are the authoritative definition."
+msgstr "在活着的数据库上跑 `\\dt` 才是权威的表清单；上面那些代码路径才是权威的定义。"
+
+#: ../developer/database.md:102
+msgid "Request logging and privacy"
+msgstr "请求日志与隐私"
+
+#: ../developer/database.md:104
+msgid ""
+"`DB_STORE_FULL_CONTENT` defaults to `false`, and that default is not a "
+"redaction of the stored text — the text is never written. With it off, "
+"`api_logs.prompt`, `api_logs.response` and `api_logs.request_payload` are "
+"inserted as `NULL`, and `/v1/responses` state is not persisted."
+msgstr ""
+"`DB_STORE_FULL_CONTENT` 默认为 "
+"`false`，而这个默认值并不是把已存下来的文本做脱敏——那些文本压根就不会写入。关掉它时，`api_logs.prompt`、`api_logs.response`"
+" 和 `api_logs.request_payload` 都按 `NULL` 插入，`/v1/responses` 的状态也不持久化。"
+
+#: ../developer/database.md:109
+msgid ""
+"Derived, non-content columns are recorded either way, because the dashboards"
+" read them instead of de-TOASTing payloads: token counts, cost, latency and "
+"TTFT, the conversation shape (`num_turns`, `num_user_turns`, "
+"`num_tool_calls`), and a fingerprint of the newest user message "
+"(`last_user_msg_chars`, `last_user_msg_entropy`, `last_user_msg_hash`)."
+msgstr ""
+"不论开关如何，派生出来的非内容列都会记录，因为仪表盘读的是它们，而不是去 de-TOAST 原始载荷：token 计数、成本、延迟和 "
+"TTFT，会话形态（`num_turns`、`num_user_turns`、`num_tool_calls`），以及最新一条用户消息的指纹（`last_user_msg_chars`、`last_user_msg_entropy`、`last_user_msg_hash`）。"
+
+#: ../developer/database.md:115
+msgid ""
+"Turning it on stores full prompts and responses. Weigh that against your "
+"users' expectations before you do."
+msgstr "打开它就会存下完整的 prompt 和响应。动手之前，先掂量一下这与用户的预期是否相符。"
+
+#: ../developer/database.md:118
+msgid "Backup"
+msgstr "备份"
+
+#: ../developer/database.md:120
+msgid "`pg_dump` in custom format, straight out of the container:"
+msgstr "直接从容器里做 custom 格式的 `pg_dump`："
+
+#: ../developer/database.md:127
+msgid ""
+"Do not add `-t` to `docker exec`: allocating a TTY corrupts the binary "
+"stream."
+msgstr "不要给 `docker exec` 加 `-t`：分配 TTY 会破坏二进制流。"
+
+#: ../developer/database.md:129
+msgid "Restore into an existing, running database:"
+msgstr "恢复到一个已存在且正在运行的数据库："
+
+#: ../developer/database.md:136
+msgid ""
+"Stop the backend (`make down`, or `docker stop hybridinference-backend`) "
+"before restoring over a live database, and remember that the backup contains"
+" hashed API keys and — if `DB_STORE_FULL_CONTENT` was ever on — user prompt "
+"content. Store it accordingly."
+msgstr ""
+"覆盖一个在线数据库之前，先停掉 backend（`make down`，或者 `docker stop hybridinference-"
+"backend`），并且记住：备份里含有哈希后的 API key，以及——只要 `DB_STORE_FULL_CONTENT` 曾经打开过——用户的 "
+"prompt 内容。请按相应的密级保管。"
+
+#: ../developer/database.md:141
+msgid "Reset"
+msgstr "重置"
+
+#: ../developer/database.md:143
+msgid ""
+"Deleting the database is more awkward than it looks, because the Postgres "
+"volume is declared `external:` in `deploy/docker/docker-compose.yml`:"
+msgstr ""
+"删掉数据库比看上去别扭，因为 Postgres 的卷在 `deploy/docker/docker-compose.yml` 里声明为 "
+"`external:`："
+
+#: ../developer/database.md:153
+msgid ""
+"**`docker compose down --volumes` does not delete an external volume.** Nor "
+"does `make down`, which passes no `--volumes` at all. A reset that relies on"
+" either silently leaves every row in place. Delete the volume by name:"
+msgstr ""
+"**`docker compose down --volumes` 不会删除外部卷**。`make down` 也不会，它压根没传 "
+"`--volumes`。依赖这两者中任何一个的「重置」，都会静默地把每一行数据原样留在那里。要按名字删除这个卷："
+
+#: ../developer/database.md:163
+msgid ""
+"`make up` depends on the `docker-volumes` target, which recreates the named "
+"volume if it is missing, so the stack comes back on an empty database and "
+"the startup initialisers rebuild the schema. Take a dump first if there is "
+"any chance you want the data back."
+msgstr ""
+"`make up` 依赖 `docker-volumes` 这个 "
+"target，具名卷缺失时它会重新创建，于是整套栈在一个空数据库上起来，由启动时的初始化逻辑重建表结构。只要还有一丝想把数据找回来的可能，就先做一份 "
+"dump。"
+
+#: ../developer/database.md:168
+msgid ""
+"The runnable example (`make demo-reset DISTRIBUTION=example`) uses its own, "
+"example-scoped volume and cannot delete `hybridinference_postgres_data`."
+msgstr ""
+"那个可运行的示例（`make demo-reset DISTRIBUTION=example`）用的是它自己的、限定在 example "
+"范围内的卷，删不掉 `hybridinference_postgres_data`。"
+
+#: ../developer/database.md:171
+msgid "Inspecting the database"
+msgstr "查看数据库"
+
+#: ../developer/database.md:177
+msgid ""
+"Useful starting points: `\\dt` for the table list and `\\d api_logs` for the"
+" request log's columns. `make ps` shows the published bindings — Postgres "
+"and pgAdmin should both read `127.0.0.1:...`; anything else means the "
+"database is listening beyond this host."
+msgstr ""
+"几个好用的起点：`\\dt` 看表清单，`\\d api_logs` 看请求日志的列。`make ps` 会列出发布出来的绑定——Postgres 和 "
+"pgAdmin 都应该显示成 `127.0.0.1:...`；不是这样就说明数据库在这台机器之外也在监听。"
+
+#: ../developer/database.md:182
+msgid "Optional: pgAdmin"
+msgstr "可选：pgAdmin"
+
+#: ../developer/database.md:184
+msgid ""
+"The Compose stack ships a pgAdmin service for people who prefer a GUI. It is"
+" **profile-gated** — nothing starts it unless the `admin` profile is named —"
+" and it is entirely optional; `psql` above does everything."
+msgstr ""
+"Compose 栈里带了一个 pgAdmin 服务，给偏好图形界面的人用。它由 **profile 把关**——不点名 `admin` profile "
+"就没有任何东西会启动它——而且它完全可选；上面的 `psql` 什么都能做。"
+
+#: ../developer/database.md:188
+msgid "Starting and restarting it"
+msgstr "启动与重启"
+
+#: ../developer/database.md:190
+msgid "The profile must be on *every* Compose command, not just the first:"
+msgstr "这个 profile 必须出现在*每一条* Compose 命令上，不只是第一条："
+
+#: ../developer/database.md:197
+msgid ""
+"Omitting it does not fail loudly, it just does the wrong thing in both "
+"directions: a plain `make up` starts every other service and skips pgAdmin, "
+"and a plain `make down` leaves the pgAdmin container running while removing "
+"everything around it (Compose then reports the network as still in use). "
+"Pass `COMPOSE_PROFILES=admin` on both halves of a restart."
+msgstr ""
+"漏掉它不会大声报错，只会在两个方向上都做错事：不带 profile 的 `make up` 会启动其他所有服务、跳过 pgAdmin；不带 "
+"profile 的 `make down` 会把周围的一切都删掉，却留着 pgAdmin 容器在跑（然后 Compose "
+"报告网络仍在使用中）。重启的两半都要带上 `COMPOSE_PROFILES=admin`。"
+
+#: ../developer/database.md:203
+msgid "Authentication"
+msgstr "认证"
+
+#: ../developer/database.md:205
+msgid "Two independent gates, and by default neither is pgAdmin's own login:"
+msgstr "两道互相独立的关卡，而且默认情况下没有一道是 pgAdmin 自己的登录："
+
+#: ../developer/database.md:207
+msgid ""
+"`PGADMIN_CONFIG_SERVER_MODE` defaults to `False`, which serves pgAdmin with "
+"**no login of its own**. Set it to `True` in `.env` and pgAdmin asks for "
+"`PGADMIN_EMAIL` / `PGADMIN_PASSWORD` (which themselves default to "
+"`admin@local.dev` / `admin` — change them before enabling this)."
+msgstr ""
+"`PGADMIN_CONFIG_SERVER_MODE` 默认为 `False`，这样提供出来的 pgAdmin **自身没有登录**。在 `.env`"
+" 里把它设为 `True`，pgAdmin 就会要 `PGADMIN_EMAIL` / `PGADMIN_PASSWORD`（这两个自身的默认值是 "
+"`admin@local.dev` / `admin`——启用之前先改掉）。"
+
+#: ../developer/database.md:211
+#, python-brace-format
+msgid ""
+"Reached through the console at `/pgadmin/`, the request is gated on an admin"
+" session by a Next.js route handler "
+"(`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`), which asks the "
+"backend to verify the caller. Reached directly on its published port "
+"(`127.0.0.1:${PGADMIN_PORT:-5050}`, loopback only), that gate does not apply"
+" — use an SSH tunnel:"
+msgstr ""
+"从控制台的 `/pgadmin/` 进去时，请求由一个 Next.js route "
+"handler（`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`）按管理员会话把关，它会请后端校验调用方。直接走它发布的端口（`127.0.0.1:${PGADMIN_PORT:-5050}`，只监听回环）进去时，这道关卡不生效——请用"
+" SSH 隧道："
+
+#: ../developer/database.md:222
+msgid ""
+"pgAdmin's *master password* prompt never appears: "
+"`PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED` is pinned to `\"False\"` in the "
+"Compose file with no environment variable to change it."
+msgstr ""
+"pgAdmin 的*主密码*（master "
+"password）提示永远不会出现：`PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED` 在 Compose "
+"文件里被钉死为 `\"False\"`，而且没有任何环境变量能改它。"
+
+#: ../developer/database.md:226
+msgid "Registering the database"
+msgstr "注册数据库"
+
+#: ../developer/database.md:228
+msgid "`Servers` → right-click → `Register` → `Server`."
+msgstr "`Servers` → 右键 → `Register` → `Server`。"
+
+#: ../developer/database.md:229
+msgid "**General**: any name."
+msgstr "**General**：名字随便起。"
+
+#: ../developer/database.md:230
+msgid ""
+"**Connection**: host `postgres`, port `5432`, maintenance database "
+"`DB_NAME`, username `DB_USER`, password `DB_PASSWORD` — the container-"
+"internal values, not the host port mapping."
+msgstr ""
+"**Connection**：host 填 `postgres`，port 填 `5432`，maintenance database 填 "
+"`DB_NAME`，username 填 `DB_USER`，password 填 "
+"`DB_PASSWORD`——都用容器内部的值，不是宿主机那侧的端口映射。"
+
+#: ../developer/database.md:234
+msgid "Resetting pgAdmin"
+msgstr "重置 pgAdmin"
+
+#: ../developer/database.md:236
+msgid ""
+"Its saved connections live in `hybridinference_pgadmin_data`, an ordinary "
+"project-local volume (not external, unlike the Postgres one):"
+msgstr ""
+"它保存的连接放在 `hybridinference_pgadmin_data`，这是个普通的项目内卷（不像 Postgres 那个卷，它不是 "
+"external）："

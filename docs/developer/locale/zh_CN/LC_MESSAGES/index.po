@@ -1,0 +1,216 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/index.rst:78
+msgid "Getting Started"
+msgstr "入门"
+
+#: ../developer/index.rst:86
+msgid "Concepts"
+msgstr "概念"
+
+#: ../developer/index.rst:94
+msgid "Guides"
+msgstr "指南"
+
+#: ../developer/index.rst:105
+msgid "Operations"
+msgstr "运维"
+
+#: ../developer/index.rst:116
+msgid "Contributing"
+msgstr "参与贡献"
+
+#: ../developer/index.rst:2
+msgid "HybridInference"
+msgstr ""
+
+#: ../developer/index.rst:4
+msgid ""
+"HybridInference is an open-source LLM inference gateway. It puts one OpenAI-"
+"compatible HTTP API in front of a mix of inference servers you run yourself "
+"— vLLM, SGLang, Ollama, or anything else that speaks the OpenAI API — and "
+"hosted provider APIs, then decides per request which of them answers."
+msgstr ""
+"HybridInference 是一个开源的 LLM 推理网关。它在一批自建推理服务器（vLLM、SGLang、Ollama，或任何其他讲 OpenAI"
+" API 的服务）和托管的 provider API 之前，统一摆上一套 OpenAI 兼容的 HTTP API，再逐请求决定由其中哪一个来应答。"
+
+#: ../developer/index.rst:9
+msgid ""
+"The idea the whole system is built around is that the *model id* a client "
+"asks for is decoupled from the *endpoint* that serves it. One published id "
+"can be backed by several routes at once, so traffic across them can be "
+"weighted, failed over when an endpoint degrades, priced, and logged — "
+"without the client changing a line."
+msgstr ""
+"整个系统的立足点是：客户端请求的\\ *模型 id*\\ ，与真正服务它的\\ *端点*\\ 是解耦的。一个对外发布的 id "
+"可以同时由多条路由承载，于是这些路由之间的流量可以加权、可以在某个端点劣化时回退、可以计价、可以记录日志——而客户端一行都不用改。"
+
+#: ../developer/index.rst:15
+msgid ""
+"This is the documentation for the gateway software itself: running it, "
+"understanding it, extending it, and contributing to it."
+msgstr "本文档讲的是网关软件本身：如何运行它、理解它、扩展它，以及如何为它贡献代码。"
+
+#: ../developer/index.rst:19
+msgid "What is in the box"
+msgstr "开箱内容"
+
+#: ../developer/index.rst:21
+msgid ""
+"**An OpenAI-compatible surface** — ``POST /v1/chat/completions``, ``POST "
+"/v1/embeddings``, ``POST /v1/responses`` and ``GET /v1/models``, plus an "
+"Anthropic Messages surface at ``/v1/messages`` and "
+"``/anthropic/v1/messages`` for clients that speak that protocol instead."
+msgstr ""
+"**一套 OpenAI 兼容的接口**\\ ——包括 ``POST /v1/chat/completions``、``POST "
+"/v1/embeddings``、``POST /v1/responses`` 和 ``GET /v1/models``\\ ；另外还在 "
+"``/v1/messages`` 和 ``/anthropic/v1/messages`` 上提供一套 Anthropic Messages "
+"接口，供改讲该协议的客户端使用。"
+
+#: ../developer/index.rst:25
+msgid ""
+"**A routing engine** — a per-model choice of router, weighted selection "
+"among an id's routes, automatic fallback to the next route, and a per-"
+"endpoint circuit breaker that pulls a failing endpoint out of rotation."
+msgstr ""
+"**一套路由引擎**\\ ——按模型选择 router、在一个 id 的多条路由之间加权选择、自动回退到下一条路由，以及按端点计的熔断器（circuit"
+" breaker），把持续失败的端点摘出轮转。"
+
+#: ../developer/index.rst:28
+msgid ""
+"**Provider adapters** — a generic OpenAI-compatible adapter, which also "
+"serves your own local servers, alongside dedicated adapters for OpenRouter, "
+"Anthropic's direct API, Claude via Google Vertex, and Gemini."
+msgstr ""
+"**一组 provider adapter**\\ ——一个通用的 OpenAI 兼容 adapter（自建的本地服务器也走它），外加面向 "
+"OpenRouter、Anthropic 直连 API、经 Google Vertex 的 Claude 以及 Gemini 的专用 adapter。"
+
+#: ../developer/index.rst:31
+msgid ""
+"**A web and admin console** — a Next.js app for sign-up and login, API keys,"
+" usage and recent requests, a chat playground, and an admin area covering "
+"users, model visibility, provider keys, route weights and analytics."
+msgstr ""
+"**一套 Web 与管理控制台**\\ ——一个 Next.js 应用，提供注册登录、API "
+"key、用量与最近请求、聊天试验场，以及涵盖用户、模型可见性、provider key、路由权重和分析的管理区。"
+
+#: ../developer/index.rst:34
+msgid ""
+"**Operational storage** — Postgres for accounts, API keys and a request log,"
+" with the schema created on startup rather than by a migration tool."
+msgstr "**运行数据存储**\\ ——用 Postgres 存放账号、API key 和请求日志；表结构在启动时创建，而不是交给迁移工具。"
+
+#: ../developer/index.rst:37
+msgid ""
+"The backend is Python (3.10–3.13) under ``apps/backend/``, split into "
+"``serving/`` (HTTP surface, auth, adapters, storage, observability) and "
+"``routing/`` (route table, strategies, endpoint health, fallback). The "
+"console is Next.js under ``apps/frontend/``. The repository is MIT-licensed."
+msgstr ""
+"后端是 ``apps/backend/`` 下的 Python（3.10–3.13），分成 ``serving/``\\ （HTTP "
+"接口、鉴权、adapter、存储、可观测性）和 ``routing/``\\ （路由表、策略、端点健康、回退）两半。控制台是 "
+"``apps/frontend/`` 下的 Next.js。仓库采用 MIT 许可证。"
+
+#: ../developer/index.rst:43
+msgid "Where to start"
+msgstr "从哪里开始"
+
+#: ../developer/index.rst:49
+msgid "If you want to"
+msgstr "如果你想"
+
+#: ../developer/index.rst:50
+msgid "Start here"
+msgstr "从这里开始"
+
+#: ../developer/index.rst:51
+msgid "Watch a gateway serve a request, with no account, key or GPU"
+msgstr "不用账号、不用 key、不用 GPU，看一个网关处理一次请求"
+
+#: ../developer/index.rst:52
+msgid ":doc:`router-tutorial`"
+msgstr ""
+
+#: ../developer/index.rst:53
+msgid "Run your own gateway against real providers"
+msgstr "用真实的 provider 跑起你自己的网关"
+
+#: ../developer/index.rst:54
+msgid ":doc:`installation`"
+msgstr ""
+
+#: ../developer/index.rst:55
+msgid "Follow a request from HTTP through to an upstream call"
+msgstr "跟着一次请求，从 HTTP 一路走到上游调用"
+
+#: ../developer/index.rst:56
+msgid ":doc:`architecture`"
+msgstr ""
+
+#: ../developer/index.rst:57
+msgid "Publish a new model id, or wire up a provider the gateway has never talked to"
+msgstr "发布一个新的模型 id，或接上网关从未对接过的 provider"
+
+#: ../developer/index.rst:59
+msgid ":doc:`adding-models`"
+msgstr ""
+
+#: ../developer/index.rst:60
+msgid "Change how an endpoint gets chosen, or write your own strategy"
+msgstr "改变端点的选中方式，或自己写一个策略"
+
+#: ../developer/index.rst:61
+msgid ":doc:`routing`"
+msgstr ""
+
+#: ../developer/index.rst:62
+msgid "Send a patch"
+msgstr "提交一个补丁"
+
+#: ../developer/index.rst:63
+msgid ":doc:`contributing`"
+msgstr ""
+
+#: ../developer/index.rst:66
+msgid "Scope of this site"
+msgstr "本站的范围"
+
+#: ../developer/index.rst:68
+msgid ""
+"These pages document the software, not any one installation of it. Which "
+"models a given gateway serves, and how to get an account on it, are the "
+"operator's to publish separately."
+msgstr "这些页面记录的是软件本身，而不是它的某一次具体安装。某个网关服务哪些模型、怎样在它上面拿到账号，由运营方另行公布。"
+
+#: ../developer/index.rst:72
+msgid ""
+"That separation is built into the repository: a deployment keeps its "
+"identity, its configuration-file locations and its feature switches in a "
+"*distribution overlay* under ``distributions/`` rather than in the code, "
+"which is why a fresh clone comes up as nobody's gateway but your own. "
+":doc:`configuration` explains how those overlays resolve."
+msgstr ""
+"这条分界是写进仓库结构里的：一个部署把自己的身份、配置文件位置和功能开关放在 ``distributions/`` 下的\\ *distribution"
+" overlay*\\ 里，而不是放进代码，所以新克隆出来的仓库跑起来不属于任何人，只属于你自己。\\ :doc:`configuration` "
+"讲解这些 overlay 是怎样解析出来的。"
+

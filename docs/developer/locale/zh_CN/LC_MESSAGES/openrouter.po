@@ -1,0 +1,366 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/openrouter.md:1
+msgid "Routing through OpenRouter"
+msgstr "通过 OpenRouter 路由"
+
+#: ../developer/openrouter.md:3
+msgid ""
+"[OpenRouter](https://openrouter.ai) is one of the providers HybridInference "
+"can route to, and it is the one a fresh checkout uses by default. This page "
+"covers the OpenRouter adapter specifically. For how routing works in "
+"general, see [Architecture](architecture.md); for the model-registry syntax,"
+" see [Adding models](adding-models.md)."
+msgstr ""
+"[OpenRouter](https://openrouter.ai) 是 HybridInference 可以路由到的 provider "
+"之一，也是全新检出默认使用的那一个。本页专门讲 OpenRouter adapter。路由总体上如何工作见 "
+"[架构](architecture.md)；模型注册表的语法见 [添加模型](adding-models.md)。"
+
+#: ../developer/openrouter.md:9
+msgid "The default catalogue"
+msgstr "默认的模型目录"
+
+#: ../developer/openrouter.md:11
+msgid ""
+"With no environment variables and no deployment overlay, config resolution "
+"falls through to `config/examples/models.openrouter.yaml`, which registers "
+"three models against OpenRouter — two direct and one demonstrating a local-"
+"first hybrid route with OpenRouter as the fallback leg. Supplying one API "
+"key is enough to get a working gateway:"
+msgstr ""
+"在没有任何环境变量、也没有部署 overlay 的情况下，配置解析会一路回落到 "
+"`config/examples/models.openrouter.yaml`，它针对 OpenRouter "
+"注册了三个模型——两个直连，另一个演示了本地优先、以 OpenRouter 作为回退分支（leg）的混合路由。给出一把 API key "
+"就足以跑起一个可用的网关："
+
+#: ../developer/openrouter.md:23
+msgid ""
+"Run it from the repository root: the default paths are relative, and the "
+"boot log confirms which registry was chosen with a line like `Registered 3 "
+"routes from config/examples/models.openrouter.yaml`."
+msgstr ""
+"要从仓库根目录运行：默认路径都是相对路径；启动日志会用类似 `Registered 3 routes from "
+"config/examples/models.openrouter.yaml` 的一行确认选中的是哪份注册表。"
+
+#: ../developer/openrouter.md:31
+msgid ""
+"The catalogue is a starting point, not a fixture: OpenRouter's model slugs "
+"move, and the pricing figures in that file are approximate and used only for"
+" the gateway's own usage accounting. Copy it and edit freely."
+msgstr ""
+"这份目录是起点，不是一成不变的样板：OpenRouter 的模型 slug "
+"会变动，而那个文件里的价格数字只是近似值，仅用于网关自己的用量核算。复制一份随意改。"
+
+#: ../developer/openrouter.md:35
+msgid "Route syntax"
+msgstr "路由语法"
+
+#: ../developer/openrouter.md:37
+msgid ""
+"An OpenRouter route is an entry in a model's `route:` list. There are two "
+"forms of `kind:`."
+msgstr "一条 OpenRouter 路由就是某个模型 `route:` 列表里的一项。`kind:` 有两种写法。"
+
+#: ../developer/openrouter.md:40
+msgid "`kind: openrouter`"
+msgstr ""
+
+#: ../developer/openrouter.md:42
+msgid ""
+"OpenRouter picks the upstream provider itself, under its own default policy."
+msgstr "由 OpenRouter 自己按它的默认策略挑选上游 provider。"
+
+#: ../developer/openrouter.md:53
+msgid ""
+"`provider_model_id` is OpenRouter's own slug for the model. The `id:` your "
+"clients ask for is the gateway's; the two are independent on purpose."
+msgstr ""
+"`provider_model_id` 是 OpenRouter 自己对该模型的 slug。客户端请求时用的 `id:` "
+"是网关的；两者相互独立，这是有意为之。"
+
+#: ../developer/openrouter.md:56
+msgid "`kind: openrouter[<slug>]`"
+msgstr ""
+
+#: ../developer/openrouter.md:58
+#, python-brace-format
+msgid ""
+"Pins every request on that leg to one OpenRouter upstream, by sending "
+"`provider: {order: [<slug>], allow_fallbacks: false}`."
+msgstr ""
+"通过发送 `provider: {order: [<slug>], allow_fallbacks: "
+"false}`，把这条分支上的每个请求都钉死在某一个 OpenRouter 上游。"
+
+#: ../developer/openrouter.md:70
+msgid ""
+"The slug must match `[A-Za-z0-9_.-]+`, optionally with `/`-separated "
+"segments (`deepinfra`, `deepinfra/turbo`). A malformed bracket form — empty "
+"pin, whitespace, nested or unmatched brackets — raises at registration "
+"rather than being silently ignored. OpenRouter's list of provider slugs is "
+"at <https://openrouter.ai/docs/features/provider-routing>."
+msgstr ""
+"slug 必须匹配 `[A-Za-z0-9_.-]+`，也可以带以 `/` "
+"分隔的多段（`deepinfra`、`deepinfra/turbo`）。写坏的方括号形式——空的 "
+"pin、空白字符、嵌套或不配对的方括号——会在注册时报错，而不是被悄悄忽略。OpenRouter 的 provider slug 列表见 "
+"<https://openrouter.ai/docs/features/provider-routing>。"
+
+#: ../developer/openrouter.md:76
+msgid ""
+"Two legs that share a `base_url` but pin different upstreams still get "
+"distinct `endpoint_id`s, because the bracketed kind survives into the "
+"identifier. Their circuit-breaker and availability state therefore stay "
+"isolated: one flaky upstream does not take the other out. In `api_logs`, "
+"though, both forms record `provider = \"openrouter\"`, so analytics sees a "
+"single OpenRouter cohort."
+msgstr ""
+"两条共用同一个 `base_url` 但钉了不同上游的分支，仍然会拿到各自不同的 `endpoint_id`，因为带方括号的 kind "
+"会保留进标识符里。因此它们的熔断器（circuit breaker）和可用性状态是彼此隔离的：一个不稳定的上游不会把另一个一起带下去。不过在 "
+"`api_logs` 里，两种写法记录的都是 `provider = \"openrouter\"`，所以分析侧看到的是同一个 OpenRouter "
+"群组。"
+
+#: ../developer/openrouter.md:82
+msgid "Sort policy"
+msgstr "排序策略"
+
+#: ../developer/openrouter.md:84
+#, python-brace-format
+msgid ""
+"An OpenRouter route created through the admin provider-routes API may carry "
+"an `openrouter_sort` policy of `price`, `throughput`, or `latency`, which is"
+" sent as `provider: {sort: <policy>}`. It applies only to *unpinned* routes "
+"— a route with a bracket-form pin sends `order` instead, and the pin wins. "
+"The API rejects the field with `422` on a non-OpenRouter route or an "
+"unrecognised value."
+msgstr ""
+"通过 admin provider-routes API 创建的 OpenRouter 路由，可以带一个取值为 `price`、`throughput`"
+" 或 `latency` 的 `openrouter_sort` 策略，它会以 `provider: {sort: <policy>}` "
+"发出。它只对*未钉死*的路由生效——带方括号 pin 的路由发的是 `order`，pin 优先。对非 OpenRouter 路由或无法识别的取值，该 "
+"API 会以 `422` 拒绝这个字段。"
+
+#: ../developer/openrouter.md:90
+msgid "What the adapter sends"
+msgstr "adapter 发出的内容"
+
+#: ../developer/openrouter.md:92
+msgid ""
+"`OpenRouterAdapter` (`apps/backend/serving/adapters/openrouter.py`) is a "
+"thin subclass of the generic OpenAI-compatible adapter. On top of the normal"
+" request it adds:"
+msgstr ""
+"`OpenRouterAdapter`（`apps/backend/serving/adapters/openrouter.py`）是通用 OpenAI"
+" 兼容 adapter 的一个很薄的子类。在普通请求之上，它额外加了："
+
+#: ../developer/openrouter.md:96
+msgid ""
+"**Attribution headers.** `X-Title` carries the site name and `HTTP-Referer` "
+"the site's public base URL, both resolved from the site identity "
+"(`SITE_NAME` / `SITE_PUBLIC_BASE_URL`, else the active distribution "
+"manifest, else the neutral default). OpenRouter attributes traffic to "
+"whoever these name, for leaderboard placement and free-tier limits. A header"
+" with no value is omitted rather than sent blank, so an undeclared "
+"`SITE_PUBLIC_BASE_URL` means no `HTTP-Referer` at all; `X-Title` always goes"
+" out, falling back to the literal `HybridInference` when no site name is "
+"set. Declare `SITE_NAME` if you want your own account credited."
+msgstr ""
+"**归属请求头**。`X-Title` 带的是站点名，`HTTP-Referer` 带的是站点的公开 base "
+"URL，两者都从站点身份解析而来（`SITE_NAME` / `SITE_PUBLIC_BASE_URL`，其次是当前生效的 distribution "
+"manifest，再次是中性默认值）。OpenRouter "
+"会把流量归属到这两个头指向的对象，用于排行榜排名和免费额度限制。没有值的头会被省略，而不是发一个空值，所以未声明 "
+"`SITE_PUBLIC_BASE_URL` 就意味着完全不发 `HTTP-Referer`；`X-Title` "
+"则一定会发出，在没有设置站点名时回退到字面量 `HybridInference`。想让流量记在你自己的账号上，就声明 `SITE_NAME`。"
+
+#: ../developer/openrouter.md:105
+#, python-brace-format
+msgid ""
+"**`usage: {include: true}`** on every request, so OpenRouter returns its "
+"per-request `cost` field."
+msgstr ""
+"**`usage: {include: true}`** 加在每一个请求上，好让 OpenRouter 返回它按请求计的 `cost` 字段。"
+
+#: ../developer/openrouter.md:107
+#, python-brace-format
+msgid ""
+"**`stream_options: {include_usage: true}`** on streaming requests, so the "
+"final SSE chunk carries the usage block."
+msgstr ""
+"**`stream_options: {include_usage: true}`** 加在流式请求上，好让最后一个 SSE 分块带上 usage 块。"
+
+#: ../developer/openrouter.md:109
+#, python-brace-format
+msgid "**`provider: {...}`** for the pinned and sort cases described above."
+msgstr "**`provider: {...}`** 用于上面讲的钉死和排序两种情况。"
+
+#: ../developer/openrouter.md:111
+msgid "Cost accounting"
+msgstr "成本核算"
+
+#: ../developer/openrouter.md:113
+msgid "Two numbers, deliberately kept apart:"
+msgstr "两个数字，刻意分开："
+
+#: ../developer/openrouter.md
+msgid "Column in `api_logs`"
+msgstr "`api_logs` 中的列"
+
+#: ../developer/openrouter.md
+msgid "Meaning"
+msgstr "含义"
+
+#: ../developer/openrouter.md
+msgid "`cost_usd`"
+msgstr ""
+
+#: ../developer/openrouter.md
+msgid ""
+"What the caller is charged: tokens × the pricing declared for the model in "
+"your registry. Unaffected by OpenRouter"
+msgstr "向调用方收取的费用：token 数 × 你在注册表里为该模型声明的价格。不受 OpenRouter 影响"
+
+#: ../developer/openrouter.md
+msgid "`upstream_cost_usd`"
+msgstr ""
+
+#: ../developer/openrouter.md
+msgid "What OpenRouter reported it charged you for that request"
+msgstr "OpenRouter 报告的、它就这次请求向你收取的费用"
+
+#: ../developer/openrouter.md:120
+msgid ""
+"`upstream_cost_usd` is `NULL` for non-OpenRouter routes, and `NULL` for an "
+"OpenRouter route when the response carried no cost figure."
+msgstr ""
+"对非 OpenRouter 路由，`upstream_cost_usd` 是 `NULL`；对 OpenRouter "
+"路由，如果响应里没有带成本数字，它同样是 `NULL`。"
+
+#: ../developer/openrouter.md:123
+msgid "API keys"
+msgstr "API key"
+
+#: ../developer/openrouter.md:125
+msgid ""
+"A route's `api_keys:` is a list. With a single entry — the usual case — the "
+"adapter uses it directly. With several, the inherited key-pool logic "
+"rotates: a key that hits a key-specific or transient failure (429, "
+"401/402/403, 408/425, 5xx, or a timeout) is muted for five minutes and the "
+"request advances to the next key. Request-scoped failures such as `400` and "
+"`422` fail identically on every key, so they propagate immediately instead "
+"of burning the pool."
+msgstr ""
+"路由的 `api_keys:` 是一个列表。只有一项时——常见情况——adapter "
+"直接用它。有多项时，继承来的密钥池逻辑会轮换：某把密钥遇到与密钥相关的或临时性的失败（429、401/402/403、408/425、5xx "
+"或超时）时会被静默五分钟，请求转到下一把。像 `400` 和 `422` "
+"这类与请求本身有关的失败在每把密钥上都会同样失败，所以它们会立刻向上传递，而不是白白耗掉整个池。"
+
+#: ../developer/openrouter.md:132
+msgid ""
+"An `api_keys:` entry that expands from an unset environment variable is "
+"treated as absent. A route marked `optional: true` is then skipped with a "
+"warning naming the model and kind; any other route raises "
+"`MissingEnvBackedKeyError` and startup fails. Either way a route is never "
+"registered pointing at an endpoint it cannot authenticate to."
+msgstr ""
+"如果 `api_keys:` 里的某一项展开自一个未设置的环境变量，它会被当作不存在。此时标了 `optional: true` "
+"的路由会被跳过，并打出一条点名模型和 kind 的警告；其他路由则会抛出 "
+"`MissingEnvBackedKeyError`，启动失败。无论哪种情况，都不会注册一条指向自己无法完成鉴权的端点的路由。"
+
+#: ../developer/openrouter.md:138
+msgid "Error handling"
+msgstr "错误处理"
+
+#: ../developer/openrouter.md:140
+msgid ""
+"OpenRouter errors travel the same path as any other OpenAI-compatible "
+"provider's. Two mechanisms handle them, and they are independent:"
+msgstr "OpenRouter 的错误走的路径和任何其他 OpenAI 兼容 provider 的一样。有两套机制处理它们，而且彼此独立："
+
+#: ../developer/openrouter.md:143
+msgid ""
+"**Fallback.** When a request to an OpenRouter leg fails for any reason, the "
+"router records the failure and tries the model's remaining legs in route "
+"order, skipping any that are admin-disabled, modality-incompatible, or "
+"circuit-open. The exception is a request the caller explicitly pinned with "
+"`X-Route-Pin`, which never falls back. If every leg fails, the first error "
+"is what the client sees. Failure status codes do not select between \"fall "
+"back\" and \"propagate\" — that decision is only about whether another leg "
+"is available."
+msgstr ""
+"**回退**。发往某条 OpenRouter "
+"分支的请求因任何原因失败时，router 会记下这次失败，并按路由顺序尝试该模型剩下的分支，跳过被管理员禁用的、模态不兼容的和熔断已打开的分支。例外是调用方用 "
+"`X-Route-Pin` "
+"显式钉死的请求，它永远不会回退。如果每条分支都失败，客户端看到的是第一个错误。失败的状态码并不决定「回退」还是「向上传递」——那个决定只取决于是否还有另一条分支可用。"
+
+#: ../developer/openrouter.md:151
+msgid ""
+"**The circuit breaker.** Failures accumulate per `endpoint_id`; after "
+"`CIRCUIT_FAILURE_THRESHOLD` consecutive failures (default 3) the endpoint "
+"stops receiving traffic for `CIRCUIT_COOLDOWN_SECONDS` (default 30) before a"
+" half-open probe. Client errors are exempt: a 4xx other than 408, 429, 401, "
+"and 407 is the caller's request being wrong, and letting it open the circuit"
+" would take the endpoint away from everyone else. 408 and 429 mean "
+"OpenRouter is overloaded and do count; 401 and 407 mean *your* "
+"`OPENROUTER_API_KEY` was rejected, which no user can work around, so they "
+"count and additionally page."
+msgstr ""
+"**熔断器**。失败按 `endpoint_id` 累计；连续失败达到 `CIRCUIT_FAILURE_THRESHOLD` 次（默认 "
+"3）之后，该端点会在 `CIRCUIT_COOLDOWN_SECONDS`（默认 30）内停止接收流量，然后才做一次半开探测。客户端错误不计入：除 "
+"408、429、401 和 407 之外的 4xx 是调用方自己的请求写错了，让它打开熔断会把这个端点从其他所有人手里拿走。408 和 429 表示 "
+"OpenRouter 过载，是计入的；401 和 407 表示*你的* `OPENROUTER_API_KEY` "
+"被拒，这是任何用户都绕不过去的，所以它们既计入，还会额外触发告警。"
+
+#: ../developer/openrouter.md:160
+msgid "Troubleshooting"
+msgstr "排查"
+
+#: ../developer/openrouter.md:162
+msgid ""
+"**Every OpenRouter request returns 401.** The gateway's key was rejected, "
+"not the caller's. Check `OPENROUTER_API_KEY` in the environment the backend "
+"process actually sees. A key that is unset entirely never gets that far — "
+"the route is skipped or startup fails, as above — so a 401 means a key was "
+"present and OpenRouter refused it."
+msgstr ""
+"**每个 OpenRouter 请求都返回 401**。被拒的是网关的密钥，不是调用方的。检查后端进程实际看到的那个环境里的 "
+"`OPENROUTER_API_KEY`。完全没设置的密钥根本走不到这一步——如上所述，路由会被跳过，或者启动直接失败——所以 401 "
+"意味着密钥是有的，只是被 OpenRouter 拒了。"
+
+#: ../developer/openrouter.md:168
+msgid ""
+"**The model is missing from `/v1/models`.** Confirm the registry the gateway"
+" loaded: the boot log emits `Registered N routes from <path>`, which is the "
+"file the resolution chain chose. If it is not the file you edited, an "
+"explicit `MODELS_CONFIG_PATH` or a distribution manifest is winning over it "
+"— see [Configuration](configuration.md)."
+msgstr ""
+"**`/v1/models` 里没有这个模型**。确认网关加载的是哪份注册表：启动日志会打出 `Registered N routes from "
+"<path>`，那就是解析链选中的文件。如果它不是你改的那个文件，说明有显式的 `MODELS_CONFIG_PATH` 或某个 "
+"distribution manifest 压过了它——见 [配置](configuration.md)。"
+
+#: ../developer/openrouter.md:174
+msgid ""
+"**Requests reach the wrong upstream.** Use `GET /routing` to see the "
+"effective weight distribution per model. Note that this endpoint is "
+"unauthenticated and discloses upstream base URLs; see the warning in "
+"[Architecture](architecture.md#http-surface)."
+msgstr ""
+"**请求打到了错误的上游**。用 `GET /routing` 查看每个模型实际生效的权重分布。注意这个端点没有鉴权，而且会泄露上游的 base "
+"URL；见 [架构](architecture.md#http-surface) 里的警告。"
