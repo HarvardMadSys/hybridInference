@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-29 10:34+0800\n"
+"POT-Creation-Date: 2026-08-29 11:27+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -42,7 +42,8 @@ msgid ""
 "found, see [Configuration](configuration.md); for the shape of a model "
 "entry and its `route:` list, see [Adding a New Model](adding-models.md)."
 msgstr ""
-"本页介绍路由引擎本身、它的各个旋钮，以及如何添加你自己的路由策略。配置文件放在哪里、又是如何被找到的，见[配置](configuration.md)；模型条目及其 `route:` 列表的结构，见[添加新模型](adding-models.md)。"
+"本页介绍路由引擎本身、它的各个旋钮，以及如何添加你自己的路由策略。配置文件放在哪里、又是如何被找到的，见[配置](configuration.md)；模型条目及其"
+" `route:` 列表的结构，见[添加新模型](adding-models.md)。"
 
 #: ../developer/routing.md:14
 msgid "Architecture"
@@ -288,7 +289,10 @@ msgid ""
 "which the completions router strips before forwarding. Clients never see "
 "either."
 msgstr ""
-"成功的响应会带上一块 `_routing` 数据（`provider`、`base_url`、`endpoint_id`，发生过回退时还有 `fallback` 和 `failed_attempts`），供服务层把这个请求归属到真正服务了它的那个端点。流式则通过 `apps/backend/routing/telemetry.py` 里 `routing_chunk()` 构造的一个合成 chunk 在带内做同样的事，completions router 在转发前会把它剥掉。这两样客户端都看不到。"
+"成功的响应会带上一块 `_routing` 数据（`provider`、`base_url`、`endpoint_id`，发生过回退时还有 "
+"`fallback` 和 `failed_attempts`），供服务层把这个请求归属到真正服务了它的那个端点。流式则通过 "
+"`apps/backend/routing/telemetry.py` 里 `routing_chunk()` 构造的一个合成 chunk "
+"在带内做同样的事，completions router 在转发前会把它剥掉。这两样客户端都看不到。"
 
 #: ../developer/routing.md:123
 msgid "Endpoint health and circuit breaking"
@@ -389,7 +393,10 @@ msgid ""
 "first request, so the counter reports it without waiting for the average "
 "to catch up."
 msgstr ""
-"`GET /health/deep` 会报出这份登记：每个端点的可用率、熔断状态，以及一个「上游连续拒绝凭据」的计数器——它从第一次被拒起就把该端点降级。鉴权被拒和其他失败一样，确实会计入可用率 EWMA，但这个 EWMA 是刻意做得慢的：一个可用率满值的端点，在默认 `alpha` 为 `0.1` 时要连续失败四次才会掉到 `0.7` 的下限之下。而凭据被拒从第一个请求起对每个调用方就都是致命的，所以这个计数器直接报出来，不等平均值追上。"
+"`GET /health/deep` "
+"会报出这份登记：每个端点的可用率、熔断状态，以及一个「上游连续拒绝凭据」的计数器——它从第一次被拒起就把该端点降级。鉴权被拒和其他失败一样，确实会计入可用率"
+" EWMA，但这个 EWMA 是刻意做得慢的：一个可用率满值的端点，在默认 `alpha` 为 `0.1` 时要连续失败四次才会掉到 `0.7` "
+"的下限之下。而凭据被拒从第一个请求起对每个调用方就都是致命的，所以这个计数器直接报出来，不等平均值追上。"
 
 #: ../developer/routing.md:150
 msgid "State is per process. Each backend worker keeps its own breakers."
@@ -442,7 +449,9 @@ msgid ""
 "because weights encode cost and provider preference and not only "
 "capacity."
 msgstr ""
-"只有当较重的那次抽取在该端点上积压了至少 `ROUTING_PREFILL_INTERVENE_TOKENS` 个待 prefill 的未命中缓存 prompt token 时，这条决胜规则才会启用；低于该值时完全由配置的权重决定，因为权重编码的是成本和 provider 偏好，而不只是容量。"
+"只有当较重的那次抽取在该端点上积压了至少 `ROUTING_PREFILL_INTERVENE_TOKENS` 个待 prefill 的未命中缓存"
+" prompt token 时，这条决胜规则才会启用；低于该值时完全由配置的权重决定，因为权重编码的是成本和 provider "
+"偏好，而不只是容量。"
 
 #: ../developer/routing.md:174
 msgid ""
@@ -995,21 +1004,53 @@ msgstr ""
 
 #: ../developer/routing.md:573
 msgid ""
-"Its implementation is a separate Python package. When that package is not"
-" installed, `apps/backend/routing/strategies/__init__.py` registers "
-"`routewise` as a *missing* strategy: selecting it fails configuration "
-"validation with an actionable message rather than breaking backend "
-"import."
+"Its implementation lives in a separate package: the MIT-licensed [`llm-"
+"routewise`](https://github.com/HarvardMadSys/RouteWise), which this "
+"gateway takes as a required dependency and which any application can use "
+"to choose a provider — it performs no network I/O and reads no "
+"credentials. The design is described in *RouteWise: Latency--Cost "
+"Optimization for Multi-Provider LLM Routing* (EuroSys '27)."
 msgstr ""
-"它的实现是一个独立的 Python "
-"包。当那个包没有安装时，`apps/backend/routing/strategies/__init__.py` 会把 `routewise` "
-"注册为一个*缺失*的策略：选用它会在配置校验阶段带着一条可操作的消息失败，而不是让后端导入崩掉。"
+"它的实现是一个独立的包：MIT 许可的 [`llm-routewise`](https://github.com/HarvardMadSys/RouteWise)。本网关把它作为必需依赖引入，而任何应用都可以拿它来选 provider——它不做任何网络 I/O，也不读取任何凭据。设计细节见 *RouteWise: Latency--Cost Optimization for Multi-Provider LLM Routing*（EuroSys '27）。"
 
-#: ../developer/routing.md:578
+#: ../developer/routing.md:580
+msgid ""
+"Required, but not load-bearing for startup. When the package is absent — "
+"a partial install, or a build that deliberately drops the strategy — "
+"`apps/backend/routing/strategies/__init__.py` registers `routewise` as a "
+"*missing* strategy: selecting it fails configuration validation with an "
+"actionable message rather than breaking backend import. No single routing"
+" algorithm decides whether the gateway can start."
+msgstr ""
+"它是必需依赖，但不是启动的承重件。当这个包缺失时——安装不完整，或者某个构建刻意去掉了这个策略——`apps/backend/routing/strategies/__init__.py` 会把 `routewise` 注册为一个*缺失*的策略：选用它会在配置校验阶段带着一条可操作的消息失败，而不是让后端导入崩掉。没有任何单一路由算法能决定网关能不能启动。"
+
+#: ../developer/routing.md:587
+msgid ""
+"For a registry you can run unedited against two loopback providers, with "
+"every option annotated, see "
+"[`config/examples/models.routewise.yaml`](../../config/examples/models.routewise.yaml)."
+msgstr ""
+"想要一份不用改就能对着两个回环 provider 直接跑、且每个选项都有注释的注册表，见 [`config/examples/models.routewise.yaml`](../../config/examples/models.routewise.yaml)。"
+
+#: ../developer/routing.md:591
+msgid ""
+"**Latency evidence.** The policy only trades latency against cost where "
+"it has measurements. Two endpoints with no TTFT samples tie on the "
+"latency objective, `cost_tiebroken_objective` breaks that tie on price, "
+"and the LP returns a one-hot solution on the cheaper one at every cost "
+"budget — so nothing ever measures the endpoint the policy is avoiding. "
+"Evidence comes from live traffic, from `db_bootstrap_enabled` replaying "
+"recent `api_logs` at startup, and from the active prober "
+"(`routewise_probe_enabled`), which runs in-process and does not require "
+"an operational store; persisting probe samples is an optimization on top."
+msgstr ""
+"**延迟证据**。只有在有实测数据的地方，这套策略才会拿延迟去换成本。两个都没有 TTFT 样本的端点在延迟目标上是打平的，`cost_tiebroken_objective` 会按价格打破平局，于是在任何成本预算下 LP 都会在更便宜的那个上给出 one-hot 解——结果就是策略正在回避的那个端点永远不会被测到。证据有三个来源：线上真实流量、`db_bootstrap_enabled` 在启动时回放近期的 `api_logs`，以及主动探测器（`routewise_probe_enabled`）——后者在进程内运行，不需要运营存储；把探测样本持久化只是在这之上的一项优化。"
+
+#: ../developer/routing.md:601
 msgid "Configuration splits by ownership:"
 msgstr "配置按归属拆成两处："
 
-#: ../developer/routing.md:580
+#: ../developer/routing.md:603
 msgid ""
 "**`router_params:` (per model)** — algorithm knobs only. The accepted "
 "keys and their defaults are generated field-for-field from the "
@@ -1024,21 +1065,16 @@ msgstr ""
 " 逐字段生成的，那份 dataclass 才是权威列表：成本预算插值、时延对冲模式、时延 SLO "
 "与窗口、成本包络的分位数/窗口/最小样本数、输出长度预测器，以及前缀缓存开关。"
 
-#: ../developer/routing.md:586
-#, python-brace-format
+#: ../developer/routing.md:609
 msgid ""
 "**Route entries (per provider)** — resource semantics: `provider_type: "
 "on_demand | quota | concurrency`, `pricing:`, `quota: {limit}` plus a "
-"`quota_source:` block naming the provider usage API that is the quota "
-"truth, `concurrency: {limit}`, and optional `quota_pool:` / "
-"`concurrency_pool:` ids for routes that share one subscription."
+"`quota_source:` block, `concurrency: {limit}`, and optional `quota_pool:`"
+" / `concurrency_pool:` ids for routes that share one subscription."
 msgstr ""
-"**路由条目（按 provider）**——资源语义：`provider_type: on_demand | quota | "
-"concurrency`、`pricing:`、`quota: {limit}` 以及一个 `quota_source:` 块（指明哪个 "
-"provider 用量 API 是配额的事实来源）、`concurrency: {limit}`，还有可选的 `quota_pool:` / "
-"`concurrency_pool:` id，供共用同一份订阅的路由使用。"
+"**路由条目（按 provider）**——资源语义：`provider_type: on_demand | quota | concurrency`、`pricing:`、`quota: {limit}` 加一个 `quota_source:` 块、`concurrency: {limit}`，以及可选的 `quota_pool:` / `concurrency_pool:` id，供共享同一份订阅的多条路由使用。"
 
-#: ../developer/routing.md:592
+#: ../developer/routing.md:614
 msgid ""
 "Resource limits used to live in `router_params:`. Those keys are now "
 "rejected at boot with a message naming their route-level replacement, so "
@@ -1047,7 +1083,77 @@ msgstr ""
 "资源上限以前是放在 `router_params:` "
 "里的。那些键现在会在启动时被拒绝，并在消息里指出它们对应的路由级替代项，这样陈旧的注册表会大声失败，而不是悄悄用上默认值。"
 
-#: ../developer/routing.md:596
+#: ../developer/routing.md:618
+msgid ""
+"**Quota sources.** `quota_source:` is a selector, not a fetcher. It names"
+" `provider` / `usage_label` / `unit`, and `_find_usage` matches all three"
+" exactly against the usage records a provider fetcher returns. RouteWise "
+"calls those fetchers itself through `ProviderQuotaSnapshotStore` "
+"(`apps/backend/routing/routewise/quota.py`) rather than reading the admin"
+" poller's cache, and only two are registered: `chutes` and `minimax`. "
+"`usage_label` is the fetcher's own label string, not an operator-chosen "
+"name — the Chutes fetcher emits `Daily requests` with `unit: requests`."
+msgstr ""
+"**配额来源**。`quota_source:` 是一个选择器，不是抓取器。它指定 `provider` / `usage_label` / `unit` 三项，`_find_usage` 会拿这三项和 provider 抓取器返回的用量记录做精确匹配。RouteWise 是通过 `ProviderQuotaSnapshotStore`（`apps/backend/routing/routewise/quota.py`）自己去调这些抓取器的，并不读 admin 轮询器的缓存；而已注册的抓取器只有两个：`chutes` 和 `minimax`。`usage_label` 是抓取器自己的标签字符串，不是运维可以随便起的名字——Chutes 的抓取器发出的是 `Daily requests`，`unit: requests`。"
+
+#: ../developer/routing.md:627
+msgid ""
+"The route's `kind:` and credential belong to the same contract. Each "
+"fetcher discovers its own keys by provider — `fetch_chutes` looks for "
+"`CHUTES_API_KEY` and for keys bound to `chutes` routes — so a quota route"
+" served through the generic `openai_compat` adapter under an unrelated "
+"key never joins that pool: inference authenticates, and the quota "
+"snapshot stays `not_configured`. Match `kind:` to the provider and use "
+"the provider's own key variable."
+msgstr ""
+"路由的 `kind:` 和它的凭据属于同一份契约。每个抓取器都是按 provider 去发现自己的 key 的——`fetch_chutes` 找的是 `CHUTES_API_KEY`，以及绑定在 `chutes` 路由上的 key——所以一条走通用 `openai_compat` adapter、用着不相干 key 的配额路由，永远不会加入那个池子：推理请求能通过鉴权，而配额快照会一直停在 `not_configured`。请让 `kind:` 与 provider 对应，并使用该 provider 自己的 key 变量。"
+
+#: ../developer/routing.md:634
+msgid ""
+"A `provider` outside the registered pair, or a mistyped label, simply "
+"never resolves. Nothing warns about it — the only quota log lines are a "
+"refresh failure and a provider/route limit mismatch — so the route stays "
+"unready and is skipped in silence. Verify a new quota source against the "
+"fetcher before shipping it."
+msgstr ""
+"写了那两个已注册 provider 之外的 `provider`，或者标签拼错，结果就是它永远解析不出来。而且没有任何警告——配额相关的日志只有「刷新失败」和「provider/路由 limit 不一致」两条——所以这条路由会一直处于未就绪状态，被静默跳过。上线一个新的配额来源之前，请先对着抓取器验证一遍。"
+
+#: ../developer/routing.md:640
+msgid ""
+"The `local` provider seen in admin-created routes is not a third fetcher:"
+" it is a gateway-side per-request counter installed through "
+"`configure_local_fallbacks`. Naming `provider: local` in a "
+"`quota_source:` does not arm it, but static YAML can still reach it — "
+"`_uses_local_quota_fallback` selects a quota route whose `route_metadata`"
+" sets `local_quota_fallback: true`, or whose `route_provider` and "
+"`upstream_provider` differ. Know what it is before relying on it: the "
+"count lives in the worker process, so it starts at zero on every restart "
+"and does not add up across workers; it increments by one per request, so "
+"it can only express a **request-count** allowance, never tokens or spend;"
+" and it resets at the next **server-local midnight**, so it models a "
+"daily cap and nothing else. A four-hour window, a monthly window, or a "
+"plan whose reset the provider decides all need a real `quota_source`."
+msgstr ""
+"在 admin 创建的路由里看到的 `local` provider 并不是第三个抓取器：它是通过 `configure_local_fallbacks` 装上的、网关侧的按请求计数器。在 `quota_source:` 里写 `provider: local` 并不会启用它，但静态 YAML 仍然可以够到它——`_uses_local_quota_fallback` 选中的是这样的配额路由：`route_metadata` 里设了 `local_quota_fallback: true`，或者 `route_provider` 与 `upstream_provider` 不同。依赖它之前先搞清楚它是什么：计数活在 worker 进程里，所以每次重启都从零开始，也不会跨 worker 累加；它每个请求加一，所以只能表达**请求次数**额度，永远表达不了 token 或花费；并且它在下一个**服务器本地午夜**重置，所以它只能建模「每日上限」，别的都不行。四小时窗口、按月窗口、或者由 provider 决定何时重置的套餐，都需要一个真正的 `quota_source`。"
+
+#: ../developer/routing.md:653
+#, python-brace-format
+msgid ""
+"**Endpoint identity.** Latency profiles, availability tracking and "
+"request logs share one key per route, derived by "
+"`registry._make_provider_id` as `{model_id}:{location}`. `location` is "
+"`local-{port}` for a base URL on a local host, otherwise a name taken "
+"from the hostname (`api.minimax.io` → `minimax-api`) for the generic "
+"adapter kinds, and `{kind}-api` for the rest. So an edit that changes "
+"that derived part — a new port locally, a new vendor hostname remotely — "
+"renames the endpoint and restarts its latency profile, while one that "
+"does not (moving between local hosts on the same port) keeps it. A "
+"`route_id:` in a static `models.yaml` never overrides it; that field "
+"belongs to the admin provider-routes API."
+msgstr ""
+"**端点身份**。延迟画像、可用性跟踪和请求日志共用每条路由的同一个 key，由 `registry._make_provider_id` 推导为 `{model_id}:{location}`。当 base URL 指向本地主机时，`location` 是 `local-{port}`；否则，对通用 adapter 类别取自主机名（`api.minimax.io` → `minimax-api`），其余则是 `{kind}-api`。所以一次改动只要动到了被推导的那一部分——本地换端口、远端换厂商主机名——就会给端点改名并让它的延迟画像重新开始；没动到的（比如在同一端口上的本地主机之间迁移）则会保留。静态 `models.yaml` 里的 `route_id:` 永远不会覆盖它；那个字段属于 admin 的 provider-routes API。"
+
+#: ../developer/routing.md:664
 msgid ""
 "**Cold start.** A quota-bearing route needs a calibrated cost envelope, "
 "built from recent request history. A model whose quota route sits "
@@ -1061,7 +1167,7 @@ msgstr ""
 " `EnvelopeNotCalibratedError`，bootstrap "
 "会把它向上传播，于是整个部署快速失败，而不是对外提供一个根本路由不了的模型。"
 
-#: ../developer/routing.md:603
+#: ../developer/routing.md:671
 msgid ""
 "**Worker scope.** RouteWise decision state, latency profiles, quota and "
 "concurrency reservations, and per-model transition locks are process-"
@@ -1078,13 +1184,13 @@ msgstr ""
 "`stateful_providers_single_worker_only`，默认为 true）。只用 on-demand 路由的 "
 "RouteWise 模型可以跑多个 worker，但每个 worker 仍然各学各的。"
 
-#: ../developer/routing.md:611
+#: ../developer/routing.md:679
 msgid ""
 "**Runtime tuning.** Admin endpoints resolve a model id passed as a query "
 "parameter, because model ids may contain `/`:"
 msgstr "**运行期调参**。管理端点从查询参数里取模型 id，因为模型 id 可能包含 `/`："
 
-#: ../developer/routing.md:620
+#: ../developer/routing.md:688
 msgid ""
 "Settings are model-scoped, and aliases resolve to the canonical model, so"
 " an alias and its canonical model always read and write the same values. "
@@ -1097,11 +1203,11 @@ msgstr ""
 "`GET`/`PATCH /admin/routewise/settings` 端点仍然保留，如今它设定的是一个兜底值，供既没有模型级覆盖、也没有"
 " `router_params:` 取值的模型使用。"
 
-#: ../developer/routing.md:627
+#: ../developer/routing.md:695
 msgid "Reserving upstream keys for a tier"
 msgstr "为某个层级预留上游 key"
 
-#: ../developer/routing.md:629
+#: ../developer/routing.md:697
 msgid ""
 "A provider credential can be reserved for a user role and above, so "
 "premium upstream capacity is not spent by the lowest tier. Reservation "
@@ -1113,7 +1219,7 @@ msgstr ""
 "上而不是模型上：模型目录里的 `required_role` 决定一个用户*能调用什么*，而 key 的 `min_role` "
 "决定*谁的*请求可以花掉这份凭据。"
 
-#: ../developer/routing.md:635
+#: ../developer/routing.md:703
 msgid ""
 "Each key in a `KeyPool` (`apps/backend/serving/adapters/key_pool.py`) "
 "carries a `min_role`, defaulting to `free` — no reservation. Anything "
@@ -1124,7 +1230,7 @@ msgstr ""
 "`min_role`，默认是 `free`——即不预留。任何更高的取值（`pro`、`internal`、`admin`）都会让这把 key "
 "对层级低于它的调用方不可见："
 
-#: ../developer/routing.md:639
+#: ../developer/routing.md:707
 msgid ""
 "**Selection.** Reserved keys are filtered out for callers that do not "
 "meet `min_role`. Among the keys a caller *may* use, the most-reserved go "
@@ -1134,7 +1240,7 @@ msgstr ""
 "**选取**。对达不到 `min_role` 的调用方，被预留的 key 会被过滤掉。在一个调用方*可以*使用的 key "
 "之中，预留层级最高的排在最前，因此有资格的调用方会先耗尽为它留出的容量，再退回到所有层级共享的那些 key。"
 
-#: ../developer/routing.md:643
+#: ../developer/routing.md:711
 msgid ""
 "**Affinity.** The pool's own five-minute key binding is honoured only for"
 " the role that created it, and any change to what the pool holds — a tier"
@@ -1147,9 +1253,13 @@ msgid ""
 " Only a declaration change triggers this, so ordinary traffic never loses"
 " prompt-cache warmth to it."
 msgstr ""
-"**亲和**。key 池自己那份五分钟的 key 绑定，只对创建它的角色有效；池中内容的任何变动——某个层级挪动、加入一把 key、重新启用或移除一把 key——都会丢弃所有*首选* key 发生变动的绑定。这里说的*静默*，是 `KeyPool` 自己的术语：一把 key 在遇到 key 相关的失败（401/402/403/429）后被临时移出轮转；它仍然是声明过的，过一阵会自己回来。绑定到一把只是被静默的 key 时，绑定仍然保留，因为那是暂态，`acquire` 会绕开它重新挑选；绑定到已被移除的 key 则一律作废。只有声明发生变化才会触发这件事，所以普通流量不会因此丢掉 prompt 缓存的预热。"
+"**亲和**。key 池自己那份五分钟的 key 绑定，只对创建它的角色有效；池中内容的任何变动——某个层级挪动、加入一把 "
+"key、重新启用或移除一把 key——都会丢弃所有*首选* key 发生变动的绑定。这里说的*静默*，是 `KeyPool` 自己的术语：一把 "
+"key 在遇到 key 相关的失败（401/402/403/429）后被临时移出轮转；它仍然是声明过的，过一阵会自己回来。绑定到一把只是被静默的 "
+"key 时，绑定仍然保留，因为那是暂态，`acquire` 会绕开它重新挑选；绑定到已被移除的 key "
+"则一律作废。只有声明发生变化才会触发这件事，所以普通流量不会因此丢掉 prompt 缓存的预热。"
 
-#: ../developer/routing.md:653
+#: ../developer/routing.md:721
 msgid ""
 "**Exhaustion.** A caller whose usable keys are all muted (or who has "
 "none) gets `KeyPoolExhausted`, which the router treats as an upstream "
@@ -1158,7 +1268,7 @@ msgstr ""
 "**耗尽**。如果一个调用方可用的 key 全部被静默（或者它一把也没有），就会得到 `KeyPoolExhausted`；router "
 "把它当作一次上游失败，转而回退到下一条路由。"
 
-#: ../developer/routing.md:656
+#: ../developer/routing.md:724
 msgid ""
 "**Health accounting.** When the pool could still serve an unrestricted "
 "caller, the refusal is a `KeyPoolRoleRestricted` (a `KeyPoolExhausted` "
@@ -1176,7 +1286,7 @@ msgstr ""
 "的层级提供服务；把它计入的话，一波低层级流量的突发就能打开熔断器，把预留容量从它本该服务的调用方手里剥走。一个*谁都*用不了的池仍然是普通的 "
 "`KeyPoolExhausted`，照常计入。"
 
-#: ../developer/routing.md:663
+#: ../developer/routing.md:731
 msgid ""
 "**Single-adapter surfaces.** `/v1/messages` commits to one adapter up "
 "front instead of walking the fallback chain, so it picks the first "
@@ -1187,7 +1297,7 @@ msgstr ""
 "adapter，而不是沿着回退链走下去，因此它会挑第一个持有该调用方可以花掉的 key 的 adapter。否则，一个被预留的首个 adapter"
 " 会让本可由另一条路由服务的请求直接硬失败。"
 
-#: ../developer/routing.md:668
+#: ../developer/routing.md:736
 msgid ""
 "The caller's role reaches the pool through the request context, published"
 " by the API-key auth dependency. Requests with no user identity — health "
@@ -1198,7 +1308,7 @@ msgstr ""
 "调用方的角色经由请求上下文抵达 key 池，由 API key 鉴权依赖项发布。没有用户身份的请求——健康探测、预热、管理员 "
 "playground——不带角色，一律按不受限处理：预留是对更低的*层级*扣住容量，而不是对网关自己的机件。"
 
-#: ../developer/routing.md:674
+#: ../developer/routing.md:742
 msgid ""
 "**Managing it.** Reservation is declared through the admin API rather "
 "than an env var, because pool membership comes from each route's "
@@ -1244,7 +1354,7 @@ msgstr ""
 msgid "`provider_env_key_min_roles`, keyed by the key's hash"
 msgstr "`provider_env_key_min_roles`，以该 key 的哈希为键"
 
-#: ../developer/routing.md:685
+#: ../developer/routing.md:753
 msgid ""
 "An environment credential has no row of its own, so its reservation is "
 "keyed by hash. Two consequences: the reservation outlives the key leaving"
@@ -1256,7 +1366,7 @@ msgstr ""
 "环境变量里的凭据没有属于自己的数据库行，所以它的预留以哈希为键。这带来两个后果：这把 key "
 "退出轮换之后预留依然存在（把变量恢复回去，它就会以当初预留的层级回来），以及管理列表里可能出现一条凭据在任何地方都没有配置的预留——这样它可以被主动解除，而不是潜伏在那里等着。"
 
-#: ../developer/routing.md:691
+#: ../developer/routing.md:759
 msgid ""
 "`apps/backend/serving/adapters/dynamic_keys.py` owns the enforced tier, "
 "because pools are built from adapter config (which carries no tier) and "
@@ -1272,7 +1382,7 @@ msgstr ""
 "缓存，并在启动时以及每次管理端改动之后从数据库刷新。同一份凭据被配置了两次时，**最严格的那条声明胜出**：`free` "
 "表示*没有*声明，而不是断言人人都可以花这把 key，因此加一条更宽松的重复声明并不能放宽访问，结果也不依赖配置顺序。"
 
-#: ../developer/routing.md:700
+#: ../developer/routing.md:768
 msgid ""
 "**Limit: a provider with no key pool cannot carry a reservation.** "
 "`min_role` is enforced by `KeyPool`, so it reaches `openai_compat` routes"

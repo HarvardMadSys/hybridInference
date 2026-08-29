@@ -537,7 +537,7 @@ msgid ""
 "`clamp01((coverage - 0.5) / 0.5)`, `coverage = distinct active UTC hours "
 "/ 24`"
 msgstr ""
-"`clamp01((coverage - 0.5) / 0.5)`，其中 `coverage` = 有活动的不同 UTC 小时数 / 24"
+"`clamp01((coverage - 0.5) / 0.5)`，其中 `coverage = distinct active UTC hours / 24`——有活动的不同 UTC 小时数除以 24"
 
 #: ../developer/automation-score.md:13
 msgid "`N ≥ 10`"

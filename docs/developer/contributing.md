@@ -277,25 +277,45 @@ string containing something like `≥ 5%` looks like a format string to gettext 
 and `msgfmt -c` then rejects the contradictory pair. Delete the added
 `python-format` and keep `no-python-format`.
 
-#### Publishing more than one language
+#### How a translation reaches the published site
 
-A single-language build is the default and nothing above changes it. To
-publish several, set `DOCS_LANGUAGES` to `code:endonym` pairs and build the
-whole set:
+`make docs` builds every published language from one `sphinx-build`. The first
+language named in `DOCS_LANGUAGES` (declared in `conf.py`, defaulting to
+`en:English,zh_CN:简体中文`) is the root language and lands at the top of the
+output tree; each other language is written to `docs/build/html/<code>/` by a
+`build-finished` hook in `conf.py`.
+
+One invocation rather than one per language, because the published site is
+built by a command that lives in the hosting project's settings, not in this
+repository — there is no env var to set at publish time, so the language list
+has to travel in `conf.py`. Keeping the root language at the tree root is what
+preserves every URL the English-only site had: `/routing.html` stays
+`/routing.html`, and the translation is at `/zh_CN/routing.html`.
+
+The sidebar switcher links to the same page in each other language and renders
+nothing when fewer than two languages are declared, so a single-language site
+never shows a dead control. `DOCS_LANGUAGES="en:English"` builds English alone
+when a translation is not what you are working on.
+
+#### The check that catches a reverted translation
 
 ```bash
-make docs-site DOCS_LANGUAGES="en:English,zh_CN:简体中文"
+make docs-verify
 ```
 
-That writes `docs/build/site/<code>/` — one directory per language, siblings
-under a common root — and renders a language switcher in the sidebar that
-links to the same page in each other language. The switcher assumes exactly
-that layout. It renders nothing when `DOCS_LANGUAGES` names fewer than two
-languages, so a single-language site never shows a dead control.
+`make docs` plus `ops/ci/check_docs_translations.py`, and the same thing the
+Docs Build CI job runs. It exists because none of the failures above are
+visible to `-W`: Sphinx falls back to the English source for any string it
+cannot translate, so a page that has quietly reverted still builds clean. Four
+checks —
 
-Serving that layout is a publication-side decision: it changes the site's URLs
-(`/en/…` rather than `/…`), so whoever owns the deploy has to move to it
-deliberately.
+- **fuzzy** entries, which Sphinx refuses to apply;
+- **missing catalogs**, for a page added without `make docs-translate`;
+- **stale catalogs** — an English edit whose `msgid` no longer matches any
+  entry, which is the commonest case and carries no `fuzzy` marker at all
+  because nothing re-merged;
+- **structural divergence** between the built pages, which is what catches the
+  CJK-adjacent markup traps above.
 
 ## Proposing a change
 
