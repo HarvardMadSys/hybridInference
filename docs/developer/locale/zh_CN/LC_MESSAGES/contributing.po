@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-29 10:38+0800\n"
+"POT-Creation-Date: 2026-08-29 11:30+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -496,52 +496,98 @@ msgid ""
 " to gettext — and `msgfmt -c` then rejects the contradictory pair. Delete"
 " the added `python-format` and keep `no-python-format`."
 msgstr ""
-"还有一个，好在它至少会明着报错：`make docs-translate` 可能会在你已标注 `no-python-format` 的条目上再追加一个 `python-format`——源串里出现类似 `≥ 5%` 的写法，在 gettext 看来就像格式串——随后 `msgfmt -c` 会拒绝这对互相矛盾的标记。把新加的 `python-format` 删掉，保留 `no-python-format` 即可。"
+"还有一个，好在它至少会明着报错：`make docs-translate` 可能会在你已标注 `no-python-format` "
+"的条目上再追加一个 `python-format`——源串里出现类似 `≥ 5%` 的写法，在 gettext 看来就像格式串——随后 "
+"`msgfmt -c` 会拒绝这对互相矛盾的标记。把新加的 `python-format` 删掉，保留 `no-python-format` "
+"即可。"
 
 #: ../developer/contributing.md:280
-msgid "Publishing more than one language"
-msgstr "发布多种语言"
+msgid "How a translation reaches the published site"
+msgstr ""
+"翻译是怎么上到已发布站点的"
 
 #: ../developer/contributing.md:282
 msgid ""
-"A single-language build is the default and nothing above changes it. To "
-"publish several, set `DOCS_LANGUAGES` to `code:endonym` pairs and build "
-"the whole set:"
+"`make docs` builds every published language from one `sphinx-build`. The "
+"first language named in `DOCS_LANGUAGES` (declared in `conf.py`, "
+"defaulting to `en:English,zh_CN:简体中文`) is the root language and lands at "
+"the top of the output tree; each other language is written to "
+"`docs/build/html/<code>/` by a `build-finished` hook in `conf.py`."
 msgstr ""
-"默认是单语言构建，上面讲的一切都不会改变这一点。要发布多种语言，把 `DOCS_LANGUAGES` 设成若干 `code:endonym` "
-"对，然后构建整套："
+"`make docs` 用一次 `sphinx-build` 构建出所有已发布的语言。`DOCS_LANGUAGES`（在 `conf.py` 里声明，默认是 `en:English,zh_CN:简体中文`）里排第一的语言是根语言，落在输出目录的顶层；其余每种语言由 `conf.py` 里一个 `build-finished` 钩子写进 `docs/build/html/<code>/`。"
 
-#: ../developer/contributing.md:290
+#: ../developer/contributing.md:288
 msgid ""
-"That writes `docs/build/site/<code>/` — one directory per language, "
-"siblings under a common root — and renders a language switcher in the "
-"sidebar that links to the same page in each other language. The switcher "
-"assumes exactly that layout. It renders nothing when `DOCS_LANGUAGES` "
-"names fewer than two languages, so a single-language site never shows a "
-"dead control."
+"One invocation rather than one per language, because the published site "
+"is built by a command that lives in the hosting project's settings, not "
+"in this repository — there is no env var to set at publish time, so the "
+"language list has to travel in `conf.py`. Keeping the root language at "
+"the tree root is what preserves every URL the English-only site had: "
+"`/routing.html` stays `/routing.html`, and the translation is at "
+"`/zh_CN/routing.html`."
 msgstr ""
-"这会写出 "
-"`docs/build/site/<code>/`——每种语言一个目录，互为兄弟目录挂在同一个根下——并在侧边栏渲染一个语言切换器，链到其他每种语言的同一页面。切换器正是按这个布局假定的。当"
-" `DOCS_LANGUAGES` 列出的语言少于两种时，它什么都不渲染，所以单语言站点不会出现一个点不动的控件。"
+"之所以是一次调用而不是每种语言一次：已发布站点的构建命令在托管方的设置里，不在本仓库中——发布时没有环境变量可以设，所以语言列表必须写在 `conf.py` 里随代码走。而把根语言留在树顶，是为了保住纯英文站曾有的每一个 URL：`/routing.html` 还是 `/routing.html`，翻译版在 `/zh_CN/routing.html`。"
 
-#: ../developer/contributing.md:296
+#: ../developer/contributing.md:295
 msgid ""
-"Serving that layout is a publication-side decision: it changes the site's"
-" URLs (`/en/…` rather than `/…`), so whoever owns the deploy has to move "
-"to it deliberately."
-msgstr "是否按这个布局对外提供服务，是发布侧的决定：它会改变站点的 URL（变成 `/en/…` 而不是 `/…`），所以负责部署的人必须有意识地切过去。"
+"The sidebar switcher links to the same page in each other language and "
+"renders nothing when fewer than two languages are declared, so a single-"
+"language site never shows a dead control. `DOCS_LANGUAGES=\"en:English\"`"
+" builds English alone when a translation is not what you are working on."
+msgstr ""
+"侧边栏的切换器指向其他每种语言的同一页；声明的语言少于两种时它什么都不渲染，所以单语言站点不会出现一个点了没用的控件。只想构建英文时用 `DOCS_LANGUAGES=\"en:English\"`。"
 
 #: ../developer/contributing.md:300
+msgid "The check that catches a reverted translation"
+msgstr ""
+"抓「翻译悄悄退回英文」的那道检查"
+
+#: ../developer/contributing.md:306
+msgid ""
+"`make docs` plus `ops/ci/check_docs_translations.py`, and the same thing "
+"the Docs Build CI job runs. It exists because none of the failures above "
+"are visible to `-W`: Sphinx falls back to the English source for any "
+"string it cannot translate, so a page that has quietly reverted still "
+"builds clean. Four checks —"
+msgstr ""
+"就是 `make docs` 加上 `ops/ci/check_docs_translations.py`，也正是 Docs Build 这个 CI job 跑的东西。它之所以存在，是因为上面那些失效方式 `-W` 一个都看不见：任何 Sphinx 翻不了的字符串都会回落到英文原文，所以一个已经悄悄退回英文的页面照样构建得干干净净。四项检查——"
+
+#: ../developer/contributing.md:312
+msgid "**fuzzy** entries, which Sphinx refuses to apply;"
+msgstr ""
+"**fuzzy** 条目，Sphinx 拒绝使用它们；"
+
+#: ../developer/contributing.md:313
+msgid "**missing catalogs**, for a page added without `make docs-translate`;"
+msgstr ""
+"**缺失的目录**，即新加了页面却没跑 `make docs-translate`；"
+
+#: ../developer/contributing.md:314
+msgid ""
+"**stale catalogs** — an English edit whose `msgid` no longer matches any "
+"entry, which is the commonest case and carries no `fuzzy` marker at all "
+"because nothing re-merged;"
+msgstr ""
+"**过期的目录**——改过的英文句子其 `msgid` 已经匹配不上任何条目。这是最常见的情况，而且根本不会带 `fuzzy` 标记，因为压根没人重新合并过；"
+
+#: ../developer/contributing.md:317
+msgid ""
+"**structural divergence** between the built pages, which is what catches "
+"the CJK-adjacent markup traps above."
+msgstr ""
+"构建产物之间的**结构差异**，它抓的正是上面那些紧挨 CJK 的标记陷阱。"
+
+#: ../developer/contributing.md:320
 msgid "Proposing a change"
 msgstr "提出改动"
 
-#: ../developer/contributing.md:302
+#: ../developer/contributing.md:322
 msgid ""
 "**Branch off `dev`, not `main`.** Pull requests target `dev`; CI runs on "
 "pull requests against `main` and `dev`."
 msgstr "**从 `dev` 开分支，而不是 `main`**。PR 提向 `dev`；针对 `main` 和 `dev` 的 PR 都会跑 CI。"
 
-#: ../developer/contributing.md:304
+#: ../developer/contributing.md:324
 msgid ""
 "**Name branches `<user>/<scope>/<feature-name>`**, e.g. `jane/routing"
 "/weighted-fallback`."
@@ -549,7 +595,7 @@ msgstr ""
 "**分支命名为 `<user>/<scope>/<feature-name>`**，例如 `jane/routing/weighted-"
 "fallback`。"
 
-#: ../developer/contributing.md:306
+#: ../developer/contributing.md:326
 msgid ""
 "**Write commit and pull-request titles as conventional commits** — "
 "`type(scope): summary`, e.g. `fix(routing): keep the fallback route on "
@@ -561,21 +607,21 @@ msgstr ""
 " `fix(routing): keep the fallback route on 429`。`dev` 上的历史按每个 PR 压成一个 "
 "commit，所以你写的标题就会成为 commit 的 subject——`git log --oneline` 里能看到要对齐的样子。"
 
-#: ../developer/contributing.md:311
+#: ../developer/contributing.md:331
 msgid ""
 "Keep a pull request to one feature or fix, update the docs in the same "
 "change, and add tests for new behaviour."
 msgstr "一个 PR 只做一个功能或一处修复，在同一处改动里把文档一起更新，并为新行为补上测试。"
 
-#: ../developer/contributing.md:313
+#: ../developer/contributing.md:333
 msgid "Do not commit to `main` or `dev` directly."
 msgstr "不要直接向 `main` 或 `dev` 提交。"
 
-#: ../developer/contributing.md:315
+#: ../developer/contributing.md:335
 msgid "What CI will run"
 msgstr "CI 会跑什么"
 
-#: ../developer/contributing.md:317
+#: ../developer/contributing.md:337
 msgid ""
 "The `CI` workflow (`.github/workflows/ci.yml`) classifies which paths a "
 "pull request touched and then runs only the relevant jobs:"
@@ -664,7 +710,7 @@ msgstr ""
 msgid "aggregates the results of the jobs above into one check"
 msgstr "把上面各个 job 的结果汇总成一个检查项"
 
-#: ../developer/contributing.md:331
+#: ../developer/contributing.md:351
 msgid ""
 "Because CI includes `dbtest`, a change to storage or auth can be green "
 "locally and red in CI. Run `make test-db` against a local Postgres when "
@@ -674,10 +720,49 @@ msgstr ""
 "`apps/backend/serving/storage/` 或认证那一面时，要对着本地 Postgres 跑一遍 `make test-"
 "db`。"
 
-#: ../developer/contributing.md:335
+#: ../developer/contributing.md:355
 msgid ""
 "If a pull request shows no CI run at all, check whether it has a merge "
 "conflict first — a conflicted pull request does not trigger the "
 "`pull_request` workflow."
 msgstr "如果一个 PR 一次 CI 运行都没有，先看它是不是有合并冲突——有冲突的 PR 不会触发 `pull_request` workflow。"
+
+#~ msgid "Publishing more than one language"
+#~ msgstr "发布多种语言"
+
+#~ msgid ""
+#~ "A single-language build is the "
+#~ "default and nothing above changes it."
+#~ " To publish several, set `DOCS_LANGUAGES`"
+#~ " to `code:endonym` pairs and build "
+#~ "the whole set:"
+#~ msgstr ""
+#~ "默认是单语言构建，上面讲的一切都不会改变这一点。要发布多种语言，把 `DOCS_LANGUAGES` 设成若干"
+#~ " `code:endonym` 对，然后构建整套："
+
+#~ msgid ""
+#~ "That writes `docs/build/site/<code>/` — one"
+#~ " directory per language, siblings under "
+#~ "a common root — and renders a "
+#~ "language switcher in the sidebar that"
+#~ " links to the same page in each"
+#~ " other language. The switcher assumes "
+#~ "exactly that layout. It renders nothing"
+#~ " when `DOCS_LANGUAGES` names fewer than "
+#~ "two languages, so a single-language "
+#~ "site never shows a dead control."
+#~ msgstr ""
+#~ "这会写出 "
+#~ "`docs/build/site/<code>/`——每种语言一个目录，互为兄弟目录挂在同一个根下——并在侧边栏渲染一个语言切换器，链到其他每种语言的同一页面。切换器正是按这个布局假定的。当"
+#~ " `DOCS_LANGUAGES` 列出的语言少于两种时，它什么都不渲染，所以单语言站点不会出现一个点不动的控件。"
+
+#~ msgid ""
+#~ "Serving that layout is a publication-"
+#~ "side decision: it changes the site's "
+#~ "URLs (`/en/…` rather than `/…`), so "
+#~ "whoever owns the deploy has to "
+#~ "move to it deliberately."
+#~ msgstr ""
+#~ "是否按这个布局对外提供服务，是发布侧的决定：它会改变站点的 URL（变成 `/en/…` 而不是 "
+#~ "`/…`），所以负责部署的人必须有意识地切过去。"
 

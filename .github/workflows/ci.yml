@@ -293,15 +293,24 @@ jobs:
           echo "uv sync failed after 3 attempts" >&2
           exit 1
 
-      - name: Build developer docs (warnings are errors)
-        # Same command as `make docs`, and the same `-W` the published site
+      - name: Build developer docs and verify translations
+        # `make docs-verify` is `make docs` (which builds every published
+        # language, English at the tree root and each translation beneath it)
+        # plus the translation checker. Going through the Makefile rather than
+        # repeating the sphinx-build command here is what keeps this job and a
+        # contributor's local run from drifting apart.
+        #
+        # The `-W` that `make docs` passes is the same one the published site
         # builds with, so a toctree or xref break fails here rather than
-        # silently leaving the site stale. Sphinx, myst-parser and
+        # silently leaving the site stale. The checker covers what `-W` cannot
+        # see: a translation reverts to English silently, so a stale or missing
+        # catalog builds perfectly clean. Sphinx, myst-parser and
         # sphinx-rtd-theme come from the `dev` dependency group, so the
         # versions track uv.lock.
+        #
         # --no-sync: plain `uv run` would re-sync the environment and pull the
         # full project closure back in, undoing the narrowed install above.
-        run: uv run --no-sync sphinx-build -b html docs/developer docs/build/html -W --keep-going
+        run: make docs-verify UV_RUN="uv run --no-sync"
 
   test:
     # No custom name: skipped jobs do not expand matrix expressions in names;

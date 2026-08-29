@@ -1,5 +1,5 @@
 .PHONY: help format lint test test-verbose test-cov docs docs-gettext docs-translate \
-	docs-lang docs-site setup-dev clean check all \
+	docs-lang docs-verify setup-dev clean check all \
        docker-volumes up down restart ps logs build smoke \
        demo demo-smoke demo-down demo-reset _require-demo
 
@@ -64,14 +64,26 @@ test-all:  ## Run all tests except external (includes db-dependent)
 test-e2e: ## Run external/E2E tests (may require local server)
 	$(UV_RUN) pytest -m external -vv
 
-docs:  ## Build the developer docs site into docs/build/html
+docs:  ## Build the publishable docs site (every language) into docs/build/html
 	@echo "$(YELLOW)Building developer docs...$(RESET)"
-	@# Same command and flags as the "Docs Build" CI job: warnings are errors,
-	@# --keep-going reports all of them instead of stopping at the first.
+	@# Same command and flags as the "Docs Build" CI job and as the published
+	@# site: warnings are errors, --keep-going reports all of them instead of
+	@# stopping at the first. conf.py emits each non-root language into
+	@# docs/build/html/<code>/ from this one invocation, so what this produces
+	@# is the whole published tree. DOCS_LANGUAGES="en:English" builds English
+	@# alone when you only care about the source language.
 	$(UV_RUN) sphinx-build -b html docs/developer docs/build/html -W --keep-going
 	@echo "$(GREEN)OK Docs built: docs/build/html/index.html$(RESET)"
 
 DOCS_LANG ?= zh_CN
+
+docs-verify: docs docs-gettext  ## Build the site and check every translation still applies
+	@echo "$(YELLOW)Checking translations against the English build...$(RESET)"
+	@# A translation never fails loudly: Sphinx falls back to English for any
+	@# string it cannot translate, so a stale catalog builds clean under -W and
+	@# reads as English. This is what notices.
+	$(UV_RUN) python ops/ci/check_docs_translations.py \
+		docs/build/html docs/developer/locale --gettext-dir docs/gettext
 
 docs-gettext:  ## Extract translatable strings from the docs into docs/gettext/
 	@echo "$(YELLOW)Extracting translatable strings...$(RESET)"
@@ -92,20 +104,6 @@ docs-lang:  ## Build one translated language into docs/build/html-$(DOCS_LANG)
 	$(UV_RUN) sphinx-build -b html docs/developer docs/build/html-$(DOCS_LANG) \
 		-D language=$(DOCS_LANG) -W --keep-going
 	@echo "$(GREEN)OK Docs built: docs/build/html-$(DOCS_LANG)/index.html$(RESET)"
-
-docs-site:  ## Build every language in DOCS_LANGUAGES into docs/build/site/<code>/
-	@# The layout the language switcher assumes: one directory per language,
-	@# siblings under a common root. DOCS_LANGUAGES is "code:endonym" pairs,
-	@# e.g. DOCS_LANGUAGES="en:English,zh_CN:简体中文".
-	@test -n "$(DOCS_LANGUAGES)" || { echo "$(YELLOW)Set DOCS_LANGUAGES, e.g. DOCS_LANGUAGES=\"en:English,zh_CN:简体中文\"$(RESET)"; exit 1; }
-	@rm -rf docs/build/site
-	@for pair in $$(echo "$(DOCS_LANGUAGES)" | tr ',' ' '); do \
-		code=$${pair%%:*}; \
-		echo "$(YELLOW)Building $$code...$(RESET)"; \
-		DOCS_LANGUAGES="$(DOCS_LANGUAGES)" $(UV_RUN) sphinx-build -b html docs/developer \
-			docs/build/site/$$code -D language=$$code -W --keep-going || exit 1; \
-	done
-	@echo "$(GREEN)OK Site built: docs/build/site/$(RESET)"
 
 rag-ingest:  ## Build the docs RAG index (real bge-m3; RAG_EMBEDDER=hash for offline)
 	@echo "$(YELLOW)Building docs RAG index...$(RESET)"

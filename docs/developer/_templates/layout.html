@@ -3,11 +3,15 @@
 {# Language switcher. Renders only when DOCS_LANGUAGES names two or more
    languages (see conf.py); a single-language build emits nothing at all.
 
+   Publication layout: the first declared language is the root language and is
+   published at the site root (`/routing.html`); every other language lives in
+   a directory named for its code (`/zh_CN/routing.html`). Keeping the root
+   language at the root is what preserves every URL the English-only site had.
+
    Every language builds from the same source tree, so the page set is
-   identical across languages and the same relative path always exists in the
-   sibling tree. `pagename` is the current page without its extension, so the
-   depth prefix walks out of the current language directory before entering
-   the other one. #}
+   identical across them and the same relative path always exists in the other
+   tree. `pagename` is the current page without its extension, so its slash
+   count is the page's depth below whichever tree it is in. #}
 
 {% block sidebartitle %}
   {{ super() }}
@@ -15,13 +19,17 @@
   {#- Sphinx exposes the current language in BCP-47 form (`zh-CN`) while a
       locale directory is named `zh_CN`, so normalise before comparing. -#}
   {%- set _current = language|replace('-', '_')|lower %}
-  {%- set _up = '../' * (pagename.count('/') + 1) %}
+  {%- set _is_root = _current == doc_root_language|lower %}
+  {#- Walk up to this page's own tree root, then one more level when the page
+      is in a nested language directory, to reach the site root. -#}
+  {%- set _site_root = '../' * (pagename.count('/') + (0 if _is_root else 1)) %}
   <div class="doc-language-switcher" role="navigation" aria-label="Language">
     {%- for lang in doc_languages %}
     {%- if lang.code|lower == _current %}
     <span class="current" aria-current="true">{{ lang.label }}</span>
     {%- else %}
-    <a href="{{ _up }}{{ lang.code }}/{{ pagename }}.html" hreflang="{{ lang.code }}">{{ lang.label }}</a>
+    {%- set _prefix = '' if lang.code|lower == doc_root_language|lower else lang.code ~ '/' %}
+    <a href="{{ _site_root }}{{ _prefix }}{{ pagename }}.html" hreflang="{{ lang.code }}">{{ lang.label }}</a>
     {%- endif %}
     {%- endfor %}
   </div>
