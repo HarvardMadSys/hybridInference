@@ -57,12 +57,29 @@ variables point its route at your local OpenAI-compatible server.
 
 ## Start Here
 
-- **Run and use a gateway:** [User README](README.user.md)
-- **Develop, operate, or contribute:** [Developer README](README.developer.md)
-- **See one in production:** [FreeInference](https://freeinference.org/) is a
-  public HybridInference gateway run at Harvard SEAS; its
-  [user documentation](https://doc.freeinference.org/) is a worked example of
-  what a deployment publishes.
+The developer documentation is published at
+**[internaldoc.freeinference.org](https://internaldoc.freeinference.org/)**
+(also in [Simplified Chinese](https://internaldoc.freeinference.org/zh_CN/)),
+and its sources are in [`docs/developer/`](docs/developer/). Start at whichever
+row describes you:
+
+| If you want to | Start here |
+|---|---|
+| Watch a gateway serve a request, with no account, key or GPU | [Quickstart](docs/developer/router-tutorial.md) |
+| Run your own gateway against real providers | [Installation](docs/developer/installation.md) |
+| Understand how a request becomes a routing decision | [Architecture](docs/developer/architecture.md) |
+| Add a model, a local server, or a new provider | [Adding a New Model](docs/developer/adding-models.md) |
+| Operate one in production | [Deployment Guide](docs/developer/deployment.md) |
+| Send a change | [Contributing](docs/developer/contributing.md) |
+
+Bugs and questions go to the
+[issue tracker](https://github.com/HarvardMadSys/hybridInference/issues).
+Security reports have their own channel — see [SECURITY.md](SECURITY.md).
+
+**See one in production:** [FreeInference](https://freeinference.org/) is a
+public HybridInference gateway run at Harvard SEAS; its
+[user documentation](https://doc.freeinference.org/) is a worked example of
+what a deployment publishes.
 
 ## What It Does
 
@@ -165,10 +182,12 @@ apps/
   backend/
     serving/      # FastAPI gateway, adapters, auth, storage, observability
     routing/      # Routing strategies, routers, health, circuit breaker
-    benchmark/    # Benchmark utilities
   frontend/       # Next.js web UI
-config/           # Model, routing, and alert configuration
-  examples/       # Reference registries, including the OpenRouter quickstart
+benchmark/        # Benchmark utilities
+config/
+  examples/       # Reference registries and routing config; also the built-in
+                  # fallback a checkout with no overlay resolves to. A
+                  # deployment's own config lives in distributions/<name>/.
 distributions/    # Per-distribution overlays: identity, content, config
                   # (including example/, the public runnable router example)
 services/         # Generic protocol-conformance harness and testkit
@@ -180,11 +199,25 @@ docs/             # Developer docs, agent specs/plans, reviews
 
 ## Documentation
 
-- [README.user.md](README.user.md) explains how to run your own gateway, connect OpenAI-compatible clients, choose models, and call a hosted one.
-- [README.developer.md](README.developer.md) explains local setup, project structure, testing, formatting, architecture, configuration, and contribution workflow.
-- `docs/developer/` contains deeper architecture, deployment, routing, configuration, and extension guides.
+- The developer documentation site — [internaldoc.freeinference.org](https://internaldoc.freeinference.org/), sources in [`docs/developer/`](docs/developer/) — is the single place this project documents itself: setup, architecture, routing, configuration, deployment, extension, and the contribution workflow. Edit the sources, not a copy.
 - `distributions/` holds per-deployment overlays. A deployment's identity, content and documentation live in its own overlay rather than in the code, which is why a fresh clone comes up as nobody's gateway but your own.
+- A deployment's *user*-facing documentation — which models it serves, how to get an account — is the operator's to publish, not this repository's.
+
+## Provider Terms
+
+You connect providers with your own credentials — this project ships none — so
+each provider's terms bind you, not the gateway. Read them before adding a
+route.
+
+Some plans, in particular the subscription and coding-plan tiers that several
+providers offer, are licensed for individual personal use and do not permit
+reselling, sharing or otherwise redistributing the capacity they grant. The
+gateway will let you configure such a route; that is not the same as being
+permitted to. If a plan is licensed to you personally, route it only for your
+own personal, non-commercial or research use.
 
 ## License
 
-This repository is licensed under the [MIT License](LICENSE).
+This repository is licensed under the [MIT License](LICENSE). That covers its
+source code alone; it grants no rights to any third-party model, API or
+subscription you route to.

@@ -329,8 +329,12 @@ logging a per-file digest comparison — while resolution stays unchanged. Setti
 mode a manifest that fails to load stops the process rather than quietly serving
 a different registry than the deployment named.
 
-All three YAML files support environment interpolation: `${VAR}` and
-`${VAR:-default}`. A route whose `api_key`, `api_keys`, or `base_url` expands to
+All three YAML files support environment interpolation, but not the same
+dialect. The model registry expands only a whole value that is exactly
+`${VAR}` (`registry.py`); the routing and alert files run a recursive regex
+expander that also handles `${VAR:-default}` and variables embedded in longer
+strings (`_expand_env_value` in `apps/backend/routing/config.py`). A route whose
+`api_key`, `api_keys`, or `base_url` expands to
 nothing is either skipped (if the route is marked optional) or fails startup —
 never registered as a dead endpoint.
 

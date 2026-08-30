@@ -13,7 +13,11 @@ failed over when an endpoint degrades, priced, and logged — without the client
 changing a line.
 
 This is the documentation for the gateway software itself: running it,
-understanding it, extending it, and contributing to it.
+understanding it, extending it, and contributing to it. The source is at
+`github.com/HarvardMadSys/hybridInference
+<https://github.com/HarvardMadSys/hybridInference>`_, under the MIT license;
+bugs and questions go to its `issue tracker
+<https://github.com/HarvardMadSys/hybridInference/issues>`_.
 
 What is in the box
 ------------------
