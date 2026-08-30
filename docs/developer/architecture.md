@@ -62,8 +62,8 @@ root is `apps/backend`, declared in `pyproject.toml`.
 
 For how a public deployment gets traffic *to* the gateway — reverse proxy, CDN,
 and the console's own path rewrites — see
-[Edge and console routing](edge-and-console-routing.md). Nothing in this page
-depends on that topology; the gateway is an ordinary HTTP server.
+[The public path table](public-path-table.md). Nothing in this page depends on
+that topology; the gateway is an ordinary HTTP server.
 
 ## Request lifecycle
 
@@ -429,9 +429,9 @@ The console and the API share one origin: the Next.js rewrites in
 `apps/frontend/next.config.js` proxy `/v1`, `/anthropic`, `/auth`, `/user`,
 `/admin`, `/health`, and `/site-config` to the backend, so a browser session and
 an API key reach the same paths on the same host. Those rewrites — not a reverse
-proxy config — are the public path table; see
-[Edge and console routing](edge-and-console-routing.md). The frontend has its
-own toolchain and quality gates, separate from the Python `make` targets.
+proxy config — are [the public path table](public-path-table.md). The frontend
+has its own toolchain and quality gates, separate from the Python `make`
+targets.
 
 See [Deployment Guide](deployment.md) to run it, [Installation](installation.md) for a
 local checkout, and [Contributing](contributing.md) before sending a change.
