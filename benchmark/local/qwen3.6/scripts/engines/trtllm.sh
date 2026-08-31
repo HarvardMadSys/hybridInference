@@ -10,8 +10,8 @@ set -euo pipefail
 
 CONTAINER=qwen36-trtllm
 IMAGE=nvcr.io/nvidia/tensorrt-llm/release:latest
-MODEL_DIR=/netscratch/juncheng/models/Qwen3.6-35B-A3B-FP8
-ENGINE_DIR=/netscratch/juncheng/models/Qwen3.6-35B-A3B-FP8-trtllm-engine
+MODEL_DIR=${MODEL_DIR:-/models/Qwen3.6-35B-A3B-FP8}
+ENGINE_DIR=${ENGINE_DIR:-${MODEL_DIR}-trtllm-engine}
 PORT=8002
 GPU_INDEX=1
 MAX_MODEL_LEN=135168

@@ -27,7 +27,7 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "personal home path": re.compile(r"(?<![A-Za-z0-9_.-])/(?:Users|home)/[A-Za-z0-9._-]+"),
     "internal hostname": re.compile(
         r"\b(?:internal|staging-internal)\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
-        r"|\b(?:spark2|h200|holygpu\d*[a-z0-9]*)\b"
+        r"|\b(?:spark2|h200|holygpu\d*[a-z0-9]*|rtx6000[a-z0-9-]*|gpu\d+|cxl)\b"
     ),
     "cluster path": re.compile(r"(?:/n)?/(?:net)?scratch/[A-Za-z0-9_./-]+"),
     "cloudflare identifier": re.compile(r'(?:account_id|database_id)\s*=\s*"[0-9a-f-]{32,}"'),
@@ -37,7 +37,6 @@ PATTERNS: dict[str, re.Pattern[str]] = {
 # entry when its findings have moved out or been neutralized. A strict run is
 # clean only when this mapping is empty and no unclassified finding remains.
 PENDING: dict[str, str] = {
-    "benchmark/": "machine-specific benchmark configuration",
     "docs/agents/": "historical plans and specs",
     "docs/superpowers/": "historical plans and specs",
     "tests/": "production-shaped fixtures awaiting neutralization or migration",

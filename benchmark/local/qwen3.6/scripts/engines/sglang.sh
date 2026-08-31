@@ -5,7 +5,7 @@
 set -euo pipefail
 
 CONTAINER=qwen36-sglang
-MODEL_DIR=/scratch/juncheng/models/Qwen3.6-35B-A3B-FP8
+MODEL_DIR=${MODEL_DIR:-/models/Qwen3.6-35B-A3B-FP8}
 PORT=8001
 GPU_INDEX=1
 MAX_MODEL_LEN=135168

@@ -16,7 +16,8 @@ REPO_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 
 # Model
 MODEL_REPO: Final[str] = "Qwen/Qwen3.6-35B-A3B-FP8"
-MODEL_DIR: Final[Path] = Path("/netscratch/juncheng/models/Qwen3.6-35B-A3B-FP8")
+# Local weight store; adjust to wherever download_model.sh placed the weights.
+MODEL_DIR: Final[Path] = Path("/models/Qwen3.6-35B-A3B-FP8")
 
 # Server config (held constant across engines)
 MAX_MODEL_LEN: Final[int] = 135168  # 132K — fits 128K input + output headroom

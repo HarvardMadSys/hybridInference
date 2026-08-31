@@ -2,13 +2,13 @@
 
 **Date:** 2026-07-03
 **Author:** Juncheng Yang
-**Hardware:** 1 × NVIDIA RTX PRO 6000 Blackwell Max-Q (96 GB VRAM), gpu1 / rtx6000 node
+**Hardware:** 1 × NVIDIA RTX PRO 6000 Blackwell Max-Q (96 GB VRAM)
 **Model:** [`nvidia/diffusiongemma-26B-A4B-it-NVFP4`](https://huggingface.co/nvidia/diffusiongemma-26B-A4B-it-NVFP4) — 26 B block-diffusion LLM (Gemma4 backbone), NVFP4 weights (~19 GB on disk)
-**Engine:** vLLM (`vllm/vllm-openai:gemma`, v0.22.1rc1) via `ops/local_deployment_proxy`, `--attention-backend TRITON_ATTN`, V2 model runner, `max_model_len=262144`, `gpu_memory_utilization=0.85`
+**Engine:** vLLM (`vllm/vllm-openai:gemma`, v0.22.1rc1) via the local deployment proxy (since moved to the deployment repository), `--attention-backend TRITON_ATTN`, V2 model runner, `max_model_len=262144`, `gpu_memory_utilization=0.85`
 **Harness:** NVIDIA `genai-perf` 0.0.16 (OpenAI `/v1/completions`), plus an async fallback client for high concurrency
 
-> **Status:** this benchmark is why DiffusionGemma was **removed** from the rtx6000
-> node (#896, reverted in #898). It remains served on DGX Spark. Kept here as the
+> **Status:** this benchmark is why DiffusionGemma was **removed** from the
+> RTX-PRO-6000 serving node (#896, reverted in #898). It remains served on DGX Spark. Kept here as the
 > characterization record and for the `max_denoising_steps` throughput lever.
 
 ---

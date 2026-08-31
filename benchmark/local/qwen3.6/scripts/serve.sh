@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # benchmark/serve.sh — Launch Qwen3.6-27B-FP8 and Qwen3.6-35B-A3B-FP8 via vLLM
-# and expose them on spark2 via reverse SSH tunnels.
+# and expose them on a gateway host via reverse SSH tunnels.
 #
 # Usage:
 #   ./benchmark/serve.sh [--no-tunnel]
@@ -10,24 +10,24 @@
 #   2. Starts qwen36-vllm-35b  on local port 8001 (GPU 1)
 #   3. Waits for both /v1/models endpoints to respond 200
 #   4. Opens reverse SSH tunnels so that:
-#        spark2:10800  →  localhost:8000  (27B)
-#        spark2:10801  →  localhost:8001  (35B)
+#        <gateway-host>:10800  →  localhost:8000  (27B)
+#        <gateway-host>:10801  →  localhost:8001  (35B)
 #   Ctrl-C tears everything down cleanly.
 #
-# Requirements: Docker with NVIDIA Container Toolkit, SSH access to spark2.
-# Override SSH_HOST to use a different remote, e.g.:
-#   SSH_HOST=user@spark2.example.com ./benchmark/serve.sh
+# Requirements: Docker with NVIDIA Container Toolkit, SSH access to the
+# gateway host. Set SSH_HOST to the tunnel target, e.g.:
+#   SSH_HOST=user@gateway.example.com ./benchmark/serve.sh
 
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MODEL_27B_DIR=/scratch/juncheng/models/Qwen3.6-27B-FP8
+MODEL_27B_DIR=${MODEL_27B_DIR:-/models/Qwen3.6-27B-FP8}
 MODEL_27B_NAME="Qwen/Qwen3.6-27B-FP8"
 CONTAINER_27B=qwen36-vllm-27b
 PORT_27B=8000
 GPU_27B=0
 
-MODEL_35B_DIR=/scratch/juncheng/models/Qwen3.6-35B-A3B-FP8
+MODEL_35B_DIR=${MODEL_35B_DIR:-/models/Qwen3.6-35B-A3B-FP8}
 MODEL_35B_NAME="Qwen/Qwen3.6-35B-A3B-FP8"
 CONTAINER_35B=qwen36-vllm-35b
 PORT_35B=8001
@@ -38,7 +38,7 @@ GMU=0.90
 
 REMOTE_PORT_27B=10800
 REMOTE_PORT_35B=10801
-SSH_HOST=${SSH_HOST:-spark2}
+SSH_HOST=${SSH_HOST:-}
 
 HEALTH_TIMEOUT=600   # seconds to wait for each model to be ready
 HEALTH_INTERVAL=10
@@ -120,6 +120,10 @@ if $NO_TUNNEL; then
   echo "[serve] --no-tunnel set; skipping SSH tunnel. Press Ctrl-C to stop."
   wait
 else
+  if [ -z "$SSH_HOST" ]; then
+    echo "[serve] Set SSH_HOST=user@gateway-host (or pass --no-tunnel)." >&2
+    exit 1
+  fi
   echo "[serve] Opening reverse tunnels on ${SSH_HOST}:"
   echo "[serve]   ${SSH_HOST}:${REMOTE_PORT_27B} → localhost:${PORT_27B}  (27B)"
   echo "[serve]   ${SSH_HOST}:${REMOTE_PORT_35B} → localhost:${PORT_35B}  (35B)"

@@ -323,7 +323,7 @@ jobs:
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.python_tests == 'true')
     # Service containers need Docker socket access; keep these jobs off the
-    # generic pool that includes gpu1, which lacks that access.
+    # generic-pool hosts that lack that access.
     runs-on: [self-hosted, Linux, ci-general]
     strategy:
       fail-fast: false
@@ -1258,11 +1258,11 @@ jobs:
 
   publish-backend-amd64:
     name: Publish backend candidate (amd64)
-    # Native twin of the arm64 half, on the dedicated x86_64 build runner
-    # (rtx6000b-docker-1). Deliberately NOT on the production serving host:
-    # a runner in the docker group is root-equivalent on its machine, so
-    # builds live alongside the other CI-class workloads on rtx6000b, never
-    # with production serving.
+    # Native twin of the arm64 half, on the dedicated x86_64 build runner.
+    # Deliberately NOT on the production serving host: a runner in the docker
+    # group is root-equivalent on its machine, so builds live alongside the
+    # other CI-class workloads on the build host, never with production
+    # serving.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate, publish-backend-precheck]
     runs-on: [self-hosted, Linux, x64-docker]

@@ -8,7 +8,7 @@
 set -euo pipefail
 
 REPO=Qwen/Qwen3.6-35B-A3B-FP8
-DEST=/scratch/juncheng/models/Qwen3.6-35B-A3B-FP8
+DEST=${DEST:-/models/Qwen3.6-35B-A3B-FP8}
 
 mkdir -p "$DEST"
 

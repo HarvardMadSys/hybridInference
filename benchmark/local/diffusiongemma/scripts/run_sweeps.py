@@ -1,4 +1,4 @@
-"""Drive genai-perf sweeps for DiffusionGemma on gpu1 (rtx6000, live :8001).
+"""Drive genai-perf sweeps for DiffusionGemma against the live serving node (:8001).
 
 DiffusionGemma is a block-diffusion LLM: one denoising pass emits a whole block,
 so request latency tracks the *block size* (max_tokens), input length, and
@@ -29,9 +29,9 @@ ARTIFACTS = RESULTS / "artifacts"
 RESULTS.mkdir(parents=True, exist_ok=True)
 
 MODEL = "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
-TOKENIZER = "/scratch/juncheng/models/diffusiongemma-26B-A4B-it-NVFP4"
+TOKENIZER = "/models/diffusiongemma-26B-A4B-it-NVFP4"
 URL = "http://127.0.0.1:8001"
-KEY = "freeinference_api"
+KEY = "placeholder-key"  # the endpoint only requires a non-empty bearer value
 
 SWEEPS = [
     # name, input_len, output_len, concurrency, request_count, warmup

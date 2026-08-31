@@ -22,8 +22,10 @@ MODEL = os.environ.get("MODEL", "Qwen/Qwen3.6-27B-FP8")
 URL = os.environ.get("URL", "http://localhost:8000")
 TOKENIZER = os.environ.get(
     "TOKENIZER",
-    "/scratch/hf/hub/models--Qwen--Qwen3.6-27B-FP8/"
-    "snapshots/e89b16ebf1988b3d6befa7de50abc2d76f26eb09",
+    os.path.expanduser(
+        "~/.cache/huggingface/hub/models--Qwen--Qwen3.6-27B-FP8/"
+        "snapshots/e89b16ebf1988b3d6befa7de50abc2d76f26eb09"
+    ),
 )
 RESULTS_NAME = os.environ.get("RESULTS_NAME", "results_27b_fp8")
 OUT_DIR = Path(__file__).resolve().parent.parent / RESULTS_NAME / "vllm"
