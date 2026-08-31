@@ -50,6 +50,12 @@ ATTRIBUTION: dict[str, str] = {
         "for why each neutral default is what it is"
     ),
     "docs/developer/router-tutorial.md": "the clone URL, same as installation.md",
+    "docs/developer/trusted-proxies-and-client-ips.md": (
+        "cites the tracker issue that motivated the trust boundary"
+    ),
+    "docs/developer/locale/zh_CN/LC_MESSAGES/trusted-proxies-and-client-ips.po": (
+        "the same citation, carried into the translation catalog"
+    ),
     "docs/developer/installation.md": "the clone URL, same as router-tutorial.md",
     "SECURITY.md": (
         "names the repository's advisory URL, and names FreeInference to scope "
