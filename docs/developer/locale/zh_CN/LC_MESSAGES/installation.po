@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-30 22:25+0800\n"
+"POT-Creation-Date: 2026-08-31 13:58+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -384,8 +384,14 @@ msgid "`BASE_URL`"
 msgstr ""
 
 #: ../developer/installation.md
-msgid "this gateway's own public origin; blank derives it from the request"
-msgstr "本网关自己的公网 origin；留空则从请求中推导"
+msgid ""
+"this gateway's own public origin, used to build the absolute links in "
+"signup and password-reset emails. Set it: the server does not interpret "
+"`X-Forwarded-*`, so a blank value derives `http://…` from the request "
+"even behind a TLS proxy. See [Trusted Proxies and Client IPs](trusted-"
+"proxies-and-client-ips.md)"
+msgstr ""
+"本网关自己对外的 origin，用来拼装注册和密码重置邮件里的绝对链接。请设置它：服务器不解析 `X-Forwarded-*`，所以留空的话，即便在 TLS 反代后面，也会从请求里推导出 `http://…`。见[可信代理与客户端 IP](trusted-proxies-and-client-ips.md)"
 
 #: ../developer/installation.md
 msgid "`LOG_LEVEL`, `LOG_FORMAT`"
@@ -427,7 +433,9 @@ msgid ""
 "[Configuration](configuration.md) for the difference from the routing "
 "file."
 msgstr ""
-"代码里没有一份固定的 provider 变量清单。模型注册表在加载时，只会替换整个值恰好是 `${VAR}` 的那些项，所以一个部署需要哪些 provider 凭据，完全取决于它自己的注册表写了哪些变量。注意注册表用的是那个更窄的展开器：只认整值，不支持 `${VAR:-default}`，也不支持嵌在更长字符串里替换。它和路由文件的差别见[配置](configuration.md)。"
+"代码里没有一份固定的 provider 变量清单。模型注册表在加载时，只会替换整个值恰好是 `${VAR}` 的那些项，所以一个部署需要哪些 "
+"provider 凭据，完全取决于它自己的注册表写了哪些变量。注意注册表用的是那个更窄的展开器：只认整值，不支持 "
+"`${VAR:-default}`，也不支持嵌在更长字符串里替换。它和路由文件的差别见[配置](configuration.md)。"
 
 #: ../developer/installation.md:192
 msgid ""
@@ -534,8 +542,7 @@ msgstr ""
 msgid ""
 "The same call from the OpenAI Python SDK — the gateway is the `base_url`,"
 " and nothing else about an existing client changes:"
-msgstr ""
-"同一个调用，用 OpenAI 的 Python SDK 来发——网关就是那个 `base_url`，现有客户端别的什么都不用改："
+msgstr "同一个调用，用 OpenAI 的 Python SDK 来发——网关就是那个 `base_url`，现有客户端别的什么都不用改："
 
 #: ../developer/installation.md:268
 msgid "Documentation"
@@ -624,4 +631,7 @@ msgstr "**端口已被占用**——在 `.env` 里覆盖 `BACKEND_PORT`、`FRONT
 #~ "和 `${VAR:-default}` 做插值（`apps/backend/routing/config.py`"
 #~ " 里的 `_expand_env_value`），所以一个部署需要哪些 provider "
 #~ "凭据，正好就是它自己的注册表点名的那些变量："
+
+#~ msgid "this gateway's own public origin; blank derives it from the request"
+#~ msgstr "本网关自己的公网 origin；留空则从请求中推导"
 

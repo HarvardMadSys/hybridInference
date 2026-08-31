@@ -167,7 +167,7 @@ the default registry needs, everything in `.env.example` is optional. The ones y
 | `DB_ENABLED` | `false` runs the gateway with no database |
 | `DB_STORE_FULL_CONTENT` | `false` (default) hashes prompts and responses instead of storing them |
 | `FRONTEND_URL` | absolute URL your users click in verification and reset emails |
-| `BASE_URL` | this gateway's own public origin; blank derives it from the request |
+| `BASE_URL` | this gateway's own public origin, used to build the absolute links in signup and password-reset emails. Set it: the server does not interpret `X-Forwarded-*`, so a blank value derives `http://…` from the request even behind a TLS proxy. See [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) |
 | `LOG_LEVEL`, `LOG_FORMAT` | logging verbosity and `json`/text output |
 | `ALERTS_ENABLED`, `SLACK_ALERTS_WEBHOOK_URL` | in-process alerting, off by default |
 | `TRUST_PROXY_HEADERS` | whether `X-Forwarded-For` / `X-Real-IP` are believed |
