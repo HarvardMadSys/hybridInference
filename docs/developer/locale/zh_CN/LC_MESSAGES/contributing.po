@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-29 11:30+0800\n"
+"POT-Creation-Date: 2026-08-31 16:52+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -267,7 +267,7 @@ msgid "Hits live external servers"
 msgstr "会打到真实的外部服务器"
 
 #: ../developer/contributing.md
-msgid "`tests/external/`, `tests/e2e/`"
+msgid "`tests/external/`"
 msgstr ""
 
 #: ../developer/contributing.md
@@ -282,20 +282,7 @@ msgstr ""
 "`testpaths` 是 `[\"tests\", \"distributions\"]`，因此 overlay 自带的测试会和 "
 "`tests/` 一起在默认测试集中运行。"
 
-#: ../developer/contributing.md:116
-msgid ""
-"`tests/e2e/` is not a separate marker tier: its files carry `pytestmark ="
-" pytest.mark.external` like everything in `tests/external/`, so `make "
-"test-e2e` (`pytest -m external`) selects both. What distinguishes it is "
-"its own `tests/e2e/Makefile`, which stands up the stack the phase tests "
-"expect before running them."
-msgstr ""
-"`tests/e2e/` 并不是一个独立的 marker 层：它里面的文件和 `tests/external/` 里的一样带着 "
-"`pytestmark = pytest.mark.external`，所以 `make test-e2e`（`pytest -m "
-"external`）两边都会选中。它的区别在于自带一份 "
-"`tests/e2e/Makefile`，会在跑测试之前把这些阶段测试所需要的整套服务先立起来。"
-
-#: ../developer/contributing.md:134
+#: ../developer/contributing.md:128
 msgid ""
 "The `dbtest` tier needs a reachable PostgreSQL. Tests read "
 "`TEST_DB_HOST`, `TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASSWORD` "
@@ -307,7 +294,7 @@ msgstr ""
 "`localhost:5432` 和 `postgres`/`postgres`），有些还会读完整的 "
 "`TEST_PG_DSN`。只把数据库容器起起来就够了："
 
-#: ../developer/contributing.md:143
+#: ../developer/contributing.md:137
 msgid ""
 "`make test` parallelises with `pytest-xdist` at file granularity. Run "
 "serially when you are debugging a specific failure, but check a suspected"
@@ -317,15 +304,15 @@ msgstr ""
 "`make test` 用 `pytest-xdist` 以文件为粒度并行。调查某个具体失败时可以串行跑，但怀疑是环境变量泄漏引起的失败，还要在 "
 "`-n auto` 下再查一遍——跨文件的环境泄漏只有在并行运行时才会暴露。"
 
-#: ../developer/contributing.md:148
+#: ../developer/contributing.md:142
 msgid "Frontend"
 msgstr "前端"
 
-#: ../developer/contributing.md:150
+#: ../developer/contributing.md:144
 msgid "The console's gates are separate from the Python ones:"
 msgstr "控制台的门禁与 Python 那套是分开的："
 
-#: ../developer/contributing.md:162
+#: ../developer/contributing.md:156
 msgid ""
 "CI additionally runs `npm run format:check` (prettier) and `npm audit "
 "--omit=dev --audit-level=high` in `apps/frontend`."
@@ -333,11 +320,11 @@ msgstr ""
 "CI 还会在 `apps/frontend` 里额外运行 `npm run format:check`（prettier）和 `npm audit"
 " --omit=dev --audit-level=high`。"
 
-#: ../developer/contributing.md:165
+#: ../developer/contributing.md:159
 msgid "Documentation"
 msgstr "文档"
 
-#: ../developer/contributing.md:167
+#: ../developer/contributing.md:161
 msgid ""
 "These pages are MyST Markdown compiled by Sphinx from `docs/developer/`, "
 "with `docs/developer/index.rst` as the root toctree. Build them from the "
@@ -346,13 +333,13 @@ msgstr ""
 "这些页面是 MyST Markdown，由 Sphinx 从 `docs/developer/` 编译，以 "
 "`docs/developer/index.rst` 作为根目录树。在仓库根目录构建："
 
-#: ../developer/contributing.md:175
+#: ../developer/contributing.md:169
 msgid ""
 "CI's **Docs Build** job builds the same tree with warnings promoted to "
 "errors:"
 msgstr "CI 的 **Docs Build** 任务构建同一棵树，并把警告升级为错误："
 
-#: ../developer/contributing.md:181
+#: ../developer/contributing.md:175
 msgid ""
 "That job is what gates documentation changes in this repository — a "
 "broken cross-reference or a page missing from the toctree fails the "
@@ -364,17 +351,17 @@ msgstr ""
 "、`myst-parser` 和 `sphinx-rtd-theme` 都来自 `dev` 依赖组，因此 `make setup-dev` "
 "之后就能构建。"
 
-#: ../developer/contributing.md:186
+#: ../developer/contributing.md:180
 msgid ""
 "Add a new page to `docs/developer/index.rst` as well as writing it; an "
 "orphan file is a warning, and warnings are errors in CI."
 msgstr "写一个新页面的同时，要把它加进 `docs/developer/index.rst`；孤立文件会产生警告，而在 CI 里警告就是错误。"
 
-#: ../developer/contributing.md:189
+#: ../developer/contributing.md:183
 msgid "Translations"
 msgstr "翻译"
 
-#: ../developer/contributing.md:191
+#: ../developer/contributing.md:185
 msgid ""
 "The pages are written in English and translated with Sphinx's gettext "
 "workflow, so a translation is attached to *each paragraph of source text*"
@@ -385,11 +372,11 @@ msgstr ""
 "这些页面用英文书写，并通过 Sphinx 的 gettext "
 "流程翻译，因此译文挂在*源文本的每一个段落*上，而不是挂在整份文件上。这正是局部翻译之所以安全的原因：任何没有译文的字符串都会回退到英文，站点照样能完整构建出来。"
 
-#: ../developer/contributing.md:204
+#: ../developer/contributing.md:198
 msgid "A catalog entry pairs the English source with its translation:"
 msgstr "消息目录里的一条记录，把英文原文和它的译文配成一对："
 
-#: ../developer/contributing.md:212
+#: ../developer/contributing.md:206
 msgid ""
 "Because the English text *is* the lookup key, editing a paragraph "
 "invalidates its translation automatically: the next `make docs-translate`"
@@ -404,28 +391,28 @@ msgstr ""
 "fuzzy`，构建就不再使用它，页面回退到英文，而不是继续提供一份已经和代码对不上的译文。译者只需要回头处理被标记的那些条目。**这就是采用消息目录、而不是并列一份"
 " `.zh.md` 文件的理由**——后者会悄悄漂移，读者完全看不出自己读到的内容已经过时。"
 
-#: ../developer/contributing.md:220
+#: ../developer/contributing.md:214
 msgid "Commit the `.po` files. `docs/gettext/` is generated and ignored."
 msgstr "要提交 `.po` 文件。`docs/gettext/` 是生成物，已被忽略。"
 
-#: ../developer/contributing.md:222
+#: ../developer/contributing.md:216
 msgid ""
 "Translating a page does not require translating all of it, and there is "
 "no obligation to keep a language complete — an untranslated paragraph is "
 "a fallback, not a bug."
 msgstr "翻译一个页面不要求把它全部翻完，也没有义务让某种语言保持完整——未翻译的段落是一种回退，不是缺陷。"
 
-#: ../developer/contributing.md:226
+#: ../developer/contributing.md:220
 msgid "Translating into Chinese, Japanese or Korean"
 msgstr "翻译成中日韩语言时"
 
-#: ../developer/contributing.md:228
+#: ../developer/contributing.md:222
 msgid ""
 "Four traps, all of them silent — the build stays green and the page is "
 "wrong. Each was hit while translating this doc set into Chinese."
 msgstr "四个坑，全都是静默的——构建照样全绿，页面却是错的。这份文档翻成中文时，四个都踩到了。"
 
-#: ../developer/contributing.md:231
+#: ../developer/contributing.md:225
 msgid ""
 "**A heading that starts with a number is discarded.** Sphinx re-parses a "
 "translated title, and MyST reads `1. ` as an enumerated-list marker "
@@ -436,7 +423,7 @@ msgstr ""
 "**以数字开头的标题会被丢弃**。Sphinx 会重新解析翻译后的标题，而 MyST 把 `1. ` "
 "读成有序列表标记而不是文本。结构与原文对不上，翻译被丢弃，输出的是英文标题，而且没有任何警告——`-W` 下也没有。把那个点转义掉："
 
-#: ../developer/contributing.md:241
+#: ../developer/contributing.md:235
 msgid ""
 "**In `index.rst`, inline markup that touches a CJK character does not "
 "parse.** reStructuredText requires whitespace or specific punctuation "
@@ -448,7 +435,7 @@ msgstr ""
 "前面是空白或特定标点，而汉字两者都不是，于是 `请求的*模型 id*` 渲染成字面星号。用一个转义空格把它们隔开——在 catalog 里写作 "
 "`\\\\ `，也就是字符串里的一个反斜杠加空格："
 
-#: ../developer/contributing.md:251
+#: ../developer/contributing.md:245
 msgid ""
 "This applies to `index.rst` only. Markdown pages need no escaping: "
 "CommonMark treats a CJK character as neither whitespace nor punctuation, "
@@ -457,7 +444,7 @@ msgstr ""
 "这条只适用于 `index.rst`。Markdown 页面不需要转义：CommonMark 认为 CJK "
 "字符既不是空白也不是标点，所以夹在汉字之间的 `**模型 id**` 是合法的强调。"
 
-#: ../developer/contributing.md:255
+#: ../developer/contributing.md:249
 msgid ""
 "**One Markdown case does break, though**: a closing `**` preceded by a "
 "CJK full stop and followed by a CJK character is not right-flanking, so "
@@ -468,7 +455,7 @@ msgstr ""
 "**但 Markdown 有一种情况确实会坏**：结尾的 `**` 前面是句号、后面是汉字时不构成右侧闭合，于是 `**术语。**后文` "
 "会留下字面星号。把句号移到加粗外面——`**术语**。后文`——这本来也是更好的排版，给标点加粗是错的。"
 
-#: ../developer/contributing.md:261
+#: ../developer/contributing.md:255
 msgid ""
 "**A stale `.mo` masks your edits.** Sphinx skips recompilation when the "
 "`.mo` is newer than its `.po`, so you can verify a build that never read "
@@ -477,7 +464,7 @@ msgstr ""
 "**过期的 `.mo` 会掩盖你的改动**。当 `.mo` 比它的 `.po` 新时，Sphinx "
 "会跳过重新编译，于是你验证的那次构建根本没读到你的修改。每次验证构建之前先执行："
 
-#: ../developer/contributing.md:269
+#: ../developer/contributing.md:263
 msgid ""
 "The check that catches all four at once is a structural diff against the "
 "English build: for each page, compare the counts of `<code>`, `<strong>`,"
@@ -488,7 +475,7 @@ msgstr ""
 "能一次抓住这四种的检查，是与英文构建做结构 diff：逐页比较 `<code>`、`<strong>`、`<em>`、`<a>` "
 "的数量，以及行内代码字面量和链接目标的多重集合。丢掉一个标记、或者把链接目标也翻译了，只有这个检查能发现。"
 
-#: ../developer/contributing.md:274
+#: ../developer/contributing.md:268
 msgid ""
 "One more, which at least fails loudly: `make docs-translate` can append "
 "`python-format` to an entry you had annotated `no-python-format` — a "
@@ -501,12 +488,11 @@ msgstr ""
 "`msgfmt -c` 会拒绝这对互相矛盾的标记。把新加的 `python-format` 删掉，保留 `no-python-format` "
 "即可。"
 
-#: ../developer/contributing.md:280
+#: ../developer/contributing.md:274
 msgid "How a translation reaches the published site"
-msgstr ""
-"翻译是怎么上到已发布站点的"
+msgstr "翻译是怎么上到已发布站点的"
 
-#: ../developer/contributing.md:282
+#: ../developer/contributing.md:276
 msgid ""
 "`make docs` builds every published language from one `sphinx-build`. The "
 "first language named in `DOCS_LANGUAGES` (declared in `conf.py`, "
@@ -514,9 +500,11 @@ msgid ""
 "the top of the output tree; each other language is written to "
 "`docs/build/html/<code>/` by a `build-finished` hook in `conf.py`."
 msgstr ""
-"`make docs` 用一次 `sphinx-build` 构建出所有已发布的语言。`DOCS_LANGUAGES`（在 `conf.py` 里声明，默认是 `en:English,zh_CN:简体中文`）里排第一的语言是根语言，落在输出目录的顶层；其余每种语言由 `conf.py` 里一个 `build-finished` 钩子写进 `docs/build/html/<code>/`。"
+"`make docs` 用一次 `sphinx-build` 构建出所有已发布的语言。`DOCS_LANGUAGES`（在 `conf.py` "
+"里声明，默认是 `en:English,zh_CN:简体中文`）里排第一的语言是根语言，落在输出目录的顶层；其余每种语言由 `conf.py` "
+"里一个 `build-finished` 钩子写进 `docs/build/html/<code>/`。"
 
-#: ../developer/contributing.md:288
+#: ../developer/contributing.md:282
 msgid ""
 "One invocation rather than one per language, because the published site "
 "is built by a command that lives in the hosting project's settings, not "
@@ -526,23 +514,25 @@ msgid ""
 "`/routing.html` stays `/routing.html`, and the translation is at "
 "`/zh_CN/routing.html`."
 msgstr ""
-"之所以是一次调用而不是每种语言一次：已发布站点的构建命令在托管方的设置里，不在本仓库中——发布时没有环境变量可以设，所以语言列表必须写在 `conf.py` 里随代码走。而把根语言留在树顶，是为了保住纯英文站曾有的每一个 URL：`/routing.html` 还是 `/routing.html`，翻译版在 `/zh_CN/routing.html`。"
+"之所以是一次调用而不是每种语言一次：已发布站点的构建命令在托管方的设置里，不在本仓库中——发布时没有环境变量可以设，所以语言列表必须写在 "
+"`conf.py` 里随代码走。而把根语言留在树顶，是为了保住纯英文站曾有的每一个 URL：`/routing.html` 还是 "
+"`/routing.html`，翻译版在 `/zh_CN/routing.html`。"
 
-#: ../developer/contributing.md:295
+#: ../developer/contributing.md:289
 msgid ""
 "The sidebar switcher links to the same page in each other language and "
 "renders nothing when fewer than two languages are declared, so a single-"
 "language site never shows a dead control. `DOCS_LANGUAGES=\"en:English\"`"
 " builds English alone when a translation is not what you are working on."
 msgstr ""
-"侧边栏的切换器指向其他每种语言的同一页；声明的语言少于两种时它什么都不渲染，所以单语言站点不会出现一个点了没用的控件。只想构建英文时用 `DOCS_LANGUAGES=\"en:English\"`。"
+"侧边栏的切换器指向其他每种语言的同一页；声明的语言少于两种时它什么都不渲染，所以单语言站点不会出现一个点了没用的控件。只想构建英文时用 "
+"`DOCS_LANGUAGES=\"en:English\"`。"
+
+#: ../developer/contributing.md:294
+msgid "The check that catches a reverted translation"
+msgstr "抓「翻译悄悄退回英文」的那道检查"
 
 #: ../developer/contributing.md:300
-msgid "The check that catches a reverted translation"
-msgstr ""
-"抓「翻译悄悄退回英文」的那道检查"
-
-#: ../developer/contributing.md:306
 msgid ""
 "`make docs` plus `ops/ci/check_docs_translations.py`, and the same thing "
 "the Docs Build CI job runs. It exists because none of the failures above "
@@ -550,44 +540,44 @@ msgid ""
 "string it cannot translate, so a page that has quietly reverted still "
 "builds clean. Four checks —"
 msgstr ""
-"就是 `make docs` 加上 `ops/ci/check_docs_translations.py`，也正是 Docs Build 这个 CI job 跑的东西。它之所以存在，是因为上面那些失效方式 `-W` 一个都看不见：任何 Sphinx 翻不了的字符串都会回落到英文原文，所以一个已经悄悄退回英文的页面照样构建得干干净净。四项检查——"
+"就是 `make docs` 加上 `ops/ci/check_docs_translations.py`，也正是 Docs Build 这个 "
+"CI job 跑的东西。它之所以存在，是因为上面那些失效方式 `-W` 一个都看不见：任何 Sphinx "
+"翻不了的字符串都会回落到英文原文，所以一个已经悄悄退回英文的页面照样构建得干干净净。四项检查——"
 
-#: ../developer/contributing.md:312
+#: ../developer/contributing.md:306
 msgid "**fuzzy** entries, which Sphinx refuses to apply;"
-msgstr ""
-"**fuzzy** 条目，Sphinx 拒绝使用它们；"
+msgstr "**fuzzy** 条目，Sphinx 拒绝使用它们；"
 
-#: ../developer/contributing.md:313
+#: ../developer/contributing.md:307
 msgid "**missing catalogs**, for a page added without `make docs-translate`;"
-msgstr ""
-"**缺失的目录**，即新加了页面却没跑 `make docs-translate`；"
+msgstr "**缺失的目录**，即新加了页面却没跑 `make docs-translate`；"
 
-#: ../developer/contributing.md:314
+#: ../developer/contributing.md:308
 msgid ""
 "**stale catalogs** — an English edit whose `msgid` no longer matches any "
 "entry, which is the commonest case and carries no `fuzzy` marker at all "
 "because nothing re-merged;"
 msgstr ""
-"**过期的目录**——改过的英文句子其 `msgid` 已经匹配不上任何条目。这是最常见的情况，而且根本不会带 `fuzzy` 标记，因为压根没人重新合并过；"
+"**过期的目录**——改过的英文句子其 `msgid` 已经匹配不上任何条目。这是最常见的情况，而且根本不会带 `fuzzy` "
+"标记，因为压根没人重新合并过；"
 
-#: ../developer/contributing.md:317
+#: ../developer/contributing.md:311
 msgid ""
 "**structural divergence** between the built pages, which is what catches "
 "the CJK-adjacent markup traps above."
-msgstr ""
-"构建产物之间的**结构差异**，它抓的正是上面那些紧挨 CJK 的标记陷阱。"
+msgstr "构建产物之间的**结构差异**，它抓的正是上面那些紧挨 CJK 的标记陷阱。"
 
-#: ../developer/contributing.md:320
+#: ../developer/contributing.md:314
 msgid "Proposing a change"
 msgstr "提出改动"
 
-#: ../developer/contributing.md:322
+#: ../developer/contributing.md:316
 msgid ""
 "**Branch off `dev`, not `main`.** Pull requests target `dev`; CI runs on "
 "pull requests against `main` and `dev`."
 msgstr "**从 `dev` 开分支，而不是 `main`**。PR 提向 `dev`；针对 `main` 和 `dev` 的 PR 都会跑 CI。"
 
-#: ../developer/contributing.md:324
+#: ../developer/contributing.md:318
 msgid ""
 "**Name branches `<user>/<scope>/<feature-name>`**, e.g. `jane/routing"
 "/weighted-fallback`."
@@ -595,7 +585,7 @@ msgstr ""
 "**分支命名为 `<user>/<scope>/<feature-name>`**，例如 `jane/routing/weighted-"
 "fallback`。"
 
-#: ../developer/contributing.md:326
+#: ../developer/contributing.md:320
 msgid ""
 "**Write commit and pull-request titles as conventional commits** — "
 "`type(scope): summary`, e.g. `fix(routing): keep the fallback route on "
@@ -607,21 +597,21 @@ msgstr ""
 " `fix(routing): keep the fallback route on 429`。`dev` 上的历史按每个 PR 压成一个 "
 "commit，所以你写的标题就会成为 commit 的 subject——`git log --oneline` 里能看到要对齐的样子。"
 
-#: ../developer/contributing.md:331
+#: ../developer/contributing.md:325
 msgid ""
 "Keep a pull request to one feature or fix, update the docs in the same "
 "change, and add tests for new behaviour."
 msgstr "一个 PR 只做一个功能或一处修复，在同一处改动里把文档一起更新，并为新行为补上测试。"
 
-#: ../developer/contributing.md:333
+#: ../developer/contributing.md:327
 msgid "Do not commit to `main` or `dev` directly."
 msgstr "不要直接向 `main` 或 `dev` 提交。"
 
-#: ../developer/contributing.md:335
+#: ../developer/contributing.md:329
 msgid "What CI will run"
 msgstr "CI 会跑什么"
 
-#: ../developer/contributing.md:337
+#: ../developer/contributing.md:331
 msgid ""
 "The `CI` workflow (`.github/workflows/ci.yml`) classifies which paths a "
 "pull request touched and then runs only the relevant jobs:"
@@ -710,7 +700,7 @@ msgstr ""
 msgid "aggregates the results of the jobs above into one check"
 msgstr "把上面各个 job 的结果汇总成一个检查项"
 
-#: ../developer/contributing.md:351
+#: ../developer/contributing.md:345
 msgid ""
 "Because CI includes `dbtest`, a change to storage or auth can be green "
 "locally and red in CI. Run `make test-db` against a local Postgres when "
@@ -720,7 +710,7 @@ msgstr ""
 "`apps/backend/serving/storage/` 或认证那一面时，要对着本地 Postgres 跑一遍 `make test-"
 "db`。"
 
-#: ../developer/contributing.md:355
+#: ../developer/contributing.md:349
 msgid ""
 "If a pull request shows no CI run at all, check whether it has a merge "
 "conflict first — a conflicted pull request does not trigger the "
@@ -765,4 +755,24 @@ msgstr "如果一个 PR 一次 CI 运行都没有，先看它是不是有合并�
 #~ msgstr ""
 #~ "是否按这个布局对外提供服务，是发布侧的决定：它会改变站点的 URL（变成 `/en/…` 而不是 "
 #~ "`/…`），所以负责部署的人必须有意识地切过去。"
+
+#~ msgid "`tests/external/`, `tests/e2e/`"
+#~ msgstr ""
+
+#~ msgid ""
+#~ "`tests/e2e/` is not a separate marker"
+#~ " tier: its files carry `pytestmark ="
+#~ " pytest.mark.external` like everything in "
+#~ "`tests/external/`, so `make test-e2e` "
+#~ "(`pytest -m external`) selects both. "
+#~ "What distinguishes it is its own "
+#~ "`tests/e2e/Makefile`, which stands up the "
+#~ "stack the phase tests expect before "
+#~ "running them."
+#~ msgstr ""
+#~ "`tests/e2e/` 并不是一个独立的 marker 层：它里面的文件和 "
+#~ "`tests/external/` 里的一样带着 `pytestmark = "
+#~ "pytest.mark.external`，所以 `make test-e2e`（`pytest "
+#~ "-m external`）两边都会选中。它的区别在于自带一份 "
+#~ "`tests/e2e/Makefile`，会在跑测试之前把这些阶段测试所需要的整套服务先立起来。"
 
