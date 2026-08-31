@@ -108,16 +108,10 @@ Markers are the contract; directories are a convention. The markers declared in
 | API surface | `tests/api/` | — | yes |
 | Server / observability | `tests/servers/`, `tests/observability/` | — | yes |
 | Needs a live Postgres | mostly `tests/integration/` | `dbtest` | no |
-| Hits live external servers | `tests/external/`, `tests/e2e/` | `external` | no |
+| Hits live external servers | `tests/external/` | `external` | no |
 
 `testpaths` is `["tests", "distributions"]`, so overlay-owned tests run in the
 default suite alongside `tests/`.
-
-`tests/e2e/` is not a separate marker tier: its files carry
-`pytestmark = pytest.mark.external` like everything in `tests/external/`, so
-`make test-e2e` (`pytest -m external`) selects both. What distinguishes it is
-its own `tests/e2e/Makefile`, which stands up the stack the phase tests expect
-before running them.
 
 ```bash
 make test                              # the default suite
@@ -125,7 +119,7 @@ make test-verbose                      # same selection, serial, -vv
 make test-cov                          # same selection, with coverage
 make test-db                           # only -m dbtest
 make test-all                          # everything except -m external
-make test-e2e                          # only -m external
+make test-external                     # only -m external
 
 uv run pytest tests/unit/routing/test_manager.py           # one file
 uv run pytest -m dbtest tests/integration/                 # one tier

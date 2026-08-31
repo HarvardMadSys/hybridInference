@@ -32,7 +32,6 @@ tests/
   unit/           # Fast, mocked. Default in CI.
   api/            # Per-provider API surface tests.
   integration/    # Hits a real DB or external service. Marker: dbtest.
-  e2e/            # Makefile-driven full-stack runs.
   external/       # Hits live servers. Marker: external.
 ops/              # Operational tooling (ci, admin, release, deploy, setup, backend-coupled db analysis)
 deploy/           # Systemd units, Docker, observability manifests
@@ -160,7 +159,6 @@ handle `${VAR:-default}` and variables embedded in longer strings.
 | Unit | `tests/unit/` | — | yes |
 | API surface | `tests/api/` | — | yes |
 | Integration (DB / external) | `tests/integration/` | `dbtest` | no |
-| End-to-end | `tests/e2e/` | — (Makefile-driven) | no |
 | Live external | `tests/external/` | `external` | no |
 
 Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.

@@ -61,7 +61,7 @@ test-all:  ## Run all tests except external (includes db-dependent)
 	$(UV_RUN) pytest -q -m "not external" -n auto --dist loadfile
 	@echo "$(GREEN)OK All tests passed$(RESET)"
 
-test-e2e: ## Run external/E2E tests (may require local server)
+test-external: ## Run the live external-provider tests (needs real keys/servers)
 	$(UV_RUN) pytest -m external -vv
 
 docs:  ## Build the publishable docs site (every language) into docs/build/html
