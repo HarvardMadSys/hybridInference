@@ -515,17 +515,16 @@ async def verify_api_key(
 
     # Check if auth is enabled
     if not is_user_auth_enabled():
-        # Auth disabled - allow all, mark as anonymous. ``auth_disabled``
-        # records the deployment mode on the context itself: consumers that
-        # normally require an *authenticated* caller (the synthetic-probe
-        # trust check) can distinguish "this deployment trusts everyone" from
-        # "this caller presented nothing" without reaching back into settings.
+        # Auth disabled - allow all, mark as anonymous. The admin role here
+        # opens the API, but ``authenticated`` stays False on purpose: the
+        # synthetic-probe trust check (serving/utils/synthetic_probe.py)
+        # requires a *presented, resolved* key, so on an auth-disabled
+        # deployment no caller's X-Probe marker is honoured.
         return _publish_caller_role(
             {
                 "user_id": "anonymous",
                 "role": "admin",
                 "authenticated": False,
-                "auth_disabled": True,
                 "is_admin": True,
             }
         )

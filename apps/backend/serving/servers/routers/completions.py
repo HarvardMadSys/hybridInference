@@ -531,12 +531,17 @@ async def chat_completions(
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
     # The probe marker is honoured only from a caller who cannot abuse it: an
-    # authenticated internal/admin key (or any caller on an auth-disabled
-    # deployment, which is all-trust by construction), never an agent-sandbox
-    # credential. An untrusted caller's header is simply ignored — the request
-    # logs, records routing observations and gets no X-Provider header, like
-    # any other traffic. See serving/utils/synthetic_probe.py.
+    # authenticated internal/admin key, never an agent-sandbox credential.
+    # An untrusted caller's header is simply ignored — the request logs,
+    # records routing observations and gets no X-Provider header, like any
+    # other traffic. See serving/utils/synthetic_probe.py.
     is_synthetic_probe = is_trusted_probe(request, user_ctx)
+    # Published immediately, before any of the early 404/403 exits below:
+    # RequestLogMiddleware demotes probe request lines from this ctx key, so a
+    # later publish would leave a trusted probe's unknown-model 404 suppressed
+    # in api_logs yet logged at INFO — the two noise controls disagreeing
+    # about the same request.
+    req_ctx.update({"synthetic_probe": is_synthetic_probe})
     # ``log_synthetic_probes`` opts probe traffic into api_logs persistence so
     # it (and its real usage/cost) shows in the requests dashboard. The
     # X-Provider header stays keyed on ``is_synthetic_probe``; the per-user
@@ -745,7 +750,8 @@ async def chat_completions(
             "request_id": request_id,
             "auth_key_hash": auth_key_hash or "_anon",
             "affinity_key": affinity_key,
-            "synthetic_probe": is_synthetic_probe,
+            # synthetic_probe is already published, right after the trust
+            # check — before the early 404/403 exits above.
             # User identity for failure attribution — the routing layer reads
             # these to name the offending users in circuit-breaker alerts.
             "user_id": user_id,

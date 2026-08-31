@@ -1214,10 +1214,13 @@ async def anthropic_messages(
                     "model_not_found" if exc.status_code == 404 else "no_provider_available"
                 ),
                 reason=str(exc.detail),
-                user={
-                    "user_id": user_ctx.get("user_id"),
-                    "role": user_ctx.get("role"),
-                },
+                # The full context, not a {user_id, role} projection: the
+                # rejection log's probe-trust check also reads
+                # ``authenticated`` and the agent-grant fields, and a slimmed
+                # dict would make a trusted monitor's rejection log as
+                # ordinary traffic. The log itself persists only the fields
+                # it selects.
+                user=user_ctx,
                 model_id=model_id,
                 prompt=body.get("messages") or "",
             )

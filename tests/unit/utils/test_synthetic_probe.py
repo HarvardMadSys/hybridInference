@@ -18,11 +18,13 @@ from serving.utils.synthetic_probe import is_trusted_probe_caller
         # The deployment's own monitors: authenticated internal/admin keys.
         pytest.param({"role": "internal", "authenticated": True}, True, id="internal-key"),
         pytest.param({"role": "admin", "authenticated": True}, True, id="admin-key"),
-        # Auth-disabled deployments are all-trust by construction; the context
-        # says so explicitly rather than via the (unauthenticated) admin role.
+        # The auth-disabled anonymous context: verify_api_key hands it the
+        # admin role, but nothing was authenticated — "auth is off" opens the
+        # API, it does not mint a verifiable monitor identity, so the marker
+        # is refused (fail-closed).
         pytest.param(
-            {"role": "admin", "authenticated": False, "auth_disabled": True},
-            True,
+            {"role": "admin", "authenticated": False, "is_admin": True},
+            False,
             id="auth-disabled-anonymous",
         ),
         # Role below internal never qualifies, authenticated or not.

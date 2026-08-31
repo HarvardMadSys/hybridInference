@@ -14,11 +14,13 @@ therefore split two questions the original implementation conflated:
 A trusted probe caller is an **authenticated** internal/admin key that is not
 an agent-sandbox credential:
 
-* ``authenticated`` — when auth is disabled, ``verify_api_key`` hands every
-  anonymous caller ``role="admin"``; that grants the marker only because such
-  a deployment is all-trust by construction, which the explicit
-  ``auth_disabled`` flag records. With auth enabled, role alone is never
-  enough.
+* ``authenticated`` — a real key was presented and resolved. Role alone is
+  never enough: with auth disabled, ``verify_api_key`` hands every anonymous
+  caller ``role="admin"``, so an auth-disabled deployment has *no* caller
+  whose marker is honoured. That is deliberate (fail-closed): "auth is off"
+  means the API is open, not that an anonymous caller holds a verifiable
+  monitor identity. A deployment that wants probes without auth needs an
+  explicit mechanism (a probe secret, a source allowlist) — not this header.
 * internal/admin — the deployment's own monitors run with these roles; a
   free/pro key must not be able to opt itself out of anything.
 * not a grant — a grant context carries its *owner's* role while the requests
@@ -64,7 +66,7 @@ def is_trusted_probe_caller(user_ctx: Mapping[str, Any] | None) -> bool:
         return False
     if not has_role(user_ctx.get("role") or "free", "internal"):
         return False
-    return bool(user_ctx.get("authenticated") or user_ctx.get("auth_disabled"))
+    return bool(user_ctx.get("authenticated"))
 
 
 def is_trusted_probe(request: Request, user_ctx: Mapping[str, Any] | None) -> bool:
