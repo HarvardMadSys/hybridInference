@@ -58,8 +58,8 @@ variables point its route at your local OpenAI-compatible server.
 ## Start Here
 
 The developer documentation is published at
-**[internaldoc.freeinference.org](https://internaldoc.freeinference.org/)**
-(also in [Simplified Chinese](https://internaldoc.freeinference.org/zh_CN/)),
+**[doc.hybridinference.org](https://doc.hybridinference.org/)**
+(also in [Simplified Chinese](https://doc.hybridinference.org/zh_CN/)),
 and its sources are in [`docs/developer/`](docs/developer/). Start at whichever
 row describes you:
 
@@ -199,7 +199,7 @@ docs/             # Developer docs, agent specs/plans, reviews
 
 ## Documentation
 
-- The developer documentation site — [internaldoc.freeinference.org](https://internaldoc.freeinference.org/), sources in [`docs/developer/`](docs/developer/) — is the single place this project documents itself: setup, architecture, routing, configuration, deployment, extension, and the contribution workflow. Edit the sources, not a copy.
+- The developer documentation site — [doc.hybridinference.org](https://doc.hybridinference.org/), sources in [`docs/developer/`](docs/developer/) — is the single place this project documents itself: setup, architecture, routing, configuration, deployment, extension, and the contribution workflow. Edit the sources, not a copy.
 - `distributions/` holds per-deployment overlays. A deployment's identity, content and documentation live in its own overlay rather than in the code, which is why a fresh clone comes up as nobody's gateway but your own.
 - A deployment's *user*-facing documentation — which models it serves, how to get an account — is the operator's to publish, not this repository's.
 
