@@ -118,7 +118,7 @@ msgstr "Users 标签页里的单用户按钮 + 批量「Automation」列"
 
 #: ../developer/automation-score.md:13
 msgid "CLI"
-msgstr ""
+msgstr "命令行工具"
 
 #: ../developer/automation-score.md:13
 msgid "`ops/db/analysis/user_automation_score.py`"

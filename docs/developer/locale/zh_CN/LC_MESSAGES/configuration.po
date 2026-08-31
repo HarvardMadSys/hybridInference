@@ -456,7 +456,7 @@ msgstr ""
 
 #: ../developer/configuration.md
 msgid "Adapter"
-msgstr ""
+msgstr "适配器"
 
 #: ../developer/configuration.md
 msgid ""

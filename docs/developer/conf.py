@@ -104,6 +104,19 @@ source_suffix = {
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 
+# Copied verbatim to the site root: the Cloudflare Pages `_redirects` table and
+# the `404.html` it falls back to. Both belong to the published site rather than
+# to any page, and Pages reads them from the output root.
+#
+# Without a 404.html, Pages answers an unmatched path with the site index and
+# HTTP 200 -- a dead link then looks alive to a reader and gets indexed as a
+# duplicate of the home page. The file is deliberately self-contained (no
+# relative asset paths): it is served at whatever depth was requested.
+#
+# `_build_nested_languages` re-runs this build for each translation, so both
+# files also land under `/<code>/`. Harmless -- Pages only reads the root copy.
+html_extra_path = ["_extra"]
+
 # RTD theme options
 html_theme_options = {
     "navigation_depth": 4,

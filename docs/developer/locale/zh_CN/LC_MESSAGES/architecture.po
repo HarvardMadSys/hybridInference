@@ -606,7 +606,7 @@ msgstr ""
 
 #: ../developer/architecture.md:270
 msgid "Adapters"
-msgstr ""
+msgstr "适配器"
 
 #: ../developer/architecture.md:272
 msgid ""
@@ -981,7 +981,7 @@ msgstr ""
 
 #: ../developer/architecture.md
 msgid "API key"
-msgstr ""
+msgstr "API 密钥"
 
 #: ../developer/architecture.md
 msgid "Anthropic-compatible inference"

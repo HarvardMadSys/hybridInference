@@ -758,7 +758,7 @@ msgstr ""
 
 #: ../developer/adding-models.md
 msgid "Kind"
-msgstr ""
+msgstr "类型"
 
 #: ../developer/adding-models.md
 msgid "Category"
@@ -774,7 +774,7 @@ msgstr ""
 
 #: ../developer/adding-models.md
 msgid "OpenAI-compat"
-msgstr ""
+msgstr "OpenAI 兼容"
 
 #: ../developer/adding-models.md
 msgid "Generic OpenAI-compatible endpoint; use when no specific kind fits"
