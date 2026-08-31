@@ -149,7 +149,9 @@ For the full diagram (network layer, observability, storage), see
 | `distributions/<name>/config/routing.yaml` | Local/remote split, health checks — a deployment's; the gateway starts without one |
 | `distributions/<name>/config/alerts.yaml` | Alert rules — a deployment's, not the project's |
 
-YAML supports env var interpolation: `${VAR}` and `${VAR:-default}`.
+YAML supports env var interpolation, in two dialects: the model registry
+substitutes only a whole `${VAR}` value, while the routing and alert files also
+handle `${VAR:-default}` and variables embedded in longer strings.
 
 ### 6.4 Tests: markers and tiers
 

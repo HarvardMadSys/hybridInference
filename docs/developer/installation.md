@@ -22,7 +22,7 @@ needs nothing but network access to the index.
 ## Quick start with Docker
 
 ```bash
-git clone <repository-url> hybridinference
+git clone https://github.com/HarvardMadSys/hybridInference.git hybridinference
 cd hybridinference
 cp .env.example .env
 ```
@@ -99,7 +99,7 @@ changed. To point the gateway at your own registry instead, see
 ## Development checkout (no Docker)
 
 ```bash
-git clone <repository-url> hybridinference
+git clone https://github.com/HarvardMadSys/hybridInference.git hybridinference
 cd hybridinference
 
 make setup-dev
@@ -175,9 +175,11 @@ the default registry needs, everything in `.env.example` is optional. The ones y
 ### Provider credentials
 
 There is no fixed list of provider variables in the code. A model registry
-interpolates `${VAR}` and `${VAR:-default}` when it is loaded
-(`_expand_env_value` in `apps/backend/routing/config.py`), so the provider
-credentials a deployment needs are exactly the variables its own registry names:
+substitutes any value that is exactly `${VAR}` when it is loaded, so the
+provider credentials a deployment needs are exactly the variables its own
+registry names. Note the registry's expander is the narrow one: whole values
+only, with no `${VAR:-default}` and no substitution inside a longer string. See
+[Configuration](configuration.md) for the difference from the routing file.
 
 ```yaml
 route:
@@ -247,6 +249,21 @@ curl -s http://localhost:8080/v1/chat/completions \
 
 Drop the `Authorization` header if you set `USER_AUTH_ENABLED=0`. Use a model id
 that `/v1/models` actually listed.
+
+The same call from the OpenAI Python SDK — the gateway is the `base_url`, and
+nothing else about an existing client changes:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(api_key="<your-api-key>", base_url="http://localhost:8080/v1")
+
+response = client.chat.completions.create(
+    model="<model-id>",
+    messages=[{"role": "user", "content": "Say hello."}],
+)
+print(response.choices[0].message.content)
+```
 
 ## Documentation
 

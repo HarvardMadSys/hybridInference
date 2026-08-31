@@ -41,8 +41,6 @@ ATTRIBUTION: dict[str, str] = {
         "names the deployment this gateway runs for, and points at it as a "
         "worked example — true, useful to a reader, and not a leak"
     ),
-    "README.user.md": "the same, plus the clone URL",
-    "README.developer.md": "the clone URL, and the same worked example",
     "deploy/docker/docker-compose.yml": (
         "NEXT_PUBLIC_GITHUB_URL defaults to this repository, which is where "
         "the console's source link should point"
@@ -52,6 +50,20 @@ ATTRIBUTION: dict[str, str] = {
         "for why each neutral default is what it is"
     ),
     "docs/developer/router-tutorial.md": "the clone URL, same as installation.md",
+    "docs/developer/installation.md": "the clone URL, same as router-tutorial.md",
+    "SECURITY.md": (
+        "names the repository's advisory URL, and names FreeInference to scope "
+        "it out — one deployment of this software is not the software"
+    ),
+    "docs/developer/index.rst": (
+        "the repository and issue-tracker URLs — a published doc site that "
+        "cannot name its own source is the defect, not the naming"
+    ),
+    "docs/developer/routing.md": (
+        "links the MIT-licensed RouteWise package repository, cited the way a dependency is"
+    ),
+    "docs/developer/locale/zh_CN/LC_MESSAGES/index.po": "the same URLs, inside their translation",
+    "docs/developer/locale/zh_CN/LC_MESSAGES/routing.po": "the same URL, inside its translation",
     "CLAUDE.md": (
         "links to the public sibling cloud-agent repository, cited the way a dependency is"
     ),

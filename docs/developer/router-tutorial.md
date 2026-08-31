@@ -47,7 +47,7 @@ needed if you continue to Stage 3 with a GPU-backed local server.
 Clone the repository and start the runnable distribution:
 
 ```bash
-git clone <repository-url> hybridinference
+git clone https://github.com/HarvardMadSys/hybridInference.git hybridinference
 cd hybridinference
 
 make up DISTRIBUTION=example
