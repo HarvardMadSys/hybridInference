@@ -15,20 +15,6 @@ The people behind the project are visible where the work happens: the
 [contributors page](https://github.com/HarvardMadSys/hybridInference/graphs/contributors)
 lists everyone who has landed a change.
 
-## How to cite
-
-If you use HybridInference or RouteWise in your research, cite the RouteWise
-paper:
-
-```bibtex
-@inproceedings{tian2027routewise,
-  title     = {{RouteWise}: Latency--Cost Optimization for Multi-Provider LLM Routing},
-  author    = {Muxin Tian and Haoran Ni and Yiyan Zhai and Yangsun Park and Juncheng Yang},
-  booktitle = {Proceedings of the 22nd European Conference on Computer Systems (EuroSys '27)},
-  year      = {2027}
-}
-```
-
 ## See it running
 
 [FreeInference](https://freeinference.org/) is the lab's own deployment of

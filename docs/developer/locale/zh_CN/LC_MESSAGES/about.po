@@ -54,16 +54,6 @@ msgstr ""
 "项目背后的人就在工作发生的地方:[贡献者页面](https://github.com/HarvardMadSys/hybridInference/graphs/contributors)"
 "列出了每一位提交过变更的人。"
 
-#: ../developer/about.md:18
-msgid "How to cite"
-msgstr "如何引用"
-
-#: ../developer/about.md:20
-msgid ""
-"If you use HybridInference or RouteWise in your research, cite the "
-"RouteWise paper:"
-msgstr "如果你在研究中使用 HybridInference 或 RouteWise,请引用 RouteWise 论文:"
-
 #: ../developer/about.md:36
 msgid "See it running"
 msgstr "看看线上实例"
