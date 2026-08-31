@@ -132,7 +132,6 @@ ALLOWLIST: dict[str, str] = {
     ),
     ".env.oncall.example": "on-call site config example — step-2 move",
     ".env.example": "one commented overlay-manifest path, which is the example that works",
-    "benchmark/": "paper artifacts — step-2 per ownership inventory",
     "Makefile": "a comment naming the sibling cloud-agent repository",
 }
 

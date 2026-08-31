@@ -37,7 +37,6 @@ PATTERNS: dict[str, re.Pattern[str]] = {
 # entry when its findings have moved out or been neutralized. A strict run is
 # clean only when this mapping is empty and no unclassified finding remains.
 PENDING: dict[str, str] = {
-    "benchmark/": "machine-specific benchmark configuration",
     "docs/agents/": "historical plans and specs",
     "docs/superpowers/": "historical plans and specs",
     "tests/": "production-shaped fixtures awaiting neutralization or migration",

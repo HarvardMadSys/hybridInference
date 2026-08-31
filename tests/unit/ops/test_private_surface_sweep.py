@@ -25,6 +25,15 @@ def test_each_private_surface_shape_is_detected(label: str) -> None:
     assert sweep_module.PATTERNS[label].search(_SAMPLES[label])
 
 
+@pytest.mark.parametrize(
+    "value",
+    ["sample-node" + "-4-docker-1", "sample-node" + "-7", "sample-node" + "-9"],
+)
+def test_gpu_fleet_hostnames_are_detected(value: str) -> None:
+    """The fleet's GPU node names count as internal hostnames too."""
+    assert sweep_module.PATTERNS["internal hostname"].search(value)
+
+
 @pytest.mark.parametrize("value", ["/home/agent", "/home/somebody"])
 def test_stable_service_and_placeholder_homes_are_not_personal(value: str) -> None:
     """The guard stays focused on copied developer-machine paths."""
