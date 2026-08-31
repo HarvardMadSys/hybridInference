@@ -1,0 +1,50 @@
+# Cloudflare Pages redirect table for the published docs site.
+#
+# Read at the site root only, so this file has to carry the rules for every
+# language tree. Without it a retired URL does not 404 -- Pages falls back to
+# the site index and answers 200, which makes a dead link look alive to both
+# readers and search engines.
+#
+# Two kinds of rule live here:
+#
+#   1. Renames. A page that moved keeps its old address working. Add a line
+#      here in the same PR that renames the file, and add the /zh_CN/ twin.
+#   2. Language-code guesses. The published Chinese tree is /zh_CN/ (the
+#      gettext locale name); /zh and /zh-cn are what a reader actually types.
+#
+# Pages matches these before serving a file, and only the first match wins, so
+# specific rules go above wildcards. The .html twins are here because Pages
+# only rewrites .html to its clean URL after this table has had its say.
+
+# --- Renames -----------------------------------------------------------
+# "Edge and Console Routing" -> "The Public Path Table" (#1339)
+/edge-and-console-routing              /public-path-table                301
+/edge-and-console-routing.html         /public-path-table                301
+/zh_CN/edge-and-console-routing        /zh_CN/public-path-table          301
+/zh_CN/edge-and-console-routing.html   /zh_CN/public-path-table          301
+
+# The operator's production-edge page, split and neutralised (#1330)
+/freeinference                         /public-path-table                301
+/freeinference.html                    /public-path-table                301
+/zh_CN/freeinference                   /zh_CN/public-path-table          301
+/zh_CN/freeinference.html              /zh_CN/public-path-table          301
+
+# Client IP resolution, folded into the trusted-proxies page (#1332)
+/client-ip                             /trusted-proxies-and-client-ips   301
+/client-ip.html                        /trusted-proxies-and-client-ips   301
+/zh_CN/client-ip                       /zh_CN/trusted-proxies-and-client-ips  301
+/zh_CN/client-ip.html                  /zh_CN/trusted-proxies-and-client-ips  301
+
+# Harvard-cluster runbook, generalised to any HPC host (#1330)
+/fasrc                                 /hpc-model-host                   301
+/fasrc.html                            /hpc-model-host                   301
+/zh_CN/fasrc                           /zh_CN/hpc-model-host             301
+/zh_CN/fasrc.html                      /zh_CN/hpc-model-host             301
+
+# --- Language-code guesses ---------------------------------------------
+/zh                                    /zh_CN/                           301
+/zh/*                                  /zh_CN/:splat                     301
+/zh-cn                                 /zh_CN/                           301
+/zh-cn/*                               /zh_CN/:splat                     301
+/zh-CN                                 /zh_CN/                           301
+/zh-CN/*                               /zh_CN/:splat                     301

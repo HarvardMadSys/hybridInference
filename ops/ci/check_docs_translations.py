@@ -97,6 +97,14 @@ def _po_entries(text: str) -> list[tuple[str, str, str]]:
     return out
 
 
+# Built HTML that is not a translatable page, so it has no catalog and no
+# translated twin to compare against. Sphinx generates the first three; `404`
+# is the static Cloudflare Pages fallback copied verbatim from
+# `docs/developer/_extra/` by `html_extra_path`, which is why it carries its
+# own bilingual text instead of a `.po`.
+NON_PAGE_STEMS = {"genindex", "search", "py-modindex", "404"}
+
+
 def check_catalogs(locale_dir: Path) -> list[str]:
     """Report fuzzy entries, which Sphinx silently renders as English."""
     problems = []
@@ -115,7 +123,7 @@ def check_catalogs(locale_dir: Path) -> list[str]:
 def check_coverage(build_dir: Path, locale_dir: Path, languages: list[str]) -> list[str]:
     """Report pages a language has no catalog for, which render fully in English."""
     problems = []
-    pages = {p.stem for p in build_dir.glob("*.html")} - {"genindex", "search", "py-modindex"}
+    pages = {p.stem for p in build_dir.glob("*.html")} - NON_PAGE_STEMS
     for lang in languages:
         messages = locale_dir / lang / "LC_MESSAGES"
         if not messages.is_dir():
@@ -195,6 +203,8 @@ def check_structure(build_dir: Path, languages: list[str]) -> list[str]:
             problems.append(f"{lang_dir}: the build produced no such language directory")
             continue
         for source_page in sorted(build_dir.glob("*.html")):
+            if source_page.stem in NON_PAGE_STEMS:
+                continue
             translated = lang_dir / source_page.name
             if not translated.exists():
                 problems.append(f"{translated}: missing from the {lang} build")

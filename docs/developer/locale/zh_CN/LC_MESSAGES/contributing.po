@@ -208,7 +208,7 @@ msgstr "位置"
 
 #: ../developer/contributing.md
 msgid "Marker"
-msgstr ""
+msgstr "标记"
 
 #: ../developer/contributing.md
 msgid "In `make test`?"
@@ -631,7 +631,7 @@ msgstr ""
 
 #: ../developer/contributing.md
 msgid "Job"
-msgstr ""
+msgstr "作业"
 
 #: ../developer/contributing.md
 msgid "What it does"

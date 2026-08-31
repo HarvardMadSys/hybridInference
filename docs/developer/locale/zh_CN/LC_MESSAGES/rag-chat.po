@@ -464,7 +464,7 @@ msgstr ""
 
 #: ../developer/rag-chat.md
 msgid "falls back to `LOCAL_API_KEY`"
-msgstr ""
+msgstr "回落到 `LOCAL_API_KEY`"
 
 #: ../developer/rag-chat.md
 msgid ""

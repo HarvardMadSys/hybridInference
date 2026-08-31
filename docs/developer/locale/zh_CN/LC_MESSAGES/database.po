@@ -440,7 +440,7 @@ msgstr "按国家统计的小时级请求数和 token 数；只有聚合值，�
 
 #: ../developer/database.md
 msgid "Agent grants"
-msgstr ""
+msgstr "智能体授权"
 
 #: ../developer/database.md
 msgid "`agent_grants`"
