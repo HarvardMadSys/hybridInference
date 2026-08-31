@@ -121,7 +121,7 @@ DOCKER_IMAGE_FILES = {
 # repo-root README counts as docs regardless of directory.
 DOCS_FILES = frozenset({"LICENSE"})
 DOCS_PREFIXES = ("docs/",)
-# Sphinx source tree for the internal doc site (internaldoc.freeinference.org).
+# Sphinx source tree for the developer doc site (doc.hybridinference.org).
 # Only this subtree feeds `sphinx-build docs/developer`, so it -- not docs in
 # general -- gates the docs build. The toctree is self-contained and no page
 # uses autodoc, so nothing outside this prefix can break that build.
