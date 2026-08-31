@@ -183,6 +183,32 @@ Use `/health/ready` for a strict readiness probe: it applies AND-logic across
 configured stores and returns 503 unless every one of them is up.
 `/health/deep` additionally reports per-endpoint health.
 
+### Marking monitor traffic
+
+A monitor that drives real inference — hitting `/v1/chat/completions` on a
+schedule to measure a backend end to end, rather than just polling `/health` —
+would otherwise land in `api_logs`, skew the dashboards, and feed RouteWise's
+online learning as if it were user demand. Send `X-Probe: synthetic` on those
+requests to keep them out: a marked request is left out of `api_logs` (and its
+rejections out of the rejection log), does not record a routing observation,
+and carries an `X-Provider` response header naming the backend that answered,
+so the monitor can confirm which route it exercised.
+
+The marker is honoured **only from an authenticated internal- or admin-role API
+key** — never a free/pro key, an agent-sandbox grant, or, importantly, an
+anonymous caller on a deployment running with `USER_AUTH_ENABLED=0` (auth-off
+hands every caller the admin role, which is not the same as holding a monitor
+identity). From any other caller the header is ignored and the request is
+logged like ordinary traffic. A deployment that needs probes without auth wants
+an explicit mechanism — a shared secret, a source allowlist — not this header.
+
+The one thing the marker never touches is billing: cost and quota are
+incremented unconditionally on every surface, for trusted and untrusted callers
+alike, so a probe cannot be used to obtain unmetered inference. To keep marked
+traffic in `api_logs` after all — to see a monitor's real latency and spend in
+the requests dashboard — turn on the `log_synthetic_probes` runtime setting;
+the routing-observation and `X-Provider` behaviour is unchanged.
+
 ## Alerting
 
 The backend has an in-process alert engine that posts to a Slack webhook. It is
