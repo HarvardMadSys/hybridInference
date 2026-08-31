@@ -122,3 +122,9 @@ how those overlays resolve.
    :caption: Contributing
 
    contributing
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Project
+
+   about

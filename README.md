@@ -1,6 +1,6 @@
 # HybridInference
 
-HybridInference is an open-source multi-provider LLM gateway, and the production reference integration of [RouteWise](#routewise), the cost--latency routing system from our EuroSys '27 paper. It routes requests across local inference servers and remote OpenAI-compatible providers, and turns RouteWise's per-request decision into a deployable system: provider adapters, an OpenAI-compatible API, health-aware fallback, observability, configuration, and a control plane. It powers FreeInference, and can be self-hosted as a standalone gateway.
+HybridInference is an open-source multi-provider LLM gateway, and the production reference integration of [RouteWise](#routewise), the cost--latency routing system from our EuroSys '27 paper. It routes requests across local inference servers and remote OpenAI-compatible providers, and turns RouteWise's per-request decision into a deployable system: provider adapters, an OpenAI-compatible API, health-aware fallback, observability, configuration, and a control plane. It powers FreeInference, and can be self-hosted as a standalone gateway. HybridInference is developed by the [Harvard MadSys Lab](https://juncheng.seas.harvard.edu/) at Harvard SEAS.
 
 ## Quickstart
 

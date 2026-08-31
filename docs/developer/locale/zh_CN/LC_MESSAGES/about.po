@@ -1,0 +1,106 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-31 14:50+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/about.md:1
+msgid "About"
+msgstr "关于"
+
+#: ../developer/about.md:3
+msgid "The project and the lab"
+msgstr "项目与实验室"
+
+#: ../developer/about.md:5
+msgid ""
+"HybridInference is developed by the [Harvard MadSys "
+"Lab](https://juncheng.seas.harvard.edu/) at the Harvard John A. Paulson "
+"School of Engineering and Applied Sciences, and published under the [MIT "
+"license](https://github.com/HarvardMadSys/hybridInference/blob/main/LICENSE)."
+" The routing system at its center, RouteWise, is the subject of the lab's"
+" EuroSys '27 paper and ships separately as the MIT-licensed [`llm-"
+"routewise`](https://github.com/HarvardMadSys/RouteWise) library; this "
+"gateway is its production reference integration."
+msgstr ""
+"HybridInference 由哈佛大学约翰·A·保尔森工程与应用科学学院的 [Harvard "
+"MadSys 实验室](https://juncheng.seas.harvard.edu/)开发,以 [MIT "
+"许可证](https://github.com/HarvardMadSys/hybridInference/blob/main/LICENSE)发布。"
+"其核心的路由系统 RouteWise 是实验室 EuroSys '27 论文的研究对象,并作为 MIT 许可的 [`llm-"
+"routewise`](https://github.com/HarvardMadSys/RouteWise) 库独立发布;本网关是它的生产参考集成。"
+
+#: ../developer/about.md:14
+msgid ""
+"The people behind the project are visible where the work happens: the "
+"[contributors "
+"page](https://github.com/HarvardMadSys/hybridInference/graphs/contributors)"
+" lists everyone who has landed a change."
+msgstr ""
+"项目背后的人就在工作发生的地方:[贡献者页面](https://github.com/HarvardMadSys/hybridInference/graphs/contributors)"
+"列出了每一位提交过变更的人。"
+
+#: ../developer/about.md:18
+msgid "How to cite"
+msgstr "如何引用"
+
+#: ../developer/about.md:20
+msgid ""
+"If you use HybridInference or RouteWise in your research, cite the "
+"RouteWise paper:"
+msgstr "如果你在研究中使用 HybridInference 或 RouteWise,请引用 RouteWise 论文:"
+
+#: ../developer/about.md:32
+msgid ""
+"The repository also carries a "
+"[`CITATION.cff`](https://github.com/HarvardMadSys/hybridInference/blob/main/CITATION.cff),"
+" so GitHub's \"Cite this repository\" button produces the same reference."
+msgstr ""
+"仓库中还带有 "
+"[`CITATION.cff`](https://github.com/HarvardMadSys/hybridInference/blob/main/CITATION.cff),"
+"因此 GitHub 的 \"Cite this repository\" 按钮会生成同样的引用。"
+
+#: ../developer/about.md:36
+msgid "See it running"
+msgstr "看看线上实例"
+
+#: ../developer/about.md:38
+msgid ""
+"[FreeInference](https://freeinference.org/) is the lab's own deployment "
+"of this gateway. A deployment's identity — branding, team, sponsors, "
+"user-facing documentation — lives with the deployment, in its overlay and"
+" on its own site, not in this repository. That separation is why these "
+"pages name no default provider and no team: a fresh clone comes up as "
+"your gateway, not ours."
+msgstr ""
+"[FreeInference](https://freeinference.org/) 是实验室自己运营的本网关部署。"
+"一个部署的身份——品牌、团队、赞助商、面向用户的文档——随部署走,放在它自己的 overlay "
+"和站点里,而不在本仓库中。正因为这种分离,这些页面不会写死任何默认 provider "
+"或团队:新克隆下来的是你自己的网关,而不是我们的。"
+
+#: ../developer/about.md:45
+msgid "Getting in touch"
+msgstr "联系我们"
+
+#: ../developer/about.md:47
+msgid ""
+"Bugs and questions go to the [issue "
+"tracker](https://github.com/HarvardMadSys/hybridInference/issues); "
+"patches follow the [contributing guide](contributing.md)."
+msgstr ""
+"Bug 与问题请提交到[问题跟踪器](https://github.com/HarvardMadSys/hybridInference/issues);"
+"补丁请遵循[贡献指南](contributing.md)。"
