@@ -9,6 +9,7 @@ Usage:
     print(config.MODEL_REPO, config.MAX_MODEL_LEN)
 """
 
+import os
 from pathlib import Path
 from typing import Final
 
@@ -16,8 +17,9 @@ REPO_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 
 # Model
 MODEL_REPO: Final[str] = "Qwen/Qwen3.6-35B-A3B-FP8"
-# Local weight store; adjust to wherever download_model.sh placed the weights.
-MODEL_DIR: Final[Path] = Path("/models/Qwen3.6-35B-A3B-FP8")
+# Local weight store. Honors the same MODEL_DIR override as the engine
+# scripts, so the orchestrator and the engines agree on where weights live.
+MODEL_DIR: Final[Path] = Path(os.environ.get("MODEL_DIR", "/models/Qwen3.6-35B-A3B-FP8"))
 
 # Server config (held constant across engines)
 MAX_MODEL_LEN: Final[int] = 135168  # 132K — fits 128K input + output headroom

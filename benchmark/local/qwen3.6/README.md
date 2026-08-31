@@ -46,7 +46,7 @@ Each engine runs in its own official Docker container:
 | sglang | `lmsysorg/sglang:latest` (`7515a1e626d2`) | 55 GB |
 | TensorRT-LLM | `nvcr.io/nvidia/tensorrt-llm/release:latest` (`e0d966e2daec`) | 77 GB |
 
-Docker + NVIDIA Container Toolkit installed via [`scripts/setup_docker.sh`](scripts/setup_docker.sh) (passwordless sudo). Model weights downloaded via [`scripts/download_model.sh`](scripts/download_model.sh) to the local weight store (default `/models/Qwen3.6-35B-A3B-FP8`; the scripts honor `MODEL_DIR`/`DEST` overrides).
+Docker + NVIDIA Container Toolkit installed via [`scripts/setup_docker.sh`](scripts/setup_docker.sh) (passwordless sudo). Model weights downloaded via [`scripts/download_model.sh`](scripts/download_model.sh) to the local weight store (default `/models/Qwen3.6-35B-A3B-FP8`; the scripts honor `MODEL_DIR`/`DEST` overrides). Create the store once with `sudo mkdir -p /models && sudo chown $USER /models`, or point the overrides at any writable directory.
 
 ### 2.3 Engine configuration (held identical across all engines)
 

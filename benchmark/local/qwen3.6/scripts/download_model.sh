@@ -10,7 +10,12 @@ set -euo pipefail
 REPO=Qwen/Qwen3.6-35B-A3B-FP8
 DEST=${DEST:-/models/Qwen3.6-35B-A3B-FP8}
 
-mkdir -p "$DEST"
+if ! mkdir -p "$DEST" 2>/dev/null; then
+  echo "Cannot create $DEST. Create the weight store once:" >&2
+  echo "  sudo mkdir -p /models && sudo chown \$USER /models" >&2
+  echo "or point DEST (and MODEL_DIR for the engine scripts) somewhere writable." >&2
+  exit 1
+fi
 
 # Prefer the new `hf` CLI if available; fall back to the older `huggingface-cli`.
 if command -v hf >/dev/null 2>&1; then

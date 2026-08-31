@@ -48,6 +48,12 @@ if [[ "${1:-}" == "--no-tunnel" ]]; then
   NO_TUNNEL=true
 fi
 
+# Fail before the models spend minutes loading, not after.
+if ! $NO_TUNNEL && [[ -z "$SSH_HOST" ]]; then
+  echo "[serve] Set SSH_HOST=user@gateway-host (or pass --no-tunnel)." >&2
+  exit 1
+fi
+
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 TUNNEL_PID=""
 
@@ -120,10 +126,6 @@ if $NO_TUNNEL; then
   echo "[serve] --no-tunnel set; skipping SSH tunnel. Press Ctrl-C to stop."
   wait
 else
-  if [ -z "$SSH_HOST" ]; then
-    echo "[serve] Set SSH_HOST=user@gateway-host (or pass --no-tunnel)." >&2
-    exit 1
-  fi
   echo "[serve] Opening reverse tunnels on ${SSH_HOST}:"
   echo "[serve]   ${SSH_HOST}:${REMOTE_PORT_27B} → localhost:${PORT_27B}  (27B)"
   echo "[serve]   ${SSH_HOST}:${REMOTE_PORT_35B} → localhost:${PORT_35B}  (35B)"
