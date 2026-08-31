@@ -1,4 +1,4 @@
-# Edge and Console Routing
+# The Public Path Table
 
 HybridInference ships two long-running HTTP services: the FastAPI gateway
 (`apps/backend`) and a Next.js console (`apps/frontend`). Only one of them needs

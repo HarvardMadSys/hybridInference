@@ -45,7 +45,7 @@ are yours to supply. Point it at `${BACKEND_HOST}:${BACKEND_PORT}` and
 Which public paths the console serves itself and which it forwards to the
 backend is a separate question, and the answer is in the console's own
 `next.config.js` rather than in any proxy config. See
-[Edge and console routing](edge-and-console-routing.md).
+[The public path table](public-path-table.md).
 
 ## Everyday operations
 
