@@ -55,6 +55,7 @@ from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip
+from serving.utils.synthetic_probe import is_trusted_probe
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
@@ -529,10 +530,22 @@ async def chat_completions(
     except Exception as e:
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
-    is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
-    # ``log_synthetic_probes`` opts probe traffic into api_logs persistence so it
-    # (and its real usage/cost) shows in the requests dashboard. The per-user
-    # quota increment and X-Provider header stay keyed on ``is_synthetic_probe``.
+    # The probe marker is honoured only from a caller who cannot abuse it: an
+    # authenticated internal/admin key, never an agent-sandbox credential.
+    # An untrusted caller's header is simply ignored — the request logs,
+    # records routing observations and gets no X-Provider header, like any
+    # other traffic. See serving/utils/synthetic_probe.py.
+    is_synthetic_probe = is_trusted_probe(request, user_ctx)
+    # Published immediately, before any of the early 404/403 exits below:
+    # RequestLogMiddleware demotes probe request lines from this ctx key, so a
+    # later publish would leave a trusted probe's unknown-model 404 suppressed
+    # in api_logs yet logged at INFO — the two noise controls disagreeing
+    # about the same request.
+    req_ctx.update({"synthetic_probe": is_synthetic_probe})
+    # ``log_synthetic_probes`` opts probe traffic into api_logs persistence so
+    # it (and its real usage/cost) shows in the requests dashboard. The
+    # X-Provider header stays keyed on ``is_synthetic_probe``; the per-user
+    # quota increment is unconditional (the marker affects noise, never money).
     # A setting read failure defaults to suppression.
     log_synthetic_probes = False
     if (
@@ -737,7 +750,8 @@ async def chat_completions(
             "request_id": request_id,
             "auth_key_hash": auth_key_hash or "_anon",
             "affinity_key": affinity_key,
-            "synthetic_probe": is_synthetic_probe,
+            # synthetic_probe is already published, right after the trust
+            # check — before the early 404/403 exits above.
             # User identity for failure attribution — the routing layer reads
             # these to name the offending users in circuit-breaker alerts.
             "user_id": user_id,
@@ -1003,25 +1017,26 @@ async def chat_completions(
         # Increment daily cost counter for billed requests (non-streaming).
         # Done before the log payload assembly so the row sees the
         # cost-tracker-populated ``upstream_cost_usd`` on ``routing``.
-        if not is_synthetic_probe:
-            _ns_usage = (
-                normalize_usage(response.get("usage")) if isinstance(response, dict) else None
-            ) or {}
-            if _ns_usage:
-                routing = await cost_tracker.schedule_increment(
-                    user_id=user_id,
-                    routing=routing,
-                    prompt_tokens=int(_ns_usage.get("prompt_tokens", 0) or 0),
-                    completion_tokens=int(_ns_usage.get("completion_tokens", 0) or 0),
-                    total_tokens=(
-                        int(_ns_usage["total_tokens"])
-                        if _ns_usage.get("total_tokens") is not None
-                        else None
-                    ),
-                    cache_read_tokens=int(_ns_usage.get("cache_read_tokens", 0) or 0),
-                    cache_write_tokens=int(_ns_usage.get("cache_write_tokens", 0) or 0),
-                    reasoning_tokens=int(_ns_usage.get("reasoning_tokens", 0) or 0),
-                )
+        # Unconditional — probes included: the ``x-probe`` header must be able
+        # to affect log noise but never cost/quota (mirrors embeddings.py).
+        _ns_usage = (
+            normalize_usage(response.get("usage")) if isinstance(response, dict) else None
+        ) or {}
+        if _ns_usage:
+            routing = await cost_tracker.schedule_increment(
+                user_id=user_id,
+                routing=routing,
+                prompt_tokens=int(_ns_usage.get("prompt_tokens", 0) or 0),
+                completion_tokens=int(_ns_usage.get("completion_tokens", 0) or 0),
+                total_tokens=(
+                    int(_ns_usage["total_tokens"])
+                    if _ns_usage.get("total_tokens") is not None
+                    else None
+                ),
+                cache_read_tokens=int(_ns_usage.get("cache_read_tokens", 0) or 0),
+                cache_write_tokens=int(_ns_usage.get("cache_write_tokens", 0) or 0),
+                reasoning_tokens=int(_ns_usage.get("reasoning_tokens", 0) or 0),
+            )
 
         # Background DB log so the row write doesn't block the HTTP response.
         if log_store and not suppress_synthetic_logging:

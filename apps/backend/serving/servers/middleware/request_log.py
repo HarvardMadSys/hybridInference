@@ -87,7 +87,13 @@ class RequestLogMiddleware:
             "client_error_kind": ctx.get(req_ctx.CLIENT_ERROR_KIND),
         }
         is_quiet_path = request.url.path in _QUIET_PATHS
-        is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
+        # The handler publishes its trusted-probe verdict into req_ctx
+        # (completions and embeddings both do). Reading the header here
+        # instead would demote the request line for *any* caller who sends
+        # ``X-Probe: synthetic`` — a free way to keep scanning traffic out of
+        # the INFO log. A request that never reached a publishing handler
+        # (rejected early, or a non-inference path) logs at its normal level.
+        is_synthetic_probe = bool(ctx.get("synthetic_probe"))
 
         # A 401 the gateway issued itself is routine SPA token-refresh churn and
         # stays at DEBUG. A 401 relayed from an upstream is the opposite: the

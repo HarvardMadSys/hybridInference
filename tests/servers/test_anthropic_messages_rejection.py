@@ -77,3 +77,78 @@ async def test_anthropic_unknown_model_logs_rejection(monkeypatch):
     assert log_calls[0]["error_code"] == "model_not_found"
     assert log_calls[0]["model_id"] == "claude-bogus-9000"
     assert log_calls[0]["user"]["user_id"] == "u1"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_rejection_passes_probe_trust_fields(monkeypatch):
+    """The rejection call hands log_rejection the *full* caller context.
+
+    The rejection log's probe-trust check reads ``authenticated`` and the
+    agent-grant fields; a ``{user_id, role}`` projection (the original shape)
+    made a trusted monitor's rejection log as ordinary traffic. Asserted with
+    the production predicate so the test states exactly the property the
+    fix restores.
+    """
+    from serving.utils.synthetic_probe import is_trusted_probe_caller
+
+    log_calls: list[dict] = []
+
+    async def fake_log_rejection(**kwargs):
+        log_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "serving.servers.routers.anthropic_messages.log_rejection",
+        fake_log_rejection,
+    )
+
+    from serving.servers.routers import anthropic_messages as mod
+
+    app = FastAPI()
+    app.include_router(mod.router)
+
+    prober = {"user_id": "prober", "role": "internal", "is_admin": False, "authenticated": True}
+
+    fake_router = MagicMock()
+    fake_router.routes = {}
+
+    async def _verify():
+        return prober
+
+    async def _get_router():
+        return fake_router
+
+    async def _get_log_store():
+        return MagicMock()
+
+    async def _enforce():
+        yield
+
+    app.dependency_overrides[verify_api_key] = _verify
+    app.dependency_overrides[get_router] = _get_router
+    app.dependency_overrides[get_log_store] = _get_log_store
+    app.dependency_overrides[enforce_user_concurrency] = _enforce
+
+    app.state.services = type("S", (), {})()
+    app.state.services.log_store = MagicMock()
+    app.state.services.operational_store = None
+    app.state.services.runtime_settings = MagicMock()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/anthropic/v1/messages",
+            json={
+                "model": "claude-bogus-9000",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers={"Authorization": "Bearer test", "X-Probe": "synthetic"},
+        )
+        await asyncio.sleep(0)
+
+    assert resp.status_code == 404
+    assert len(log_calls) == 1
+    assert is_trusted_probe_caller(log_calls[0]["user"]), (
+        "log_rejection must receive enough of the caller context for the "
+        "probe-trust check to recognise this internal monitor"
+    )

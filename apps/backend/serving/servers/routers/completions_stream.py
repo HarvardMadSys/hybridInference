@@ -240,11 +240,14 @@ class StreamSession:
             metadata: Mutable metadata dict the handler will update with
                 adapter routing keys (minus ``upstream_cost_usd``).
             user_id: Stable user identifier for cost increments.
-            is_synthetic_probe: Skip DB / cost / observation side effects.
+            is_synthetic_probe: Skip the routing-observation side effects.
+                Only ever True for a *trusted* probe caller (the handler
+                resolves it via ``serving.utils.synthetic_probe``). Cost is
+                never skipped — the marker affects noise, not money.
             suppress_synthetic_logging: Skip only the api_logs persistence for
                 this request. Separate from ``is_synthetic_probe`` so the
-                ``log_synthetic_probes`` admin toggle can log probes (with their
-                cost) while still excluding them from per-user quota and metrics.
+                ``log_synthetic_probes`` admin toggle can log probes (with
+                their cost) while still excluding them from request metrics.
             log_store: ``LogStore`` instance — gating only; the
                 ``CompletionsLogger`` performs the actual writes.
             active_router: Router used for the routing observation.
@@ -671,7 +674,9 @@ class StreamSession:
         # CostTracker (same fire-and-forget semantics as before; the
         # tracker also populates self._routing.upstream_cost_usd so the
         # subsequent log-payload assembly sees the new value).
-        if not self._is_synthetic_probe and self._adapter_routing:
+        # Unconditional w.r.t. the probe flag: the ``x-probe`` header may
+        # affect log noise but never cost/quota (mirrors embeddings.py).
+        if self._adapter_routing:
             _usage = response_for_db.get("usage") or {}
             self._routing = await self._cost_tracker.schedule_increment(
                 user_id=self._user_id,

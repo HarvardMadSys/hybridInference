@@ -152,6 +152,10 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         # reader task. A leftover value would rank the next request -- a
         # different prompt, possibly on a different endpoint.
         "upstream_priority",
+        # Trusted-probe verdict from the inference handlers; the request-log
+        # middleware demotes probe lines from it, so a leftover True would
+        # demote the next request on the task to DEBUG.
+        "synthetic_probe",
     }
 )
 

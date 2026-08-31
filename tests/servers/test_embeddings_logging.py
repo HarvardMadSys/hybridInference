@@ -95,12 +95,17 @@ def _build_app(
     op_store: _CapturingOpStore | None = None,
     *,
     log_synthetic_probes: bool = False,
+    user_role: str = "internal",
 ) -> FastAPI:
+    # ``internal`` by default so the probe-suppression tests exercise a caller
+    # whose X-Probe marker is actually honoured; pass a lower role to model an
+    # untrusted caller.
     app = FastAPI()
     app.include_router(embeddings.router)
 
     app.dependency_overrides[verify_api_key] = lambda: {
         "user_id": "user-emb",
+        "role": user_role,
         "authenticated": True,
     }
     app.dependency_overrides[enforce_user_concurrency] = lambda: None
@@ -424,6 +429,25 @@ async def test_synthetic_probe_unknown_model_not_logged_by_default():
     resp = await _post(app, {"model": "nope", "input": "hi"}, headers=_PROBE_HEADERS)
     assert resp.status_code == 404
     assert logger.calls == []
+
+
+@pytest.mark.asyncio
+async def test_probe_marker_from_untrusted_caller_is_ignored():
+    """A free-tier key sending X-Probe: synthetic gets no probe treatment: the
+    request is logged untagged and billed, exactly like ordinary traffic —
+    otherwise the caller-controlled header would be a self-service opt-out
+    from the request log.
+    """
+    adapter = _FakeAdapter(response=_OK_RESPONSE, pricing=_PAID_PRICING)
+    logger = _CapturingLogger()
+    op_store = _CapturingOpStore()
+    app = _build_app(adapter, logger, op_store, log_synthetic_probes=False, user_role="free")
+
+    resp = await _post(app, {"model": "emb-model", "input": "hi"}, headers=_PROBE_HEADERS)
+    assert resp.status_code == 200
+    assert len(logger.calls) == 1
+    assert "synthetic_probe" not in logger.calls[0][1]["metadata"]
+    assert op_store.increments == [("user-emb", pytest.approx(5 * 1.0 / 1_000_000))]
 
 
 @pytest.mark.asyncio

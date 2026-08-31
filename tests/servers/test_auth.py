@@ -53,6 +53,9 @@ async def test_auth_disabled_returns_anonymous(monkeypatch, mock_request):
     assert result == {
         "user_id": "anonymous",
         "role": "admin",
+        # ``authenticated`` stays False: the synthetic-probe trust check
+        # requires a presented, resolved key, so this context's admin role
+        # opens the API without granting the probe marker.
         "authenticated": False,
         "is_admin": True,
     }

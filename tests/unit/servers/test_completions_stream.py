@@ -454,12 +454,23 @@ async def test_finalization_propagates_usage_and_schedules_cost_when_routing_pre
 
 
 @pytest.mark.asyncio
-async def test_finalization_skipped_for_synthetic_probe():
+async def test_probe_skips_log_and_observation_but_still_bills():
+    """The probe flag suppresses noise, never money.
+
+    The api_logs row and the RouteWise observation are skipped, but the cost
+    increment runs exactly as for ordinary traffic: the (caller-controlled)
+    marker must not be able to gate billing — mirrors the unconditional
+    increment in embeddings.py.
+    """
     log_store = MagicMock()
     log_store.log_request = AsyncMock()
     cl_logger = MagicMock(spec=CompletionsLogger)
     cost_tracker = MagicMock(spec=CostTracker)
-    cost_tracker.schedule_increment = AsyncMock()
+
+    async def _identity_increment(**kwargs):
+        return kwargs["routing"]
+
+    cost_tracker.schedule_increment = AsyncMock(side_effect=_identity_increment)
 
     session = _make_session(
         log_store=log_store,
@@ -467,11 +478,19 @@ async def test_finalization_skipped_for_synthetic_probe():
         completions_logger=cl_logger,
         is_synthetic_probe=True,
     )
-    await _consume(session.stream(_aiter([_content_chunk("gpt-4", "hi", finish="stop")])))
+    chunks = [
+        _routing_chunk("openai"),
+        _content_chunk("gpt-4", "hi", finish="stop"),
+        _usage_chunk("gpt-4", {"prompt_tokens": 5, "completion_tokens": 2}),
+    ]
+    await _consume(session.stream(_aiter(chunks)))
 
     cl_logger.schedule_log.assert_not_called()
     cl_logger.record_routing_observation.assert_not_called()
-    cost_tracker.schedule_increment.assert_not_awaited()
+    cost_tracker.schedule_increment.assert_awaited_once()
+    inc_kwargs = cost_tracker.schedule_increment.call_args.kwargs
+    assert inc_kwargs["prompt_tokens"] == 5
+    assert inc_kwargs["completion_tokens"] == 2
 
 
 # ---------------------------------------------------------------------------

@@ -666,10 +666,15 @@ async def test_capture_skips_a_malformed_content_length():
     assert await capture_rejected_prompt(request) == ""
 
 
+# The deployment's own monitors present authenticated internal/admin keys;
+# only their probe marker is honoured.
+_TRUSTED_PROBE_USER = {"user_id": "prober", "role": "internal", "authenticated": True}
+
+
 @pytest.mark.asyncio
 async def test_synthetic_probe_rejection_suppressed_when_probe_logging_off(fake_log_store):
-    """A probe rejected at the gate is not persisted while log_synthetic_probes
-    is off, even though log_rejected_requests is on.
+    """A trusted probe rejected at the gate is not persisted while
+    log_synthetic_probes is off, even though log_rejected_requests is on.
     """
     rs = _runtime_with({"log_rejected_requests": True, "log_synthetic_probes": False})
     await log_rejection(
@@ -678,15 +683,15 @@ async def test_synthetic_probe_rejection_suppressed_when_probe_logging_off(fake_
         request=_fake_request("/v1/embeddings", headers={"x-probe": "synthetic"}),
         status_code=429,
         error_code="concurrency_limit_exceeded",
-        reason="limit=1 role=free",
-        user={"user_id": "u1", "role": "free"},
+        reason="limit=1 role=internal",
+        user=_TRUSTED_PROBE_USER,
     )
     fake_log_store.log_request.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_synthetic_probe_rejection_logged_when_probe_logging_on(fake_log_store):
-    """When log_synthetic_probes is on, a rejected probe is still persisted."""
+    """When log_synthetic_probes is on, a rejected trusted probe is persisted."""
     rs = _runtime_with({"log_rejected_requests": True, "log_synthetic_probes": True})
     await log_rejection(
         log_store=fake_log_store,
@@ -694,10 +699,47 @@ async def test_synthetic_probe_rejection_logged_when_probe_logging_on(fake_log_s
         request=_fake_request("/v1/embeddings", headers={"x-probe": "synthetic"}),
         status_code=429,
         error_code="concurrency_limit_exceeded",
-        reason="limit=1 role=free",
-        user={"user_id": "u1", "role": "free"},
+        reason="limit=1 role=internal",
+        user=_TRUSTED_PROBE_USER,
     )
     fake_log_store.log_request.assert_awaited_once()
     md = fake_log_store.log_request.await_args.kwargs["metadata"]
     assert md["synthetic_probe"] is True
     assert md["request_type"] == "embedding"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "untrusted_user",
+    [
+        pytest.param({"user_id": "u1", "role": "free", "authenticated": True}, id="free-key"),
+        pytest.param(
+            {
+                "user_id": "owner",
+                "role": "internal",
+                "authenticated": True,
+                "agent_grant_id": "grant-1",
+            },
+            id="agent-grant",
+        ),
+        pytest.param(None, id="unidentified"),
+    ],
+)
+async def test_untrusted_probe_marker_does_not_suppress_rejection(fake_log_store, untrusted_user):
+    """The probe header is caller-controlled: from anyone but an authenticated
+    internal/admin key it must not mute the caller's own rejection row — nor
+    tag it out of the probe-excluding aggregates.
+    """
+    rs = _runtime_with({"log_rejected_requests": True, "log_synthetic_probes": False})
+    await log_rejection(
+        log_store=fake_log_store,
+        runtime_settings=rs,
+        request=_fake_request("/v1/embeddings", headers={"x-probe": "synthetic"}),
+        status_code=429,
+        error_code="concurrency_limit_exceeded",
+        reason="limit=1",
+        user=untrusted_user,
+    )
+    fake_log_store.log_request.assert_awaited_once()
+    md = fake_log_store.log_request.await_args.kwargs["metadata"]
+    assert "synthetic_probe" not in md

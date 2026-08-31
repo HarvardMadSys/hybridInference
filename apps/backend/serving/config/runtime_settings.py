@@ -64,10 +64,11 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "type": "bool",
         "default": False,
         "description": (
-            "Persist synthetic probe requests (X-Probe: synthetic) to api_logs "
-            "so they — and their real usage/cost — appear in the requests "
-            "dashboard, which is useful for tracking monitoring cost. They stay "
-            "excluded from per-user quota increments and the request metrics."
+            "Persist synthetic probe requests (X-Probe: synthetic, honoured "
+            "only from authenticated internal/admin keys) to api_logs so they "
+            "— and their real usage/cost — appear in the requests dashboard, "
+            "which is useful for tracking monitoring cost. They stay excluded "
+            "from the request metrics; quota/cost increments always apply."
         ),
     },
     "force_chat_completions_streaming": {
