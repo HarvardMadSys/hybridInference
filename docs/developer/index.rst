@@ -93,7 +93,7 @@ how those overlays resolve.
 
    architecture
    routing
-   edge-and-console-routing
+   public-path-table
 
 .. toctree::
    :maxdepth: 2

@@ -26,7 +26,7 @@ apps/backend/serving/     # FastAPI app — HTTP layer, SSE streaming, middlewar
 apps/backend/routing/      # Routing engine — strategies, circuit breaker, EWMA health, provider registry
   routewise/               # Per-model routing config
 apps/frontend/             # Next.js frontend
-config/                    # YAML configs: models.yaml, routing.yaml, alerts.yaml, routewise.yaml
+config/                    # YAML configs: models.yaml, routing.yaml, alerts.yaml
 services/                  # sidecar workers, where a deployment ships them
 tests/
   unit/                    # Pure unit tests (mocked adapters, routing logic, auth, config)
@@ -104,8 +104,8 @@ Use this decision tree to find the right area:
 | Error context | Look in |
 |---|---|
 | LLM provider returned unexpected response / timeout | `serving/adapters/` — find the adapter file for the provider (e.g. `claude.py`, `gemini.py`, `openrouter.py`) |
-| Wrong provider selected / "all circuits open" | `routing/routers.py`, `routing/strategies.py`, `routing/health.py` |
-| Model not found / routing config issue | `config/models.yaml`, `config/routing.yaml`, `config/routewise.yaml`, `routing/model_router_registry.py` |
+| Wrong provider selected / "all circuits open" | `routing/routers.py`, `routing/strategies/`, `routing/health.py` |
+| Model not found / routing config issue | `config/models.yaml` (incl. per-model `router:` / `router_params:`), `config/routing.yaml`, `routing/model_router_registry.py` |
 | Auth failure (401/403, bad API key, JWT error) | `serving/auth/`, `serving/servers/auth.py`, `serving/config/settings.py` |
 | SSE streaming interrupted / malformed chunks | `serving/stream.py`, `serving/servers/sse.py` |
 | Database error (connection, query, migration) | `serving/storage/`, check `DB_BACKEND` env var (`postgres` vs `d1`) |
@@ -143,7 +143,7 @@ git diff HEAD~5 -- config/
 ### 2e — Check environment and config
 
 - Compare `.env.example` with `.env` — are required vars set?
-- Check the active config: `config/models.yaml` (model definitions), `config/routing.yaml` (routing strategy), `config/routewise.yaml` (per-model overrides).
+- Check the active config: `config/models.yaml` (model definitions, incl. per-model `router:` / `router_params:` overrides) and `config/routing.yaml` (routing strategy).
 - Settings are `lru_cache`-d — if a test changes env vars, ensure `get_settings.cache_clear()` is called (the top-level `conftest.py` does this automatically).
 
 ### 2f — Form a hypothesis
@@ -214,7 +214,6 @@ make test
 
 ```bash
 make format
-make test
 ```
 
 ### 4d — Check for side effects
