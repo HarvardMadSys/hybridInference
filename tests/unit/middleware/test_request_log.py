@@ -87,6 +87,14 @@ def app_with_middleware():
         req_ctx.update({"provider": "diffusiongemma"})
         return Response(status_code=401)
 
+    # ``async def`` for the same contextvar reason as above. Mirrors what the
+    # inference handlers publish once they have judged the caller's X-Probe
+    # marker trustworthy.
+    @app.get("/v1/chat/completions-trusted-probe")
+    async def trusted_probe():
+        req_ctx.update({"synthetic_probe": True})
+        return {}
+
     return app
 
 
@@ -166,6 +174,38 @@ class TestRequestLogMiddleware:
 
         records = [r for r in caplog.records if r.getMessage() == "http_request"]
         assert records, "Expected an http_request log record for /v1/chat/completions"
+        assert all(r.levelno == logging.INFO for r in records)
+
+    @pytest.mark.asyncio
+    async def test_trusted_probe_verdict_from_ctx_demotes_to_debug(
+        self, app_with_middleware, caplog
+    ):
+        """A handler-published trusted-probe verdict demotes the request line."""
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+            await _get(app_with_middleware, "/v1/chat/completions-trusted-probe")
+
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
+        assert records
+        assert all(r.levelno == logging.DEBUG for r in records)
+
+    @pytest.mark.asyncio
+    async def test_bare_probe_header_no_longer_demotes(self, app_with_middleware, caplog):
+        """The raw X-Probe header alone must not demote the request line.
+
+        The middleware reads the handler's trusted-probe verdict from req_ctx;
+        a request whose handler published nothing (here: a plain endpoint)
+        logs at INFO even with the header set — otherwise any scanner could
+        keep its traffic out of the INFO log with one header.
+        """
+        with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+            await _get(
+                app_with_middleware,
+                "/v1/chat/completions",
+                headers={"X-Probe": "synthetic"},
+            )
+
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
+        assert records, "Expected the probe-headered request to log at INFO"
         assert all(r.levelno == logging.INFO for r in records)
 
     @pytest.mark.asyncio

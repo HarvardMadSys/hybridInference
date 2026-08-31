@@ -153,7 +153,10 @@ async def _identify_rejected_caller(
     # account rather than the unresolved caller it actually is.
     if not isinstance(row, dict) or not row.get("user_id"):
         return None
-    return {"user_id": row["user_id"], "role": row.get("role") or "free"}
+    # ``authenticated``: the lookup resolved a live key, which is the same
+    # fact the normal auth path asserts with this flag — the rejection log's
+    # probe-trust check relies on it.
+    return {"user_id": row["user_id"], "role": row.get("role") or "free", "authenticated": True}
 
 
 async def _authenticate_by_api_key(
@@ -193,6 +196,11 @@ async def _authenticate_by_api_key(
             # issues its own query, so a flood turns one expiry into a herd
             # against the shared pool — the same cost this whole path is trying
             # not to reintroduce.
+            # No ``user`` yet — the caller is identified only below, and only
+            # when this says the row would be kept. Passing None means a
+            # probe-marked request is treated as loggable here; the definitive
+            # probe-trust decision happens in log_rejection with the resolved
+            # caller, so the marker still cannot suppress a scanner's row.
             enabled = await bounded_enrichment(
                 rejection_logging_enabled(request, status_code=429), default=False
             )
@@ -507,12 +515,17 @@ async def verify_api_key(
 
     # Check if auth is enabled
     if not is_user_auth_enabled():
-        # Auth disabled - allow all, mark as anonymous
+        # Auth disabled - allow all, mark as anonymous. ``auth_disabled``
+        # records the deployment mode on the context itself: consumers that
+        # normally require an *authenticated* caller (the synthetic-probe
+        # trust check) can distinguish "this deployment trusts everyone" from
+        # "this caller presented nothing" without reaching back into settings.
         return _publish_caller_role(
             {
                 "user_id": "anonymous",
                 "role": "admin",
                 "authenticated": False,
+                "auth_disabled": True,
                 "is_admin": True,
             }
         )
@@ -554,6 +567,9 @@ async def verify_api_key(
                 user={
                     "user_id": effective_user_id,
                     "role": identity.get("role") or "free",
+                    # The caller passed key auth to reach the quota gate, so
+                    # the rejection log's probe-trust check sees a real key.
+                    "authenticated": True,
                 },
             )
         )

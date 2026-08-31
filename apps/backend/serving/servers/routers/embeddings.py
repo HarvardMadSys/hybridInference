@@ -28,6 +28,7 @@ from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip
+from serving.utils.synthetic_probe import is_trusted_probe
 from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
@@ -147,9 +148,11 @@ async def create_embeddings(
 
     # Synthetic health-probe traffic is suppressed from api_logs unless the
     # ``log_synthetic_probes`` toggle opts it in — mirrors the chat-completions
-    # path so probes don't pollute the dashboards or get billed. A setting read
-    # failure defaults to suppression.
-    is_synthetic_probe = http_request.headers.get("x-probe", "").lower() == "synthetic"
+    # path so probes don't pollute the dashboards. Only a trusted caller's
+    # marker counts (authenticated internal/admin, never a grant; see
+    # serving/utils/synthetic_probe.py) — and billing is unconditional either
+    # way. A setting read failure defaults to suppression.
+    is_synthetic_probe = is_trusted_probe(http_request, user_ctx)
     log_synthetic_probes = False
     if (
         is_synthetic_probe
@@ -173,6 +176,10 @@ async def create_embeddings(
         {
             "auth_key_hash": auth_key_hash or "_anon",
             "affinity_key": derive_affinity_key(auth_key_hash, client_ip),
+            # Trusted-probe verdict for downstream readers that never see
+            # user_ctx: RequestLogMiddleware demotes probe request lines to
+            # DEBUG from this, mirroring the chat-completions publish.
+            "synthetic_probe": is_synthetic_probe,
         }
     )
 

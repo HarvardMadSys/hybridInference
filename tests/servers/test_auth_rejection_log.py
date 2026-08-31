@@ -187,7 +187,7 @@ async def test_blocked_ip_rejection_logs_prompt_and_user(monkeypatch, blocked_lo
     # Raw request text, not a parsed messages array: nothing decodes an
     # attacker-chosen body on this path. The content is still all there.
     assert '"who am I"' in log_calls[0]["prompt"]
-    assert log_calls[0]["user"] == {"user_id": "u1", "role": "pro"}
+    assert log_calls[0]["user"] == {"user_id": "u1", "role": "pro", "authenticated": True}
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
+from serving.utils.synthetic_probe import is_trusted_probe_caller
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -188,6 +189,7 @@ async def rejection_logging_enabled(
     request: Request,
     *,
     status_code: int,
+    user: dict[str, Any] | None = None,
     log_store: BaseLogStore | None = None,
     runtime_settings: RuntimeSettings | None = None,
 ) -> bool:
@@ -197,6 +199,12 @@ async def rejection_logging_enabled(
     — reading the request body, resolving the caller's identity — whether that
     work would end up anywhere. :func:`log_rejection` applies the same gate, so
     a caller that skips this only loses the enrichment, never correctness.
+
+    ``user`` is the resolved caller when the call site has one; it decides
+    whether an ``X-Probe: synthetic`` marker is honoured. Call sites that
+    reject before identifying anyone pass ``None`` and the marker is ignored:
+    the header is caller-controlled, so honouring it from an unidentified
+    caller would hand every scanner a mute button for its own rejection rows.
 
     Never raises.
     """
@@ -222,7 +230,9 @@ async def rejection_logging_enabled(
     # ``log_synthetic_probes`` opts them in — mirrors the handler-path
     # suppression so a probe rejected at the gate (e.g. during the overload it
     # is meant to detect) does not pollute api_logs while probe logging is off.
-    if _is_synthetic_probe(request):
+    # Only a trusted caller's marker counts; an untrusted or unidentified
+    # caller's probe header is ignored and their rejection logs like any other.
+    if _is_synthetic_probe(request) and is_trusted_probe_caller(user):
         try:
             return await runtime_settings.get_bool("log_synthetic_probes")
         except Exception:
@@ -413,11 +423,12 @@ async def log_rejection(
     if not await rejection_logging_enabled(
         request,
         status_code=status_code,
+        user=user,
         log_store=log_store,
         runtime_settings=runtime_settings,
     ):
         return
-    is_synthetic_probe = _is_synthetic_probe(request)
+    is_synthetic_probe = _is_synthetic_probe(request) and is_trusted_probe_caller(user)
 
     ctx = req_ctx.get()
     request_id = ctx.get("request_id") or ""
@@ -431,7 +442,9 @@ async def log_rejection(
     }
     # Tag persisted probe rejections so consumers that exclude probes via this
     # field (e.g. PostgresLogStore.get_model_activity) don't miscount them as
-    # real-user traffic. Only reached when log_synthetic_probes opted them in.
+    # real-user traffic. Only reached when log_synthetic_probes opted them in,
+    # and only for a trusted caller — an untrusted caller must not be able to
+    # tag its own rows out of those aggregates.
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
     # Classify embedding rejections so they match the success-path tagging and

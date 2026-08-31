@@ -943,7 +943,12 @@ async def test_non_stream_failure_logged_even_when_observation_raises(
 
 @pytest.mark.asyncio
 async def test_synthetic_probe_skips_db_logging(monkeypatch, mock_db_logger):
-    """Synthetic probe traffic should not be logged to DB."""
+    """Synthetic probe traffic should not be logged to DB.
+
+    Runs with auth disabled, which doubles as the regression test for that
+    deployment mode: an all-trust deployment (``auth_disabled`` on the
+    context) still honours the probe marker without any authenticated key.
+    """
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
 
     router = RouteExecutor()
@@ -971,6 +976,129 @@ async def test_synthetic_probe_skips_db_logging(monkeypatch, mock_db_logger):
     assert resp.status_code == status.HTTP_200_OK
     assert resp.headers.get("X-Provider") == "test"
     mock_log_store.log_request.assert_not_called()
+
+
+def _probe_app_with_user_ctx(user_ctx: dict[str, Any], mock_db_logger, mock_log_store) -> FastAPI:
+    """App with a real route and a fixed authenticated caller context."""
+    from serving.servers.auth import verify_api_key
+
+    router = RouteExecutor()
+    router.register_route("gpt-4", [(RoutingAwareAdapter(_mk_cfg("gpt-4")), 1.0)])
+    app = FastAPI(title="Probe Trust Test")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=mock_db_logger,
+        log_store=mock_log_store,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+    app.dependency_overrides[verify_api_key] = lambda: user_ctx
+    return app
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_ctx",
+    [
+        pytest.param(
+            {"user_id": "free-user", "role": "free", "authenticated": True},
+            id="free-key",
+        ),
+        pytest.param(
+            {
+                "user_id": "owner",
+                "role": "internal",
+                "authenticated": True,
+                "agent_grant_id": "grant-1",
+                "agent_job_id": "job-1",
+            },
+            id="agent-grant-with-internal-owner",
+        ),
+    ],
+)
+async def test_probe_marker_from_untrusted_caller_is_ignored(mock_db_logger, user_ctx):
+    """X-Probe: synthetic from anyone but an authenticated internal/admin key
+    is inert: the request is logged (untagged) and no X-Provider is exposed.
+    The header is caller-controlled, so honouring it here would be a
+    self-service opt-out from api_logs — and, for a grant, would hand that
+    power to sandboxed agent code running under the owner's role.
+    """
+    mock_log_store = MagicMock()
+    mock_log_store.log_request = AsyncMock()
+    app = _probe_app_with_user_ctx(user_ctx, mock_db_logger, mock_log_store)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"X-Probe": "synthetic"},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    assert "X-Provider" not in resp.headers
+    db_kwargs = await _wait_for_db_log_kwargs(mock_log_store)
+    assert db_kwargs is not None, "an untrusted probe marker must not suppress the log row"
+    assert "synthetic_probe" not in db_kwargs["metadata"]
+
+
+class _UsageRoutingAdapter(RoutingAwareAdapter):
+    """RoutingAwareAdapter that also reports token usage."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        response = await super().chat_completion(messages, **params)
+        response["usage"] = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+        return response
+
+
+@pytest.mark.asyncio
+async def test_trusted_probe_suppresses_log_but_still_bills(mock_db_logger):
+    """A trusted probe keeps its log suppression and X-Provider header, but the
+    cost increment runs anyway: the marker affects noise, never money.
+    """
+    from serving.servers.auth import verify_api_key
+
+    router = RouteExecutor()
+    router.register_route("gpt-4", [(_UsageRoutingAdapter(_mk_cfg("gpt-4")), 1.0)])
+    mock_log_store = MagicMock()
+    mock_log_store.log_request = AsyncMock()
+    cost_tracker = MagicMock()
+
+    async def _identity_increment(**kwargs):
+        return kwargs["routing"]
+
+    cost_tracker.schedule_increment = AsyncMock(side_effect=_identity_increment)
+
+    app = FastAPI(title="Trusted Probe Billing Test")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=mock_db_logger,
+        log_store=mock_log_store,
+        cost_tracker=cost_tracker,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+    app.dependency_overrides[verify_api_key] = lambda: {
+        "user_id": "prober",
+        "role": "internal",
+        "authenticated": True,
+    }
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"X-Probe": "synthetic"},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    assert resp.headers.get("X-Provider") == "test"
+    mock_log_store.log_request.assert_not_called()
+    cost_tracker.schedule_increment.assert_awaited_once()
+    inc_kwargs = cost_tracker.schedule_increment.call_args.kwargs
+    assert inc_kwargs["prompt_tokens"] == 7
+    assert inc_kwargs["completion_tokens"] == 3
 
 
 @pytest.mark.asyncio
