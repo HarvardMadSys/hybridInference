@@ -50,6 +50,15 @@ ATTRIBUTION: dict[str, str] = {
         "for why each neutral default is what it is"
     ),
     "docs/developer/router-tutorial.md": "the clone URL, same as installation.md",
+    "docs/developer/about.md": (
+        "the lab, the citation, and the flagship deployment — the page whose "
+        "job is naming the origin"
+    ),
+    "docs/developer/locale/zh_CN/LC_MESSAGES/about.po": ("the same page, inside its translation"),
+    "docs/developer/_extra/404.html": "the source-repository link, same as index.rst",
+    "docs/developer/_extra/_redirects": (
+        "retired URLs kept alive — the old page names are facts of the site's history"
+    ),
     "docs/developer/trusted-proxies-and-client-ips.md": (
         "cites the tracker issue that motivated the trust boundary"
     ),

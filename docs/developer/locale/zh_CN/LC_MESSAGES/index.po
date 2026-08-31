@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-30 22:16+0800\n"
+"POT-Creation-Date: 2026-08-31 14:50+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -39,6 +39,10 @@ msgstr "运维"
 #: ../developer/index.rst:120
 msgid "Contributing"
 msgstr "参与贡献"
+
+#: ../developer/index.rst:126
+msgid "Project"
+msgstr "项目"
 
 #: ../developer/index.rst:2
 msgid "HybridInference"
@@ -76,7 +80,11 @@ msgid ""
 "license; bugs and questions go to its `issue tracker "
 "<https://github.com/HarvardMadSys/hybridInference/issues>`_."
 msgstr ""
-"本文档讲的是网关软件本身：如何运行它、理解它、扩展它，以及如何为它贡献代码。源码在 `github.com/HarvardMadSys/hybridInference <https://github.com/HarvardMadSys/hybridInference>`_，采用 MIT 许可；缺陷与提问请走它的 `issue tracker <https://github.com/HarvardMadSys/hybridInference/issues>`_。"
+"本文档讲的是网关软件本身：如何运行它、理解它、扩展它，以及如何为它贡献代码。源码在 "
+"`github.com/HarvardMadSys/hybridInference "
+"<https://github.com/HarvardMadSys/hybridInference>`_，采用 MIT 许可；缺陷与提问请走它的 "
+"`issue tracker "
+"<https://github.com/HarvardMadSys/hybridInference/issues>`_。"
 
 #: ../developer/index.rst:23
 msgid "What is in the box"
