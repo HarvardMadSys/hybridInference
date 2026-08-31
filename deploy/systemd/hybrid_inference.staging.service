@@ -15,10 +15,14 @@ Environment=PYTHONPATH=__REPO_ROOT__
 
 # Runs on port 8000, bound to all interfaces so it's reachable on the CloudLab public IP.
 # Change --host to 127.0.0.1 if a reverse proxy is added later.
+# --no-proxy-headers: uvicorn defaults it ON (trusting 127.0.0.1). Forwarded
+# headers are interpreted only by the application's TRUST_PROXY_HEADERS gate
+# (serving/utils/request_ip.py), never by the server in front of it.
 ExecStart=__REPO_ROOT__/.venv/bin/uvicorn serving.servers.app:app \
   --host 0.0.0.0 \
   --port 8000 \
-  --no-server-header
+  --no-server-header \
+  --no-proxy-headers
 
 Restart=on-failure
 RestartSec=5s

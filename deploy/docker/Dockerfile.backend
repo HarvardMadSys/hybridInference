@@ -36,6 +36,13 @@ EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
+# --no-proxy-headers is load-bearing: uvicorn's proxy-header handling defaults
+# ON, and it rewrites request.client / the URL scheme from X-Forwarded-* BEFORE
+# any application code runs — upstream of the TRUST_PROXY_HEADERS gate in
+# serving/utils/request_ip.py, which would then filter an already-spoofed
+# "socket peer". Forwarded headers are interpreted in exactly one place, behind
+# that flag. Consequence: request.url.scheme is always http here, so any
+# deployment that builds absolute URLs (auth emails) must set BASE_URL.
 CMD ["uvicorn", "serving.servers.app:app", \
      "--host", "0.0.0.0", "--port", "8080", "--no-server-header", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--no-proxy-headers"]
