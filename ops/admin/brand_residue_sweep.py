@@ -55,7 +55,6 @@ ATTRIBUTION: dict[str, str] = {
         "job is naming the origin"
     ),
     "docs/developer/locale/zh_CN/LC_MESSAGES/about.po": ("the same page, inside its translation"),
-    "CITATION.cff": ("the citation metadata GitHub renders — authors and lab are the content"),
     "docs/developer/_extra/404.html": "the source-repository link, same as index.rst",
     "docs/developer/_extra/_redirects": (
         "retired URLs kept alive — the old page names are facts of the site's history"

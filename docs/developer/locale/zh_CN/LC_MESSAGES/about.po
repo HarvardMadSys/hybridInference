@@ -64,16 +64,6 @@ msgid ""
 "RouteWise paper:"
 msgstr "如果你在研究中使用 HybridInference 或 RouteWise,请引用 RouteWise 论文:"
 
-#: ../developer/about.md:32
-msgid ""
-"The repository also carries a "
-"[`CITATION.cff`](https://github.com/HarvardMadSys/hybridInference/blob/main/CITATION.cff),"
-" so GitHub's \"Cite this repository\" button produces the same reference."
-msgstr ""
-"仓库中还带有 "
-"[`CITATION.cff`](https://github.com/HarvardMadSys/hybridInference/blob/main/CITATION.cff),"
-"因此 GitHub 的 \"Cite this repository\" 按钮会生成同样的引用。"
-
 #: ../developer/about.md:36
 msgid "See it running"
 msgstr "看看线上实例"

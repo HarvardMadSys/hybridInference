@@ -29,10 +29,6 @@ paper:
 }
 ```
 
-The repository also carries a
-[`CITATION.cff`](https://github.com/HarvardMadSys/hybridInference/blob/main/CITATION.cff),
-so GitHub's "Cite this repository" button produces the same reference.
-
 ## See it running
 
 [FreeInference](https://freeinference.org/) is the lab's own deployment of
