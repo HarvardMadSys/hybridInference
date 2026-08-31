@@ -46,11 +46,12 @@ describe('Sponsors', () => {
   it('shows sponsor logos in full color', () => {
     render(<Sponsors />);
 
-    [screen.getByAltText('Example Labs logo'), screen.getByAltText('Example Institute logo')].forEach(
-      (logo) => {
-        expect(logo).not.toHaveClass('grayscale');
-        expect(logo).not.toHaveClass('opacity-70');
-      },
-    );
+    [
+      screen.getByAltText('Example Labs logo'),
+      screen.getByAltText('Example Institute logo'),
+    ].forEach((logo) => {
+      expect(logo).not.toHaveClass('grayscale');
+      expect(logo).not.toHaveClass('opacity-70');
+    });
   });
 });
