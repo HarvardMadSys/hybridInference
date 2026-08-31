@@ -11,6 +11,38 @@ limits, the auth-failure blocklist, sticky routing affinity, and the rows
 written to `api_logs` — reads its answer. This page describes what that module
 does, how to configure it, and what ends up stored as a result.
 
+## The server underneath
+
+For the module to be the single decision point, the server it runs inside must
+not make the same decision first. uvicorn carries its own proxy-header
+handling, and it defaults **on**: unless told otherwise, it rewrites
+`request.client` — the socket peer as the application sees it — and the URL
+scheme from `X-Forwarded-For` / `X-Forwarded-Proto` whenever the TCP peer is
+in `--forwarded-allow-ips` (default `127.0.0.1`, also settable through the
+`FORWARDED_ALLOW_IPS` environment variable). That rewrite happens before any
+application code runs, upstream of everything this page describes, so left
+enabled it hands `request_ip.py` an already-forged "socket peer" while
+`TRUST_PROXY_HEADERS=0` promises that no header influences the result. The
+Docker image shipped for a while with the widest form of this —
+`--proxy-headers --forwarded-allow-ips "*"` — which made the leftmost
+`X-Forwarded-For` entry, i.e. whatever the caller wrote, the socket peer on
+every request (HarvardMadSys/freeInference#72).
+
+Every launch configuration in this repository therefore passes
+`--no-proxy-headers` explicitly — `deploy/docker/Dockerfile.backend`,
+`deploy/docker/Dockerfile.oncall` and both systemd units —
+and `tests/unit/deploy/test_uvicorn_proxy_headers.py` fails if one stops doing
+so. If you run the gateway under your own process manager, carry the flag
+over: deleting the two flags is not enough, because the default is on.
+
+Two consequences of the server never interpreting forwarded headers:
+
+- `request.url.scheme` is always `http` behind a TLS-terminating proxy. Set
+  `BASE_URL` (see `.env.example`) so absolute URLs — signup verification and
+  password-reset email links — do not fall back to the request scheme.
+- `peer_ip` below is the genuine TCP peer again, which is what makes it usable
+  as the un-forgeable anchor the rest of this page treats it as.
+
 ## The two trust flags
 
 Nothing in a forwarding header is trusted unless you say so. Two independent

@@ -41,5 +41,9 @@ EXPOSE 8091
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://localhost:8091/healthz | grep -q '"ready":true'
 
+# --no-proxy-headers: explicit, matching Dockerfile.backend — uvicorn defaults
+# it ON (trusting 127.0.0.1), and this service should never have its
+# request.client rewritten from a caller-supplied header either.
 CMD ["uvicorn", "serving.oncall.app:app", \
-     "--host", "0.0.0.0", "--port", "8091", "--no-server-header"]
+     "--host", "0.0.0.0", "--port", "8091", "--no-server-header", \
+     "--no-proxy-headers"]

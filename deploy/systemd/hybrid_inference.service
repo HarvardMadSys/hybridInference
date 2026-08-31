@@ -8,10 +8,17 @@ User=freeinference
 Group=freeinference
 Type=simple
 WorkingDirectory=/srv/hybridInference
+# --no-proxy-headers is load-bearing here: uvicorn's proxy-header handling
+# defaults ON and trusts 127.0.0.1 — exactly where a localhost reverse proxy
+# connects from. Left implicit, uvicorn would rewrite request.client from
+# whatever X-Forwarded-For the proxy relays, upstream of the application's
+# TRUST_PROXY_HEADERS gate (serving/utils/request_ip.py). That gate is the one
+# place forwarded headers are interpreted.
 ExecStart=/srv/hybridInference/.venv/bin/uvicorn serving.servers.app:app \
   --host 127.0.0.1 \
   --port 8080 \
-  --no-server-header
+  --no-server-header \
+  --no-proxy-headers
 
 
 Restart=on-failure
