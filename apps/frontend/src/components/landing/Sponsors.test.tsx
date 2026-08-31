@@ -11,9 +11,9 @@ vi.mock('@/config/branding', () => ({
   branding: {
     sponsors: [
       {
-        name: 'NVIDIA',
-        alt: 'NVIDIA logo',
-        src: '/sponsors/nvidia.svg',
+        name: 'Example Labs',
+        alt: 'Example Labs logo',
+        src: '/sponsors/example-labs.svg',
         className: 'h-10 sm:h-12',
         width: 975,
         height: 180,
@@ -39,18 +39,19 @@ describe('Sponsors', () => {
     render(<Sponsors />);
 
     expect(screen.getByText('Sponsors')).toBeInTheDocument();
-    expect(screen.getByAltText('NVIDIA logo')).toBeInTheDocument();
+    expect(screen.getByAltText('Example Labs logo')).toBeInTheDocument();
     expect(screen.getByAltText('Example Institute logo')).toBeInTheDocument();
   });
 
   it('shows sponsor logos in full color', () => {
     render(<Sponsors />);
 
-    [screen.getByAltText('NVIDIA logo'), screen.getByAltText('Example Institute logo')].forEach(
-      (logo) => {
-        expect(logo).not.toHaveClass('grayscale');
-        expect(logo).not.toHaveClass('opacity-70');
-      },
-    );
+    [
+      screen.getByAltText('Example Labs logo'),
+      screen.getByAltText('Example Institute logo'),
+    ].forEach((logo) => {
+      expect(logo).not.toHaveClass('grayscale');
+      expect(logo).not.toHaveClass('opacity-70');
+    });
   });
 });
