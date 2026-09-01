@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
 import { buildTimeSiteConfig } from '@/config/site-config';
-import { CodeExample } from './CodeExample';
+import { buildCurlExample, CodeExample } from './CodeExample';
 
 describe('CodeExample', () => {
   afterEach(cleanup);
@@ -38,7 +38,23 @@ describe('CodeExample', () => {
 
     expect(screen.getByText('Quickstart')).toBeInTheDocument();
     expect(
-      screen.getByText(/curl http:\/\/localhost:8080\/v1\/chat\/completions/),
+      screen.getByText(/curl 'http:\/\/localhost:8080\/v1\/chat\/completions'/),
     ).toBeInTheDocument();
+  });
+
+  it('serializes and shell-quotes model ids before rendering the command', () => {
+    const singleQuote = String.fromCodePoint(39);
+    const command = buildCurlExample({
+      exampleApiBase: 'https://api.example.test',
+      exampleApiKeyEnvVar: 'EXAMPLE_API_KEY',
+      exampleModel: `router${singleQuote}; printf PWNED >&2; #`,
+    });
+
+    expect(command).toContain(
+      `router${singleQuote}"${singleQuote}"${singleQuote}; printf PWNED >&2; #`,
+    );
+    expect(command).not.toContain(`router${singleQuote}; printf PWNED >&2; #`);
+    expect(command).toContain(`-d ${singleQuote}{`);
+    expect(command).toContain('"messages": [');
   });
 });

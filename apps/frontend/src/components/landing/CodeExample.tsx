@@ -3,6 +3,33 @@
 import { useState } from 'react';
 
 import { useBranding } from '@/components/providers/SiteConfigProvider';
+import type { Branding } from '@/config/branding';
+
+type QuickstartBranding = Pick<Branding, 'exampleApiBase' | 'exampleApiKeyEnvVar' | 'exampleModel'>;
+
+function shellSingleQuote(value: string): string {
+  const singleQuote = String.fromCodePoint(39);
+  const escapedSingleQuote = `${singleQuote}"${singleQuote}"${singleQuote}`;
+
+  return `${singleQuote}${value.replaceAll(singleQuote, escapedSingleQuote)}${singleQuote}`;
+}
+
+export function buildCurlExample(branding: QuickstartBranding): string {
+  const endpoint = `${branding.exampleApiBase}/v1/chat/completions`;
+  const payload = JSON.stringify(
+    {
+      model: branding.exampleModel,
+      messages: [{ role: 'user', content: 'Hello!' }],
+    },
+    null,
+    2,
+  );
+
+  return `curl ${shellSingleQuote(endpoint)} \\
+  -H "Authorization: Bearer $${branding.exampleApiKeyEnvVar}" \\
+  -H "Content-Type: application/json" \\
+  -d ${shellSingleQuote(payload)}`;
+}
 
 export function CodeExample(): JSX.Element | null {
   const [copied, setCopied] = useState(false);
@@ -12,13 +39,7 @@ export function CodeExample(): JSX.Element | null {
     return null;
   }
 
-  const curlExample = `curl ${branding.exampleApiBase}/v1/chat/completions \\
-  -H "Authorization: Bearer $${branding.exampleApiKeyEnvVar}" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "${branding.exampleModel}",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'`;
+  const curlExample = buildCurlExample(branding);
 
   async function handleCopy() {
     try {
