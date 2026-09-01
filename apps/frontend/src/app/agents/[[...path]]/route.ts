@@ -147,7 +147,18 @@ function redirectTarget(
   ] as const;
   const exact = known.filter(({ base }) => redirect.origin === base.origin);
   if (exact.length === 1) return exact[0];
-  if (exact.length > 1) return selected;
+  if (exact.length > 1) {
+    const pathMatches = exact.filter(({ base }) => {
+      const path = basePath(base);
+      return !path || redirect.pathname === path || redirect.pathname.startsWith(`${path}/`);
+    });
+    if (pathMatches.length > 0) {
+      const longestLength = Math.max(...pathMatches.map(({ base }) => basePath(base).length));
+      const longest = pathMatches.filter(({ base }) => basePath(base).length === longestLength);
+      if (longest.length === 1) return longest[0];
+    }
+    return selected;
+  }
   if (redirect.hostname === selected.base.hostname) return selected;
 
   const sameHostname = known.filter(({ base }) => redirect.hostname === base.hostname);

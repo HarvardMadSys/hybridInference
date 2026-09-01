@@ -219,6 +219,23 @@ describe('/agents runtime proxy', () => {
     expect(response.headers.get('location')).not.toContain('agent-web');
   });
 
+  it('selects same-origin redirect targets by their longest matching base path', async () => {
+    vi.stubEnv('AGENT_WEB_INTERNAL_URL', 'http://agent:3000/services');
+    vi.stubEnv('AGENT_CONTROL_PLANE_INTERNAL_URL', 'http://agent:3000/services/api');
+    stubFetch(
+      () =>
+        new Response(null, {
+          status: 303,
+          headers: { location: 'http://agent:3000/services/api/v1/jobs/job-2' },
+        }),
+    );
+
+    const response = await GET(request('/agents/jobs/job-1'));
+
+    expect(response.headers.get('location')).toBe('/agents/api/v1/jobs/job-2');
+    expect(response.headers.get('location')).not.toContain('/services/api');
+  });
+
   it.each([
     ['/agents/projects/42/', 'login?next=1', '/agents/projects/42/login?next=1'],
     ['/agents/api/v1/jobs/job-1/', '../signin', '/agents/api/v1/jobs/signin'],
