@@ -81,6 +81,8 @@ def test_loader_rejects_fields_outside_public_contract(tmp_path: Path) -> None:
         (("links", "docs_url"), "http://insecure.example"),
         (("links", "docs_url"), "https://example.com:bad"),
         (("example", "api_base"), "http://example.com:99999"),
+        (("example", "api_base"), "https://api.example.com?tenant=example"),
+        (("example", "api_base"), "https://api.example.com#completion"),
         (("example", "api_key_env_var"), "not-a-shell-name"),
         (("analytics", "statcounter_project_id"), "not-digits"),
         (("storage_key_prefix",), "contains spaces"),

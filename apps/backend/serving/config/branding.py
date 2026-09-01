@@ -58,6 +58,15 @@ def validate_public_https_url(value: str) -> str:
     return _absolute_url_or_empty(value, schemes={"https"})
 
 
+def _api_base_url(value: str) -> str:
+    validated = _absolute_url_or_empty(value, schemes={"http", "https"})
+    if validated:
+        parsed = urlsplit(validated)
+        if parsed.query or parsed.fragment:
+            raise ValueError("must not contain a query or fragment")
+    return validated
+
+
 def _asset_url(value: str) -> str:
     if not value:
         return value
@@ -124,7 +133,7 @@ class BrandingExample(_BrandingModel):
     @classmethod
     def validate_api_base(cls, value: str) -> str:
         """Allow a hidden example or an absolute HTTP(S) API base."""
-        return _absolute_url_or_empty(value, schemes={"http", "https"})
+        return _api_base_url(value)
 
 
 class BrandingAnalytics(_BrandingModel):

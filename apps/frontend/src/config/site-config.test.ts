@@ -207,6 +207,20 @@ describe('resolveRuntimeSiteConfig', () => {
       },
     });
     expect(withUncompiledSponsorClass.branding).toBe(buildTimeSiteConfig.branding);
+
+    for (const apiBase of [
+      'https://api.example.test?tenant=example',
+      'https://api.example.test#completion',
+    ]) {
+      const withUnjoinableApiBase = resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        branding: {
+          ...runtimeBranding,
+          example: { ...runtimeBranding.example, api_base: apiBase },
+        },
+      });
+      expect(withUnjoinableApiBase.branding).toBe(buildTimeSiteConfig.branding);
+    }
   });
 
   it('rejects malformed or unsupported-version documents without changing the fallback', () => {

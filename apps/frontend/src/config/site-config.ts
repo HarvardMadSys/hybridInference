@@ -17,12 +17,12 @@ const publicLinkSchema = z
   .string()
   .refine((value) => value === '' || hasProtocol(value, ['https:']), 'must be empty or HTTPS');
 
-const apiBaseSchema = z
-  .string()
-  .refine(
-    (value) => value === '' || hasProtocol(value, ['http:', 'https:']),
-    'must be empty or HTTP(S)',
-  );
+const apiBaseSchema = z.string().refine((value) => {
+  if (value === '') return true;
+  if (!hasProtocol(value, ['http:', 'https:'])) return false;
+  const parsed = new URL(value);
+  return !parsed.search && !parsed.hash;
+}, 'must be empty or HTTP(S) without a query or fragment');
 
 const assetUrlSchema = z.string().refine((value) => {
   if (value === '') return true;
