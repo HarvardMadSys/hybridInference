@@ -158,6 +158,7 @@ def test_console_candidate_build_has_no_distribution_identity_inputs() -> None:
         assert "hybridinference-console" in build["outputs"]
         assert "NEXT_PUBLIC_API_BASE=" in args
         assert "NEXT_PUBLIC_BUILD_SHA=${{ github.sha }}" in args
+        assert "NEXT_PUBLIC_BUILD_TIMESTAMP=${{ github.event.head_commit.timestamp }}" in args
         assert "NEXT_PUBLIC_APP_NAME" not in args
         assert "NEXT_PUBLIC_TEAM_JSON" not in args
         assert "NEXT_PUBLIC_SPONSORS_JSON" not in args

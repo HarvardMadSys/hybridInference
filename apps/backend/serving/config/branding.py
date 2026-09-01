@@ -34,7 +34,11 @@ def _absolute_url_or_empty(value: str, *, schemes: set[str]) -> str:
         return value
     try:
         parsed = urlsplit(value)
-        valid = parsed.scheme in schemes and bool(parsed.netloc)
+        # Accessing port performs the range/numeric validation that urlsplit
+        # deliberately defers. Use hostname rather than netloc so malformed
+        # authority-only values cannot pass the public URL contract either.
+        _ = parsed.port
+        valid = parsed.scheme in schemes and bool(parsed.hostname)
     except ValueError:
         valid = False
     if not valid or any(char.isspace() for char in value) or "\\" in value:

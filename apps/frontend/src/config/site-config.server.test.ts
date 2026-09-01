@@ -19,7 +19,7 @@ describe('loadRuntimeSiteConfig', () => {
     vi.restoreAllMocks();
   });
 
-  it('keeps cross-request caching off without disabling per-render request memoization', async () => {
+  it('keeps cross-request caching off and gives the runtime request a deadline', async () => {
     vi.stubEnv('BACKEND_INTERNAL_URL', 'http://runtime-backend:9090/');
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -38,7 +38,7 @@ describe('loadRuntimeSiteConfig', () => {
         headers: { accept: 'application/json' },
       }),
     );
-    expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty('signal');
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it('enables the public agents feature only when both private destinations exist', async () => {
@@ -77,9 +77,14 @@ describe('loadRuntimeSiteConfig', () => {
     expect(resolved.features.agents).toBe(false);
   });
 
-  it('falls back after the runtime request timeout without passing an abort signal', async () => {
+  it('aborts and falls back when the runtime request exceeds its deadline', async () => {
     vi.useFakeTimers();
-    const fetchMock = vi.fn().mockReturnValue(new Promise(() => undefined));
+    const fetchMock = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+      const signal = init?.signal;
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
     vi.stubGlobal('fetch', fetchMock);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
@@ -88,6 +93,27 @@ describe('loadRuntimeSiteConfig', () => {
     const resolved = await pending;
 
     expect(resolved.distribution.id).toBe(buildTimeSiteConfig.distribution.id);
-    expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty('signal');
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  it('keeps response body consumption under the same deadline', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation((_url: string, init?: RequestInit) => ({
+      ok: true,
+      json: () =>
+        new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const pending = loadRuntimeSiteConfig();
+    await vi.advanceTimersByTimeAsync(3_000);
+    const resolved = await pending;
+
+    expect(resolved.distribution.id).toBe(buildTimeSiteConfig.distribution.id);
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
   });
 });

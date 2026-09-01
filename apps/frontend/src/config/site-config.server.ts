@@ -1,3 +1,5 @@
+import * as React from 'react';
+
 import {
   buildTimeSiteConfig,
   resolveRuntimeSiteConfig,
@@ -8,23 +10,13 @@ import {
 const DEFAULT_BACKEND_INTERNAL_URL = 'http://backend:8080';
 const SITE_CONFIG_TIMEOUT_MS = 3_000;
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timeout = setTimeout(
-      () => reject(new Error('Runtime site config request timed out.')),
-      timeoutMs,
-    );
-  });
+type CacheFunction = <T extends (...args: never[]) => unknown>(fn: T) => T;
 
-  try {
-    return await Promise.race([promise, deadline]);
-  } finally {
-    if (timeout !== undefined) {
-      clearTimeout(timeout);
-    }
-  }
-}
+// Next's RSC compiler aliases React to its server runtime, which exposes
+// cache(). Vitest loads the React 18 client package instead, so direct unit
+// execution uses the identity fallback without creating a process-wide cache.
+const cachePerRender: CacheFunction =
+  (React as typeof React & { cache?: CacheFunction }).cache ?? ((fn) => fn);
 
 function hasRuntimeAgentProxy(): boolean {
   return Boolean(
@@ -33,7 +25,7 @@ function hasRuntimeAgentProxy(): boolean {
   );
 }
 
-export async function loadRuntimeSiteConfig(): Promise<RuntimeSiteConfig> {
+async function loadRuntimeSiteConfigUncached(): Promise<RuntimeSiteConfig> {
   let siteConfig = buildTimeSiteConfig;
   const backendUrl = (process.env.BACKEND_INTERNAL_URL || DEFAULT_BACKEND_INTERNAL_URL).replace(
     /\/+$/,
@@ -41,18 +33,23 @@ export async function loadRuntimeSiteConfig(): Promise<RuntimeSiteConfig> {
   );
 
   try {
-    // A caller-provided AbortSignal opts this GET out of Next.js request memoization.
-    // Keep the timeout outside fetch so metadata, layouts, and pages share one response
-    // during a render, while no-store still prevents reuse across requests.
-    const response = await withTimeout(
-      fetch(`${backendUrl}/site-config`, {
-        cache: 'no-store',
-        headers: { accept: 'application/json' },
-      }),
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(new Error('Runtime site config request timed out.')),
       SITE_CONFIG_TIMEOUT_MS,
     );
-    if (response.ok) {
-      siteConfig = resolveRuntimeSiteConfig(await response.json());
+    try {
+      const response = await fetch(`${backendUrl}/site-config`, {
+        cache: 'no-store',
+        headers: { accept: 'application/json' },
+        signal: controller.signal,
+      });
+      if (response.ok) {
+        // Keep body consumption under the same deadline as the headers.
+        siteConfig = resolveRuntimeSiteConfig(await response.json());
+      }
+    } finally {
+      clearTimeout(timeout);
     }
   } catch (error) {
     console.warn('Unable to load runtime site config; using build-time defaults.', error);
@@ -60,3 +57,9 @@ export async function loadRuntimeSiteConfig(): Promise<RuntimeSiteConfig> {
 
   return withAgentsFeature(siteConfig, hasRuntimeAgentProxy());
 }
+
+// React cache is scoped to one server render. That lets metadata, layouts, and
+// pages share the parsed snapshot even though the abort signal intentionally
+// opts the underlying fetch out of Next.js fetch memoization. no-store still
+// prevents the result from crossing request boundaries.
+export const loadRuntimeSiteConfig = cachePerRender(loadRuntimeSiteConfigUncached);
