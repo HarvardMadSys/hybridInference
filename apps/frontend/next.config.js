@@ -15,6 +15,13 @@ const AGENT_CONTROL_PLANE_INTERNAL_URL = process.env.AGENT_CONTROL_PLANE_INTERNA
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // Keep every backend consumer on the exact target compiled into the rewrite
+  // manifest. next.config `env` values are inlined during `next build`, so a
+  // container-level BACKEND_INTERNAL_URL cannot retarget only server code and
+  // leave /v1, /auth, and the other rewrites pointing somewhere else.
+  env: {
+    BUILT_BACKEND_INTERNAL_URL: BACKEND_INTERNAL_URL,
+  },
   // Next strips a trailing slash by redirecting; pgAdmin (Flask) adds one back
   // the same way. Left on, the two bounce a request between them forever the
   // first time anyone opens /pgadmin/browser/ — so the normalization is turned

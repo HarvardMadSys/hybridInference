@@ -17,7 +17,7 @@
  */
 import { NextResponse, type NextRequest } from 'next/server';
 
-const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || 'http://backend:8080';
+const BACKEND_INTERNAL_URL = process.env.BUILT_BACKEND_INTERNAL_URL || 'http://backend:8080';
 const PGADMIN_INTERNAL_URL = process.env.PGADMIN_INTERNAL_URL || 'http://pgadmin:80';
 
 /**

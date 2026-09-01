@@ -21,6 +21,10 @@ const WEB = 'http://agent-web:3000';
 const API = 'http://agent-control-plane:8000';
 
 async function loadRewrites(env: Record<string, string | undefined>) {
+  return loadConfig(env).rewrites();
+}
+
+function loadConfig(env: Record<string, string | undefined>) {
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -29,8 +33,7 @@ async function loadRewrites(env: Record<string, string | undefined>) {
   const path = require.resolve('./next.config.js');
   delete require.cache[path];
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const config = require('./next.config.js');
-  return config.rewrites();
+  return require('./next.config.js');
 }
 
 describe('the /agents rewrites', () => {
@@ -83,6 +86,19 @@ describe('the /agents rewrites', () => {
     // call is served the web app's HTML — a 200 that is not JSON, which reads
     // as a client bug rather than a routing one.
     expect(sources.indexOf('/agents/api/:path*')).toBeLessThan(sources.indexOf('/agents/:path*'));
+  });
+
+  it('pins server-side backend fetches to the rewrite target selected at build time', async () => {
+    const backend = 'http://custom-backend:9090';
+    const config = loadConfig({ BACKEND_INTERNAL_URL: backend });
+    const { afterFiles } = await config.rewrites();
+
+    expect(config.env.BUILT_BACKEND_INTERNAL_URL).toBe(backend);
+    expect(
+      afterFiles.every(({ destination }: { destination: string }) =>
+        destination.startsWith(backend),
+      ),
+    ).toBe(true);
   });
 
   it('strips the prefix for the API and keeps it for the web app', async () => {

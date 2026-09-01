@@ -40,10 +40,18 @@ requires recreating the container, not rebuilding the image.
 
 | Variable | Default | Resolution | Points at |
 |---|---|---|---|
-| `BACKEND_INTERNAL_URL` | `http://backend:8080` | build time for rewrites; also runtime for server-side site config fetches | the FastAPI gateway |
+| `BACKEND_INTERNAL_URL` | `http://backend:8080` | build time for rewrites and server-side backend calls | the FastAPI gateway |
 | `AGENT_WEB_INTERNAL_URL` | *(unset)* | runtime | the standalone cloud agent's web app |
 | `AGENT_CONTROL_PLANE_INTERNAL_URL` | *(unset)* | runtime | that agent's control-plane API |
 | `PGADMIN_INTERNAL_URL` | `http://pgadmin:80` | runtime | pgAdmin |
+
+`BACKEND_INTERNAL_URL` is one image-build contract, not a container-runtime
+switch. The same value is compiled into both the rewrite manifest and the
+server-only `BUILT_BACKEND_INTERNAL_URL` used by `/site-config` and pgAdmin's
+admin check. This prevents a runtime override from silently sending only some
+backend requests to a new target. The canonical neutral image uses
+`http://backend:8080`; a deployment consuming that image must provide that
+network alias. A different backend target requires rebuilding the console.
 
 ### Runtime route handler — the cloud agent proxy
 

@@ -27,10 +27,9 @@ function hasRuntimeAgentProxy(): boolean {
 
 async function loadRuntimeSiteConfigUncached(): Promise<RuntimeSiteConfig> {
   let siteConfig = buildTimeSiteConfig;
-  const backendUrl = (process.env.BACKEND_INTERNAL_URL || DEFAULT_BACKEND_INTERNAL_URL).replace(
-    /\/+$/,
-    '',
-  );
+  const backendUrl = (
+    process.env.BUILT_BACKEND_INTERNAL_URL || DEFAULT_BACKEND_INTERNAL_URL
+  ).replace(/\/+$/, '');
 
   try {
     const controller = new AbortController();

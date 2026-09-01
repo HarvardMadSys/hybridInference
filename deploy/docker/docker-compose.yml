@@ -195,10 +195,9 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3001"
-      # Server-first site configuration is fetched from the backend for every
-      # full page request. This is runtime environment, unlike the compatibility
-      # build arg above, so one image can be moved between deployments.
-      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL-http://backend:8080}
+      # BACKEND_INTERNAL_URL is deliberately absent here. Next compiles it into
+      # both the rewrite table and BUILT_BACKEND_INTERNAL_URL; changing only a
+      # running container would otherwise split backend traffic across targets.
       # The server-side pgAdmin proxy must strip the same session cookie the
       # backend issues. Production keeps the established default; local
       # side-by-side deployments can choose a collision-free name.

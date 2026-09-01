@@ -109,8 +109,8 @@ msgid "`http://backend:8080`"
 msgstr ""
 
 #: ../developer/public-path-table.md
-msgid "build time for rewrites; also runtime for server-side site config fetches"
-msgstr "rewrites 在构建时解析；服务端获取站点配置时也在运行时使用"
+msgid "build time for rewrites and server-side backend calls"
+msgstr "rewrites 和服务端 backend 调用均在构建时解析"
 
 #: ../developer/public-path-table.md
 msgid "the FastAPI gateway"
@@ -143,6 +143,21 @@ msgstr "那个 agent 的控制面 API"
 #: ../developer/public-path-table.md
 msgid "`PGADMIN_INTERNAL_URL`"
 msgstr ""
+
+#: ../developer/public-path-table.md
+msgid ""
+"`BACKEND_INTERNAL_URL` is one image-build contract, not a container-runtime "
+"switch. The same value is compiled into both the rewrite manifest and the "
+"server-only `BUILT_BACKEND_INTERNAL_URL` used by `/site-config` and pgAdmin's "
+"admin check. This prevents a runtime override from silently sending only some "
+"backend requests to a new target. The canonical neutral image uses "
+"`http://backend:8080`; a deployment consuming that image must provide that "
+"network alias. A different backend target requires rebuilding the console."
+msgstr ""
+"`BACKEND_INTERNAL_URL` 是统一的镜像构建契约，不是容器运行时开关。同一个值会同时编译进 "
+"rewrite manifest，以及 `/site-config` 和 pgAdmin 管理员校验使用的服务端专用 "
+"`BUILT_BACKEND_INTERNAL_URL`，避免运行时覆盖只把部分 backend 请求静默切到新目标。规范中立镜像使用 "
+"`http://backend:8080`；使用该镜像的部署必须提供这个网络别名。若要使用其他 backend 目标，必须重新构建 console。"
 
 #: ../developer/public-path-table.md
 msgid "`http://pgadmin:80`"

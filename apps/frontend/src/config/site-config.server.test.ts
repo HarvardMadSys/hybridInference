@@ -20,7 +20,8 @@ describe('loadRuntimeSiteConfig', () => {
   });
 
   it('keeps cross-request caching off and gives the runtime request a deadline', async () => {
-    vi.stubEnv('BACKEND_INTERNAL_URL', 'http://runtime-backend:9090/');
+    vi.stubEnv('BUILT_BACKEND_INTERNAL_URL', 'http://built-backend:9090/');
+    vi.stubEnv('BACKEND_INTERNAL_URL', 'http://runtime-must-not-retarget:7070/');
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => runtimeDocument,
@@ -32,7 +33,7 @@ describe('loadRuntimeSiteConfig', () => {
     expect(resolved.distribution.id).toBe('runtime');
     expect(resolved.features.rag).toBe(false);
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://runtime-backend:9090/site-config',
+      'http://built-backend:9090/site-config',
       expect.objectContaining({
         cache: 'no-store',
         headers: { accept: 'application/json' },

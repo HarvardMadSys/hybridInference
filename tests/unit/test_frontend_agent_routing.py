@@ -38,10 +38,13 @@ def test_the_agent_urls_are_runtime_environment() -> None:
         assert environment[name] == f"${{{name}-}}"
 
 
-def test_backend_internal_url_is_runtime_environment() -> None:
-    """Server-first branding lookup follows the deployment's backend target."""
-    environment = _frontend()["environment"]
-    assert environment["BACKEND_INTERNAL_URL"] == "${BACKEND_INTERNAL_URL-http://backend:8080}"
+def test_backend_internal_url_is_one_build_time_contract() -> None:
+    """Rewrites and server fetches cannot be retargeted independently."""
+    frontend = _frontend()
+    assert frontend["build"]["args"]["BACKEND_INTERNAL_URL"] == (
+        "${BACKEND_INTERNAL_URL-http://backend:8080}"
+    )
+    assert "BACKEND_INTERNAL_URL" not in frontend["environment"]
 
 
 def test_site_assets_directory_is_runtime_only() -> None:
