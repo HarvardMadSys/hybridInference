@@ -13,12 +13,13 @@ const runtimeDocument = {
 
 describe('loadRuntimeSiteConfig', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
-  it('fetches the v1 document from the runtime backend without caching', async () => {
+  it('keeps cross-request caching off without disabling per-render request memoization', async () => {
     vi.stubEnv('BACKEND_INTERNAL_URL', 'http://runtime-backend:9090/');
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -37,6 +38,7 @@ describe('loadRuntimeSiteConfig', () => {
         headers: { accept: 'application/json' },
       }),
     );
+    expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty('signal');
   });
 
   it('enables the public agents feature only when both private destinations exist', async () => {
@@ -73,5 +75,19 @@ describe('loadRuntimeSiteConfig', () => {
 
     expect(resolved.branding).toBe(buildTimeSiteConfig.branding);
     expect(resolved.features.agents).toBe(false);
+  });
+
+  it('falls back after the runtime request timeout without passing an abort signal', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockReturnValue(new Promise(() => undefined));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const pending = loadRuntimeSiteConfig();
+    await vi.advanceTimersByTimeAsync(3_000);
+    const resolved = await pending;
+
+    expect(resolved.distribution.id).toBe(buildTimeSiteConfig.distribution.id);
+    expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty('signal');
   });
 });
