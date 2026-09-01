@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import Script from 'next/script';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { buildCombinedUseCase, signupSchema, SignupFormData } from '@/lib/schemas/auth';
+import { buildCombinedUseCase, createSignupSchema, SignupFormData } from '@/lib/schemas/auth';
 import { signup, type SignupResponse } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
@@ -28,13 +28,17 @@ export default function SignupPage() {
   const [error, setError] = useState<string | null>(null);
   const [signupResult, setSignupResult] = useState<SignupResponse | null>(null);
   const turnstileTokenRef = useRef<string | null>(null);
+  const runtimeSignupSchema = useMemo(
+    () => createSignupSchema(branding.siteHost),
+    [branding.siteHost],
+  );
 
   const {
     register,
     handleSubmit,
     formState: { errors },
   } = useForm<SignupFormData>({
-    resolver: zodResolver(signupSchema),
+    resolver: zodResolver(runtimeSignupSchema),
   });
 
   useEffect(() => {

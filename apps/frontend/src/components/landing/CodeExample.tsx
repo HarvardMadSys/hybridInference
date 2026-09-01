@@ -4,9 +4,14 @@ import { useState } from 'react';
 
 import { useBranding } from '@/components/providers/SiteConfigProvider';
 
-export function CodeExample(): JSX.Element {
+export function CodeExample(): JSX.Element | null {
   const [copied, setCopied] = useState(false);
   const branding = useBranding();
+
+  if (!branding.exampleApiBase) {
+    return null;
+  }
+
   const curlExample = `curl ${branding.exampleApiBase}/v1/chat/completions \\
   -H "Authorization: Bearer $${branding.exampleApiKeyEnvVar}" \\
   -H "Content-Type: application/json" \\
