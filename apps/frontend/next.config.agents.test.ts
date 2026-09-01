@@ -9,12 +9,11 @@
 // Two failures this catches, both silent:
 //
 // **`afterFiles` loses.** A rewrite returned in a flat array is `afterFiles`,
-// which Next checks *after* filesystem routes — and this app still ships its
-// own `/agents` pages. An `afterFiles` rule for that prefix matches nothing,
-// so a deployment believes it has cut over and has not.
+// which Next checks *after* filesystem routes — including the new runtime
+// `/agents` handler. Legacy rewrites therefore have to remain beforeFiles.
 //
 // **Opt-in.** Every deployment running no standalone agent must be untouched.
-// Unconditional, these rules would 502 `/agents` for all of them.
+// Unconditional, these legacy rules would bypass the runtime handler.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -43,7 +42,7 @@ describe('the /agents rewrites', () => {
     process.env = { ...saved };
   });
 
-  it('is unset by default, so other deployments keep their own pages', async () => {
+  it('is unset by default, so the runtime handler decides whether the service exists', async () => {
     const { beforeFiles } = await loadRewrites({
       AGENT_WEB_INTERNAL_URL: undefined,
       AGENT_CONTROL_PLANE_INTERNAL_URL: undefined,

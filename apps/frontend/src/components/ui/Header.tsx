@@ -18,7 +18,21 @@ export function Header() {
   return (
     <header className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-6">
       <div className="flex min-w-0 items-baseline gap-2">
-        <Link href="/" prefetch={false} className="text-xl font-bold tracking-tight">
+        <Link
+          href="/"
+          prefetch={false}
+          className="inline-flex min-w-0 items-center gap-2 text-xl font-bold tracking-tight"
+        >
+          {branding.logoUrl ? (
+            // Runtime assets cannot use next/image because their origin is
+            // deliberately unknown when the neutral image is built.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={branding.logoUrl}
+              alt={`${branding.appName} logo`}
+              className="h-8 w-auto shrink-0 object-contain"
+            />
+          ) : null}
           {branding.appName}
         </Link>
         {branding.orgName && branding.orgUrl && (

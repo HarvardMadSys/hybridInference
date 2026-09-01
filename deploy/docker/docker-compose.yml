@@ -150,12 +150,10 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.frontend
       args:
-        # Console identity. Every value below is empty by default, and the
-        # console's own code supplies a neutral fallback for each, so a clone
-        # builds a console that names no deployment. A deployment fills these
-        # in through an env file (distributions/*/deploy/frontend.env, fed to
-        # `docker compose --env-file` by ops/deploy/*.sh); the server's .env
-        # still overrides any of them.
+        # Transition compatibility for local/source builds and pre-W7 branded
+        # distributions. Canonical published consoles omit every identity
+        # value below and load the active deployment through /site-config at
+        # runtime. Empty defaults keep a fresh clone neutral.
         # Explicitly local when omitted. An explicitly supplied empty string is
         # distinct: the console preserves it as a same-origin API base, which
         # distributions can combine with the Next.js rewrites below.
@@ -188,23 +186,9 @@ services:
         NEXT_PUBLIC_DATA_POLICY_NOTICE: ${NEXT_PUBLIC_DATA_POLICY_NOTICE-}
         NEXT_PUBLIC_TEAM_JSON: ${NEXT_PUBLIC_TEAM_JSON-}
         NEXT_PUBLIC_SPONSORS_JSON: ${NEXT_PUBLIC_SPONSORS_JSON-}
-        NEXT_PUBLIC_TEAM_IMAGE_HOST: ${NEXT_PUBLIC_TEAM_IMAGE_HOST-}
-        # Where the standalone cloud agent is, if this deployment runs one.
-        # Both unset (the default) and `/agents` keeps resolving to this app's
-        # own pages, exactly as before the split — `next.config.js` gates the
-        # rewrite on both being present.
-        #
-        # **Build args, and they have to be.** Next resolves `rewrites()` at
-        # build time and writes the result into `.next/routes-manifest.json`;
-        # a value supplied only at `docker run` is read by nothing, and the
-        # symptom is the old pages continuing to serve with every variable
-        # looking correctly set in `docker inspect`. Adopting or rolling back
-        # the agent service is therefore a rebuild.
-        #
-        # Reachability is the deployment's problem, not this file's. Co-located
-        # these are service names on a shared network; on separate machines —
-        # which is where the agent service is meant to live — they are whatever
-        # address it answers on.
+        # Compatibility bridge for legacy images whose beforeFiles rewrites
+        # were compiled at build time. Neutral images leave these empty here
+        # and consume the runtime values below instead.
         AGENT_WEB_INTERNAL_URL: ${AGENT_WEB_INTERNAL_URL-}
         AGENT_CONTROL_PLANE_INTERNAL_URL: ${AGENT_CONTROL_PLANE_INTERNAL_URL-}
     container_name: hybridinference-frontend
@@ -212,17 +196,23 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3001"
+      # Server-first site configuration is fetched from the backend for every
+      # full page request. This is runtime environment, unlike the compatibility
+      # build arg above, so one image can be moved between deployments.
+      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL-http://backend:8080}
       # The server-side pgAdmin proxy must strip the same session cookie the
       # backend issues. Production keeps the established default; local
       # side-by-side deployments can choose a collision-free name.
       REFRESH_TOKEN_COOKIE_NAME: ${REFRESH_TOKEN_COOKIE_NAME:-refresh_token}
-      # Present here as well as in `build.args` above, and the build args are
-      # the ones that matter: Next bakes `rewrites()` into
-      # `.next/routes-manifest.json`. These exist so `docker inspect` on a
-      # running container shows what the image was built to route to — the
-      # manifest is not somewhere an operator will think to look.
+      # Read on every request by the server-only `/agents` route. Both must be
+      # set or the route truthfully answers 404. The values never reach the
+      # browser bundle.
       AGENT_WEB_INTERNAL_URL: ${AGENT_WEB_INTERNAL_URL-}
       AGENT_CONTROL_PLANE_INTERNAL_URL: ${AGENT_CONTROL_PLANE_INTERNAL_URL-}
+      # Absolute path inside this container to a dedicated, read-only branding
+      # image directory. Deployment overlays that use it also bind-mount that
+      # directory; unset means `/site-assets/*` answers 404.
+      SITE_ASSETS_DIR: ${SITE_ASSETS_DIR-}
     ports:
       - "${FRONTEND_HOST:-0.0.0.0}:${FRONTEND_PORT:-3001}:3001"
     depends_on:

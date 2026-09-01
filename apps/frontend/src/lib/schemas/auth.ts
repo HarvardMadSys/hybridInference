@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { branding } from '@/config/branding';
 
 export const emailSchema = z
   .string()
@@ -16,7 +15,7 @@ export const passwordSchema = z
 export function buildCombinedUseCase(
   useCase?: string,
   discoverySource?: string,
-  siteHost = branding.siteHost,
+  siteHost = 'this service',
 ): string {
   const trimmedUseCase = useCase?.trim();
   const trimmedDiscovery = discoverySource?.trim();

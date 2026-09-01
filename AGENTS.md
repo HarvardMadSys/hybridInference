@@ -194,8 +194,9 @@ What remains here is the gateway's side of the two service contracts:
   attribution.
 - **`/agents` routing** — the console proxies the path to the standalone web
   app via the `AGENT_WEB_INTERNAL_URL` / `AGENT_CONTROL_PLANE_INTERNAL_URL`
-  build args (`apps/frontend/next.config.js` rewrites); without them the path
-  is a 404.
+  server-only runtime environment (`apps/frontend/src/app/agents/` route
+  handler); without either value the path is a 404. The values never enter the
+  browser bundle.
 
 The old `agent_*` tables stay in existing databases as read-only history
 (decision DR5); nothing here creates, reads or migrates them.

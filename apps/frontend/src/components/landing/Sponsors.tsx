@@ -1,10 +1,9 @@
-import Image from 'next/image';
+'use client';
 
-import { branding } from '@/config/branding';
-
-const sponsors = branding.sponsors;
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 
 export function Sponsors(): JSX.Element | null {
+  const { sponsors } = useBranding();
   if (sponsors.length === 0) {
     return null;
   }
@@ -16,7 +15,10 @@ export function Sponsors(): JSX.Element | null {
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-x-10 gap-y-6 sm:gap-x-14">
           {sponsors.map((sponsor) => (
-            <Image
+            // Runtime assets cannot use next/image because the neutral image
+            // has no build-time knowledge of their origin.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
               key={sponsor.name}
               src={sponsor.src}
               alt={sponsor.alt}

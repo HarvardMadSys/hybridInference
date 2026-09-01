@@ -29,10 +29,21 @@ def _force_mode(monkeypatch, mode: str) -> None:
     )
 
 
-def _force_manifest(monkeypatch, *, display_name: str, base_url: str, support: str) -> None:
+def _force_manifest(
+    monkeypatch,
+    *,
+    display_name: str,
+    base_url: str,
+    support: str,
+    branding_config=None,
+) -> None:
     config = SimpleNamespace(
         distribution=SimpleNamespace(display_name=display_name),
-        site=SimpleNamespace(public_base_url=base_url, support_email=support),
+        site=SimpleNamespace(
+            public_base_url=base_url,
+            support_email=support,
+        ),
+        branding_config=branding_config,
     )
     monkeypatch.setattr(distribution_module, "get_distribution_config", lambda: config)
 
@@ -94,6 +105,24 @@ def test_env_beats_active_manifest(monkeypatch):
     )
     monkeypatch.setenv("SITE_NAME", "EnvName")
     assert get_site_identity().name == "EnvName"
+
+
+def test_branding_supplies_docs_url_but_env_still_wins(monkeypatch):
+    _force_mode(monkeypatch, "active")
+    _force_manifest(
+        monkeypatch,
+        display_name="Acme",
+        base_url="https://acme.example",
+        support="help@acme.example",
+        branding_config=SimpleNamespace(
+            links=SimpleNamespace(docs_url="https://manifest-docs.acme.example")
+        ),
+    )
+
+    assert get_site_identity().docs_url == "https://manifest-docs.acme.example"
+
+    monkeypatch.setenv("SITE_DOCS_URL", "https://override-docs.acme.example")
+    assert get_site_identity().docs_url == "https://override-docs.acme.example"
 
 
 def test_email_content_follows_identity(monkeypatch):

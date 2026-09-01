@@ -1,7 +1,6 @@
 # 拆仓执行计划(Step 2 of 3):迁出 freeInference
 
-> 状态:执行计划草案。§6 的拍板项确认后即可动工;在那之前 W0/W1/W2 不受影响,
-> 可先行。
+> 状态:执行中。§6 的前置拍板项均已确认；W7 的 2026-09-01 决策见下文。
 > 依据:[Step 1 执行计划](2026-07-27-same-repo-split-execution.zh.md)、
 > [主设计文档](../specs/2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)、
 > issue #738(生产安全不变量)、#1031、#1044(关闭注记:复活时机 = Step 2
@@ -13,7 +12,7 @@
 > 所有保留的 Git 历史；公开机制以主设计文档的“公开与可见性策略”为准。
 > 修订:2026-08-12,状态对账——W0 已完成、W1 GitHub 侧已完成、§7 行动项已随
 > H4 解决;详见 §0 与各工作项内的进展注记。已并入九轮交叉评审:W5 删除
-> 时序改判(不与搬迁同批)、W6 增补 prod 观察窗、W7 compose base 来源待拍板
+> 时序改判(不与搬迁同批)、W6 增补 prod 观察窗、W7 compose base 来源已拍板
 > (§6-5)与 `/agents` 路由缺口(P1)、判据②曾改以 public-export **物化树**
 > 为对象、W2 同源硬门(脏检查含 untracked + 无旁路)、W2 砍除 frontend
 > 候选旁支(缺 `AGENT_*` build args 与 cloud-agent 网络,整条留待 W7)、
@@ -360,19 +359,15 @@ W5 修订所述的上游删除批。
 记录)。完成后 frontend 翻 digest、主机移除上游 checkout,§2-1 豁免自动失效,
 主设计 Phase 4 验收全量回归。
 
-**待设计(2026-08-12 评审指出)**:主机移除上游 checkout 后,compose base
-(`deploy/docker/docker-compose.yml`)的来源悬空——v1 靠 checkout 供给,
-W7 拆掉它却没安排接替。候选:freeInference vendor 一份、由 bump 门测试对照
-上游 diff;上游把 compose 作为 release artifact 随镜像发布;或 compose
-整体改判归 freeInference。W7 动工前拍板。
+**已决定(2026-09-01)**:生产 compose 整体归 freeInference；上游
+`deploy/docker/docker-compose.yml` 只作为通用参考实现。bump 门在两次 pin
+之间发现上游参考 compose 改动时发告警，由分发仓显式吸收所需接口变化。
 
-**W7 的第三类构建期身份——`/agents` 路由(2026-08-12 评审 P1)**:品牌值与
-静态资产之外,`AGENT_WEB_INTERNAL_URL`/`AGENT_CONTROL_PLANE_INTERNAL_URL`
-是 build 时烤进 next.config.js rewrites 的**路由行为**(不设 = `/agents`
-404,见 CLAUDE.md §6.6);中立 frontend 镜像不含私有地址,`/site-config`
-能补值、补不回 rewrites。翻 digest 前必须先落运行时方案:route handler
-代理(console 代理 pgAdmin 的先例可循)或部署侧路由(tunnel 层)。
-不阻塞 W2–W6,阻塞 W7 与 Step 2 收尾。
+**W7 的第三类构建期身份——`/agents` 路由(2026-08-12 评审 P1；
+2026-09-01 已决定)**:采用 console 的 Node runtime route handler；两个内部
+URL 只在容器启动时读取，不进入镜像或浏览器。当前 jobs/terminal 链路为
+HTTP+SSE，代理保持流式响应；若 cloud-agent 将来引入 WebSocket，须改用支持
+HTTP Upgrade 的部署侧代理，不能假定 route handler 能承接升级。
 
 ### W8 欠账清理(开源前必须,不阻塞搬迁)
 
@@ -418,8 +413,8 @@ HybridInference 仓库可见性。
    节奏)。
 3. **bump 节奏**:每次上游 push(体验最接近今天)vs 每日汇总(噪音更小)。
 4. (已决定)Step 3 直接公开现有 HybridInference 仓库。
-5. (不阻塞 W4–W6,W7 动工前必拍)W7 拆除上游 checkout 后 compose base
-   的来源——候选见 W7 注记。
+5. **已决定(2026-09-01):** W7 拆除上游 checkout 后，生产 compose 归
+   freeInference；上游 compose 是参考实现，bump 门负责变更告警。
 
 注(2026-08-12):执行侧对 1–3 的建议——接受豁免、裸 SHA、每次 push
 (bump 频率反向调整成本低,先保"体验守恒");待 Murphy 拍板,拍板后

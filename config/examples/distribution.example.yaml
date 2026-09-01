@@ -24,7 +24,7 @@
 # GET /site-config when the manifest runs in active mode.
 #
 # Do not put secrets here — credentials stay in the environment. Relative
-# `paths:` entries resolve against this file's directory.
+# `paths:` and `site.branding` entries resolve against this file's directory.
 
 schema_version: 1
 
@@ -38,7 +38,7 @@ site:
   support_email: admin@inference.example.com
   # terms_document: ./content/terms.md
   # privacy_document: ./content/privacy.md
-  # branding: ./branding/site.yaml
+  branding: ./branding.example.yaml
 
 features:
   routers: [fixed]

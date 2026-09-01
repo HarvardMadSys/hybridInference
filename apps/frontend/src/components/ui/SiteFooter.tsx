@@ -83,19 +83,21 @@ export function SiteFooter(): JSX.Element {
     });
   }
 
-  entries.push({
-    key: 'github',
-    node: (
-      <a
-        href={branding.githubUrl}
-        className="hover:text-crimson"
-        target="_blank"
-        rel="noopener noreferrer"
-      >
-        GitHub
-      </a>
-    ),
-  });
+  if (branding.githubUrl) {
+    entries.push({
+      key: 'github',
+      node: (
+        <a
+          href={branding.githubUrl}
+          className="hover:text-crimson"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          GitHub
+        </a>
+      ),
+    });
+  }
 
   entries.push({ key: 'build', node: <BuildInfo /> });
 

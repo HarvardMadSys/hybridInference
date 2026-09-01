@@ -1,17 +1,20 @@
 name: Build Candidate Images
 
-# Manual diagnostic image slicer. Canonical deployable backend candidates are
-# published automatically by ci.yml as multi-arch manifests under the
-# dev-<full-sha> tag; distribution bump chains consume only those candidates.
+# Manual diagnostic image slicer. Canonical deployable backend and neutral-
+# console candidates are published automatically by ci.yml as multi-arch
+# manifests under the dev-<full-sha> tag; distribution bump chains consume
+# only those candidates.
 #
 # This dispatch-only tool intentionally builds one operator-selected platform
 # under a separate manual-<full-sha>-<arch> tag. It diagnoses Dockerfile/build
 # problems without minting a deployable candidate or repointing either
 # canonical dev tag.
 #
-# Backend only. Frontend images are distribution-specific and are built by a
-# distribution's own bump pipeline; this neutral upstream workflow has none of
-# the branding or route build args needed to produce one.
+# Backend only: this dispatch workflow remains a narrow diagnostic slicer. The
+# console's canonical neutral candidate is automatic because it must carry no
+# distribution branding or private route target at all; ci.yml builds that
+# exact artifact after the normal gate rather than accepting operator-supplied
+# build arguments here.
 
 on:
   workflow_dispatch:

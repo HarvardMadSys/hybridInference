@@ -26,6 +26,7 @@ const configuredBranding = {
   orgName: 'Example Org',
   orgUrl: 'https://org.example.test',
   statusUrl: 'https://status.example.test/',
+  logoUrl: '/site-assets/logo.svg',
 };
 
 let brandingOverride: Record<string, unknown> = configuredBranding;
@@ -61,6 +62,15 @@ describe('Header', () => {
     expect(statusLink).toHaveAttribute('href', 'https://status.example.test/');
     expect(statusLink).toHaveAttribute('target', '_blank');
     expect(statusLink).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('renders a same-origin runtime logo without a build-time image allowlist', () => {
+    render(<Header />);
+
+    expect(screen.getByRole('img', { name: 'Example Inference logo' })).toHaveAttribute(
+      'src',
+      '/site-assets/logo.svg',
+    );
   });
 
   it('hides the status link when the deployment has no status page', () => {

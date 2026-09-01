@@ -1,11 +1,10 @@
 /** @type {import('next').NextConfig} */
 const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || 'http://backend:8080';
 
-// Where the standalone cloud agent lives, once a deployment runs one. Unset on
-// every deployment that does not, and then nothing below changes: `/agents`
-// keeps resolving to this app's own pages, which is what it did before the
-// split and what it must keep doing for anyone who never adopts the new
-// service.
+// Compatibility bridge for images built before `/agents` became a runtime
+// route handler. A branded legacy build may still compile these rewrites in;
+// a neutral build leaves both values empty and requests reach
+// `src/app/agents/[[...path]]/route.ts`, which reads its targets at runtime.
 //
 // Two variables and not one because they are two services — the browser app
 // and its control-plane API — and on a real deployment they are two ports, or
@@ -22,25 +21,15 @@ const nextConfig = {
   // off here and reimplemented in middleware.ts for everything except the
   // proxied path, which has to reach pgAdmin exactly as the browser asked.
   skipTrailingSlashRedirect: true,
-  images: {
-    // Remote host for team-member photos (branding.team). A deployment that
-    // hosts photos off-site names the host; one that has no team, or serves
-    // the photos itself, allows no remote host at all. CommonJS file: cannot
-    // import the TS branding module, so read the env var inline.
-    remotePatterns: process.env.NEXT_PUBLIC_TEAM_IMAGE_HOST
-      ? [{ protocol: 'https', hostname: process.env.NEXT_PUBLIC_TEAM_IMAGE_HOST }]
-      : [],
-  },
   async rewrites() {
     // **`beforeFiles`, and it has to be.** A rewrite returned in a flat array
     // is `afterFiles`, which Next checks *after* filesystem routes. This app's
     // own `/agents` pages were removed at H4, but beforeFiles keeps the proxy
     // authoritative even if a page ever reappears under that prefix.
     //
-    // With the variables unset no rewrite is emitted and `/agents` answers
-    // 404 — the truthful state for a deployment that runs no agent service.
-    // The pre-H4 fallback (this app's own agent pages) is gone, so unsetting
-    // the variables is *not* a rollback to a gateway-served UI; there is none.
+    // With the build variables unset no rewrite is emitted. The runtime route
+    // then answers 404 unless both server-only target variables are present.
+    // The pre-H4 fallback (this app's own agent pages) is gone.
     //
     // Job history did not move to the standalone service (decision DR5): it
     // has its own database, so `/agents` history there started empty.
@@ -68,64 +57,64 @@ const nextConfig = {
     return {
       beforeFiles: agentRewrites,
       afterFiles: [
-      { source: '/v1/:path*', destination: `${BACKEND_INTERNAL_URL}/v1/:path*` },
-      // Anthropic Messages endpoint (Claude Code et al.). Clients point at
-      // <site>/anthropic, so without this rewrite those requests fall through
-      // to the Next.js 404 page.
-      { source: '/anthropic/:path*', destination: `${BACKEND_INTERNAL_URL}/anthropic/:path*` },
-      { source: '/auth/:path*', destination: `${BACKEND_INTERNAL_URL}/auth/:path*` },
-      { source: '/user/:path*', destination: `${BACKEND_INTERNAL_URL}/user/:path*` },
-      { source: '/admin/:path*', destination: `${BACKEND_INTERNAL_URL}/admin/:path*` },
-      {
-        source: '/internal/verify-grafana',
-        destination: `${BACKEND_INTERNAL_URL}/internal/verify-grafana`,
-      },
-      {
-        source: '/internal/verify-admin',
-        destination: `${BACKEND_INTERNAL_URL}/internal/verify-admin`,
-      },
-      {
-        source: '/internal/playground/:path*',
-        destination: `${BACKEND_INTERNAL_URL}/internal/playground/:path*`,
-      },
-      // The cloud agent's control plane runs on its own machine and reaches
-      // this gateway over its public origin. Nginx sends unmatched paths here,
-      // so a path with no rewrite is answered by Next.js — and its 404 is an
-      // HTML page, which reads to the caller as "the gateway is down" rather
-      // than "this path is not forwarded". Every one of these was unreachable
-      // in production and staging until this entry existed.
-      //
-      // Named individually, because this prefix is shared: /internal/verify-*
-      // authenticate a browser session by cookie, and a blanket
-      // /internal/:path* would forward whatever lands here next without anyone
-      // deciding it should be reachable from outside.
-      {
-        source: '/internal/model-catalog',
-        destination: `${BACKEND_INTERNAL_URL}/internal/model-catalog`,
-      },
-      {
-        source: '/internal/users/:userId/status',
-        destination: `${BACKEND_INTERNAL_URL}/internal/users/:userId/status`,
-      },
-      // Whole prefix, unlike the two above: every route on that router carries
-      // the dispatch token as a router-level dependency, so a route added
-      // later is authorized by construction. Enumerating them here instead
-      // would mean the next one 404s at this layer with nothing to say why.
-      {
-        source: '/internal/agent-grants',
-        destination: `${BACKEND_INTERNAL_URL}/internal/agent-grants`,
-      },
-      {
-        source: '/internal/agent-grants/:path*',
-        destination: `${BACKEND_INTERNAL_URL}/internal/agent-grants/:path*`,
-      },
-      { source: '/health', destination: `${BACKEND_INTERNAL_URL}/health` },
-      // Public homepage updates. Nginx routes unmatched paths to the frontend,
-      // so this rewrite forwards the request on to FastAPI (same pattern as
-      // /health). Without it the static frontend would 404 the fetch in prod.
-      { source: '/site-updates', destination: `${BACKEND_INTERNAL_URL}/site-updates` },
-      // Public distribution identity consumed by SiteConfigProvider.
-      { source: '/site-config', destination: `${BACKEND_INTERNAL_URL}/site-config` },
+        { source: '/v1/:path*', destination: `${BACKEND_INTERNAL_URL}/v1/:path*` },
+        // Anthropic Messages endpoint (Claude Code et al.). Clients point at
+        // <site>/anthropic, so without this rewrite those requests fall through
+        // to the Next.js 404 page.
+        { source: '/anthropic/:path*', destination: `${BACKEND_INTERNAL_URL}/anthropic/:path*` },
+        { source: '/auth/:path*', destination: `${BACKEND_INTERNAL_URL}/auth/:path*` },
+        { source: '/user/:path*', destination: `${BACKEND_INTERNAL_URL}/user/:path*` },
+        { source: '/admin/:path*', destination: `${BACKEND_INTERNAL_URL}/admin/:path*` },
+        {
+          source: '/internal/verify-grafana',
+          destination: `${BACKEND_INTERNAL_URL}/internal/verify-grafana`,
+        },
+        {
+          source: '/internal/verify-admin',
+          destination: `${BACKEND_INTERNAL_URL}/internal/verify-admin`,
+        },
+        {
+          source: '/internal/playground/:path*',
+          destination: `${BACKEND_INTERNAL_URL}/internal/playground/:path*`,
+        },
+        // The cloud agent's control plane runs on its own machine and reaches
+        // this gateway over its public origin. Nginx sends unmatched paths here,
+        // so a path with no rewrite is answered by Next.js — and its 404 is an
+        // HTML page, which reads to the caller as "the gateway is down" rather
+        // than "this path is not forwarded". Every one of these was unreachable
+        // in production and staging until this entry existed.
+        //
+        // Named individually, because this prefix is shared: /internal/verify-*
+        // authenticate a browser session by cookie, and a blanket
+        // /internal/:path* would forward whatever lands here next without anyone
+        // deciding it should be reachable from outside.
+        {
+          source: '/internal/model-catalog',
+          destination: `${BACKEND_INTERNAL_URL}/internal/model-catalog`,
+        },
+        {
+          source: '/internal/users/:userId/status',
+          destination: `${BACKEND_INTERNAL_URL}/internal/users/:userId/status`,
+        },
+        // Whole prefix, unlike the two above: every route on that router carries
+        // the dispatch token as a router-level dependency, so a route added
+        // later is authorized by construction. Enumerating them here instead
+        // would mean the next one 404s at this layer with nothing to say why.
+        {
+          source: '/internal/agent-grants',
+          destination: `${BACKEND_INTERNAL_URL}/internal/agent-grants`,
+        },
+        {
+          source: '/internal/agent-grants/:path*',
+          destination: `${BACKEND_INTERNAL_URL}/internal/agent-grants/:path*`,
+        },
+        { source: '/health', destination: `${BACKEND_INTERNAL_URL}/health` },
+        // Public homepage updates. Nginx routes unmatched paths to the frontend,
+        // so this rewrite forwards the request on to FastAPI (same pattern as
+        // /health). Without it the static frontend would 404 the fetch in prod.
+        { source: '/site-updates', destination: `${BACKEND_INTERNAL_URL}/site-updates` },
+        // Public distribution identity consumed by SiteConfigProvider.
+        { source: '/site-config', destination: `${BACKEND_INTERNAL_URL}/site-config` },
       ],
     };
   },

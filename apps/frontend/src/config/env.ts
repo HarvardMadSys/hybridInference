@@ -1,7 +1,8 @@
 // Centralized configuration for the application.
 //
-// The frontend bundle is built once and then served statically, so deployment
-// selection must be available at build time.
+// Client API routing and build identity are compiled into the neutral bundle.
+// Distribution branding is intentionally absent here: the server layout loads
+// that from /site-config for each request.
 
 type DeployTarget = 'production' | 'staging';
 

@@ -5,41 +5,47 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import TeamPage from './page';
 
-// The roster is distribution content (NEXT_PUBLIC_TEAM_JSON); upstream ships
-// none, so the page is exercised with an explicit one.
+// The roster is runtime distribution content; upstream ships none, so the
+// page is exercised with an explicit one.
 //
 // Invented people, deliberately. The previous fixture used the real roster —
 // names, job titles, employers, personal websites and photo URLs — as test
 // data in a repository that is about to be published. What the page has to be
 // shown doing is rendering whatever roster it is handed, and a real person's
 // affiliation proves nothing about that.
-vi.mock('@/config/branding', () => ({
-  branding: {
-    orgName: 'Example Org',
-    orgUrl: 'https://org.example.test',
-    team: [
-      {
-        name: 'Ada Example',
-        affiliations: ['Principal Investigator at Example University'],
-        badge: 'Lead',
-        image: 'https://images.example.test/ada.jpg',
-      },
-      {
-        name: 'Blake Sample',
-        affiliations: ['Research Intern at Example University', 'Undergraduate at Example College'],
-        badge: 'Core developer',
-        image: '/team/blake-sample.jpg',
-        website: 'https://blake.example.test/',
-      },
-      {
-        name: 'Cameron Placeholder',
-        affiliations: [
-          'Research Intern at Example University',
-          'Undergraduate at Example Institute',
-        ],
-      },
-    ],
-  },
+vi.mock('@/config/site-config.server', () => ({
+  loadRuntimeSiteConfig: async () => ({
+    branding: {
+      appName: 'Runtime Example',
+      orgName: 'Example Org',
+      orgUrl: 'https://org.example.test',
+      team: [
+        {
+          name: 'Ada Example',
+          affiliations: ['Principal Investigator at Example University'],
+          badge: 'Lead',
+          image: 'https://images.example.test/ada.jpg',
+        },
+        {
+          name: 'Blake Sample',
+          affiliations: [
+            'Research Intern at Example University',
+            'Undergraduate at Example College',
+          ],
+          badge: 'Core developer',
+          image: '/site-assets/team/blake-sample.jpg',
+          website: 'https://blake.example.test/',
+        },
+        {
+          name: 'Cameron Placeholder',
+          affiliations: [
+            'Research Intern at Example University',
+            'Undergraduate at Example Institute',
+          ],
+        },
+      ],
+    },
+  }),
 }));
 
 describe('TeamPage', () => {
@@ -53,11 +59,11 @@ describe('TeamPage', () => {
     return card as HTMLElement;
   };
 
-  it('renders the team heading and lead member with a photo', () => {
-    render(<TeamPage />);
+  it('renders the runtime team heading and lead member with a photo', async () => {
+    render(await TeamPage());
 
     expect(
-      screen.getByRole('heading', { level: 1, name: /the people behind/i }),
+      screen.getByRole('heading', { level: 1, name: /the people behind runtime example/i }),
     ).toBeInTheDocument();
 
     const leadCard = cardFor(/ada example/i);
@@ -70,8 +76,8 @@ describe('TeamPage', () => {
     expect(photo).toHaveAttribute('src', expect.stringContaining('images.example.test'));
   });
 
-  it('renders the research interns with badges, affiliations, photos, and placeholder avatars', () => {
-    render(<TeamPage />);
+  it('renders the research interns with badges, affiliations, photos, and placeholder avatars', async () => {
+    render(await TeamPage());
 
     const developerCard = cardFor(/blake sample/i);
     expect(within(developerCard).getByText(/^core developer$/i)).toBeInTheDocument();

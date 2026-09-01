@@ -1,0 +1,44 @@
+# Public runtime branding referenced by distribution.example.yaml.
+#
+# This document is returned to browsers through GET /site-config. Keep secrets
+# and internal service addresses out of it. Empty strings disable optional
+# presentation such as analytics, signup hints, and external links.
+
+schema_version: 1
+
+app_description: A gateway that routes requests across local and remote inference providers.
+site_host: inference.example.com
+
+organization:
+  name: Example Organization
+  url: https://www.example.com
+  tagline: Example inference infrastructure
+
+links:
+  docs_url: https://docs.example.com
+  status_url: https://status.example.com
+  github_url: https://github.com/example/hybridInference
+
+example:
+  api_base: https://inference.example.com
+  api_key_env_var: EXAMPLE_INFERENCE_API_KEY
+  model: llama-3.3-70b
+
+analytics:
+  statcounter_project_id: ""
+  statcounter_security_key: ""
+
+signup:
+  turnstile_site_key: ""
+  fast_track_domain: ""
+  fast_track_org: ""
+
+storage_key_prefix: example-inference
+data_policy_notice: ""
+
+assets:
+  logo_url: ""
+  favicon_url: ""
+
+team: []
+sponsors: []

@@ -13,7 +13,7 @@ import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
-import { branding } from '@/config/branding';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 
 const changePasswordSchema = z
   .object({
@@ -35,6 +35,7 @@ type ChangePasswordFormData = z.infer<typeof changePasswordSchema>;
 
 function SettingsContent() {
   const { state, refreshUser } = useAuth();
+  const branding = useBranding();
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileSuccess, setProfileSuccess] = useState<string | null>(null);

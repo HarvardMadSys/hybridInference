@@ -62,11 +62,11 @@ def test_no_contract_variable_ships_a_value() -> None:
 
 
 # The AGENT_* names the gateway itself still reads after H4. The console's
-# `/agents` rewrites are compiled from the two internal URLs at build time
-# (next.config.js via Dockerfile.frontend build args), and the deploy scripts
-# grep .env for the network name to decide whether the console joins the
-# standalone stack's Docker network. Everything else with the prefix moved out
-# with the cloud agent.
+# `/agents` route reads the two internal URLs at runtime (legacy images may
+# still have equivalent rewrites compiled in), and the deploy scripts grep
+# .env for the network name to decide whether the console joins the standalone
+# stack's Docker network. Everything else with the prefix moved out with the
+# cloud agent.
 SURVIVING_AGENT_VARS = frozenset(
     {
         "AGENT_WEB_INTERNAL_URL",

@@ -21,9 +21,9 @@ design doc. Applying manifest paths requires an explicit
 change behavior.
 
 ``site:`` and ``features:`` are parsed here and exposed as a safe public subset
-by ``GET /site-config``; the frontend overlays those values at browser runtime.
-Manifest values must not contain secrets; env interpolation is deliberately
-unsupported in ``schema_version: 1``.
+by ``GET /site-config``; ``site.branding`` names a separately versioned public
+branding document. Manifest values must not contain secrets; env interpolation
+is deliberately unsupported in ``schema_version: 1``.
 """
 
 from __future__ import annotations
@@ -35,8 +35,9 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from serving.config.branding import BrandingConfig, BrandingConfigError, load_branding_config
 from serving.config.settings import get_settings
 from serving.utils.logging import get_logger
 
@@ -80,7 +81,7 @@ class DistributionInfo(_ManifestModel):
 
 
 class DistributionSite(_ManifestModel):
-    """Site identity handed to the frontend site-config endpoint (later PR)."""
+    """Site identity and paths to distribution-owned public content."""
 
     public_base_url: str = ""
     support_email: str = ""
@@ -115,6 +116,8 @@ class DistributionDeployment(_ManifestModel):
 class DistributionConfig(_ManifestModel):
     """Validated distribution manifest."""
 
+    _branding_config: BrandingConfig | None = PrivateAttr(default=None)
+
     schema_version: int = Field(ge=1, le=1)
     distribution: DistributionInfo
     site: DistributionSite = Field(default_factory=DistributionSite)
@@ -122,13 +125,21 @@ class DistributionConfig(_ManifestModel):
     paths: DistributionPaths = Field(default_factory=DistributionPaths)
     deployment: DistributionDeployment = Field(default_factory=DistributionDeployment)
 
+    @property
+    def branding_config(self) -> BrandingConfig | None:
+        """Return the validated branding snapshot declared by this manifest."""
+        return self._branding_config
+
 
 class DistributionConfigError(Exception):
     """Raised when a distribution manifest cannot be loaded or validated."""
 
 
 def load_distribution_config(path: Path) -> DistributionConfig:
-    """Load and validate a manifest; relative ``paths:`` resolve against it.
+    """Load and validate a manifest and its declared branding document.
+
+    Relative ``paths:`` and ``site.branding`` values resolve against the
+    manifest directory.
 
     Raises:
         DistributionConfigError: On unreadable files, YAML errors, or
@@ -151,15 +162,33 @@ def load_distribution_config(path: Path) -> DistributionConfig:
         # `root / value` keeps absolute values as-is and anchors relative ones
         # at the manifest directory; resolving unconditionally validates both
         # forms (e.g. embedded NUL bytes raise here instead of at use time).
-        resolved = {
+        resolved_paths = {
             kind: str((root / value).resolve()) if value else value
             for kind, value in config.paths.model_dump().items()
         }
+        resolved_branding = (
+            str((root / config.site.branding).resolve()) if config.site.branding else ""
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         raise DistributionConfigError(
             f"cannot resolve paths in distribution manifest {path}: {exc}"
         ) from exc
-    return config.model_copy(update={"paths": DistributionPaths(**resolved)})
+
+    branding_config: BrandingConfig | None = None
+    if resolved_branding:
+        try:
+            branding_config = load_branding_config(Path(resolved_branding))
+        except BrandingConfigError as exc:
+            raise DistributionConfigError(
+                f"branding declared by distribution manifest {path} did not load: {exc}"
+            ) from exc
+
+    resolved_site = config.site.model_copy(update={"branding": resolved_branding})
+    resolved_config = config.model_copy(
+        update={"paths": DistributionPaths(**resolved_paths), "site": resolved_site}
+    )
+    resolved_config._branding_config = branding_config
+    return resolved_config
 
 
 def _refuse_or_fall_back(configured: str, exc: Exception, *, unexpected: bool = False) -> None:
@@ -179,7 +208,8 @@ def _refuse_or_fall_back(configured: str, exc: Exception, *, unexpected: bool = 
         logger.critical(f"{kind} {configured!r} — refusing to start in active mode")
         raise DistributionConfigError(
             f"distribution manifest {configured!r} is the configured source of "
-            f"config paths (DISTRIBUTION_CONFIG_MODE=active) and did not load: {exc}"
+            f"deployment identity and config paths (DISTRIBUTION_CONFIG_MODE=active) "
+            f"and did not load: {exc}"
         ) from exc
     logger.exception(f"{kind} {configured!r}; using legacy config resolution")
 

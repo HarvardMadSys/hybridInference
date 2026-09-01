@@ -1,12 +1,11 @@
 # The console joins the standalone cloud agent's network.
 #
-# `#1206` pointed `/agents/*` at that service through the console's own
-# rewrites — `http://web:3000` and `http://control-plane:8000`, baked into the
-# image at build time. Those are Docker DNS names, and a name only resolves on
-# a network both containers are on. The console was on `hybridinference` alone,
-# so every `/agents` request ended in `getaddrinfo ENOTFOUND web` and the
-# console answered **500**: the rewrite existed, the target was unreachable,
-# and nothing in the console's own health said so.
+# The console's runtime route handler points `/agents/*` at
+# `http://web:3000` and `http://control-plane:8000`. Those are Docker DNS
+# names, and a name only resolves on a network both containers are on. The
+# console was once on `hybridinference` alone, so every `/agents` request ended
+# in `getaddrinfo ENOTFOUND web`: the route existed, the target was
+# unreachable, and nothing in the console's own health said so.
 #
 # **Why an overlay and not two lines in the base file.** The network belongs to
 # the other repository's stack (`freeinference-cloud-agent`, which names it

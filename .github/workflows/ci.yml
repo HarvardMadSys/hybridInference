@@ -1377,3 +1377,220 @@ jobs:
               echo "- pushed multi-arch (arm64+amd64): \`ghcr.io/harvardmadsys/hybridinference-backend@${INDEX}\` (tag \`dev-${GITHUB_SHA:0:8}\`)"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---- Neutral console candidate publishing -----------------------------
+  # W7 makes the console an upstream artifact too. These jobs deliberately
+  # pass no distribution branding or private route target: deployments inject
+  # public identity through /site-config and server-only proxy targets at
+  # runtime. As with the backend, every green dev SHA gets a native arm64 and
+  # amd64 child stitched into one immutable index for distribution lock files.
+  publish-console-precheck:
+    name: Publish console candidate (precheck)
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
+    needs: [ci-gate]
+    runs-on: [self-hosted, Linux, arm64-docker]
+    timeout-minutes: 5
+    outputs:
+      existing: ${{ steps.existing.outputs.digest }}
+    steps:
+      - name: Look up an existing console candidate for this SHA
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-console/versions?per_page=100" \
+                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" 2>/dev/null | head -1 || true)"
+          if [ -n "${digest}" ]; then
+            echo "console candidate dev-${GITHUB_SHA} already published (${digest}); downstream jobs will skip"
+          else
+            echo "no console candidate for dev-${GITHUB_SHA} (or the lookup errored); downstream jobs will build"
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+  publish-console-arm64:
+    name: Publish console candidate (arm64)
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
+    needs: [ci-gate, publish-console-precheck]
+    runs-on: [self-hosted, Linux, arm64-docker]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+        if: needs.publish-console-precheck.outputs.existing == ''
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        if: needs.publish-console-precheck.outputs.existing == ''
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: needs.publish-console-precheck.outputs.existing == ''
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push neutral console by digest (native arm64)
+        if: needs.publish-console-precheck.outputs.existing == ''
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.frontend
+          platforms: linux/arm64
+          outputs: type=image,name=ghcr.io/harvardmadsys/hybridinference-console,name-canonical=true,push-by-digest=true,push=true
+          # Same-origin is the portable browser contract. No branding or
+          # AGENT_* build argument is allowed on this canonical image.
+          build-args: |
+            NEXT_PUBLIC_API_BASE=
+            NEXT_PUBLIC_BUILD_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=console-arm64
+          cache-to: type=gha,mode=min,scope=console-arm64
+
+      - name: Refuse distribution identity in the arm64 payload
+        if: needs.publish-console-precheck.outputs.existing == ''
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/harvardmadsys/hybridinference-console@${DIGEST}"
+          docker pull "${image}"
+          docker run --rm --entrypoint sh "${image}" -eu -c '
+            if grep -r -i -n -E "freeinference|http://web:3000|http://control-plane:8000" /app; then
+              echo "neutral console contains distribution branding or a private proxy target" >&2
+              exit 1
+            fi
+          '
+
+  publish-console-amd64:
+    name: Publish console candidate (amd64)
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
+    needs: [ci-gate, publish-console-precheck]
+    runs-on: [self-hosted, Linux, x64-docker]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+        if: needs.publish-console-precheck.outputs.existing == ''
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        if: needs.publish-console-precheck.outputs.existing == ''
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: needs.publish-console-precheck.outputs.existing == ''
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push neutral console by digest (native amd64)
+        if: needs.publish-console-precheck.outputs.existing == ''
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.frontend
+          platforms: linux/amd64
+          outputs: type=image,name=ghcr.io/harvardmadsys/hybridinference-console,name-canonical=true,push-by-digest=true,push=true
+          build-args: |
+            NEXT_PUBLIC_API_BASE=
+            NEXT_PUBLIC_BUILD_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=console-amd64
+          cache-to: type=gha,mode=min,scope=console-amd64
+
+      - name: Refuse distribution identity in the amd64 payload
+        if: needs.publish-console-precheck.outputs.existing == ''
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/harvardmadsys/hybridinference-console@${DIGEST}"
+          docker pull "${image}"
+          docker run --rm --entrypoint sh "${image}" -eu -c '
+            if grep -r -i -n -E "freeinference|http://web:3000|http://control-plane:8000" /app; then
+              echo "neutral console contains distribution branding or a private proxy target" >&2
+              exit 1
+            fi
+          '
+
+  publish-console:
+    name: Publish console candidate
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' && needs.publish-console-arm64.result == 'success' && needs.publish-console-amd64.result == 'success' }}
+    needs: [ci-gate, publish-console-precheck, publish-console-arm64, publish-console-amd64]
+    runs-on: [self-hosted, Linux, arm64-docker]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        if: needs.publish-console-precheck.outputs.existing == ''
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Stitch and tag the neutral multi-arch console
+        id: stitch
+        env:
+          ARM_DIGEST: ${{ needs.publish-console-arm64.outputs.digest }}
+          AMD_DIGEST: ${{ needs.publish-console-amd64.outputs.digest }}
+          EXISTING: ${{ needs.publish-console-precheck.outputs.existing }}
+        run: |
+          set -euo pipefail
+          img="ghcr.io/harvardmadsys/hybridinference-console"
+          short="${GITHUB_SHA:0:8}"
+          if [ -n "${EXISTING}" ]; then
+            echo "console candidate dev-${GITHUB_SHA} already published (${EXISTING}); nothing to stitch"
+            echo "digest=${EXISTING}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${ARM_DIGEST}" ] || [ -z "${AMD_DIGEST}" ]; then
+            echo "::error title=Missing console arch digest::arm64='${ARM_DIGEST}' amd64='${AMD_DIGEST}' — precheck said build, but an arch job produced no digest"
+            exit 1
+          fi
+          docker buildx imagetools create \
+            -t "${img}:dev-${GITHUB_SHA}" \
+            -t "${img}:dev-${short}" \
+            "${img}@${ARM_DIGEST}" \
+            "${img}@${AMD_DIGEST}"
+          index="$(docker buildx imagetools inspect "${img}:dev-${GITHUB_SHA}" --format '{{ json .Manifest.Digest }}' | tr -d '"')"
+          echo "digest=${index}" >> "$GITHUB_OUTPUT"
+
+      - name: Candidate summary
+        env:
+          EXISTING: ${{ needs.publish-console-precheck.outputs.existing }}
+          INDEX: ${{ steps.stitch.outputs.digest }}
+        run: |
+          {
+            echo "## Neutral console candidate"
+            echo ""
+            echo "- source SHA: \`${GITHUB_SHA}\`"
+            if [ -n "${EXISTING}" ]; then
+              echo "- already published: \`ghcr.io/harvardmadsys/hybridinference-console@${EXISTING}\`"
+            else
+              echo "- pushed multi-arch (arm64+amd64): \`ghcr.io/harvardmadsys/hybridinference-console@${INDEX}\` (tag \`dev-${GITHUB_SHA:0:8}\`)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

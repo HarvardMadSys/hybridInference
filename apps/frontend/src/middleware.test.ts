@@ -1,7 +1,8 @@
 /**
  * The trailing-slash redirect lives here only because next.config.js turns
- * Next's own version off for the pgAdmin proxy. These tests pin both halves of
- * that bargain: the proxied path keeps its slash, everything else loses it.
+ * Next's own version off for the pgAdmin and agent proxies. These tests pin
+ * both halves of that bargain: proxied paths keep their slash, everything else
+ * loses it.
  */
 import { NextRequest } from 'next/server';
 import { describe, expect, it } from 'vitest';
@@ -30,6 +31,15 @@ describe('trailing-slash middleware', () => {
     // Flask adds this slash back if it is stripped, and Next would strip it
     // again — the two would bounce the request between them indefinitely.
     for (const path of ['/pgadmin', '/pgadmin/', '/pgadmin/browser/', '/pgadmin/static/js/']) {
+      const response = get(path);
+      expect(response.headers.get('location'), path).toBeNull();
+    }
+  });
+
+  it('leaves the agent proxy alone, slash and all', () => {
+    // The standalone web app owns /agents and may canonicalize its own root to
+    // /agents/. Stripping that slash here would create a redirect loop.
+    for (const path of ['/agents', '/agents/', '/agents/jobs/', '/agents/api/v1/jobs/']) {
       const response = get(path);
       expect(response.headers.get('location'), path).toBeNull();
     }

@@ -15,8 +15,9 @@ hardcoded strings:
 A deployment supplies its own identity through ``SITE_*``, which
 ``deploy/docker/docker-compose.yml`` pins for both staging and production (and
 ``.env`` still overrides), so a configured site's rendered output is unchanged
-by the neutral default. ``docs_url`` has no manifest field yet; it joins the manifest schema
-with the config-migration wave.
+by the neutral default. The manifest's versioned branding document supplies
+``docs_url`` while ``SITE_DOCS_URL`` remains the higher-precedence operational
+override.
 """
 
 from __future__ import annotations
@@ -72,6 +73,7 @@ def get_site_identity() -> SiteIdentity:
 
     manifest_name: str | None = None
     manifest_base_url: str | None = None
+    manifest_docs_url: str | None = None
     manifest_support: str | None = None
     if get_settings().distribution_config_mode.strip().lower() == "active":
         config = get_distribution_config()
@@ -79,12 +81,15 @@ def get_site_identity() -> SiteIdentity:
             manifest_name = config.distribution.display_name
             manifest_base_url = config.site.public_base_url
             manifest_support = config.site.support_email
+            branding = getattr(config, "branding_config", None)
+            if branding is not None:
+                manifest_docs_url = branding.links.docs_url
 
     return SiteIdentity(
         name=_pick("SITE_NAME", manifest_name, NEUTRAL_DEFAULT.name),
         public_base_url=_pick(
             "SITE_PUBLIC_BASE_URL", manifest_base_url, NEUTRAL_DEFAULT.public_base_url
         ),
-        docs_url=_pick("SITE_DOCS_URL", None, NEUTRAL_DEFAULT.docs_url),
+        docs_url=_pick("SITE_DOCS_URL", manifest_docs_url, NEUTRAL_DEFAULT.docs_url),
         support_email=_pick("SITE_SUPPORT_EMAIL", manifest_support, NEUTRAL_DEFAULT.support_email),
     )

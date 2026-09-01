@@ -8,10 +8,11 @@ import { UsageStats } from '@/components/features/dashboard/UsageStats';
 import { UpdatesBanner } from '@/components/ui/UpdatesBanner';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
-import { branding } from '@/config/branding';
+import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 export function DashboardView() {
   const { state } = useAuth();
+  const { branding, features } = useSiteConfig();
   const displayName = state.user?.user_name || state.user?.email;
 
   return (
@@ -112,20 +113,22 @@ export function DashboardView() {
             Internal Tools
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <Link
-              href="/agents"
-              className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
-            >
-              <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M7 3v12m0 0a3 3 0 1 0 3 3m-3-3a3 3 0 0 1 3 3m7-15a3 3 0 1 1-3 3m3-3v6a4 4 0 0 1-4 4H10"
-                />
-              </svg>
-              Agents
-            </Link>
+            {features.agents && (
+              <Link
+                href="/agents"
+                className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
+              >
+                <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M7 3v12m0 0a3 3 0 1 0 3 3m-3-3a3 3 0 0 1 3 3m7-15a3 3 0 1 1-3 3m3-3v6a4 4 0 0 1-4 4H10"
+                  />
+                </svg>
+                Agents
+              </Link>
+            )}
             <Link
               href="/dashboard/playground"
               prefetch={false}

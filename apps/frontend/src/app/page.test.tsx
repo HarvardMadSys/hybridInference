@@ -15,12 +15,12 @@ const NOTICE = 'Requests are logged by this deployment for research purposes.';
 
 let dataPolicyNotice = NOTICE;
 
-vi.mock('@/config/branding', () => ({
-  branding: {
+vi.mock('@/components/providers/SiteConfigProvider', () => ({
+  useBranding: () => ({
     get dataPolicyNotice() {
       return dataPolicyNotice;
     },
-  },
+  }),
 }));
 
 vi.mock('@/components/providers', () => ({
