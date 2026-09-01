@@ -44,11 +44,19 @@ def test_public_payload_uses_snake_case_and_omits_absent_team_fields(tmp_path: P
     assert payload["sponsors"][0]["class_name"] == "h-8"
 
 
-def test_public_payload_revalidates_the_operational_docs_override() -> None:
+@pytest.mark.parametrize(
+    "docs_url",
+    [
+        "http://insecure.example",
+        "https://docs.example?language=en",
+        "https://docs.example#install",
+    ],
+)
+def test_public_payload_revalidates_the_operational_docs_override(docs_url: str) -> None:
     config = load_branding_config(_EXAMPLE)
 
-    with pytest.raises(ValueError, match="https"):
-        config.public_payload(docs_url="http://insecure.example")
+    with pytest.raises(ValueError):
+        config.public_payload(docs_url=docs_url)
 
 
 def test_loader_rejects_missing_file(tmp_path: Path) -> None:
@@ -83,8 +91,13 @@ def test_loader_rejects_fields_outside_public_contract(tmp_path: Path) -> None:
         (("links", "docs_url"), "https://exa%mple.com"),
         (("links", "docs_url"), "https://999.999.999.999"),
         (("links", "docs_url"), "https://[v1.zz]"),
+        (("links", "docs_url"), "https://docs.example.com?language=en"),
+        (("links", "docs_url"), "https://docs.example.com#"),
+        (("links", "github_url"), "https://github.com/example/repo?tab=readme"),
+        (("links", "github_url"), "https://github.com/example/repo#readme"),
         (("example", "api_base"), "http://example.com:99999"),
         (("example", "api_base"), "https://api.example.com?tenant=example"),
+        (("example", "api_base"), "https://api.example.com?"),
         (("example", "api_base"), "https://api.example.com#completion"),
         (("example", "api_key_env_var"), "not-a-shell-name"),
         (("analytics", "statcounter_project_id"), "not-digits"),

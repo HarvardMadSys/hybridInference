@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from serving.config.branding import validate_public_https_url
+from serving.config.branding import validate_public_https_base_url
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -70,18 +70,20 @@ def _pick_docs_url(manifest_value: str | None) -> str:
     env_value = os.getenv("SITE_DOCS_URL", "").strip()
     if env_value:
         try:
-            return validate_public_https_url(env_value)
+            return validate_public_https_base_url(env_value)
         except ValueError:
-            logger.error("Ignoring invalid SITE_DOCS_URL; expected an empty or absolute HTTPS URL")
+            logger.error(
+                "Ignoring invalid SITE_DOCS_URL; expected an empty or path-joinable HTTPS URL"
+            )
 
     candidate = manifest_value.strip() if manifest_value and manifest_value.strip() else ""
     # A manifest branding document has already passed this validator. Retain
     # the check here so mocked/custom config providers cannot publish a shape
     # the runtime console must reject.
     try:
-        return validate_public_https_url(candidate)
+        return validate_public_https_base_url(candidate)
     except ValueError:
-        logger.error("Ignoring invalid manifest docs URL; expected an absolute HTTPS URL")
+        logger.error("Ignoring invalid manifest docs URL; expected a path-joinable HTTPS URL")
         return NEUTRAL_DEFAULT.docs_url
 
 

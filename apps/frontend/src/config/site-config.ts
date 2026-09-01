@@ -17,11 +17,16 @@ const publicLinkSchema = z
   .string()
   .refine((value) => value === '' || hasProtocol(value, ['https:']), 'must be empty or HTTPS');
 
+const publicBaseLinkSchema = z.string().refine((value) => {
+  if (value === '') return true;
+  if (!hasProtocol(value, ['https:'])) return false;
+  return !value.includes('?') && !value.includes('#');
+}, 'must be empty or HTTPS without a query or fragment');
+
 const apiBaseSchema = z.string().refine((value) => {
   if (value === '') return true;
   if (!hasProtocol(value, ['http:', 'https:'])) return false;
-  const parsed = new URL(value);
-  return !parsed.search && !parsed.hash;
+  return !value.includes('?') && !value.includes('#');
 }, 'must be empty or HTTP(S) without a query or fragment');
 
 const assetUrlSchema = z.string().refine((value) => {
@@ -64,9 +69,9 @@ const runtimeBrandingSchema = z
       .strict(),
     links: z
       .object({
-        docs_url: publicLinkSchema,
+        docs_url: publicBaseLinkSchema,
         status_url: publicLinkSchema,
-        github_url: publicLinkSchema,
+        github_url: publicBaseLinkSchema,
       })
       .strict(),
     example: z

@@ -223,6 +223,7 @@ describe('resolveRuntimeSiteConfig', () => {
 
     for (const apiBase of [
       'https://api.example.test?tenant=example',
+      'https://api.example.test?',
       'https://api.example.test#completion',
     ]) {
       const withUnjoinableApiBase = resolveRuntimeSiteConfig({
@@ -233,6 +234,22 @@ describe('resolveRuntimeSiteConfig', () => {
         },
       });
       expect(withUnjoinableApiBase.branding).toBe(buildTimeSiteConfig.branding);
+    }
+
+    for (const [key, value] of [
+      ['docs_url', 'https://docs.example.test?language=en'],
+      ['docs_url', 'https://docs.example.test#'],
+      ['github_url', 'https://github.com/example/runtime?tab=readme'],
+      ['github_url', 'https://github.com/example/runtime#readme'],
+    ] as const) {
+      const withUnjoinableLinkBase = resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        branding: {
+          ...runtimeBranding,
+          links: { ...runtimeBranding.links, [key]: value },
+        },
+      });
+      expect(withUnjoinableLinkBase.branding).toBe(buildTimeSiteConfig.branding);
     }
   });
 

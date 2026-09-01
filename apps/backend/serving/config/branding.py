@@ -66,13 +66,24 @@ def validate_public_https_url(value: str) -> str:
     return _absolute_url_or_empty(value, schemes={"https"})
 
 
-def _api_base_url(value: str) -> str:
-    validated = _absolute_url_or_empty(value, schemes={"http", "https"})
-    if validated:
-        parsed = urlsplit(validated)
-        if parsed.query or parsed.fragment:
-            raise ValueError("must not contain a query or fragment")
+def _absolute_url_base_or_empty(value: str, *, schemes: set[str]) -> str:
+    """Validate a URL whose path will be extended by a consumer."""
+    validated = _absolute_url_or_empty(value, schemes=schemes)
+    if validated and ("?" in validated or "#" in validated):
+        # Check the delimiters, not only parsed.query/fragment: URL parsers
+        # report both as empty for a trailing bare `?` or `#`, which still
+        # turns any path appended by a consumer into query/fragment text.
+        raise ValueError("must not contain a query or fragment")
     return validated
+
+
+def validate_public_https_base_url(value: str) -> str:
+    """Return an empty or path-joinable public HTTPS URL."""
+    return _absolute_url_base_or_empty(value, schemes={"https"})
+
+
+def _api_base_url(value: str) -> str:
+    return _absolute_url_base_or_empty(value, schemes={"http", "https"})
 
 
 def _asset_url(value: str) -> str:
@@ -123,10 +134,16 @@ class BrandingLinks(_BrandingModel):
     status_url: str
     github_url: str
 
-    @field_validator("docs_url", "status_url", "github_url")
+    @field_validator("docs_url", "github_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        """Allow hidden links or HTTPS bases that consumers can extend."""
+        return validate_public_https_base_url(value)
+
+    @field_validator("status_url")
     @classmethod
     def validate_url(cls, value: str) -> str:
-        """Allow hidden links or public HTTPS links."""
+        """Allow a hidden status link or a public HTTPS link."""
         return validate_public_https_url(value)
 
 
@@ -233,7 +250,7 @@ class BrandingConfig(_BrandingModel):
         payload = self.model_dump(exclude={"schema_version"}, exclude_none=True)
         payload["links"] = {
             **self.links.model_dump(),
-            "docs_url": validate_public_https_url(docs_url),
+            "docs_url": validate_public_https_base_url(docs_url),
         }
         return payload
 

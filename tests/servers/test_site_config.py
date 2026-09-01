@@ -180,8 +180,16 @@ async def test_serves_validated_public_branding_with_docs_override(client, monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_docs_url",
+    [
+        "http://insecure.example.com",
+        "https://docs.example.com?language=en",
+        "https://docs.example.com#install",
+    ],
+)
 async def test_invalid_docs_override_cannot_invalidate_runtime_branding(
-    client, monkeypatch, tmp_path
+    client, monkeypatch, tmp_path, invalid_docs_url
 ):
     branding = tmp_path / "branding" / "site.yaml"
     branding.parent.mkdir()
@@ -195,7 +203,7 @@ async def test_invalid_docs_override_cannot_invalidate_runtime_branding(
     )
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
-    monkeypatch.setenv("SITE_DOCS_URL", "http://insecure.example.com")
+    monkeypatch.setenv("SITE_DOCS_URL", invalid_docs_url)
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
 

@@ -125,7 +125,15 @@ def test_branding_supplies_docs_url_but_env_still_wins(monkeypatch):
     assert get_site_identity().docs_url == "https://override-docs.acme.example"
 
 
-def test_invalid_docs_env_falls_back_to_valid_manifest_value(monkeypatch):
+@pytest.mark.parametrize(
+    "invalid_docs_url",
+    [
+        "http://insecure.example",
+        "https://docs.acme.example?language=en",
+        "https://docs.acme.example#install",
+    ],
+)
+def test_invalid_docs_env_falls_back_to_valid_manifest_value(monkeypatch, invalid_docs_url):
     _force_mode(monkeypatch, "active")
     _force_manifest(
         monkeypatch,
@@ -136,7 +144,7 @@ def test_invalid_docs_env_falls_back_to_valid_manifest_value(monkeypatch):
             links=SimpleNamespace(docs_url="https://manifest-docs.acme.example")
         ),
     )
-    monkeypatch.setenv("SITE_DOCS_URL", "http://insecure.example")
+    monkeypatch.setenv("SITE_DOCS_URL", invalid_docs_url)
 
     assert get_site_identity().docs_url == "https://manifest-docs.acme.example"
 
