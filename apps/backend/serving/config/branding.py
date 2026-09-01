@@ -8,7 +8,15 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import unquote, urlsplit
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PositiveInt, ValidationError, field_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PositiveInt,
+    ValidationError,
+    field_validator,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -40,11 +48,11 @@ def _absolute_url_or_empty(value: str, *, schemes: set[str]) -> str:
         return value
     try:
         parsed = urlsplit(value)
-        # Accessing port performs the range/numeric validation that urlsplit
-        # deliberately defers. Use hostname rather than netloc so malformed
-        # authority-only values cannot pass the public URL contract either.
-        _ = parsed.port
-        valid = parsed.scheme in schemes and bool(parsed.hostname)
+        # urlsplit accepts host spellings that browsers reject. Pydantic's URL
+        # parser validates the authority with browser-compatible host and port
+        # rules, while urlsplit keeps the explicit `scheme://host` requirement.
+        browser_url = AnyHttpUrl(value)
+        valid = browser_url.scheme in schemes and bool(parsed.hostname)
     except ValueError:
         valid = False
     if not valid or any(char.isspace() for char in value) or "\\" in value:
