@@ -34,6 +34,16 @@ export const config = {
   buildSha: process.env.NEXT_PUBLIC_BUILD_SHA || '',
   buildTimestamp: process.env.NEXT_PUBLIC_BUILD_TIMESTAMP || '',
 
+  // Whether this deployment runs a standalone cloud agent.
+  //
+  // **Not a flag anyone sets.** `next.config.js` computes it from the same two
+  // variables the `/agents` rewrite is built from and injects it, so the
+  // console's entry point and the path behind it cannot disagree. A hand-set
+  // flag could be turned on by a deployment that never configured the proxy,
+  // and the console would then offer a link to a 404 — which is the whole
+  // reason this is derived rather than declared.
+  agentsEnabled: process.env.NEXT_PUBLIC_AGENTS_ENABLED === 'true',
+
   // Feature Flags (can be toggled via environment variables if needed)
   enableAnalytics: process.env.NEXT_PUBLIC_ENABLE_ANALYTICS === 'true',
   enableDarkMode: process.env.NEXT_PUBLIC_ENABLE_DARK_MODE !== 'false',
