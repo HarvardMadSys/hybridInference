@@ -102,35 +102,57 @@ const runtimeBrandingSchema = z
   })
   .strict();
 
-const siteConfigDocumentSchema = z
+const distributionSchema = z
+  .object({
+    id: z.string().trim(),
+    display_name: z.string().trim(),
+    release: z.string(),
+  })
+  .strict();
+
+const siteSchema = z
+  .object({
+    public_base_url: z.string(),
+    support_email: z.string(),
+  })
+  .strict();
+
+const featuresSchema = z
+  .object({
+    routers: z.array(z.string()),
+    public_signup: z.boolean().nullable(),
+    rag: z.boolean().nullable(),
+  })
+  .strict();
+
+const versionedSiteConfigDocumentSchema = z
   .object({
     schema_version: z.literal(1),
-    distribution: z
-      .object({
-        id: z.string().trim(),
-        display_name: z.string().trim(),
-        release: z.string(),
-      })
-      .strict(),
-    site: z
-      .object({
-        public_base_url: z.string(),
-        support_email: z.string(),
-      })
-      .strict(),
-    features: z
-      .object({
-        routers: z.array(z.string()),
-        public_signup: z.boolean().nullable(),
-        rag: z.boolean().nullable(),
-      })
-      .strict(),
+    distribution: distributionSchema,
+    site: siteSchema,
+    features: featuresSchema,
     // Parse branding independently. A deployment can roll the v1 endpoint out
     // before its branding document without replacing the compatibility values
     // already baked into the transition image.
     branding: z.unknown().nullable(),
   })
   .strict();
+
+// The endpoint immediately preceding schema v1 exposed this exact subset.
+// Accept it during rolling upgrades and paired rollbacks so a neutral console
+// keeps the deployment identity and feature gates while the backend catches up.
+const legacySiteConfigDocumentSchema = z
+  .object({
+    distribution: distributionSchema,
+    site: siteSchema,
+    features: featuresSchema,
+  })
+  .strict();
+
+const siteConfigDocumentSchema = z.union([
+  versionedSiteConfigDocumentSchema,
+  legacySiteConfigDocumentSchema,
+]);
 
 export interface RuntimeSiteConfig {
   branding: Branding;
@@ -196,17 +218,54 @@ function resolveBranding(input: unknown, displayName: string, supportEmail: stri
   };
 }
 
+function resolveLegacyBranding(
+  displayName: string,
+  publicBaseUrl: string,
+  supportEmail: string,
+): Branding {
+  const normalizedBaseUrl = publicBaseUrl.replace(/\/+$/, '');
+  const safeBaseUrl = apiBaseSchema.safeParse(normalizedBaseUrl).success ? normalizedBaseUrl : '';
+  let siteHost = '';
+  if (safeBaseUrl) {
+    try {
+      siteHost = new URL(safeBaseUrl).host;
+    } catch {
+      // The schema already checks this, but keep the fallback local if URL
+      // parsing behavior differs between runtimes.
+    }
+  }
+
+  return {
+    ...buildTimeBranding,
+    ...(displayName ? { appName: displayName } : {}),
+    ...(safeBaseUrl ? { exampleApiBase: safeBaseUrl } : {}),
+    ...(siteHost ? { siteHost } : {}),
+    ...(supportEmail.trim() ? { contactEmail: supportEmail.trim() } : {}),
+  };
+}
+
 export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
   const parsed = siteConfigDocumentSchema.safeParse(input);
   if (!parsed.success) return buildTimeSiteConfig;
 
   const document = parsed.data;
-  return {
-    branding: resolveBranding(
+  let branding: Branding;
+  if ('schema_version' in document) {
+    branding = resolveBranding(
       document.branding,
       document.distribution.display_name,
       document.site.support_email,
-    ),
+    );
+  } else {
+    branding = resolveLegacyBranding(
+      document.distribution.display_name,
+      document.site.public_base_url,
+      document.site.support_email,
+    );
+  }
+
+  return {
+    branding,
     distribution: {
       id: document.distribution.id,
       release: document.distribution.release,

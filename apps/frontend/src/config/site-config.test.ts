@@ -140,6 +140,42 @@ describe('resolveRuntimeSiteConfig', () => {
     expect(resolved.features).toEqual(buildTimeSiteConfig.features);
   });
 
+  it('preserves legacy identity and disabled features during a rolling upgrade', () => {
+    const {
+      schema_version: _schemaVersion,
+      branding: _branding,
+      ...legacyDocument
+    } = runtimeDocument;
+
+    const resolved = resolveRuntimeSiteConfig(legacyDocument);
+
+    expect(resolved.branding).toMatchObject({
+      appName: 'Example Inference',
+      exampleApiBase: 'https://inference.example.test',
+      siteHost: 'inference.example.test',
+      contactEmail: 'support@example.test',
+    });
+    expect(resolved.distribution).toEqual({ id: 'example', release: '2026.07' });
+    expect(resolved.features).toEqual({ publicSignup: false, rag: false, agents: false });
+  });
+
+  it('keeps legacy feature gates when its optional identity URL is malformed', () => {
+    const {
+      schema_version: _schemaVersion,
+      branding: _branding,
+      ...legacyDocument
+    } = runtimeDocument;
+    const resolved = resolveRuntimeSiteConfig({
+      ...legacyDocument,
+      site: { ...legacyDocument.site, public_base_url: 'javascript:alert(1)' },
+    });
+
+    expect(resolved.branding.exampleApiBase).toBe(buildTimeSiteConfig.branding.exampleApiBase);
+    expect(resolved.branding.siteHost).toBe(buildTimeSiteConfig.branding.siteHost);
+    expect(resolved.branding.appName).toBe('Example Inference');
+    expect(resolved.features).toEqual({ publicSignup: false, rag: false, agents: false });
+  });
+
   it('preserves build-time branding when a branding field is unsafe or malformed', () => {
     const resolved = resolveRuntimeSiteConfig({
       ...runtimeDocument,
@@ -173,7 +209,7 @@ describe('resolveRuntimeSiteConfig', () => {
     expect(withUncompiledSponsorClass.branding).toBe(buildTimeSiteConfig.branding);
   });
 
-  it('rejects malformed or unversioned documents without changing the fallback', () => {
+  it('rejects malformed or unsupported-version documents without changing the fallback', () => {
     expect(resolveRuntimeSiteConfig({ distribution: {} })).toBe(buildTimeSiteConfig);
     expect(resolveRuntimeSiteConfig({ ...runtimeDocument, schema_version: 2 })).toBe(
       buildTimeSiteConfig,
