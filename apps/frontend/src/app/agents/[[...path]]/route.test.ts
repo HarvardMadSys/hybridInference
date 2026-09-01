@@ -219,6 +219,20 @@ describe('/agents runtime proxy', () => {
     expect(response.headers.get('location')).not.toContain('agent-web');
   });
 
+  it.each([
+    ['/agents/projects/42/', 'login?next=1', '/agents/projects/42/login?next=1'],
+    ['/agents/api/v1/jobs/job-1/', '../signin', '/agents/api/v1/jobs/signin'],
+  ])(
+    'resolves a path-relative redirect from %s against the effective upstream URL',
+    async (path, location, expected) => {
+      stubFetch(() => new Response(null, { status: 307, headers: { location } }));
+
+      const response = await GET(request(path));
+
+      expect(response.headers.get('location')).toBe(expected);
+    },
+  );
+
   it('passes the first SSE chunk through before the delayed second chunk exists', async () => {
     vi.useFakeTimers();
     const encoder = new TextEncoder();

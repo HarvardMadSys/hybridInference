@@ -156,12 +156,16 @@ function redirectTarget(
 
 function foldInternalRedirect(
   location: string,
+  upstreamRequestUrl: URL,
   selected: RouteTarget,
   targets: RuntimeTargets,
 ): string | null {
   let redirect: URL;
   try {
-    redirect = new URL(location, selected.base);
+    // A path-relative Location is relative to the resource that produced it,
+    // not to the service root. Using the effective fetch URL preserves deep
+    // paths such as `/agents/projects/42/` + `login`.
+    redirect = new URL(location, upstreamRequestUrl);
   } catch {
     return null;
   }
@@ -182,6 +186,7 @@ function foldInternalRedirect(
 
 function responseHeaders(
   upstream: Response,
+  upstreamRequestUrl: URL,
   target: RouteTarget,
   targets: RuntimeTargets,
 ): Headers {
@@ -207,7 +212,7 @@ function responseHeaders(
 
   const location = headers.get('location');
   if (location) {
-    const folded = foldInternalRedirect(location, target, targets);
+    const folded = foldInternalRedirect(location, upstreamRequestUrl, target, targets);
     if (folded) headers.set('location', folded);
   }
 
@@ -249,7 +254,7 @@ async function handle(request: NextRequest): Promise<Response> {
 
   return new NextResponse(upstream.body, {
     status: upstream.status,
-    headers: responseHeaders(upstream, target, targets),
+    headers: responseHeaders(upstream, url, target, targets),
   });
 }
 

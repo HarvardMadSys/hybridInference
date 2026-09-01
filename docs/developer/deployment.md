@@ -100,13 +100,15 @@ rebuild. Recreate the frontend with `make up` after changing its runtime
 environment; restart the backend after changing the branding document it
 loads.
 
-The Compose file still exposes the old branding and agent variables as build
-arguments for source builds and pre-W7 distribution images. That is a
-transition bridge, not the canonical release path: neutral published images
-omit them. Values that genuinely remain `NEXT_PUBLIC_*` build metadata or
-compatibility settings are compiled into the browser bundle and still require
-`make build s=frontend`. See [The public path table](public-path-table.md) for
-the distinction between runtime handlers and legacy build-time rewrites.
+The Compose file still exposes the old branding variables as build arguments
+for source compatibility. The Dockerfile also retains the two legacy agent
+arguments for explicit pre-W7 downstream build pipelines, but upstream Compose
+does not populate them. Those are transition bridges, not the canonical
+release path: neutral published images omit them. Values that genuinely remain
+`NEXT_PUBLIC_*` build metadata or compatibility settings are compiled into the
+browser bundle and still require `make build s=frontend`. See [The public path
+table](public-path-table.md) for the distinction between runtime handlers and
+legacy build-time rewrites.
 
 ## Configuration
 

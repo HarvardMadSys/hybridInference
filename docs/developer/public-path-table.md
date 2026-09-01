@@ -72,8 +72,9 @@ Three implementation facts are load-bearing here:
 
 `next.config.js` still emits the same three rules as `beforeFiles` rewrites when
 both agent URLs are supplied **while building** an older distribution image.
-This is only a transition bridge: canonical neutral images supply neither
-build arg and use the runtime handler above. Because `beforeFiles` wins over a
+Direct downstream build pipelines can still opt into that bridge, but upstream
+Compose deliberately does not pass the agent targets as build args. Canonical
+neutral images use the runtime handler above. Because `beforeFiles` wins over a
 filesystem route, an image built with those legacy values keeps its baked-in
 targets and cannot be retargeted by changing only the container environment.
 

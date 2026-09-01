@@ -1,8 +1,9 @@
-"""The legacy `/agents` rewrite remains as a compatibility bridge.
+"""The runtime `/agents` route is authoritative in upstream Compose builds.
 
-Next resolves `rewrites()` at **build time** and writes the result into
-`.next/routes-manifest.json`. Existing branded images may still carry those
-rules, while neutral images leave them empty and use the runtime route handler.
+The Dockerfile still accepts explicit agent build args as a compatibility
+bridge for pre-W7 downstream pipelines. Upstream Compose must not copy its
+runtime targets into those args, because a compiled ``beforeFiles`` rewrite
+would outrank the runtime route handler.
 """
 
 from __future__ import annotations
@@ -23,14 +24,11 @@ def _frontend() -> dict:
     return yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["frontend"]
 
 
-def test_the_agent_urls_are_build_args() -> None:
-    """Legacy branded builds keep routing during the gradual cutover."""
+def test_the_agent_urls_are_not_compose_build_args() -> None:
+    """A source build cannot accidentally bake this deployment's targets."""
     args = _frontend()["build"]["args"]
     for name in AGENT_URLS:
-        assert name in args, (
-            f"{name} is not a build arg, so a legacy branded image cannot "
-            "compile its compatibility rewrite during the gradual cutover"
-        )
+        assert name not in args, f"{name} must remain runtime-only in upstream Compose"
 
 
 def test_the_agent_urls_are_runtime_environment() -> None:
@@ -61,10 +59,3 @@ def test_the_dockerfile_carries_them_into_the_build() -> None:
         assert f"ENV {name}=${name}" in text, (
             f"{name} is declared but never promoted to ENV, so `next build` does not see it"
         )
-
-
-def test_they_default_to_empty_so_other_deployments_are_untouched() -> None:
-    """Empty build args leave the runtime route authoritative by default."""
-    args = _frontend()["build"]["args"]
-    for name in AGENT_URLS:
-        assert args[name] == f"${{{name}-}}", f"{name} must default to empty; got {args[name]!r}"

@@ -186,11 +186,10 @@ services:
         NEXT_PUBLIC_DATA_POLICY_NOTICE: ${NEXT_PUBLIC_DATA_POLICY_NOTICE-}
         NEXT_PUBLIC_TEAM_JSON: ${NEXT_PUBLIC_TEAM_JSON-}
         NEXT_PUBLIC_SPONSORS_JSON: ${NEXT_PUBLIC_SPONSORS_JSON-}
-        # Compatibility bridge for legacy images whose beforeFiles rewrites
-        # were compiled at build time. Neutral images leave these empty here
-        # and consume the runtime values below instead.
-        AGENT_WEB_INTERNAL_URL: ${AGENT_WEB_INTERNAL_URL-}
-        AGENT_CONTROL_PLANE_INTERNAL_URL: ${AGENT_CONTROL_PLANE_INTERNAL_URL-}
+        # Agent targets are deliberately absent here. The Dockerfile still
+        # accepts them for pre-W7 downstream build pipelines, but passing this
+        # deployment's runtime values into a source build would compile legacy
+        # beforeFiles rewrites that outrank the runtime route handler below.
     container_name: hybridinference-frontend
     restart: unless-stopped
     environment:
