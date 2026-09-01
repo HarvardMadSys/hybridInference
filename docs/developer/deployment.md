@@ -87,17 +87,26 @@ taking effect:
 |---|---|
 | A value in `.env` | `make up` — a container reads its `env_file` when it is *created*, so `docker compose restart` keeps the old environment |
 | A model registry or routing YAML | `make restart s=backend` — `config/` and `distributions/` are bind-mounted read-only, so no rebuild is needed |
-| A `NEXT_PUBLIC_*` or `AGENT_*` console value | `make build s=frontend` — see below |
+| A distribution branding YAML | `make restart s=backend` — `/site-config` serves the validated snapshot loaded at backend startup |
+| A file in the mounted site-assets directory | No image rebuild; replace the file in the deployment overlay |
+| `AGENT_WEB_INTERNAL_URL` or `AGENT_CONTROL_PLANE_INTERNAL_URL` | `make up` — the `/agents` route handler reads them at runtime in the recreated frontend container |
+| A true build-only `NEXT_PUBLIC_*` compatibility value | `make build s=frontend` — see below |
 | Backend or frontend source | `make build`, or `make build s=<service>` |
 
-The console's identity and its `/agents` rewrites are Next.js **build args**
-(`deploy/docker/docker-compose.yml`, `frontend.build.args`), and Next resolves
-`rewrites()` at build time into `.next/routes-manifest.json`. Changing any
-`NEXT_PUBLIC_*` value or the `AGENT_*` URLs therefore takes a `make build
-s=frontend`; a value supplied only at container start is read by nothing, and
-the symptom is the old pages continuing to serve while `docker inspect` shows
-the new value. Adopting or rolling back those settings is therefore a rebuild,
-not a restart.
+Canonical console identity comes from the active distribution's versioned
+branding YAML through `/site-config`, and `/agents` gets its two destinations
+from server-only runtime environment. Neither change requires a frontend image
+rebuild. Recreate the frontend with `make up` after changing its runtime
+environment; restart the backend after changing the branding document it
+loads.
+
+The Compose file still exposes the old branding and agent variables as build
+arguments for source builds and pre-W7 distribution images. That is a
+transition bridge, not the canonical release path: neutral published images
+omit them. Values that genuinely remain `NEXT_PUBLIC_*` build metadata or
+compatibility settings are compiled into the browser bundle and still require
+`make build s=frontend`. See [The public path table](public-path-table.md) for
+the distinction between runtime handlers and legacy build-time rewrites.
 
 ## Configuration
 
