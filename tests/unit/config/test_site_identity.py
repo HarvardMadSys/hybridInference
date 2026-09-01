@@ -125,6 +125,22 @@ def test_branding_supplies_docs_url_but_env_still_wins(monkeypatch):
     assert get_site_identity().docs_url == "https://override-docs.acme.example"
 
 
+def test_invalid_docs_env_falls_back_to_valid_manifest_value(monkeypatch):
+    _force_mode(monkeypatch, "active")
+    _force_manifest(
+        monkeypatch,
+        display_name="Acme",
+        base_url="https://acme.example",
+        support="help@acme.example",
+        branding_config=SimpleNamespace(
+            links=SimpleNamespace(docs_url="https://manifest-docs.acme.example")
+        ),
+    )
+    monkeypatch.setenv("SITE_DOCS_URL", "http://insecure.example")
+
+    assert get_site_identity().docs_url == "https://manifest-docs.acme.example"
+
+
 def test_email_content_follows_identity(monkeypatch):
     monkeypatch.setenv("SITE_NAME", "Acme")
     html, _text = render_markdown_email("hello")

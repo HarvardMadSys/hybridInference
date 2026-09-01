@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import posixpath
+import re
 from typing import TYPE_CHECKING, Annotated, Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, ValidationError, field_validator
@@ -28,6 +30,10 @@ SponsorClassName = Annotated[
     Field(pattern=r"^(?:h-(?:8|10|12|14|16))(?: sm:h-(?:8|10|12|14|16))?$"),
 ]
 
+_SITE_ASSET_PREFIX = "/site-assets/"
+_SITE_ASSET_EXTENSIONS = {".avif", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".svg", ".webp"}
+_INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+
 
 def _absolute_url_or_empty(value: str, *, schemes: set[str]) -> str:
     if not value:
@@ -47,10 +53,36 @@ def _absolute_url_or_empty(value: str, *, schemes: set[str]) -> str:
     return value
 
 
-def _asset_url(value: str) -> str:
-    if not value or (value.startswith("/site-assets/") and "\\" not in value):
-        return value
+def validate_public_https_url(value: str) -> str:
+    """Return an empty or public HTTPS URL, raising for unsafe values."""
     return _absolute_url_or_empty(value, schemes={"https"})
+
+
+def _asset_url(value: str) -> str:
+    if not value:
+        return value
+    if not value.startswith(_SITE_ASSET_PREFIX):
+        return validate_public_https_url(value)
+
+    parsed = urlsplit(value)
+    raw_relative = parsed.path.removeprefix(_SITE_ASSET_PREFIX)
+    if _INVALID_PERCENT_ESCAPE.search(parsed.path):
+        raise ValueError("contains an invalid percent escape")
+    try:
+        relative = unquote(raw_relative, errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValueError("contains invalid UTF-8 escaping") from exc
+
+    parts = relative.split("/")
+    if (
+        not relative
+        or "\0" in relative
+        or "\\" in relative
+        or any(not part or part in {".", ".."} or part.startswith(".") for part in parts)
+        or posixpath.splitext(relative)[1].lower() not in _SITE_ASSET_EXTENSIONS
+    ):
+        raise ValueError("must name an image served by /site-assets")
+    return value
 
 
 class BrandingOrganization(_BrandingModel):
@@ -64,7 +96,7 @@ class BrandingOrganization(_BrandingModel):
     @classmethod
     def validate_url(cls, value: str) -> str:
         """Allow no organization link or a public HTTPS link."""
-        return _absolute_url_or_empty(value, schemes={"https"})
+        return validate_public_https_url(value)
 
 
 class BrandingLinks(_BrandingModel):
@@ -78,7 +110,7 @@ class BrandingLinks(_BrandingModel):
     @classmethod
     def validate_url(cls, value: str) -> str:
         """Allow hidden links or public HTTPS links."""
-        return _absolute_url_or_empty(value, schemes={"https"})
+        return validate_public_https_url(value)
 
 
 class BrandingExample(_BrandingModel):
@@ -142,7 +174,7 @@ class BrandingTeamMember(_BrandingModel):
     @classmethod
     def validate_website(cls, value: str | None) -> str | None:
         """Validate an optional public team link."""
-        return _absolute_url_or_empty(value, schemes={"https"}) if value is not None else None
+        return validate_public_https_url(value) if value is not None else None
 
 
 class BrandingSponsor(_BrandingModel):
@@ -182,7 +214,10 @@ class BrandingConfig(_BrandingModel):
     def public_payload(self, *, docs_url: str) -> dict[str, Any]:
         """Return the browser-safe contract, applying resolved docs identity."""
         payload = self.model_dump(exclude={"schema_version"}, exclude_none=True)
-        payload["links"] = {**self.links.model_dump(), "docs_url": docs_url}
+        payload["links"] = {
+            **self.links.model_dump(),
+            "docs_url": validate_public_https_url(docs_url),
+        }
         return payload
 
 

@@ -44,6 +44,13 @@ def test_public_payload_uses_snake_case_and_omits_absent_team_fields(tmp_path: P
     assert payload["sponsors"][0]["class_name"] == "h-8"
 
 
+def test_public_payload_revalidates_the_operational_docs_override() -> None:
+    config = load_branding_config(_EXAMPLE)
+
+    with pytest.raises(ValueError, match="https"):
+        config.public_payload(docs_url="http://insecure.example")
+
+
 def test_loader_rejects_missing_file(tmp_path: Path) -> None:
     with pytest.raises(BrandingConfigError, match="cannot read branding config"):
         load_branding_config(tmp_path / "missing.yaml")
@@ -78,6 +85,11 @@ def test_loader_rejects_fields_outside_public_contract(tmp_path: Path) -> None:
         (("analytics", "statcounter_project_id"), "not-digits"),
         (("storage_key_prefix",), "contains spaces"),
         (("assets", "logo_url"), "/public/logo.svg"),
+        (("assets", "logo_url"), "/site-assets//logo.svg"),
+        (("assets", "logo_url"), "/site-assets/%2e%2e/logo.svg"),
+        (("assets", "logo_url"), "/site-assets/.private/logo.svg"),
+        (("assets", "logo_url"), "/site-assets/logo.txt"),
+        (("assets", "logo_url"), "/site-assets/logo%ZZ.svg"),
     ],
 )
 def test_loader_rejects_values_the_runtime_client_cannot_consume(

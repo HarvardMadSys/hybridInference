@@ -180,6 +180,32 @@ async def test_serves_validated_public_branding_with_docs_override(client, monke
 
 
 @pytest.mark.asyncio
+async def test_invalid_docs_override_cannot_invalidate_runtime_branding(
+    client, monkeypatch, tmp_path
+):
+    branding = tmp_path / "branding" / "site.yaml"
+    branding.parent.mkdir()
+    branding.write_text(_BRANDING_EXAMPLE.read_text())
+    manifest = tmp_path / "distribution.yaml"
+    manifest.write_text(
+        MANIFEST.replace(
+            "features:\n",
+            "  branding: ./branding/site.yaml\nfeatures:\n",
+        )
+    )
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
+    monkeypatch.setenv("SITE_DOCS_URL", "http://insecure.example.com")
+    get_settings.cache_clear()
+    get_distribution_config.cache_clear()
+
+    body = (await client.get("/site-config")).json()
+
+    assert body["branding"]["links"]["docs_url"] == "https://docs.example.com"
+    assert body["branding"]["site_host"] == "inference.example.com"
+
+
+@pytest.mark.asyncio
 async def test_never_leaks_server_paths(client, monkeypatch, tmp_path):
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
