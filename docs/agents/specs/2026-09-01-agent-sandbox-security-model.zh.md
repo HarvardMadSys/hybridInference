@@ -227,7 +227,64 @@ PROVISIONING -> SETUP_EGRESS -> NETWORK_DETACHED -> AGENT_EGRESS
 
 ## 9. 容器与 runtime 隔离
 
-### 9.1 基线 hardening
+选择执行 runtime 时，首先要回答的不是“它是不是容器”，而是：**工具进程发出的 syscall，最后由谁执行。**
+
+[![runc、gVisor 与 Kata 的 syscall 执行边界：普通容器直接进入宿主机内核，gVisor 由 Sentry 承接，Kata 由客户机内核执行](assets/sandbox-syscall-execution-boundaries.svg)](assets/sandbox-syscall-execution-boundaries.svg)
+
+*图 1：隔离边界越强，宿主机越难直接观察并归因工具进程的原始 syscall。*
+
+### 9.1 三种执行边界
+
+#### 普通容器（runc）：共享宿主机内核
+
+容器没有第二个内核。工具进程是宿主机上的普通进程；namespace 改变它能看见的进程、网络和挂载，cgroup 约束它能消耗的资源，但 `open()`、`mmap()`、`clone()` 等 syscall 仍由宿主机 Linux 内核直接执行。
+
+因此普通容器启动快、兼容性完整，Host eBPF 也能直接观察工具进程的 syscall。代价是所有租户共享同一内核攻击面；namespace、cgroup、capability 与 seccomp 是必要 hardening，但不能把共享内核变成 VM 边界。
+
+#### gVisor：用户态内核承接 syscall
+
+gVisor 在工具进程和宿主机内核之间插入 Sentry。工具 syscall 先由 Sentry 拦截，并由其在用户态实现大部分 Linux syscall 语义；只有底层资源操作再通过一组受限 syscall 进入宿主机内核。
+
+这显著缩小不可信代码直接触达的宿主机内核攻击面，并保留接近容器的启动特性。代价是额外的用户态路径、I/O 开销和 syscall/内核特性兼容缺口。Host eBPF 看到的是 Sentry、Gofer 等代理进程的宿主机行为，而不是工具原本发出的完整 syscall 流。
+
+#### Kata：客户机内核执行 syscall
+
+Kata 为沙盒创建轻量虚拟机。工具进程运行在 guest 中，syscall 由独立的客户机 Linux 内核执行；宿主机只运行 VMM，并处理 virtio、tap 等设备侧行为。
+
+硬件虚拟化提供三者中最强的 kernel boundary，并保留接近原生 Linux 的 guest 兼容性。代价是更高的启动时间、固定内存与设备配置开销。Host eBPF 只能观察 VMM、virtio 和宿主网络设备，无法直接看到 guest 中的工具进程及其 syscall。
+
+### 9.2 边界与观测对比
+
+| 维度 | 普通容器 / runc | gVisor | Kata |
+|---|---|---|---|
+| 工具 syscall 的执行者 | 宿主机内核 | Sentry 用户态内核 | 客户机内核 |
+| 与宿主机内核的边界 | namespace/cgroup/seccomp，共享内核 | 用户态 syscall implementation，缩小 host syscall 面 | 硬件虚拟化，独立 guest kernel |
+| 启动与固定开销 | 最低，通常毫秒级 | 较低，通常仍是容器量级 | 最高，通常百毫秒至秒级且有 VM 固定内存 |
+| Linux 兼容性 | 最高 | 有 syscall 与内核特性缺口 | 接近原生 guest Linux |
+| Host eBPF 直接看到 | 工具进程的真实 syscall | Sentry/Gofer 的 host syscall | VMM、virtio、tap 等 host-side 行为 |
+| Operation 归属策略 | 可按 PID/cgroup 直接关联 | 需要 runtime event 与代理侧 identity 关联 | 需要 guest agent 或 guest telemetry 回传 |
+
+这不是“安全与可观测性只能二选一”，而是测量位置必须随隔离边界移动：runc 可以主要依赖 host sensor；gVisor 需要把 Sentry/runtime event 纳入归属；Kata 的 syscall/process 级观测必须进入 guest，host 侧只保留 VM 与设备总量。
+
+### 9.3 当前实现与准入规则
+
+当前 `cloud_agent_host/sandbox.py` 只定义三个 backend：`process`、`container` 和 `kata`。
+
+- `container` 且 `runtime=None` 表示普通 runc 共享内核。Preflight 记录 `agent_sandbox_shared_kernel`，该档位只适合可信仓库或已有外层 VM 隔离的场景。
+- `kata` 使用 `io.containerd.kata.v2`。Preflight 会启动 exact-image probe 执行 `uname -r`；若 guest kernel 与 host kernel 相同，则拒绝把该 host 宣告为 VM-isolated。
+- gVisor 当前没有独立 backend、执行档位或安全 probe。管理员能够填写 runtime 字符串不等于平台已经验证 gVisor 隔离；面向不可信仓库的强制档位当前只接受经过 probe 的 Kata。
+
+`is_vm_isolated` 当前以“配置了非空 runtime”表达非默认 runtime，而不是独立的安全证明。安全决策不得单独依赖该字段；准入必须依赖明确的 profile、runtime allowlist 与 exact-image probe。
+
+| 场景 | 当前最低边界 | 准入说明 |
+|---|---|---|
+| 一次性、隔离 VM 中的内部任务 | Hardened container | 外层 VM 承担租户 kernel boundary |
+| 可信内部仓库、自托管 host | Hardened runc container | 仍需 non-root/cap/seccomp/resource limits |
+| Public multi-tenant、不可信仓库 | Probed Kata VM | 当前只认 `io.containerd.kata.v2`；gVisor 需新增独立 profile 与 probe 后才能准入 |
+
+Runtime capability 必须由 preflight 与 exact-image probe 证明。配置要求强化隔离但 host 只提供普通 Docker 时，host 不得 advertise capability，也不得 claim 对应 job。
+
+### 9.4 基线 hardening
 
 所有执行 profile 至少要求：
 
@@ -240,16 +297,6 @@ PROVISIONING -> SETUP_EGRESS -> NETWORK_DETACHED -> AGENT_EGRESS
 - 无 Docker socket、host `/proc`、host cgroupfs 与 host path mount；
 - credential-free immutable base image；
 - 精确 runtime/helper pin 与 image digest attestation。
-
-### 9.2 隔离 profile
-
-| 场景 | 最低边界 | 说明 |
-|---|---|---|
-| 一次性、隔离 VM 中的内部任务 | Hardened container | VM 承担外层租户隔离 |
-| 可信内部仓库、自托管 host | Hardened Docker container | 仍需 non-root/cap/seccomp/resource limits |
-| Public multi-tenant、不可信仓库 | Kata、gVisor 或等价强化边界 | 普通共享内核 container 不满足目标 |
-
-Runtime capability 必须由 preflight 与 exact-image probe 证明。配置要求强化隔离但 host 只提供普通 Docker 时，host 不得 advertise capability，也不得 claim 对应 job。
 
 ## 10. Docker-owned storage boundary
 
@@ -424,7 +471,7 @@ Publisher 不能信任沙盒声明的目标 repository、branch 或 base；必�
 ### 17.3 Runtime isolation
 
 - non-root、cap drop、seccomp 与 resource limit 在真实 runtime 生效；
-- public multi-tenant profile 在 Kata/gVisor 或目标后端验证；
+- public multi-tenant profile 在当前实现中通过 Kata exact-image probe；新增 gVisor 等后端前必须提供独立 profile、runtime allowlist 与等价 probe；
 - sibling `/proc`、ptrace、signal、tmpfs 测试通过；
 - `setsid`、double-fork、ignore TERM 能被清理；
 - container OOM 观察为 group failure；

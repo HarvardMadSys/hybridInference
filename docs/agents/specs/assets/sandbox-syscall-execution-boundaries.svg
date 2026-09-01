@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title id="title">runc、gVisor 与 Kata 的系统调用执行边界</title>
+  <desc id="desc">普通容器的工具系统调用直接进入宿主机内核；gVisor 由用户态 Sentry 实现系统调用语义，只向宿主机发出受限调用；Kata 的工具系统调用由虚拟机内的客户机内核执行，宿主机只观察到虚拟机监视器和设备行为。</desc>
+  <style>
+    :root {
+      --fg: #1f2937;
+      --muted: #5f6b7a;
+      --surface: #f8fafc;
+      --surface-strong: #eef2f6;
+      --border: #c6d0dc;
+      --runc: #b86524;
+      --gvisor: #28746a;
+      --kata: #2e6790;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fg: #e6edf3;
+        --muted: #a7b1bd;
+        --surface: #161b22;
+        --surface-strong: #202833;
+        --border: #485568;
+        --runc: #eda15f;
+        --gvisor: #68c8b7;
+        --kata: #78bcea;
+      }
+    }
+    text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", sans-serif; fill: var(--fg); }
+    .title { font-size: 25px; font-weight: 600; }
+    .panel-title { font-size: 20px; font-weight: 600; }
+    .label { font-size: 15px; font-weight: 600; }
+    .small { font-size: 13px; fill: var(--muted); }
+    .tiny { font-size: 12px; fill: var(--muted); }
+    .panel { fill: none; stroke: var(--border); stroke-width: 1.5; rx: 14; }
+    .scope { fill: none; stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 6 5; rx: 10; }
+    .host { fill: var(--surface); }
+    .node { fill: var(--surface-strong); stroke: var(--border); stroke-width: 1.25; rx: 8; }
+    .arrow { fill: none; stroke: var(--fg); stroke-width: 1.8; marker-end: url(#arrow); }
+    .restricted { stroke-dasharray: 5 4; }
+    .runc { fill: var(--runc); }
+    .gvisor { fill: var(--gvisor); }
+    .kata { fill: var(--kata); }
+    .runc-stroke { stroke: var(--runc); }
+    .gvisor-stroke { stroke: var(--gvisor); }
+    .kata-stroke { stroke: var(--kata); }
+    .status { font-size: 12px; font-weight: 600; }
+    .divider { stroke: var(--border); stroke-width: 1; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--fg)"/>
+    </marker>
+  </defs>
+
+  <text class="title" x="36" y="42">工具进程发出的 syscall，最后由谁执行？</text>
+
+  <!-- runc -->
+  <rect class="panel" x="30" y="70" width="360" height="455"/>
+  <circle class="runc" cx="58" cy="103" r="6"/>
+  <text class="panel-title" x="74" y="110">普通容器 · runc</text>
+  <text class="status runc" x="360" y="109" text-anchor="end">当前 container</text>
+  <rect class="scope" x="58" y="140" width="304" height="128"/>
+  <text class="small" x="74" y="162">namespace + cgroup</text>
+  <rect class="node" x="102" y="184" width="216" height="52"/>
+  <text class="label" x="210" y="216" text-anchor="middle">工具进程</text>
+  <rect class="host" x="58" y="300" width="304" height="142" rx="10"/>
+  <text class="tiny" x="74" y="321">HOST</text>
+  <rect class="node runc-stroke" x="92" y="346" width="236" height="62"/>
+  <text class="label" x="210" y="373" text-anchor="middle">宿主机 Linux 内核</text>
+  <text class="small" x="210" y="393" text-anchor="middle">直接执行工具 syscall</text>
+  <path class="arrow" d="M 210 236 L 210 344"/>
+  <text class="small" x="222" y="289">open · mmap · clone</text>
+  <line class="divider" x1="58" y1="463" x2="362" y2="463"/>
+  <text class="label" x="210" y="490" text-anchor="middle">Host eBPF：真实工具 syscall</text>
+  <text class="small" x="210" y="511" text-anchor="middle">可直接按进程 / cgroup 归因</text>
+
+  <!-- gVisor -->
+  <rect class="panel" x="420" y="70" width="360" height="455"/>
+  <circle class="gvisor" cx="448" cy="103" r="6"/>
+  <text class="panel-title" x="464" y="110">gVisor · runsc</text>
+  <text class="status gvisor" x="750" y="109" text-anchor="end">当前未接线</text>
+  <rect class="scope" x="448" y="140" width="304" height="205"/>
+  <text class="small" x="464" y="162">userspace kernel sandbox</text>
+  <rect class="node" x="492" y="180" width="216" height="48"/>
+  <text class="label" x="600" y="210" text-anchor="middle">工具进程</text>
+  <path class="arrow" d="M 600 228 L 600 263"/>
+  <text class="tiny" x="612" y="251">syscall trap</text>
+  <rect class="node gvisor-stroke" x="480" y="265" width="240" height="62"/>
+  <text class="label" x="600" y="292" text-anchor="middle">Sentry 用户态内核</text>
+  <text class="small" x="600" y="312" text-anchor="middle">实现 Linux syscall 语义</text>
+  <rect class="host" x="448" y="365" width="304" height="77" rx="10"/>
+  <text class="tiny" x="464" y="386">HOST</text>
+  <rect class="node" x="500" y="388" width="200" height="40"/>
+  <text class="label" x="600" y="414" text-anchor="middle">宿主机内核</text>
+  <path class="arrow restricted" d="M 600 327 L 600 386"/>
+  <text class="tiny" x="612" y="358">受限 host syscalls</text>
+  <line class="divider" x1="448" y1="463" x2="752" y2="463"/>
+  <text class="label" x="600" y="490" text-anchor="middle">Host eBPF：Sentry / Gofer 行为</text>
+  <text class="small" x="600" y="511" text-anchor="middle">看不到原始工具 syscall 语义</text>
+
+  <!-- Kata -->
+  <rect class="panel" x="810" y="70" width="360" height="455"/>
+  <circle class="kata" cx="838" cy="103" r="6"/>
+  <text class="panel-title" x="854" y="110">Kata · microVM</text>
+  <text class="status kata" x="1140" y="109" text-anchor="end">当前 strict profile</text>
+  <rect class="scope kata-stroke" x="838" y="140" width="304" height="196"/>
+  <text class="small" x="854" y="162">轻量虚拟机</text>
+  <rect class="node" x="882" y="180" width="216" height="48"/>
+  <text class="label" x="990" y="210" text-anchor="middle">工具进程</text>
+  <path class="arrow" d="M 990 228 L 990 263"/>
+  <rect class="node kata-stroke" x="870" y="265" width="240" height="54"/>
+  <text class="label" x="990" y="287" text-anchor="middle">客户机 Linux 内核</text>
+  <text class="small" x="990" y="306" text-anchor="middle">执行工具 syscall</text>
+  <rect class="host" x="838" y="350" width="304" height="92" rx="10"/>
+  <text class="tiny" x="854" y="371">HOST</text>
+  <rect class="node" x="870" y="379" width="106" height="44"/>
+  <text class="label" x="923" y="406" text-anchor="middle">VMM</text>
+  <rect class="node" x="1000" y="379" width="110" height="44"/>
+  <text class="label" x="1055" y="406" text-anchor="middle">Host kernel</text>
+  <path class="arrow restricted" d="M 965 319 L 934 377"/>
+  <path class="arrow restricted" d="M 976 401 L 998 401"/>
+  <text class="tiny" x="1003" y="350" text-anchor="middle">virtio / hypercall</text>
+  <line class="divider" x1="838" y1="463" x2="1142" y2="463"/>
+  <text class="label" x="990" y="490" text-anchor="middle">Host eBPF：VMM / 设备行为</text>
+  <text class="small" x="990" y="511" text-anchor="middle">工具进程与 guest syscall 不可见</text>
+
+  <!-- trade-off -->
+  <text class="label" x="36" y="572">总体趋势</text>
+  <line class="divider" x1="36" y1="590" x2="1164" y2="590"/>
+  <text class="small" x="60" y="624">隔离边界</text>
+  <path class="arrow kata-stroke" d="M 160 619 L 1120 619"/>
+  <text class="small" x="640" y="611" text-anchor="middle">共享宿主内核 → 用户态内核 → 独立客户机内核</text>
+  <text class="small" x="60" y="660">Host 直接视野</text>
+  <path class="arrow runc-stroke" d="M 1120 655 L 160 655"/>
+  <text class="small" x="640" y="647" text-anchor="middle">VMM / 设备 → 代理进程 → 真实工具 syscall</text>
+</svg>
