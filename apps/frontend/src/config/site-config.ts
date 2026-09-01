@@ -175,7 +175,6 @@ export const buildTimeSiteConfig: RuntimeSiteConfig = {
 
 function resolveBranding(input: unknown, displayName: string, supportEmail: string): Branding {
   if (input === null) return buildTimeBranding;
-  if (!displayName) return buildTimeBranding;
 
   const parsed = runtimeBrandingSchema.safeParse(input);
   if (!parsed.success) return buildTimeBranding;
@@ -183,7 +182,7 @@ function resolveBranding(input: unknown, displayName: string, supportEmail: stri
   const document = parsed.data;
   const githubUrl = document.links.github_url.replace(/\/+$/, '');
   return {
-    appName: displayName,
+    appName: displayName || buildTimeBranding.appName,
     appDescription: document.app_description,
     siteHost: document.site_host,
     orgName: document.organization.name,

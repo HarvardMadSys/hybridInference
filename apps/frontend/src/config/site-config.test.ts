@@ -126,6 +126,19 @@ describe('resolveRuntimeSiteConfig', () => {
     expect(resolved.features.publicSignup).toBe(false);
   });
 
+  it('keeps valid runtime branding when the distribution display name is empty', () => {
+    const resolved = resolveRuntimeSiteConfig({
+      ...runtimeDocument,
+      distribution: { ...runtimeDocument.distribution, display_name: '' },
+    });
+
+    expect(resolved.branding.appName).toBe(buildTimeSiteConfig.branding.appName);
+    expect(resolved.branding.appDescription).toBe('Runtime description');
+    expect(resolved.branding.logoUrl).toBe('/site-assets/logo.svg');
+    expect(resolved.branding.docsUrl).toBe('https://docs.example.test');
+    expect(resolved.branding.team).toEqual(runtimeBranding.team);
+  });
+
   it('accepts the backend neutral v1 shape while retaining every fallback brand value', () => {
     const resolved = resolveRuntimeSiteConfig({
       ...runtimeDocument,
