@@ -12,6 +12,11 @@
 > “过滤导出 / 不公开本仓历史”的路线已被此决定取代。当前树与所有保留的 Git
 > 历史都属于公开前审计面；完整门槛见本文“公开与可见性策略”一节。
 
+> **2026-09-02 后续裁定：** 无持续消费者、owner 或执行门禁的
+> `services/freeinference-harness/` 已从上游退役；其中唯一缺失的静默断流
+> 契约已收进主测试套件。下文关于保留或拆分该 harness 的旧裁定仅作为决策
+> 历史保留，以本注记为准。
+
 **相关文档：**
 [2026-06-18-opensource-decoupling.zh.md](2026-06-18-opensource-decoupling.zh.md)
 （英文版 [2026-06-18-opensource-decoupling.md](2026-06-18-opensource-decoupling.md)）

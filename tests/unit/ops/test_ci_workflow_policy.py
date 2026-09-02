@@ -212,13 +212,12 @@ def test_python_tests_signal_controls_only_the_pytest_job() -> None:
     assert "needs.changes.outputs.backend == 'true'" in jobs["backend-quality"]["if"]
 
 
-def test_w5c_retired_worker_assets_and_ci_wiring_are_absent() -> None:
+def test_w5c_retired_services_and_ci_wiring_are_absent() -> None:
     jobs = _workflow("ci.yml")["jobs"]
     retired_paths = (
         ROOT / "services/status-monitor-worker",
         ROOT / "services/alert-control-plane-worker",
-        ROOT / "services/freeinference-harness/configs/targets/freeinference.yaml",
-        ROOT / "services/freeinference-harness/configs/targets/provider-pinned.yaml",
+        ROOT / "services/freeinference-harness",
     )
 
     assert all(not path.exists() for path in retired_paths)

@@ -17,6 +17,10 @@
 > workflow 是迁移期旧入口,不是 freeInference 的长期归属资产;
 > `sync-main.yml` 留上游。freeInference 的部署与同名 promotion 手势均为
 > 新仓自有实现,不是搬走同一个上游文件。
+>
+> **2026-09-02 后续裁定：** 无持续消费者、owner 或执行门禁的
+> `services/freeinference-harness/` 已从上游退役；唯一缺失的静默断流契约已
+> 收进主测试套件。下文关于 harness 迁移或留存的表项仅作为 W3/W5c 历史保留。
 
 ## 0. 裁定原则
 
