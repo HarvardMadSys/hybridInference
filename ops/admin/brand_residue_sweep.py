@@ -118,9 +118,6 @@ ALLOWLIST: dict[str, str] = {
     "docs/agents/": "historical design docs — review before direct publication",
     "docs/superpowers/": "historical design docs — review before direct publication",
     "docs/reviews/": "review records — review before direct publication",
-    "services/freeinference-harness/": (
-        "generic protocol-conformance testkit; neutral naming is tracked separately"
-    ),
     "ops/": "operator scripts — step-2 classification per ownership inventory",
     "deploy/": "deployment defaults — neutral-defaults flip wave",
     "apps/frontend/": "compile-time branding defaults — neutral-defaults flip wave",

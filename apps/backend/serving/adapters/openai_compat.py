@@ -41,6 +41,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+_INCOMPLETE_STREAM_ERROR = (
+    "Upstream stream ended without a terminal finish_reason or [DONE] sentinel"
+)
+
 # Total timeout (seconds) for a non-streaming upstream completion POST. The old
 # 120s cap killed long-but-healthy generations (reasoning models, large
 # max_tokens) with a generic 502 even while the upstream was still producing.
@@ -539,8 +543,8 @@ class OpenAICompatAdapter(BaseAdapter):
         - ``stream_iter`` is the underlying async iterator from ``stream_post``;
           the caller should continue iterating it after processing
           ``first_chunk``.
-        - ``lease`` is the ``Lease`` to release (status 200) when the stream
-          ends, or ``None`` when no pool is configured.
+        - ``lease`` is the ``Lease`` to release according to the stream outcome,
+          or ``None`` when no pool is configured.
         - ``first_chunk`` is the first chunk already pulled from the iterator
           (must be processed first by the caller).
 
@@ -560,7 +564,9 @@ class OpenAICompatAdapter(BaseAdapter):
             try:
                 first = await stream_iter.__anext__()
             except StopAsyncIteration:
-                return  # empty stream — nothing to yield, fall out
+                # Empty stream is incomplete. Yield no lease/chunk so the
+                # caller's terminal-signal check raises the upstream error.
+                return
             yield stream_iter, None, first
             return
 
@@ -605,8 +611,11 @@ class OpenAICompatAdapter(BaseAdapter):
             try:
                 first = await stream_iter.__anext__()
             except StopAsyncIteration:
-                # Empty stream — treat as success
-                self._key_pool.release(lease, status_code=200)
+                # A 2xx response with no stream events is incomplete. Do not
+                # retry after the upstream accepted the generation request, but
+                # count the outcome as a non-HTTP failure so a multi-key route
+                # rotates off this key on the next request.
+                self._key_pool.release(lease, status_code=0)
                 logger.debug(
                     "key_pool_active_affinities",
                     extra={
@@ -852,6 +861,8 @@ class OpenAICompatAdapter(BaseAdapter):
         upstream_usage: dict[str, Any] | None = None
         prompt_tokens_override: int | None = None
         saw_tool_calls = False
+        saw_done = False
+        saw_terminal_finish_reason = False
 
         # Helper to yield formatted chunks from processed data
         def format_and_yield(processed_chunk: dict[str, Any]) -> str | None:
@@ -1005,10 +1016,18 @@ class OpenAICompatAdapter(BaseAdapter):
                     data_str = chunk[6:]
 
                     if data_str.strip() == "[DONE]":
+                        saw_done = True
                         break
 
                     try:
                         data = json.loads(data_str)
+
+                        raw_choices = data.get("choices") if isinstance(data, dict) else None
+                        if isinstance(raw_choices, list) and any(
+                            isinstance(choice, dict) and bool(choice.get("finish_reason"))
+                            for choice in raw_choices
+                        ):
+                            saw_terminal_finish_reason = True
 
                         # Process output format (returns a list of chunks)
                         processed_chunks = processor.process_stream_chunk(data)
@@ -1020,6 +1039,12 @@ class OpenAICompatAdapter(BaseAdapter):
 
                     except json.JSONDecodeError:
                         logger.warning(f"[OpenAICompat] Failed to parse chunk: {data_str[:100]}")
+
+            if not saw_done and not saw_terminal_finish_reason:
+                # A clean TCP/HTTP EOF is not proof that generation completed.
+                # Surfacing it as an upstream error keeps partial content
+                # observable without fabricating a normal final chunk + [DONE].
+                raise aiohttp.ClientError(_INCOMPLETE_STREAM_ERROR)
         except asyncio.TimeoutError:
             # Idle timeout reading upstream: mute the key, end the stream
             # gracefully (flush + [DONE] are still emitted below).

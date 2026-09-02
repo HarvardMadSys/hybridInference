@@ -47,7 +47,6 @@ docs/
   developer/      this guide (MyST Markdown, built with Sphinx)
   agents/         design specs and plans
 ops/              maintenance and CI helper scripts (admin, ci, db)
-services/         standalone protocol-conformance harnesses and testkits
 tests/            see the test tiers below
 benchmark/        benchmarking scripts
 ```

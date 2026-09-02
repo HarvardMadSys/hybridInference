@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 
 from serving.adapters.base import ModelConfig
@@ -161,6 +162,100 @@ async def test_streaming_default_processor_preserves_content_after_reasoning_onl
     )
     assert payloads[-1]["choices"][0]["finish_reason"] == "stop"
     assert payloads[-1]["usage"]["completion_tokens"] > 0
+
+
+@pytest.mark.asyncio
+async def test_streaming_clean_eof_without_terminal_signal_is_incomplete():
+    """A partial upstream response must not be disguised as a complete answer."""
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(delta={"role": "assistant"})
+        yield _make_chunk(delta={"content": "partial"})
+        # Clean EOF: no finish_reason and no [DONE].
+
+    adapter = _make_adapter(processor="default", api_keys=["sk-one", "sk-two"])
+    adapter.http.stream_post = fake_stream_post
+
+    chunks: list[str] = []
+    with pytest.raises(aiohttp.ClientError, match=r"ended without.*finish_reason.*\[DONE\]"):
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
+            chunks.append(chunk)
+
+    assert chunks
+    assert all(chunk.strip() != "data: [DONE]" for chunk in chunks)
+    payloads = [json.loads(chunk[6:]) for chunk in chunks]
+    assert not any(payload.get("usage") for payload in payloads)
+    assert not any(
+        choice.get("finish_reason")
+        for payload in payloads
+        for choice in payload.get("choices") or []
+    )
+    assert adapter._key_pool is not None
+    next_key, lease = adapter._key_pool.acquire("next-request")
+    assert next_key == "sk-two"
+    adapter._key_pool.release(lease, status_code=200)
+
+
+@pytest.mark.asyncio
+async def test_streaming_terminal_finish_reason_without_done_remains_compatible():
+    """A finish_reason is sufficient proof of a complete upstream stream."""
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(delta={"content": "complete"})
+        yield _make_chunk(delta={}, finish_reason="stop")
+        # Some compatible upstreams omit [DONE] after the terminal chunk.
+
+    adapter = _make_adapter(processor="default")
+    adapter.http.stream_post = fake_stream_post
+
+    chunks = [
+        chunk async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])
+    ]
+
+    assert chunks[-1] == "data: [DONE]\n\n"
+    final = json.loads(chunks[-2][6:])
+    assert final["choices"][0]["finish_reason"] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_streaming_done_without_finish_reason_remains_compatible():
+    """The upstream [DONE] sentinel remains a sufficient terminal signal."""
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(delta={"content": "complete"})
+        yield "data: [DONE]"
+
+    adapter = _make_adapter(processor="default")
+    adapter.http.stream_post = fake_stream_post
+
+    chunks = [
+        chunk async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])
+    ]
+
+    assert chunks[-1] == "data: [DONE]\n\n"
+    final = json.loads(chunks[-2][6:])
+    assert final["choices"][0]["finish_reason"] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_streaming_empty_eof_counts_as_key_pool_failure():
+    """An empty 2xx body is an incomplete stream and rotates off that key."""
+
+    async def fake_stream_post(*args, **kwargs):
+        if False:
+            yield ""  # pragma: no cover - make this an empty async generator
+
+    adapter = _make_adapter(processor="default", api_keys=["sk-one", "sk-two"])
+    adapter.http.stream_post = fake_stream_post
+
+    with pytest.raises(aiohttp.ClientError, match=r"ended without.*finish_reason.*\[DONE\]"):
+        async for _ in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass
+
+    assert adapter._key_pool is not None
+    next_key, lease = adapter._key_pool.acquire("next-request")
+    assert next_key == "sk-two"
+    adapter._key_pool.release(lease, status_code=200)
 
 
 @pytest.mark.asyncio
