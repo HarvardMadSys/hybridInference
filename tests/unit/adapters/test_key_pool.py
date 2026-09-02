@@ -488,6 +488,32 @@ def test_acquire_raises_when_every_usable_key_is_excluded():
     with pytest.raises(KeyPoolExhausted) as excinfo:
         pool.acquire("user-A", exclude={0, 1})
     assert not isinstance(excinfo.value, KeyPoolRoleRestricted)
+    assert "already tried by this request" in str(excinfo.value)
+
+
+def test_exclusion_exhaustion_is_not_excused_as_a_tier_restriction():
+    """Burning your own keys is an endpoint failure, even beside a reserved key.
+
+    The tier question is judged as if this request had not excluded anything:
+    a free caller that tried its only shared key and watched it fail has hit the
+    endpoint, and a healthy pro-reserved key it was never entitled to must not
+    turn that into the health-exempt ``KeyPoolRoleRestricted``.
+    """
+    pool = KeyPool(
+        keys=["shared", "reserved"],
+        provider_label="test",
+        min_roles={"reserved": "pro"},
+    )
+
+    with pytest.raises(KeyPoolExhausted) as excinfo:
+        pool.acquire("user-A", role="free", exclude={0})
+    assert not isinstance(excinfo.value, KeyPoolRoleRestricted)
+
+    # Without the exclusion the same caller *is* merely tier-restricted, which is
+    # what the exempt class is for — the distinction the exclusion must not blur.
+    pool._keys[0].cooldown_until = float("inf")
+    with pytest.raises(KeyPoolRoleRestricted):
+        pool.acquire("user-B", role="free")
 
 
 def test_rotation_repoints_affinity_onto_the_key_that_served(monkeypatch):

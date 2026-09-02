@@ -508,7 +508,13 @@ class OpenAICompatAdapter(BaseAdapter):
                         "provider": provider,
                         "key_index": lease.key_index,
                         "status": status,
+                        # The event name predates rotate-before-mute and is kept
+                        # so existing log filters still match, but it now covers
+                        # both outcomes. These two say which: ``muted`` for a
+                        # dashboard predicate, ``outcome`` for a human reading
+                        # the line.
                         "muted": outcome is ReleaseOutcome.MUTED,
+                        "outcome": outcome.name.lower(),
                     },
                 )
                 last_error = e
@@ -657,7 +663,10 @@ class OpenAICompatAdapter(BaseAdapter):
                         "key_index": lease.key_index,
                         "status": e.status,
                         "stage": "stream",
+                        # See the non-streaming path: the event name covers both
+                        # outcomes, and these two say which.
                         "muted": outcome is ReleaseOutcome.MUTED,
+                        "outcome": outcome.name.lower(),
                     },
                 )
                 last_error = e

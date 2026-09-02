@@ -459,7 +459,10 @@ class KeyPool:
 
         Raises:
             KeyPoolExhausted: if every key the caller may use is in cooldown or
-                excluded (or the caller may use none at all).
+                excluded (or the caller may use none at all). Exhaustion caused
+                by *exclude* is always this plain class, never the health-exempt
+                ``KeyPoolRoleRestricted``: the caller had keys and watched the
+                endpoint fail on every one of them.
         """
         now = time.monotonic()
         with self._lock:
@@ -500,19 +503,28 @@ class KeyPool:
 
             idx = self._pick_first_available_locked(now, role, exclude)
             if idx is None:
-                # Distinguish "this endpoint is down" from "this endpoint has
-                # nothing for your tier": if an unrestricted caller could still be
-                # served, the pool is healthy and only this caller is shut out.
-                # The probe carries the same exclusions: a request that has
-                # already tried every key it may use has hit a real endpoint
-                # failure, not a tier restriction, and must not be excused from
-                # endpoint health because some other caller's key is untouched.
-                serves_someone = self._pick_first_available_locked(now, None, exclude) is not None
-                error = KeyPoolRoleRestricted if serves_someone else KeyPoolExhausted
-                raise error(
+                prefix = (
                     f"No usable API key for provider {self._provider_label!r} "
                     f"(role={role or 'unrestricted'}, {len(self._keys)} configured): "
-                    "every key the caller may use is muted or reserved for a higher tier"
+                )
+                # Exclusions are this request's own doing, so they are answered
+                # before the tier question. A caller that had keys and burned
+                # them all has watched the endpoint fail on every one: that is a
+                # real endpoint failure and must never be excused from endpoint
+                # health, however healthy the pool looks to some other tier whose
+                # reserved key this caller never touched.
+                if self._pick_first_available_locked(now, role) is not None:
+                    raise KeyPoolExhausted(
+                        prefix + "every key the caller may use was already tried by this request"
+                    )
+                # Nothing usable even ignoring exclusions. Now the original
+                # question stands: "this endpoint is down" or "this endpoint has
+                # nothing for your tier"? If an unrestricted caller could still be
+                # served, the pool is healthy and only this caller is shut out.
+                serves_someone = self._pick_first_available_locked(now, None) is not None
+                error = KeyPoolRoleRestricted if serves_someone else KeyPoolExhausted
+                raise error(
+                    prefix + "every key the caller may use is muted or reserved for a higher tier"
                 )
 
             self._affinity[affinity_key] = _Affinity(
