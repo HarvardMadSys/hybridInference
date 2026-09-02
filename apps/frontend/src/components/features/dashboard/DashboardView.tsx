@@ -8,11 +8,11 @@ import { UsageStats } from '@/components/features/dashboard/UsageStats';
 import { UpdatesBanner } from '@/components/ui/UpdatesBanner';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
-import { branding } from '@/config/branding';
-import { config } from '@/config/env';
+import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 export function DashboardView() {
   const { state } = useAuth();
+  const { branding, features } = useSiteConfig();
   const displayName = state.user?.user_name || state.user?.email;
 
   return (
@@ -113,11 +113,7 @@ export function DashboardView() {
             Internal Tools
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {/* Only where one is deployed: `/agents` is a proxy to a
-                separate service, and a deployment that runs none answers 404.
-                The role check above says who may use it; this says whether it
-                is there at all, and the two are different questions. */}
-            {config.agentsEnabled && (
+            {features.agents && (
               <Link
                 href="/agents"
                 className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"

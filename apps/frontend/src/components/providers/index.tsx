@@ -4,10 +4,17 @@ import { AuthProvider } from './AuthProvider';
 import { QueryProvider } from './QueryProvider';
 import { ToastProvider } from './ToastProvider';
 import { SiteConfigProvider } from './SiteConfigProvider';
+import type { RuntimeSiteConfig } from '@/config/site-config';
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({
+  children,
+  initialSiteConfig,
+}: {
+  children: React.ReactNode;
+  initialSiteConfig: RuntimeSiteConfig;
+}) {
   return (
-    <SiteConfigProvider>
+    <SiteConfigProvider initialConfig={initialSiteConfig}>
       <QueryProvider>
         <AuthProvider>
           {children}

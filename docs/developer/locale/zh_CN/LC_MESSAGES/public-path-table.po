@@ -4,20 +4,19 @@
 # package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
 #
-#, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: HybridInference\n"
+"Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-28 23:30+0800\n"
+"POT-Creation-Date: 2026-09-01 17:46+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
-"Language-Team: zh_CN <LL@li.org>\n"
 "Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Plural-Forms: nplurals=1; plural=0;\n"
 "Generated-By: Babel 2.18.0\n"
 
 #: ../developer/public-path-table.md:1
@@ -26,9 +25,9 @@ msgstr "公网路径表"
 
 #: ../developer/public-path-table.md:3
 msgid ""
-"HybridInference ships two long-running HTTP services: the FastAPI gateway "
-"(`apps/backend`) and a Next.js console (`apps/frontend`). Only one of them "
-"needs to be reachable from the internet."
+"HybridInference ships two long-running HTTP services: the FastAPI gateway"
+" (`apps/backend`) and a Next.js console (`apps/frontend`). Only one of "
+"them needs to be reachable from the internet."
 msgstr ""
 "HybridInference 会跑两个长期运行的 HTTP 服务：FastAPI 网关（`apps/backend`）和 Next.js "
 "控制台（`apps/frontend`）。其中只有一个需要能从公网访问到。"
@@ -36,55 +35,54 @@ msgstr ""
 #: ../developer/public-path-table.md:7
 msgid ""
 "**The console owns the public path table.** It is the process that "
-"terminates public traffic, and its `rewrites()` configuration in "
-"`apps/frontend/next.config.js` decides which paths are proxied on to FastAPI"
-" (or to another service) and which it answers itself. Anything not named "
-"there is served by the console's own pages."
+"terminates public traffic. Static gateway forwarding lives in the "
+"`rewrites()` configuration in `apps/frontend/next.config.js`; proxies "
+"whose destinations must remain changeable after the image is built live "
+"in App Router route handlers. Anything not named by either mechanism is "
+"served by the console's own pages."
 msgstr ""
-"**公开路径表由控制台掌管**。它是终结公网流量的那个进程，它在 `apps/frontend/next.config.js` 里的 "
-"`rewrites()` 配置决定了哪些路径被代理给 "
-"FastAPI（或另一个服务）、哪些由它自己回答。没有在那里写明的路径，一律由控制台自己的页面提供。"
+"**公开路径表由控制台掌管。** 它是终结公网流量的进程。静态网关转发写在 `apps/frontend/next.config.js` 的 "
+"`rewrites()` 配置中；目标地址需要在镜像构建后仍可修改的代理，则写成 App Router route "
+"handler。两种机制都没有点名的路径，由控制台自己的页面提供。"
 
-#: ../developer/public-path-table.md:13
+#: ../developer/public-path-table.md:14
 msgid ""
 "This is worth stating plainly because it is easy to get wrong from the "
-"outside: adding a public route is an edit to `next.config.js`, not to "
-"whatever reverse proxy or tunnel happens to sit in front. A path missing "
-"from that file is answered by the console's HTML 404 page — which reads to "
-"an API client as \"the gateway is down\" rather than \"this path is not "
-"forwarded\"."
+"outside: adding a public route is an edit to `next.config.js` or a route "
+"handler, not to whatever reverse proxy or tunnel happens to sit in front."
+" A path missing from both is answered by the console's HTML 404 page — "
+"which reads to an API client as \"the gateway is down\" rather than "
+"\"this path is not forwarded\"."
 msgstr ""
-"这一点值得明说，因为从外面看很容易搞错：加一条公开路由是改 "
-"`next.config.js`，而不是改前面碰巧挡着的那层反向代理或隧道。那个文件里没有的路径，会由控制台的 HTML 404 页面来回答——在 "
-"API 客户端看来，这读起来像「网关挂了」，而不是「这个路径没有被转发」。"
+"这一点值得明说，因为从外面看很容易搞错：新增公开路由要改 `next.config.js` 或 route "
+"handler，而不是改前面碰巧挡着的反向代理或隧道。两边都没有的路径会由控制台的 HTML 404 页面响应——在 API "
+"客户端看来，这更像「网关挂了」，而不是「这个路径没有被转发」。"
 
-#: ../developer/public-path-table.md:29
+#: ../developer/public-path-table.md:30
 msgid "The path table"
 msgstr "路径表"
 
-#: ../developer/public-path-table.md:31
+#: ../developer/public-path-table.md:32
 msgid ""
-"The table below is generated from the `rewrites()` function in "
-"`apps/frontend/next.config.js`. That file is the source of truth; if the two"
-" disagree, the file is right. Regenerate this section when you change it."
+"The table below combines the static rewrites with the filesystem route "
+"handlers. `apps/frontend/next.config.js` is the source of truth for "
+"rewrites; the matching `route.ts` file is the source of truth for a "
+"runtime handler."
 msgstr ""
-"下面的表格由 `apps/frontend/next.config.js` 中的 `rewrites()` "
-"函数生成。那个文件才是事实来源；两者不一致时以文件为准。改了它就重新生成本节。"
+"下表同时列出静态 rewrites 和文件系统 route handlers。`apps/frontend/next.config.js` 是 "
+"rewrites 的事实来源；对应的 `route.ts` 文件是运行时 handler 的事实来源。"
 
-#: ../developer/public-path-table.md:35
+#: ../developer/public-path-table.md:36
 msgid ""
-"Destination hosts come from environment variables. Next resolves "
-"`rewrites()` at **build** time and writes the result into `.next/routes-"
-"manifest.json`, so these are build args, not runtime environment: a value "
-"supplied only at `docker run` is read by nothing, and the symptom is the old"
-" table continuing to serve while every variable looks correctly set in "
-"`docker inspect`. See the `frontend` service's `build.args` in "
-"`deploy/docker/docker-compose.yml`."
+"Destination resolution is deliberately split. Next resolves `rewrites()` "
+"at **build** time and writes them into `.next/routes-manifest.json`. "
+"Route handlers read their server-only environment at request time, so "
+"changing those targets requires recreating the container, not rebuilding "
+"the image."
 msgstr ""
-"目标主机来自环境变量。Next 在**构建**时解析 `rewrites()` 并把结果写进 `.next/routes-"
-"manifest.json`，所以这些是构建参数，而不是运行时环境：只在 `docker run` 时提供的值不会被任何东西读到，症状是 `docker"
-" inspect` 里每个变量看着都设对了，服务的却仍是旧表。见 `deploy/docker/docker-compose.yml` 中 "
-"`frontend` 服务的 `build.args`。"
+"目标地址的解析时机被有意拆开。Next 在**构建**时解析 `rewrites()` 并把它们写入 `.next/routes-"
+"manifest.json`。Route handlers "
+"在请求到来时读取仅服务端可见的环境变量，因此修改这些目标只需重新创建容器，无需重建镜像。"
 
 #: ../developer/public-path-table.md
 msgid "Variable"
@@ -93,6 +91,10 @@ msgstr "变量"
 #: ../developer/public-path-table.md
 msgid "Default"
 msgstr "默认值"
+
+#: ../developer/public-path-table.md
+msgid "Resolution"
+msgstr "解析时机"
 
 #: ../developer/public-path-table.md
 msgid "Points at"
@@ -107,6 +109,10 @@ msgid "`http://backend:8080`"
 msgstr ""
 
 #: ../developer/public-path-table.md
+msgid "build time for rewrites and server-side backend calls"
+msgstr "rewrites 和服务端 backend 调用均在构建时解析"
+
+#: ../developer/public-path-table.md
 msgid "the FastAPI gateway"
 msgstr "FastAPI 网关"
 
@@ -117,6 +123,10 @@ msgstr ""
 #: ../developer/public-path-table.md
 msgid "*(unset)*"
 msgstr "*（未设置）*"
+
+#: ../developer/public-path-table.md
+msgid "runtime"
+msgstr "运行时"
 
 #: ../developer/public-path-table.md
 msgid "the standalone cloud agent's web app"
@@ -135,25 +145,41 @@ msgid "`PGADMIN_INTERNAL_URL`"
 msgstr ""
 
 #: ../developer/public-path-table.md
+msgid ""
+"`BACKEND_INTERNAL_URL` is one image-build contract, not a container-runtime "
+"switch. The same value is compiled into both the rewrite manifest and the "
+"server-only `BUILT_BACKEND_INTERNAL_URL` used by `/site-config` and pgAdmin's "
+"admin check. This prevents a runtime override from silently sending only some "
+"backend requests to a new target. The canonical neutral image uses "
+"`http://backend:8080`; a deployment consuming that image must provide that "
+"network alias. A different backend target requires rebuilding the console."
+msgstr ""
+"`BACKEND_INTERNAL_URL` 是统一的镜像构建契约，不是容器运行时开关。同一个值会同时编译进 "
+"rewrite manifest，以及 `/site-config` 和 pgAdmin 管理员校验使用的服务端专用 "
+"`BUILT_BACKEND_INTERNAL_URL`，避免运行时覆盖只把部分 backend 请求静默切到新目标。规范中立镜像使用 "
+"`http://backend:8080`；使用该镜像的部署必须提供这个网络别名。若要使用其他 backend 目标，必须重新构建 console。"
+
+#: ../developer/public-path-table.md
 msgid "`http://pgadmin:80`"
 msgstr ""
 
 #: ../developer/public-path-table.md
-msgid "pgAdmin (used by the route handler, not a rewrite)"
-msgstr "pgAdmin（由 route handler 使用，不是 rewrite）"
+msgid "pgAdmin"
+msgstr "pgAdmin"
 
-#: ../developer/public-path-table.md:49
-msgid "`beforeFiles` — the cloud agent proxy"
-msgstr "`beforeFiles`——cloud agent 代理"
+#: ../developer/public-path-table.md:48
+msgid "Runtime route handler — the cloud agent proxy"
+msgstr "运行时 route handler——cloud agent 代理"
 
-#: ../developer/public-path-table.md:51
+#: ../developer/public-path-table.md:50
 msgid ""
-"Emitted **only when both `AGENT_WEB_INTERNAL_URL` and "
-"`AGENT_CONTROL_PLANE_INTERNAL_URL` are set.** With either unset the array is"
-" empty and `/agents` has no route at all."
+"`apps/frontend/src/app/agents/[[...path]]/route.ts` reads both agent "
+"targets on every request. With either variable unset, `/agents` "
+"truthfully answers 404; an invalid target or an unreachable configured "
+"service answers 502."
 msgstr ""
-"**只有在 `AGENT_WEB_INTERNAL_URL` 和 `AGENT_CONTROL_PLANE_INTERNAL_URL` "
-"都设置了的时候才会生成**。任一未设置，这个数组就是空的，`/agents` 根本没有路由。"
+"`apps/frontend/src/app/agents/[[...path]]/route.ts` 会在每次请求时读取两个 agent "
+"目标。任一变量未设置时，`/agents` 会如实返回 404；目标无效或已配置服务无法访问时返回 502。"
 
 #: ../developer/public-path-table.md
 msgid "Source"
@@ -177,8 +203,7 @@ msgid "`${AGENT_CONTROL_PLANE_INTERNAL_URL}/:path*`"
 msgstr ""
 
 #: ../developer/public-path-table.md
-msgid ""
-"prefix **stripped** — the control plane serves its routes at its own root"
+msgid "prefix **stripped** — the control plane serves its routes at its own root"
 msgstr "前缀被**去掉**——控制面在自己的根路径上提供这些路由"
 
 #: ../developer/public-path-table.md
@@ -192,8 +217,8 @@ msgstr ""
 
 #: ../developer/public-path-table.md
 msgid ""
-"prefix **kept** — that app is built with `basePath=/agents` and generates "
-"links carrying it"
+"prefix **kept** — that app is built with `basePath=/agents` and generates"
+" links carrying it"
 msgstr "前缀被**保留**——那个应用是以 `basePath=/agents` 构建的，生成的链接都带着它"
 
 #: ../developer/public-path-table.md
@@ -209,37 +234,61 @@ msgstr ""
 msgid "bare prefix"
 msgstr "裸前缀"
 
-#: ../developer/public-path-table.md:61
-msgid "Two ordering facts are load-bearing here:"
-msgstr "这里有两条关于顺序的事实是关键的："
+#: ../developer/public-path-table.md:60
+msgid "Three implementation facts are load-bearing here:"
+msgstr "这里有三条实现细节至关重要："
 
-#: ../developer/public-path-table.md:63
+#: ../developer/public-path-table.md:62
 msgid ""
-"`/agents/api/:path*` must precede `/agents/:path*`. The first is a prefix of"
-" the second, so with the order reversed every API call is answered with the "
-"web app's HTML."
+"`/agents/api/:path*` is matched before `/agents/:path*`. The first is a "
+"prefix of the second, so with the order reversed every API call is "
+"answered with the web app's HTML."
 msgstr ""
-"`/agents/api/:path*` 必须排在 `/agents/:path*` 前面。前者是后者的前缀，顺序反过来的话，每个 API 调用都会被 "
-"web 应用的 HTML 应答。"
+"`/agents/api/:path*` 会先于 `/agents/:path*` 匹配。前者是后者的前缀，顺序反过来的话，每个 API "
+"调用都会被 web 应用的 HTML 响应。"
 
-#: ../developer/public-path-table.md:66
+#: ../developer/public-path-table.md:65
 msgid ""
-"These are `beforeFiles`, not a flat array. A rewrite returned in a flat "
-"array is `afterFiles`, which Next checks *after* filesystem routes — "
-"`beforeFiles` keeps the proxy authoritative even if a page later appears "
-"under that prefix."
+"The handler streams request and response bodies, including SSE, but it "
+"cannot accept WebSocket upgrades. A future WebSocket endpoint needs an "
+"upgrade-aware proxy in front of Next.js."
 msgstr ""
-"这些是 `beforeFiles`，不是一个扁平数组。以扁平数组返回的 rewrite 属于 `afterFiles`，Next "
-"会在文件系统路由*之后*才检查它——`beforeFiles` 则让这个代理保持权威，即便之后在该前缀下出现了某个页面。"
+"这个 handler 会流式转发请求体和响应体，包括 SSE，但不能接受 WebSocket 升级。将来的 WebSocket 端点需要在 "
+"Next.js 前面配置支持协议升级的代理。"
 
-#: ../developer/public-path-table.md:70
+#: ../developer/public-path-table.md:68
+msgid ""
+"Hop-by-hop headers are removed, cookies are preserved, and redirects that"
+" name either internal agent service are folded back through its public "
+"prefix."
+msgstr "逐跳（hop-by-hop）头会被移除，cookie 会被保留；指向任一 agent 内部服务的重定向会折回到对应的公开前缀。"
+
+#: ../developer/public-path-table.md:71
+msgid "Legacy `beforeFiles` compatibility"
+msgstr "旧版 `beforeFiles` 兼容桥"
+
+#: ../developer/public-path-table.md:73
+msgid ""
+"`next.config.js` still emits the same three rules as `beforeFiles` "
+"rewrites when both agent URLs are supplied **while building** an older "
+"distribution image. Direct downstream build pipelines can still opt into "
+"that bridge, but upstream Compose deliberately does not pass the agent "
+"targets as build args. Canonical neutral images use the runtime handler "
+"above. Because `beforeFiles` wins over a filesystem route, an image built"
+" with those legacy values keeps its baked-in targets and cannot be "
+"retargeted by changing only the container environment."
+msgstr ""
+"当**构建**旧版分发镜像时同时提供两个 agent URL，`next.config.js` 仍会生成相同的三条 `beforeFiles` rewrite 规则。"
+"下游直接构建镜像的流水线仍可选择使用这座兼容桥，但上游 Compose 有意不把 agent 目标作为构建参数传入。规范的中立镜像使用上面的运行时 handler。"
+"由于 `beforeFiles` 的优先级高于文件系统路由，使用旧值构建的镜像会保留烤入其中的目标地址，无法只靠修改容器环境来重新指向。"
+
+#: ../developer/public-path-table.md:81
 msgid "`afterFiles` — the gateway"
 msgstr "`afterFiles`——网关"
 
-#: ../developer/public-path-table.md:72
+#: ../developer/public-path-table.md:83
 #, python-brace-format
-msgid ""
-"Every destination below is `${BACKEND_INTERNAL_URL}` plus the same path."
+msgid "Every destination below is `${BACKEND_INTERNAL_URL}` plus the same path."
 msgstr "下面每一条的目标都是 `${BACKEND_INTERNAL_URL}` 加上同样的路径。"
 
 #: ../developer/public-path-table.md
@@ -363,28 +412,28 @@ msgid "`/site-config`"
 msgstr ""
 
 #: ../developer/public-path-table.md
-msgid ""
-"public deployment identity, consumed by the console's `SiteConfigProvider`"
+msgid "public deployment identity, consumed by the console's `SiteConfigProvider`"
 msgstr "公开的部署身份，由控制台的 `SiteConfigProvider` 消费"
 
-#: ../developer/public-path-table.md:92
+#: ../developer/public-path-table.md:103
 msgid ""
 "Note on `/internal`: the entries are named individually rather than "
 "forwarded as a blanket `/internal/:path*`, and that is deliberate. The "
-"prefix is shared — `/internal/verify-*` authenticate a browser session by "
-"cookie — so a blanket rule would publish whatever route lands under "
+"prefix is shared — `/internal/verify-*` authenticate a browser session by"
+" cookie — so a blanket rule would publish whatever route lands under "
 "`/internal` next without anyone deciding it should be reachable from "
-"outside. `/internal/agent-grants` is the one exception granted a whole sub-"
-"prefix, because every route on that router carries a dispatch-token "
+"outside. `/internal/agent-grants` is the one exception granted a whole "
+"sub-prefix, because every route on that router carries a dispatch-token "
 "dependency at the router level and so is authorized by construction."
 msgstr ""
 "关于 `/internal` 的说明：这些条目是一条条单独列出的，而不是用一条笼统的 `/internal/:path*` "
-"转发，这是有意的。这个前缀是共用的——`/internal/verify-*` 用 cookie 认证浏览器会话——所以一条笼统的规则会把下一个落到 "
-"`/internal` 下的路由直接公开出去，而没有任何人决定过它应该能从外部访问。`/internal/agent-grants` "
+"转发，这是有意的。这个前缀是共用的——`/internal/verify-*` 用 cookie "
+"认证浏览器会话——所以一条笼统的规则会把下一个落到 `/internal` "
+"下的路由直接公开出去，而没有任何人决定过它应该能从外部访问。`/internal/agent-grants` "
 "是唯一被授予整个子前缀的例外，因为那个 router 上的每条路由都在 router 层带了 dispatch token "
 "依赖，因此在构造上就是已鉴权的。"
 
-#: ../developer/public-path-table.md:101
+#: ../developer/public-path-table.md:112
 msgid ""
 "Note on `/internal/verify-grafana`: the rewrite exists, but no route "
 "matching that path is registered in `apps/backend` at this revision. It "
@@ -393,23 +442,23 @@ msgstr ""
 "关于 `/internal/verify-grafana` 的说明：这条 rewrite 存在，但在当前修订版的 `apps/backend` "
 "里并没有注册与该路径匹配的路由。它转发过去只会得到网关的 404。"
 
-#: ../developer/public-path-table.md:105
+#: ../developer/public-path-table.md:116
 msgid "Why `/pgadmin` is a route handler and not a rewrite"
 msgstr "为什么 `/pgadmin` 是 route handler 而不是 rewrite"
 
-#: ../developer/public-path-table.md:107
+#: ../developer/public-path-table.md:118
 msgid "`/pgadmin` is the interesting case, and the reason this page exists."
 msgstr "`/pgadmin` 是这里有意思的一个例子，也是本页存在的理由。"
 
-#: ../developer/public-path-table.md:109
+#: ../developer/public-path-table.md:120
 msgid ""
 "pgAdmin must only be reachable by an admin. **A rewrite cannot "
-"authenticate** — it is a static mapping evaluated before any of your code "
-"runs, with no way to call out, inspect a session, or refuse. So `/pgadmin` "
-"is not in the table at all. It is an app route, "
-"`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which is a filesystem "
-"route and therefore wins over `afterFiles` rewrites. The handler proxies to "
-"pgAdmin itself, after checking the caller."
+"authenticate** — it is a static mapping evaluated before any of your code"
+" runs, with no way to call out, inspect a session, or refuse. So "
+"`/pgadmin` is not in the table at all. It is an app route, "
+"`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which is a "
+"filesystem route and therefore wins over `afterFiles` rewrites. The "
+"handler proxies to pgAdmin itself, after checking the caller."
 msgstr ""
 "pgAdmin 必须只能被管理员访问到。**rewrite "
 "无法鉴权**——它是一个静态映射，在你的任何代码运行之前就被求值，没有办法向外发起调用、检查会话或者拒绝请求。所以 `/pgadmin` "
@@ -417,139 +466,225 @@ msgstr ""
 "`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`，属于文件系统路由，因此优先于 "
 "`afterFiles` 里的 rewrite。这个 handler 在检查过调用方之后，自己代理到 pgAdmin。"
 
-#: ../developer/public-path-table.md:117
+#: ../developer/public-path-table.md:128
 msgid ""
-"The handler is a compact worked example of an authenticated reverse proxy in"
-" a Next.js route handler, and every one of its decisions generalizes:"
+"The handler is a compact worked example of an authenticated reverse proxy"
+" in a Next.js route handler, and every one of its decisions generalizes:"
 msgstr ""
 "这个 handler 是一个紧凑的实例，示范了如何在 Next.js 的 route handler "
 "里写一个带鉴权的反向代理，而且它的每一个决定都可以推广："
 
-#: ../developer/public-path-table.md:120
+#: ../developer/public-path-table.md:131
 msgid ""
-"**Fail closed.** `verifyAdmin()` calls `GET /internal/verify-admin` on the "
-"gateway with the caller's cookie and a 5-second timeout. Only an explicit "
-"`200` admits. A backend that is down, slow, or answering something "
-"unexpected denies. It assumes it is the only thing standing in front of a "
-"database console, because it cannot tell whether pgAdmin has its own login "
-"(that depends on `PGADMIN_CONFIG_SERVER_MODE`, which defaults to `False`)."
+"**Fail closed.** `verifyAdmin()` calls `GET /internal/verify-admin` on "
+"the gateway with the caller's cookie and a 5-second timeout. Only an "
+"explicit `200` admits. A backend that is down, slow, or answering "
+"something unexpected denies. It assumes it is the only thing standing in "
+"front of a database console, because it cannot tell whether pgAdmin has "
+"its own login (that depends on `PGADMIN_CONFIG_SERVER_MODE`, which "
+"defaults to `False`)."
 msgstr ""
 "**失败即拒绝（fail closed）**。`verifyAdmin()` 带着调用方的 cookie、以 5 秒超时调用网关上的 `GET "
 "/internal/verify-admin`。只有明确的 `200` "
 "才放行。后端挂了、慢了、或者答了点意料之外的东西，都拒绝。它假定自己是挡在一个数据库控制台前面的唯一一道关，因为它无法判断 pgAdmin "
 "是否有自己的登录（那取决于 `PGADMIN_CONFIG_SERVER_MODE`，其默认值是 `False`）。"
 
-#: ../developer/public-path-table.md:126
+#: ../developer/public-path-table.md:137
 msgid ""
-"**Strip the console's own session cookie** before forwarding. pgAdmin has no"
-" use for it, and forwarding a session credential to a proxied app is how "
-"those leak."
+"**Strip the console's own session cookie** before forwarding. pgAdmin has"
+" no use for it, and forwarding a session credential to a proxied app is "
+"how those leak."
 msgstr "转发前**剥掉控制台自己的会话 cookie**。pgAdmin 用不上它，而把会话凭据转发给被代理的应用，正是这类凭据泄漏的方式。"
 
-#: ../developer/public-path-table.md:129
+#: ../developer/public-path-table.md:140
 msgid ""
 "**Drop hop-by-hop headers** (RFC 9110 §7.6.1) plus `host` and `content-"
 "length`, which `fetch` derives from the outgoing request. Drop `content-"
-"encoding` on the way back, because `fetch` already decompressed the body. "
-"Re-split `Set-Cookie` with `getSetCookie()` — `Headers.forEach` folds "
+"encoding` on the way back, because `fetch` already decompressed the body."
+" Re-split `Set-Cookie` with `getSetCookie()` — `Headers.forEach` folds "
 "repeated values into one string."
 msgstr ""
 "**丢掉逐跳（hop-by-hop）头**（RFC 9110 §7.6.1），外加 `host` 和 `content-length`——这两个 "
 "`fetch` 会自己从待发出的请求推导。回程要丢掉 `content-encoding`，因为 `fetch` 已经把 body 解压过了。用 "
 "`getSetCookie()` 重新拆分 `Set-Cookie`——`Headers.forEach` 会把重复的值折成一个字符串。"
 
-#: ../developer/public-path-table.md:134
+#: ../developer/public-path-table.md:145
 msgid ""
 "**Fold upstream-absolute redirects back to bare paths.** When a request "
 "arrives without a trailing slash a route requires, Werkzeug builds an "
-"absolute redirect from the `Host` it saw — here the internal container name,"
-" which resolves nowhere in a browser. `foldUpstreamRedirect()` rewrites "
-"those to a path, matching on hostname rather than origin so it holds "
-"whatever port is on the URL."
+"absolute redirect from the `Host` it saw — here the internal container "
+"name, which resolves nowhere in a browser. `foldUpstreamRedirect()` "
+"rewrites those to a path, matching on hostname rather than origin so it "
+"holds whatever port is on the URL."
 msgstr ""
 "**把上游给出的绝对地址重定向折回成裸路径**。当请求少了某条路由要求的尾斜杠时，Werkzeug 会用它看到的 `Host` "
-"构造一个绝对重定向——这里就是内部容器名，在浏览器里根本解析不了。`foldUpstreamRedirect()` 会把这类地址改写成路径，它匹配的是 "
-"hostname 而不是 origin，所以 URL 上带的是什么端口它都能兜住。"
+"构造一个绝对重定向——这里就是内部容器名，在浏览器里根本解析不了。`foldUpstreamRedirect()` "
+"会把这类地址改写成路径，它匹配的是 hostname 而不是 origin，所以 URL 上带的是什么端口它都能兜住。"
 
-#: ../developer/public-path-table.md:140
+#: ../developer/public-path-table.md:151
 msgid ""
-"**Redirect with a bare path, not an absolute URL.** Behind a tunnel the app "
-"sees its own bind address as `Host`, so `new URL('/login', request.nextUrl)`"
-" renders as `https://0.0.0.0:3001/login` and strands the browser. The "
-"handler writes the `Location` header by hand, since "
+"**Redirect with a bare path, not an absolute URL.** Behind a tunnel the "
+"app sees its own bind address as `Host`, so `new URL('/login', "
+"request.nextUrl)` renders as `https://0.0.0.0:3001/login` and strands the"
+" browser. The handler writes the `Location` header by hand, since "
 "`NextResponse.redirect()` accepts only absolute URLs."
 msgstr ""
 "**重定向要用裸路径，而不是绝对 URL**。在隧道后面，应用把自己的绑定地址当成 `Host`，于是 `new URL('/login', "
 "request.nextUrl)` 会渲染成 `https://0.0.0.0:3001/login`，把浏览器晾在那儿。由于 "
 "`NextResponse.redirect()` 只接受绝对 URL，这个 handler 是自己手写 `Location` 头的。"
 
-#: ../developer/public-path-table.md:146
+#: ../developer/public-path-table.md:157
 msgid "The trailing-slash interaction"
 msgstr "与尾斜杠的相互作用"
 
-#: ../developer/public-path-table.md:148
+#: ../developer/public-path-table.md:159
 msgid ""
-"`skipTrailingSlashRedirect: true` is set globally in `next.config.js`, and "
-"it has to be, for this one path. Next normalizes a trailing slash away by "
-"redirecting; pgAdmin (Flask) adds one back the same way. Left on, the two "
-"bounce a browser between them forever the first time anyone opens "
-"`/pgadmin/browser/`. The proxied path has to reach pgAdmin exactly as the "
-"browser asked for it."
+"`skipTrailingSlashRedirect: true` is set globally in `next.config.js`, "
+"because proxied applications own their path semantics. Next normally "
+"redirects a trailing slash away; pgAdmin (Flask) or the agent web app may"
+" add one back. Left on, the two layers can bounce a browser between them "
+"forever. A proxied path has to reach its upstream exactly as the browser "
+"asked for it."
 msgstr ""
-"`skipTrailingSlashRedirect: true` 是在 `next.config.js` "
-"里全局设置的，而且为了这一条路径，它必须这么设。Next "
-"会用重定向把尾斜杠规范化掉；pgAdmin（Flask）又会用同样的方式把它加回来。开着它，第一次有人打开 `/pgadmin/browser/` "
-"时，两边就会让浏览器在它们之间无限弹跳。被代理的路径必须原样、按浏览器请求的样子送到 pgAdmin。"
-
-#: ../developer/public-path-table.md:154
-msgid ""
-"Turning that flag off globally would change every other URL on the site, so "
-"`apps/frontend/src/middleware.ts` reimplements the redirect for everything "
-"*except* the `/pgadmin` prefix — a 308 to the slash-less path, built from "
-"`new URL(request.url)` rather than `nextUrl.clone()` (a cloned `NextURL` "
-"remembers the incoming trailing slash and re-serializes it, redirecting the "
-"request to exactly where it already is)."
-msgstr ""
-"把这个开关全局关掉会改变站点上所有其他 URL，所以 `apps/frontend/src/middleware.ts` 为 `/pgadmin` "
-"前缀*以外*的所有路径重新实现了这个重定向——用 308 跳到去掉尾斜杠的路径，并且是用 `new URL(request.url)` 而不是 "
-"`nextUrl.clone()` 构造的（克隆出来的 `NextURL` 会记住请求里带的尾斜杠并重新序列化出来，把请求重定向到它已经所在的地方）。"
-
-#: ../developer/public-path-table.md:161
-msgid "Adding a public path"
-msgstr "新增一条公开路径"
-
-#: ../developer/public-path-table.md:163
-msgid ""
-"Add the rule to `rewrites()` in `apps/frontend/next.config.js`. Put it in "
-"`afterFiles` unless it must outrank a filesystem route."
-msgstr ""
-"在 `apps/frontend/next.config.js` 的 `rewrites()` 里加上规则。除非它必须压过文件系统路由，否则放进 "
-"`afterFiles`。"
+"`skipTrailingSlashRedirect: true` 在 `next.config.js` "
+"中全局设置，因为被代理的应用应掌管自己的路径语义。Next 通常会通过重定向移除尾斜杠；pgAdmin（Flask）或 agent web "
+"应用可能再把它加回来。若保留该默认行为，两层可能让浏览器在它们之间无限跳转。被代理的路径必须原样、按浏览器请求的样子送到上游。"
 
 #: ../developer/public-path-table.md:165
 msgid ""
-"Name it specifically. Prefer `/prefix/thing` over `/prefix/:path*` unless "
-"every current and future route under that prefix is authorized by "
-"construction."
+"Turning that flag off globally would change every other URL on the site, "
+"so `apps/frontend/src/middleware.ts` reimplements the redirect for "
+"everything *except* the `/pgadmin` and `/agents` prefixes — a 308 to the "
+"slash-less path, built from `new URL(request.url)` rather than "
+"`nextUrl.clone()` (a cloned `NextURL` remembers the incoming trailing "
+"slash and re-serializes it, redirecting the request to exactly where it "
+"already is)."
 msgstr ""
-"写得具体一点。优先用 `/prefix/thing` 而不是 `/prefix/:path*`，除非该前缀下当前和将来的每一条路由在构造上都是已鉴权的。"
+"把这个开关全局关掉会改变站点上所有其他 URL，所以 `apps/frontend/src/middleware.ts` 为 `/pgadmin`"
+" 和 `/agents` 前缀*以外*的所有路径重新实现了这个重定向——用 308 跳到去掉尾斜杠的路径，并且是用 `new "
+"URL(request.url)` 而不是 `nextUrl.clone()` 构造的（克隆出来的 `NextURL` "
+"会记住请求里带的尾斜杠并重新序列化出来，把请求重定向到它已经所在的地方）。"
 
-#: ../developer/public-path-table.md:168
-msgid ""
-"If the path needs a check the destination cannot make for itself, it is a "
-"route handler, not a rewrite."
-msgstr "如果这条路径需要一次目标服务自己做不了的检查，那它就该是 route handler，而不是 rewrite。"
-
-#: ../developer/public-path-table.md:170
-msgid ""
-"Rebuild the console. The rewrite table is baked into `.next/routes-"
-"manifest.json` at build time, so a backend-only deploy will not pick the "
-"change up. Adopting or rolling back the cloud agent proxy is likewise a "
-"rebuild, not an environment change."
-msgstr ""
-"重新构建控制台。rewrite 表在构建时就被烤进了 `.next/routes-"
-"manifest.json`，所以只部署后端不会带上这个改动。启用或回滚 cloud agent 代理同样是一次重新构建，而不是改一下环境变量。"
+#: ../developer/public-path-table.md:172
+msgid "Adding a public path"
+msgstr "新增一条公开路径"
 
 #: ../developer/public-path-table.md:174
+msgid ""
+"Choose the routing mechanism. Add a static rule to `rewrites()` in "
+"`apps/frontend/next.config.js`; use a `route.ts` handler when its target "
+"must remain configurable after build or the request needs application "
+"logic."
+msgstr ""
+"选择路由机制。在 `apps/frontend/next.config.js` 的 `rewrites()` "
+"中添加静态规则；如果目标必须在构建后仍可配置，或请求需要应用逻辑，就使用 `route.ts` handler。"
+
+#: ../developer/public-path-table.md:177
+msgid ""
+"Name it specifically. Prefer `/prefix/thing` over `/prefix/:path*` unless"
+" every current and future route under that prefix is authorized by "
+"construction."
+msgstr ""
+"写得具体一点。优先用 `/prefix/thing` 而不是 "
+"`/prefix/:path*`，除非该前缀下当前和将来的每一条路由在构造上都是已鉴权的。"
+
+#: ../developer/public-path-table.md:180
+msgid ""
+"If the path needs a check the destination cannot make for itself, it is a"
+" route handler, not a rewrite."
+msgstr "如果这条路径需要一次目标服务自己做不了的检查，那它就该是 route handler，而不是 rewrite。"
+
+#: ../developer/public-path-table.md:182
+msgid ""
+"Rebuild the console for a source or rewrite-table change. After that "
+"image is deployed, a runtime handler's target can be changed by "
+"recreating its container; a static rewrite target still requires another "
+"image build."
+msgstr ""
+"源码或 rewrite 表发生变化时要重建控制台。该镜像部署后，运行时 handler 的目标可以通过重新创建容器来修改；静态 rewrite "
+"的目标仍需再次构建镜像。"
+
+#: ../developer/public-path-table.md:185
 msgid "Regenerate the table above."
 msgstr "重新生成上面的表格。"
+
+#~ msgid ""
+#~ "The table below is generated from "
+#~ "the `rewrites()` function in "
+#~ "`apps/frontend/next.config.js`. That file is "
+#~ "the source of truth; if the two"
+#~ " disagree, the file is right. "
+#~ "Regenerate this section when you change"
+#~ " it."
+#~ msgstr ""
+#~ "下面的表格由 `apps/frontend/next.config.js` 中的 "
+#~ "`rewrites()` 函数生成。那个文件才是事实来源；两者不一致时以文件为准。改了它就重新生成本节。"
+
+#~ msgid ""
+#~ "Destination hosts come from environment "
+#~ "variables. Next resolves `rewrites()` at "
+#~ "**build** time and writes the result "
+#~ "into `.next/routes-manifest.json`, so these"
+#~ " are build args, not runtime "
+#~ "environment: a value supplied only at"
+#~ " `docker run` is read by nothing, "
+#~ "and the symptom is the old table"
+#~ " continuing to serve while every "
+#~ "variable looks correctly set in `docker"
+#~ " inspect`. See the `frontend` service's "
+#~ "`build.args` in `deploy/docker/docker-compose.yml`."
+#~ msgstr ""
+#~ "目标主机来自环境变量。Next 在**构建**时解析 `rewrites()` 并把结果写进 "
+#~ "`.next/routes-manifest.json`，所以这些是构建参数，而不是运行时环境：只在 `docker"
+#~ " run` 时提供的值不会被任何东西读到，症状是 `docker inspect` "
+#~ "里每个变量看着都设对了，服务的却仍是旧表。见 `deploy/docker/docker-compose.yml`"
+#~ " 中 `frontend` 服务的 `build.args`。"
+
+#~ msgid "pgAdmin (used by the route handler, not a rewrite)"
+#~ msgstr "pgAdmin（由 route handler 使用，不是 rewrite）"
+
+#~ msgid ""
+#~ "Emitted **only when both "
+#~ "`AGENT_WEB_INTERNAL_URL` and "
+#~ "`AGENT_CONTROL_PLANE_INTERNAL_URL` are set.** With"
+#~ " either unset the array is empty "
+#~ "and `/agents` has no route at all."
+#~ msgstr ""
+#~ "**只有在 `AGENT_WEB_INTERNAL_URL` 和 "
+#~ "`AGENT_CONTROL_PLANE_INTERNAL_URL` "
+#~ "都设置了的时候才会生成**。任一未设置，这个数组就是空的，`/agents` 根本没有路由。"
+
+#~ msgid ""
+#~ "These are `beforeFiles`, not a flat "
+#~ "array. A rewrite returned in a "
+#~ "flat array is `afterFiles`, which Next"
+#~ " checks *after* filesystem routes — "
+#~ "`beforeFiles` keeps the proxy authoritative"
+#~ " even if a page later appears "
+#~ "under that prefix."
+#~ msgstr ""
+#~ "这些是 `beforeFiles`，不是一个扁平数组。以扁平数组返回的 rewrite 属于 "
+#~ "`afterFiles`，Next 会在文件系统路由*之后*才检查它——`beforeFiles` "
+#~ "则让这个代理保持权威，即便之后在该前缀下出现了某个页面。"
+
+#~ msgid ""
+#~ "Add the rule to `rewrites()` in "
+#~ "`apps/frontend/next.config.js`. Put it in "
+#~ "`afterFiles` unless it must outrank a"
+#~ " filesystem route."
+#~ msgstr ""
+#~ "在 `apps/frontend/next.config.js` 的 `rewrites()` "
+#~ "里加上规则。除非它必须压过文件系统路由，否则放进 `afterFiles`。"
+
+#~ msgid ""
+#~ "Rebuild the console. The rewrite table"
+#~ " is baked into `.next/routes-manifest.json`"
+#~ " at build time, so a backend-"
+#~ "only deploy will not pick the "
+#~ "change up. Adopting or rolling back "
+#~ "the cloud agent proxy is likewise "
+#~ "a rebuild, not an environment change."
+#~ msgstr ""
+#~ "重新构建控制台。rewrite 表在构建时就被烤进了 `.next/routes-"
+#~ "manifest.json`，所以只部署后端不会带上这个改动。启用或回滚 cloud agent "
+#~ "代理同样是一次重新构建，而不是改一下环境变量。"

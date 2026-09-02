@@ -1,12 +1,15 @@
 // Centralized HTTP client with auth handling and token refresh.
 
 import { APIError, httpStatusToErrorCode } from '@/lib/utils/errors';
-import { branding } from '@/config/branding';
 
 let accessToken: string | null = null;
 let refreshPromise: Promise<boolean> | null = null;
 
-export const AUTH_EXPIRED_EVENT = `${branding.storageKeyPrefix}:auth-expired`;
+// This event is ephemeral within one loaded console bundle, not persisted
+// distribution state. Keeping a stable neutral name lets storageKeyPrefix be
+// supplied entirely by runtime branding without coupling the API client to a
+// build-time value.
+export const AUTH_EXPIRED_EVENT = 'hybridinference:auth-expired';
 
 // Wrap fetch so a genuine connectivity failure (DNS, offline, connection
 // refused/reset) — which rejects with a TypeError before any response exists —

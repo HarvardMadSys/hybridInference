@@ -2,22 +2,22 @@
  * Restores Next's trailing-slash redirect for the console's own pages.
  *
  * `skipTrailingSlashRedirect` in next.config.js turns that redirect off
- * globally, because it has to be off for `/pgadmin/` — Next redirects the
- * slash away, Flask redirects it back, and a browser opening
- * `/pgadmin/browser/` bounces between them until it gives up. The proxied
- * path therefore has to reach pgAdmin exactly as the browser asked for it.
+ * globally, because proxy targets own their path semantics. Next redirecting
+ * a slash away while pgAdmin or the agent web app adds it back would bounce a
+ * browser between the two indefinitely. Proxied paths therefore have to reach
+ * their upstream exactly as the browser asked for them.
  *
  * Every other path keeps the behaviour it had before that flag: `/login/`
  * still lands on `/login`, so existing links and bookmarks are unaffected.
  */
 import { NextResponse, type NextRequest } from 'next/server';
 
-const PROXIED_PREFIX = '/pgadmin';
+const PROXIED_PREFIXES = ['/agents', '/pgadmin'] as const;
 
 export function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl;
 
-  if (pathname === PROXIED_PREFIX || pathname.startsWith(`${PROXIED_PREFIX}/`)) {
+  if (PROXIED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))) {
     return NextResponse.next();
   }
 

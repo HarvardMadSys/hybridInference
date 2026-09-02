@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import Script from 'next/script';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { buildCombinedUseCase, signupSchema, SignupFormData } from '@/lib/schemas/auth';
+import { buildCombinedUseCase, createSignupSchema, SignupFormData } from '@/lib/schemas/auth';
 import { signup, type SignupResponse } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
@@ -13,7 +13,6 @@ import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
-const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || '';
 const TURNSTILE_CALLBACK = '__signupTurnstileCallback';
 
 declare global {
@@ -24,34 +23,40 @@ declare global {
 
 export default function SignupPage() {
   const { branding, features } = useSiteConfig();
+  const turnstileSiteKey = branding.turnstileSiteKey;
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [signupResult, setSignupResult] = useState<SignupResponse | null>(null);
   const turnstileTokenRef = useRef<string | null>(null);
+  const runtimeSignupSchema = useMemo(
+    () => createSignupSchema(branding.siteHost),
+    [branding.siteHost],
+  );
 
   const {
     register,
     handleSubmit,
     formState: { errors },
   } = useForm<SignupFormData>({
-    resolver: zodResolver(signupSchema),
+    resolver: zodResolver(runtimeSignupSchema),
   });
 
   useEffect(() => {
-    if (!TURNSTILE_SITE_KEY) return;
+    turnstileTokenRef.current = null;
+    if (!turnstileSiteKey) return;
     window[TURNSTILE_CALLBACK] = (token: string) => {
       turnstileTokenRef.current = token;
     };
     return () => {
       delete window[TURNSTILE_CALLBACK];
     };
-  }, []);
+  }, [turnstileSiteKey]);
 
   const onSubmit = async (data: SignupFormData) => {
     setIsLoading(true);
     setError(null);
 
-    if (TURNSTILE_SITE_KEY && !turnstileTokenRef.current) {
+    if (turnstileSiteKey && !turnstileTokenRef.current) {
       setError('Please complete the captcha.');
       setIsLoading(false);
       return;
@@ -281,7 +286,7 @@ export default function SignupPage() {
             )}
           </div>
 
-          {TURNSTILE_SITE_KEY && (
+          {turnstileSiteKey && (
             <>
               <Script
                 src="https://challenges.cloudflare.com/turnstile/v0/api.js"
@@ -289,7 +294,7 @@ export default function SignupPage() {
               />
               <div
                 className="cf-turnstile"
-                data-sitekey={TURNSTILE_SITE_KEY}
+                data-sitekey={turnstileSiteKey}
                 data-callback={TURNSTILE_CALLBACK}
               />
             </>

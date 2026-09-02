@@ -15,14 +15,20 @@ hardcoded strings:
 A deployment supplies its own identity through ``SITE_*``, which
 ``deploy/docker/docker-compose.yml`` pins for both staging and production (and
 ``.env`` still overrides), so a configured site's rendered output is unchanged
-by the neutral default. ``docs_url`` has no manifest field yet; it joins the manifest schema
-with the config-migration wave.
+by the neutral default. The manifest's versioned branding document supplies
+``docs_url`` while ``SITE_DOCS_URL`` remains the higher-precedence operational
+override.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+
+from serving.config.branding import validate_public_https_base_url
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,28 @@ def _pick(env_key: str, manifest_value: str | None, legacy: str) -> str:
     return legacy
 
 
+def _pick_docs_url(manifest_value: str | None) -> str:
+    """Resolve the docs URL without publishing an invalid env override."""
+    env_value = os.getenv("SITE_DOCS_URL", "").strip()
+    if env_value:
+        try:
+            return validate_public_https_base_url(env_value)
+        except ValueError:
+            logger.error(
+                "Ignoring invalid SITE_DOCS_URL; expected an empty or path-joinable HTTPS URL"
+            )
+
+    candidate = manifest_value.strip() if manifest_value and manifest_value.strip() else ""
+    # A manifest branding document has already passed this validator. Retain
+    # the check here so mocked/custom config providers cannot publish a shape
+    # the runtime console must reject.
+    try:
+        return validate_public_https_base_url(candidate)
+    except ValueError:
+        logger.error("Ignoring invalid manifest docs URL; expected a path-joinable HTTPS URL")
+        return NEUTRAL_DEFAULT.docs_url
+
+
 def get_site_identity() -> SiteIdentity:
     """Resolve the identity as env > active manifest > legacy defaults.
 
@@ -72,6 +100,7 @@ def get_site_identity() -> SiteIdentity:
 
     manifest_name: str | None = None
     manifest_base_url: str | None = None
+    manifest_docs_url: str | None = None
     manifest_support: str | None = None
     if get_settings().distribution_config_mode.strip().lower() == "active":
         config = get_distribution_config()
@@ -79,12 +108,15 @@ def get_site_identity() -> SiteIdentity:
             manifest_name = config.distribution.display_name
             manifest_base_url = config.site.public_base_url
             manifest_support = config.site.support_email
+            branding = getattr(config, "branding_config", None)
+            if branding is not None:
+                manifest_docs_url = branding.links.docs_url
 
     return SiteIdentity(
         name=_pick("SITE_NAME", manifest_name, NEUTRAL_DEFAULT.name),
         public_base_url=_pick(
             "SITE_PUBLIC_BASE_URL", manifest_base_url, NEUTRAL_DEFAULT.public_base_url
         ),
-        docs_url=_pick("SITE_DOCS_URL", None, NEUTRAL_DEFAULT.docs_url),
+        docs_url=_pick_docs_url(manifest_docs_url),
         support_email=_pick("SITE_SUPPORT_EMAIL", manifest_support, NEUTRAL_DEFAULT.support_email),
     )

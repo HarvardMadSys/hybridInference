@@ -2,18 +2,13 @@
 //
 // Three-step rule, step 2: defaults that would misdirect a third-party
 // deployment (analytics ids, the API host in the copy-paste example, the
-// affiliated-domain hint) are now neutral or off. FreeInference keeps its
-// identity because deploy/docker/docker-compose.yml passes an explicit value
-// for every one of these at build time, so its rendered output is unchanged.
+// affiliated-domain hint) are neutral or off. A distribution supplies its
+// identity through the versioned runtime document instead.
 //
-// Team and sponsors are empty upstream and come from NEXT_PUBLIC_TEAM_JSON /
-// NEXT_PUBLIC_SPONSORS_JSON; a deployment supplies its own. (This paragraph
-// used to say they still carried built-in defaults, which stopped being true
-// when they were moved and nobody came back for the comment.)
-//
-// These values are the build-time fallback. SiteConfigProvider overlays the
-// safe identity and feature fields from GET /site-config at browser runtime,
-// so one frontend image can follow the active distribution manifest.
+// These values are the transition build fallback. The root server layout
+// loads GET /site-config at request time and gives SiteConfigProvider that
+// value on its first render, so one frontend image can follow the active
+// distribution manifest without a client-side brand flash.
 
 import { z } from 'zod';
 import { config } from './env';
@@ -35,6 +30,41 @@ export interface Sponsor {
   height: number;
 }
 
+// Runtime Tailwind classes must come from the finite set safelisted in
+// tailwind.config.ts. Accepting arbitrary deployment strings would render
+// classes the neutral build never compiled and widen the public contract.
+export const sponsorClassNameSchema = z
+  .string()
+  .regex(/^(?:h-(?:8|10|12|14|16))(?: sm:h-(?:8|10|12|14|16))?$/);
+
+export interface Branding {
+  appName: string;
+  appDescription: string;
+  siteHost: string;
+  orgName: string;
+  orgUrl: string;
+  orgTagline: string;
+  docsUrl: string;
+  statusUrl: string;
+  githubUrl: string;
+  commitUrlBase: string;
+  contactEmail: string;
+  exampleApiBase: string;
+  exampleApiKeyEnvVar: string;
+  exampleModel: string;
+  statcounterProjectId: string;
+  statcounterSecurityKey: string;
+  turnstileSiteKey: string;
+  fastTrackDomain: string;
+  fastTrackOrg: string;
+  dataPolicyNotice: string;
+  storageKeyPrefix: string;
+  logoUrl: string;
+  faviconUrl: string;
+  team: TeamMember[];
+  sponsors: Sponsor[];
+}
+
 const teamSchema: z.ZodType<TeamMember[]> = z.array(
   z.object({
     name: z.string().min(1),
@@ -50,7 +80,7 @@ const sponsorsSchema: z.ZodType<Sponsor[]> = z.array(
     name: z.string().min(1),
     alt: z.string().min(1),
     src: z.string().min(1),
-    className: z.string(),
+    className: sponsorClassNameSchema,
     width: z.number().positive(),
     height: z.number().positive(),
   }),
@@ -71,7 +101,7 @@ function fromJsonEnv<T>(raw: string | undefined, fallback: T, schema: z.ZodType<
 const githubUrl =
   process.env.NEXT_PUBLIC_GITHUB_URL || 'https://github.com/HarvardMadSys/hybridInference';
 
-export const branding = {
+export const branding: Branding = {
   // Product identity (appName itself lives in env.ts and is already
   // NEXT_PUBLIC_APP_NAME-overridable).
   appName: config.appName,
@@ -104,10 +134,14 @@ export const branding = {
   // Analytics: off unless an operator opts in with their own Statcounter ids
   // (layout.tsx skips the scripts entirely when the project id is empty).
   // A shipped default would report every third-party deployment's traffic
-  // into the FreeInference account; those ids now come from the deployment
-  // (docker-compose passes them for FreeInference builds).
+  // into an upstream operator's account; those ids come from the deployment.
   statcounterProjectId: process.env.NEXT_PUBLIC_STATCOUNTER_PROJECT_ID ?? '',
   statcounterSecurityKey: process.env.NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY ?? '',
+
+  // CAPTCHA is public configuration (the secret key remains backend-only).
+  // Keep the build-time value as a compatibility fallback until every
+  // deployment serves the versioned runtime branding document.
+  turnstileSiteKey: process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? '',
 
   // Signup fast-track hint (display copy only; the real allowlist is
   // server-side). Empty fastTrackDomain hides the hint, which is the right
@@ -117,21 +151,25 @@ export const branding = {
 
   // Data-handling notice shown on the landing page. Empty by default and
   // hidden when empty: a deployment must state its own policy, and no
-  // upstream default can be correct for someone else's users. FreeInference
-  // supplies its text through the deployment (docker-compose).
+  // upstream default can be correct for someone else's users. A distribution
+  // supplies its own text through /site-config.
   dataPolicyNotice: process.env.NEXT_PUBLIC_DATA_POLICY_NOTICE || '',
 
-  // Namespace for localStorage keys and DOM events. Changing it logs every
-  // visitor out of dismissed-state memory; keep it stable per distribution.
+  // Namespace for persisted browser preferences. Changing it resets existing
+  // dismissal state, so keep it stable per distribution.
   storageKeyPrefix: process.env.NEXT_PUBLIC_STORAGE_KEY_PREFIX || 'hybridinference',
+
+  // Runtime distributions normally serve these from /site-assets. Empty
+  // fallbacks preserve the neutral console's existing text-only header and
+  // browser-default icon.
+  logoUrl: '',
+  faviconUrl: '',
 
   // People and sponsors. Empty upstream — a neutral console has neither, and
   // arrays hidden behind a fallback are the kind of content that silently
-  // ships one distribution's identity to everyone else. FreeInference passes
-  // its own through NEXT_PUBLIC_TEAM_JSON / NEXT_PUBLIC_SPONSORS_JSON
-  // (deploy/docker/docker-compose.yml). Empty arrays hide the sections.
+  // ships one distribution's identity to everyone else. Legacy images may
+  // still supply NEXT_PUBLIC_TEAM_JSON / NEXT_PUBLIC_SPONSORS_JSON; runtime
+  // distributions use /site-config. Empty arrays hide the sections.
   team: fromJsonEnv<TeamMember[]>(process.env.NEXT_PUBLIC_TEAM_JSON, [], teamSchema),
   sponsors: fromJsonEnv<Sponsor[]>(process.env.NEXT_PUBLIC_SPONSORS_JSON, [], sponsorsSchema),
 };
-
-export type Branding = typeof branding;

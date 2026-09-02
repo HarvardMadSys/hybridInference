@@ -5,15 +5,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Sponsors } from './Sponsors';
 
-// Sponsors are distribution content (supplied via NEXT_PUBLIC_SPONSORS_JSON),
-// so the test provides them rather than relying on a shipped default.
-vi.mock('@/config/branding', () => ({
-  branding: {
+// Sponsors are runtime distribution content, so the test provides them rather
+// than relying on a shipped default.
+vi.mock('@/components/providers/SiteConfigProvider', () => ({
+  useBranding: () => ({
     sponsors: [
       {
         name: 'Example Labs',
         alt: 'Example Labs logo',
-        src: '/sponsors/example-labs.svg',
+        src: '/site-assets/sponsors/example-labs.svg',
         className: 'h-10 sm:h-12',
         width: 975,
         height: 180,
@@ -21,13 +21,13 @@ vi.mock('@/config/branding', () => ({
       {
         name: 'Example Institute',
         alt: 'Example Institute logo',
-        src: '/sponsors/example-institute.svg',
+        src: 'https://assets.example.test/example-institute.svg',
         className: 'h-12 sm:h-14',
         width: 307,
         height: 86,
       },
     ],
-  },
+  }),
 }));
 
 describe('Sponsors', () => {
@@ -41,6 +41,14 @@ describe('Sponsors', () => {
     expect(screen.getByText('Sponsors')).toBeInTheDocument();
     expect(screen.getByAltText('Example Labs logo')).toBeInTheDocument();
     expect(screen.getByAltText('Example Institute logo')).toBeInTheDocument();
+    expect(screen.getByAltText('Example Labs logo')).toHaveAttribute(
+      'src',
+      '/site-assets/sponsors/example-labs.svg',
+    );
+    expect(screen.getByAltText('Example Institute logo')).toHaveAttribute(
+      'src',
+      'https://assets.example.test/example-institute.svg',
+    );
   });
 
   it('shows sponsor logos in full color', () => {

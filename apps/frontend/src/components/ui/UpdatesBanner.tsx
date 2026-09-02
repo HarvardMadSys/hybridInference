@@ -4,11 +4,11 @@ import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getPublicSiteUpdates, type PublicSiteUpdate } from '@/lib/api/updates';
-import { branding } from '@/config/branding';
-
-const DISMISS_KEY = `${branding.storageKeyPrefix}:dismissed-banner`;
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 
 export function UpdatesBanner(): JSX.Element | null {
+  const { storageKeyPrefix } = useBranding();
+  const dismissKey = `${storageKeyPrefix}:dismissed-banner`;
   const [banner, setBanner] = useState<PublicSiteUpdate | null>(null);
   const [dismissed, setDismissed] = useState(true);
 
@@ -18,18 +18,18 @@ export function UpdatesBanner(): JSX.Element | null {
       if (!active || !res.banner) return;
       setBanner(res.banner);
       // Banners are dismissed per-id, so publishing a new banner re-shows it.
-      const stored = localStorage.getItem(DISMISS_KEY);
+      const stored = localStorage.getItem(dismissKey);
       setDismissed(stored === res.banner.id);
     });
     return () => {
       active = false;
     };
-  }, []);
+  }, [dismissKey]);
 
   if (!banner || dismissed) return null;
 
   function dismiss() {
-    if (banner) localStorage.setItem(DISMISS_KEY, banner.id);
+    if (banner) localStorage.setItem(dismissKey, banner.id);
     setDismissed(true);
   }
 

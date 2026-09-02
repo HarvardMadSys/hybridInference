@@ -1,11 +1,10 @@
 /** @type {import('next').NextConfig} */
 const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || 'http://backend:8080';
 
-// Where the standalone cloud agent lives, once a deployment runs one. Unset on
-// every deployment that does not, and then nothing below changes: `/agents`
-// keeps resolving to this app's own pages, which is what it did before the
-// split and what it must keep doing for anyone who never adopts the new
-// service.
+// Compatibility bridge for images built before `/agents` became a runtime
+// route handler. A branded legacy build may still compile these rewrites in;
+// a neutral build leaves both values empty and requests reach
+// `src/app/agents/[[...path]]/route.ts`, which reads its targets at runtime.
 //
 // Two variables and not one because they are two services — the browser app
 // and its control-plane API — and on a real deployment they are two ports, or
@@ -13,26 +12,15 @@ const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || 'http://backend
 const AGENT_WEB_INTERNAL_URL = process.env.AGENT_WEB_INTERNAL_URL || '';
 const AGENT_CONTROL_PLANE_INTERNAL_URL = process.env.AGENT_CONTROL_PLANE_INTERNAL_URL || '';
 
-// Whether this deployment runs a cloud agent at all, for the console's own
-// entry point.
-//
-// **Derived from the same two variables as the rewrite below, deliberately.**
-// A separate feature flag could be turned on by a deployment that never set
-// them, and then the console would offer a link to a path that 404s — which is
-// exactly the failure this exists to remove. One expression, one answer: if
-// `/agents` resolves, the entry point is shown; if it does not, it is not
-// there to click.
-//
-// Inlined at build time like every other `NEXT_PUBLIC_*` value, which matches
-// the rewrite: Next resolves `rewrites()` into the routes manifest when the
-// bundle is built, so both are fixed per image.
-const AGENTS_ENABLED = Boolean(AGENT_WEB_INTERNAL_URL && AGENT_CONTROL_PLANE_INTERNAL_URL);
-
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // Keep every backend consumer on the exact target compiled into the rewrite
+  // manifest. next.config `env` values are inlined during `next build`, so a
+  // container-level BACKEND_INTERNAL_URL cannot retarget only server code and
+  // leave /v1, /auth, and the other rewrites pointing somewhere else.
   env: {
-    NEXT_PUBLIC_AGENTS_ENABLED: AGENTS_ENABLED ? 'true' : '',
+    BUILT_BACKEND_INTERNAL_URL: BACKEND_INTERNAL_URL,
   },
   // Next strips a trailing slash by redirecting; pgAdmin (Flask) adds one back
   // the same way. Left on, the two bounce a request between them forever the
@@ -40,47 +28,38 @@ const nextConfig = {
   // off here and reimplemented in middleware.ts for everything except the
   // proxied path, which has to reach pgAdmin exactly as the browser asked.
   skipTrailingSlashRedirect: true,
-  images: {
-    // Remote host for team-member photos (branding.team). A deployment that
-    // hosts photos off-site names the host; one that has no team, or serves
-    // the photos itself, allows no remote host at all. CommonJS file: cannot
-    // import the TS branding module, so read the env var inline.
-    remotePatterns: process.env.NEXT_PUBLIC_TEAM_IMAGE_HOST
-      ? [{ protocol: 'https', hostname: process.env.NEXT_PUBLIC_TEAM_IMAGE_HOST }]
-      : [],
-  },
   async rewrites() {
     // **`beforeFiles`, and it has to be.** A rewrite returned in a flat array
     // is `afterFiles`, which Next checks *after* filesystem routes. This app's
     // own `/agents` pages were removed at H4, but beforeFiles keeps the proxy
     // authoritative even if a page ever reappears under that prefix.
     //
-    // With the variables unset no rewrite is emitted and `/agents` answers
-    // 404 — the truthful state for a deployment that runs no agent service.
-    // The pre-H4 fallback (this app's own agent pages) is gone, so unsetting
-    // the variables is *not* a rollback to a gateway-served UI; there is none.
+    // With the build variables unset no rewrite is emitted. The runtime route
+    // then answers 404 unless both server-only target variables are present.
+    // The pre-H4 fallback (this app's own agent pages) is gone.
     //
     // Job history did not move to the standalone service (decision DR5): it
     // has its own database, so `/agents` history there started empty.
-    const agentRewrites = AGENTS_ENABLED
-      ? [
-          // The API first: `/agents/api/*` is a prefix of `/agents/*`, and
-          // the more specific rule has to be matched first or every API call
-          // is served the web app's HTML.
-          //
-          // The prefix is stripped here — the control plane serves
-          // `/v1/agent/...` at its root and knows nothing about `/agents`.
-          {
-            source: '/agents/api/:path*',
-            destination: `${AGENT_CONTROL_PLANE_INTERNAL_URL}/:path*`,
-          },
-          // The prefix is *kept* here: that app is built with
-          // `basePath=/agents`, so it generates its own links and asset URLs
-          // already carrying it and expects to receive them.
-          { source: '/agents/:path*', destination: `${AGENT_WEB_INTERNAL_URL}/agents/:path*` },
-          { source: '/agents', destination: `${AGENT_WEB_INTERNAL_URL}/agents` },
-        ]
-      : [];
+    const agentRewrites =
+      AGENT_WEB_INTERNAL_URL && AGENT_CONTROL_PLANE_INTERNAL_URL
+        ? [
+            // The API first: `/agents/api/*` is a prefix of `/agents/*`, and
+            // the more specific rule has to be matched first or every API call
+            // is served the web app's HTML.
+            //
+            // The prefix is stripped here — the control plane serves
+            // `/v1/agent/...` at its root and knows nothing about `/agents`.
+            {
+              source: '/agents/api/:path*',
+              destination: `${AGENT_CONTROL_PLANE_INTERNAL_URL}/:path*`,
+            },
+            // The prefix is *kept* here: that app is built with
+            // `basePath=/agents`, so it generates its own links and asset URLs
+            // already carrying it and expects to receive them.
+            { source: '/agents/:path*', destination: `${AGENT_WEB_INTERNAL_URL}/agents/:path*` },
+            { source: '/agents', destination: `${AGENT_WEB_INTERNAL_URL}/agents` },
+          ]
+        : [];
 
     return {
       beforeFiles: agentRewrites,

@@ -1,3 +1,5 @@
+'use client';
+
 import Link from 'next/link';
 import {
   CodeExample,
@@ -9,9 +11,11 @@ import {
   UseCases,
 } from '@/components/landing';
 import { UpdatesBanner } from '@/components/ui/UpdatesBanner';
-import { branding } from '@/config/branding';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 
 export default function HomePage(): JSX.Element {
+  const branding = useBranding();
+
   return (
     <div className="flex w-full flex-col gap-4">
       <UpdatesBanner />

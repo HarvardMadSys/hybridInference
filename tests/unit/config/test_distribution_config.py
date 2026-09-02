@@ -42,6 +42,9 @@ paths:
   routing: /abs/routing.yaml
 """
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_BRANDING_EXAMPLE = _REPO_ROOT / "config" / "examples" / "branding.example.yaml"
+
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
@@ -77,6 +80,22 @@ def test_loader_resolves_relative_paths_against_manifest_dir(tmp_path):
     assert config.paths.models == str((tmp_path / "config/models.yaml").resolve())
     assert config.paths.routing == "/abs/routing.yaml"
     assert config.paths.alerts == ""
+
+
+def test_loader_resolves_and_validates_relative_branding_path(tmp_path):
+    branding = tmp_path / "branding" / "site.yaml"
+    branding.parent.mkdir()
+    branding.write_text(_BRANDING_EXAMPLE.read_text())
+    manifest = _write_manifest(
+        tmp_path,
+        MANIFEST.replace("paths:\n", "site:\n  branding: ./branding/site.yaml\npaths:\n"),
+    )
+
+    config = load_distribution_config(manifest)
+
+    assert config.site.branding == str(branding.resolve())
+    assert config.branding_config is not None
+    assert config.branding_config.organization.name == "Example Organization"
 
 
 def test_loader_rejects_unsupported_schema_version(tmp_path):
@@ -168,6 +187,24 @@ def test_a_manifest_that_will_not_parse_is_fatal_in_active_mode(monkeypatch, tmp
     get_distribution_config.cache_clear()
     with pytest.raises(DistributionConfigError, match="active"):
         get_distribution_config()
+
+
+@pytest.mark.parametrize("branding_contents", [None, "links: ["])
+def test_declared_broken_branding_is_fatal_in_active_mode(monkeypatch, tmp_path, branding_contents):
+    branding = tmp_path / "branding.yaml"
+    if branding_contents is not None:
+        branding.write_text(branding_contents)
+    manifest = _write_manifest(
+        tmp_path,
+        MANIFEST.replace("paths:\n", "site:\n  branding: ./branding.yaml\npaths:\n"),
+    )
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
+
+    with pytest.raises(DistributionConfigError) as exc_info:
+        get_distribution_config()
+    assert "active" in str(exc_info.value)
+    assert "branding" in str(exc_info.value)
 
 
 # --- Precedence ---

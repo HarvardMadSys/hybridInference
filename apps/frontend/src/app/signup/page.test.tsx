@@ -12,6 +12,8 @@ vi.mock('@/lib/api/auth', () => ({
 }));
 
 import { signup, type SignupResponse } from '@/lib/api/auth';
+import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
+import { buildTimeSiteConfig } from '@/config/site-config';
 import SignupPage from './page';
 
 const mockedSignup = vi.mocked(signup);
@@ -53,6 +55,27 @@ describe('SignupPage', () => {
     expect(screen.getByRole('link', { name: /terms of service/i })).toHaveAttribute(
       'href',
       '/terms',
+    );
+  });
+
+  it('renders Turnstile from the runtime branding value', () => {
+    const runtimeConfig = {
+      ...buildTimeSiteConfig,
+      branding: {
+        ...buildTimeSiteConfig.branding,
+        turnstileSiteKey: 'runtime-turnstile-key',
+      },
+    };
+
+    const { container } = render(
+      <SiteConfigProvider initialConfig={runtimeConfig}>
+        <SignupPage />
+      </SiteConfigProvider>,
+    );
+
+    expect(container.querySelector('.cf-turnstile')).toHaveAttribute(
+      'data-sitekey',
+      'runtime-turnstile-key',
     );
   });
 

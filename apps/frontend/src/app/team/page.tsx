@@ -1,23 +1,12 @@
-import Image from 'next/image';
 import { notFound } from 'next/navigation';
-import { branding } from '@/config/branding';
-import { config } from '@/config/env';
-import { RuntimeAppName } from '@/components/ui/RuntimeAppName';
+import type { Metadata } from 'next';
+import { loadRuntimeSiteConfig } from '@/config/site-config.server';
+import { pageMetadata } from '@/config/site-metadata';
 
-export const metadata = {
-  title: `Team | ${config.appName}`,
-  description: `The people building ${config.appName}.`,
-};
-
-interface TeamMember {
-  name: string;
-  affiliations: string[];
-  badge?: string;
-  image?: string;
-  website?: string;
+export async function generateMetadata(): Promise<Metadata> {
+  const siteConfig = await loadRuntimeSiteConfig();
+  return pageMetadata(siteConfig, 'Team', `The people building ${siteConfig.branding.appName}.`);
 }
-
-const members: TeamMember[] = branding.team;
 
 function initials(name: string): string {
   return name
@@ -28,17 +17,16 @@ function initials(name: string): string {
     .join('');
 }
 
-export default function TeamPage(): JSX.Element {
+export default async function TeamPage(): Promise<JSX.Element> {
+  const { branding } = await loadRuntimeSiteConfig();
+  const members = branding.team;
   if (members.length === 0) notFound();
   return (
     <div className="flex w-full flex-col gap-10">
       <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-white via-gray-50 to-red-50/30 px-6 py-14 text-center shadow-subtle">
         <p className="text-sm font-semibold uppercase tracking-widest text-crimson">Our team</p>
         <h1 className="mx-auto mt-3 max-w-2xl font-serif text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl">
-          The people behind{' '}
-          <span className="text-crimson">
-            <RuntimeAppName />
-          </span>
+          The people behind <span className="text-crimson">{branding.appName}</span>
         </h1>
         <p className="mx-auto mt-5 max-w-xl text-base text-gray-600 sm:text-lg">
           A small research team building free, open LLM inference
@@ -67,12 +55,13 @@ export default function TeamPage(): JSX.Element {
           >
             <div className="relative h-28 w-28 shrink-0 overflow-hidden rounded-full ring-4 ring-white shadow-md">
               {member.image ? (
-                <Image
+                // Runtime assets cannot be declared in next/image's
+                // build-time remotePatterns allowlist.
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
                   src={member.image}
                   alt={`Photo of ${member.name}`}
-                  fill
-                  sizes="112px"
-                  className="object-cover transition duration-300 group-hover:scale-105"
+                  className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                 />
               ) : (
                 <span

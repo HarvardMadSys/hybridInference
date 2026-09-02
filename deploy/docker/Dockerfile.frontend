@@ -18,12 +18,10 @@ ARG NEXT_PUBLIC_API_BASE=http://localhost:8080
 # higher precedence and pins the server-side rewrite target deterministically.
 ARG BACKEND_INTERNAL_URL=http://backend:8080
 
-# Where the standalone cloud agent is, if this deployment runs one. **Build
-# args, not runtime environment**: Next resolves `rewrites()` at build time and
-# writes the result into `.next/routes-manifest.json`, so a value supplied only
-# at `docker run` is read by nothing. Empty by default — then no rewrite is
-# emitted and `/agents` answers 404, the truthful answer for a deployment that
-# runs no agent service (the console's own agents pages were removed at H4).
+# Compatibility bridge for legacy branded images: when both values are passed
+# as build args, Next compiles the old beforeFiles rewrites into its routes
+# manifest. Neutral images leave them empty and the Node route handler reads
+# the same server-only names at container runtime instead.
 ARG AGENT_WEB_INTERNAL_URL=
 ARG AGENT_CONTROL_PLANE_INTERNAL_URL=
 ARG NEXT_PUBLIC_DEPLOY_TARGET=production
@@ -51,7 +49,6 @@ ARG NEXT_PUBLIC_STORAGE_KEY_PREFIX=
 ARG NEXT_PUBLIC_DATA_POLICY_NOTICE=
 ARG NEXT_PUBLIC_TEAM_JSON=
 ARG NEXT_PUBLIC_SPONSORS_JSON=
-ARG NEXT_PUBLIC_TEAM_IMAGE_HOST=
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
 ENV BACKEND_INTERNAL_URL=$BACKEND_INTERNAL_URL
 ENV AGENT_WEB_INTERNAL_URL=$AGENT_WEB_INTERNAL_URL
@@ -81,7 +78,6 @@ ENV NEXT_PUBLIC_STORAGE_KEY_PREFIX=$NEXT_PUBLIC_STORAGE_KEY_PREFIX
 ENV NEXT_PUBLIC_DATA_POLICY_NOTICE=$NEXT_PUBLIC_DATA_POLICY_NOTICE
 ENV NEXT_PUBLIC_TEAM_JSON=$NEXT_PUBLIC_TEAM_JSON
 ENV NEXT_PUBLIC_SPONSORS_JSON=$NEXT_PUBLIC_SPONSORS_JSON
-ENV NEXT_PUBLIC_TEAM_IMAGE_HOST=$NEXT_PUBLIC_TEAM_IMAGE_HOST
 COPY --from=deps /app/node_modules node_modules
 COPY apps/frontend/ .
 RUN npm run build

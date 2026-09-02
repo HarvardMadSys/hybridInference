@@ -9,17 +9,20 @@
 // Two failures this catches, both silent:
 //
 // **`afterFiles` loses.** A rewrite returned in a flat array is `afterFiles`,
-// which Next checks *after* filesystem routes — and this app still ships its
-// own `/agents` pages. An `afterFiles` rule for that prefix matches nothing,
-// so a deployment believes it has cut over and has not.
+// which Next checks *after* filesystem routes — including the new runtime
+// `/agents` handler. Legacy rewrites therefore have to remain beforeFiles.
 //
 // **Opt-in.** Every deployment running no standalone agent must be untouched.
-// Unconditional, these rules would 502 `/agents` for all of them.
+// Unconditional, these legacy rules would bypass the runtime handler.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const WEB = 'http://agent-web:3000';
 const API = 'http://agent-control-plane:8000';
+
+async function loadRewrites(env: Record<string, string | undefined>) {
+  return loadConfig(env).rewrites();
+}
 
 function loadConfig(env: Record<string, string | undefined>) {
   for (const [k, v] of Object.entries(env)) {
@@ -33,10 +36,6 @@ function loadConfig(env: Record<string, string | undefined>) {
   return require('./next.config.js');
 }
 
-async function loadRewrites(env: Record<string, string | undefined>) {
-  return loadConfig(env).rewrites();
-}
-
 describe('the /agents rewrites', () => {
   const saved = { ...process.env };
   beforeEach(() => {
@@ -46,7 +45,7 @@ describe('the /agents rewrites', () => {
     process.env = { ...saved };
   });
 
-  it('is unset by default, so other deployments keep their own pages', async () => {
+  it('is unset by default, so the runtime handler decides whether the service exists', async () => {
     const { beforeFiles } = await loadRewrites({
       AGENT_WEB_INTERNAL_URL: undefined,
       AGENT_CONTROL_PLANE_INTERNAL_URL: undefined,
@@ -89,6 +88,19 @@ describe('the /agents rewrites', () => {
     expect(sources.indexOf('/agents/api/:path*')).toBeLessThan(sources.indexOf('/agents/:path*'));
   });
 
+  it('pins server-side backend fetches to the rewrite target selected at build time', async () => {
+    const backend = 'http://custom-backend:9090';
+    const config = loadConfig({ BACKEND_INTERNAL_URL: backend });
+    const { afterFiles } = await config.rewrites();
+
+    expect(config.env.BUILT_BACKEND_INTERNAL_URL).toBe(backend);
+    expect(
+      afterFiles.every(({ destination }: { destination: string }) =>
+        destination.startsWith(backend),
+      ),
+    ).toBe(true);
+  });
+
   it('strips the prefix for the API and keeps it for the web app', async () => {
     const { beforeFiles } = await loadRewrites({
       AGENT_WEB_INTERNAL_URL: WEB,
@@ -105,26 +117,5 @@ describe('the /agents rewrites', () => {
     // already carrying it. Strip here and every asset 404s while the HTML
     // still loads.
     expect(bySource['/agents/:path*']).toBe(`${WEB}/agents/:path*`);
-  });
-
-  // The console's own entry point is derived from this same pair, so that a
-  // deployment cannot end up offering a link to a path it does not serve.
-  it.each([
-    ['neither variable', undefined, undefined, ''],
-    ['only the web URL', WEB, undefined, ''],
-    ['only the control plane', undefined, API, ''],
-    ['both', WEB, API, 'true'],
-  ])('tells the console what the rewrite decided: %s', async (_name, web, api, expected) => {
-    const config = loadConfig({
-      AGENT_WEB_INTERNAL_URL: web,
-      AGENT_CONTROL_PLANE_INTERNAL_URL: api,
-    });
-    const { beforeFiles } = await config.rewrites();
-
-    expect(config.env.NEXT_PUBLIC_AGENTS_ENABLED).toBe(expected);
-    // The property that matters is not the value, it is that the two move
-    // together: an entry point offered without a rewrite behind it is a link
-    // to a 404, and a rewrite with no entry point is a feature nobody finds.
-    expect(Boolean(config.env.NEXT_PUBLIC_AGENTS_ENABLED)).toBe(beforeFiles.length > 0);
   });
 });

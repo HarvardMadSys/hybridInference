@@ -1,12 +1,13 @@
 import '../styles/globals.css';
 import Script from 'next/script';
 import { Crimson_Text } from 'next/font/google';
-import { branding } from '@/config/branding';
-import { config } from '@/config/env';
+import type { Metadata } from 'next';
 import { Providers } from '@/components/providers';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { Header } from '@/components/ui/Header';
 import { SiteFooter } from '@/components/ui/SiteFooter';
+import { loadRuntimeSiteConfig } from '@/config/site-config.server';
+import { rootMetadata } from '@/config/site-metadata';
 
 const crimsonText = Crimson_Text({
   subsets: ['latin'],
@@ -15,12 +16,16 @@ const crimsonText = Crimson_Text({
   display: 'swap',
 });
 
-export const metadata = {
-  title: config.appName,
-  description: branding.appDescription,
-};
+export const dynamic = 'force-dynamic';
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export async function generateMetadata(): Promise<Metadata> {
+  return rootMetadata(await loadRuntimeSiteConfig());
+}
+
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const siteConfig = await loadRuntimeSiteConfig();
+  const { branding } = siteConfig;
+
   return (
     <html lang="en" className={`h-full ${crimsonText.variable}`}>
       <head>
@@ -48,13 +53,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         suppressHydrationWarning
       >
         <ErrorBoundary>
-          <Providers>
+          <Providers initialSiteConfig={siteConfig}>
             <Header />
             <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-6 py-12">
               {children}
             </main>
             <SiteFooter />
-            {branding.statcounterProjectId && (
+            {branding.statcounterProjectId ? (
               <noscript>
                 <div className="statcounter">
                   <a
@@ -73,7 +78,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   </a>
                 </div>
               </noscript>
-            )}
+            ) : null}
           </Providers>
         </ErrorBoundary>
       </body>

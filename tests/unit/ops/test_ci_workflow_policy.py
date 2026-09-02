@@ -72,6 +72,10 @@ def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
         "publish-backend-arm64",
         "publish-backend-amd64",
         "publish-backend",
+        "publish-console-precheck",
+        "publish-console-arm64",
+        "publish-console-amd64",
+        "publish-console",
     ],
 )
 def test_publish_gate_survives_skipped_ancestors(job_name: str) -> None:
@@ -94,26 +98,28 @@ def test_publish_gate_survives_skipped_ancestors(job_name: str) -> None:
     assert "needs.ci-gate.result == 'success'" in job["if"]
 
 
-def test_publish_stitch_requires_both_native_halves() -> None:
+@pytest.mark.parametrize("image", ["backend", "console"])
+def test_publish_stitch_requires_both_native_halves(image: str) -> None:
     """The dev-<sha> tag is the completeness signal; only the stitch mints it.
 
     The stitch must gate on BOTH arch results explicitly — with !cancelled()
     suppressing the implicit success(), nothing else stops it from tagging a
     half-published candidate whose other half failed.
     """
-    job = _workflow("ci.yml")["jobs"]["publish-backend"]
+    job = _workflow("ci.yml")["jobs"][f"publish-{image}"]
 
     assert set(job["needs"]) == {
         "ci-gate",
-        "publish-backend-precheck",
-        "publish-backend-arm64",
-        "publish-backend-amd64",
+        f"publish-{image}-precheck",
+        f"publish-{image}-arm64",
+        f"publish-{image}-amd64",
     }
-    assert "needs.publish-backend-arm64.result == 'success'" in job["if"]
-    assert "needs.publish-backend-amd64.result == 'success'" in job["if"]
+    assert f"needs.publish-{image}-arm64.result == 'success'" in job["if"]
+    assert f"needs.publish-{image}-amd64.result == 'success'" in job["if"]
 
 
-def test_publish_existence_verdict_has_a_single_source() -> None:
+@pytest.mark.parametrize("image", ["backend", "console"])
+def test_publish_existence_verdict_has_a_single_source(image: str) -> None:
     """One Packages API query, shared by every publish job.
 
     Independent per-job existence queries can disagree only through a
@@ -124,18 +130,61 @@ def test_publish_existence_verdict_has_a_single_source() -> None:
     publish job other than the precheck may query the Packages API itself.
     """
     jobs = _workflow("ci.yml")["jobs"]
-    verdict = "needs.publish-backend-precheck.outputs.existing"
+    verdict = f"needs.publish-{image}-precheck.outputs.existing"
 
-    for name in ("publish-backend-arm64", "publish-backend-amd64"):
-        assert "publish-backend-precheck" in jobs[name]["needs"], name
+    for name in (f"publish-{image}-arm64", f"publish-{image}-amd64"):
+        assert f"publish-{image}-precheck" in jobs[name]["needs"], name
         gated = [step for step in jobs[name]["steps"] if step.get("if") == f"{verdict} == ''"]
         assert gated, f"{name}: no step obeys the precheck verdict"
         assert not any(
             "/packages/container/" in str(step.get("run", "")) for step in jobs[name]["steps"]
         ), f"{name}: runs its own existence query"
 
-    stitch = next(step for step in jobs["publish-backend"]["steps"] if step.get("id") == "stitch")
+    stitch = next(step for step in jobs[f"publish-{image}"]["steps"] if step.get("id") == "stitch")
     assert stitch["env"]["EXISTING"] == "${{ " + verdict + " }}"
+
+
+def test_console_candidate_build_has_no_distribution_identity_inputs() -> None:
+    """The canonical console is the white-label artifact W7 promises."""
+    jobs = _workflow("ci.yml")["jobs"]
+
+    for arch in ("arm64", "amd64"):
+        job = jobs[f"publish-console-{arch}"]
+        step = next(item for item in job["steps"] if item.get("id") == "push")
+        build = step["with"]
+        args = str(build["build-args"])
+
+        assert build["file"] == "deploy/docker/Dockerfile.frontend"
+        assert "hybridinference-console" in build["outputs"]
+        assert "NEXT_PUBLIC_API_BASE=" in args
+        assert "NEXT_PUBLIC_BUILD_SHA=${{ github.sha }}" in args
+        assert "NEXT_PUBLIC_BUILD_TIMESTAMP=${{ github.event.head_commit.timestamp }}" in args
+        assert "NEXT_PUBLIC_APP_NAME" not in args
+        assert "NEXT_PUBLIC_TEAM_JSON" not in args
+        assert "NEXT_PUBLIC_SPONSORS_JSON" not in args
+        assert "AGENT_WEB_INTERNAL_URL" not in args
+        assert "AGENT_CONTROL_PLANE_INTERNAL_URL" not in args
+
+
+def test_both_console_platforms_scan_the_published_payload_for_identity() -> None:
+    """Build arguments are policy; inspect the actual bytes before stitching."""
+    jobs = _workflow("ci.yml")["jobs"]
+
+    for arch in ("arm64", "amd64"):
+        job = jobs[f"publish-console-{arch}"]
+        scan = next(
+            step
+            for step in job["steps"]
+            if step.get("name", "").startswith("Refuse distribution identity")
+        )
+        command = scan["run"]
+
+        assert scan["env"]["DIGEST"] == "${{ steps.push.outputs.digest }}"
+        assert "docker pull" in command
+        assert "docker run --rm" in command
+        assert "freeinference" in command
+        assert "http://web:3000" in command
+        assert "http://control-plane:8000" in command
 
 
 def test_publish_builds_are_native_never_emulated() -> None:

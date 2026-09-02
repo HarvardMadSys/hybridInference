@@ -2,6 +2,21 @@ import type { Config } from 'tailwindcss';
 
 export default {
   content: ['./src/**/*.{ts,tsx}'],
+  // Sponsor sizing arrives in /site-config at runtime. The branding schema
+  // restricts class_name to this finite vocabulary; safelisting the same set
+  // ensures a white-label build contains every allowed utility and variant.
+  safelist: [
+    'h-8',
+    'h-10',
+    'h-12',
+    'h-14',
+    'h-16',
+    'sm:h-8',
+    'sm:h-10',
+    'sm:h-12',
+    'sm:h-14',
+    'sm:h-16',
+  ],
   darkMode: 'class',
   theme: {
     extend: {

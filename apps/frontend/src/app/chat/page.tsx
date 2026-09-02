@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/Button';
 import { Markdown } from '@/components/ui/Markdown';
 import { streamRagChat, type RagSource } from '@/lib/api/chat';
 import { APIError } from '@/lib/utils/errors';
-import { branding } from '@/config/branding';
 import { useBranding, useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 interface UiMessage {
@@ -16,10 +15,10 @@ interface UiMessage {
   streaming?: boolean;
 }
 
-function docUrl(source: string): string {
+function docUrl(source: string, docsUrl: string): string {
   // The public docs are a Sphinx site; a page named `quickstart.md` builds to
   // `quickstart.html`. Best-effort deep link — falls back to a readable label.
-  const docsBase = branding.docsUrl.replace(/\/+$/, '');
+  const docsBase = docsUrl.replace(/\/+$/, '');
   const docPath = source.replace(/^\/+/, '').replace(/\.md$/, '.html');
   return `${docsBase}/${docPath}`;
 }
@@ -31,7 +30,7 @@ function updateLast(messages: UiMessage[], patch: Partial<UiMessage>): UiMessage
   return next;
 }
 
-function SourceChips({ sources }: { sources: RagSource[] }) {
+function SourceChips({ sources, docsUrl }: { sources: RagSource[]; docsUrl: string }) {
   if (!sources.length) return null;
   return (
     <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-3">
@@ -39,7 +38,7 @@ function SourceChips({ sources }: { sources: RagSource[] }) {
       {sources.map((s) => (
         <a
           key={s.id}
-          href={docUrl(s.source)}
+          href={docUrl(s.source, docsUrl)}
           target="_blank"
           rel="noopener noreferrer"
           title={s.title}
@@ -135,9 +134,9 @@ function ChatView() {
         <h1 className="text-2xl font-bold tracking-tight">Docs Assistant</h1>
         <p className="mt-1 text-sm text-gray-500">
           Ask anything about {runtimeBranding.appName}. Answers are grounded in the{' '}
-          {branding.docsUrl ? (
+          {runtimeBranding.docsUrl ? (
             <a
-              href={branding.docsUrl}
+              href={runtimeBranding.docsUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="text-crimson hover:underline"
@@ -188,7 +187,9 @@ function ChatView() {
                 ) : m.streaming ? (
                   <span className="text-gray-400">Thinking…</span>
                 ) : null}
-                {m.role === 'assistant' && m.sources && <SourceChips sources={m.sources} />}
+                {m.role === 'assistant' && m.sources && (
+                  <SourceChips sources={m.sources} docsUrl={runtimeBranding.docsUrl} />
+                )}
               </div>
             </div>
           ))

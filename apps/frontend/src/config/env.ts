@@ -1,7 +1,8 @@
 // Centralized configuration for the application.
 //
-// The frontend bundle is built once and then served statically, so deployment
-// selection must be available at build time.
+// Client API routing and build identity are compiled into the neutral bundle.
+// Distribution branding is intentionally absent here: the server layout loads
+// that from /site-config for each request.
 
 type DeployTarget = 'production' | 'staging';
 
@@ -33,16 +34,6 @@ export const config = {
   // Build Identity (baked in at build time by deploy scripts)
   buildSha: process.env.NEXT_PUBLIC_BUILD_SHA || '',
   buildTimestamp: process.env.NEXT_PUBLIC_BUILD_TIMESTAMP || '',
-
-  // Whether this deployment runs a standalone cloud agent.
-  //
-  // **Not a flag anyone sets.** `next.config.js` computes it from the same two
-  // variables the `/agents` rewrite is built from and injects it, so the
-  // console's entry point and the path behind it cannot disagree. A hand-set
-  // flag could be turned on by a deployment that never configured the proxy,
-  // and the console would then offer a link to a 404 — which is the whole
-  // reason this is derived rather than declared.
-  agentsEnabled: process.env.NEXT_PUBLIC_AGENTS_ENABLED === 'true',
 
   // Feature Flags (can be toggled via environment variables if needed)
   enableAnalytics: process.env.NEXT_PUBLIC_ENABLE_ANALYTICS === 'true',

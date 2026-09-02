@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { branding } from '@/config/branding';
 
 export const emailSchema = z
   .string()
@@ -16,7 +15,7 @@ export const passwordSchema = z
 export function buildCombinedUseCase(
   useCase?: string,
   discoverySource?: string,
-  siteHost = branding.siteHost,
+  siteHost = 'this service',
 ): string {
   const trimmedUseCase = useCase?.trim();
   const trimmedDiscovery = discoverySource?.trim();
@@ -28,42 +27,50 @@ export function buildCombinedUseCase(
     .join('\n\n');
 }
 
-export const signupSchema = z
-  .object({
-    email: emailSchema,
-    password: passwordSchema,
-    confirmPassword: z.string(),
-    userName: z
-      .string()
-      .trim()
-      .min(2, 'Username must be at least 2 characters')
-      .max(50, 'Username cannot exceed 50 characters'),
-    useCase: z
-      .string()
-      .trim()
-      .max(2000, 'Use case cannot exceed 2000 characters')
-      .optional()
-      .or(z.literal('')),
-    discoverySource: z
-      .string()
-      .trim()
-      .max(500, 'Response cannot exceed 500 characters')
-      .optional()
-      .or(z.literal('')),
-    acceptTerms: z.boolean(),
-  })
-  .refine((data) => data.password === data.confirmPassword, {
-    message: 'Passwords do not match',
-    path: ['confirmPassword'],
-  })
-  .refine((data) => data.acceptTerms, {
-    message: 'You must agree to the Terms of Service',
-    path: ['acceptTerms'],
-  })
-  .refine((data) => buildCombinedUseCase(data.useCase, data.discoverySource).length <= 2000, {
-    message: 'Combined use case and discovery response is too long (max 2000 characters)',
-    path: ['discoverySource'],
-  });
+const signupFieldsSchema = z.object({
+  email: emailSchema,
+  password: passwordSchema,
+  confirmPassword: z.string(),
+  userName: z
+    .string()
+    .trim()
+    .min(2, 'Username must be at least 2 characters')
+    .max(50, 'Username cannot exceed 50 characters'),
+  useCase: z
+    .string()
+    .trim()
+    .max(2000, 'Use case cannot exceed 2000 characters')
+    .optional()
+    .or(z.literal('')),
+  discoverySource: z
+    .string()
+    .trim()
+    .max(500, 'Response cannot exceed 500 characters')
+    .optional()
+    .or(z.literal('')),
+  acceptTerms: z.boolean(),
+});
+
+export function createSignupSchema(siteHost = 'this service') {
+  return signupFieldsSchema
+    .refine((data) => data.password === data.confirmPassword, {
+      message: 'Passwords do not match',
+      path: ['confirmPassword'],
+    })
+    .refine((data) => data.acceptTerms, {
+      message: 'You must agree to the Terms of Service',
+      path: ['acceptTerms'],
+    })
+    .refine(
+      (data) => buildCombinedUseCase(data.useCase, data.discoverySource, siteHost).length <= 2000,
+      {
+        message: 'Combined use case and discovery response is too long (max 2000 characters)',
+        path: ['discoverySource'],
+      },
+    );
+}
+
+export const signupSchema = createSignupSchema();
 
 export const loginSchema = z.object({
   email: emailSchema,

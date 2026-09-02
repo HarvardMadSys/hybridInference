@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { loginSchema, passwordSchema, signupSchema } from './auth';
+import { createSignupSchema, loginSchema, passwordSchema, signupSchema } from './auth';
 
 describe('auth schemas', () => {
   it('accepts a strong password', () => {
@@ -90,6 +90,28 @@ describe('auth schemas', () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it('measures the combined signup text with the runtime site host', () => {
+    const input = {
+      email: 'user@example.org',
+      password: 'SecurePass123',
+      confirmPassword: 'SecurePass123',
+      userName: 'Example User',
+      useCase: 'a'.repeat(1900),
+      discoverySource: 'b'.repeat(50),
+      acceptTerms: true,
+    };
+    const runtimeSchema = createSignupSchema('x'.repeat(100));
+    const result = runtimeSchema.safeParse(input);
+
+    expect(signupSchema.safeParse(input).success).toBe(true);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.flatten().fieldErrors.discoverySource).toContain(
+        'Combined use case and discovery response is too long (max 2000 characters)',
+      );
+    }
   });
 
   it('accepts valid login input', () => {
