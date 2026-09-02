@@ -71,7 +71,6 @@ function makeTrend(
 }
 
 const defaultProps = {
-  days: 7,
   userFilter: '',
   modelFilter: '',
   requestType: 'all' as const,
@@ -82,7 +81,7 @@ describe('RequestPerformancePanel', () => {
     vi.clearAllMocks();
     vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
-      days: 7,
+      days: 1,
       groups: [makeGroup()],
       truncated: false,
     });
@@ -114,7 +113,7 @@ describe('RequestPerformancePanel', () => {
   it('keeps each endpoint of a model as its own row', async () => {
     vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
-      days: 7,
+      days: 1,
       groups: [
         makeGroup(),
         makeGroup({
@@ -147,7 +146,7 @@ describe('RequestPerformancePanel', () => {
   it('renders a metric with no samples as undefined rather than zeros', async () => {
     vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
-      days: 7,
+      days: 1,
       groups: [
         makeGroup({
           // Every response decoded faster than the throughput floor: traffic
@@ -166,23 +165,33 @@ describe('RequestPerformancePanel', () => {
 
   it('forwards the tab filters to the API', async () => {
     render(
-      <RequestPerformancePanel
-        days={30}
-        userFilter="ada@example.com"
-        modelFilter="glm"
-        requestType="chat"
-      />,
+      <RequestPerformancePanel userFilter="ada@example.com" modelFilter="glm" requestType="chat" />,
     );
 
     await waitFor(() =>
       expect(getRecentRequestsPerformance).toHaveBeenCalledWith({
-        days: 30,
+        // Its own window, not the tab's lookback — which the panel is not given.
+        days: 1,
         userId: 'ada@example.com',
         modelId: 'glm',
         requestType: 'chat',
         refresh: false,
       }),
     );
+  });
+
+  it('measures its own 24h window rather than the tab lookback', async () => {
+    render(<RequestPerformancePanel {...defaultProps} />);
+
+    // The tab's selector runs to 90 days, and a mean that wide averages away the
+    // load swings this panel exists to show — so the window is the panel's own,
+    // and the copy says which one it is.
+    await waitFor(() =>
+      expect(getRecentRequestsPerformance).toHaveBeenCalledWith(
+        expect.objectContaining({ days: 1 }),
+      ),
+    );
+    expect(screen.getByText(/over the last 24h/)).toBeInTheDocument();
   });
 
   it('reloads on a refresh key change and asks the backend to skip its cache', async () => {
@@ -200,17 +209,17 @@ describe('RequestPerformancePanel', () => {
     );
 
     // A later filter change is not a refresh, even though refreshKey stays at 1.
-    rerender(<RequestPerformancePanel {...defaultProps} days={30} refreshKey={1} />);
+    rerender(<RequestPerformancePanel {...defaultProps} modelFilter="glm" refreshKey={1} />);
     await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(3));
     expect(getRecentRequestsPerformance).toHaveBeenLastCalledWith(
-      expect.objectContaining({ days: 30, refresh: false }),
+      expect.objectContaining({ modelId: 'glm', refresh: false }),
     );
   });
 
   it('formats a whole-thousand throughput without a stray decimal', async () => {
     vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
-      days: 7,
+      days: 1,
       groups: [
         makeGroup({
           // Float arithmetic upstream can land just off a round thousand.
@@ -255,16 +264,16 @@ describe('RequestPerformancePanel', () => {
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
 
-    const { rerender } = render(<RequestPerformancePanel {...defaultProps} days={7} />);
+    const { rerender } = render(<RequestPerformancePanel {...defaultProps} />);
     await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(1));
 
-    rerender(<RequestPerformancePanel {...defaultProps} days={30} />);
+    rerender(<RequestPerformancePanel {...defaultProps} modelFilter="glm" />);
     await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(2));
 
     // The newer request answers first...
     second.resolve({
       generated_at: '2026-06-30T12:00:00.000Z',
-      days: 30,
+      days: 1,
       groups: [makeGroup({ endpoint_id: 'newer-endpoint' })],
       truncated: false,
     });
@@ -273,7 +282,7 @@ describe('RequestPerformancePanel', () => {
     // ...then the older one arrives late and must be ignored.
     first.resolve({
       generated_at: '2026-06-30T12:00:00.000Z',
-      days: 7,
+      days: 1,
       groups: [makeGroup({ endpoint_id: 'stale-endpoint' })],
       truncated: false,
     });
@@ -284,7 +293,7 @@ describe('RequestPerformancePanel', () => {
   it('shows an empty state when nothing matched', async () => {
     vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
-      days: 7,
+      days: 1,
       groups: [],
       truncated: false,
     });
@@ -305,7 +314,7 @@ describe('RequestPerformancePanel', () => {
   it('says when the group list was capped', async () => {
     vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
-      days: 7,
+      days: 1,
       groups: [makeGroup()],
       truncated: true,
     });
@@ -338,7 +347,7 @@ describe('RequestPerformancePanel trends', () => {
   }
 
   it('does not fetch the trend until a route is opened', async () => {
-    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    render(<RequestPerformancePanel {...defaultProps} />);
     await screen.findByText('glm-4.6:local-12003');
 
     expect(getRecentRequestsPerformanceTrend).not.toHaveBeenCalled();
@@ -359,7 +368,7 @@ describe('RequestPerformancePanel trends', () => {
   });
 
   it('renders both charts for the opened route', async () => {
-    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    render(<RequestPerformancePanel {...defaultProps} />);
     await expandFirstRow();
 
     // One card per metric — never one chart with two y scales, since ms and
@@ -372,7 +381,7 @@ describe('RequestPerformancePanel trends', () => {
   });
 
   it('fetches each route once and reuses it when reopened', async () => {
-    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    render(<RequestPerformancePanel {...defaultProps} />);
     const row = await expandFirstRow();
     await screen.findByTestId('endpoint-trend-ttft');
     expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(1);
@@ -392,7 +401,7 @@ describe('RequestPerformancePanel trends', () => {
         series: [{ ...makeTrend().series[0], model_id: 'glm-4.6', endpoint_id: 'glm-4.6:zai-api' }],
       }),
     );
-    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    render(<RequestPerformancePanel {...defaultProps} />);
 
     const quiet = (await screen.findByText('glm-4.6:zai-api')).closest('tr');
     fireEvent.click(quiet!);
@@ -420,7 +429,7 @@ describe('RequestPerformancePanel trends', () => {
         series: [{ ...makeTrend().series[0], model_id: 'model-a', endpoint_id: 'openai' }],
       }),
     );
-    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    render(<RequestPerformancePanel {...defaultProps} />);
 
     const rows = await screen.findAllByText('openai');
     fireEvent.click(rows[0].closest('tr')!);
@@ -441,30 +450,30 @@ describe('RequestPerformancePanel trends', () => {
     const pending = new Promise<AdminRequestPerfTrendResponse>((r) => (resolveFirst = r));
     vi.mocked(getRecentRequestsPerformanceTrend).mockReturnValueOnce(pending);
 
-    const { rerender } = render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    const { rerender } = render(<RequestPerformancePanel {...defaultProps} />);
     await expandFirstRow();
     await waitFor(() => expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(1));
 
     // Filters move while that request is still in flight.
-    rerender(<RequestPerformancePanel {...defaultProps} days={7} />);
+    rerender(<RequestPerformancePanel {...defaultProps} modelFilter="glm" />);
     await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(2));
     resolveFirst(makeTrend());
 
-    // Reopening must ask again for the new window rather than serve the stale one.
-    vi.mocked(getRecentRequestsPerformanceTrend).mockResolvedValue(makeTrend({ days: 7 }));
+    // Reopening must ask again for the new filters rather than serve the stale one.
+    vi.mocked(getRecentRequestsPerformanceTrend).mockResolvedValue(makeTrend());
     await expandFirstRow();
     await waitFor(() => expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(2));
     expect(getRecentRequestsPerformanceTrend).toHaveBeenLastCalledWith(
-      expect.objectContaining({ days: 7 }),
+      expect.objectContaining({ modelId: 'glm' }),
     );
   });
 
   it('closes the trend and drops it when the filters change', async () => {
-    const { rerender } = render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    const { rerender } = render(<RequestPerformancePanel {...defaultProps} />);
     await expandFirstRow();
     await screen.findByTestId('endpoint-trend-ttft');
 
-    rerender(<RequestPerformancePanel {...defaultProps} days={7} />);
+    rerender(<RequestPerformancePanel {...defaultProps} modelFilter="glm" />);
 
     await waitFor(() =>
       expect(screen.queryByTestId('endpoint-trend-ttft')).not.toBeInTheDocument(),
@@ -473,13 +482,13 @@ describe('RequestPerformancePanel trends', () => {
     await expandFirstRow();
     await waitFor(() => expect(getRecentRequestsPerformanceTrend).toHaveBeenCalledTimes(2));
     expect(getRecentRequestsPerformanceTrend).toHaveBeenLastCalledWith(
-      expect.objectContaining({ days: 7 }),
+      expect.objectContaining({ modelId: 'glm' }),
     );
   });
 
   it('reports a trend failure without breaking the table', async () => {
     vi.mocked(getRecentRequestsPerformanceTrend).mockRejectedValue(new Error('nope'));
-    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    render(<RequestPerformancePanel {...defaultProps} />);
     await expandFirstRow();
 
     expect(await screen.findByText(/Failed to load the trend: nope/)).toBeInTheDocument();
@@ -510,7 +519,7 @@ describe('RequestPerformancePanel trends', () => {
         ],
       }),
     );
-    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    render(<RequestPerformancePanel {...defaultProps} />);
     await expandFirstRow();
 
     expect(await screen.findAllByText(/No measurable samples/)).toHaveLength(2);
@@ -621,7 +630,7 @@ describe('RequestPerformancePanel trend state isolation', () => {
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
 
-    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    render(<RequestPerformancePanel {...defaultProps} />);
     await screen.findByText('glm-4.6:local-12003');
 
     fireEvent.click(rowFor('glm-4.6:local-12003'));
@@ -654,7 +663,7 @@ describe('RequestPerformancePanel trend state isolation', () => {
         makeTrend({ series: [{ ...makeTrend().series[0], endpoint_id: 'glm-4.6:zai-api' }] }),
       );
 
-    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    render(<RequestPerformancePanel {...defaultProps} />);
     await screen.findByText('glm-4.6:local-12003');
 
     fireEvent.click(rowFor('glm-4.6:local-12003'));
@@ -683,7 +692,7 @@ describe('RequestPerformancePanel trend state isolation', () => {
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce(makeTrend({ series: [] }));
 
-    render(<RequestPerformancePanel {...defaultProps} days={1} />);
+    render(<RequestPerformancePanel {...defaultProps} />);
     await screen.findByText('glm-4.6:local-12003');
 
     fireEvent.click(rowFor('glm-4.6:local-12003'));
@@ -695,9 +704,7 @@ describe('RequestPerformancePanel trend state isolation', () => {
   });
 
   it('asks the backend for fresh numbers on the first trend after a Refresh', async () => {
-    const { rerender } = render(
-      <RequestPerformancePanel {...defaultProps} days={1} refreshKey={0} />,
-    );
+    const { rerender } = render(<RequestPerformancePanel {...defaultProps} refreshKey={0} />);
     await screen.findByText('glm-4.6:local-12003');
     fireEvent.click(rowFor('glm-4.6:local-12003'));
     await waitFor(() =>
@@ -708,7 +715,7 @@ describe('RequestPerformancePanel trend state isolation', () => {
 
     // Refresh: the summary bypasses the backend's ~20s cache, and the trend
     // opened afterwards must not come back older than the summary above it.
-    rerender(<RequestPerformancePanel {...defaultProps} days={1} refreshKey={1} />);
+    rerender(<RequestPerformancePanel {...defaultProps} refreshKey={1} />);
     await waitFor(() => expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(2));
     fireEvent.click(rowFor('glm-4.6:local-12003'));
     await waitFor(() =>

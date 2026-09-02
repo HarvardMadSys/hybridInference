@@ -80,23 +80,35 @@ function sampleSummary(group: AdminRequestPerfGroup): string {
 }
 
 /**
+ * The window this panel measures over, fixed rather than taken from the tab's
+ * lookback selector.
+ *
+ * TTFT and decode throughput swing with load over hours, so the tab's default
+ * week averages a bad afternoon away, and its 7/30/90d trends bucket six hours
+ * to a day wide — too coarse to see the swing at all. A day keeps the summary
+ * about what the endpoints are doing now, and the trend hourly.
+ */
+const WINDOW_DAYS = 1;
+/** How that window is written in this panel's copy. */
+const WINDOW_LABEL = '24h';
+
+/**
  * Per-(model, endpoint) TTFT and decode-throughput summary for the Recent
  * Requests tab.
  *
- * Follows the tab's user / model / type / lookback filters so the summary
- * describes the rows below it. "Errors only" is not applied: the backend always
+ * Follows the tab's user / model / type filters so the summary describes the
+ * rows below it, but not its lookback: this panel always measures the last
+ * `WINDOW_LABEL`. "Errors only" is not applied either: the backend always
  * scopes this view to successful streaming requests, since a failed or
  * non-streamed request has no meaningful first-token or decode timing.
  */
 export function RequestPerformancePanel({
-  days,
   userFilter,
   modelFilter,
   requestType,
   refreshKey = 0,
   errorsOnly = false,
 }: {
-  days: number;
   userFilter: string;
   modelFilter: string;
   requestType: 'all' | 'chat' | 'embedding';
@@ -153,7 +165,7 @@ export function RequestPerformancePanel({
         setTrendLoading(new Set());
         setTrendErrors(new Map());
         const data = await getRecentRequestsPerformance({
-          days,
+          days: WINDOW_DAYS,
           userId: userFilter || undefined,
           modelId: modelFilter || undefined,
           requestType: requestType === 'all' ? undefined : requestType,
@@ -176,7 +188,7 @@ export function RequestPerformancePanel({
         if (seq === seqRef.current) setLoading(false);
       }
     },
-    [days, userFilter, modelFilter, requestType],
+    [userFilter, modelFilter, requestType],
   );
 
   useEffect(() => {
@@ -205,7 +217,7 @@ export function RequestPerformancePanel({
         return next;
       });
       getRecentRequestsPerformanceTrend({
-        days,
+        days: WINDOW_DAYS,
         userId: userFilter || undefined,
         modelId: modelFilter || undefined,
         requestType: requestType === 'all' ? undefined : requestType,
@@ -241,7 +253,7 @@ export function RequestPerformancePanel({
           });
         });
     },
-    [expanded, trendByRoute, trendLoading, days, userFilter, modelFilter, requestType],
+    [expanded, trendByRoute, trendLoading, userFilter, modelFilter, requestType],
   );
 
   return (
@@ -252,8 +264,8 @@ export function RequestPerformancePanel({
             Per-endpoint TTFT &amp; decode throughput
           </h2>
           <p className="text-[11px] text-gray-400">
-            Successful streaming requests over the last {days}d, split by the model and endpoint
-            that served them. Select a route to see it over time
+            Successful streaming requests over the last {WINDOW_LABEL}, split by the model and
+            endpoint that served them. Select a route to see it over time
             {errorsOnly ? ' (not narrowed by “errors only”)' : ''}.
           </p>
         </div>
@@ -348,7 +360,7 @@ export function RequestPerformancePanel({
                         tabIndex={0}
                         role="button"
                         aria-expanded={isExpanded}
-                        aria-label={`Show the last ${days}d trend for ${group.endpoint_id}`}
+                        aria-label={`Show the last ${WINDOW_LABEL} trend for ${group.endpoint_id}`}
                       >
                         <td
                           className="max-w-[180px] truncate py-2 pl-4 pr-2 text-[12px] font-medium text-gray-900"
