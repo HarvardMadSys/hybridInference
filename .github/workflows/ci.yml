@@ -1196,8 +1196,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100" \
-                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" 2>/dev/null | head -1 || true)"
+          if ! digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100" \
+                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" | head -1)"; then
+            echo "::warning title=Package lookup failed::Treating the lookup failure as no candidate; publication will rebuild"
+            digest=""
+          fi
           if [ -n "${digest}" ]; then
             echo "candidate dev-${GITHUB_SHA} already published (${digest}); downstream jobs will skip"
           else
@@ -1399,8 +1402,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-console/versions?per_page=100" \
-                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" 2>/dev/null | head -1 || true)"
+          if ! digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-console/versions?per_page=100" \
+                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" | head -1)"; then
+            echo "::warning title=Package lookup failed::Treating the lookup failure as no candidate; publication will rebuild"
+            digest=""
+          fi
           if [ -n "${digest}" ]; then
             echo "console candidate dev-${GITHUB_SHA} already published (${digest}); downstream jobs will skip"
           else

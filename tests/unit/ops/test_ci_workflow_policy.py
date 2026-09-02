@@ -144,6 +144,25 @@ def test_publish_existence_verdict_has_a_single_source(image: str) -> None:
     assert stitch["env"]["EXISTING"] == "${{ " + verdict + " }}"
 
 
+@pytest.mark.parametrize("image", ["backend", "console"])
+def test_publish_precheck_discards_packages_api_error_payload(image: str) -> None:
+    """A Packages API error body must never masquerade as an image digest.
+
+    ``gh api`` writes its JSON error body to stdout. The first console publish
+    therefore treated a 404 ``Package not found`` body as a non-empty digest
+    when ``|| true`` erased the command failure, and skipped both native builds.
+    ``pipefail`` plus an explicit failure branch must clear that payload.
+    """
+    job = _workflow("ci.yml")["jobs"][f"publish-{image}-precheck"]
+    lookup = next(step for step in job["steps"] if step.get("id") == "existing")["run"]
+
+    assert "set -euo pipefail" in lookup
+    assert 'if ! digest="$(gh api ' in lookup
+    assert "|| true" not in lookup
+    assert 'digest=""' in lookup
+    assert "Package lookup failed" in lookup
+
+
 def test_console_candidate_build_has_no_distribution_identity_inputs() -> None:
     """The canonical console is the white-label artifact W7 promises."""
     jobs = _workflow("ci.yml")["jobs"]
