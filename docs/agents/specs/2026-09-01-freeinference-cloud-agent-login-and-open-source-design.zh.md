@@ -252,10 +252,15 @@ PR 中的 `deploy/local` 用于该功能的本地验证与 smoke，不在本文�
 这条轴不是空白——它有自己的设计和一条走了大半的工作流，见
 [中立上游与多 distribution 设计](./2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)：
 
-- `distributions/` 目前只剩 `example`，FreeInference 的 overlay 已搬出本仓；
-- W0–W6 已关闭，生产已在中立链路上运行；
-- **剩 W7**（console 翻 digest，被 compose-base 决策阻塞）**和 W8**（五项密钥轮换，
-  目前零证据）——W8 未完，本文验收第 11 条就不成立；
+- `distributions/` 目前只剩 `example`，FreeInference 的 overlay 已搬出本仓（仓库内可
+  直接核实）；
+- 以下进度**来自 2026-09-01 的会话对账，仓库内没有同步的记录**：那份设计的执行计划
+  [`2026-08-03-repo-split-step2-execution.zh.md`](../plans/2026-08-03-repo-split-step2-execution.zh.md)
+  自身的状态注记停在 2026-08-12，跟踪 issue #738 的最后一条评论停在 07-29。按对账，
+  W0–W6 已关闭、生产已在中立链路上运行；**剩 W7**（console 翻 digest，被 compose-base
+  决策阻塞）**和 W8**（五项密钥轮换，目前零证据）。读者应以执行计划的下一次对账为准，
+  而那次对账本身是一项待办；
+- W8 未完，本文验收第 11 条就不成立；
 - 那份设计另有 10 条待决策，其中 **#5（RouteWise 是 workspace 还是正式 wheel）阻塞
   Phase 3 的中立 artifact**，且两个选项都意味着 RouteWise 代码公开，需结合在审论文定。
 
