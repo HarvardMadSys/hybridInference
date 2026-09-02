@@ -1,11 +1,13 @@
 """Integration tests for multi-key rotation in OpenAICompatAdapter.
 
 Covers:
-- 429 on key K mutes K and the next call goes to a different key.
-- Other key-specific / transient errors (e.g. 500) and network errors also
-  mute K and rotate.
-- Request-scoped client errors (e.g. 400) propagate without muting or rotating.
-- All keys erroring in one call propagates the last error.
+- 429 on key K rotates the call onto a different key, leaving K unmuted while
+  another key was still untried.
+- Other key-specific / transient errors (e.g. 500) and network errors rotate
+  the same way.
+- Request-scoped client errors (e.g. 400) propagate without rotating or muting.
+- All keys erroring in one call propagates the last error, and mutes the last
+  key tried — the one with nowhere left to rotate to.
 - Single-`api_key` routes do NOT create a key pool (legacy path).
 
 The pool integration routes through ``OpenAICompatAdapter._post_with_pool``,
@@ -53,7 +55,11 @@ def _make_response_error(
 
 
 async def test_multi_key_rotates_on_429():
-    """First key gets 429, second key returns 200; user gets the 200."""
+    """First key gets 429, second key returns 200; user gets the 200.
+
+    Rotation precedes muting, so k1 keeps its place in the pool: another key was
+    untried, so the 429 costs this request a second attempt and nothing more.
+    """
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
 
     success_payload = {
@@ -77,10 +83,13 @@ async def test_multi_key_rotates_on_429():
 
     assert call_count["n"] == 2
     assert "choices" in result
-    # k1 went into cooldown, k2 did not.
+    # Neither key is in cooldown: k1 was rotated past, not muted.
     assert adapter._key_pool is not None
-    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[0].cooldown_until == 0
     assert adapter._key_pool._keys[1].cooldown_until == 0
+    # The caller's affinity followed the rotation onto the key that worked, so
+    # its next request goes straight to k2 instead of paying for k1 again.
+    assert adapter._key_pool._affinity["_anon"].key_index == 1
 
 
 async def test_multi_key_pool_exhausted_propagates():
@@ -203,7 +212,7 @@ async def test_empty_pool_raises_keypool_exhausted_not_assertion():
 
 
 async def test_multi_key_rotates_on_non_429_error():
-    """First key 500s, second key returns 200; the 500 mutes only the first key."""
+    """First key 500s, second key returns 200; the 500 only moves the request."""
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
 
     success_payload = {
@@ -227,14 +236,14 @@ async def test_multi_key_rotates_on_non_429_error():
 
     assert call_count["n"] == 2
     assert "choices" in result
-    # k1 was muted by the 500; k2 served the request and stayed clean.
+    # k1 was rotated past, not muted; k2 served the request.
     assert adapter._key_pool is not None
-    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[0].cooldown_until == 0
     assert adapter._key_pool._keys[1].cooldown_until == 0
 
 
 async def test_multi_key_rotates_on_network_error():
-    """A connection error (no HTTP status) mutes the key and rotates."""
+    """A connection error (no HTTP status) rotates to the next key."""
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
 
     success_payload = {
@@ -259,7 +268,7 @@ async def test_multi_key_rotates_on_network_error():
     assert call_count["n"] == 2
     assert "choices" in result
     assert adapter._key_pool is not None
-    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[0].cooldown_until == 0
     assert adapter._key_pool._keys[1].cooldown_until == 0
 
 
@@ -287,8 +296,8 @@ async def test_request_scoped_4xx_propagates_without_muting():
     assert adapter._key_pool._keys[1].cooldown_until == 0
 
 
-async def test_all_keys_500_keeps_last_key_usable():
-    """Every key 500s (transient) -> all but the last key muted; last 500 propagates."""
+async def test_all_keys_500_mutes_only_the_key_with_nowhere_left_to_go():
+    """Every key 500s (transient) -> only the last key tried mutes; the 500 propagates."""
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
 
     async def always_500(url, json, headers, timeout):
@@ -301,19 +310,20 @@ async def test_all_keys_500_keeps_last_key_usable():
         await adapter.chat_completion([{"role": "user", "content": "hi"}])
 
     assert exc_info.value.status == 500
-    # k1 was muted; k2 (the last usable key) is kept in service for a transient
-    # error so a provider blip can't take the whole route offline.
+    # k1's failure was absorbed by rotating onto k2. k2 had nowhere left to go,
+    # so it took the mute — and k1, still usable, keeps the route alive, which
+    # is what the transient-error guard exists to protect.
     assert adapter._key_pool is not None
-    assert adapter._key_pool._keys[0].cooldown_until > 0
-    assert adapter._key_pool._keys[1].cooldown_until == 0
+    assert adapter._key_pool._keys[0].cooldown_until == 0
+    assert adapter._key_pool._keys[1].cooldown_until > 0
 
 
 async def test_all_keys_429_mute_entire_pool():
     """Every key 429s (key-specific) -> eventually all keys muted, including the last.
 
-    k1 mutes on its very first 429 since k2 is still available to take over.
-    From then on k2 is the *sole* usable key, so it gets
-    ``SOLE_KEY_BACKOFF_THRESHOLD`` free passes (429 propagates but k2 stays
+    The first call rotates k1 -> k2 and mutes only k2, the key it ran out of
+    alternatives on. k1 is then the *sole* usable key, so it gets
+    ``SOLE_KEY_BACKOFF_THRESHOLD`` free passes (429 propagates but k1 stays
     usable) before it too mutes — there's nowhere left to rotate to, so a
     single blip on the last key must not cost the full mute duration.
     """
@@ -324,7 +334,7 @@ async def test_all_keys_429_mute_entire_pool():
         raise _make_response_error(429, retry_after="1")
 
     with patch.object(adapter.http, "json_post", side_effect=always_429):
-        # k1's mute (call 1, first iteration) plus k2's free passes and final
+        # k2's mute (call 1, after the rotation) plus k1's free passes and final
         # mute together take SOLE_KEY_BACKOFF_THRESHOLD + 1 calls.
         for _ in range(adapter._key_pool.SOLE_KEY_BACKOFF_THRESHOLD + 1):
             with pytest.raises(aiohttp.ClientResponseError) as exc_info:
@@ -408,9 +418,10 @@ async def test_streaming_rotates_on_429_at_open():
     assert mock_stream.call_args_list[0].kwargs["headers"]["Authorization"] == "Bearer k1"
     assert mock_stream.call_args_list[1].kwargs["headers"]["Authorization"] == "Bearer k2"
 
-    # k1 is in cooldown; k2 is clean.
+    # Neither key is in cooldown: the open error rotated past k1, it did not
+    # mute it — k2 was untried and took the stream.
     assert adapter._key_pool is not None
-    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[0].cooldown_until == 0
     assert adapter._key_pool._keys[1].cooldown_until == 0
 
     # The consumer received non-empty content somewhere in the stream.
@@ -456,7 +467,7 @@ async def test_streaming_pool_exhausted_propagates():
     """Every key 429s on stream open → final 429 propagates to the caller.
 
     Same sole-key free-pass behavior as test_all_keys_429_mute_entire_pool:
-    k1 mutes immediately (k2 was still available), then k2 — now the sole
+    the first call rotates k1 -> k2 and mutes only k2, then k1 — now the sole
     usable key — gets its free passes before it too mutes.
     """
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
@@ -477,7 +488,12 @@ async def test_streaming_pool_exhausted_propagates():
 
 
 async def test_streaming_mid_stream_error_mutes_key():
-    """An error after the first chunk mutes the key via the error-status release."""
+    """An error after the first chunk mutes the key via the error-status release.
+
+    Mid-stream there is nothing to rotate onto — the upstream has already begun
+    answering — so this release carries no ``tried`` set and takes the mute path,
+    moving the *next* request off the key.
+    """
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
 
     async def gen():
@@ -612,10 +628,11 @@ async def test_free_caller_fails_over_when_only_reserved_keys_remain():
     async def always_429(url, json, headers, timeout):
         raise _make_response_error(429, retry_after="1")
 
-    # Burn both keys with a pro caller. Its first attempt takes the reserved key
-    # (reserved-first), which mutes at once since the shared key can take over;
-    # the shared key is then its sole key, so it costs one call per free pass
-    # before it mutes too.
+    # Burn both keys with a pro caller. Its first call takes the reserved key
+    # (reserved-first), rotates onto the shared key when that 429s, and mutes
+    # the shared key — the one it ran out of alternatives on. The reserved key
+    # is then its sole key, so it costs one call per free pass before it mutes
+    # too.
     with patch.object(adapter.http, "json_post", side_effect=always_429):
         for _ in range(adapter._key_pool.SOLE_KEY_BACKOFF_THRESHOLD + 1):
             with (

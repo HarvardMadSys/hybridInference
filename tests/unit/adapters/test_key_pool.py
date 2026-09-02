@@ -1,20 +1,36 @@
-"""Unit tests for KeyPool — sequential rotation with affinity + 5-min mute.
+"""Unit tests for KeyPool — sequential rotation with affinity, then a short mute.
 
 Selection is sequential: the pool hands out the earliest usable key and only
-advances to a later key once an earlier one is muted. *Any* upstream error
-(429, other 4xx/5xx, or a non-HTTP failure signalled by ``status_code=0``)
-mutes the leased key for ``MUTE_SECONDS`` (5 minutes) — except that a
-key-specific failure (429/401/402/403) landing on the *sole* usable key gets
-``SOLE_KEY_BACKOFF_THRESHOLD`` free passes first, then backs off
-exponentially from ``SOLE_KEY_BACKOFF_BASE_SECONDS`` up to the same
-``MUTE_SECONDS`` ceiling, since there is nowhere to rotate to.
+advances to a later key once an earlier one is muted or already tried by this
+request. *Any* upstream error (429, other 4xx/5xx, or a non-HTTP failure
+signalled by ``status_code=0``) moves the request off the leased key.
+
+Rotation comes first: while the caller still has an untried usable key,
+``release`` reports ``ROTATED`` and leaves the failing key selectable. Only
+when there is nothing left to rotate to does the key take a ``MUTE_SECONDS``
+(20 second) cooldown — except that a key-specific failure (429/401/402/403)
+landing on the *sole* usable key gets ``SOLE_KEY_BACKOFF_THRESHOLD`` free
+passes first, then backs off from ``SOLE_KEY_BACKOFF_BASE_SECONDS`` up to the
+same ``MUTE_SECONDS`` ceiling.
+
+``release`` takes the keys this request has already used as ``tried``. Empty
+(the default) means no rotation loop is driving it — a rotation loop always
+records the key it is about to use — so those releases go straight to the mute
+path. Tests that exercise rotation pass ``tried`` explicitly, exactly as the
+adapter's loop does.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from serving.adapters.key_pool import KeyPool, KeyPoolExhausted, should_mute_status
+from serving.adapters.key_pool import (
+    KeyPool,
+    KeyPoolExhausted,
+    KeyPoolRoleRestricted,
+    ReleaseOutcome,
+    should_mute_status,
+)
 
 MUTE = KeyPool.MUTE_SECONDS
 
@@ -110,8 +126,12 @@ def test_concurrent_users_share_the_first_key():
 
 
 @pytest.mark.parametrize("status_code", [429, 401, 402, 403, 408, 425, 500, 503, 599, 0])
-def test_release_key_specific_or_transient_error_mutes_for_five_minutes(monkeypatch, status_code):
-    """Key-specific / transient failures (and the network sentinel 0) mute for 5 min."""
+def test_release_mutes_for_mute_seconds_when_nothing_to_rotate_to(monkeypatch, status_code):
+    """Key-specific / transient failures (and the network sentinel 0) mute for 20s.
+
+    No ``tried`` set, so this release has no rotation loop behind it (the
+    mid-stream case) and takes the mute path straight away.
+    """
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
@@ -144,8 +164,8 @@ def test_release_transient_error_does_not_mute_sole_key(status_code):
     """A transient/provider-side error must not take the only usable key offline."""
     pool = KeyPool(keys=["only"], provider_label="test")
     _, lease = pool.acquire("user-A")
-    muted = pool.release(lease, status_code=status_code)
-    assert muted is False
+    outcome = pool.release(lease, status_code=status_code)
+    assert outcome is ReleaseOutcome.PROPAGATE
     assert pool._keys[0].cooldown_until == 0.0
 
 
@@ -153,9 +173,9 @@ def test_release_transient_error_does_not_mute_sole_key(status_code):
 def test_release_key_specific_error_gives_sole_key_free_passes(monkeypatch, status_code):
     """Quota/auth/payment failures get free passes on the sole key before muting.
 
-    There's nowhere to rotate to, so a single blip must not cost the full
-    5-minute mute — only a sustained streak past SOLE_KEY_BACKOFF_THRESHOLD
-    starts muting (see test_release_key_specific_error_backs_off_sole_key).
+    There's nowhere to rotate to, so a single blip must not cost a mute at all
+    — only a sustained streak past SOLE_KEY_BACKOFF_THRESHOLD starts muting
+    (see test_release_key_specific_error_backs_off_sole_key).
     """
     pool = KeyPool(keys=["only"], provider_label="test")
     fake_now = [1000.0]
@@ -163,14 +183,13 @@ def test_release_key_specific_error_gives_sole_key_free_passes(monkeypatch, stat
 
     _, lease = pool.acquire("user-A")
     for _ in range(pool.SOLE_KEY_BACKOFF_THRESHOLD):
-        muted = pool.release(lease, status_code=status_code)
-        assert muted is False
+        assert pool.release(lease, status_code=status_code) is ReleaseOutcome.PROPAGATE
         assert pool._keys[0].cooldown_until == 0.0
         _, lease = pool.acquire("user-A")
 
 
 def test_release_key_specific_error_backs_off_sole_key_exponentially(monkeypatch):
-    """Past the free-pass threshold, sole-key mutes grow exponentially to the 5-min cap."""
+    """Past the free-pass threshold, sole-key mutes grow to the MUTE_SECONDS cap."""
     pool = KeyPool(keys=["only"], provider_label="test")
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
@@ -178,23 +197,23 @@ def test_release_key_specific_error_backs_off_sole_key_exponentially(monkeypatch
     # Burn through the free passes first.
     for _ in range(pool.SOLE_KEY_BACKOFF_THRESHOLD):
         _, lease = pool.acquire("user-A")
-        assert pool.release(lease, status_code=429) is False
+        assert pool.release(lease, status_code=429) is ReleaseOutcome.PROPAGATE
         fake_now[0] += 1
 
     expected_durations = [pool.SOLE_KEY_BACKOFF_BASE_SECONDS * (2**step) for step in range(5)]
     for expected in expected_durations:
         _, lease = pool.acquire("user-A")
         before = fake_now[0]
-        assert pool.release(lease, status_code=429) is True
+        assert pool.release(lease, status_code=429) is ReleaseOutcome.MUTED
         assert pool._keys[0].cooldown_until == pytest.approx(before + min(expected, MUTE))
         # Jump past this cooldown so the next iteration can acquire again.
         fake_now[0] = pool._keys[0].cooldown_until + 1
 
     # Enough consecutive failures have now accrued that the mute is pinned at
-    # the full 5-minute ceiling, same as the always-mutes-immediately case.
+    # the full MUTE_SECONDS ceiling, same as the nothing-to-rotate-to case.
     _, lease = pool.acquire("user-A")
     before = fake_now[0]
-    assert pool.release(lease, status_code=429) is True
+    assert pool.release(lease, status_code=429) is ReleaseOutcome.MUTED
     assert pool._keys[0].cooldown_until == pytest.approx(before + MUTE)
 
 
@@ -211,8 +230,8 @@ def test_success_resets_sole_key_backoff_streak(monkeypatch):
     assert pool._keys[0].consecutive_failures == 0
 
     _, lease = pool.acquire("user-A")
-    muted = pool.release(lease, status_code=429)  # back to the 1st free pass
-    assert muted is False
+    outcome = pool.release(lease, status_code=429)  # back to the 1st free pass
+    assert outcome is ReleaseOutcome.PROPAGATE
     assert pool._keys[0].cooldown_until == 0.0
 
 
@@ -224,20 +243,25 @@ def test_release_transient_error_keeps_last_usable_key(monkeypatch):
 
     # Mute k0 (key-specific), then a transient 500 hits k1 — the last usable key.
     _, lease0 = pool.acquire("user-A")
-    assert pool.release(lease0, status_code=429) is True
+    assert pool.release(lease0, status_code=429) is ReleaseOutcome.MUTED
     _, lease1 = pool.acquire("user-B")
     assert lease1.key_index == 1
-    muted = pool.release(lease1, status_code=500)
-    assert muted is False
+    outcome = pool.release(lease1, status_code=500)
+    assert outcome is ReleaseOutcome.PROPAGATE
     assert pool._keys[1].cooldown_until == 0.0
 
 
-def test_release_returns_false_for_non_muting_statuses():
-    """2xx and request-scoped 4xx report not-muted so callers propagate."""
+def test_release_propagates_for_non_muting_statuses():
+    """2xx and request-scoped 4xx report PROPAGATE so callers surface the error.
+
+    Passing ``tried`` makes no difference: a request-scoped error fails the same
+    way on every key, so it must not rotate even when another key is free.
+    """
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
     _, lease = pool.acquire("user-A")
-    assert pool.release(lease, status_code=200) is False
-    assert pool.release(lease, status_code=400) is False
+    assert pool.release(lease, status_code=200) is ReleaseOutcome.PROPAGATE
+    assert pool.release(lease, status_code=400) is ReleaseOutcome.PROPAGATE
+    assert pool.release(lease, status_code=400, tried={0}) is ReleaseOutcome.PROPAGATE
 
 
 @pytest.mark.parametrize(
@@ -309,9 +333,9 @@ def test_all_keys_muted_raises_keypoolexhausted(monkeypatch):
     lease1 = None
     for _ in range(pool.SOLE_KEY_BACKOFF_THRESHOLD):
         _, lease1 = pool.acquire("user-B")
-        assert pool.release(lease1, status_code=429) is False
+        assert pool.release(lease1, status_code=429) is ReleaseOutcome.PROPAGATE
     _, lease1 = pool.acquire("user-B")
-    assert pool.release(lease1, status_code=429) is True
+    assert pool.release(lease1, status_code=429) is ReleaseOutcome.MUTED
 
     with pytest.raises(KeyPoolExhausted):
         pool.acquire("user-C")
@@ -388,3 +412,147 @@ def test_concurrent_acquires_all_use_the_first_key():
     assert all(idx == 0 for idx in results)
     assert pool._keys[0].request_count == NUM_USERS
     assert all(s.request_count == 0 for s in pool._keys[1:])
+
+
+# --- rotate first, mute as a last resort -----------------------------------
+
+
+def test_mute_seconds_is_twenty():
+    """The mute window is 20s: long enough to move traffic, short to recover.
+
+    Pinned because it is the number an operator feels — a muted key is capacity
+    the pool is not spending, and every caller-facing ``retry-after`` for an
+    exhausted pool is derived from it.
+    """
+    assert KeyPool.MUTE_SECONDS == 20.0
+
+
+@pytest.mark.parametrize("status_code", [429, 401, 402, 403, 408, 425, 500, 503, 599, 0])
+def test_release_rotates_without_muting_while_a_key_is_untried(monkeypatch, status_code):
+    """A failure with somewhere to go rotates; the failing key keeps its place."""
+    pool = KeyPool(keys=["k0", "k1", "k2"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    outcome = pool.release(lease, status_code=status_code, tried={lease.key_index})
+
+    assert outcome is ReleaseOutcome.ROTATED
+    assert pool._keys[lease.key_index].cooldown_until == 0.0
+    # The streak still counts, so a key that keeps failing arrives at the mute
+    # path already partway through its backoff.
+    assert pool._keys[lease.key_index].consecutive_failures == 1
+
+
+def test_release_mutes_once_every_key_has_been_tried(monkeypatch):
+    """The last key a request reaches has nowhere to rotate to, so it mutes."""
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, first = pool.acquire("user-A")
+    assert pool.release(first, status_code=429, tried={0}) is ReleaseOutcome.ROTATED
+
+    _, second = pool.acquire("user-A", exclude={0})
+    assert second.key_index == 1
+    assert pool.release(second, status_code=429, tried={0, 1}) is ReleaseOutcome.MUTED
+
+    assert pool._keys[0].cooldown_until == 0.0
+    assert pool._keys[1].cooldown_until == pytest.approx(1000.0 + MUTE)
+
+
+def test_acquire_skips_tried_keys(monkeypatch):
+    """``exclude`` advances a rotation loop past keys that are usable but spent."""
+    pool = KeyPool(keys=["k0", "k1", "k2"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    assert pool.acquire("user-A", exclude=set())[0] == "k0"
+    assert pool.acquire("user-A", exclude={0})[0] == "k1"
+    assert pool.acquire("user-A", exclude={0, 1})[0] == "k2"
+
+    # Exclusion is per call and never persisted: another caller still starts at
+    # the earliest key, because nothing about k0 was muted.
+    assert pool.acquire("user-B")[0] == "k0"
+
+
+def test_acquire_raises_when_every_usable_key_is_excluded():
+    """A request that has burned every key it may use gets KeyPoolExhausted.
+
+    Plain ``KeyPoolExhausted``, not ``KeyPoolRoleRestricted``: the caller ran out
+    because the endpoint failed it on every key, and excusing that from endpoint
+    health would hide a real outage.
+    """
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+
+    with pytest.raises(KeyPoolExhausted) as excinfo:
+        pool.acquire("user-A", exclude={0, 1})
+    assert not isinstance(excinfo.value, KeyPoolRoleRestricted)
+
+
+def test_rotation_repoints_affinity_onto_the_key_that_served(monkeypatch):
+    """Rotating rebinds the caller, so its next request skips the failed key.
+
+    The failing key is left selectable on purpose, so without this a repeat
+    caller would pay a wasted upstream round trip on every request.
+    """
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    assert pool.release(lease, status_code=429, tried={0}) is ReleaseOutcome.ROTATED
+    assert pool.acquire("user-A", exclude={0})[0] == "k1"
+
+    # Next request from the same caller: no exclusions, and it still lands on k1.
+    assert pool.acquire("user-A")[0] == "k1"
+
+
+def test_release_without_tried_takes_the_mute_path(monkeypatch):
+    """No ``tried`` means no rotation loop — a mid-stream failure, so mute.
+
+    The empty default cannot mean "nothing tried yet": a rotation loop records
+    the key before it can fail, so only a caller that has no way to rotate ever
+    releases with an empty set.
+    """
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    assert pool.release(lease, status_code=0) is ReleaseOutcome.MUTED
+    assert pool._keys[0].cooldown_until == pytest.approx(1000.0 + MUTE)
+
+
+def test_total_outage_converges_on_a_fully_muted_pool(monkeypatch):
+    """Every key dead: each request mutes the one it runs out of alternatives on.
+
+    Rotation-first slows the walk to exhaustion but must not prevent it — a pool
+    that never exhausts would never raise ``KeyPoolExhausted``, and the endpoint
+    breaker would never see the endpoint fail as a whole.
+    """
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    def one_request() -> None:
+        """Walk the keys the way the adapter's rotation loop does."""
+        tried: set[int] = set()
+        for _ in range(pool.size()):
+            try:
+                _, lease = pool.acquire("user-A", exclude=tried)
+            except KeyPoolExhausted:
+                return
+            tried.add(lease.key_index)
+            if pool.release(lease, status_code=429, tried=tried) is ReleaseOutcome.PROPAGATE:
+                return
+
+    # k1 mutes on the first request (k0 was rotated past), then k0 spends its
+    # sole-key free passes before muting too.
+    for _ in range(pool.SOLE_KEY_BACKOFF_THRESHOLD + 1):
+        one_request()
+
+    assert pool._keys[0].cooldown_until > fake_now[0]
+    assert pool._keys[1].cooldown_until > fake_now[0]
+    with pytest.raises(KeyPoolExhausted):
+        pool.acquire("user-B")

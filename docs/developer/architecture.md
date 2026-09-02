@@ -293,12 +293,14 @@ rather than writing a new class; see [Adding a New Model](adding-models.md).
 
 Key rotation is an adapter concern. When a route declares `api_keys:` (plural),
 `OpenAICompatAdapter` draws from a pool: a key that hits a key-specific or
-transient failure (429, 401/402/403, 408/425, 5xx, timeouts) is muted for five
-minutes and the request advances to the next key. Request-scoped errors such as
-400 and 422 fail on every key, so they propagate immediately instead of burning
-the pool. A completion POST is never retried against the *same* key — re-sending
-a non-idempotent generation would double-bill it. Resilience comes from the
-router's fallback chain, not from blind retries.
+transient failure (429, 401/402/403, 408/425, 5xx, timeouts) hands the request
+to the next key. Rotation comes before muting — while another key is still
+untried the failing one keeps its place in the pool, and only a key the request
+runs out of alternatives on is muted, for 20 seconds. Request-scoped errors such
+as 400 and 422 fail on every key, so they propagate immediately instead of
+burning the pool. A completion POST is never retried against the *same* key —
+re-sending a non-idempotent generation would double-bill it. Resilience comes
+from the router's fallback chain, not from blind retries.
 
 ## Configuration
 

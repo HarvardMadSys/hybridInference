@@ -5,24 +5,39 @@ Each adapter that opts into multi-key holds a KeyPool. The pool exposes
 in-process, behind a single ``threading.Lock``.
 
 Selection is **sequential**: the pool always hands out the earliest usable
-key and only advances to a later key once an earlier one is muted. A key is
-muted for ``MUTE_SECONDS`` (5 minutes) on upstream failures that are
-key-specific or transient — rate limit/quota (429), auth/permission
-(401/402/403), request-timeout / too-early (408/425), any 5xx, and non-HTTP
-failures such as timeouts and connection errors. Request-scoped client errors
-(other 4xx like 400/404/422) do *not* mute: they fail identically on every
-key, so muting would take the whole pool down. The net effect is "use one key
-until it runs out of quota or errors, then move to the next".
+key and only advances to a later key once an earlier one is muted or has
+already been tried by this request. Upstream failures that are key-specific
+or transient — rate limit/quota (429), auth/permission (401/402/403),
+request-timeout / too-early (408/425), any 5xx, and non-HTTP failures such as
+timeouts and connection errors — move the request onto another key.
+Request-scoped client errors (other 4xx like 400/404/422) do *not*: they fail
+identically on every key, so rotating would burn the whole pool on one bad
+request. The net effect is "use one key until it runs out of quota or errors,
+then move to the next".
 
-Key-specific failures (429/401/402/403) normally mute even the *last* usable
-key, since retrying that key immediately cannot succeed. But for a pool with
-only one key configured, that means every rate-limit blip costs a flat
-5-minute total blackout with nothing to rotate to. To keep that blip-tolerant
-without giving up the safety net for a genuinely dead/exhausted key, the sole
-remaining key instead gets a couple of free passes
-(``SOLE_KEY_BACKOFF_THRESHOLD``) before it starts muting, then backs off
-exponentially from ``SOLE_KEY_BACKOFF_BASE_SECONDS`` up to the same
-``MUTE_SECONDS`` ceiling as a sustained failure streak continues.
+**Rotation comes before muting.** A failure only mutes the key when the caller
+has nowhere left to rotate to — every other key this caller may use is muted,
+removed, or already tried in this request. While an untried usable key
+remains, ``release`` reports ``ROTATED``: the request moves on and the failing
+key stays selectable, so a one-off blip never costs a key its place in the
+pool. The trade is deliberate: a persistently dead key (revoked credential,
+exhausted quota) is re-tried by each request that has not yet rotated past it,
+one wasted upstream round trip each, until the last-resort path finally mutes
+it. Rotation repoints the caller's affinity binding onto the key that worked,
+so a repeat caller pays that round trip once rather than every request.
+
+Once there *is* nothing to rotate to, the key is muted for ``MUTE_SECONDS``
+(20 seconds) — long enough to move traffic off a key that is failing right
+now, short enough that a recovered key is back in service almost immediately.
+
+Key-specific failures (429/401/402/403) mute even the *last* usable key, since
+retrying that key immediately cannot succeed. But for a pool with only one key
+usable, that means every rate-limit blip costs a total blackout with nothing to
+rotate to. To keep that blip-tolerant without giving up the safety net for a
+genuinely dead/exhausted key, the sole remaining key instead gets a couple of
+free passes (``SOLE_KEY_BACKOFF_THRESHOLD``) before it starts muting, then
+backs off from ``SOLE_KEY_BACKOFF_BASE_SECONDS`` up to the ``MUTE_SECONDS``
+ceiling as a sustained failure streak continues.
 
 **Tier reservation.** Each key carries a ``min_role`` (default ``"free"`` — no
 reservation). A caller whose role does not meet a key's ``min_role`` never sees
@@ -42,12 +57,18 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from enum import IntEnum
+from typing import TYPE_CHECKING
 
 from serving.config.settings import ROLE_RANK, has_role
 
-# 4xx statuses that are key-specific (not request-scoped) and so should mute the
-# key and trigger rotation: auth/permission, payment, request-timeout/too-early,
-# and rate limit/quota. All other 4xx are treated as request-scoped.
+if TYPE_CHECKING:
+    from collections.abc import Collection
+
+# 4xx statuses that are key-specific (not request-scoped) and so should rotate
+# the request onto another key — and mute this one once there is none left:
+# auth/permission, payment, request-timeout/too-early, and rate limit/quota. All
+# other 4xx are treated as request-scoped.
 _MUTABLE_4XX = frozenset({401, 402, 403, 408, 425, 429})
 
 # The subset of mutable statuses where the *key itself* is the problem — quota
@@ -60,14 +81,16 @@ _KEY_SPECIFIC_STATUSES = frozenset({401, 402, 403, 429})
 
 
 def should_mute_status(status_code: int) -> bool:
-    """Whether an upstream outcome should mute the key and trigger rotation.
+    """Whether an upstream outcome should move the request off this key.
 
-    Mutes on failures that are key-specific or transient: rate limit/quota
+    True for failures that are key-specific or transient: rate limit/quota
     (429), auth/permission (401/402/403), request-timeout / too-early
     (408/425), any 5xx, and non-HTTP failures (``status_code == 0`` for
-    timeouts / connection errors). A 2xx response and request-scoped client
-    errors (other 4xx such as 400/404/422) do not mute — a bad request fails
-    identically on every key, so muting it would disable the whole pool.
+    timeouts / connection errors). Those rotate to another key, and mute this
+    one only when there is no other key left to rotate to (see ``release``).
+    A 2xx response and request-scoped client errors (other 4xx such as
+    400/404/422) do neither — a bad request fails identically on every key, so
+    rotating it would burn the whole pool.
     """
     if 200 <= status_code < 300:
         return False
@@ -88,6 +111,30 @@ def is_key_specific_status(status_code: int) -> bool:
     return status_code in _KEY_SPECIFIC_STATUSES
 
 
+class ReleaseOutcome(IntEnum):
+    """What ``KeyPool.release`` decided, and therefore what the caller does next.
+
+    Ordered so that ``PROPAGATE`` is falsy and the two rotate outcomes are truthy:
+    ``if not pool.release(...)`` still reads as "nothing to rotate to", which is
+    the shape every call site used when ``release`` returned a bare bool.
+
+    Attributes:
+        PROPAGATE: nothing to rotate to (or nothing worth rotating for) — the
+            caller raises the upstream error.
+        ROTATED: the caller should try another key, and the failing key was left
+            selectable. Rotation is the first response to a failure, so this is
+            the common outcome for a pool with more than one usable key.
+        MUTED: the caller should try another key, and the failing key was put in
+            cooldown because there was nothing left for *this* caller to rotate
+            onto. The caller usually has no attempts left either, and surfaces
+            the upstream error.
+    """
+
+    PROPAGATE = 0
+    ROTATED = 1
+    MUTED = 2
+
+
 DEFAULT_MIN_ROLE = "free"
 
 
@@ -106,8 +153,9 @@ def normalize_min_role(min_role: str | None) -> str:
 class KeyPoolExhausted(Exception):
     """Raised by ``KeyPool.acquire`` when no key is usable by the caller.
 
-    Either every key is in cooldown, or the ones still usable are all reserved
-    for a higher tier than the caller holds (see ``KeyPoolRoleRestricted``).
+    Either every key is in cooldown or already tried by this request, or the
+    ones still usable are all reserved for a higher tier than the caller holds
+    (see ``KeyPoolRoleRestricted``).
     """
 
 
@@ -187,13 +235,19 @@ class KeyPool:
     """Hands out API keys sequentially, muting a key on a key-specific error."""
 
     AFFINITY_TTL_SECONDS: float = 300.0  # 5 minutes
-    MUTE_SECONDS: float = 300.0  # 5 minutes — key-specific/transient errors mute the key
+    # 20 seconds — how long a key sits out once a failure has nowhere left to
+    # rotate to. Short on purpose: muting is a last resort here (rotation is
+    # tried first), so the window only has to outlast the failure that caused
+    # it, and a key whose quota window has already rolled over should not be
+    # held out of service for minutes afterwards.
+    MUTE_SECONDS: float = 20.0
     SWEEP_THRESHOLD: int = 1000
     # Sole-remaining-key backoff for key-specific failures (429/401/402/403):
     # tolerate this many consecutive failures with no mute at all, then start
     # muting at BASE_SECONDS and double on each further consecutive failure,
-    # capped at MUTE_SECONDS. Multi-key mutes are unaffected — they mute
-    # immediately since another key can still serve traffic.
+    # capped at MUTE_SECONDS. With the ceiling at 20s the ramp is effectively
+    # 15s then 20s, which is the intent: the free passes do the blip absorbing,
+    # the mute only paces a key that keeps failing.
     SOLE_KEY_BACKOFF_THRESHOLD: int = 2
     SOLE_KEY_BACKOFF_BASE_SECONDS: float = 15.0
 
@@ -381,16 +435,31 @@ class KeyPool:
         """Return the number of active per-user affinity entries."""
         return len(self._affinity)
 
-    def acquire(self, affinity_key: str, *, role: str | None = None) -> tuple[str, Lease]:
+    def acquire(
+        self,
+        affinity_key: str,
+        *,
+        role: str | None = None,
+        exclude: Collection[int] = (),
+    ) -> tuple[str, Lease]:
         """Return (api_key, lease) for the caller, creating affinity as needed.
 
         Keys reserved above *role* are invisible to this call — they are neither
         selected nor honored through an existing affinity binding. ``role=None``
         is an unrestricted internal caller.
 
+        *exclude* names key slots this request has already tried, so a rotation
+        loop advances past them even though they are not muted — which, since
+        rotation now happens before muting, is the usual state of a key that just
+        failed. It is per-call and never persisted: the excluded keys stay
+        selectable for every other caller. An existing affinity binding onto an
+        excluded key is dropped rather than honored, so the re-pick that follows
+        rebinds the caller onto the key that ends up serving the request instead
+        of sending its next request back to the one that just failed.
+
         Raises:
-            KeyPoolExhausted: if every key the caller may use is in cooldown
-                (or the caller may use none at all).
+            KeyPoolExhausted: if every key the caller may use is in cooldown or
+                excluded (or the caller may use none at all).
         """
         now = time.monotonic()
         with self._lock:
@@ -420,6 +489,7 @@ class KeyPool:
                     and existing.role == role
                     and not bound.removed
                     and bound.cooldown_until <= now
+                    and existing.key_index not in exclude
                     and _role_may_use(role, bound)
                 ):
                     idx = existing.key_index
@@ -428,12 +498,16 @@ class KeyPool:
                 # Drop stale or unusable affinity; we'll re-pick below.
                 del self._affinity[affinity_key]
 
-            idx = self._pick_first_available_locked(now, role)
+            idx = self._pick_first_available_locked(now, role, exclude)
             if idx is None:
                 # Distinguish "this endpoint is down" from "this endpoint has
                 # nothing for your tier": if an unrestricted caller could still be
                 # served, the pool is healthy and only this caller is shut out.
-                serves_someone = self._pick_first_available_locked(now, None) is not None
+                # The probe carries the same exclusions: a request that has
+                # already tried every key it may use has hit a real endpoint
+                # failure, not a tier restriction, and must not be excused from
+                # endpoint health because some other caller's key is untouched.
+                serves_someone = self._pick_first_available_locked(now, None, exclude) is not None
                 error = KeyPoolRoleRestricted if serves_someone else KeyPoolExhausted
                 raise error(
                     f"No usable API key for provider {self._provider_label!r} "
@@ -449,13 +523,15 @@ class KeyPool:
             self._keys[idx].request_count += 1
             return self._keys[idx].key, Lease(idx, affinity_key, role)
 
-    def _pick_first_available_locked(self, now: float, role: str | None = None) -> int | None:
+    def _pick_first_available_locked(
+        self, now: float, role: str | None = None, exclude: Collection[int] = ()
+    ) -> int | None:
         """Return the index of the best key *role* may use, or None.
 
         Sequential selection: traffic concentrates on the earliest key that is
         neither removed nor muted, and only advances to a later key once the
-        earlier ones are muted. ``request_count`` is no longer a selection
-        signal — it is retained purely for telemetry.
+        earlier ones are muted or excluded. ``request_count`` is no longer a
+        selection signal — it is retained purely for telemetry.
 
         Reservation reorders that scan rather than replacing it: keys reserved
         for the highest tier the caller still qualifies for come first, then
@@ -466,7 +542,10 @@ class KeyPool:
         candidates = [
             (-ROLE_RANK.get(state.min_role, 0), i)
             for i, state in enumerate(self._keys)
-            if not state.removed and state.cooldown_until <= now and _role_may_use(role, state)
+            if not state.removed
+            and state.cooldown_until <= now
+            and i not in exclude
+            and _role_may_use(role, state)
         ]
         if not candidates:
             return None
@@ -480,8 +559,10 @@ class KeyPool:
         for k in expired:
             del self._affinity[k]
 
-    def release(self, lease: Lease, *, status_code: int | None) -> bool:
-        """Report the request outcome; return True iff the key was muted.
+    def release(
+        self, lease: Lease, *, status_code: int | None, tried: Collection[int] = ()
+    ) -> ReleaseOutcome:
+        """Report the request outcome and say what the caller should do next.
 
         ``status_code=None`` is a NEUTRAL release: the outcome is unknown
         (e.g. a mid-open I/O error that may have fired after the upstream
@@ -490,62 +571,96 @@ class KeyPool:
         as 200 would reset ``consecutive_failures`` and defeat the sole-key
         backoff during a sustained outage that mixes 429s with resets.
 
-        Mutes the leased key when ``should_mute_status(status_code)`` is true
-        — i.e. for key-specific or transient failures (429, 401/402/403,
-        408/425, 5xx, and non-HTTP failures signalled by ``status_code ==
-        0``). A 2xx response and request-scoped client errors (other 4xx)
-        leave the key usable.
+        Rotation is the first response to a failure worth rotating for
+        (``should_mute_status``: 429, 401/402/403, 408/425, 5xx, and non-HTTP
+        failures signalled by ``status_code == 0``). While the caller still has
+        an untried usable key, the outcome is ``ROTATED`` and the failing key is
+        left selectable: a blip on one key costs that request a retry elsewhere,
+        not the key's place in the pool. A 2xx response and request-scoped client
+        errors (other 4xx) ``PROPAGATE`` — the latter fail identically on every
+        key, so rotating would burn the pool on one bad request.
 
-        Guard: a transient / provider-side failure (408/425/5xx/network)
-        never mutes the *last* usable key, so a single upstream blip cannot
-        take a sole-key route offline (subsequent requests would otherwise
-        hit KeyPoolExhausted without even attempting the provider).
+        Muting is the last resort, reached only once *this* caller has nowhere
+        left to rotate: every other key it may use is muted, removed, or named in
+        *tried*. Then:
 
-        Key-specific failures (quota/auth/payment: 429/401/402/403) mute
-        immediately at the full ``MUTE_SECONDS`` when another key can take
-        over. When this is the *last* usable key, though, there is nowhere to
-        rotate to — muting immediately at the full 5 minutes would turn every
-        rate-limit blip into a flat 5-minute blackout. Instead the sole key
-        gets ``SOLE_KEY_BACKOFF_THRESHOLD`` consecutive failures for free,
-        then backs off from ``SOLE_KEY_BACKOFF_BASE_SECONDS``, doubling per
-        additional consecutive failure, capped at ``MUTE_SECONDS`` — tolerant
-        of a momentary blip, still self-protecting against a sustained outage
-        or genuinely exhausted key.
+        - A transient / provider-side failure (408/425/5xx/network) still never
+          mutes the *last usable* key, so a single upstream blip cannot take a
+          sole-key route offline (subsequent requests would otherwise hit
+          KeyPoolExhausted without even attempting the provider). With other
+          keys alive but already tried, it mutes for ``MUTE_SECONDS``.
+        - Key-specific failures (quota/auth/payment: 429/401/402/403) mute for
+          ``MUTE_SECONDS`` — except on the last usable key, where there is
+          nowhere to rotate even on a later request: that key gets
+          ``SOLE_KEY_BACKOFF_THRESHOLD`` consecutive failures for free, then
+          backs off from ``SOLE_KEY_BACKOFF_BASE_SECONDS``, doubling per
+          additional consecutive failure, capped at ``MUTE_SECONDS`` — tolerant
+          of a momentary blip, still self-protecting against a sustained outage
+          or genuinely exhausted key.
+
+        A total outage still converges on a fully muted pool, one key per
+        request: each request rotates through the keys that are up, and the last
+        one it reaches takes the mute. As keys drop out the march gets shorter,
+        until ``acquire`` raises ``KeyPoolExhausted`` and endpoint health sees
+        the endpoint fail as a whole.
 
         Args:
             lease: the lease returned by ``acquire``.
             status_code: HTTP status code, 0 for non-HTTP failures
                 (timeouts / network errors), or None for a neutral release.
+            tried: key slots this request has already used, including this
+                lease's own — a rotation loop records the key before using it, so
+                its ``tried`` is never empty. Empty (the default) therefore means
+                no rotation loop is driving this release: the caller cannot
+                rotate, and the mute path applies. That is the right reading for
+                a mid-stream failure, where the upstream has already started
+                answering and only the next request can move elsewhere.
 
         Returns:
-            True if the key was muted (caller should rotate to another key),
-            False otherwise (caller should propagate the error).
+            A ``ReleaseOutcome``: ``ROTATED`` or ``MUTED`` if the caller should
+            try another key, ``PROPAGATE`` if it should surface the error.
         """
         if status_code is None:
-            return False
+            return ReleaseOutcome.PROPAGATE
         if not should_mute_status(status_code):
             if 200 <= status_code < 300:
                 with self._lock:
                     self._keys[lease.key_index].consecutive_failures = 0
-            return False
+            return ReleaseOutcome.PROPAGATE
         with self._lock:
             now = time.monotonic()
             state = self._keys[lease.key_index]
             state.consecutive_failures += 1
+
+            # Rotate before muting: somewhere untried to go means this failure
+            # costs the request one retry, not the key its place in the pool.
+            # The streak above still counts, so a key that keeps failing is
+            # already partway through its backoff when the mute path is reached.
+            #
+            # An empty ``tried`` is the "no rotation loop behind this release"
+            # signal, not "nothing tried yet": a loop records the key it is about
+            # to use before it can fail, so its ``tried`` always holds at least
+            # this lease. Such a caller cannot rotate, and falls straight to the
+            # mute path below.
+            if tried and self._has_untried_usable_key_locked(
+                lease.key_index, now, lease.role, tried
+            ):
+                return ReleaseOutcome.ROTATED
+
             is_sole_key = not self._has_other_usable_key_locked(lease.key_index, now, lease.role)
 
             if not is_key_specific_status(status_code):
                 if is_sole_key:
                     # Transient error on the only usable key — keep it in service.
-                    return False
+                    return ReleaseOutcome.PROPAGATE
                 state.cooldown_until = now + self.MUTE_SECONDS
-                return True
+                return ReleaseOutcome.MUTED
 
             if is_sole_key:
                 if state.consecutive_failures <= self.SOLE_KEY_BACKOFF_THRESHOLD:
                     # A couple of free passes — there's no key to rotate to
-                    # anyway, so a single blip shouldn't cost 5 minutes.
-                    return False
+                    # anyway, so a single blip shouldn't cost a blackout.
+                    return ReleaseOutcome.PROPAGATE
                 backoff_step = min(
                     state.consecutive_failures - self.SOLE_KEY_BACKOFF_THRESHOLD - 1,
                     8,  # 2**8 * BASE already exceeds MUTE_SECONDS; caps the exponent
@@ -555,10 +670,34 @@ class KeyPool:
                     self.MUTE_SECONDS,
                 )
                 state.cooldown_until = now + duration
-                return True
+                return ReleaseOutcome.MUTED
 
             state.cooldown_until = now + self.MUTE_SECONDS
+            return ReleaseOutcome.MUTED
+
+    def _has_untried_usable_key_locked(
+        self,
+        exclude_idx: int,
+        now: float,
+        role: str | None,
+        tried: Collection[int],
+    ) -> bool:
+        """Whether the caller has a usable key left that this request has not used.
+
+        The question ``release`` asks before muting anything: is there still
+        somewhere to rotate to? Narrower than ``_has_other_usable_key_locked`` by
+        exactly the keys this request already burned — those are alive for the
+        next caller but useless to this one, which just watched them fail.
+        """
+        for i, state in enumerate(self._keys):
+            if i == exclude_idx or i in tried or state.removed:
+                continue
+            if state.cooldown_until > now:
+                continue
+            if not _role_may_use(role, state):
+                continue
             return True
+        return False
 
     def _has_other_usable_key_locked(
         self, exclude_idx: int, now: float, role: str | None = None

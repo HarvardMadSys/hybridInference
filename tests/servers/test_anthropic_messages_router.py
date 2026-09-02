@@ -1839,7 +1839,7 @@ async def test_upstream_401_remapped_to_502_not_401(anthropic_test_client, monke
 @pytest.mark.asyncio
 async def test_key_pool_exhausted_returns_429_rate_limit(anthropic_test_client, monkeypatch):
     """C7: all keys muted -> 429 rate_limit_error, not a generic 502."""
-    from serving.adapters.key_pool import KeyPoolExhausted
+    from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 
     async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
         raise KeyPoolExhausted("No active API keys")
@@ -1857,8 +1857,10 @@ async def test_key_pool_exhausted_returns_429_rate_limit(anthropic_test_client, 
     assert r.status_code == 429
     err = r.json()
     assert err["error"]["type"] == "rate_limit_error"
-    # retry-after matches the key-pool mute window so clients don't retry early.
-    assert r.headers.get("retry-after") == "300"
+    # retry-after tracks the key-pool mute window (asserted against the constant,
+    # not a literal, so shortening the window updates the header with it) — a
+    # client that waits it out finds the pool usable again.
+    assert r.headers.get("retry-after") == str(int(KeyPool.MUTE_SECONDS))
 
 
 @pytest.mark.asyncio
