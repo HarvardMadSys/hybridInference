@@ -816,9 +816,10 @@ export function RequestsTab() {
         </div>
       )}
 
-      {/* Per-endpoint latency/throughput summary for the filtered window */}
+      {/* Per-endpoint latency/throughput summary. Takes the filters below it but
+          not the lookback: it measures its own fixed 24h window, since TTFT and
+          decode throughput average away over a week. */}
       <RequestPerformancePanel
-        days={reqDays}
         userFilter={debouncedUserFilter}
         modelFilter={debouncedModelFilter}
         requestType={reqType}

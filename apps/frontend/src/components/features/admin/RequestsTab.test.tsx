@@ -115,7 +115,7 @@ describe('RequestsTab row expansion', () => {
     });
     vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
-      days: 7,
+      days: 1,
       groups: [],
       truncated: false,
     });
@@ -193,30 +193,28 @@ describe('RequestsTab row expansion', () => {
 
     await screen.findByText('gpt-4o-mini');
     expect(getRecentRequestsPerformance).toHaveBeenCalledWith({
-      days: 7,
+      // The panel's own window, not the tab's 7d default.
+      days: 1,
       userId: undefined,
       modelId: undefined,
       requestType: undefined,
       refresh: false,
     });
 
-    // Changing the lookback re-scopes the summary alongside the list.
+    // The lookback re-scopes the list but not the summary: TTFT and decode
+    // throughput are read over the panel's fixed day whatever the tab shows.
     fireEvent.change(screen.getByLabelText('Lookback window'), { target: { value: '30' } });
     await waitFor(() =>
-      expect(getRecentRequestsPerformance).toHaveBeenLastCalledWith({
-        days: 30,
-        userId: undefined,
-        modelId: undefined,
-        requestType: undefined,
-        refresh: false,
-      }),
+      // days is the 7th positional argument of listRecentRequests.
+      expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[6]).toBe(30),
     );
+    expect(getRecentRequestsPerformance).toHaveBeenCalledTimes(1);
 
     // Refresh reloads the summary and asks the backend for fresh numbers.
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() =>
       expect(getRecentRequestsPerformance).toHaveBeenLastCalledWith(
-        expect.objectContaining({ days: 30, refresh: true }),
+        expect.objectContaining({ days: 1, refresh: true }),
       ),
     );
   });
