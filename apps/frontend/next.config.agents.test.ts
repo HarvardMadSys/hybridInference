@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 const WEB = 'http://agent-web:3000';
 const API = 'http://agent-control-plane:8000';
 
-async function loadRewrites(env: Record<string, string | undefined>) {
+function loadConfig(env: Record<string, string | undefined>) {
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -30,8 +30,11 @@ async function loadRewrites(env: Record<string, string | undefined>) {
   const path = require.resolve('./next.config.js');
   delete require.cache[path];
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const config = require('./next.config.js');
-  return config.rewrites();
+  return require('./next.config.js');
+}
+
+async function loadRewrites(env: Record<string, string | undefined>) {
+  return loadConfig(env).rewrites();
 }
 
 describe('the /agents rewrites', () => {
@@ -102,5 +105,26 @@ describe('the /agents rewrites', () => {
     // already carrying it. Strip here and every asset 404s while the HTML
     // still loads.
     expect(bySource['/agents/:path*']).toBe(`${WEB}/agents/:path*`);
+  });
+
+  // The console's own entry point is derived from this same pair, so that a
+  // deployment cannot end up offering a link to a path it does not serve.
+  it.each([
+    ['neither variable', undefined, undefined, ''],
+    ['only the web URL', WEB, undefined, ''],
+    ['only the control plane', undefined, API, ''],
+    ['both', WEB, API, 'true'],
+  ])('tells the console what the rewrite decided: %s', async (_name, web, api, expected) => {
+    const config = loadConfig({
+      AGENT_WEB_INTERNAL_URL: web,
+      AGENT_CONTROL_PLANE_INTERNAL_URL: api,
+    });
+    const { beforeFiles } = await config.rewrites();
+
+    expect(config.env.NEXT_PUBLIC_AGENTS_ENABLED).toBe(expected);
+    // The property that matters is not the value, it is that the two move
+    // together: an entry point offered without a rewrite behind it is a link
+    // to a 404, and a rewrite with no entry point is a feature nobody finds.
+    expect(Boolean(config.env.NEXT_PUBLIC_AGENTS_ENABLED)).toBe(beforeFiles.length > 0);
   });
 });
