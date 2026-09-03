@@ -199,6 +199,8 @@ function resolveBranding(input: unknown, displayName: string, supportEmail: stri
     commitUrlBase: githubUrl ? `${githubUrl}/commit` : '',
     contactEmail: supportEmail.trim(),
     exampleApiBase: document.example.api_base.replace(/\/+$/, ''),
+    // An explicitly empty api_base is the documented hidden example.
+    exampleHidden: document.example.api_base === '',
     exampleApiKeyEnvVar: document.example.api_key_env_var,
     exampleModel: document.example.model,
     statcounterProjectId: document.analytics.statcounter_project_id,

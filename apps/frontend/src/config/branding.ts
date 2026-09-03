@@ -49,9 +49,15 @@ export interface Branding {
   githubUrl: string;
   commitUrlBase: string;
   contactEmail: string;
+  // Published API base for copy-paste examples; '' when the deployment
+  // publishes none and the console derives one from its own API origin.
   exampleApiBase: string;
   exampleApiKeyEnvVar: string;
   exampleModel: string;
+  // True only when a runtime branding document sets example.api_base to
+  // '' on purpose: the documented "hidden example", which suppresses the
+  // quickstart instead of deriving a base.
+  exampleHidden: boolean;
   statcounterProjectId: string;
   statcounterSecurityKey: string;
   turnstileSiteKey: string;
@@ -124,12 +130,15 @@ export const branding: Branding = {
   commitUrlBase: `${githubUrl}/commit`,
   contactEmail: process.env.NEXT_PUBLIC_CONTACT_EMAIL || '',
 
-  // Landing-page code example. The default must be copy-pasteable against the
-  // reader's own deployment, never against someone else's hosted service; the
-  // model id matches config/examples/models.openrouter.yaml.
-  exampleApiBase: process.env.NEXT_PUBLIC_EXAMPLE_API_BASE || 'http://localhost:8080',
+  // Homepage code example. A build publishes no example base of its own: the
+  // developer home derives one from NEXT_PUBLIC_API_BASE (else the page
+  // origin), so a console built against a real API never advertises a
+  // localhost default, and never someone else's hosted service. The model id
+  // matches config/examples/models.openrouter.yaml.
+  exampleApiBase: process.env.NEXT_PUBLIC_EXAMPLE_API_BASE || '',
   exampleApiKeyEnvVar: process.env.NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR || 'HYBRIDINFERENCE_API_KEY',
   exampleModel: process.env.NEXT_PUBLIC_EXAMPLE_MODEL || 'llama-3.3-70b',
+  exampleHidden: false,
 
   // Analytics: off unless an operator opts in with their own Statcounter ids
   // (layout.tsx skips the scripts entirely when the project id is empty).

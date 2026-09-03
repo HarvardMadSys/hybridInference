@@ -8,15 +8,17 @@ import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { config } from '@/config/env';
+import { fetchWithAuth } from '@/lib/api/client';
 
 type GatewayStatus = 'checking' | 'healthy' | 'degraded' | 'unhealthy' | 'unreachable';
 
-interface HealthResponse {
-  status?: unknown;
-}
+// Anonymous visitors see the public catalog; a signed-in user sees the models
+// their account can reach, which /v1/models without credentials cannot tell.
+type CatalogScope = 'public' | 'account';
 
-interface ModelsResponse {
-  data?: unknown;
+interface JsonResult {
+  ok: boolean;
+  payload: unknown;
 }
 
 interface CatalogModel {
@@ -45,19 +47,21 @@ const PRIMARY_LINK_CLASS =
 const SECONDARY_LINK_CLASS =
   'inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-medium text-gray-800 transition-colors hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2';
 
-function readGatewayStatus(response: Response, payload: HealthResponse): GatewayStatus {
-  if (payload.status === 'healthy') return 'healthy';
-  if (payload.status === 'degraded') return 'degraded';
-  if (payload.status === 'unhealthy') return 'unhealthy';
-  return response.ok ? 'healthy' : 'unhealthy';
+function readGatewayStatus(result: JsonResult): GatewayStatus {
+  const status = (result.payload as { status?: unknown } | null)?.status;
+  if (status === 'healthy') return 'healthy';
+  if (status === 'degraded') return 'degraded';
+  if (status === 'unhealthy') return 'unhealthy';
+  return result.ok ? 'healthy' : 'unhealthy';
 }
 
 // The catalog lists embedding models beside chat models; the backend tags
 // them with the "embeddings" feature so the quickstart never posts one to
 // /v1/chat/completions.
-function readCatalog(payload: ModelsResponse): CatalogModel[] {
-  if (!Array.isArray(payload.data)) return [];
-  return payload.data.flatMap((entry) => {
+function readCatalog(payload: unknown): CatalogModel[] {
+  const data = (payload as { data?: unknown } | null)?.data;
+  if (!Array.isArray(data)) return [];
+  return data.flatMap((entry) => {
     if (!entry || typeof entry !== 'object') return [];
     const { id, supported_features: features } = entry as {
       id?: unknown;
@@ -69,21 +73,38 @@ function readCatalog(payload: ModelsResponse): CatalogModel[] {
   });
 }
 
-// Every request carries the unmount abort and a deadline: a gateway that
-// accepts the connection and then hangs must read as unreachable, not sit on
-// "Checking…" for as long as the tab is open.
-async function fetchWithin(url: string, signal: AbortSignal, timeoutMs: number): Promise<Response> {
+// Runs `load` under a deadline that covers the whole exchange, body included:
+// a gateway that answers the headers and then stalls the body must read as
+// unreachable, not sit on "Checking…" for as long as the tab is open. The
+// outer signal is the unmount abort.
+async function withDeadline<T>(
+  signal: AbortSignal,
+  timeoutMs: number,
+  load: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
   const controller = new AbortController();
   const abort = () => controller.abort();
   if (signal.aborted) abort();
   signal.addEventListener('abort', abort);
   const timer = window.setTimeout(abort, timeoutMs);
   try {
-    return await fetch(url, { cache: 'no-store', signal: controller.signal });
+    return await load(controller.signal);
   } finally {
     window.clearTimeout(timer);
     signal.removeEventListener('abort', abort);
   }
+}
+
+async function readJson(response: Response): Promise<JsonResult> {
+  return { ok: response.ok, payload: await response.json() };
+}
+
+function loadPublicJson(path: string, signal: AbortSignal): Promise<JsonResult> {
+  return fetch(`${config.apiBase}${path}`, { cache: 'no-store', signal }).then(readJson);
+}
+
+function loadAccountJson(path: string, signal: AbortSignal): Promise<JsonResult> {
+  return fetchWithAuth(config.apiBase, path, { cache: 'no-store', signal }).then(readJson);
 }
 
 function isAbsoluteUrl(value: string): boolean {
@@ -122,40 +143,50 @@ export function DeveloperHome({
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<number | undefined>(undefined);
 
+  const catalogScope: CatalogScope = auth.isAuthenticated ? 'account' : 'public';
+
+  useEffect(() => {
+    setPageOrigin(window.location.origin);
+    return () => window.clearTimeout(copiedTimer.current);
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
 
-    async function loadHealth(): Promise<void> {
-      try {
-        const response = await fetchWithin(`${config.apiBase}/health`, signal, requestTimeoutMs);
-        const payload = (await response.json()) as HealthResponse;
-        setGatewayStatus(readGatewayStatus(response, payload));
-      } catch {
+    withDeadline(signal, requestTimeoutMs, (inner) => loadPublicJson('/health', inner))
+      .then((result) => setGatewayStatus(readGatewayStatus(result)))
+      .catch(() => {
         if (!signal.aborted) setGatewayStatus('unreachable');
-      }
-    }
+      });
 
-    async function loadCatalog(): Promise<void> {
-      try {
-        const response = await fetchWithin(`${config.apiBase}/v1/models`, signal, requestTimeoutMs);
-        if (!response.ok) throw new Error(`Models request failed with ${response.status}`);
-        const payload = (await response.json()) as ModelsResponse;
-        setCatalog(readCatalog(payload));
-      } catch {
-        if (!signal.aborted) setCatalogUnavailable(true);
-      }
-    }
-
-    setPageOrigin(window.location.origin);
-    void loadHealth();
-    void loadCatalog();
-
-    return () => {
-      controller.abort();
-      window.clearTimeout(copiedTimer.current);
-    };
+    return () => controller.abort();
   }, [requestTimeoutMs]);
+
+  useEffect(() => {
+    // Fetch once the session has resolved, so the list is loaded for the
+    // scope the visitor actually has rather than twice.
+    if (auth.loading) return undefined;
+    const controller = new AbortController();
+    const { signal } = controller;
+    setCatalog(null);
+    setCatalogUnavailable(false);
+
+    withDeadline(signal, requestTimeoutMs, (inner) =>
+      catalogScope === 'account'
+        ? loadAccountJson('/user/models', inner)
+        : loadPublicJson('/v1/models', inner),
+    )
+      .then((result) => {
+        if (!result.ok) throw new Error('Models request failed');
+        setCatalog(readCatalog(result.payload));
+      })
+      .catch(() => {
+        if (!signal.aborted) setCatalogUnavailable(true);
+      });
+
+    return () => controller.abort();
+  }, [auth.loading, catalogScope, requestTimeoutMs]);
 
   const isExample = distribution.id === 'example';
   const scope = isExample ? 'local gateway' : 'gateway';
@@ -163,11 +194,14 @@ export function DeveloperHome({
   const status = statusDetails[gatewayStatus];
   const links = homeLinks(auth, features.publicSignup);
 
-  // The command needs an absolute base: the distribution's published one,
-  // else the API origin this console is built against, else the page's own
-  // origin (which proxies /v1). curl cannot resolve a relative URL.
-  const curlBase =
-    branding.exampleApiBase || (isAbsoluteUrl(config.apiBase) ? config.apiBase : pageOrigin);
+  // The command needs an absolute base. A distribution that publishes one
+  // wins; one that hides its example on purpose gets no command; otherwise
+  // the base is the API origin this console is built against, else the page's
+  // own origin, which proxies /v1. curl cannot resolve a relative URL.
+  const quickstartHidden = branding.exampleHidden;
+  const curlBase = quickstartHidden
+    ? ''
+    : branding.exampleApiBase || (isAbsoluteUrl(config.apiBase) ? config.apiBase : pageOrigin);
   const chatModels = catalog?.filter((model) => model.chat).map((model) => model.id) ?? null;
   const noChatModels = chatModels !== null && chatModels.length === 0;
   const exampleModel = pickExampleModel(chatModels, branding.exampleModel);
@@ -242,12 +276,12 @@ export function DeveloperHome({
           <div className="border-b border-gray-200 px-6 py-5 sm:border-b-0 sm:border-r sm:px-8">
             <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">API base</dt>
             <dd className="mt-2 break-all font-mono text-sm font-medium text-gray-900">
-              {curlBase || 'Same origin'}
+              {quickstartHidden ? 'Not published' : curlBase || 'Same origin'}
             </dd>
           </div>
           <div className="px-6 py-5 sm:px-8">
             <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">
-              Loaded models
+              {catalogScope === 'account' ? 'Your models' : 'Public models'}
             </dt>
             <dd className="mt-2 text-sm font-medium text-gray-900" aria-live="polite">
               {catalogUnavailable
@@ -264,20 +298,32 @@ export function DeveloperHome({
 
       {noChatModels ? (
         <section className="rounded-2xl border border-dashed border-gray-300 bg-white px-6 py-6 text-sm text-gray-600">
-          <p className="font-medium text-gray-900">No chat models yet.</p>
-          <p className="mt-1">
-            {auth.user?.is_admin ? (
-              <>
+          {catalogScope === 'public' ? (
+            <>
+              <p className="font-medium text-gray-900">No public chat models.</p>
+              <p className="mt-1">Sign in to see the models available to your account.</p>
+            </>
+          ) : auth.user?.is_admin ? (
+            <>
+              <p className="font-medium text-gray-900">No chat models yet.</p>
+              <p className="mt-1">
                 Add a route in the{' '}
                 <Link href="/dashboard/admin" className="underline hover:text-gray-900">
                   Admin Console
                 </Link>{' '}
                 to serve one.
-              </>
-            ) : (
-              'Ask the operator of this deployment to add a route.'
-            )}
-          </p>
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="font-medium text-gray-900">
+                No chat models are available to your account.
+              </p>
+              <p className="mt-1">
+                Ask the operator of this deployment to add a route or grant access.
+              </p>
+            </>
+          )}
         </section>
       ) : curlBase ? (
         <section className="overflow-hidden rounded-2xl border border-gray-200 bg-gray-950 shadow-sm">

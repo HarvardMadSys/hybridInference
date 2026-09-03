@@ -20,6 +20,8 @@ links:
   github_url: https://github.com/example/hybridInference
 
 example:
+  # Absolute HTTP(S) base for the homepage quickstart. An empty string hides
+  # the quickstart; a console then shows the API base as "Not published".
   api_base: https://inference.example.com
   api_key_env_var: EXAMPLE_INFERENCE_API_KEY
   model: llama-3.3-70b
