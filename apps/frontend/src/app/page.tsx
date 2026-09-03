@@ -1,39 +1,24 @@
 'use client';
 
 import Link from 'next/link';
-import {
-  CodeExample,
-  ExampleDeveloperHome,
-  Features,
-  Hero,
-  HowItWorks,
-  Sponsors,
-  Updates,
-  UseCases,
-} from '@/components/landing';
+import { DeveloperHome, Sponsors, Updates } from '@/components/landing';
 import { UpdatesBanner } from '@/components/ui/UpdatesBanner';
-import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 
+// The homepage is the developer home for every deployment: a fresh clone is
+// nobody's gateway but its operator's, so it ships no marketing copy. Updates,
+// sponsors and the data-policy notice are distribution content and render only
+// when the deployment supplies them.
 export default function HomePage(): JSX.Element {
-  const siteConfig = useSiteConfig();
-
-  if (siteConfig.distribution.id === 'example') {
-    return <ExampleDeveloperHome />;
-  }
-
-  const { branding } = siteConfig;
+  const branding = useBranding();
 
   return (
-    <div className="flex w-full flex-col gap-4">
+    <div className="flex w-full flex-col gap-6">
       <UpdatesBanner />
-      <Hero />
+      <DeveloperHome />
       <Updates />
-      <Features />
-      <UseCases />
-      <HowItWorks />
-      <CodeExample />
       <Sponsors />
-      <footer className="mt-16 border-t border-gray-200 px-4 py-8 text-center text-xs text-gray-500 sm:px-6 lg:px-8">
+      <footer className="mt-10 border-t border-gray-200 px-4 py-8 text-center text-xs text-gray-500 sm:px-6 lg:px-8">
         <p>Service is provided without guarantee.</p>
         <p className="mt-1">
           {branding.dataPolicyNotice ? `${branding.dataPolicyNotice} ` : null}

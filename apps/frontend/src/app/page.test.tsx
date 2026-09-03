@@ -5,21 +5,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import HomePage from './page';
 
+type AuthUser = {
+  id: string;
+  email: string;
+  role: string;
+  user_name?: string | null;
+  is_admin: boolean;
+};
+
 let authState = {
   loading: false,
   isAuthenticated: false,
-  user: null as { id: string; email: string; role: string; user_name?: string | null } | null,
+  user: null as AuthUser | null,
 };
 
 const NOTICE = 'Requests are logged by this deployment for research purposes.';
 
 let dataPolicyNotice = NOTICE;
 let distributionId = 'legacy';
+let publicSignup = true;
+let exampleModel = 'example-chat';
 
 const branding = {
   exampleApiBase: 'http://localhost:13001',
   exampleApiKeyEnvVar: 'HYBRIDINFERENCE_API_KEY',
-  exampleModel: 'example-chat',
+  get exampleModel() {
+    return exampleModel;
+  },
   get dataPolicyNotice() {
     return dataPolicyNotice;
   },
@@ -30,7 +42,7 @@ vi.mock('@/components/providers/SiteConfigProvider', () => ({
   useSiteConfig: () => ({
     branding,
     distribution: { id: distributionId, release: '' },
-    features: { publicSignup: false, rag: false, agents: false },
+    features: { publicSignup, rag: false, agents: false },
   }),
 }));
 
@@ -40,19 +52,18 @@ vi.mock('@/components/providers', () => ({
   }),
 }));
 
-vi.mock('@/components/providers/AuthProvider', () => ({
-  hasRole: (userRole: string | undefined, required: string) => userRole === required,
-}));
+vi.mock('@/components/providers/AuthProvider', () => {
+  const rank: Record<string, number> = { free: 0, pro: 1, internal: 2, admin: 3 };
+  return {
+    hasRole: (userRole: string | undefined, required: string) =>
+      (rank[userRole ?? 'free'] ?? 0) >= (rank[required] ?? Number.POSITIVE_INFINITY),
+  };
+});
 
 vi.mock('@/components/landing', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/components/landing')>();
   return {
     ...actual,
-    CodeExample: () => <section aria-label="code example" />,
-    Features: () => <section aria-label="features" />,
-    Hero: () => <section aria-label="hero" />,
-    HowItWorks: () => <section aria-label="how it works" />,
-    UseCases: () => <section aria-label="use cases" />,
     Sponsors: () => <section aria-label="sponsors" />,
     Updates: () => <section aria-label="updates" />,
   };
@@ -62,9 +73,32 @@ vi.mock('@/components/ui/UpdatesBanner', () => ({
   UpdatesBanner: () => <section aria-label="updates banner" />,
 }));
 
-vi.mock('@/components/features/dashboard/DashboardView', () => ({
-  DashboardView: () => <section aria-label="dashboard view">Dashboard</section>,
-}));
+function stubGateway(
+  health: { status: string } | Error = { status: 'healthy' },
+  modelIds: string[] = [],
+) {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    if (health instanceof Error) throw health;
+    if (String(input) === '/health') {
+      return new Response(JSON.stringify(health), { status: 200 });
+    }
+    if (String(input) === '/v1/models') {
+      return new Response(JSON.stringify({ data: modelIds.map((id) => ({ id })) }), {
+        status: 200,
+      });
+    }
+    throw new Error(`Unexpected request: ${String(input)}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+function curlCommand(): HTMLElement {
+  return screen.getByText(
+    (_, element) =>
+      element?.tagName === 'CODE' && Boolean(element.textContent?.startsWith('curl ')),
+  );
+}
 
 describe('HomePage', () => {
   afterEach(() => {
@@ -73,70 +107,80 @@ describe('HomePage', () => {
   });
 
   beforeEach(() => {
-    authState = {
-      loading: false,
-      isAuthenticated: false,
-      user: null,
-    };
+    authState = { loading: false, isAuthenticated: false, user: null };
     dataPolicyNotice = NOTICE;
     distributionId = 'legacy';
+    publicSignup = true;
+    exampleModel = 'example-chat';
+    stubGateway();
   });
 
-  it('shows the no-guarantee notice before the data-policy notice', () => {
-    const { container } = render(<HomePage />);
-
-    const warrantyNotice = screen.getByText(/service is provided without guarantee/i);
-    const loggingNotice = screen.getByText(new RegExp(NOTICE, 'i'));
-
-    expect(warrantyNotice).toBeInTheDocument();
-    expect(loggingNotice).toBeInTheDocument();
-    expect(warrantyNotice.compareDocumentPosition(loggingNotice)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING,
-    );
-    expect(container).toHaveTextContent(/provided without guarantee/i);
-  });
-
-  it('keeps the existing marketing homepage for a non-example distribution', () => {
-    authState = {
-      loading: false,
-      isAuthenticated: true,
-      user: {
-        id: 'user-1',
-        email: 'user@example.com',
-        role: 'free',
-        user_name: 'Test User',
-      },
-    };
-
+  it('renders the developer home for every deployment, with no marketing copy', async () => {
     render(<HomePage />);
 
-    [/hero/i, /features/i, /use cases/i, /how it works/i, /code example/i, /sponsors/i].forEach(
-      (pattern) => {
-        expect(screen.getByLabelText(pattern)).toBeInTheDocument();
-      },
-    );
-    expect(screen.queryByLabelText(/dashboard view/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/service is provided without guarantee/i)).toBeInTheDocument();
-    expect(screen.getByText(new RegExp(NOTICE, 'i'))).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /your gateway is ready/i })).toBeInTheDocument();
+    expect(screen.queryByText(/local example/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/frontier|research community|free to use|no credit card/i),
+    ).not.toBeInTheDocument();
+    [/updates banner/i, /^updates$/i, /sponsors/i].forEach((pattern) => {
+      expect(screen.getByLabelText(pattern)).toBeInTheDocument();
+    });
+    screen.getAllByRole('link').forEach((link) => {
+      expect(link.getAttribute('href')).toMatch(/^\//);
+    });
+
+    await waitFor(() => expect(screen.getByText('Healthy')).toBeInTheDocument());
   });
 
-  it('renders the developer home only for the example distribution', async () => {
+  it('labels the example distribution as the local example', () => {
     distributionId = 'example';
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        if (String(input) === '/health') {
-          return new Response(JSON.stringify({ status: 'healthy' }), { status: 200 });
-        }
-        return new Response(JSON.stringify({ data: [] }), { status: 200 });
-      }),
-    );
 
     render(<HomePage />);
 
+    expect(screen.getByText('Local example')).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: /your local gateway is ready/i }),
     ).toBeInTheDocument();
+    expect(screen.getByText(/inspect the example deployment/i)).toBeInTheDocument();
+  });
+
+  it('offers sign-in and sign-up to anonymous visitors, sign-up only with public signup', () => {
+    const { unmount } = render(<HomePage />);
+
+    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
+    expect(screen.getByRole('link', { name: 'Sign up' })).toHaveAttribute('href', '/signup');
+    expect(screen.queryByRole('link', { name: 'Dashboard' })).not.toBeInTheDocument();
+    unmount();
+
+    publicSignup = false;
+    render(<HomePage />);
+
+    expect(screen.getByRole('link', { name: 'Sign in' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Sign up' })).not.toBeInTheDocument();
+  });
+
+  it('opens the console for signed-in users, scoped to what their role can reach', () => {
+    authState = {
+      loading: false,
+      isAuthenticated: true,
+      user: { id: 'user-1', email: 'user@example.com', role: 'free', is_admin: false },
+    };
+    const { unmount } = render(<HomePage />);
+
+    expect(screen.getByRole('link', { name: 'Dashboard' })).toHaveAttribute('href', '/dashboard');
+    expect(screen.queryByRole('link', { name: 'Playground' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Admin Console' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
+    unmount();
+
+    authState = {
+      loading: false,
+      isAuthenticated: true,
+      user: { id: 'admin-1', email: 'admin@local.dev', role: 'admin', is_admin: true },
+    };
+    render(<HomePage />);
+
     expect(screen.getByRole('link', { name: 'Dashboard' })).toHaveAttribute('href', '/dashboard');
     expect(screen.getByRole('link', { name: 'Playground' })).toHaveAttribute(
       'href',
@@ -146,30 +190,10 @@ describe('HomePage', () => {
       'href',
       '/dashboard/admin',
     );
-    expect(screen.queryByLabelText(/hero/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/frontier|research community|free to use/i)).not.toBeInTheDocument();
-    screen.getAllByRole('link').forEach((link) => {
-      expect(link.getAttribute('href')).toMatch(/^\//);
-    });
-
-    await waitFor(() => expect(screen.getByText('Healthy')).toBeInTheDocument());
   });
 
-  it('loads the example gateway status and model list from same-origin endpoints', async () => {
-    distributionId = 'example';
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input) === '/health') {
-        return new Response(JSON.stringify({ status: 'degraded' }), { status: 200 });
-      }
-      if (String(input) === '/v1/models') {
-        return new Response(
-          JSON.stringify({ data: [{ id: 'example-chat' }, { id: 'local-embedding' }] }),
-          { status: 200 },
-        );
-      }
-      throw new Error(`Unexpected request: ${String(input)}`);
-    });
-    vi.stubGlobal('fetch', fetchMock);
+  it('loads gateway status and the model list from same-origin endpoints', async () => {
+    const fetchMock = stubGateway({ status: 'degraded' }, ['example-chat', 'local-embedding']);
 
     render(<HomePage />);
 
@@ -188,12 +212,49 @@ describe('HomePage', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(screen.getByText('http://localhost:13001')).toBeInTheDocument();
-    const curlCommand = screen.getByText(
-      (_, element) =>
-        element?.tagName === 'CODE' && Boolean(element.textContent?.startsWith('curl ')),
+    expect(curlCommand()).toHaveTextContent('http://localhost:13001/v1/chat/completions');
+    expect(curlCommand()).toHaveTextContent('"model": "example-chat"');
+  });
+
+  it('points the curl example at a model the gateway actually serves', async () => {
+    // The build-time default names a model a fresh clone does not serve; the
+    // command must stay copy-paste runnable against this deployment.
+    exampleModel = 'llama-3.3-70b';
+    stubGateway({ status: 'healthy' }, ['glm-local', 'embed-local']);
+
+    render(<HomePage />);
+
+    expect(curlCommand()).toHaveTextContent('"model": "llama-3.3-70b"');
+    await waitFor(() => expect(curlCommand()).toHaveTextContent('"model": "glm-local"'));
+    expect(screen.getByText('glm-local', { selector: 'code' })).toBeInTheDocument();
+  });
+
+  it('says the gateway needs attention when it cannot be reached', async () => {
+    stubGateway(new Error('connection refused'));
+
+    render(<HomePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Unreachable')).toBeInTheDocument();
+      expect(screen.getByText('Unavailable')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByRole('heading', { name: /your gateway needs attention/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the no-guarantee notice before the data-policy notice', () => {
+    const { container } = render(<HomePage />);
+
+    const warrantyNotice = screen.getByText(/service is provided without guarantee/i);
+    const loggingNotice = screen.getByText(new RegExp(NOTICE, 'i'));
+
+    expect(warrantyNotice).toBeInTheDocument();
+    expect(loggingNotice).toBeInTheDocument();
+    expect(warrantyNotice.compareDocumentPosition(loggingNotice)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
     );
-    expect(curlCommand).toHaveTextContent('http://localhost:13001/v1/chat/completions');
-    expect(curlCommand).toHaveTextContent('"model": "example-chat"');
+    expect(container).toHaveTextContent(/provided without guarantee/i);
   });
 
   it('states no data policy when the deployment has not declared one', () => {

@@ -1,10 +1,12 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import { useBranding } from '@/components/providers/SiteConfigProvider';
-import { buildCurlExample } from '@/components/landing/CodeExample';
+import { buildCurlExample, pickExampleModel } from '@/components/landing/curlExample';
+import { useAuth } from '@/components/providers';
+import { hasRole } from '@/components/providers/AuthProvider';
+import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 type GatewayStatus = 'checking' | 'healthy' | 'degraded' | 'unhealthy' | 'unreachable';
 
@@ -16,6 +18,12 @@ interface ModelsResponse {
   data?: unknown;
 }
 
+interface HomeLink {
+  href: string;
+  label: string;
+  primary?: boolean;
+}
+
 const statusDetails: Record<GatewayStatus, { label: string; dotClassName: string }> = {
   checking: { label: 'Checking…', dotClassName: 'bg-gray-400' },
   healthy: { label: 'Healthy', dotClassName: 'bg-emerald-500' },
@@ -23,6 +31,11 @@ const statusDetails: Record<GatewayStatus, { label: string; dotClassName: string
   unhealthy: { label: 'Unhealthy', dotClassName: 'bg-red-500' },
   unreachable: { label: 'Unreachable', dotClassName: 'bg-red-500' },
 };
+
+const PRIMARY_LINK_CLASS =
+  'inline-flex h-10 items-center justify-center rounded-lg bg-gray-950 px-4 text-sm font-medium text-white transition-colors hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:ring-offset-2';
+const SECONDARY_LINK_CLASS =
+  'inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-medium text-gray-800 transition-colors hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2';
 
 function readGatewayStatus(response: Response, payload: HealthResponse): GatewayStatus {
   if (payload.status === 'healthy') return 'healthy';
@@ -40,12 +53,32 @@ function readModelIds(payload: ModelsResponse): string[] {
   });
 }
 
-export function ExampleDeveloperHome(): JSX.Element {
-  const branding = useBranding();
+// Anonymous visitors get the way in; signed-in users get the console. The
+// header carries no sign-in link, so this is the page that has to offer one.
+function homeLinks(auth: ReturnType<typeof useAuth>['state'], publicSignup: boolean): HomeLink[] {
+  if (!auth.isAuthenticated) {
+    const links: HomeLink[] = [{ href: '/login', label: 'Sign in', primary: true }];
+    if (publicSignup) links.push({ href: '/signup', label: 'Sign up' });
+    return links;
+  }
+  const links: HomeLink[] = [{ href: '/dashboard', label: 'Dashboard', primary: true }];
+  if (hasRole(auth.user?.role, 'internal')) {
+    links.push({ href: '/dashboard/playground', label: 'Playground' });
+  }
+  if (auth.user?.is_admin) {
+    links.push({ href: '/dashboard/admin', label: 'Admin Console' });
+  }
+  return links;
+}
+
+export function DeveloperHome(): JSX.Element {
+  const { branding, distribution, features } = useSiteConfig();
+  const { state: auth } = useAuth();
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>('checking');
   const [models, setModels] = useState<string[] | null>(null);
   const [modelsUnavailable, setModelsUnavailable] = useState(false);
   const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -84,17 +117,30 @@ export function ExampleDeveloperHome(): JSX.Element {
     void loadHealth();
     void loadModels();
 
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      window.clearTimeout(copiedTimer.current);
+    };
   }, []);
 
+  const isExample = distribution.id === 'example';
+  const scope = isExample ? 'local gateway' : 'gateway';
+  const needsAttention = gatewayStatus === 'unhealthy' || gatewayStatus === 'unreachable';
   const status = statusDetails[gatewayStatus];
-  const curlExample = buildCurlExample(branding);
+  const exampleModel = pickExampleModel(models, branding.exampleModel);
+  const curlExample = buildCurlExample({
+    exampleApiBase: branding.exampleApiBase,
+    exampleApiKeyEnvVar: branding.exampleApiKeyEnvVar,
+    exampleModel,
+  });
+  const links = homeLinks(auth, features.publicSignup);
 
   async function handleCopy(): Promise<void> {
     try {
       await navigator.clipboard.writeText(curlExample);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
+      window.clearTimeout(copiedTimer.current);
+      copiedTimer.current = window.setTimeout(() => setCopied(false), 2000);
     } catch {
       // The command remains selectable when the Clipboard API is unavailable.
     }
@@ -104,37 +150,35 @@ export function ExampleDeveloperHome(): JSX.Element {
     <div className="flex w-full flex-col gap-6">
       <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
         <div className="px-6 py-10 sm:px-10 sm:py-12">
-          <div className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-600">
-            <span className="h-1.5 w-1.5 rounded-full bg-gray-500" aria-hidden="true" />
-            Local example
-          </div>
-          <h1 className="mt-5 max-w-2xl text-3xl font-semibold tracking-tight text-gray-950 sm:text-5xl">
-            Your local gateway is ready.
+          {isExample ? (
+            <div className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-600">
+              <span className="h-1.5 w-1.5 rounded-full bg-gray-500" aria-hidden="true" />
+              Local example
+            </div>
+          ) : null}
+          <h1
+            className={`max-w-2xl text-3xl font-semibold tracking-tight text-gray-950 sm:text-5xl ${
+              isExample ? 'mt-5' : ''
+            }`}
+          >
+            {needsAttention ? `Your ${scope} needs attention.` : `Your ${scope} is ready.`}
           </h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-gray-600">
-            Inspect the example deployment, try a request, or open the console to configure your own
-            routes.
+            {isExample
+              ? 'Inspect the example deployment, try a request, or open the console to configure your own routes.'
+              : 'Check the gateway, try a request, or open the console to configure routes and keys.'}
           </p>
 
-          <nav aria-label="Example tools" className="mt-7 flex flex-wrap gap-3">
-            <Link
-              href="/dashboard"
-              className="inline-flex h-10 items-center justify-center rounded-lg bg-gray-950 px-4 text-sm font-medium text-white transition-colors hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:ring-offset-2"
-            >
-              Dashboard
-            </Link>
-            <Link
-              href="/dashboard/playground"
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-medium text-gray-800 transition-colors hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
-            >
-              Playground
-            </Link>
-            <Link
-              href="/dashboard/admin"
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-medium text-gray-800 transition-colors hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
-            >
-              Admin Console
-            </Link>
+          <nav aria-label="Gateway tools" className="mt-7 flex flex-wrap gap-3">
+            {links.map((link) => (
+              <Link
+                key={link.href}
+                href={link.href}
+                className={link.primary ? PRIMARY_LINK_CLASS : SECONDARY_LINK_CLASS}
+              >
+                {link.label}
+              </Link>
+            ))}
           </nav>
         </div>
 
@@ -179,7 +223,7 @@ export function ExampleDeveloperHome(): JSX.Element {
           <div>
             <p className="text-sm font-medium text-white">Try the API</p>
             <p className="mt-0.5 text-xs text-gray-400">
-              Uses <code>{branding.exampleModel}</code>
+              Uses <code>{exampleModel}</code>
             </p>
           </div>
           <button
