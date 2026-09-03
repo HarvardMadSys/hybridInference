@@ -326,6 +326,20 @@ def _canonical_model_id(model_id: str, route: Any) -> str:
     return str(getattr(cfg, "id", model_id) or model_id)
 
 
+def _bare_provider(value: str) -> str:
+    """Reduce a provider reference to the provider that owns its credentials.
+
+    An OpenRouter-pinned route stores ``openrouter[parasail]``; the credential
+    owner is OpenRouter, and ``parasail`` is a routing preference, not a
+    provider the registry can hold keys for.
+    """
+    try:
+        base, _pin = parse_openrouter_kind(value)
+    except ValueError:
+        base = value
+    return dynamic_keys.normalize_key_provider(base)
+
+
 def _provider_candidates_for_adapter(adapter: Any) -> set[str]:
     cfg = getattr(adapter, "config", None)
     metadata = getattr(cfg, "route_metadata", None) or {}
@@ -339,7 +353,42 @@ def _provider_candidates_for_adapter(adapter: Any) -> set[str]:
     for value in candidates:
         if isinstance(value, str) and value.strip():
             normalized.add(dynamic_keys.normalize_key_provider(value.strip()))
+            normalized.add(_bare_provider(value.strip()))
     return normalized
+
+
+def _runtime_provider_for_adapter(adapter: Any) -> str | None:
+    """Return the one provider a live route belongs to in the registry.
+
+    The credential owner wins: a relabelled route keeps its keys under the
+    provider it talks to, and a pinned OpenRouter route is an OpenRouter
+    route. Listing every candidate label instead materializes ghost rows —
+    ``parasail`` with no keys and no base URL — for preferences that are not
+    providers.
+    """
+    cfg = getattr(adapter, "config", None)
+    metadata = getattr(cfg, "route_metadata", None) or {}
+    for key in ("key_provider", "upstream_provider"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return _bare_provider(value.strip())
+    provider = getattr(cfg, "provider", None)
+    if isinstance(provider, str) and provider.strip():
+        return _bare_provider(provider.strip())
+    return None
+
+
+def _runtime_route_providers(services) -> set[str]:
+    """Return the providers that currently own at least one live route."""
+    router_obj = getattr(services, "router", None)
+    routes = getattr(router_obj, "routes", {}) if router_obj is not None else {}
+    providers: set[str] = set()
+    for route in routes.values():
+        for adapter in _route_adapters(route):
+            provider = _runtime_provider_for_adapter(adapter)
+            if provider:
+                providers.add(provider)
+    return providers
 
 
 def _models_by_provider(services) -> dict[str, set[str]]:
@@ -589,8 +638,10 @@ async def list_provider_definitions(
     runtime_models_by_provider = _models_by_provider(services)
     # The dynamic-key registry is an ever-seen whitelist, so it can retain a
     # provider after its final runtime route is removed. Derive runtime entries
-    # from the live route table instead so stale registrations stay hidden.
-    active_route_providers = set(runtime_models_by_provider) - set(custom_rows)
+    # from the live route table instead so stale registrations stay hidden —
+    # and from each route's credential owner, not from every label attached to
+    # it, so a pinned OpenRouter target never surfaces as its own provider.
+    active_route_providers = _runtime_route_providers(services) - set(custom_rows)
     built_in_providers = _registry_provider_names(config_specs) | active_route_providers
     for row in custom_rows.values():
         provider_registry.register_provider_definition(row)

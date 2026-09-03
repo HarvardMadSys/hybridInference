@@ -256,6 +256,10 @@ def build_model_list(
                 context_length=cfg.context_length,
                 max_output_length=cfg.max_output_length,
                 pricing=effective_pricing(cfg) or {},
+                # The catalog lists embedding models beside chat models with
+                # the same modality defaults; this is the one signal a client
+                # has that the model answers /v1/embeddings, not chat.
+                supported_features=["embeddings"],
                 on_demand=cfg.on_demand,
             )
         )
@@ -356,6 +360,10 @@ async def _build_model_list_async(
                 context_length=cfg.context_length,
                 max_output_length=cfg.max_output_length,
                 pricing=effective_pricing(cfg) or {},
+                # The catalog lists embedding models beside chat models with
+                # the same modality defaults; this is the one signal a client
+                # has that the model answers /v1/embeddings, not chat.
+                supported_features=["embeddings"],
                 on_demand=cfg.on_demand,
             )
         )

@@ -520,3 +520,32 @@ async def test_trial_user_sees_same_models_as_free():
 
     assert free_ids == trial_ids
     assert "public-model" in trial_ids
+
+
+@pytest.mark.asyncio
+async def test_models_tag_embedding_models_with_the_embeddings_feature():
+    """Embedding models sit beside chat models with the same modality defaults.
+
+    A client choosing a model for /v1/chat/completions has no other signal
+    that an entry answers /v1/embeddings instead, so the catalog says so.
+    """
+    router = RouteExecutor()
+    router.register_route("chat-model", [(_Adapter(_cfg(id="chat-model")), 1.0)])
+    embedding = _Adapter(_cfg(id="embed-model", provider="embedder"))
+
+    app = FastAPI(title="Models App")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=None,
+        embedding_adapters={"embed-model": embedding},
+    )
+    app.include_router(models.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        for path in ("/v1/models", "/models"):
+            resp = await client.get(path)
+            assert resp.status_code == status.HTTP_200_OK
+            by_id = {item["id"]: item for item in resp.json()["data"]}
+            assert by_id["embed-model"]["supported_features"] == ["embeddings"]
+            assert "embeddings" not in by_id["chat-model"]["supported_features"]

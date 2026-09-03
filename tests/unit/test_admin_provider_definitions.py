@@ -687,3 +687,56 @@ models:
     monkeypatch.setenv("MODELS_CONFIG", str(models_config))
 
     assert provider_definitions.config_route_provider_labels() == set()
+
+
+def _services_with_runtime_routes(*adapters):
+    routes = {}
+    for index, (model_id, provider, route_metadata) in enumerate(adapters):
+        adapter = SimpleNamespace(
+            config=SimpleNamespace(
+                id=model_id,
+                provider=provider,
+                route_metadata=route_metadata,
+            )
+        )
+        routes[model_id] = SimpleNamespace(raw_adapters=[(adapter, 1.0, f"runtime-route-{index}")])
+    return SimpleNamespace(router=SimpleNamespace(routes=routes))
+
+
+@pytest.mark.asyncio
+async def test_list_provider_definitions_credits_pinned_runtime_routes_to_openrouter(
+    monkeypatch,
+):
+    """A pinned OpenRouter route is an OpenRouter route, not a ``parasail`` provider.
+
+    Listing every label attached to a live route materialized ghost rows with
+    no keys and no base URL for routing preferences. The registry row is the
+    credential owner: OpenRouter for a pin, the key-pool provider for a
+    relabelled route.
+    """
+    store = FakeProviderDefinitionStore()
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=store,
+        services=_services_with_runtime_routes(
+            (
+                "minimax-m2.5",
+                "parasail",
+                {"route_provider": "parasail", "upstream_provider": "openrouter[parasail]"},
+            ),
+            (
+                "local-chat",
+                "gpu-a",
+                {"key_provider": "vllm", "upstream_provider": "vllm"},
+            ),
+        ),
+    )
+
+    providers = {row.provider: row for row in response.providers}
+    assert set(providers) == {"openrouter", "vllm"}
+    assert providers["openrouter"].models_count == 1
+    assert providers["openrouter"].default_base_url

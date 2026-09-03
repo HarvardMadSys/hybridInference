@@ -7,6 +7,7 @@ import { buildCurlExample, pickExampleModel } from '@/components/landing/curlExa
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
+import { config } from '@/config/env';
 
 type GatewayStatus = 'checking' | 'healthy' | 'degraded' | 'unhealthy' | 'unreachable';
 
@@ -18,11 +19,18 @@ interface ModelsResponse {
   data?: unknown;
 }
 
+interface CatalogModel {
+  id: string;
+  chat: boolean;
+}
+
 interface HomeLink {
   href: string;
   label: string;
   primary?: boolean;
 }
+
+export const GATEWAY_REQUEST_TIMEOUT_MS = 8_000;
 
 const statusDetails: Record<GatewayStatus, { label: string; dotClassName: string }> = {
   checking: { label: 'Checking…', dotClassName: 'bg-gray-400' },
@@ -44,13 +52,42 @@ function readGatewayStatus(response: Response, payload: HealthResponse): Gateway
   return response.ok ? 'healthy' : 'unhealthy';
 }
 
-function readModelIds(payload: ModelsResponse): string[] {
+// The catalog lists embedding models beside chat models; the backend tags
+// them with the "embeddings" feature so the quickstart never posts one to
+// /v1/chat/completions.
+function readCatalog(payload: ModelsResponse): CatalogModel[] {
   if (!Array.isArray(payload.data)) return [];
-  return payload.data.flatMap((model) => {
-    if (!model || typeof model !== 'object') return [];
-    const id = (model as { id?: unknown }).id;
-    return typeof id === 'string' && id.trim() ? [id] : [];
+  return payload.data.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const { id, supported_features: features } = entry as {
+      id?: unknown;
+      supported_features?: unknown;
+    };
+    if (typeof id !== 'string' || !id.trim()) return [];
+    const chat = !(Array.isArray(features) && features.includes('embeddings'));
+    return [{ id, chat }];
   });
+}
+
+// Every request carries the unmount abort and a deadline: a gateway that
+// accepts the connection and then hangs must read as unreachable, not sit on
+// "Checking…" for as long as the tab is open.
+async function fetchWithin(url: string, signal: AbortSignal, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal.aborted) abort();
+  signal.addEventListener('abort', abort);
+  const timer = window.setTimeout(abort, timeoutMs);
+  try {
+    return await fetch(url, { cache: 'no-store', signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+    signal.removeEventListener('abort', abort);
+  }
+}
+
+function isAbsoluteUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
 }
 
 // Anonymous visitors get the way in; signed-in users get the console. The
@@ -71,69 +108,74 @@ function homeLinks(auth: ReturnType<typeof useAuth>['state'], publicSignup: bool
   return links;
 }
 
-export function DeveloperHome(): JSX.Element {
+export function DeveloperHome({
+  requestTimeoutMs = GATEWAY_REQUEST_TIMEOUT_MS,
+}: {
+  requestTimeoutMs?: number;
+} = {}): JSX.Element {
   const { branding, distribution, features } = useSiteConfig();
   const { state: auth } = useAuth();
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>('checking');
-  const [models, setModels] = useState<string[] | null>(null);
-  const [modelsUnavailable, setModelsUnavailable] = useState(false);
+  const [catalog, setCatalog] = useState<CatalogModel[] | null>(null);
+  const [catalogUnavailable, setCatalogUnavailable] = useState(false);
+  const [pageOrigin, setPageOrigin] = useState('');
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const controller = new AbortController();
+    const { signal } = controller;
 
     async function loadHealth(): Promise<void> {
       try {
-        const response = await fetch('/health', {
-          cache: 'no-store',
-          signal: controller.signal,
-        });
+        const response = await fetchWithin(`${config.apiBase}/health`, signal, requestTimeoutMs);
         const payload = (await response.json()) as HealthResponse;
         setGatewayStatus(readGatewayStatus(response, payload));
-      } catch (error) {
-        if (!(error instanceof Error && error.name === 'AbortError')) {
-          setGatewayStatus('unreachable');
-        }
+      } catch {
+        if (!signal.aborted) setGatewayStatus('unreachable');
       }
     }
 
-    async function loadModels(): Promise<void> {
+    async function loadCatalog(): Promise<void> {
       try {
-        const response = await fetch('/v1/models', {
-          cache: 'no-store',
-          signal: controller.signal,
-        });
+        const response = await fetchWithin(`${config.apiBase}/v1/models`, signal, requestTimeoutMs);
         if (!response.ok) throw new Error(`Models request failed with ${response.status}`);
         const payload = (await response.json()) as ModelsResponse;
-        setModels(readModelIds(payload));
-      } catch (error) {
-        if (!(error instanceof Error && error.name === 'AbortError')) {
-          setModelsUnavailable(true);
-        }
+        setCatalog(readCatalog(payload));
+      } catch {
+        if (!signal.aborted) setCatalogUnavailable(true);
       }
     }
 
+    setPageOrigin(window.location.origin);
     void loadHealth();
-    void loadModels();
+    void loadCatalog();
 
     return () => {
       controller.abort();
       window.clearTimeout(copiedTimer.current);
     };
-  }, []);
+  }, [requestTimeoutMs]);
 
   const isExample = distribution.id === 'example';
   const scope = isExample ? 'local gateway' : 'gateway';
   const needsAttention = gatewayStatus === 'unhealthy' || gatewayStatus === 'unreachable';
   const status = statusDetails[gatewayStatus];
-  const exampleModel = pickExampleModel(models, branding.exampleModel);
+  const links = homeLinks(auth, features.publicSignup);
+
+  // The command needs an absolute base: the distribution's published one,
+  // else the API origin this console is built against, else the page's own
+  // origin (which proxies /v1). curl cannot resolve a relative URL.
+  const curlBase =
+    branding.exampleApiBase || (isAbsoluteUrl(config.apiBase) ? config.apiBase : pageOrigin);
+  const chatModels = catalog?.filter((model) => model.chat).map((model) => model.id) ?? null;
+  const noChatModels = chatModels !== null && chatModels.length === 0;
+  const exampleModel = pickExampleModel(chatModels, branding.exampleModel);
   const curlExample = buildCurlExample({
-    exampleApiBase: branding.exampleApiBase,
+    exampleApiBase: curlBase,
     exampleApiKeyEnvVar: branding.exampleApiKeyEnvVar,
     exampleModel,
   });
-  const links = homeLinks(auth, features.publicSignup);
 
   async function handleCopy(): Promise<void> {
     try {
@@ -161,7 +203,9 @@ export function DeveloperHome(): JSX.Element {
               isExample ? 'mt-5' : ''
             }`}
           >
-            {needsAttention ? `Your ${scope} needs attention.` : `Your ${scope} is ready.`}
+            {/* /health is a liveness check (process and stores), so this says
+                "running", not "ready": provider circuits are not consulted. */}
+            {needsAttention ? `Your ${scope} needs attention.` : `Your ${scope} is running.`}
           </h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-gray-600">
             {isExample
@@ -198,7 +242,7 @@ export function DeveloperHome(): JSX.Element {
           <div className="border-b border-gray-200 px-6 py-5 sm:border-b-0 sm:border-r sm:px-8">
             <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">API base</dt>
             <dd className="mt-2 break-all font-mono text-sm font-medium text-gray-900">
-              {branding.exampleApiBase || 'Same origin'}
+              {curlBase || 'Same origin'}
             </dd>
           </div>
           <div className="px-6 py-5 sm:px-8">
@@ -206,39 +250,58 @@ export function DeveloperHome(): JSX.Element {
               Loaded models
             </dt>
             <dd className="mt-2 text-sm font-medium text-gray-900" aria-live="polite">
-              {modelsUnavailable
+              {catalogUnavailable
                 ? 'Unavailable'
-                : models === null
+                : catalog === null
                   ? 'Loading…'
-                  : models.length > 0
-                    ? models.join(', ')
+                  : catalog.length > 0
+                    ? catalog.map((model) => model.id).join(', ')
                     : 'None configured'}
             </dd>
           </div>
         </dl>
       </section>
 
-      <section className="overflow-hidden rounded-2xl border border-gray-200 bg-gray-950 shadow-sm">
-        <div className="flex items-center justify-between border-b border-gray-800 px-5 py-3">
-          <div>
-            <p className="text-sm font-medium text-white">Try the API</p>
-            <p className="mt-0.5 text-xs text-gray-400">
-              Uses <code>{exampleModel}</code>
-            </p>
+      {noChatModels ? (
+        <section className="rounded-2xl border border-dashed border-gray-300 bg-white px-6 py-6 text-sm text-gray-600">
+          <p className="font-medium text-gray-900">No chat models yet.</p>
+          <p className="mt-1">
+            {auth.user?.is_admin ? (
+              <>
+                Add a route in the{' '}
+                <Link href="/dashboard/admin" className="underline hover:text-gray-900">
+                  Admin Console
+                </Link>{' '}
+                to serve one.
+              </>
+            ) : (
+              'Ask the operator of this deployment to add a route.'
+            )}
+          </p>
+        </section>
+      ) : curlBase ? (
+        <section className="overflow-hidden rounded-2xl border border-gray-200 bg-gray-950 shadow-sm">
+          <div className="flex items-center justify-between border-b border-gray-800 px-5 py-3">
+            <div>
+              <p className="text-sm font-medium text-white">Try the API</p>
+              <p className="mt-0.5 text-xs text-gray-400">
+                Uses <code>{exampleModel}</code>
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="rounded-md border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:border-gray-600 hover:bg-gray-900 hover:text-white focus:outline-none focus:ring-2 focus:ring-gray-500"
+              aria-live="polite"
+            >
+              {copied ? 'Copied' : 'Copy curl'}
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="rounded-md border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:border-gray-600 hover:bg-gray-900 hover:text-white focus:outline-none focus:ring-2 focus:ring-gray-500"
-            aria-live="polite"
-          >
-            {copied ? 'Copied' : 'Copy curl'}
-          </button>
-        </div>
-        <pre className="overflow-x-auto px-5 py-5 text-sm leading-6 text-gray-200">
-          <code>{curlExample}</code>
-        </pre>
-      </section>
+          <pre className="overflow-x-auto px-5 py-5 text-sm leading-6 text-gray-200">
+            <code>{curlExample}</code>
+          </pre>
+        </section>
+      ) : null}
     </div>
   );
 }
