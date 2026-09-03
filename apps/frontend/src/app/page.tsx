@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import {
   CodeExample,
+  ExampleDeveloperHome,
   Features,
   Hero,
   HowItWorks,
@@ -11,10 +12,16 @@ import {
   UseCases,
 } from '@/components/landing';
 import { UpdatesBanner } from '@/components/ui/UpdatesBanner';
-import { useBranding } from '@/components/providers/SiteConfigProvider';
+import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 export default function HomePage(): JSX.Element {
-  const branding = useBranding();
+  const siteConfig = useSiteConfig();
+
+  if (siteConfig.distribution.id === 'example') {
+    return <ExampleDeveloperHome />;
+  }
+
+  const { branding } = siteConfig;
 
   return (
     <div className="flex w-full flex-col gap-4">
