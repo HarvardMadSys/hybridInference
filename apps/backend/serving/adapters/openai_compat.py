@@ -19,7 +19,7 @@ from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
-from .key_pool import KeyPool, KeyPoolExhausted, KeyPoolRoleRestricted
+from .key_pool import KeyPool, KeyPoolExhausted, KeyPoolRoleRestricted, ReleaseOutcome
 from .processors import get_processor
 from .profiles import (
     ProviderProfile,
@@ -50,7 +50,7 @@ _INCOMPLETE_STREAM_ERROR = (
 # max_tokens) with a generic 502 even while the upstream was still producing.
 # A non-streaming response arrives as one body at the end, so an idle/sock_read
 # timeout can't distinguish "still generating" from "hung" -- only a generous
-# total bound works. A persistent timeout still mutes the key and rotates, so
+# total bound works. A persistent timeout still rotates onto another key, so
 # raising the ceiling doesn't weaken failover. Override via env for slow local
 # backends. Streaming requests are unaffected (they set their own timeout).
 _DEFAULT_COMPLETION_TIMEOUT_S = 600.0
@@ -413,14 +413,15 @@ class OpenAICompatAdapter(BaseAdapter):
         path with retries. When set, the pool hands out keys sequentially: a
         request uses one key until it hits a key-specific or transient failure
         (429, 401/402/403, 408/425, 5xx, or a timeout/connection error), at
-        which point ``release`` mutes the key for 5 minutes and the loop advances
-        to the next key. ``release`` returns whether it actually muted: it does
-        not when the error is request-scoped (other 4xx like 400/422, which fail
-        on every key) or when a transient error hits the last usable key — in
-        both cases there is nothing to rotate to, so the error propagates. Pool
-        exhaustion re-raises the last error (or KeyPoolExhausted if none was seen
-        yet), which the caller surfaces as an upstream failure for the router
-        fallback chain.
+        which point the loop advances to the next key. Keys already tried are
+        passed back to the pool so the advance actually happens: rotation comes
+        before muting, so the key that just failed is usually still selectable.
+        ``release`` reports ``PROPAGATE`` when there is nothing to rotate to —
+        a request-scoped error (other 4xx like 400/422, which fail on every key),
+        or a transient error on the last usable key — and the error propagates.
+        Pool exhaustion re-raises the last error (or KeyPoolExhausted if none was
+        seen yet), which the caller surfaces as an upstream failure for the
+        router fallback chain.
         """
         if self._key_pool is None:
             headers = self._build_headers()
@@ -445,17 +446,20 @@ class OpenAICompatAdapter(BaseAdapter):
         provider = self._key_pool_provider_label
         role = _caller_role()
 
-        # Bound the loop to the number of keys this caller may use — defensive;
-        # acquire already filters muted and higher-tier-reserved keys, so we
-        # shouldn't reacquire the same just-muted one.
+        # Bound the loop to the number of keys this caller may use. ``tried``
+        # is what makes each pass a different key: acquire filters muted and
+        # higher-tier-reserved keys, but a key that just failed is left
+        # selectable (rotation precedes muting), so without the exclusion the
+        # loop would re-acquire it every time.
         max_attempts = self._key_pool.size(role)
         if max_attempts <= 0:
             raise self._no_usable_key_error(provider, role)
         last_error: BaseException | None = None
+        tried: set[int] = set()
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key, role=role)
+                api_key, lease = self._key_pool.acquire(affinity_key, role=role, exclude=tried)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",
@@ -469,6 +473,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     raise last_error from exhausted
                 raise
 
+            tried.add(lease.key_index)
             logger.debug(
                 "key_pool_request",
                 extra={
@@ -488,12 +493,14 @@ class OpenAICompatAdapter(BaseAdapter):
                 )
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
-                if not self._key_pool.release(lease, status_code=status):
-                    # Not muted: either a request-scoped client error (fails
-                    # identically on every key) or a transient error on the last
-                    # usable key — nothing to rotate to, so propagate.
+                outcome = self._key_pool.release(lease, status_code=status, tried=tried)
+                if outcome is ReleaseOutcome.PROPAGATE:
+                    # Either a request-scoped client error (fails identically on
+                    # every key) or a transient error on the last usable key —
+                    # nothing to rotate to, so propagate.
                     raise
-                # Key muted for 5 minutes; advance to the next one.
+                # Rotated off this key (muted only if it was the last one this
+                # caller could have used); advance to the next.
                 logger.warning(
                     "key_pool_cooldown",
                     extra={
@@ -501,6 +508,13 @@ class OpenAICompatAdapter(BaseAdapter):
                         "provider": provider,
                         "key_index": lease.key_index,
                         "status": status,
+                        # The event name predates rotate-before-mute and is kept
+                        # so existing log filters still match, but it now covers
+                        # both outcomes. These two say which: ``muted`` for a
+                        # dashboard predicate, ``outcome`` for a human reading
+                        # the line.
+                        "muted": outcome is ReleaseOutcome.MUTED,
+                        "outcome": outcome.name.lower(),
                     },
                 )
                 last_error = e
@@ -550,11 +564,12 @@ class OpenAICompatAdapter(BaseAdapter):
 
         Rotates keys only on status (``ClientResponseError``) opening errors,
         which the client raises before any response-body byte is read: 429/auth
-        mute and rotate, request-scoped 4xx propagate without muting. A
-        non-status I/O error may instead be a disconnect after the upstream
-        returned 2xx and began streaming, so it propagates without rotating to
-        avoid re-submitting (duplicate generation / double billing). Mid-stream
-        errors are handled by the streaming consumer, not here.
+        rotate (muting the key only once there is nothing left to rotate to),
+        request-scoped 4xx propagate. A non-status I/O error may instead be a
+        disconnect after the upstream returned 2xx and began streaming, so it
+        propagates without rotating to avoid re-submitting (duplicate generation
+        / double billing). Mid-stream errors are handled by the streaming
+        consumer, not here.
         """
         if self._key_pool is None:
             headers = self._build_headers()
@@ -577,10 +592,11 @@ class OpenAICompatAdapter(BaseAdapter):
         if max_attempts <= 0:
             raise self._no_usable_key_error(provider, role)
         last_error: BaseException | None = None
+        tried: set[int] = set()
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key, role=role)
+                api_key, lease = self._key_pool.acquire(affinity_key, role=role, exclude=tried)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",
@@ -594,6 +610,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     raise last_error from exhausted
                 raise
 
+            tried.add(lease.key_index)
             logger.debug(
                 "key_pool_request",
                 extra={
@@ -614,7 +631,10 @@ class OpenAICompatAdapter(BaseAdapter):
                 # A 2xx response with no stream events is incomplete. Do not
                 # retry after the upstream accepted the generation request, but
                 # count the outcome as a non-HTTP failure so a multi-key route
-                # rotates off this key on the next request.
+                # rotates off this key on the next request. Released without
+                # ``tried`` deliberately: that is the pool's "cannot rotate"
+                # signal, and it is the mute -- not a rotation here -- that moves
+                # the next request along.
                 self._key_pool.release(lease, status_code=0)
                 logger.debug(
                     "key_pool_active_affinities",
@@ -628,11 +648,13 @@ class OpenAICompatAdapter(BaseAdapter):
             except aiohttp.ClientResponseError as e:
                 # Status error — raised by the client before any response body
                 # byte is read, so re-issuing the request on another key is safe.
-                if not self._key_pool.release(lease, status_code=e.status):
-                    # Not muted: request-scoped error, or a transient error on
-                    # the last usable key — propagate without rotating.
+                outcome = self._key_pool.release(lease, status_code=e.status, tried=tried)
+                if outcome is ReleaseOutcome.PROPAGATE:
+                    # Nothing to rotate to: request-scoped error, or a transient
+                    # error on the last usable key — propagate.
                     raise
-                # Key muted for 5 minutes; rotate to the next one.
+                # Rotated off this key (muted only if it was the last one this
+                # caller could have used); open on the next.
                 logger.warning(
                     "key_pool_cooldown",
                     extra={
@@ -641,6 +663,10 @@ class OpenAICompatAdapter(BaseAdapter):
                         "key_index": lease.key_index,
                         "status": e.status,
                         "stage": "stream",
+                        # See the non-streaming path: the event name covers both
+                        # outcomes, and these two say which.
+                        "muted": outcome is ReleaseOutcome.MUTED,
+                        "outcome": outcome.name.lower(),
                     },
                 )
                 last_error = e
@@ -978,8 +1004,10 @@ class OpenAICompatAdapter(BaseAdapter):
         # Open the stream via the key-pool-aware helper. The helper rotates
         # keys on opening errors BEFORE the first chunk is yielded; once we
         # receive the primed first chunk, the lease is committed for the
-        # lifetime of the stream. A mid-stream error mutes the key (released
-        # with an error status below) so the next request rotates off it.
+        # lifetime of the stream. A mid-stream error has nowhere to rotate to
+        # -- the upstream has already begun answering -- so it releases with an
+        # error status and no ``tried`` set, taking the pool's mute path and
+        # putting the key in cooldown so the next request starts elsewhere.
         primed: str | None = None
         stream_iter: AsyncIterator[str] | None = None
         active_lease = None

@@ -16,6 +16,7 @@ from serving.adapters.key_pool import (
     KeyPool,
     KeyPoolExhausted,
     KeyPoolRoleRestricted,
+    ReleaseOutcome,
     normalize_min_role,
 )
 
@@ -91,7 +92,7 @@ def test_free_caller_falls_back_past_a_muted_shared_key_only_to_shared_keys(monk
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
     _, lease = pool.acquire("user-A", role="free")
-    assert pool.release(lease, status_code=429) is True  # shared1 muted
+    assert pool.release(lease, status_code=429) is ReleaseOutcome.MUTED  # shared1 muted
 
     assert pool.acquire("user-B", role="free")[0] == "shared2"
 
@@ -155,13 +156,13 @@ def test_reserved_key_does_not_count_as_a_fallback_for_a_free_caller(monkeypatch
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
     _, lease = pool.acquire("user-A", role="free")
-    assert pool.release(lease, status_code=429) is False
+    assert pool.release(lease, status_code=429) is ReleaseOutcome.PROPAGATE
 
-    # The same failure from a pro caller *does* mute immediately: it has the
-    # shared key to rotate to.
+    # The same failure from a pro caller *does* mute: it has the shared key to
+    # fall back on, so taking the reserved one out of service costs it nothing.
     _, pro_lease = pool.acquire("user-B", role="pro")
     assert pro_lease.key_index == 1
-    assert pool.release(pro_lease, status_code=429) is True
+    assert pool.release(pro_lease, status_code=429) is ReleaseOutcome.MUTED
 
 
 def test_muting_a_reserved_key_leaves_the_shared_key_serving(monkeypatch):
@@ -170,7 +171,7 @@ def test_muting_a_reserved_key_leaves_the_shared_key_serving(monkeypatch):
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
     _, lease = pool.acquire("user-A", role="pro")
-    assert pool.release(lease, status_code=429) is True
+    assert pool.release(lease, status_code=429) is ReleaseOutcome.MUTED
 
     assert pool.acquire("user-A", role="pro")[0] == "shared"
     assert pool.acquire("user-B", role="free")[0] == "shared"
@@ -215,7 +216,8 @@ def test_shared_key_muted_but_reserved_healthy_is_role_restricted(monkeypatch):
     _, lease = pool.acquire("user-A", role="pro")  # takes 'reserved'
     assert lease.key_index == 1
     _, shared_lease = pool.acquire("user-B", role="free")
-    assert pool.release(shared_lease, status_code=429) is False  # sole key for free
+    outcome = pool.release(shared_lease, status_code=429)
+    assert outcome is ReleaseOutcome.PROPAGATE  # sole key for free
     # Force the shared key into cooldown from an unrestricted caller's lease,
     # which does have somewhere to rotate to.
     _, any_lease = pool.acquire("probe", role=None)

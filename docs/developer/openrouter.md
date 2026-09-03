@@ -125,8 +125,9 @@ OpenRouter route when the response carried no cost figure.
 A route's `api_keys:` is a list. With a single entry — the usual case — the
 adapter uses it directly. With several, the inherited key-pool logic rotates:
 a key that hits a key-specific or transient failure (429, 401/402/403, 408/425,
-5xx, or a timeout) is muted for five minutes and the request advances to the
-next key. Request-scoped failures such as `400` and `422` fail identically on
+5xx, or a timeout) hands the request to the next key. The failing key is muted
+only once the request has nowhere left to rotate to, and then for 20 seconds.
+Request-scoped failures such as `400` and `422` fail identically on
 every key, so they propagate immediately instead of burning the pool.
 
 An `api_keys:` entry that expands from an unset environment variable is treated
