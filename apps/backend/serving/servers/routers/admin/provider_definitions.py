@@ -137,9 +137,20 @@ def _base_url_with_provider_default(provider: str, base_url: str) -> str:
 def _config_managed_provider_names(
     config_specs: dict[str, ConfigProviderSpec] | None = None,
 ) -> set[str]:
-    """Return provider slugs managed by code or config/models.yaml."""
+    """Return provider slugs managed by code or config/models.yaml.
+
+    Key-provider aliases (``kimi_coding`` → ``kimi``) count as code-managed:
+    keys and routes under such a name are grouped under the alias target
+    everywhere else, so a custom provider by that name would list no models
+    and could be deleted while its routes still ran.
+    """
     specs = config_specs if config_specs is not None else _configured_provider_specs()
-    return set(PROVIDER_TARGETS) | set(SELECTABLE_PROVIDER_TARGETS) | set(specs)
+    return (
+        set(PROVIDER_TARGETS)
+        | set(SELECTABLE_PROVIDER_TARGETS)
+        | set(dynamic_keys.aliased_key_providers())
+        | set(specs)
+    )
 
 
 def config_route_provider_labels(
@@ -326,17 +337,25 @@ def _canonical_model_id(model_id: str, route: Any) -> str:
     return str(getattr(cfg, "id", model_id) or model_id)
 
 
-def _bare_provider(value: str) -> str:
+def _credential_owner(value: str) -> str:
     """Reduce a provider reference to the provider that owns its credentials.
 
-    An OpenRouter-pinned route stores ``openrouter[parasail]``; the credential
-    owner is OpenRouter, and ``parasail`` is a routing preference, not a
-    provider the registry can hold keys for.
+    A pinned OpenRouter route is referenced three ways — ``openrouter[parasail]``
+    in config, the bare target name ``parasail`` in the Routing tab's route
+    metadata, and ``openrouter`` on the adapter itself — and the credential
+    owner is OpenRouter in every case; ``parasail`` is a routing preference,
+    not a provider the registry can hold keys for. Any other route target
+    resolves to its key provider, and everything else to its key-pool name.
     """
     try:
-        base, _pin = parse_openrouter_kind(value)
+        base, pin = parse_openrouter_kind(value)
     except ValueError:
-        base = value
+        base, pin = value, None
+    if pin is not None:
+        return "openrouter"
+    target = PROVIDER_TARGETS.get(base)
+    if target is not None:
+        return dynamic_keys.normalize_key_provider(target.key_provider)
     return dynamic_keys.normalize_key_provider(base)
 
 
@@ -353,7 +372,7 @@ def _provider_candidates_for_adapter(adapter: Any) -> set[str]:
     for value in candidates:
         if isinstance(value, str) and value.strip():
             normalized.add(dynamic_keys.normalize_key_provider(value.strip()))
-            normalized.add(_bare_provider(value.strip()))
+            normalized.add(_credential_owner(value.strip()))
     return normalized
 
 
@@ -367,14 +386,16 @@ def _runtime_provider_for_adapter(adapter: Any) -> str | None:
     providers.
     """
     cfg = getattr(adapter, "config", None)
+    if getattr(cfg, "openrouter_pinned_provider", None):
+        return "openrouter"
     metadata = getattr(cfg, "route_metadata", None) or {}
     for key in ("key_provider", "upstream_provider"):
         value = metadata.get(key)
         if isinstance(value, str) and value.strip():
-            return _bare_provider(value.strip())
+            return _credential_owner(value.strip())
     provider = getattr(cfg, "provider", None)
     if isinstance(provider, str) and provider.strip():
-        return _bare_provider(provider.strip())
+        return _credential_owner(provider.strip())
     return None
 
 
