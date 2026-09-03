@@ -162,9 +162,9 @@ def config_route_provider_labels(
 def _registry_provider_names(
     config_specs: dict[str, ConfigProviderSpec] | None = None,
 ) -> set[str]:
-    """Return built-in provider slugs that belong in the provider registry."""
+    """Return config-declared provider slugs that belong in the registry."""
     specs = config_specs if config_specs is not None else _configured_provider_specs()
-    return set(SELECTABLE_PROVIDER_TARGETS) | set(specs)
+    return set(specs)
 
 
 def _is_config_managed_provider(
@@ -575,9 +575,7 @@ async def list_provider_definitions(
     definition_rows = {row.provider: row for row in await op_store.list_provider_definitions()}
 
     config_specs = _configured_provider_specs()
-    db_row_providers = set(definition_rows)
-    runtime_known_providers = dynamic_keys.get_known_providers() - db_row_providers
-    built_in_providers = _registry_provider_names(config_specs) | runtime_known_providers
+    reserved_providers = _config_managed_provider_names(config_specs)
 
     # The definitions table only surfaces genuine custom providers. A row whose
     # slug matches a built-in name is ignored: built-ins are read-only and
@@ -586,8 +584,10 @@ async def list_provider_definitions(
     custom_rows = {
         provider: row
         for provider, row in definition_rows.items()
-        if provider not in built_in_providers
+        if provider not in reserved_providers
     }
+    runtime_known_providers = dynamic_keys.get_known_providers() - set(custom_rows)
+    built_in_providers = _registry_provider_names(config_specs) | runtime_known_providers
     for row in custom_rows.values():
         provider_registry.register_provider_definition(row)
 
