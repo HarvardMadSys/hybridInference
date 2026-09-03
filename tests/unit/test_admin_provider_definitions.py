@@ -76,6 +76,18 @@ def _empty_services():
     return SimpleNamespace(router=SimpleNamespace(routes={}))
 
 
+def _services_with_runtime_provider(provider: str, model_id: str = "runtime-model"):
+    adapter = SimpleNamespace(
+        config=SimpleNamespace(
+            id=model_id,
+            provider=provider,
+            route_metadata={},
+        )
+    )
+    route = SimpleNamespace(raw_adapters=[(adapter, 1.0, "runtime-route")])
+    return SimpleNamespace(router=SimpleNamespace(routes={model_id: route}))
+
+
 @pytest.mark.asyncio
 async def test_update_builtin_provider_is_rejected(monkeypatch):
     store = FakeProviderDefinitionStore()
@@ -270,6 +282,26 @@ async def test_list_provider_definitions_includes_runtime_provider(monkeypatch):
     monkeypatch.setattr(
         provider_definitions.dynamic_keys,
         "get_known_providers",
+        lambda: {"featherless"},
+    )
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=store,
+        services=_services_with_runtime_provider("chutes"),
+    )
+
+    assert [row.provider for row in response.providers] == ["chutes"]
+
+
+@pytest.mark.asyncio
+async def test_list_provider_definitions_omits_stale_runtime_provider(monkeypatch):
+    store = FakeProviderDefinitionStore()
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(
+        provider_definitions.dynamic_keys,
+        "get_known_providers",
         lambda: {"chutes"},
     )
 
@@ -279,7 +311,7 @@ async def test_list_provider_definitions_includes_runtime_provider(monkeypatch):
         services=_empty_services(),
     )
 
-    assert [row.provider for row in response.providers] == ["chutes"]
+    assert response.providers == []
 
 
 @pytest.mark.asyncio

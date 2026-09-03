@@ -586,14 +586,18 @@ async def list_provider_definitions(
         for provider, row in definition_rows.items()
         if provider not in reserved_providers
     }
-    runtime_known_providers = dynamic_keys.get_known_providers() - set(custom_rows)
-    built_in_providers = _registry_provider_names(config_specs) | runtime_known_providers
+    runtime_models_by_provider = _models_by_provider(services)
+    # The dynamic-key registry is an ever-seen whitelist, so it can retain a
+    # provider after its final runtime route is removed. Derive runtime entries
+    # from the live route table instead so stale registrations stay hidden.
+    active_route_providers = set(runtime_models_by_provider) - set(custom_rows)
+    built_in_providers = _registry_provider_names(config_specs) | active_route_providers
     for row in custom_rows.values():
         provider_registry.register_provider_definition(row)
 
     providers = built_in_providers | set(custom_rows)
     models_by_provider = _merge_config_models_by_provider(
-        _models_by_provider(services),
+        runtime_models_by_provider,
         config_specs,
     )
     rows = [
