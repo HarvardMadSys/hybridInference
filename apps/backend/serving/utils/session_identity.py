@@ -86,10 +86,14 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 # cannot swallow the separator that ends it, and the account segment is allowed
 # to be empty (``_account__session_``). The session itself runs to the next
 # ``_`` boundary rather than to the end of the string, so a segment appended in
-# some future version still yields the session rather than nothing.
+# some future version still yields the session rather than nothing -- but the
+# trailing lookahead insists on *a* boundary, because without one the pattern
+# also matches a prefix of something else entirely and reports a truncation of
+# it: ``user_customer_account_tenant_session_admin@example.com`` would be
+# grouped under ``admin``.
 _CLAUDE_CODE_USER_ID_RE = re.compile(
     r"^user_[A-Za-z0-9.:-]+_account_[A-Za-z0-9.:-]*"
-    r"_session_(?P<sid>[A-Za-z0-9][A-Za-z0-9.:-]*)"
+    r"_session_(?P<sid>[A-Za-z0-9][A-Za-z0-9.:-]*)(?=_|$)"
 )
 
 

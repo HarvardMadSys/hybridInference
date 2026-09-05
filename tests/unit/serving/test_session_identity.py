@@ -106,6 +106,14 @@ def test_claude_code_composite_user_id() -> None:
     assert identity == SessionIdentity(CLAUDE_CODE_SESSION, "metadata.user_id")
 
 
+def test_overlong_id_after_the_session_is_rejected_not_truncated() -> None:
+    # The bound applies to what the pattern captured, and the boundary
+    # lookahead means it cannot capture a prefix of a longer token.
+    long_tail = "a" * (MAX_SESSION_ID_CHARS + 1)
+    body = {"metadata": {"user_id": f"user_9f1c_account_2f1a_session_{long_tail}"}}
+    assert session_identity(_headers(), body) is None
+
+
 def test_claude_code_session_read_up_to_the_next_segment() -> None:
     # The id ends at the next ``_`` boundary rather than at the end of the
     # string, so a segment appended in some future version still yields the
@@ -139,6 +147,11 @@ def test_declared_body_session_wins_over_the_composite_user_id() -> None:
         "customer_session_internal",
         "session_abc",
         "user_9f1c_session_7c6b",  # the account segment is missing entirely
+        # The composite prefix matches, but what follows the session is not a
+        # segment boundary: reading "admin" here would group an unrelated
+        # caller under a truncation of its own identifier.
+        "user_customer_account_tenant_session_admin@example.com",
+        "user_9f1c_account_2f1a_session_7c6b/extra",
     ],
 )
 def test_only_the_full_composite_shape_yields_a_session(user_id: str) -> None:
