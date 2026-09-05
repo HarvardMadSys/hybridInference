@@ -34,7 +34,6 @@ DEPLOY = REPO / "deploy"
 # blind (e.g. a refactor that moves the CMD into a script the scan can't see).
 _KNOWN_LAUNCH_FILES = {
     DEPLOY / "docker" / "Dockerfile.backend",
-    DEPLOY / "docker" / "Dockerfile.oncall",
     DEPLOY / "systemd" / "hybrid_inference.service",
     DEPLOY / "systemd" / "hybrid_inference.staging.service",
 }

@@ -25,8 +25,6 @@ from serving.observability.alerts import (
 
 @pytest.fixture(autouse=True)
 def reset_state(monkeypatch):
-    monkeypatch.delenv("CODEX_ONCALL_RELAY_URL", raising=False)
-    monkeypatch.delenv("CODEX_ONCALL_RELAY_TOKEN", raising=False)
     reset_dedupe_state()
     yield
     reset_dedupe_state()
@@ -53,70 +51,6 @@ async def test_alert_slack_posts_when_webhook_set(monkeypatch):
         assert url == "https://hooks.slack.com/x"
         assert "test title" in message
         assert "Foo" in message and "bar" in message
-
-
-async def test_alert_slack_prefers_oncall_relay(monkeypatch):
-    monkeypatch.setenv("CODEX_ONCALL_RELAY_URL", "https://oncall.internal/")
-    monkeypatch.setenv("CODEX_ONCALL_RELAY_TOKEN", "relay-secret")
-    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/fallback")
-    with (
-        patch(
-            "serving.observability.alerts._post_to_oncall",
-            new=AsyncMock(return_value=True),
-        ) as mock_oncall,
-        patch("serving.observability.alerts._post_to_slack", new=AsyncMock()) as mock_slack,
-    ):
-        sent = await alert_slack(
-            AlertSeverity.ERROR,
-            "Provider failed",
-            {"provider": "openai", "api_key": "must-not-leak"},
-            dedupe_key="provider:openai",
-        )
-
-    assert sent is True
-    mock_slack.assert_not_called()
-    relay_url, token, event = mock_oncall.call_args.args
-    assert relay_url == "https://oncall.internal/"
-    assert token == "relay-secret"
-    assert event.fingerprint.endswith(":provider:openai")
-    assert event.context["provider"] == "openai"
-    assert event.context["api_key"] == "[REDACTED]"
-
-
-async def test_alert_slack_falls_back_when_oncall_relay_fails(monkeypatch):
-    monkeypatch.setenv("CODEX_ONCALL_RELAY_URL", "https://oncall.internal")
-    monkeypatch.setenv("CODEX_ONCALL_RELAY_TOKEN", "relay-secret")
-    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/fallback")
-    with (
-        patch(
-            "serving.observability.alerts._post_to_oncall",
-            new=AsyncMock(return_value=False),
-        ),
-        patch(
-            "serving.observability.alerts._post_to_slack",
-            new=AsyncMock(return_value=True),
-        ) as mock_slack,
-    ):
-        sent = await alert_slack(AlertSeverity.ERROR, "Provider failed", {})
-
-    assert sent is True
-    mock_slack.assert_awaited_once()
-    assert mock_slack.call_args.args[0] == "https://hooks.slack.com/fallback"
-
-
-async def test_alert_slack_can_deliver_through_relay_without_webhook(monkeypatch):
-    monkeypatch.setenv("CODEX_ONCALL_RELAY_URL", "https://oncall.internal")
-    monkeypatch.setenv("CODEX_ONCALL_RELAY_TOKEN", "relay-secret")
-    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "")
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", "")
-    with patch(
-        "serving.observability.alerts._post_to_oncall",
-        new=AsyncMock(return_value=True),
-    ) as mock_oncall:
-        sent = await alert_slack(AlertSeverity.WARN, "Latency high", {"p95_ms": 70_000})
-
-    assert sent is True
-    mock_oncall.assert_awaited_once()
 
 
 async def test_failed_delivery_does_not_consume_cooldown(monkeypatch):
@@ -599,11 +533,11 @@ class TestAFailedSweepRetriesPromptly:
         assert mock_post.await_count == 3
 
 
-class TestTheResolutionWaitSpansBothSinks:
+class TestTheResolutionWaitOutlivesASlowSend:
     async def test_a_timeout_does_not_end_the_wait_after_one_attempt(self, monkeypatch):
-        """A firing send that tries the relay then the webhook takes both timeouts.
+        """A firing send can occupy the webhook for longer than one wait window.
 
-        Giving up on the first would drop exactly the resolution this wait
+        Giving up after the first would drop exactly the resolution this wait
         exists to save.
         """
         monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")

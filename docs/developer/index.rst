@@ -115,7 +115,6 @@ how those overlays resolve.
    staging
    trusted-proxies-and-client-ips
    automation-score
-   codex-oncall
 
 .. toctree::
    :maxdepth: 2

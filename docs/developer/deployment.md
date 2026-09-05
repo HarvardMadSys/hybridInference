@@ -26,11 +26,10 @@ host-side bind address is hard-coded to loopback. `DB_HOST` is pinned to
 `postgres` in the Compose file and is ignored under Compose — it matters only
 for a backend started directly from source.
 
-Two more services exist in the same file but start only when their profile is
-named: `pgadmin` (profile `admin`) and `codex-oncall` (profile `oncall`).
+One more service exists in the same file but starts only when its profile is
+named: `pgadmin` (profile `admin`).
 
-`frontend` and `codex-oncall` — the latter one of the profile-gated services
-above, so it normally does not run — depend on `backend` with `condition:
+`frontend` depends on `backend` with `condition:
 service_started`, not `service_healthy` — deliberately, so that a backend
 reporting unhealthy because its database logging is down does not stop the
 console from starting.
@@ -237,9 +236,6 @@ Rules and thresholds are a deployment's own; this repository ships no alerts
 file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and the built-in
 thresholds apply. The rule types and evaluation live in
 `apps/backend/serving/observability/`.
-
-For asynchronous read-only Codex investigation of alerts, see
-[Codex On-Call](codex-oncall.md).
 
 ## Database
 

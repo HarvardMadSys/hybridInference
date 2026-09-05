@@ -179,7 +179,7 @@ def test_pr_docker_shared_runs_python_tests_and_all_images() -> None:
             docker_shared=True,
             python_tests=True,
             tutorial_e2e=True,
-            matrix=("frontend", "backend", "oncall"),
+            matrix=("frontend", "backend"),
         ),
         _results(
             test="success",
@@ -191,7 +191,7 @@ def test_pr_docker_shared_runs_python_tests_and_all_images() -> None:
 def test_pr_full_requires_all_application_jobs_and_images() -> None:
     verify_gate(
         "pull_request",
-        _classification(full=True, python_tests=True, matrix=("frontend", "backend", "oncall")),
+        _classification(full=True, python_tests=True, matrix=("frontend", "backend")),
         _results(
             **{
                 "backend-quality": "success",
@@ -240,7 +240,7 @@ def test_push_runs_tutorial_e2e_only_when_classified() -> None:
 def test_schedule_and_manual_require_all_app_jobs_and_docker(event_name: str) -> None:
     verify_gate(
         event_name,
-        _classification(full=True, python_tests=True, matrix=("frontend", "backend", "oncall")),
+        _classification(full=True, python_tests=True, matrix=("frontend", "backend")),
         _results(
             **{
                 "backend-quality": "success",

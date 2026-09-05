@@ -55,41 +55,21 @@ def test_runnable_example_changes_run_both_smoke_layers(path: str) -> None:
     assert result.docker_matrix() == ["backend"]
 
 
-def test_oncall_source_also_triggers_backend_tests() -> None:
-    result = classify(["apps/backend/serving/oncall/app.py"])
-    assert _true_categories(result) == {
-        "oncall",
-        "backend",
-        "python_tests",
-        "tutorial_e2e",
-    }
-    assert result.docker_matrix() == ["backend", "oncall"]
-
-
-def test_oncall_dockerfile_is_oncall_only() -> None:
-    result = classify(["deploy/docker/Dockerfile.oncall"])
-    assert _true_categories(result) == {"oncall", "python_tests"}
-    assert result.docker_matrix() == ["oncall"]
-
-
-def test_shared_serving_change_triggers_oncall_and_backend() -> None:
-    # Dockerfile.oncall COPYs the whole apps/backend/serving tree, so shared
-    # serving code (not just serving/oncall) is baked into the on-call image.
+def test_shared_serving_change_triggers_backend() -> None:
     result = classify(["apps/backend/serving/config/settings.py"])
     assert _true_categories(result) == {
-        "oncall",
         "backend",
         "python_tests",
         "tutorial_e2e",
     }
-    assert result.docker_matrix() == ["backend", "oncall"]
+    assert result.docker_matrix() == ["backend"]
 
 
 def test_docker_shared_change() -> None:
     for path in (".dockerignore", "deploy/docker/docker-compose.yml"):
         result = classify([path])
         assert _true_categories(result) == {"docker_shared", "python_tests", "tutorial_e2e"}
-        assert result.docker_matrix() == ["frontend", "backend", "oncall"]
+        assert result.docker_matrix() == ["frontend", "backend"]
 
 
 @pytest.mark.parametrize(
@@ -97,7 +77,6 @@ def test_docker_shared_change() -> None:
     [
         ("deploy/docker/Dockerfile.frontend", "frontend", ["frontend"]),
         ("deploy/docker/Dockerfile.backend", "backend", ["backend"]),
-        ("deploy/docker/Dockerfile.oncall", "oncall", ["oncall"]),
     ],
 )
 def test_image_specific_dockerfile_change(path: str, category: str, matrix: list[str]) -> None:
@@ -126,7 +105,7 @@ def test_full_triggers(path: str) -> None:
     assert result.full is True
     assert result.python_tests is True
     assert "full" in _true_categories(result)
-    assert result.docker_matrix() == ["frontend", "backend", "oncall"]
+    assert result.docker_matrix() == ["frontend", "backend"]
 
 
 def test_makefile_full_trigger_also_selects_tutorial_e2e() -> None:
@@ -239,10 +218,10 @@ def test_tutorial_backend_surfaces_select_e2e(path: str) -> None:
 
 def test_whole_application_trees_select_tutorial_e2e() -> None:
     frontend = classify(["apps/frontend/src/app/page.tsx"])
-    oncall = classify(["apps/backend/serving/oncall/app.py"])
+    backend = classify(["apps/backend/serving/servers/routers/health.py"])
 
     assert frontend.tutorial_e2e is True
-    assert oncall.tutorial_e2e is True
+    assert backend.tutorial_e2e is True
 
 
 def test_docs_build_does_not_suppress_application_categories() -> None:
@@ -288,7 +267,7 @@ def test_rename_considers_both_old_and_new_paths() -> None:
 
 def test_mixed_images_use_stable_matrix_order() -> None:
     result = classify(["apps/backend/serving/config/settings.py", "apps/frontend/src/app/page.tsx"])
-    assert result.docker_matrix() == ["frontend", "backend", "oncall"]
+    assert result.docker_matrix() == ["frontend", "backend"]
 
 
 def test_path_normalization_strips_leading_dot_slash() -> None:
