@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -312,6 +313,84 @@ def test_avoid_ignored_when_it_is_the_only_candidate():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("keys", [["a", "b"], ["a", "b", "c"]])
+@pytest.mark.parametrize("avoided", ["a", "b", "c"])
+def test_avoid_with_elephant_prompt_does_not_index_past_candidates(keys, avoided):
+    """``avoid`` shrinks the candidate list; the elephant map must follow it.
+
+    Dropping the avoided endpoint leaves ``eligible`` shorter than ``keys``, so
+    anything keyed by position rather than by candidate index goes out of range
+    as soon as an elephant-sized prompt engages the saturation filter. That
+    combination -- an affinity pin dropped for backlog plus a mega-prefill --
+    failed every such request in production for 18 days.
+
+    Both pool sizes are covered: two endpoints is the commoner topology, and
+    only a three-endpoint pool can avoid a *middle* candidate.
+    """
+    if avoided not in keys:
+        pytest.skip("avoided endpoint is not in this pool")
+    t = PrefillLoadTracker(elephant_tokens=1000)
+    chosen = t.select_index(keys, [1.0] * len(keys), 500_000, _fixed_rand(0.99), "caller", avoided)
+    # Not merely "did not raise": the avoided endpoint must not be handed back.
+    assert keys[chosen] != avoided
+
+
+@pytest.mark.unit
+def test_avoid_with_elephant_prompt_still_skips_saturated_endpoints():
+    """The saturation filter keeps working once ``avoid`` has shrunk the pool."""
+    t = PrefillLoadTracker(elephant_tokens=1000, elephant_limit=1)
+    t.acquire("b", 500_000)  # 'b' is now at the elephant limit
+    # 'a' is avoided and 'b' is saturated, so the draw must land on 'c'.
+    assert (
+        t.select_index(["a", "b", "c"], [1.0, 1.0, 1.0], 500_000, _fixed_rand(0.0), "caller", "a")
+        == 2
+    )
+
+
+@pytest.mark.unit
+def test_avoid_with_mixed_elephant_and_saturated_candidates():
+    """The case a positional map gets *silently* wrong, not just out of range.
+
+    Here the surviving candidates disagree: 'b' is warm (not an elephant) and
+    'c' is cold and saturated. A map keyed by position would read 'b' entry for
+    'c' -- so the bug class is a mis-route, not only a crash, whenever the
+    lookup happens to stay in range.
+    """
+    t = PrefillLoadTracker(elephant_tokens=200_000, elephant_limit=1)
+    # 'b' holds this caller's warm prefix, so its un-cached remainder is small.
+    t.release(t.acquire("b", 490_000, affinity_key="caller"), prefill_confirmed=True)
+    t.acquire("c", 500_000)  # 'c' is cold and now at the elephant limit
+    # 'a' avoided, 'c' saturated -> only the warm 'b' survives.
+    assert (
+        t.select_index(["a", "b", "c"], [1.0, 1.0, 1.0], 500_000, _fixed_rand(0.0), "caller", "a")
+        == 1
+    )
+
+
+@pytest.mark.unit
+def test_avoid_with_all_candidates_saturated_still_routes():
+    """All-saturated must degrade to "least loaded", never to a crash or a stall."""
+    t = PrefillLoadTracker(elephant_tokens=1000, elephant_limit=1)
+    for key in ("a", "b", "c"):
+        t.acquire(key, 500_000)
+    chosen = t.select_index(
+        ["a", "b", "c"], [1.0, 1.0, 1.0], 500_000, _fixed_rand(0.0), "caller", "a"
+    )
+    assert chosen in (1, 2)
+
+
+@pytest.mark.unit
+def test_avoid_with_elephant_prompt_under_kill_switch(monkeypatch):
+    """The ops rollback path (ROUTING_PREFILL_AWARE_ENABLED=0) over the same input."""
+    monkeypatch.setattr(prefill_load, "PREFILL_AWARE_ENABLED", False)
+    t = PrefillLoadTracker(elephant_tokens=1000)
+    assert (
+        t.select_index(["a", "b", "c"], [1.0, 1.0, 1.0], 500_000, _fixed_rand(0.0), "caller", "a")
+        != 0
+    )
+
+
+@pytest.mark.unit
 def test_zero_weights_do_not_divide_by_zero():
     t = PrefillLoadTracker()
     assert t.select_index(["a", "b"], [0.0, 0.0], 10, _fixed_rand(0.5)) == 1
@@ -485,9 +564,61 @@ def test_router_breaks_affinity_when_pinned_endpoint_backlogged():
     assert r._select_adapter("m") is a
 
     # Once A is saturated the pin yields and selection re-runs onto B.
+    # prefill_tokens is the whale this test is named for: passing 0 here left
+    # the elephant filter dormant, which is exactly the gap that let the
+    # avoid + mega-prefill IndexError reach production through this call path.
     r.prefill_load.acquire("A", 10_000_000)
-    assert r._select_adapter("m") is b
+    assert r._select_adapter("m", prefill_tokens=500_000) is b
     assert r._affinity[("whale", "m")].endpoint_id == "B"
+
+
+@pytest.mark.unit
+def test_router_survives_a_crash_inside_prefill_aware_selection(monkeypatch, caplog):
+    """Selection is an optimization; its internal errors must not fail requests.
+
+    ``_select_adapter`` is called outside the try/except that owns adapter
+    fallback, so before this guard any exception raised inside ``select_index``
+    was terminal -- no fallback adapter, no circuit-breaker record, and a row
+    logged under the ``"router"`` sentinel with no upstream attribution. That is
+    how one IndexError failed ~700 requests a day for 18 days.
+    """
+    r = FixedRouter()
+    a = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    b = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(a, 0.5), (b, 0.5)])
+
+    def _boom(*_args, **_kwargs):
+        raise IndexError("list index out of range")
+
+    monkeypatch.setattr(r.prefill_load, "select_index", _boom)
+
+    with caplog.at_level(logging.ERROR):
+        assert r._select_adapter("m", prefill_tokens=500_000) in (a, b)
+    # Degrading silently would have made this incident invisible rather than
+    # merely under-alerted, so the traceback must reach the log.
+    assert "Prefill-aware selection failed" in caplog.text
+    assert "IndexError" in caplog.text
+
+
+@pytest.mark.unit
+def test_router_fallback_still_avoids_the_dropped_pin(monkeypatch):
+    """Even on the error path, don't hand the caller back the endpoint it left."""
+    r = FixedRouter()
+    a = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    b = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(a, 0.5), (b, 0.5)])
+    req_ctx.set({"affinity_key": "whale"})
+    r._affinity[("whale", "m")] = _Affinity(endpoint_id="A", expires_at=time.monotonic() + 300)
+    r.prefill_load.acquire("A", 10_000_000)  # pin is dropped for backlog
+
+    def _boom(*_args, **_kwargs):
+        raise IndexError("list index out of range")
+
+    monkeypatch.setattr(r.prefill_load, "select_index", _boom)
+
+    # Deterministic across draws: 'A' is excluded from the fallback pool.
+    for _ in range(20):
+        assert r._select_adapter("m", prefill_tokens=500_000) is b
 
 
 @pytest.mark.unit

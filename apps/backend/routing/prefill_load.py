@@ -987,12 +987,16 @@ class PrefillLoadTracker:
             if remaining:
                 eligible = remaining
         if PREFILL_AWARE_ENABLED:
+            # Keyed by candidate index, not by position in ``eligible``: ``avoid``
+            # may already have dropped entries, so a positional list would be
+            # shorter than ``count`` while the loop below still indexes it with
+            # indices into ``keys``.
             # Computed before taking the lock; uncached_estimate locks too.
-            elephant_here = [
-                self.is_elephant(self.uncached_estimate(keys[i], tokens, affinity_key))
+            elephant_here = {
+                i: self.is_elephant(self.uncached_estimate(keys[i], tokens, affinity_key))
                 for i in eligible
-            ]
-            if any(elephant_here):
+            }
+            if any(elephant_here.values()):
                 with self._lock:
                     unsaturated = [
                         i
