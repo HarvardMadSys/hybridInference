@@ -1029,6 +1029,59 @@ def test_routing_discount_is_unchanged_by_the_fingerprint_gate():
 
 
 @pytest.mark.unit
+def test_elephant_gate_is_not_fooled_by_a_sibling_conversation():
+    """One API key spans every conversation it sends; the gate must not.
+
+    ``affinity_key`` is the API-key hash and ``_prefix_hints`` keeps a single
+    hint per (affinity_key, endpoint_id), so conversation B inherited whatever
+    prefix conversation A left behind. Charged on the loose discount, B read as
+    ~0 un-cached tokens and never incremented ``_elephants`` -- defeating the
+    ELEPHANT_LIMIT isolation for exactly the traffic shape it exists to spread.
+    """
+    t = PrefillLoadTracker()
+    t.release(
+        t.acquire("ep", 490_000, affinity_key="key1", fingerprint="conv-a"),
+        prefill_confirmed=True,
+    )
+    # An unrelated conversation from the same key is a cold prefill.
+    other = t.acquire("ep", 500_000, affinity_key="key1", fingerprint="conv-b")
+    assert other.elephant is True
+    assert t.elephants("ep") == 1
+
+
+@pytest.mark.unit
+def test_elephant_gate_still_clears_a_real_continuation():
+    """The same conversation continuing is not an elephant -- #1271's whole point."""
+    t = PrefillLoadTracker()
+    t.release(
+        t.acquire("ep", 490_000, affinity_key="key1", fingerprint="conv-a"),
+        prefill_confirmed=True,
+    )
+    warm = t.acquire("ep", 500_000, affinity_key="key1", fingerprint="conv-a")
+    assert warm.elephant is False
+    assert t.elephants("ep") == 0
+
+
+@pytest.mark.unit
+def test_routing_load_estimate_keeps_the_loose_discount():
+    """Only admission pays for the strictness; the backlog charge is unchanged.
+
+    A mis-estimated load skews one routing draw and self-corrects, so the
+    caller-scoped discount #1267 shipped stays in place for it.
+    """
+    t = PrefillLoadTracker()
+    t.release(
+        t.acquire("ep", 490_000, affinity_key="key1", fingerprint="conv-a"),
+        prefill_confirmed=True,
+    )
+    before = t.backlog("ep")
+    t.acquire("ep", 500_000, affinity_key="key1", fingerprint="conv-b")
+    # Charged the discounted 10_000, not the full 500_000, despite being an
+    # elephant for admission purposes.
+    assert t.backlog("ep") - before == 10_000
+
+
+@pytest.mark.unit
 def test_unfingerprintable_prompt_never_claims_a_match():
     # A prompt with no text (a pure-image turn) cannot be identified, so the
     # priority path must charge it in full rather than treat None as a match.
