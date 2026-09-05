@@ -291,6 +291,110 @@ class TestAdminUsageInsightsAnalyze:
         assert resp.status_code == 404
 
 
+class TestAdminUsageInsightsSamples:
+    """POST /admin/usage-insights/samples returns the user-turn draw without an LLM."""
+
+    @pytest.fixture
+    def admin_app(self, mock_db_logger):
+        """Minimal FastAPI app with the admin router and mock pool."""
+        mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
+        mock_conn.fetch = AsyncMock(return_value=_sample_rows())
+        mock_conn.fetchrow = AsyncMock(return_value={"id": "user-123"})
+        mock_conn.execute = AsyncMock()
+
+        app = FastAPI(title="Usage Insights Samples Test")
+        services = AppServices(
+            router=MagicMock(),
+            db_logger=mock_db_logger,
+            routing_manager=None,
+        )
+        services.operational_store = _make_op_store(api_key=None)
+        app.state.services = services  # type: ignore[attr-defined]
+        app.include_router(admin_router.router)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_route_requires_admin_auth(self, admin_app):
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/admin/usage-insights/samples", json={})
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_returns_user_turns_without_an_api_key(self, admin_app, monkeypatch):
+        """Viewing samples must not require the analysis provider key."""
+        called = {"llm": False}
+
+        async def _should_not_run(*_args, **_kwargs):
+            called["llm"] = True
+            return "should not run"
+
+        monkeypatch.setattr(usage_insights, "_call_analysis_model", _should_not_run)
+
+        admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/admin/usage-insights/samples", json={})
+        admin_app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        assert called["llm"] is False
+        body = resp.json()
+        assert body["sampled_requests"] == 2
+        assert body["scope"] == "all users"
+        by_model = {s["model_id"]: s for s in body["samples"]}
+        assert by_model["glm-5.1"]["user_messages"] == ["Fix the bug in foo.py"]
+        assert by_model["glm-5.1"]["system_opener"] == "You are Claude Code."
+        assert by_model["minimax-m3"]["user_messages"] == ["refactor"]
+        # Assistant/tool turns are not part of the sample.
+        for sample in body["samples"]:
+            for msg in sample["user_messages"]:
+                assert "Looking at it" not in msg
+
+    @pytest.mark.asyncio
+    async def test_extracts_turns_from_the_prompt_column(self, admin_app, mock_db_logger):
+        mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
+        mock_conn.fetch = AsyncMock(return_value=_sample_rows_new_shape())
+
+        admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/admin/usage-insights/samples", json={})
+        admin_app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        by_model = {s["model_id"]: s for s in resp.json()["samples"]}
+        assert by_model["glm-5.1"]["user_messages"] == ["Fix the bug in foo.py"]
+        assert by_model["minimax-m3"]["user_messages"] == ["refactor"]
+
+    @pytest.mark.asyncio
+    async def test_scopes_to_user_id(self, admin_app):
+        admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/admin/usage-insights/samples",
+                json={"user_id": "user-999", "limit": 10},
+            )
+        admin_app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        assert resp.json()["scope"] == "user-999"
+
+    @pytest.mark.asyncio
+    async def test_404_when_no_samples(self, admin_app, mock_db_logger):
+        mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
+        mock_conn.fetch = AsyncMock(return_value=[])
+
+        admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/admin/usage-insights/samples", json={})
+        admin_app.dependency_overrides.clear()
+
+        assert resp.status_code == 404
+
+
 class TestAdminUsageInsightsSettings:
     @pytest.fixture
     def app_with_store(self, mock_db_logger):
