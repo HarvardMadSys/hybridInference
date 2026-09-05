@@ -6,7 +6,7 @@ from typing import Any
 
 from serving.config.site_identity import get_site_identity
 
-from .openai_compat import OpenAICompatAdapter
+from .openai_compat import OpenAICompatAdapter, unpack_first_choice
 
 
 def openrouter_attribution_headers() -> dict[str, str]:
@@ -74,8 +74,10 @@ class OpenRouterAdapter(OpenAICompatAdapter):
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         from .profiles import extract_tool_calls_for_profile
 
-        choice = response["choices"][0]
-        message = choice["message"]
+        # OpenRouter answers 200 with `choices: []` when its selected sub-provider
+        # filters or drops the generation, and 200 with only an `error` object when
+        # the upstream it proxied to failed after OpenRouter's own request succeeded.
+        choice, message = unpack_first_choice(response, self.config.provider)
         tool_calls = extract_tool_calls_for_profile(self._usage_profile, message)
         usage_info = self._parse_usage(response.get("usage", {}))
 

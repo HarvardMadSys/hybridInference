@@ -516,3 +516,45 @@ def test_completions_upstream_cost_extraction_invariant(routing_info, expected) 
     upstream_cost_usd off routing_info safely for both None and missing-key cases."""
     actual = (routing_info or {}).get("upstream_cost_usd")
     assert actual == expected
+
+
+# ---------------------------------------------------------------------------
+# A 200 is not a completion
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({"choices": []}, "no choices"),
+        ({}, "no choices"),
+        ({"choices": None}, "no choices"),
+        ({"error": {"message": "upstream exploded"}}, "upstream exploded"),
+        ({"choices": ["not-an-object"]}, "non-object choice"),
+        ({"choices": [{"finish_reason": "stop"}]}, "no message object"),
+    ],
+)
+def test_compat_parse_rejects_a_200_that_carries_no_completion(body, expected) -> None:
+    """Azure-style filters and proxied upstream errors answer 200 without choices.
+
+    Indexing straight into choices[0]["message"] turned those into a bare
+    "list index out of range" with no provider, status or upstream text.
+    """
+    adapter = OpenAICompatAdapter(_make_compat_cfg())
+    with pytest.raises(ValueError, match=expected):
+        adapter._parse_completion_response(body)
+
+
+def test_openrouter_parse_rejects_a_200_that_carries_no_completion() -> None:
+    """The OpenRouter override repeats the base parser and needs the same guard."""
+    adapter = OpenRouterAdapter(_make_compat_cfg(provider="openrouter"))
+    with pytest.raises(ValueError, match="no choices"):
+        adapter._parse_completion_response({"choices": [], "error": {"code": 502}})
+
+
+def test_compat_parse_accepts_a_legacy_text_choice() -> None:
+    """A `text` choice carries content; do not fail a response we can read."""
+    adapter = OpenAICompatAdapter(_make_compat_cfg())
+    out = adapter._parse_completion_response(
+        {"choices": [{"text": "hello", "finish_reason": "stop"}]}
+    )
+    assert out["choices"][0]["message"]["content"] == "hello"

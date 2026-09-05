@@ -1253,3 +1253,46 @@ def test_conversation_order_is_otherwise_untouched():
         ("assistant", "two"),
         ("user", "three"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Malformed content blocks degrade, they do not 500
+
+
+def test_request_string_content_block_is_treated_as_text():
+    """`content: ["hi"]` is not the documented shape, but clients send it.
+
+    Every block went through `block.get("type")`, so a plain string raised
+    AttributeError and 500'd a request whose intent is unambiguous.
+    """
+    body = {
+        "model": "glm-4.7",
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": ["Hello", "world"]}],
+    }
+    messages, _ = anthropic_request_to_openai(body)
+    assert messages == [{"role": "user", "content": "Hello\n\nworld"}]
+
+
+def test_request_untranslatable_blocks_are_dropped_not_fatal():
+    """A junk block degrades one block; the surrounding turn still translates."""
+    body = {
+        "model": "glm-4.7",
+        "max_tokens": 100,
+        "messages": [
+            {"role": "user", "content": [None, 42, {"type": "text", "text": "kept"}, ["nested"]]}
+        ],
+    }
+    messages, _ = anthropic_request_to_openai(body)
+    assert messages == [{"role": "user", "content": "kept"}]
+
+
+def test_request_non_dict_message_is_skipped():
+    """`msg.get("role")` on a non-dict message was the same crash one frame up."""
+    body = {
+        "model": "glm-4.7",
+        "max_tokens": 100,
+        "messages": ["junk", {"role": "user", "content": "real"}],
+    }
+    messages, _ = anthropic_request_to_openai(body)
+    assert messages == [{"role": "user", "content": "real"}]

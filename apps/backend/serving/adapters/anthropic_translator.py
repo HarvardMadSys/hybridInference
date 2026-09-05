@@ -41,6 +41,8 @@ def anthropic_request_to_openai(
 
     conversation: list[dict[str, Any]] = []
     for msg in body.get("messages", []):
+        if not isinstance(msg, dict):
+            continue
         if msg.get("role") == "system":
             # Clients do put `role: "system"` inside `messages`, even though
             # the Anthropic surface reserves a top-level field for it — Claude
@@ -169,6 +171,18 @@ def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
     text_only_buffer: list[str] = []
 
     for block in content:
+        if isinstance(block, str):
+            # `content: ["hi"]` is not the documented Anthropic shape, but
+            # clients send it and the intent is unambiguous. Treating it as a
+            # text block beats 500ing on a request we can obviously satisfy.
+            text_parts.append({"type": "text", "text": block})
+            text_only_buffer.append(block)
+            continue
+        if not isinstance(block, dict):
+            # Anything else (number, null, nested list) carries no content we
+            # could translate; dropping it degrades one block instead of the
+            # whole conversation. `_flatten_system` already works this way.
+            continue
         btype = block.get("type")
 
         if btype == "text":
