@@ -171,6 +171,14 @@ async def create_response(
     chat_messages = merge_leading_system_messages(chat_messages)
 
     chat_body: dict[str, Any] = {"model": model, "messages": chat_messages, **params}
+    # ``metadata`` is not a chat parameter, but the delegated handler reads it to
+    # resolve the session the client declared (serving/utils/session_identity.py).
+    # Translation replaces the body the handler sees, so without carrying it over
+    # a Responses client's ``metadata.session_id`` would be dropped here and its
+    # requests would log unlabelled. The chat request schema ignores extra
+    # fields, so nothing else reads it and nothing reaches a provider.
+    if isinstance(body.get("metadata"), dict):
+        chat_body["metadata"] = body["metadata"]
 
     # Overwrite the cached parsed body so the delegated handler validates and
     # logs the translated chat request (Starlette caches both `_json` and the

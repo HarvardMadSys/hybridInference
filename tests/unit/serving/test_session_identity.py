@@ -115,21 +115,34 @@ def test_declared_body_session_wins_over_the_composite_user_id() -> None:
         "alice",  # a plain identifier: no session packed into it
         "user_9f1c_account_2f1a",  # the composite id without the run segment
         "sessionless-client",  # "session" without the segment separators
-        "user_1_session_",  # the marker with nothing after it
-        "user_1_session_-abc",  # an id that does not start with a name character
-        "user_1_session_ 7c6b",  # a space is not part of an id
+        "user_9f1c_account_2f1a_session_",  # the marker with nothing after it
+        "user_9f1c_account_2f1a_session_-ab",  # not starting with a name character
+        "user_9f1c_account_2f1a_session_ 7c",  # a space is not part of an id
+        # Not Claude Code's composite shape, merely a plain user id that
+        # contains the marker: reading "internal" out of this would collapse
+        # every such caller into one invented session.
+        "customer_session_internal",
+        "session_abc",
+        "user_9f1c_session_7c6b",  # the account segment is missing entirely
     ],
 )
-def test_user_id_without_a_session_segment_is_not_guessed(user_id: str) -> None:
+def test_only_the_full_composite_shape_yields_a_session(user_id: str) -> None:
     assert session_identity(_headers(), {"metadata": {"user_id": user_id}}) is None
+
+
+def test_empty_account_segment_still_yields_the_session() -> None:
+    # Claude Code sends ``_account__session_`` when there is no account.
+    identity = session_identity(
+        _headers(), {"metadata": {"user_id": f"user_9f1c_account__session_{CLAUDE_CODE_SESSION}"}}
+    )
+    assert identity == SessionIdentity(CLAUDE_CODE_SESSION, "metadata.user_id")
 
 
 def test_overlong_claude_code_segment_rejected() -> None:
     # The derived value is held to the same bound as a declared one.
     long_segment = "a" * (MAX_SESSION_ID_CHARS + 1)
-    assert (
-        session_identity(_headers(), {"metadata": {"user_id": f"u_session_{long_segment}"}}) is None
-    )
+    user_id = f"user_9f1c_account_2f1a_session_{long_segment}"
+    assert session_identity(_headers(), {"metadata": {"user_id": user_id}}) is None
 
 
 @pytest.mark.parametrize(

@@ -66,11 +66,19 @@ MAX_SESSION_ID_CHARS = 128
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 # Claude Code's composite ``metadata.user_id``:
-# ``user_<hash>_account_<uuid>_session_<uuid>``. The id runs to the next ``_``
-# segment boundary rather than to the end of the string, so a segment appended
-# in some future version still yields the session rather than nothing. The
-# leading ``_`` keeps the marker a real segment boundary.
-_CLAUDE_CODE_SESSION_RE = re.compile(r"_session_(?P<sid>[A-Za-z0-9][A-Za-z0-9.:-]*)")
+# ``user_<hash>_account_<uuid>_session_<uuid>``. The *whole* shape has to match,
+# not just the ``_session_`` marker: another client's ordinary user id that
+# merely contains that substring (``customer_session_internal``) would otherwise
+# have its tail read as a session, silently collapsing every such caller into
+# one invented group. None of the segment classes admits ``_``, so a segment
+# cannot swallow the separator that ends it, and the account segment is allowed
+# to be empty (``_account__session_``). The session itself runs to the next
+# ``_`` boundary rather than to the end of the string, so a segment appended in
+# some future version still yields the session rather than nothing.
+_CLAUDE_CODE_USER_ID_RE = re.compile(
+    r"^user_[A-Za-z0-9.:-]+_account_[A-Za-z0-9.:-]*"
+    r"_session_(?P<sid>[A-Za-z0-9][A-Za-z0-9.:-]*)"
+)
 
 
 class SessionIdentity(NamedTuple):
@@ -102,16 +110,16 @@ def _claude_code_session_id(metadata: Mapping[str, Any]) -> str | None:
     """Return the session packed into Claude Code's ``metadata.user_id``.
 
     Claude Code sends one string carrying the user, the account and the run
-    (``user_<hash>_account_<uuid>_session_<uuid>``). Only the ``_session_``
-    segment is read; the rest identifies the *caller*, which the gateway
-    already knows from the API key it authenticated. A ``user_id`` without that
-    segment -- any other client's plain identifier -- yields None rather than a
-    guess.
+    (``user_<hash>_account_<uuid>_session_<uuid>``). Only the value of the
+    ``_session_`` segment is read; the rest identifies the *caller*, which the
+    gateway already knows from the API key it authenticated. The full composite
+    shape is required, so any other client's plain identifier -- including one
+    that happens to contain ``_session_`` -- yields None rather than a guess.
     """
     user_id = metadata.get("user_id")
     if not isinstance(user_id, str):
         return None
-    match = _CLAUDE_CODE_SESSION_RE.search(user_id)
+    match = _CLAUDE_CODE_USER_ID_RE.match(user_id)
     if match is None:
         return None
     return normalize_session_id(match.group("sid"))

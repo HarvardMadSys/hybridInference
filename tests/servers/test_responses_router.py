@@ -569,3 +569,58 @@ async def test_delete_response(responses_client, responses_store):
 async def test_get_unknown_response_404(responses_client):
     g = await responses_client.get("/v1/responses/resp_missing", headers=_auth())
     assert g.status_code == 404
+
+
+# --- session identity ------------------------------------------------------
+
+
+async def _wait_for_log_kwargs(mock_log_store, timeout: float = 2.0) -> dict[str, Any] | None:
+    """Wait for the fire-and-forget log task and return its kwargs."""
+    import asyncio
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if mock_log_store.log_request.call_count > 0:
+            return mock_log_store.log_request.call_args.kwargs
+        await asyncio.sleep(0.05)
+    return None
+
+
+@pytest.mark.asyncio
+async def test_declared_session_survives_the_translation(responses_client, mock_log_store):
+    """A Responses client's ``metadata.session_id`` must not be lost in translation.
+
+    Delegation replaces the body ``chat_completions`` sees with the translated
+    chat request, so the declaration only reaches the resolver if this surface
+    carries ``metadata`` across.
+    """
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "hello", "metadata": {"session_id": "resp-run-1"}},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+
+    kwargs = await _wait_for_log_kwargs(mock_log_store)
+    assert kwargs is not None, "log_request was never called"
+    assert kwargs["metadata"]["session_id"] == "resp-run-1"
+    assert kwargs["metadata"]["session_id_source"] == "metadata.session_id"
+    # And the router sees it, which is what session-scoped accounting reads.
+    assert TextAdapter.last_params["session_id"] == "resp-run-1"
+
+
+@pytest.mark.asyncio
+async def test_agent_session_header_survives_the_translation(responses_client, mock_log_store):
+    """Codex CLI sends its run id as a header; delegation preserves headers."""
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "hello"},
+        headers={**_auth(), "session_id": "codex-run-2"},
+    )
+    assert r.status_code == 200
+
+    kwargs = await _wait_for_log_kwargs(mock_log_store)
+    assert kwargs is not None
+    assert kwargs["metadata"]["session_id"] == "codex-run-2"
+    assert kwargs["metadata"]["session_id_source"] == "session_id"
