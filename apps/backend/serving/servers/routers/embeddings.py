@@ -145,11 +145,17 @@ async def create_embeddings(
     request_id = f"emb_{uuid.uuid4().hex}"
     start_time = time.time()
     is_authenticated = bool(user_ctx.get("authenticated"))
-    # Resolved the same way as on the chat surfaces, so a client that labels
-    # its session one way does not have to label it another way here. This
-    # surface has no JSON body to read -- the request arrives as a validated
-    # model -- so only the header sources can match.
-    declared_session = session_identity(http_request.headers)
+    # Resolved the same way as on the chat surfaces, so a client that labels its
+    # session one way does not have to label it another way here. The validated
+    # model drops anything the embeddings schema does not declare, so the body
+    # is read back raw for the declaration -- FastAPI has already parsed and
+    # cached it, so this costs nothing and cannot fail on a request that got
+    # this far.
+    try:
+        raw_body: Any = await http_request.json()
+    except Exception:  # pragma: no cover - validation would have rejected it
+        raw_body = None
+    declared_session = session_identity(http_request.headers, raw_body)
 
     # Synthetic health-probe traffic is suppressed from api_logs unless the
     # ``log_synthetic_probes`` toggle opts it in — mirrors the chat-completions
