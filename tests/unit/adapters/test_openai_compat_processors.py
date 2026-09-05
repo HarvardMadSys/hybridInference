@@ -1062,3 +1062,54 @@ async def test_streaming_reasoning_extract_lifts_mm_think_into_reasoning_channel
     assert content == "The answer is 42."
     assert "<mm:think>" not in content and "</mm:think>" not in content
     assert "<mm:think>" not in reasoning and "</mm:think>" not in reasoning
+
+
+# ---------------------------------------------------------------------------
+# GLM tool XML: keys and values must not desynchronize
+
+
+def _glm_args(xml: str) -> dict:
+    from serving.adapters.processors import GLMProcessor
+
+    calls = GLMProcessor()._parse_glm_tool_xml(xml)
+    assert calls, f"no tool calls parsed from {xml!r}"
+    return json.loads(calls[0]["function"]["arguments"])
+
+
+def test_glm_tool_xml_parses_ordinary_arguments():
+    args = _glm_args(
+        "<tool_call>get_weather\n"
+        "<arg_key>city</arg_key><arg_value>Paris</arg_value>"
+        "<arg_key>unit</arg_key><arg_value>celsius</arg_value>"
+        "</tool_call>"
+    )
+    assert args == {"city": "Paris", "unit": "celsius"}
+
+
+def test_glm_tool_xml_survives_a_marker_inside_a_value():
+    """A value may legitimately contain the marker text.
+
+    Keys and values were harvested by two independent re.findall scans and
+    zipped with strict=False. The key scan picked up the nested marker while
+    the value scan did not, so the lists came out different lengths and every
+    later pair shifted -- binding argument names to the wrong values, and
+    dropping the last argument entirely, with no error anywhere.
+    """
+    args = _glm_args(
+        "<tool_call>run\n"
+        '<arg_key>cmd</arg_key><arg_value>echo "<arg_key>x</arg_key>"</arg_value>'
+        "<arg_key>dir</arg_key><arg_value>/tmp</arg_value>"
+        "</tool_call>"
+    )
+    assert args["dir"] == "/tmp"
+    assert args["cmd"] == 'echo "<arg_key>x</arg_key>"'
+    assert "x" not in args
+
+
+def test_glm_tool_xml_still_json_decodes_structured_values():
+    args = _glm_args(
+        "<tool_call>run\n"
+        '<arg_key>argv</arg_key><arg_value>["bash", "-lc", "ls"]</arg_value>'
+        "</tool_call>"
+    )
+    assert args == {"argv": ["bash", "-lc", "ls"]}

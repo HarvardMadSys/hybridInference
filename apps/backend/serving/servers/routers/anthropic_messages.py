@@ -83,6 +83,14 @@ router = APIRouter()
 # is the right trade vs. killing a good turn. (A byte-level idle detector inside
 # the adapter is the fuller fix -- tracked in the surface bug backlog.)
 _KEEPALIVE_INTERVAL = 15
+
+# Upper bound on content blocks in one accumulated Anthropic message. The
+# accumulator grows its list to whatever index the upstream names, so without a
+# ceiling a single frame carrying index 100000000 -- a buggy provider, or a
+# corrupted frame that still parses as JSON -- allocates hundreds of megabytes
+# before any surrounding validation can matter. Far above any real message: heavy
+# tool use runs to dozens of blocks, not thousands.
+_MAX_CONTENT_BLOCKS = 1024
 try:
     _MAX_STREAM_IDLE = int(os.environ.get("STREAM_MAX_IDLE_S", "300"))
 except (TypeError, ValueError):
@@ -830,6 +838,17 @@ def _apply_sse_event(acc: dict | None, event_type: str, data: str) -> dict | Non
             idx = payload.get("index")
             block_in = payload.get("content_block")
             if not isinstance(idx, int) or not isinstance(block_in, dict):
+                return acc
+            # Range, not just type. A negative index skips the grow loop below
+            # and then writes through `content[idx]`, silently replacing a block
+            # from the end; an absurd positive one grows the list to match it.
+            # Dropping the block degrades one part of the message, which is what
+            # the rest of this accumulator already does with malformed input.
+            if not 0 <= idx < _MAX_CONTENT_BLOCKS:
+                logger.warning(
+                    f"Dropping content_block_start with out-of-range index {idx} "
+                    f"(limit {_MAX_CONTENT_BLOCKS})"
+                )
                 return acc
             block = dict(block_in)
             if block.get("type") == "text":

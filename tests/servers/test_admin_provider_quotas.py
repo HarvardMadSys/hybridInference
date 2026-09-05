@@ -334,6 +334,40 @@ class TestDiscoverProviderKeys:
 
         assert keys == [(1, active_key), (2, pool_key)]
 
+    @pytest.mark.asyncio
+    async def test_disabled_first_env_key_does_not_collide_with_appended_keys(self, monkeypatch):
+        """Env keys keep their suffix number; appended keys must allocate past it.
+
+        Disabling FEATHERLESS_API_KEY leaves [(2, key2)] -- length 1, index 2 --
+        so `len(keys) + 1` handed the pool key index 2 as well. Two keys then
+        shared an index and a display name, and the admin dashboard could not
+        tell them apart.
+        """
+        # Low-entropy placeholders: the repo's gitleaks allowlist uses the
+        # [[allowlists]] array form, which the pinned pre-commit gitleaks does
+        # not parse, so its ^tests/.*\.py$ exemption does not actually apply to
+        # new lines.
+        disabled_key = "env-key-one-env-key-one"
+        active_key = "env-key-two-env-key-two"
+        pool_key = "pool-key-aaa-pool-key-aaa"
+        monkeypatch.setenv("FEATHERLESS_API_KEY", disabled_key)
+        monkeypatch.setenv("FEATHERLESS_API_KEY2", active_key)
+        store = self._store(disabled_hashes={dynamic_keys.env_key_hash(disabled_key)})
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool([pool_key], "featherless")),
+        )
+
+        keys = await _discover_provider_keys(
+            "featherless",
+            "FEATHERLESS_API_KEY",
+            "FEATHERLESS_API_KEY",
+            store,
+        )
+
+        assert keys == [(2, active_key), (3, pool_key)]
+        assert len({index for index, _ in keys}) == len(keys)
+
 
 class TestFetchChutes:
     @pytest.mark.asyncio

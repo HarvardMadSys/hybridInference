@@ -127,6 +127,13 @@ async def _discover_provider_keys(
         if not is_disabled_env_key(key)
     ]
     seen = {key for _, key in keys}
+    # Env keys keep their env-var suffix number, which an operator can map back
+    # to ZAI_API_KEY2 and which therefore must not be renumbered. Filtering
+    # disabled keys punches holes in that sequence, so `len(keys) + 1` is not a
+    # free index: with ZAI_API_KEY disabled, `keys` is [(2, ...)] -- length 1 --
+    # and the next append would collide on 2, producing two keys with the same
+    # index and the same display name. Allocate past the highest suffix in use.
+    next_index = max((index for index, _ in keys), default=0) + 1
 
     if operational_store is not None and route_bound_key_ids is not None:
         try:
@@ -140,7 +147,8 @@ async def _discover_provider_keys(
             for key in db_keys:
                 if not key or key in seen:
                     continue
-                keys.append((len(keys) + 1, key))
+                keys.append((next_index, key))
+                next_index += 1
                 seen.add(key)
 
     for pool in dynamic_keys.get_pools_for_provider(
@@ -150,7 +158,8 @@ async def _discover_provider_keys(
         for key in pool.snapshot_keys():
             if not key or key in seen or is_disabled_env_key(key):
                 continue
-            keys.append((len(keys) + 1, key))
+            keys.append((next_index, key))
+            next_index += 1
             seen.add(key)
 
     return keys
