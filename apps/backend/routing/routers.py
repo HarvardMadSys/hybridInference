@@ -559,8 +559,17 @@ class FixedRouter:
             else allowed
         )
 
-        chosen = pool[
-            self._prefill_load.select_index(
+        # Prefill-aware selection is an optimization over a plain weighted draw,
+        # so its internal errors must not be fatal. This call sits outside the
+        # try/except that owns adapter fallback (see chat_completion and
+        # stream_chat_completion), which means an exception raised here is
+        # terminal: no fallback adapter is tried, no _on_failure is recorded, and
+        # the request is logged under the "router" sentinel with no upstream
+        # attribution. An IndexError in select_index reached production exactly
+        # that way and failed ~700 requests a day for 18 days. Degrade to the
+        # weighted draw the tracker is an improvement on, and log loudly.
+        try:
+            index = self._prefill_load.select_index(
                 [endpoint_id_for_adapter(adapter) for adapter, _w in pool],
                 [weight for _a, weight in pool],
                 prefill_tokens,
@@ -568,7 +577,29 @@ class FixedRouter:
                 affinity_key,
                 avoid_endpoint_id,
             )
-        ][0]
+        except Exception:
+            logger.error(
+                f"Prefill-aware selection failed for model {model_id}; "
+                f"falling back to a weighted draw over {len(pool)} route(s)",
+                exc_info=True,
+            )
+            # Still honor the dropped pin: handing the caller straight back to
+            # the endpoint it was just moved off is the one outcome selection
+            # had already ruled out.
+            candidates = [
+                i
+                for i, (adapter, _w) in enumerate(pool)
+                if endpoint_id_for_adapter(adapter) != avoid_endpoint_id
+            ] or list(range(len(pool)))
+            # allowed[] is filtered on weight > 0, so these are all positive;
+            # the guard is here because a fallback path must never itself raise.
+            fallback_weights = [max(pool[i][1], 0.0) for i in candidates]
+            index = (
+                random.choices(candidates, weights=fallback_weights)[0]
+                if sum(fallback_weights) > 0
+                else random.choice(candidates)
+            )
+        chosen = pool[index][0]
 
         if affinity_key:
             now = time.monotonic()
@@ -595,9 +626,13 @@ class FixedRouter:
         fleet runs above 90% prefix-cache hit, so ranking on the total would
         stamp a warm 500k-token continuation -- a few thousand delta tokens of
         actual prefill -- as an elephant and have the upstream schedule it last
-        and preempt it, which is the opposite of what its cost deserves. The
-        same discount decides selection and the elephant limit, so priority
-        agrees with routing by construction.
+        and preempt it, which is the opposite of what its cost deserves.
+
+        Priority does NOT agree with routing by construction: this method passes
+        ``fingerprint``/``messages`` to ``uncached_estimate`` and so gets the
+        strict warm-prefix discount, while ``select_index`` and ``acquire`` call
+        it without them and get the loose one. The two can therefore disagree
+        about whether the same request is an elephant.
 
         Per endpoint, because the discount is: a prefix resident on the replica
         the caller has been talking to is not resident on a fallback that has
