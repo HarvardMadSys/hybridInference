@@ -61,6 +61,7 @@ from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip_info
+from serving.utils.session_identity import session_identity
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 logger = get_logger(__name__)
@@ -1409,6 +1410,17 @@ async def anthropic_messages(
         # other rung of its fallback chain is reachable.
         "endpoint_id": dispatch_endpoint_id,
     }
+    # Which session this request belongs to. This is the surface Claude Code
+    # uses, and it sends no ``X-Session-ID``: it packs the run into
+    # ``metadata.user_id`` instead (see serving/utils/session_identity.py). Read
+    # that idiom or every request of a session logs session_id = NULL, and
+    # nothing downstream can put one session's rows back together. Taken from
+    # the pristine copy of the client's body rather than ``body``, which
+    # dispatch has been rewriting since the deepcopy above.
+    declared_session = session_identity(request.headers, request_payload_for_log)
+    if declared_session is not None:
+        metadata["session_id"] = declared_session.session_id
+        metadata["session_id_source"] = declared_session.source
     # Agent-sandbox attribution (issue #1041). This surface is the one Claude
     # Code actually uses, so omitting it here would leave the flagship runtime's
     # spend unattributed — and the per-job budget reads this same ledger.

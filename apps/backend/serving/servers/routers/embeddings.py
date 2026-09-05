@@ -28,6 +28,7 @@ from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip
+from serving.utils.session_identity import session_identity
 from serving.utils.synthetic_probe import is_trusted_probe
 from serving.utils.token_utils import normalize_usage
 
@@ -144,7 +145,11 @@ async def create_embeddings(
     request_id = f"emb_{uuid.uuid4().hex}"
     start_time = time.time()
     is_authenticated = bool(user_ctx.get("authenticated"))
-    session_id = http_request.headers.get("X-Session-ID")
+    # Resolved the same way as on the chat surfaces, so a client that labels
+    # its session one way does not have to label it another way here. This
+    # surface has no JSON body to read -- the request arrives as a validated
+    # model -- so only the header sources can match.
+    declared_session = session_identity(http_request.headers)
 
     # Synthetic health-probe traffic is suppressed from api_logs unless the
     # ``log_synthetic_probes`` toggle opts it in — mirrors the chat-completions
@@ -196,8 +201,9 @@ async def create_embeddings(
     }
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
-    if session_id:
-        metadata["session_id"] = session_id
+    if declared_session is not None:
+        metadata["session_id"] = declared_session.session_id
+        metadata["session_id_source"] = declared_session.source
 
     def _schedule_log(
         *,

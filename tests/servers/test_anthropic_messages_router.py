@@ -2354,3 +2354,105 @@ def test_sse_accumulator_still_accepts_ordinary_indices():
     assert len(acc["content"]) == 3
     assert acc["content"][1] is None
     assert acc["content"][2]["type"] == "text"
+
+
+# --- session identity --------------------------------------------------------
+
+# Claude Code packs the user, the account and the run into one metadata field.
+_CLAUDE_CODE_USER_ID = (
+    "user_9f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f"
+    "_account_2f1a0b3c-4d5e-6f70-8192-a3b4c5d6e7f8"
+    "_session_7c6b5a49-3827-1605-f4e3-d2c1b0a99887"
+)
+_CLAUDE_CODE_SESSION = "7c6b5a49-3827-1605-f4e3-d2c1b0a99887"
+
+
+async def _capture_log_for_body(
+    anthropic_test_client,
+    monkeypatch,
+    body: dict,
+    headers: dict | None = None,
+) -> dict:
+    """POST *body* to /v1/messages against a stub upstream, return log kwargs."""
+    upstream_resp = {
+        "id": "msg_session",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4-7",
+        "content": [{"type": "text", "text": "Hi"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 1},
+    }
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        return upstream_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    captured: dict = {}
+    captured_event = asyncio.Event()
+
+    async def fake_log_request(**kwargs):
+        captured.update(kwargs)
+        captured_event.set()
+
+    services = anthropic_test_client._transport.app.state.services
+    services.log_store.log_request = fake_log_request
+
+    r = await anthropic_test_client.post(
+        "/v1/messages", json=body, headers={**_auth(), **(headers or {})}
+    )
+    assert r.status_code == 200
+    await asyncio.wait_for(captured_event.wait(), timeout=2.0)
+    return captured
+
+
+def _claude_code_body(user_id: str) -> dict:
+    return {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {"user_id": user_id},
+    }
+
+
+@pytest.mark.asyncio
+async def test_claude_code_session_recorded_from_metadata_user_id(
+    anthropic_test_client, monkeypatch
+):
+    """Claude Code declares its run in ``metadata.user_id``; api_logs gets it.
+
+    This is the surface Claude Code uses, and it sends no ``X-Session-ID``, so
+    before this every request of a session logged ``session_id = NULL``.
+    """
+    captured = await _capture_log_for_body(
+        anthropic_test_client, monkeypatch, _claude_code_body(_CLAUDE_CODE_USER_ID)
+    )
+    assert captured["metadata"]["session_id"] == _CLAUDE_CODE_SESSION
+    # The source is recorded because this one was read out of a composite id
+    # rather than declared under the gateway's own header.
+    assert captured["metadata"]["session_id_source"] == "metadata.user_id"
+
+
+@pytest.mark.asyncio
+async def test_canonical_header_overrides_the_composite_user_id(anthropic_test_client, monkeypatch):
+    captured = await _capture_log_for_body(
+        anthropic_test_client,
+        monkeypatch,
+        _claude_code_body(_CLAUDE_CODE_USER_ID),
+        headers={"X-Session-ID": "operator-supplied"},
+    )
+    assert captured["metadata"]["session_id"] == "operator-supplied"
+    assert captured["metadata"]["session_id_source"] == "x-session-id"
+
+
+@pytest.mark.asyncio
+async def test_plain_user_id_is_not_read_as_a_session(anthropic_test_client, monkeypatch):
+    """Another client's ordinary ``metadata.user_id`` must not become a session."""
+    captured = await _capture_log_for_body(
+        anthropic_test_client, monkeypatch, _claude_code_body("customer-4711")
+    )
+    assert "session_id" not in captured["metadata"]
+    assert "session_id_source" not in captured["metadata"]
