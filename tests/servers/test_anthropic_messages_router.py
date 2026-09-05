@@ -581,7 +581,7 @@ async def test_sanitize_openai_backend_drops_top_k_container_extra_metadata(
         "messages": [{"role": "user", "content": "hi"}],
         "top_k": 40,
         "container": "my-container",
-        "metadata": {"user_id": "u1", "session_id": "s99"},
+        "metadata": {"user_id": "u1", "tenant": "acme", "session_id": "s99"},
     }
     caplog.set_level("WARNING", logger="serving.servers.routers.anthropic_messages")
     r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
@@ -590,7 +590,11 @@ async def test_sanitize_openai_backend_drops_top_k_container_extra_metadata(
     warning_text = " ".join(rec.getMessage() for rec in caplog.records)
     assert "top_k" in warning_text
     assert "container" in warning_text
-    assert "metadata" in warning_text
+    assert "metadata.tenant" in warning_text
+    # ``session_id`` is the caller's session declaration, which the gateway
+    # consumes before the sanitizer runs -- not an unsupported field it drops on
+    # the way to a backend, so it must not be reported as one.
+    assert "session_id" not in warning_text
 
 
 @pytest.mark.asyncio
@@ -2456,3 +2460,64 @@ async def test_plain_user_id_is_not_read_as_a_session(anthropic_test_client, mon
     )
     assert "session_id" not in captured["metadata"]
     assert "session_id_source" not in captured["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_declared_session_is_not_forwarded_to_a_native_upstream(
+    anthropic_test_client, monkeypatch
+):
+    """``metadata.session_id`` is consumed by the gateway, never sent upstream.
+
+    The native path forwards this body verbatim and Anthropic's Messages
+    metadata admits ``user_id`` alone, so leaving the key in would turn a
+    labelled request into an upstream 400. The log copy still carries it.
+    """
+    upstream_resp = {
+        "id": "msg_session_native",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4-7",
+        "content": [{"type": "text", "text": "Hi"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 1},
+    }
+    captured_upstream: dict = {}
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        captured_upstream.update(json or {})
+        return upstream_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    captured: dict = {}
+    captured_event = asyncio.Event()
+
+    async def fake_log_request(**kwargs):
+        captured.update(kwargs)
+        captured_event.set()
+
+    services = anthropic_test_client._transport.app.state.services
+    services.log_store.log_request = fake_log_request
+
+    r = await anthropic_test_client.post(
+        "/v1/messages",
+        json={
+            "model": NATIVE_MODEL,
+            "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}],
+            "metadata": {"user_id": "u1", "session_id": "declared-1"},
+        },
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    await asyncio.wait_for(captured_event.wait(), timeout=2.0)
+
+    # Consumed: the upstream sees the metadata it accepts, and nothing else.
+    assert captured_upstream["metadata"] == {"user_id": "u1"}
+    # Recorded: the row is labelled, and the stored payload is still the
+    # client's own request.
+    assert captured["metadata"]["session_id"] == "declared-1"
+    assert captured["metadata"]["session_id_source"] == "metadata.session_id"
+    assert captured["request_payload"]["metadata"]["session_id"] == "declared-1"

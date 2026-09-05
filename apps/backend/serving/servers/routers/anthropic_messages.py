@@ -1249,6 +1249,23 @@ async def anthropic_messages(
 
     request_payload_for_log = copy.deepcopy(body)
 
+    # Which session this request belongs to. This is the surface Claude Code
+    # uses, and it sends no ``X-Session-ID``: it packs the run into
+    # ``metadata.user_id`` instead (see serving/utils/session_identity.py). Read
+    # that idiom or every request of a session logs session_id = NULL, and
+    # nothing downstream can put one session's rows back together. Resolved from
+    # the pristine copy above rather than ``body``, which dispatch rewrites from
+    # here on; recorded into the log metadata further down.
+    declared_session = session_identity(request.headers, request_payload_for_log)
+    # ``metadata.session_id`` is a declaration to the gateway, not a field any
+    # upstream knows: Anthropic's Messages metadata admits ``user_id`` alone, and
+    # the native path forwards this body verbatim, so leaving the key in would
+    # turn a labelled request into an upstream 400. Consumed here -- after the
+    # log copy has preserved it, and before the OpenAI sanitizer reports dropped
+    # fields, so it is neither reported as dropped nor sent.
+    if isinstance(body.get("metadata"), dict):
+        body["metadata"].pop("session_id", None)
+
     body["model"] = canonical
 
     # Reroute tiny-budget calls aimed at a reasoning model to a fast model so the
@@ -1410,14 +1427,8 @@ async def anthropic_messages(
         # other rung of its fallback chain is reachable.
         "endpoint_id": dispatch_endpoint_id,
     }
-    # Which session this request belongs to. This is the surface Claude Code
-    # uses, and it sends no ``X-Session-ID``: it packs the run into
-    # ``metadata.user_id`` instead (see serving/utils/session_identity.py). Read
-    # that idiom or every request of a session logs session_id = NULL, and
-    # nothing downstream can put one session's rows back together. Taken from
-    # the pristine copy of the client's body rather than ``body``, which
-    # dispatch has been rewriting since the deepcopy above.
-    declared_session = session_identity(request.headers, request_payload_for_log)
+    # The session resolved from the client's request, back where the body was
+    # still pristine (see above).
     if declared_session is not None:
         metadata["session_id"] = declared_session.session_id
         metadata["session_id_source"] = declared_session.source
