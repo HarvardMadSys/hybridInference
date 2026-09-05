@@ -245,10 +245,24 @@ def test_consume_session_fields_strips_both_containers() -> None:
         "messages": [],
     }
     consume_session_fields(body)
-    # The declarations are gone; everything the upstream does know is untouched.
+    # The declarations are gone; everything the upstream does know is untouched,
+    # including whatever else the client put beside the declaration.
     assert body["metadata"] == {"user_id": "u1"}
     assert body["client_metadata"] == {"origin": "cli"}
     assert body["messages"] == []
+
+
+def test_consume_session_fields_removes_a_container_the_declaration_emptied() -> None:
+    # An emptied ``client_metadata`` is still a top-level field Anthropic's
+    # Messages API does not define, so leaving ``{}`` behind fails the request
+    # just as the key would have.
+    body: dict[str, Any] = {"client_metadata": {"session_id": "s2"}, "messages": []}
+    consume_session_fields(body)
+    assert body == {"messages": []}
+
+    body = {"metadata": {"session_id": "s1"}, "messages": []}
+    consume_session_fields(body)
+    assert body == {"messages": []}
 
 
 @pytest.mark.parametrize("body", [None, "text", ["metadata"], {}, {"metadata": "u1"}])

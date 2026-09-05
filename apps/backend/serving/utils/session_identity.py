@@ -204,6 +204,16 @@ def consume_session_fields(body: Any) -> None:
     declaration once it has resolved it -- after whatever copy it logs, so the
     stored payload still shows what the client sent.
 
+    Removing the key is not always enough. When the declaration *was* the whole
+    object, the empty container left behind is still a top-level field, and
+    ``client_metadata`` is not one Anthropic's Messages API defines -- so
+    ``{"client_metadata": {}}`` fails the request exactly as the key would have.
+    An emptied container is therefore removed with it.
+
+    A container that still carries something else the client sent is left as it
+    is: that part is not this gateway's to consume, and it stands or falls
+    upstream just as it did before any of this existed.
+
     Mutates ``body`` in place. Anything that is not a mapping, and any container
     that does not carry the key, is left untouched.
     """
@@ -211,5 +221,8 @@ def consume_session_fields(body: Any) -> None:
         return
     for field in _BODY_SESSION_OBJECTS:
         container = body.get(field)
-        if isinstance(container, dict):
-            container.pop("session_id", None)
+        if not isinstance(container, dict) or "session_id" not in container:
+            continue
+        container.pop("session_id")
+        if not container:
+            body.pop(field, None)

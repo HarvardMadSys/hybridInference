@@ -2521,3 +2521,61 @@ async def test_declared_session_is_not_forwarded_to_a_native_upstream(
     assert captured["metadata"]["session_id"] == "declared-1"
     assert captured["metadata"]["session_id_source"] == "metadata.session_id"
     assert captured["request_payload"]["metadata"]["session_id"] == "declared-1"
+
+
+@pytest.mark.asyncio
+async def test_client_metadata_container_is_not_forwarded_to_a_native_upstream(
+    anthropic_test_client, monkeypatch
+):
+    """A container the declaration emptied goes with it.
+
+    ``client_metadata`` is not a field Anthropic's Messages API defines, so
+    forwarding an emptied ``{}`` fails the request exactly as the key would
+    have.
+    """
+    upstream_resp = {
+        "id": "msg_session_cm",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4-7",
+        "content": [{"type": "text", "text": "Hi"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 1},
+    }
+    captured_upstream: dict = {}
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        captured_upstream.update(json or {})
+        return upstream_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    captured: dict = {}
+    captured_event = asyncio.Event()
+
+    async def fake_log_request(**kwargs):
+        captured.update(kwargs)
+        captured_event.set()
+
+    services = anthropic_test_client._transport.app.state.services
+    services.log_store.log_request = fake_log_request
+
+    r = await anthropic_test_client.post(
+        "/v1/messages",
+        json={
+            "model": NATIVE_MODEL,
+            "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}],
+            "client_metadata": {"session_id": "declared-2"},
+        },
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    await asyncio.wait_for(captured_event.wait(), timeout=2.0)
+
+    assert "client_metadata" not in captured_upstream
+    assert captured["metadata"]["session_id"] == "declared-2"
+    assert captured["metadata"]["session_id_source"] == "client_metadata.session_id"
+    assert captured["request_payload"]["client_metadata"]["session_id"] == "declared-2"
