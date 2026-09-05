@@ -98,6 +98,17 @@ FAILED_REQUEST_COUNT_SQL = (
     f"AND {FAILURE_PREDICATE_SQL}"
 )
 
+# Failures *and* the window's total, so a sustained low-rate defect is visible.
+# An absolute count alone is blind to it: this detector's 200-per-5-minutes
+# default is ~57,600/day, and the routing IndexError behind #1361 ran at
+# ~700/day -- roughly 1% of all traffic, about 87x below the bar -- for 18 days
+# without ever tripping it. $1 = window_minutes (int).
+FAILED_REQUEST_RATE_SQL = (
+    "SELECT COUNT(*) FILTER (WHERE " + FAILURE_PREDICATE_SQL + ") AS failures, "
+    "COUNT(*) AS total FROM api_logs "
+    "WHERE timestamp > NOW() - make_interval(mins => $1)"
+)
+
 # Returns top status codes, providers, models, and a sample error message for
 # the same failure window. $1 = window_minutes (int). Shares FAILURE_PREDICATE_SQL
 # with the count query so the two never drift.
@@ -132,6 +143,29 @@ async def count_recent_failures(pool: asyncpg.Pool, window_minutes: int) -> int:
         raise ValueError(f"window_minutes must be > 0, got {window_minutes}")
     result = await pool.fetchval(FAILED_REQUEST_COUNT_SQL, window_minutes)
     return int(result or 0)
+
+
+async def count_recent_failures_and_total(
+    pool: asyncpg.Pool, window_minutes: int
+) -> tuple[int, int]:
+    """Return ``(failures, total)`` for the past ``window_minutes`` minutes.
+
+    Args:
+        pool: The asyncpg pool to query.
+        window_minutes: Sliding-window size in minutes (must be > 0).
+
+    Returns:
+        Failing-row count and total row count over the window.
+
+    Raises:
+        ValueError: If ``window_minutes`` is not a positive integer.
+    """
+    if window_minutes <= 0:
+        raise ValueError(f"window_minutes must be > 0, got {window_minutes}")
+    row = await pool.fetchrow(FAILED_REQUEST_RATE_SQL, window_minutes)
+    if row is None:
+        return 0, 0
+    return int(row["failures"] or 0), int(row["total"] or 0)
 
 
 async def fetch_failure_breakdown(pool: asyncpg.Pool, window_minutes: int) -> dict:
@@ -210,6 +244,8 @@ class FailedRequestAlerter:
         window_minutes: int,
         cooldown_minutes: int,
         now_fn: Callable[[], datetime] = _utcnow,
+        rate_threshold: float = 0.0,
+        rate_min_count: int = 0,
     ) -> None:
         """Initialize the alerter with a DB pool and configuration.
 
@@ -220,24 +256,43 @@ class FailedRequestAlerter:
             window_minutes: Sliding-window size for the failure count.
             cooldown_minutes: Minimum interval between alerts.
             now_fn: Injectable clock for deterministic testing.
+            rate_threshold: Failing fraction of the window that fires
+                independently of ``threshold``. ``0.0`` disables the rate rule
+                and restores pure absolute-count behavior.
+            rate_min_count: Failures required before the rate rule can fire, so
+                a quiet window (1 failure out of 3 requests) does not page.
         """
         self.pool = pool
         self.webhook_url = webhook_url
         self.threshold = threshold
         self.window_minutes = window_minutes
         self.cooldown_minutes = cooldown_minutes
+        self.rate_threshold = rate_threshold
+        self.rate_min_count = rate_min_count
         self._now_fn = now_fn
         self._last_alert_at: datetime | None = None
 
     async def run_check(self) -> None:
         """Run one check cycle: count failures, alert if over threshold and cooled down."""
+        total = 0
         try:
-            count = await count_recent_failures(self.pool, self.window_minutes)
+            if self.rate_threshold > 0:
+                count, total = await count_recent_failures_and_total(self.pool, self.window_minutes)
+            else:
+                count = await count_recent_failures(self.pool, self.window_minutes)
         except Exception:
             logger.exception("failed_request_alerter: failure-count query failed")
             return
 
-        if count <= self.threshold:
+        # Two independent rules. The absolute count catches a loud spike; the
+        # rate catches a sustained defect that never gets near it -- which is
+        # the shape that went unalerted for 18 days in #1361.
+        rate = (count / total) if total else 0.0
+        rate_breached = (
+            self.rate_threshold > 0 and count >= self.rate_min_count and rate >= self.rate_threshold
+        )
+
+        if count <= self.threshold and not rate_breached:
             # Healthy. The detector used to stop here, which is why its alert
             # was fire-only; reporting the crossing back down is what closes
             # the incident it opened.
@@ -269,7 +324,14 @@ class FailedRequestAlerter:
             "count": count,
             "window_minutes": self.window_minutes,
             "threshold": self.threshold,
+            # Which rule fired, so the reader is not left guessing why a count
+            # far below `threshold` produced a page.
+            "trigger": "rate" if count <= self.threshold else "count",
         }
+        if self.rate_threshold > 0:
+            context["total"] = total
+            context["failure_rate"] = round(rate, 4)
+            context["rate_threshold"] = self.rate_threshold
         context.update(breakdown)
         ok = await alert_on_transition(
             key="failed_request_rate_db",
@@ -282,9 +344,12 @@ class FailedRequestAlerter:
         if ok:
             self._last_alert_at = now
             logger.info(
-                "failed_request_alerter: posted Slack alert (count=%d threshold=%d)",
+                "failed_request_alerter: posted Slack alert "
+                "(count=%d threshold=%d rate=%.4f of %d)",
                 count,
                 self.threshold,
+                rate,
+                total,
             )
 
 
@@ -314,6 +379,8 @@ def register_alerter_job(pool: asyncpg.Pool, settings: Settings) -> None:
         threshold=settings.failed_request_alert_threshold,
         window_minutes=settings.failed_request_alert_window_minutes,
         cooldown_minutes=settings.failed_request_alert_cooldown_minutes,
+        rate_threshold=settings.failed_request_alert_rate,
+        rate_min_count=settings.failed_request_alert_rate_min_count,
     )
 
     scheduler.add_job(
