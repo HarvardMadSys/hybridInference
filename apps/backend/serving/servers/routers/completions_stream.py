@@ -500,6 +500,15 @@ class StreamSession:
 
             await self._finalize_success()
         except Exception as exc:
+            # exc_info, not just the scrubbed user message: a router-internal
+            # crash (as opposed to a relayed upstream error) leaves no other
+            # trace anywhere. The IndexError behind #1361 ran for 18 days with
+            # nothing in the logs but "Internal server error" -- no type, no
+            # frame, nothing to grep for.
+            logger.error(
+                f"Stream failed for model={self._model} request_id={self._request_id}",
+                exc_info=True,
+            )
             await self._finalize_failure(exc)
             exc_status_code = _extract_exception_status_code(exc)
             user_msg = scrub_error_for_user(exc, self._request_id, exc_status_code)

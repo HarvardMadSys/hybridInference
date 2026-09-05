@@ -626,7 +626,9 @@ async def test_error_emits_error_chunk_and_schedules_error_log():
     cl_logger.schedule_log.assert_called_once()
     log_data = cl_logger.schedule_log.call_args.args[1]
     assert log_data["status_code"] == 500
-    assert log_data["error"] == "upstream blew up"
+    # The exception type is part of the recorded text: an unattributable
+    # message ("list index out of range") is what made #1361 ungreppable.
+    assert log_data["error"] == "RuntimeError: upstream blew up"
     cl_logger.record_routing_observation.assert_called_once()
     obs_kwargs = cl_logger.record_routing_observation.call_args.kwargs
     assert obs_kwargs["request_id"] == "rid-1"
@@ -850,7 +852,9 @@ async def test_failure_log_scheduled_even_when_observation_raises():
     cl_logger.schedule_log.assert_called_once()
     log_data = cl_logger.schedule_log.call_args.args[1]
     assert log_data["status_code"] == 500
-    assert log_data["error"] == "upstream blew up"
+    # The exception type is part of the recorded text: an unattributable
+    # message ("list index out of range") is what made #1361 ungreppable.
+    assert log_data["error"] == "RuntimeError: upstream blew up"
 
 
 # ---------------------------------------------------------------------------

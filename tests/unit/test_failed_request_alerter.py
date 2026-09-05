@@ -531,3 +531,115 @@ async def test_alerter_swallows_query_exception():
 def test_cooldown_arithmetic_uses_timedelta():
     base = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
     assert (base + timedelta(minutes=5)) - base == timedelta(minutes=5)
+
+
+# ── Rate rule ────────────────────────────────────────────────────────────
+
+
+def _rate_alerter(pool, *, threshold=200, rate=0.02, min_count=10):
+    from serving.admin.failed_request_alerter import FailedRequestAlerter
+
+    return FailedRequestAlerter(
+        pool=pool,
+        webhook_url="https://hooks.slack.test/abc",
+        threshold=threshold,
+        window_minutes=5,
+        cooldown_minutes=5,
+        now_fn=lambda: datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        rate_threshold=rate,
+        rate_min_count=min_count,
+    )
+
+
+def _rate_pool(failures: int, total: int):
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value={"failures": failures, "total": total})
+    pool.fetch = AsyncMock(return_value=[])
+    return pool
+
+
+@pytest.mark.asyncio
+async def test_rate_rule_fires_far_below_the_absolute_threshold():
+    """The #1361 shape: ~1% of traffic failing, ~87x below the absolute bar.
+
+    24 failures in a 5-minute window is nowhere near threshold=200, which is why
+    a defect running at that rate went unalerted for 18 days.
+    """
+    pool = _rate_pool(failures=24, total=1000)
+    alerter = _rate_alerter(pool)
+    with patch(
+        "serving.admin.failed_request_alerter.alert_on_transition",
+        new=AsyncMock(return_value=True),
+    ) as sink:
+        await alerter.run_check()
+    kwargs = sink.await_args.kwargs
+    assert kwargs["breached"] is True
+    ctx = kwargs["context"]()
+    assert ctx["trigger"] == "rate"
+    assert ctx["failure_rate"] == 0.024
+    assert ctx["count"] == 24
+
+
+@pytest.mark.asyncio
+async def test_rate_rule_ignores_a_quiet_window():
+    """1 failure out of 3 requests is 33% and must not page."""
+    pool = _rate_pool(failures=1, total=3)
+    alerter = _rate_alerter(pool)
+    with patch(
+        "serving.admin.failed_request_alerter.alert_on_transition",
+        new=AsyncMock(return_value=True),
+    ) as sink:
+        await alerter.run_check()
+    assert sink.await_args.kwargs["breached"] is False
+
+
+@pytest.mark.asyncio
+async def test_rate_rule_ignores_a_healthy_window():
+    pool = _rate_pool(failures=10, total=10_000)
+    alerter = _rate_alerter(pool)
+    with patch(
+        "serving.admin.failed_request_alerter.alert_on_transition",
+        new=AsyncMock(return_value=True),
+    ) as sink:
+        await alerter.run_check()
+    assert sink.await_args.kwargs["breached"] is False
+
+
+@pytest.mark.asyncio
+async def test_rate_zero_restores_pure_absolute_counting():
+    """The rate rule is opt-in; disabling it must not change the old query path."""
+    from serving.admin.failed_request_alerter import FailedRequestAlerter
+
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=5)
+    pool.fetchrow = AsyncMock(side_effect=AssertionError("rate query must not run"))
+    pool.fetch = AsyncMock(return_value=[])
+    alerter = FailedRequestAlerter(
+        pool=pool,
+        webhook_url="https://hooks.slack.test/abc",
+        threshold=200,
+        window_minutes=5,
+        cooldown_minutes=5,
+        now_fn=lambda: datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        rate_threshold=0.0,
+    )
+    with patch(
+        "serving.admin.failed_request_alerter.alert_on_transition",
+        new=AsyncMock(return_value=True),
+    ) as sink:
+        await alerter.run_check()
+    assert sink.await_args.kwargs["breached"] is False
+
+
+@pytest.mark.asyncio
+async def test_absolute_threshold_still_fires_and_is_labelled():
+    pool = _rate_pool(failures=250, total=300)
+    alerter = _rate_alerter(pool)
+    with patch(
+        "serving.admin.failed_request_alerter.alert_on_transition",
+        new=AsyncMock(return_value=True),
+    ) as sink:
+        await alerter.run_check()
+    kwargs = sink.await_args.kwargs
+    assert kwargs["breached"] is True
+    assert kwargs["context"]()["trigger"] == "count"

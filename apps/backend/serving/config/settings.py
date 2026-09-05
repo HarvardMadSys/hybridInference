@@ -149,6 +149,15 @@ class Settings(BaseSettings):
     failed_request_alert_threshold: int = Field(default=200, ge=0)
     failed_request_alert_window_minutes: int = Field(default=5, ge=1)
     failed_request_alert_cooldown_minutes: int = Field(default=5, ge=0)
+    # Failing fraction of a window that alerts on its own, independent of the
+    # absolute threshold above. That threshold is ~57,600 failures/day at its
+    # defaults, so a sustained low-rate defect never reaches it -- the routing
+    # IndexError in #1361 ran at ~1% of all traffic for 18 days and never fired.
+    # 0.0 disables the rate rule. The default is deliberately well above the
+    # current production baseline so merging this pages nobody; tighten it (0.02
+    # is a reasonable target) once the standing failure sources are cleared.
+    failed_request_alert_rate: float = Field(default=0.10, ge=0.0, le=1.0)
+    failed_request_alert_rate_min_count: int = Field(default=10, ge=0)
 
     # Config file paths. Canonical env names are MODELS_CONFIG_PATH /
     # ROUTING_CONFIG_PATH; the legacy MODELS_CONFIG / ROUTING_CONFIG names stay
