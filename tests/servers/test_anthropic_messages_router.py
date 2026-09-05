@@ -2309,3 +2309,48 @@ def test_pick_adapter_skips_one_whose_eligible_key_is_muted(monkeypatch):
     # Once the mute expires it is eligible again, and order is restored.
     fake_now[0] += 61.0
     assert anthropic_messages._pick_adapter_for_role(candidates, "free")[0] is muted
+
+
+# ---------------------------------------------------------------------------
+# SSE accumulator: an upstream-supplied index is not a safe list position
+
+
+def _start_event(idx, block=None):
+    return json.dumps({"index": idx, "content_block": block or {"type": "text"}})
+
+
+def test_sse_accumulator_drops_an_absurd_block_index():
+    """The list grows to whatever index arrives, so it needs a ceiling.
+
+    index=100_000_000 would append 100M ``None``s -- hundreds of megabytes --
+    before any of the surrounding validation could matter.
+    """
+    acc = {"content": []}
+    out = anthropic_messages._apply_sse_event(acc, "content_block_start", _start_event(100_000_000))
+    assert out is acc
+    assert acc["content"] == []
+
+
+def test_sse_accumulator_drops_a_negative_block_index():
+    """A negative index skipped the grow loop and wrote through the end.
+
+    ``content[-1] = block`` silently replaced an already-accumulated block
+    rather than being rejected.
+    """
+    acc = {"content": []}
+    anthropic_messages._apply_sse_event(acc, "content_block_start", _start_event(0))
+    acc["content"][0]["text"] = "real content"
+
+    anthropic_messages._apply_sse_event(acc, "content_block_start", _start_event(-1))
+
+    assert len(acc["content"]) == 1
+    assert acc["content"][0]["text"] == "real content"
+
+
+def test_sse_accumulator_still_accepts_ordinary_indices():
+    acc = {"content": []}
+    anthropic_messages._apply_sse_event(acc, "content_block_start", _start_event(0))
+    anthropic_messages._apply_sse_event(acc, "content_block_start", _start_event(2))
+    assert len(acc["content"]) == 3
+    assert acc["content"][1] is None
+    assert acc["content"][2]["type"] == "text"

@@ -244,11 +244,22 @@ class GLMProcessor(BaseProcessor):
                 continue
 
             # Args: GLM usually emits <arg_key>K</arg_key><arg_value>V</arg_value>
+            # Matched as pairs, not as two independent scans zipped together.
+            # A value may legitimately contain the marker text -- a coding agent
+            # asking to run `echo "<arg_key>x</arg_key>"` is enough -- and the
+            # key scan would then pick up that nested marker while the value
+            # scan did not, leaving the two lists different lengths.
+            # ``zip(..., strict=False)`` silently shifts every later pair rather
+            # than raising, so the request went upstream with argument names
+            # bound to the wrong values.
             args = {}
-            keys = re.findall(r"<arg_key>(.*?)</arg_key>", segment, re.DOTALL)
-            values = re.findall(r"<arg_value>(.*?)</arg_value>", segment, re.DOTALL)
+            pairs = re.findall(
+                r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
+                segment,
+                re.DOTALL,
+            )
 
-            for k, v in zip(keys, values, strict=False):
+            for k, v in pairs:
                 k = k.strip()
                 v = v.strip()
                 # OpenAI expects 'arguments' to be a JSON string of the whole
