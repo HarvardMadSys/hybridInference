@@ -29,8 +29,8 @@ Docker image shipped for a while with the widest form of this —
 every request (HarvardMadSys/freeInference#72).
 
 Every launch configuration in this repository therefore passes
-`--no-proxy-headers` explicitly — `deploy/docker/Dockerfile.backend`,
-`deploy/docker/Dockerfile.oncall` and both systemd units —
+`--no-proxy-headers` explicitly — `deploy/docker/Dockerfile.backend`
+and both systemd units —
 and `tests/unit/deploy/test_uvicorn_proxy_headers.py` fails if one stops doing
 so. If you run the gateway under your own process manager, carry the flag
 over: deleting the two flags is not enough, because the default is on.

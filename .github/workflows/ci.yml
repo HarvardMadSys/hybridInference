@@ -35,7 +35,6 @@ jobs:
     outputs:
       backend: ${{ steps.validate.outputs.backend }}
       frontend: ${{ steps.validate.outputs.frontend }}
-      oncall: ${{ steps.validate.outputs.oncall }}
       docker_shared: ${{ steps.validate.outputs.docker_shared }}
       python_tests: ${{ steps.validate.outputs.python_tests }}
       docs: ${{ steps.validate.outputs.docs }}
@@ -74,7 +73,6 @@ jobs:
           CLASSIFICATION_JSON: >-
             {"backend":${{ toJSON(steps.classify.outputs.backend) }},
             "frontend":${{ toJSON(steps.classify.outputs.frontend) }},
-            "oncall":${{ toJSON(steps.classify.outputs.oncall) }},
             "docker_shared":${{ toJSON(steps.classify.outputs.docker_shared) }},
             "python_tests":${{ toJSON(steps.classify.outputs.python_tests) }},
             "docs":${{ toJSON(steps.classify.outputs.docs) }},
@@ -619,7 +617,7 @@ jobs:
         # The fallback keeps the matrix non-empty even when the PR job-level
         # condition skips it. It also safely builds all images if outputs are
         # unavailable or malformed.
-        image: ${{ fromJSON(needs.changes.outputs.docker_matrix != '' && needs.changes.outputs.docker_matrix != '[]' && needs.changes.outputs.docker_matrix || '["frontend","backend","oncall"]') }}
+        image: ${{ fromJSON(needs.changes.outputs.docker_matrix != '' && needs.changes.outputs.docker_matrix != '[]' && needs.changes.outputs.docker_matrix || '["frontend","backend"]') }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -1126,7 +1124,6 @@ jobs:
           CLASSIFICATION_JSON: >-
             {"backend":${{ toJSON(needs.changes.outputs.backend) }},
             "frontend":${{ toJSON(needs.changes.outputs.frontend) }},
-            "oncall":${{ toJSON(needs.changes.outputs.oncall) }},
             "docker_shared":${{ toJSON(needs.changes.outputs.docker_shared) }},
             "python_tests":${{ toJSON(needs.changes.outputs.python_tests) }},
             "docs":${{ toJSON(needs.changes.outputs.docs) }},

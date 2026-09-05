@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 CATEGORIES = (
     "backend",
     "frontend",
-    "oncall",
     "docker_shared",
     "python_tests",
     "docs",
@@ -35,10 +34,10 @@ CATEGORIES = (
 )
 
 # Docker images are emitted in this order so the matrix is deterministic.
-DOCKER_IMAGES = ("frontend", "backend", "oncall")
+DOCKER_IMAGES = ("frontend", "backend")
 
 # Files whose blast radius is broad enough to force a full run. The repo-root
-# README is included because it is a COPY input to the backend/oncall images.
+# README is included because it is a COPY input to the backend image.
 FULL_FILES = frozenset(
     {
         "pyproject.toml",
@@ -98,10 +97,6 @@ TUTORIAL_E2E_PREFIXES = (
     "apps/backend/",
     "apps/frontend/",
 )
-# Dockerfile.oncall COPYs the entire apps/backend/serving tree, so any serving
-# change -- not just serving/oncall -- is baked into the on-call image and must
-# rebuild it. Keep this in sync with that Dockerfile's COPY scope.
-ONCALL_PREFIX = "apps/backend/serving/"
 DOCKER_SHARED_FILES = frozenset(
     {
         ".dockerignore",
@@ -113,8 +108,6 @@ DOCKER_IMAGE_FILES = {
     "deploy/docker/Dockerfile.frontend.dockerignore": "frontend",
     "deploy/docker/Dockerfile.backend": "backend",
     "deploy/docker/Dockerfile.backend.dockerignore": "backend",
-    "deploy/docker/Dockerfile.oncall": "oncall",
-    "deploy/docker/Dockerfile.oncall.dockerignore": "oncall",
 }
 
 # Documentation never triggers application checks. Any markdown outside the
@@ -134,7 +127,6 @@ class Classification:
 
     backend: bool = False
     frontend: bool = False
-    oncall: bool = False
     docker_shared: bool = False
     python_tests: bool = False
     docs: bool = False
@@ -254,7 +246,7 @@ def classify(files: Sequence[str] | None) -> Classification:
             else:
                 hit("docs_other", path)
             continue
-        # 3. Narrow buckets (a path may hit more than one, e.g. oncall+backend).
+        # 3. Narrow buckets (a path may hit more than one, e.g. frontend+docs).
         recognized = False
         if path.startswith(FRONTEND_PREFIX):
             result.frontend = True
@@ -269,11 +261,6 @@ def classify(files: Sequence[str] | None) -> Classification:
             # Tests exercise backend code but are not COPY inputs to an image.
             if path.startswith(BACKEND_SOURCE_PREFIX):
                 result.docker_images.add("backend")
-        if path.startswith(ONCALL_PREFIX):
-            result.oncall = True
-            hit("oncall", path)
-            recognized = True
-            result.docker_images.add("oncall")
         if path in DOCKER_SHARED_FILES:
             result.docker_shared = True
             result.python_tests = True
@@ -286,10 +273,8 @@ def classify(files: Sequence[str] | None) -> Classification:
             recognized = True
             if image == "frontend":
                 result.frontend = True
-            elif image == "backend":
-                result.backend = True
             else:
-                result.oncall = True
+                result.backend = True
         # 4. Unknown path -> conservative full run.
         if not recognized:
             result.full = True
@@ -300,7 +285,6 @@ def classify(files: Sequence[str] | None) -> Classification:
     narrow = (
         result.frontend
         or result.backend
-        or result.oncall
         or result.docker_shared
         or result.python_tests
         or result.tutorial_e2e

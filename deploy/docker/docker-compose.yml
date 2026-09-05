@@ -111,40 +111,6 @@ services:
     networks:
       - hybridinference
 
-  codex-oncall:
-    profiles: ["oncall"]
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile.oncall
-    container_name: hybridinference-codex-oncall
-    restart: unless-stopped
-    init: true
-    env_file:
-      - ${CODEX_ONCALL_ENV_FILE:-../../.env.oncall}
-    environment:
-      CODEX_ONCALL_STATE_DIR: /var/lib/codex-oncall
-      HOME: /var/lib/codex-oncall
-    read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
-    volumes:
-      - codex_oncall_data:/var/lib/codex-oncall
-    ports:
-      - "127.0.0.1:${CODEX_ONCALL_PORT:-8091}:8091"
-    depends_on:
-      backend:
-        # Ordering only, for the same reason as the frontend below: a
-        # service_healthy gate here fails `compose up` outright when the backend
-        # is merely degraded, which fails the whole deploy. The on-call agent
-        # tolerates a backend that is not ready yet and retries.
-        condition: service_started
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    networks:
-      - hybridinference
-
   frontend:
     build:
       context: ../..
@@ -303,8 +269,6 @@ volumes:
     external: true
     name: hybridinference_postgres_data
   pgadmin_data:
-    driver: local
-  codex_oncall_data:
     driver: local
 
 networks:

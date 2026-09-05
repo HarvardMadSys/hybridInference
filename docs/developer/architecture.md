@@ -390,8 +390,7 @@ There is no Prometheus exporter; it was removed. The supported surfaces are:
   `degraded` when any endpoint is.
 - **Alerting.** `alert_slack()` and `alert_on_transition()` in
   `apps/backend/serving/observability/alerts.py` post to a Slack webhook
-  (`SLACK_ALERTS_WEBHOOK_URL`), and to an on-call relay when
-  `CODEX_ONCALL_RELAY_URL` / `CODEX_ONCALL_RELAY_TOKEN` are set. Thresholds come
+  (`SLACK_ALERTS_WEBHOOK_URL`). Thresholds come
   from the alert config resolved by the same `resolve_config_path()` chain; with
   no alert file present the built-in thresholds apply. The circuit breaker pages
   on `circuit_open` transitions and on upstream-credential rejections, with

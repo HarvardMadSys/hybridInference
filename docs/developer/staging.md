@@ -21,7 +21,6 @@ zero-dependency tour of the routing engine see the
 | `frontend` | yes | the Next.js console |
 | `postgres` | yes | `postgres:16` |
 | `pgadmin` | no | Compose profile `admin` |
-| `codex-oncall` | no | Compose profile `oncall`, see [Codex On-Call](codex-oncall.md) |
 
 There are no metrics, tracing, or dashboard services in this file. If you want
 observability, you run it yourself alongside the stack.
@@ -43,9 +42,8 @@ container-side port is fixed and is not what these variables change.
 | `frontend` | `0.0.0.0:3001` | `FRONTEND_HOST`, `FRONTEND_PORT` |
 | `postgres` | `127.0.0.1:5432` | `DB_PORT` |
 | `pgadmin` (profile `admin`) | `127.0.0.1:5050` | `PGADMIN_PORT` |
-| `codex-oncall` (profile `oncall`) | `127.0.0.1:8091` | `CODEX_ONCALL_PORT` |
 
-Only `backend` and `frontend` take a host override. The other three have
+Only `backend` and `frontend` take a host override. The other two have
 `127.0.0.1` hard-coded in the Compose file, so their `*_PORT` variable moves the
 port but never the bind address.
 

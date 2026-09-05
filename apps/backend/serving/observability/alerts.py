@@ -9,8 +9,6 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import enum
-import hashlib
-import json
 import logging
 import os
 import platform
@@ -19,18 +17,14 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
-from uuid import uuid4
 
 import httpx
-
-from serving.oncall.models import AlertEvent, sanitize_for_agent
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from pydantic import JsonValue
 
 from serving.observability.alert_transitions import (
     ThresholdTransitionTracker,
@@ -227,8 +221,8 @@ def _format_message(
     info = server_info()
     # Titles are written as breach statements ("Provider circuit opened"), so a
     # resolution rendered with the breach's own severity emoji is indis-
-    # tinguishable from the outage. The relay carries ``status`` as a field; the
-    # plain webhook has only this text, so the recovery has to be said in it.
+    # tinguishable from the outage. The webhook carries only this text, so the
+    # recovery has to be said in it.
     heading = f"{_EMOJI[severity]} *{title}*" if status == "firing" else f"✅ *Recovered:* {title}"
     lines = [heading, f"_{ts} · {info['environment']}_"]
     if context:
@@ -260,76 +254,6 @@ async def _post_to_slack(webhook_url: str, message: str) -> bool:
         return False
 
 
-async def _post_to_oncall(relay_url: str, token: str, event: AlertEvent) -> bool:
-    """Post a structured alert to the oncall relay. Returns True on 2xx."""
-    endpoint = f"{relay_url.rstrip('/')}/v1/alerts"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(
-                endpoint,
-                headers={"Authorization": f"Bearer {token}"},
-                json=event.model_dump(mode="json"),
-            )
-        if 200 <= response.status_code < 300:
-            return True
-        log.error("codex oncall relay returned HTTP %s", response.status_code)
-    except Exception:
-        log.exception("codex oncall relay post failed")
-    return False
-
-
-def _oncall_fingerprint(environment: str, dedupe_key: str) -> str:
-    """Build a readable bounded fingerprint for relay-level incident dedupe."""
-    value = f"gateway:{environment}:{dedupe_key}"
-    if len(value) <= 512:
-        return value
-    digest = hashlib.sha256(value.encode()).hexdigest()
-    return f"gateway:{environment}:sha256:{digest}"
-
-
-def _oncall_context(context: dict[str, Any]) -> dict[str, JsonValue]:
-    """Convert arbitrary alert values to bounded, redacted JSON."""
-    serializable = json.loads(json.dumps(context, default=str))
-    sanitized = sanitize_for_agent(cast("JsonValue", serializable))
-    return cast("dict[str, JsonValue]", sanitized)
-
-
-def _deployment_sha() -> str | None:
-    for name in ("DEPLOYMENT_SHA", "GIT_COMMIT", "COMMIT_SHA"):
-        value = os.environ.get(name, "").strip()
-        if value:
-            return value[:128]
-    return None
-
-
-def _build_oncall_event(
-    severity: AlertSeverity,
-    title: str,
-    context: dict[str, Any],
-    message: str,
-    key: str,
-    status: Literal["firing", "resolved"],
-    cooldown_sec: int,
-) -> AlertEvent:
-    """Create a bounded relay event from the existing Slack alert."""
-    info = server_info()
-    return AlertEvent(
-        alert_id=str(uuid4()),
-        fingerprint=_oncall_fingerprint(info["environment"], key),
-        source="hybrid-inference-gateway",
-        status=status,
-        severity=severity.value,
-        title=title[:500],
-        environment=info["environment"],
-        occurred_at=dt.datetime.now(dt.timezone.utc),
-        summary=title[:4_000],
-        context=_oncall_context(context),
-        slack_text=message[:40_000],
-        deployment_sha=_deployment_sha(),
-        dedupe_window_seconds=min(max(cooldown_sec, 0), 604_800),
-    )
-
-
 async def alert_slack(
     severity: AlertSeverity,
     title: str,
@@ -339,17 +263,14 @@ async def alert_slack(
     cooldown_sec: int = 300,
     status: Literal["firing", "resolved"] = "firing",
 ) -> bool:
-    """Send an alert through the oncall relay, falling back to Slack directly.
+    """Send an alert to the Slack incoming webhook.
 
     Returns True if a message was actually sent, False otherwise.
     """
     webhook_url = os.environ.get("SLACK_ALERTS_WEBHOOK_URL", "") or os.environ.get(
         "SLACK_WEBHOOK_URL", ""
     )
-    relay_url = os.environ.get("CODEX_ONCALL_RELAY_URL", "").strip()
-    relay_token = os.environ.get("CODEX_ONCALL_RELAY_TOKEN", "").strip()
-    relay_configured = bool(relay_url and relay_token)
-    if not webhook_url and not relay_configured:
+    if not webhook_url:
         return False
 
     # Both suppressions below exist to stop a *breach* from repeating, and
@@ -419,24 +340,7 @@ async def alert_slack(
             except Exception:
                 log.debug("alert snooze check failed; sending alert", exc_info=True)
         message = _format_message(severity, title, context, status)
-        if relay_configured:
-            try:
-                event = _build_oncall_event(
-                    severity,
-                    title,
-                    context,
-                    message,
-                    key,
-                    status,
-                    cooldown_sec,
-                )
-            except Exception:
-                log.exception("codex oncall event construction failed")
-            else:
-                if await _post_to_oncall(relay_url, relay_token, event):
-                    sent = True
-        if not sent and webhook_url:
-            sent = await _post_to_slack(webhook_url, message)
+        sent = await _post_to_slack(webhook_url, message)
         return sent
     except Exception:
         log.exception("alert_slack post raised; suppressing")

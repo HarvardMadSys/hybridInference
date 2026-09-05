@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 BOOLEAN_OUTPUTS = (
     "backend",
     "frontend",
-    "oncall",
     "docker_shared",
     "python_tests",
     "docs",
@@ -24,7 +23,7 @@ BOOLEAN_OUTPUTS = (
     "security_only",
     "full",
 )
-DOCKER_IMAGES = ("frontend", "backend", "oncall")
+DOCKER_IMAGES = ("frontend", "backend")
 APP_JOB_CATEGORIES = {
     "backend-quality": "backend",
     "frontend-quality": "frontend",
@@ -116,7 +115,6 @@ def parse_classification(payload: str) -> ClassificationOutputs:
 
     python_inputs = (
         "backend",
-        "oncall",
         "docker_shared",
     )
     if (booleans["full"] or any(booleans[name] for name in python_inputs)) and not booleans[
@@ -133,7 +131,6 @@ def parse_classification(payload: str) -> ClassificationOutputs:
         # classifier's source-vs-test matrix behavior has dedicated fixtures.
         required_images = {
             "frontend": booleans["frontend"],
-            "oncall": booleans["oncall"],
         }
         for image, required in required_images.items():
             if required and image not in matrix:
