@@ -127,8 +127,8 @@ request used:
 | Read from | Sent by |
 |---|---|
 | `X-Session-ID` header | anything speaking the gateway's own contract; wins whenever present |
-| `session_id` / `conversation_id` headers | Codex CLI, which stamps its run on every request |
-| `metadata.session_id` in the request body | a client that labels the session where it labels everything else |
+| `session-id` / `thread-id` headers (the `session_id` / `conversation_id` spellings too) | Codex CLI, which stamps its run on every request |
+| `metadata.session_id` or `client_metadata.session_id` in the request body | a client that labels the session where it labels everything else; Codex uses `client_metadata` |
 | `metadata.user_id` in the request body | Claude Code, which packs the run into `user_<hash>_account_<uuid>_session_<uuid>` |
 
 `metadata.session_id_source` on the same row names which of those it came from,

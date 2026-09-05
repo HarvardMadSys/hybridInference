@@ -97,15 +97,15 @@ async def _post(app: FastAPI, headers: dict[str, str], body: dict[str, Any] | No
 
 @pytest.mark.asyncio
 async def test_agent_session_header_labels_the_row_and_reaches_routing(session_app, mock_log_store):
-    """Codex CLI stamps ``session_id`` on its requests; both consumers see it."""
+    """Codex CLI stamps ``session-id`` on its requests; both consumers see it."""
     app, adapter = session_app
-    resp = await _post(app, {"session_id": "codex-run-1"})
+    resp = await _post(app, {"session-id": "codex-run-1"})
 
     assert resp.status_code == status.HTTP_200_OK
     kwargs = await _wait_for_log_kwargs(mock_log_store)
     assert kwargs is not None, "log_request was never called"
     assert kwargs["metadata"]["session_id"] == "codex-run-1"
-    assert kwargs["metadata"]["session_id_source"] == "session_id"
+    assert kwargs["metadata"]["session_id_source"] == "session-id"
     # The router (and so RouteWise's session-scoped prefix-cache accounting)
     # sees the same value the log row carries.
     assert adapter.seen_params["session_id"] == "codex-run-1"
@@ -116,7 +116,7 @@ async def test_canonical_header_still_wins(session_app, mock_log_store):
     app, _adapter = session_app
     resp = await _post(
         app,
-        {"X-Session-ID": "canonical", "session_id": "codex-run-1"},
+        {"X-Session-ID": "canonical", "session-id": "codex-run-1"},
         {"metadata": {"session_id": "from-body"}},
     )
 
@@ -158,7 +158,7 @@ async def test_no_declaration_leaves_the_row_unlabelled(session_app, mock_log_st
 async def test_unusable_declaration_is_dropped(session_app, mock_log_store):
     """An over-long declaration is rejected, not truncated into the column."""
     app, adapter = session_app
-    resp = await _post(app, {"session_id": "s" * 200})
+    resp = await _post(app, {"session-id": "s" * 200})
 
     assert resp.status_code == status.HTTP_200_OK
     kwargs = await _wait_for_log_kwargs(mock_log_store)

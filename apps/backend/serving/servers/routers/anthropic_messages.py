@@ -61,7 +61,7 @@ from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip_info
-from serving.utils.session_identity import session_identity
+from serving.utils.session_identity import consume_session_fields, session_identity
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 logger = get_logger(__name__)
@@ -1257,14 +1257,13 @@ async def anthropic_messages(
     # the pristine copy above rather than ``body``, which dispatch rewrites from
     # here on; recorded into the log metadata further down.
     declared_session = session_identity(request.headers, request_payload_for_log)
-    # ``metadata.session_id`` is a declaration to the gateway, not a field any
-    # upstream knows: Anthropic's Messages metadata admits ``user_id`` alone, and
-    # the native path forwards this body verbatim, so leaving the key in would
-    # turn a labelled request into an upstream 400. Consumed here -- after the
-    # log copy has preserved it, and before the OpenAI sanitizer reports dropped
-    # fields, so it is neither reported as dropped nor sent.
-    if isinstance(body.get("metadata"), dict):
-        body["metadata"].pop("session_id", None)
+    # The body declarations are for the gateway, not for any provider:
+    # Anthropic's Messages metadata admits ``user_id`` alone, and the native path
+    # forwards this body verbatim, so leaving one in would turn a labelled
+    # request into an upstream 400. Consumed here -- after the log copy has
+    # preserved it, and before the OpenAI sanitizer reports dropped fields, so
+    # it is neither reported as dropped nor sent.
+    consume_session_fields(body)
 
     body["model"] = canonical
 

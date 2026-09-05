@@ -611,16 +611,42 @@ async def test_declared_session_survives_the_translation(responses_client, mock_
 
 
 @pytest.mark.asyncio
-async def test_agent_session_header_survives_the_translation(responses_client, mock_log_store):
-    """Codex CLI sends its run id as a header; delegation preserves headers."""
+async def test_codex_session_header_survives_the_translation(responses_client, mock_log_store):
+    """Codex CLI sends its run as a `session-id` header; delegation keeps headers.
+
+    The hyphenated spelling is the one Codex actually sends — Starlette matches
+    header names case-insensitively but not across separators, so an
+    underscore-only list would miss every Codex request.
+    """
     r = await responses_client.post(
         "/v1/responses",
         json={"model": TEXT_MODEL, "input": "hello"},
-        headers={**_auth(), "session_id": "codex-run-2"},
+        headers={**_auth(), "session-id": "codex-run-2", "thread-id": "codex-thread-2"},
     )
     assert r.status_code == 200
 
     kwargs = await _wait_for_log_kwargs(mock_log_store)
     assert kwargs is not None
     assert kwargs["metadata"]["session_id"] == "codex-run-2"
-    assert kwargs["metadata"]["session_id_source"] == "session_id"
+    assert kwargs["metadata"]["session_id_source"] == "session-id"
+
+
+@pytest.mark.asyncio
+async def test_codex_client_metadata_survives_the_translation(responses_client, mock_log_store):
+    """Codex also carries the run in `client_metadata`, which is not a chat field."""
+    r = await responses_client.post(
+        "/v1/responses",
+        json={
+            "model": TEXT_MODEL,
+            "input": "hello",
+            "client_metadata": {"session_id": "codex-body-2"},
+        },
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+
+    kwargs = await _wait_for_log_kwargs(mock_log_store)
+    assert kwargs is not None
+    assert kwargs["metadata"]["session_id"] == "codex-body-2"
+    assert kwargs["metadata"]["session_id_source"] == "client_metadata.session_id"
+    assert TextAdapter.last_params["session_id"] == "codex-body-2"

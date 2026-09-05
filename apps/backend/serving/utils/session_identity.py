@@ -13,10 +13,14 @@ identifier of its own, in its own idiom, and this module reads whichever idiom
 the client used:
 
 * ``X-Session-ID`` -- the gateway's own contract. Wins whenever it is present.
-* ``session_id`` / ``conversation_id`` request headers -- what Codex CLI stamps
-  on the ``/v1/responses`` requests it sends.
-* ``metadata.session_id`` in the request body -- a client that declares the
-  session where it declares everything else.
+* ``session-id`` / ``thread-id`` request headers -- what Codex CLI stamps on the
+  ``/v1/responses`` requests it sends. The underscore spellings are accepted
+  beside them: header names may contain underscores, but it is unusual enough
+  that intermediaries drop such headers by default (nginx does), so a client
+  can sensibly send either.
+* ``metadata.session_id`` / ``client_metadata.session_id`` in the request body
+  -- a client that declares the session where it declares everything else.
+  Codex uses ``client_metadata``.
 * ``metadata.user_id`` in the request body -- Claude Code packs three ids into
   that one string (``user_<hash>_account_<uuid>_session_<uuid>``), so the
   trailing ``_session_`` segment is the run.
@@ -50,10 +54,18 @@ if TYPE_CHECKING:
 #: on a surface that carries no request body.
 CANONICAL_SESSION_HEADER = "X-Session-ID"
 
-#: Headers a coding agent stamps its own run id on. Codex CLI sends both on
-#: every Responses request; ``session_id`` is preferred because a conversation
-#: can outlive the process that started it.
-_AGENT_SESSION_HEADERS = ("session_id", "conversation_id")
+#: Headers a coding agent stamps its own run id on, most specific first. Codex
+#: CLI sends ``session-id`` and ``thread-id`` on every Responses request; the
+#: session names come before the thread/conversation ones because a thread can
+#: outlive the run that opened it, and both spellings of each are accepted
+#: because header names with underscores, while legal, are dropped by default by
+#: some intermediaries (nginx among them) and clients differ over which to send.
+_AGENT_SESSION_HEADERS = ("session-id", "session_id", "thread-id", "conversation_id")
+
+#: Body objects a client declares its session in, most specific first. Codex
+#: puts it in ``client_metadata``; the Anthropic and OpenAI surfaces both define
+#: a ``metadata`` map that a client can use for the same purpose.
+_BODY_SESSION_OBJECTS = ("metadata", "client_metadata")
 
 #: Longer than any session id a real client mints (a UUID is 36 chars), short
 #: enough that a declaration cannot bloat an indexed column. A value over the
@@ -137,6 +149,9 @@ def session_identity(
     Claude Code's composite user id. The first usable value wins, so a client
     that sends the documented header is never overridden by something derived.
 
+    A caller that goes on to dispatch ``body`` upstream must pair this with
+    :func:`consume_session_fields`; the body declarations are gateway-only.
+
     Args:
         headers: The request headers. Starlette's ``Headers`` looks names up
             case-insensitively, which is what the header sources rely on.
@@ -156,16 +171,45 @@ def session_identity(
         if declared is not None:
             return SessionIdentity(declared, header)
 
-    metadata = body.get("metadata") if isinstance(body, dict) else None
-    if not isinstance(metadata, dict):
+    if not isinstance(body, dict):
         return None
 
-    declared = normalize_session_id(metadata.get("session_id"))
-    if declared is not None:
-        return SessionIdentity(declared, "metadata.session_id")
+    for field in _BODY_SESSION_OBJECTS:
+        container = body.get(field)
+        if not isinstance(container, dict):
+            continue
+        declared = normalize_session_id(container.get("session_id"))
+        if declared is not None:
+            return SessionIdentity(declared, f"{field}.session_id")
 
-    derived = _claude_code_session_id(metadata)
-    if derived is not None:
-        return SessionIdentity(derived, "metadata.user_id")
+    # Claude Code declares nothing; its run is read out of the composite id it
+    # sends as ``metadata.user_id``, so this is the last thing tried.
+    metadata = body.get("metadata")
+    if isinstance(metadata, dict):
+        derived = _claude_code_session_id(metadata)
+        if derived is not None:
+            return SessionIdentity(derived, "metadata.user_id")
 
     return None
+
+
+def consume_session_fields(body: Any) -> None:
+    """Strip the gateway-only session declarations from a body bound upstream.
+
+    ``metadata.session_id`` and ``client_metadata.session_id`` are declarations
+    to *this* gateway, not fields any provider knows: Anthropic's Messages
+    metadata admits ``user_id`` alone, and a surface that forwards the client's
+    body verbatim would turn a labelled request into an upstream 400. A caller
+    that dispatches the body it was handed must therefore consume the
+    declaration once it has resolved it -- after whatever copy it logs, so the
+    stored payload still shows what the client sent.
+
+    Mutates ``body`` in place. Anything that is not a mapping, and any container
+    that does not carry the key, is left untouched.
+    """
+    if not isinstance(body, dict):
+        return
+    for field in _BODY_SESSION_OBJECTS:
+        container = body.get(field)
+        if isinstance(container, dict):
+            container.pop("session_id", None)

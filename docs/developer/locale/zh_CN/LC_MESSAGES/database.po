@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-05 23:11+0000\n"
+"POT-Creation-Date: 2026-09-05 23:41+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -505,7 +505,10 @@ msgid ""
 "that header, so the traffic the column is most useful on used to arrive "
 "unlabelled. Each agent does carry a session of its own, in its own idiom,"
 " and the gateway reads whichever one the request used:"
-msgstr "`api_logs.session_id` 就是把同一段对话的请求归到一起的那一列，索引也正是为这种查询建的。客户端可以用网关自己的 `X-Session-ID` 头来设置它——但没有哪个编程 agent 会发这个头，于是这一列最该发挥作用的那部分流量，过去反而都是没有标记的。每个 agent 其实都带着自己的会话标识，只是各有各的写法；网关会按请求实际用的那一种去读："
+msgstr ""
+"`api_logs.session_id` 就是把同一段对话的请求归到一起的那一列，索引也正是为这种查询建的。客户端可以用网关自己的 `X"
+"-Session-ID` 头来设置它——但没有哪个编程 agent 会发这个头，于是这一列最该发挥作用的那部分流量，过去反而都是没有标记的。每个 "
+"agent 其实都带着自己的会话标识，只是各有各的写法；网关会按请求实际用的那一种去读："
 
 #: ../developer/database.md
 msgid "Read from"
@@ -524,20 +527,24 @@ msgid "anything speaking the gateway's own contract; wins whenever present"
 msgstr "任何遵循网关自身约定的客户端；只要出现就优先采用"
 
 #: ../developer/database.md
-msgid "`session_id` / `conversation_id` headers"
-msgstr "`session_id` / `conversation_id` 头"
+msgid ""
+"`session-id` / `thread-id` headers (the `session_id` / `conversation_id` "
+"spellings too)"
+msgstr "`session-id` / `thread-id` 头（`session_id` / `conversation_id` 这两种写法也认）"
 
 #: ../developer/database.md
 msgid "Codex CLI, which stamps its run on every request"
 msgstr "Codex CLI，它在每个请求上都盖上本次运行的标识"
 
 #: ../developer/database.md
-msgid "`metadata.session_id` in the request body"
-msgstr "请求体里的 `metadata.session_id`"
+msgid "`metadata.session_id` or `client_metadata.session_id` in the request body"
+msgstr "请求体里的 `metadata.session_id` 或 `client_metadata.session_id`"
 
 #: ../developer/database.md
-msgid "a client that labels the session where it labels everything else"
-msgstr "把会话标在它标注其它一切信息的同一处的客户端"
+msgid ""
+"a client that labels the session where it labels everything else; Codex "
+"uses `client_metadata`"
+msgstr "把会话标在它标注其它一切信息的同一处的客户端；Codex 用的是 `client_metadata`"
 
 #: ../developer/database.md
 msgid "`metadata.user_id` in the request body"
@@ -560,7 +567,11 @@ msgid ""
 "above, the session is recorded whether or not `DB_STORE_FULL_CONTENT` is "
 "on: it is a label the client put on the request, not part of the "
 "conversation."
-msgstr "同一行上的 `metadata.session_id_source` 会写明这个值是从哪一处读来的，这样从复合 id 里解析出来的值，就不会被误当成客户端在那个文档化的头里显式声明的值。所有来源都由客户端提供，而且不会有任何鉴权、计费或限流依赖会话 id；超过 128 个字符、或者带控制字符的声明会被丢弃，而不是记录下来。和上面那些派生列一样，无论 `DB_STORE_FULL_CONTENT` 是否打开，会话都会被记录：它是客户端贴在请求上的标签，而不是对话内容的一部分。"
+msgstr ""
+"同一行上的 `metadata.session_id_source` 会写明这个值是从哪一处读来的，这样从复合 id "
+"里解析出来的值，就不会被误当成客户端在那个文档化的头里显式声明的值。所有来源都由客户端提供，而且不会有任何鉴权、计费或限流依赖会话 id；超过 "
+"128 个字符、或者带控制字符的声明会被丢弃，而不是记录下来。和上面那些派生列一样，无论 `DB_STORE_FULL_CONTENT` "
+"是否打开，会话都会被记录：它是客户端贴在请求上的标签，而不是对话内容的一部分。"
 
 #: ../developer/database.md:143
 msgid "Backup"
@@ -756,4 +767,7 @@ msgid ""
 msgstr ""
 "它保存的连接放在 `hybridinference_pgadmin_data`，这是个普通的项目内卷（不像 Postgres 那个卷，它不是 "
 "external）："
+
+#~ msgid "`session_id` / `conversation_id` headers"
+#~ msgstr "`session_id` / `conversation_id` 头"
 
