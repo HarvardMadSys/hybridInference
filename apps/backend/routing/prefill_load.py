@@ -775,7 +775,26 @@ class PrefillLoadTracker:
         """
         total = max(int(tokens), 0)
         charged = self.uncached_estimate(endpoint_id, total, affinity_key)
-        elephant = self.is_elephant(charged)
+        # The elephant count is admission, not load, so it is gated on the
+        # conversation matching -- unlike ``charged``, which keeps the loose
+        # caller-scoped discount #1267 shipped for routing.
+        #
+        # ``affinity_key`` is the API-key hash, so it spans every conversation
+        # one key sends, and ``_prefix_hints`` holds a single hint per
+        # (affinity_key, endpoint_id) -- whichever prefill finished last. Under
+        # the loose discount a *different* conversation from the same key was
+        # charged ~0 un-cached tokens and so never counted as an elephant, which
+        # is precisely the traffic ELEPHANT_LIMIT exists to keep off a busy
+        # replica.
+        #
+        # A wrong *load* estimate skews one routing draw and self-corrects; a
+        # wrong admission verdict does not, which is why only this half pays for
+        # the strictness. An unfingerprintable prompt (a pure-image turn) still
+        # takes the loose discount, matching uncached_estimate's own contract:
+        # tightening that would newly stamp genuine warm continuations as
+        # elephants, which is the defect #1271 exists to prevent.
+        gated = self.uncached_estimate(endpoint_id, total, affinity_key, fingerprint=fingerprint)
+        elephant = self.is_elephant(gated)
         with self._lock:
             self._backlog[endpoint_id] = self._backlog.get(endpoint_id, 0) + charged
             if elephant:

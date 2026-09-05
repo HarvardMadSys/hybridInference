@@ -628,11 +628,15 @@ class FixedRouter:
         actual prefill -- as an elephant and have the upstream schedule it last
         and preempt it, which is the opposite of what its cost deserves.
 
-        Priority does NOT agree with routing by construction: this method passes
-        ``fingerprint``/``messages`` to ``uncached_estimate`` and so gets the
-        strict warm-prefix discount, while ``select_index`` and ``acquire`` call
-        it without them and get the loose one. The two can therefore disagree
-        about whether the same request is an elephant.
+        Priority does NOT agree with routing by construction. Three callers read
+        ``uncached_estimate`` at three strictnesses, deliberately: this method
+        passes ``fingerprint`` *and* ``messages``, so a fork that shares only the
+        opening fails the anchor check; ``acquire`` passes ``fingerprint`` alone,
+        enough to keep one caller's unrelated conversations from inheriting each
+        other's prefix on the admission gate; ``select_index`` passes neither,
+        because a mis-estimated *load* skews one draw and self-corrects. So
+        priority and the elephant count can still disagree about a fork or a
+        retry, and selection can disagree with both.
 
         Per endpoint, because the discount is: a prefix resident on the replica
         the caller has been talking to is not resident on a fallback that has
