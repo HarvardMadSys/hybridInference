@@ -151,6 +151,56 @@ def _key_pool_provider_label(config: Any) -> str:
     return "unknown"
 
 
+def unpack_first_choice(
+    response: dict[str, Any], provider: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return ``(choice, message)`` from a non-streaming completion body.
+
+    A 200 does not guarantee a completion. OpenAI-compatible servers answer 200
+    with ``choices: []`` when an input content filter trips (Azure-style
+    deployments do this, and so do several self-hosted servers), and some return
+    200 carrying only an in-band ``error`` object when the upstream they proxy to
+    failed after their own request succeeded. Indexing straight into
+    ``choices[0]["message"]`` turns those into an IndexError or KeyError raised
+    from inside the parser -- which the router does treat as a failure and does
+    fall back on, but which reaches the operator as "list index out of range"
+    with no provider, no status and no upstream text.
+
+    Raising a described error instead keeps the fallback behavior and makes the
+    log say what the upstream actually did. The streaming paths already use the
+    ``chunk.get("choices") or []`` form; this is the non-streaming counterpart.
+
+    Args:
+        response: Decoded JSON body from the upstream completion call.
+        provider: Provider label, for the message only.
+
+    Returns:
+        The first choice and its message object.
+
+    Raises:
+        ValueError: The body carries no usable choice.
+    """
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        upstream_error = response.get("error")
+        detail = f": {upstream_error}" if upstream_error else ""
+        raise ValueError(
+            f"{provider} returned a 200 with no choices{detail} (keys: {sorted(response)})"
+        )
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise ValueError(f"{provider} returned a non-object choice: {type(choice).__name__}")
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        # A bare `text` choice is the legacy completions shape; accept it rather
+        # than failing a response that does carry content.
+        text = choice.get("text")
+        if isinstance(text, str):
+            return choice, {"content": text}
+        raise ValueError(f"{provider} returned a choice with no message object")
+    return choice, message
+
+
 class OpenAICompatAdapter(BaseAdapter):
     """Generic adapter for OpenAI-compatible APIs.
 
@@ -1167,8 +1217,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Parse response into OpenAI-compatible format."""
-        choice = response["choices"][0]
-        message = choice["message"]
+        choice, message = unpack_first_choice(response, self.config.provider)
         tool_calls = extract_tool_calls_for_profile(self._usage_profile, message)
 
         usage = self._parse_usage(response.get("usage", {}))
