@@ -50,6 +50,35 @@ class CountRule(BaseModel):
     cooldown_sec: int = 600
 
 
+class AuthFailureSpikeConfig(CountRule):
+    """Config for ``AuthFailureSpikeRule``, which is off unless asked for.
+
+    Auth failures are internet background noise — scanners and bots retrying
+    bad keys — so a spike names nothing an operator can act on. The per-IP
+    blocklist (``utils/auth_failure_blocklist.py``) already refuses a repeat
+    offender without anyone being paged. Only the *page* is off: every
+    ``auth_failure`` log record is still emitted at the auth sites in
+    ``servers/auth.py``, so an investigation loses no evidence.
+
+    The ``enabled`` default lives here rather than on the field's
+    ``default_factory`` because a factory only runs when the key is absent
+    altogether. A deployment tuning just the threshold —
+
+    .. code-block:: yaml
+
+        rules:
+          auth_failure_spike:
+            threshold_count: 100
+
+    — has pydantic build this model from that mapping, and would have
+    inherited ``CountRule``'s ``enabled: True`` and quietly resumed paging.
+    Overriding the default on the model makes an explicit ``enabled: true``
+    the only way to turn the page back on.
+    """
+
+    enabled: bool = False
+
+
 class PendingPrefixCacheLeakConfig(BaseModel):
     """Config for ``PendingPrefixCacheLeakRule``.
 
@@ -96,7 +125,10 @@ class Rules(BaseModel):
     failed_request_rate: RateRule = Field(default_factory=RateRule)
     fivexx_rate: RateRule = Field(default_factory=lambda: RateRule(threshold_pct=2.0))
     p95_latency_per_provider: LatencyRule = Field(default_factory=LatencyRule)
-    auth_failure_spike: CountRule = Field(default_factory=CountRule)
+    # Off unless a deployment sets ``enabled: true`` under
+    # ``rules.auth_failure_spike``; see AuthFailureSpikeConfig for why, and for
+    # why the default sits on that model rather than on this factory.
+    auth_failure_spike: AuthFailureSpikeConfig = Field(default_factory=AuthFailureSpikeConfig)
     prefix_cache_pending_leak: PendingPrefixCacheLeakConfig = Field(
         default_factory=PendingPrefixCacheLeakConfig,
         validation_alias=AliasChoices(

@@ -65,8 +65,11 @@ _STALE_SWEEP_INTERVAL_SEC = 60
 # model-not-found 404s (a user asking for an unknown/unauthorized model) are
 # excluded, via the per-record marker checked in ``_is_failed_request``.
 #
-# 401: a gateway-issued auth challenge is normal SPA token-refresh churn (the
-# auth_failure_spike rule covers real auth attacks separately), but an upstream
+# 401: a gateway-issued auth challenge is normal SPA token-refresh churn (every
+# auth failure stays visible in the ``auth_failure`` log records, and the per-IP
+# blocklist refuses a repeat offender once it crosses that threshold — not on
+# the first attempt; the auth_failure_spike rule that used to page is opt-in,
+# see ``alert_config.AuthFailureSpikeConfig``), but an upstream
 # 401 means the gateway's *own* configured credential was refused — a 100%-fatal,
 # all-users outage. Only the former is excluded, via upstream attribution
 # (``provider``) on the record. Blanket-excluding 401 is why a local endpoint
@@ -314,7 +317,17 @@ class P95LatencyRule:
 
 
 class AuthFailureSpikeRule:
-    """Rule 4: auth-failure count over a sliding window."""
+    """Rule 4: auth-failure count over a sliding window.
+
+    **Disabled by default** (``rules.auth_failure_spike.enabled``): a spike of
+    bad keys is internet background noise, and the per-IP blocklist in
+    ``utils/auth_failure_blocklist.py`` already refuses a repeat offender
+    without paging anyone. Nothing here suppresses the ``auth_failure`` log
+    records themselves — they are emitted at the auth sites in
+    ``servers/auth.py``, independently of this rule, so a disabled rule costs
+    an operator no evidence. A deployment that wants the page sets
+    ``enabled: true`` in its alerts.yaml.
+    """
 
     name = "auth_failure_spike"
 
