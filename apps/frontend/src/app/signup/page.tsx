@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
+import { SignupConsentStep } from './SignupConsentStep';
 
 const TURNSTILE_CALLBACK = '__signupTurnstileCallback';
 
@@ -24,6 +25,7 @@ declare global {
 export default function SignupPage() {
   const { branding, features } = useSiteConfig();
   const turnstileSiteKey = branding.turnstileSiteKey;
+  const [step, setStep] = useState<'consent' | 'form'>('consent');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [signupResult, setSignupResult] = useState<SignupResponse | null>(null);
@@ -74,7 +76,9 @@ export default function SignupPage() {
         password: data.password,
         user_name: data.userName.trim(),
         use_case: combinedUseCase || undefined,
-        accepted_tos: data.acceptTerms,
+        // The account form is only reachable after every consent on the
+        // preceding step was checked, and the backend stores one flag.
+        accepted_tos: true,
         turnstileToken: turnstileTokenRef.current ?? undefined,
       });
       setSignupResult(result);
@@ -157,6 +161,10 @@ export default function SignupPage() {
         </Card>
       </div>
     );
+  }
+
+  if (step === 'consent') {
+    return <SignupConsentStep onContinue={() => setStep('form')} />;
   }
 
   return (
@@ -263,28 +271,6 @@ export default function SignupPage() {
               </span>
             )}
           </label>
-
-          <div>
-            <label className="flex items-start gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
-              <input
-                type="checkbox"
-                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                {...register('acceptTerms')}
-              />
-              <span>
-                I agree to the{' '}
-                <Link className="font-medium text-blue-600 hover:text-blue-700" href="/terms">
-                  Terms of Service
-                </Link>
-                .
-              </span>
-            </label>
-            {errors.acceptTerms && (
-              <span className="mt-1.5 block text-xs text-red-600">
-                {errors.acceptTerms.message}
-              </span>
-            )}
-          </div>
 
           {turnstileSiteKey && (
             <>

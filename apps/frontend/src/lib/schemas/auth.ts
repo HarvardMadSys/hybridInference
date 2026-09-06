@@ -48,7 +48,6 @@ const signupFieldsSchema = z.object({
     .max(500, 'Response cannot exceed 500 characters')
     .optional()
     .or(z.literal('')),
-  acceptTerms: z.boolean(),
 });
 
 export function createSignupSchema(siteHost = 'this service') {
@@ -56,10 +55,6 @@ export function createSignupSchema(siteHost = 'this service') {
     .refine((data) => data.password === data.confirmPassword, {
       message: 'Passwords do not match',
       path: ['confirmPassword'],
-    })
-    .refine((data) => data.acceptTerms, {
-      message: 'You must agree to the Terms of Service',
-      path: ['acceptTerms'],
     })
     .refine(
       (data) => buildCombinedUseCase(data.useCase, data.discoverySource, siteHost).length <= 2000,

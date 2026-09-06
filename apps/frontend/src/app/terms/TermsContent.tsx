@@ -2,9 +2,9 @@
 
 import { useBranding } from '@/components/providers/SiteConfigProvider';
 
-export function TermsContent(): JSX.Element {
+function useTermsSections(): { title: string; body: string[] }[] {
   const branding = useBranding();
-  const sections = [
+  return [
     {
       title: '1. Service Overview',
       body: [
@@ -15,6 +15,7 @@ export function TermsContent(): JSX.Element {
     {
       title: '2. Eligibility and Accounts',
       body: [
+        `You must be at least 18 years old to create an account or use ${branding.appName}. By creating an account or using the service, you confirm that you are at least 18 years old and have the legal capacity to agree to these Terms.`,
         'You are responsible for maintaining the confidentiality of your account credentials and API keys. You are responsible for activity submitted through your account or keys.',
         "Do not share API keys publicly, embed them in client-side code, or use another person's account without permission.",
       ],
@@ -78,6 +79,52 @@ export function TermsContent(): JSX.Element {
       ],
     },
   ];
+}
+
+/**
+ * The numbered sections of the terms, without the page header. Shared by the
+ * /terms page and the signup consent step so the text can't drift.
+ */
+export function TermsSections({
+  headingLevel = 2,
+  compact = false,
+}: {
+  headingLevel?: 2 | 3;
+  compact?: boolean;
+}): JSX.Element {
+  const sections = useTermsSections();
+  const Heading = headingLevel === 3 ? 'h3' : 'h2';
+  return (
+    <div className={compact ? 'space-y-4' : 'mt-8 space-y-8'}>
+      {sections.map((section) => (
+        <section key={section.title} className={compact ? 'space-y-1.5' : 'space-y-3'}>
+          <Heading
+            className={
+              compact
+                ? 'text-sm font-semibold text-gray-900'
+                : 'text-xl font-semibold tracking-tight text-gray-950'
+            }
+          >
+            {section.title}
+          </Heading>
+          {section.body.map((paragraph, index) => (
+            <p
+              key={index}
+              className={
+                compact ? 'text-xs leading-5 text-gray-700' : 'text-sm leading-7 text-gray-700'
+              }
+            >
+              {paragraph}
+            </p>
+          ))}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+export function TermsContent(): JSX.Element {
+  const branding = useBranding();
 
   return (
     <article className="mx-auto w-full max-w-3xl rounded-2xl border border-gray-200 bg-white px-6 py-8 shadow-sm sm:px-10 sm:py-10">
@@ -91,18 +138,7 @@ export function TermsContent(): JSX.Element {
         </p>
       </div>
 
-      <div className="mt-8 space-y-8">
-        {sections.map((section) => (
-          <section key={section.title} className="space-y-3">
-            <h2 className="text-xl font-semibold tracking-tight text-gray-950">{section.title}</h2>
-            {section.body.map((paragraph, index) => (
-              <p key={index} className="text-sm leading-7 text-gray-700">
-                {paragraph}
-              </p>
-            ))}
-          </section>
-        ))}
-      </div>
+      <TermsSections />
     </article>
   );
 }
