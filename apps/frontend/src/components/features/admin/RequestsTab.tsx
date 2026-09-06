@@ -823,6 +823,7 @@ export function RequestsTab() {
                         ? new Date(`${exportEndDate}T23:59:59Z`).toISOString()
                         : undefined,
                       userId: reqUserFilter || undefined,
+                      sessionId: reqSessionFilter || undefined,
                       modelId: reqModelFilter || undefined,
                       errorsOnly: reqErrorsOnly || undefined,
                       requestType: reqType === 'all' ? undefined : reqType,
@@ -851,6 +852,7 @@ export function RequestsTab() {
           decode throughput average away over a week. */}
       <RequestPerformancePanel
         userFilter={debouncedUserFilter}
+        sessionFilter={reqSessionFilter}
         modelFilter={debouncedModelFilter}
         requestType={reqType}
         errorsOnly={reqErrorsOnly}

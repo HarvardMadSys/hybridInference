@@ -657,12 +657,14 @@ export interface AdminRequestPerfBreakdownResponse {
 export async function getRecentRequestsPerformance({
   days,
   userId,
+  sessionId,
   modelId,
   requestType,
   refresh = false,
 }: {
   days?: number;
   userId?: string;
+  sessionId?: string;
   modelId?: string;
   requestType?: 'chat' | 'embedding';
   // Bypass the backend's short-lived per-filter cache. Set when the admin
@@ -672,6 +674,7 @@ export async function getRecentRequestsPerformance({
   const params = new URLSearchParams();
   if (days != null) params.set('days', String(days));
   if (userId) params.set('user_id', userId);
+  if (sessionId) params.set('session_id', sessionId);
   if (modelId) params.set('model_id', modelId);
   if (requestType) params.set('request_type', requestType);
   if (refresh) params.set('refresh', 'true');
@@ -714,6 +717,7 @@ export interface AdminRequestPerfTrendResponse {
 export async function getRecentRequestsPerformanceTrend({
   days,
   userId,
+  sessionId,
   modelId,
   requestType,
   servedModel,
@@ -722,6 +726,7 @@ export async function getRecentRequestsPerformanceTrend({
 }: {
   days?: number;
   userId?: string;
+  sessionId?: string;
   modelId?: string;
   requestType?: 'chat' | 'embedding';
   // The exact served route to chart. Without it the response carries only the
@@ -734,6 +739,7 @@ export async function getRecentRequestsPerformanceTrend({
   const params = new URLSearchParams();
   if (days != null) params.set('days', String(days));
   if (userId) params.set('user_id', userId);
+  if (sessionId) params.set('session_id', sessionId);
   if (modelId) params.set('model_id', modelId);
   if (requestType) params.set('request_type', requestType);
   if (servedModel) params.set('served_model', servedModel);
@@ -1210,6 +1216,9 @@ export interface ExportRequestsParams {
   startTime: string;
   endTime?: string;
   userId?: string;
+  // Exact session id. The export mirrors the Requests tab's filters, so a
+  // session-scoped list must download that session and not a superset of it.
+  sessionId?: string;
   modelId?: string;
   errorsOnly?: boolean;
   requestType?: 'chat' | 'embedding';
@@ -1222,6 +1231,7 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   });
   if (params.endTime) qs.set('end_time', params.endTime);
   if (params.userId) qs.set('user_id', params.userId);
+  if (params.sessionId) qs.set('session_id', params.sessionId);
   if (params.modelId) qs.set('model_id', params.modelId);
   if (params.errorsOnly) qs.set('errors_only', 'true');
   if (params.requestType) qs.set('request_type', params.requestType);

@@ -20,6 +20,7 @@ vi.mock('@/lib/api/admin', () => ({
 }));
 
 import {
+  exportRequests,
   getRecentRequestContent,
   getRecentRequestsPerformance,
   getRequestMetrics,
@@ -296,6 +297,36 @@ describe('RequestsTab session labelling', () => {
 
     await waitFor(() =>
       expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[7]).toBeUndefined(),
+    );
+  });
+
+  it('scopes the performance summary to the selected session', async () => {
+    // The panel sits directly above the table; leaving it unscoped would show
+    // one conversation's rows beside every conversation's latency numbers.
+    render(<RequestsTab />);
+
+    fireEvent.click(await screen.findByTitle(/^session 7c6b5a49/));
+
+    await waitFor(() =>
+      expect(getRecentRequestsPerformance).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sessionId: '7c6b5a49-3827-1605-f4e3-d2c1b0a99887' }),
+      ),
+    );
+  });
+
+  it('exports the selected session rather than every session', async () => {
+    vi.mocked(exportRequests).mockResolvedValue(undefined);
+    render(<RequestsTab />);
+
+    fireEvent.click(await screen.findByTitle(/^session 7c6b5a49/));
+    fireEvent.click(screen.getByRole('button', { name: 'Export JSONL' }));
+    fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-09-01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+
+    await waitFor(() =>
+      expect(exportRequests).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: '7c6b5a49-3827-1605-f4e3-d2c1b0a99887' }),
+      ),
     );
   });
 

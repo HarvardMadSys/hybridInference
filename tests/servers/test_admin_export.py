@@ -263,6 +263,46 @@ def test_export_applies_user_id_filter():
     assert "u.email ILIKE '%' || $3 || '%' ESCAPE '\\'" in query
 
 
+def test_export_applies_session_id_filter():
+    """The export mirrors the tab's session filter, exactly and on the column.
+
+    Without this an admin who scoped the list to one conversation and hit
+    Export downloaded every session, in a file that looks like the filtered
+    view.
+    """
+    from serving.servers.app import app
+    from serving.servers.deps import get_db_logger, verify_admin_access
+
+    row = _make_mock_row(user_id="user-1")
+    db = _make_mock_db([[row], []])
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/admin/export/requests"
+            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z"
+            "&session_id=7c6b5a49-3827",
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    mock_conn = db.pool.acquire.return_value.__aenter__.return_value
+    call_args = mock_conn.fetch.call_args
+    assert call_args is not None
+    query = call_args[0][0]
+    # Exact match on the indexed column — the same predicate the list view uses.
+    assert "l.session_id = $3" in query
+    assert "session_id ILIKE" not in query
+    assert call_args[0][3] == "7c6b5a49-3827"
+    # And the audit entry says which conversation was taken: two session-scoped
+    # exports with otherwise identical filters must not be indistinguishable in
+    # the log that exists to record what was accessed.
+    db.log_admin_action.assert_awaited_once()
+    assert db.log_admin_action.await_args.kwargs["details"]["session_id"] == "7c6b5a49-3827"
+
+
 def test_export_applies_model_id_filter():
     """model_id filter is passed through to the SQL query."""
     from serving.servers.app import app

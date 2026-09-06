@@ -104,12 +104,17 @@ const WINDOW_LABEL = '24h';
  */
 export function RequestPerformancePanel({
   userFilter,
+  sessionFilter,
   modelFilter,
   requestType,
   refreshKey = 0,
   errorsOnly = false,
 }: {
   userFilter: string;
+  // The session the table is scoped to, or '' for all of them. Without it the
+  // summary below a session-filtered table would keep averaging every other
+  // conversation's requests into the numbers.
+  sessionFilter: string;
   modelFilter: string;
   requestType: 'all' | 'chat' | 'embedding';
   refreshKey?: number;
@@ -167,6 +172,7 @@ export function RequestPerformancePanel({
         const data = await getRecentRequestsPerformance({
           days: WINDOW_DAYS,
           userId: userFilter || undefined,
+          sessionId: sessionFilter || undefined,
           modelId: modelFilter || undefined,
           requestType: requestType === 'all' ? undefined : requestType,
           refresh,
@@ -188,7 +194,7 @@ export function RequestPerformancePanel({
         if (seq === seqRef.current) setLoading(false);
       }
     },
-    [userFilter, modelFilter, requestType],
+    [userFilter, sessionFilter, modelFilter, requestType],
   );
 
   useEffect(() => {
@@ -219,6 +225,7 @@ export function RequestPerformancePanel({
       getRecentRequestsPerformanceTrend({
         days: WINDOW_DAYS,
         userId: userFilter || undefined,
+        sessionId: sessionFilter || undefined,
         modelId: modelFilter || undefined,
         requestType: requestType === 'all' ? undefined : requestType,
         servedModel: group.model_id,
@@ -253,7 +260,7 @@ export function RequestPerformancePanel({
           });
         });
     },
-    [expanded, trendByRoute, trendLoading, userFilter, modelFilter, requestType],
+    [expanded, trendByRoute, trendLoading, userFilter, sessionFilter, modelFilter, requestType],
   );
 
   return (

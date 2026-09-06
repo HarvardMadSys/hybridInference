@@ -226,8 +226,8 @@ _PERF_BREAKDOWN_CACHE_TTL_SECONDS = 20.0
 # Bound on distinct filter tuples kept. A session of filter edits walks through
 # many keys, and each entry holds only a small summary.
 _PERF_BREAKDOWN_CACHE_MAX_ENTRIES = 32
-# (pool id, days, user_id, model_id, request_type)
-_PerfBreakdownKey = tuple[int, int, str | None, str | None, str | None]
+# (pool id, days, user_id, session_id, model_id, request_type)
+_PerfBreakdownKey = tuple[int, int, str | None, str | None, str | None, str | None]
 _PERF_BREAKDOWN_CACHE: dict[_PerfBreakdownKey, tuple[float, AdminRequestPerfBreakdownResponse]] = {}
 _PERF_BREAKDOWN_LOCK: asyncio.Lock | None = None
 _PERF_BREAKDOWN_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
@@ -235,8 +235,11 @@ _PERF_BREAKDOWN_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
 # The trend view scans the same rows as the breakdown, bucketed, so it gets the
 # same treatment: its own keyed cache, sharing the TTL, entry cap and lock (one
 # heavy scan at a time across both views is exactly the bound that matters).
-# (pool id, days, user_id, model_id, request_type, served_model, served_endpoint)
-_PerfTrendKey = tuple[int, int, str | None, str | None, str | None, str | None, str | None]
+# (pool id, days, user_id, session_id, model_id, request_type, served_model,
+# served_endpoint)
+_PerfTrendKey = tuple[
+    int, int, str | None, str | None, str | None, str | None, str | None, str | None
+]
 _PERF_TREND_CACHE: dict[_PerfTrendKey, tuple[float, AdminRequestPerfTrendResponse]] = {}
 
 # Bucket width per lookback, mirroring REQUEST_METRIC_WINDOWS: a day of hourly
@@ -943,6 +946,7 @@ async def _load_request_perf_breakdown(
     *,
     days: int,
     user_id: str | None,
+    session_id: str | None,
     model_id: str | None,
     request_type: str | None,
 ) -> AdminRequestPerfBreakdownResponse:
@@ -964,6 +968,7 @@ async def _load_request_perf_breakdown(
     where_clauses, params, needs_user_join = _build_recent_requests_filters(
         days=days,
         user_id=user_id,
+        session_id=session_id,
         model_id=model_id,
         request_type=request_type,
     )
@@ -1045,6 +1050,7 @@ async def _get_cached_request_perf_breakdown(
     *,
     days: int,
     user_id: str | None,
+    session_id: str | None,
     model_id: str | None,
     request_type: str | None,
     refresh: bool = False,
@@ -1054,6 +1060,7 @@ async def _get_cached_request_perf_breakdown(
         id(db_logger.pool),
         days,
         user_id or None,
+        session_id or None,
         model_id or None,
         request_type or None,
     )
@@ -1074,6 +1081,7 @@ async def _get_cached_request_perf_breakdown(
             db_logger,
             days=days,
             user_id=user_id,
+            session_id=session_id,
             model_id=model_id,
             request_type=request_type,
         )
@@ -1088,6 +1096,7 @@ async def _get_cached_request_perf_breakdown(
 async def admin_recent_requests_performance(
     days: int = 7,
     user_id: str | None = None,
+    session_id: str | None = None,
     model_id: str | None = None,
     request_type: str | None = None,
     refresh: bool = False,
@@ -1103,6 +1112,7 @@ async def admin_recent_requests_performance(
     Query Parameters:
     - days: Lookback window in days (default: 7, clamped to [1, 90])
     - user_id: Filter by user ID, name, or email (substring match)
+    - session_id: Filter to one session, as on ``/recent-requests``
     - model_id: Filter by requested model ID (substring match)
     - request_type: ``"embedding"`` / ``"chat"``, as on ``/recent-requests``
     - refresh: Bypass the short-lived per-filter cache (the panel's Refresh)
@@ -1119,6 +1129,7 @@ async def admin_recent_requests_performance(
         db_logger,
         days=max(1, min(days, 90)),
         user_id=user_id,
+        session_id=session_id,
         model_id=model_id,
         request_type=request_type,
         refresh=refresh,
@@ -1150,6 +1161,7 @@ async def _load_request_perf_trend(
     *,
     days: int,
     user_id: str | None,
+    session_id: str | None,
     model_id: str | None,
     request_type: str | None,
     served_model: str | None = None,
@@ -1178,6 +1190,7 @@ async def _load_request_perf_trend(
     where_clauses, params, needs_user_join = _build_recent_requests_filters(
         days=days,
         user_id=user_id,
+        session_id=session_id,
         model_id=model_id,
         request_type=request_type,
     )
@@ -1317,6 +1330,7 @@ async def _get_cached_request_perf_trend(
     *,
     days: int,
     user_id: str | None,
+    session_id: str | None,
     model_id: str | None,
     request_type: str | None,
     served_model: str | None = None,
@@ -1328,6 +1342,7 @@ async def _get_cached_request_perf_trend(
         id(db_logger.pool),
         days,
         user_id or None,
+        session_id or None,
         model_id or None,
         request_type or None,
         served_model or None,
@@ -1348,6 +1363,7 @@ async def _get_cached_request_perf_trend(
             db_logger,
             days=days,
             user_id=user_id,
+            session_id=session_id,
             model_id=model_id,
             request_type=request_type,
             served_model=served_model,
@@ -1364,6 +1380,7 @@ async def _get_cached_request_perf_trend(
 async def admin_recent_requests_performance_trend(
     days: int = 1,
     user_id: str | None = None,
+    session_id: str | None = None,
     model_id: str | None = None,
     request_type: str | None = None,
     served_model: str | None = None,
@@ -1397,6 +1414,7 @@ async def admin_recent_requests_performance_trend(
         db_logger,
         days=max(1, min(days, 90)),
         user_id=user_id,
+        session_id=session_id,
         model_id=model_id,
         request_type=request_type,
         served_model=served_model,

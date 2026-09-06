@@ -335,7 +335,7 @@ async def test_group_metrics_match_row_level_computation(db_logger):
     await _seed(db_logger.pool, rows)
 
     response = await _load_request_perf_breakdown(
-        db_logger, days=7, user_id=None, model_id=None, request_type=None
+        db_logger, days=7, user_id=None, session_id=None, model_id=None, request_type=None
     )
     by_key = {(g.model_id, g.endpoint_id): g for g in response.groups}
 
@@ -372,7 +372,7 @@ async def test_unmeasurable_rows_count_as_traffic_but_not_as_samples(db_logger):
     await _seed(db_logger.pool, _mixed_rows())
 
     response = await _load_request_perf_breakdown(
-        db_logger, days=7, user_id=None, model_id=None, request_type=None
+        db_logger, days=7, user_id=None, session_id=None, model_id=None, request_type=None
     )
     local = next(g for g in response.groups if g.endpoint_id == "glm-4.6:local-12003")
 
@@ -399,7 +399,7 @@ async def test_group_cap_reports_truncation(db_logger, monkeypatch):
     await _seed(db_logger.pool, rows)
 
     response = await _load_request_perf_breakdown(
-        db_logger, days=7, user_id=None, model_id=None, request_type=None
+        db_logger, days=7, user_id=None, session_id=None, model_id=None, request_type=None
     )
 
     assert response.truncated is True
@@ -454,17 +454,17 @@ async def test_filters_narrow_the_same_rows_as_the_list_view(db_logger):
     await _seed(db_logger.pool, [*_mixed_rows(), _row("other-user", user_id="user-2")])
 
     only_bob = await _load_request_perf_breakdown(
-        db_logger, days=7, user_id="bob@example", model_id=None, request_type=None
+        db_logger, days=7, user_id="bob@example", session_id=None, model_id=None, request_type=None
     )
     assert [g.request_count for g in only_bob.groups] == [1]
 
     only_legacy = await _load_request_perf_breakdown(
-        db_logger, days=7, user_id=None, model_id="LEGACY", request_type=None
+        db_logger, days=7, user_id=None, session_id=None, model_id="LEGACY", request_type=None
     )
     assert {g.model_id for g in only_legacy.groups} == {"legacy-model"}
 
     wide = await _load_request_perf_breakdown(
-        db_logger, days=90, user_id=None, model_id=None, request_type=None
+        db_logger, days=90, user_id=None, session_id=None, model_id=None, request_type=None
     )
     local_wide = next(g for g in wide.groups if g.endpoint_id == "glm-4.6:local-12003")
     # The 40-day-old row is in range now.
@@ -519,7 +519,7 @@ async def test_trend_locates_a_regression_in_the_hour_it_happened(db_logger):
     await _seed(db_logger.pool, rows)
 
     response = await _load_request_perf_trend(
-        db_logger, days=1, user_id=None, model_id=None, request_type=None
+        db_logger, days=1, user_id=None, session_id=None, model_id=None, request_type=None
     )
 
     assert response.bucket_minutes == 60
@@ -558,7 +558,7 @@ async def test_trend_quiet_buckets_are_present_and_empty(db_logger):
     )
 
     response = await _load_request_perf_trend(
-        db_logger, days=1, user_id=None, model_id=None, request_type=None
+        db_logger, days=1, user_id=None, session_id=None, model_id=None, request_type=None
     )
     buckets = response.series[0].buckets
 
@@ -593,7 +593,7 @@ async def test_trend_keeps_endpoints_apart_on_one_shared_axis(db_logger):
     await _seed(db_logger.pool, rows)
 
     response = await _load_request_perf_trend(
-        db_logger, days=1, user_id=None, model_id=None, request_type=None
+        db_logger, days=1, user_id=None, session_id=None, model_id=None, request_type=None
     )
 
     assert [(s.endpoint_id, s.request_count) for s in response.series] == [
@@ -627,7 +627,7 @@ async def test_trend_series_cap_reports_truncation(db_logger, monkeypatch):
     await _seed(db_logger.pool, rows)
 
     response = await _load_request_perf_trend(
-        db_logger, days=1, user_id=None, model_id=None, request_type=None
+        db_logger, days=1, user_id=None, session_id=None, model_id=None, request_type=None
     )
 
     assert response.truncated is True
@@ -640,7 +640,7 @@ async def test_trend_coarsens_the_bucket_for_a_longer_window(db_logger):
     await _seed(db_logger.pool, [_row("one", ttft=300, latency=4300, completion=41, age_days=2)])
 
     week = await _load_request_perf_trend(
-        db_logger, days=7, user_id=None, model_id=None, request_type=None
+        db_logger, days=7, user_id=None, session_id=None, model_id=None, request_type=None
     )
 
     assert week.bucket_minutes == 360
@@ -654,10 +654,10 @@ async def test_trend_totals_reconcile_with_the_flat_summary(db_logger):
     await _seed(db_logger.pool, _mixed_rows())
 
     trend = await _load_request_perf_trend(
-        db_logger, days=7, user_id=None, model_id=None, request_type=None
+        db_logger, days=7, user_id=None, session_id=None, model_id=None, request_type=None
     )
     flat = await _load_request_perf_breakdown(
-        db_logger, days=7, user_id=None, model_id=None, request_type=None
+        db_logger, days=7, user_id=None, session_id=None, model_id=None, request_type=None
     )
 
     assert {(s.model_id, s.endpoint_id): s.request_count for s in trend.series} == {
@@ -688,7 +688,7 @@ async def test_trend_returns_a_named_route_even_below_the_cap(db_logger, monkeyp
 
     # Unselected: the cap keeps only the busiest, and says so.
     capped = await _load_request_perf_trend(
-        db_logger, days=1, user_id=None, model_id=None, request_type=None
+        db_logger, days=1, user_id=None, session_id=None, model_id=None, request_type=None
     )
     assert [s.endpoint_id for s in capped.series] == ["ep-busy"]
     assert capped.truncated is True
@@ -698,6 +698,7 @@ async def test_trend_returns_a_named_route_even_below_the_cap(db_logger, monkeyp
         db_logger,
         days=1,
         user_id=None,
+        session_id=None,
         model_id=None,
         request_type=None,
         served_model="glm-4.6",
@@ -744,6 +745,7 @@ async def test_trend_route_selection_distinguishes_models_sharing_an_endpoint(db
         db_logger,
         days=1,
         user_id=None,
+        session_id=None,
         model_id=None,
         request_type=None,
         served_model="model-b",

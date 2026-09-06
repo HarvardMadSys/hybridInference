@@ -747,6 +747,53 @@ async def test_perf_summary_reuses_list_filters(admin_client_capture):
 
 
 @pytest.mark.asyncio
+async def test_perf_summary_scopes_to_the_session(admin_client_capture):
+    """The summary follows the list's session filter.
+
+    It sits directly above the table and already mirrors user, model and type,
+    so a session filter it ignored would put one conversation's rows beside
+    every conversation's latency numbers.
+    """
+    client, calls, _logger = admin_client_capture
+    resp = await client.get("/admin/recent-requests/performance?session_id=sess-1")
+    assert resp.status_code == 200, resp.text
+
+    query, args = calls["fetch"][0]
+    assert "l.session_id = $2" in query
+    assert args[1] == "sess-1"
+
+
+@pytest.mark.asyncio
+async def test_perf_trend_scopes_to_the_session(admin_client_capture):
+    client, calls, _logger = admin_client_capture
+    resp = await client.get("/admin/recent-requests/performance/trend?session_id=sess-1")
+    assert resp.status_code == 200, resp.text
+
+    query, args = calls["fetch"][0]
+    assert "l.session_id = $2" in query
+    assert args[1] == "sess-1"
+
+
+@pytest.mark.asyncio
+async def test_perf_summary_cache_is_keyed_on_the_session(admin_client_capture):
+    """Two sessions must not share a cached summary.
+
+    The cache key is what stops one conversation's numbers being served for
+    another's for the length of the TTL — a filter added to the query but not
+    to the key would do exactly that.
+    """
+    client, calls, _logger = admin_client_capture
+
+    assert (await client.get("/admin/recent-requests/performance?session_id=a")).status_code == 200
+    assert (await client.get("/admin/recent-requests/performance?session_id=b")).status_code == 200
+    # Same filters as the first call: served from cache, no third query.
+    assert (await client.get("/admin/recent-requests/performance?session_id=a")).status_code == 200
+
+    session_args = [args[1] for _query, args in calls["fetch"]]
+    assert session_args == ["a", "b"]
+
+
+@pytest.mark.asyncio
 async def test_perf_summary_ignores_error_filters(admin_client_capture):
     """errors_only / status_code are not accepted: this view is success-scoped."""
     client, calls, _logger = admin_client_capture

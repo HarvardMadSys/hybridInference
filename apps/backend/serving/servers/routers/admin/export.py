@@ -38,6 +38,7 @@ async def admin_export_requests(
     start_time: datetime,
     end_time: datetime | None = None,
     user_id: str | None = None,
+    session_id: str | None = None,
     model_id: str | None = None,
     errors_only: bool = False,
     request_type: str | None = None,
@@ -51,6 +52,7 @@ async def admin_export_requests(
     - start_time: ISO8601 datetime, inclusive lower bound (required)
     - end_time: ISO8601 datetime, inclusive upper bound (defaults to now)
     - user_id: Filter by user ID, name, or email (substring match)
+    - session_id: Filter to one session (exact match on ``api_logs.session_id``)
     - model_id: Filter by model ID (substring match)
     - errors_only: If true, only include requests with errors
     - request_type: ``"embedding"`` to export only embedding requests,
@@ -85,6 +87,13 @@ async def admin_export_requests(
             f"OR u.user_name ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
             f"OR u.email ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
         )
+
+    if session_id:
+        # Exact, and on the indexed column — same predicate as the list view, so
+        # a session-scoped export is the rows the admin is looking at and not a
+        # superset of them.
+        params.append(session_id)
+        where_clauses.append(f"l.session_id = ${len(params)}")
 
     if model_id:
         params.append(_escape_ilike_substring_term(model_id))
@@ -195,6 +204,11 @@ async def admin_export_requests(
                     "range": f"{start_str}-{end_str}",
                     "include_content": include_content,
                     "user_id": user_id,
+                    # Which conversation's requests were taken. Without it two
+                    # session-scoped exports with otherwise identical filters
+                    # are indistinguishable in the audit log, which exists to
+                    # record exactly what was accessed.
+                    "session_id": session_id,
                     "model_id": model_id,
                     "errors_only": errors_only,
                     "request_type": request_type,

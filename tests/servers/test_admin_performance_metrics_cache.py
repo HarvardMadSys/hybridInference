@@ -170,7 +170,12 @@ def _breakdown(days: int = 7) -> AdminRequestPerfBreakdownResponse:
     )
 
 
-_NO_FILTERS: dict[str, object] = {"user_id": None, "model_id": None, "request_type": None}
+_NO_FILTERS: dict[str, object] = {
+    "user_id": None,
+    "session_id": None,
+    "model_id": None,
+    "request_type": None,
+}
 
 
 @pytest.mark.asyncio
@@ -193,15 +198,16 @@ async def test_breakdown_cache_is_keyed_by_filters(monkeypatch):
     """Different filters must never read each other's cached numbers."""
     db_logger = _db_logger()
     by_key = {
-        (7, None, None, None): _breakdown(7),
-        (30, None, None, None): _breakdown(30),
-        (7, "alice", None, None): _breakdown(7),
-        (7, None, "glm", None): _breakdown(7),
-        (7, None, None, "chat"): _breakdown(7),
+        (7, None, None, None, None): _breakdown(7),
+        (30, None, None, None, None): _breakdown(30),
+        (7, "alice", None, None, None): _breakdown(7),
+        (7, None, "sess-1", None, None): _breakdown(7),
+        (7, None, None, "glm", None): _breakdown(7),
+        (7, None, None, None, "chat"): _breakdown(7),
     }
 
-    async def _load(_db_logger, *, days, user_id, model_id, request_type):
-        return by_key[(days, user_id, model_id, request_type)]
+    async def _load(_db_logger, *, days, user_id, session_id, model_id, request_type):
+        return by_key[(days, user_id, session_id, model_id, request_type)]
 
     loader = AsyncMock(side_effect=_load)
     monkeypatch.setattr(metrics, "_load_request_perf_breakdown", loader)
@@ -211,17 +217,18 @@ async def test_breakdown_cache_is_keyed_by_filters(monkeypatch):
             db_logger, **{**{"days": 7, **_NO_FILTERS}, **kwargs}
         )
 
-    assert await _get() is by_key[(7, None, None, None)]
-    assert await _get(days=30) is by_key[(30, None, None, None)]
-    assert await _get(user_id="alice") is by_key[(7, "alice", None, None)]
-    assert await _get(model_id="glm") is by_key[(7, None, "glm", None)]
-    assert await _get(request_type="chat") is by_key[(7, None, None, "chat")]
-    assert loader.await_count == 5
+    assert await _get() is by_key[(7, None, None, None, None)]
+    assert await _get(days=30) is by_key[(30, None, None, None, None)]
+    assert await _get(user_id="alice") is by_key[(7, "alice", None, None, None)]
+    assert await _get(session_id="sess-1") is by_key[(7, None, "sess-1", None, None)]
+    assert await _get(model_id="glm") is by_key[(7, None, None, "glm", None)]
+    assert await _get(request_type="chat") is by_key[(7, None, None, None, "chat")]
+    assert loader.await_count == 6
 
-    # Each of those five keys is now cached independently.
-    assert await _get(days=30) is by_key[(30, None, None, None)]
-    assert await _get() is by_key[(7, None, None, None)]
-    assert loader.await_count == 5
+    # Each of those six keys is now cached independently.
+    assert await _get(days=30) is by_key[(30, None, None, None, None)]
+    assert await _get() is by_key[(7, None, None, None, None)]
+    assert loader.await_count == 6
 
 
 @pytest.mark.asyncio
@@ -233,7 +240,7 @@ async def test_breakdown_empty_filter_strings_share_the_unfiltered_key(monkeypat
 
     await metrics._get_cached_request_perf_breakdown(db_logger, days=7, **_NO_FILTERS)
     await metrics._get_cached_request_perf_breakdown(
-        db_logger, days=7, user_id="", model_id="", request_type=""
+        db_logger, days=7, user_id="", session_id="", model_id="", request_type=""
     )
 
     assert loader.await_count == 1
@@ -355,7 +362,12 @@ async def test_breakdown_cache_is_bounded(monkeypatch):
 
     for i in range(metrics._PERF_BREAKDOWN_CACHE_MAX_ENTRIES + 10):
         await metrics._get_cached_request_perf_breakdown(
-            db_logger, days=7, user_id=f"user-{i}", model_id=None, request_type=None
+            db_logger,
+            days=7,
+            user_id=f"user-{i}",
+            session_id=None,
+            model_id=None,
+            request_type=None,
         )
 
     assert len(metrics._PERF_BREAKDOWN_CACHE) == metrics._PERF_BREAKDOWN_CACHE_MAX_ENTRIES
