@@ -72,6 +72,7 @@ function makeTrend(
 
 const defaultProps = {
   userFilter: '',
+  sessionFilter: '',
   modelFilter: '',
   requestType: 'all' as const,
 };
@@ -165,7 +166,12 @@ describe('RequestPerformancePanel', () => {
 
   it('forwards the tab filters to the API', async () => {
     render(
-      <RequestPerformancePanel userFilter="ada@example.com" modelFilter="glm" requestType="chat" />,
+      <RequestPerformancePanel
+        userFilter="ada@example.com"
+        sessionFilter="sess-7"
+        modelFilter="glm"
+        requestType="chat"
+      />,
     );
 
     await waitFor(() =>
@@ -173,6 +179,9 @@ describe('RequestPerformancePanel', () => {
         // Its own window, not the tab's lookback — which the panel is not given.
         days: 1,
         userId: 'ada@example.com',
+        // Without this the summary would keep averaging every other
+        // conversation into the numbers beside a session-filtered table.
+        sessionId: 'sess-7',
         modelId: 'glm',
         requestType: 'chat',
         refresh: false,
