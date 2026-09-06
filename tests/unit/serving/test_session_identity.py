@@ -59,10 +59,13 @@ def test_canonical_header_wins_over_every_other_source() -> None:
 
 @pytest.mark.parametrize(
     "header",
-    # What Codex CLI actually sends is the hyphenated pair; the underscore
-    # spellings are accepted beside them because header names carrying
-    # underscores are legal but commonly dropped by intermediaries, so clients
-    # differ over which to send.
+    # Two idioms share this list. `session-id` / `thread-id` are what Codex CLI
+    # sends, hyphenated; the underscore spellings are accepted beside them
+    # because header names carrying underscores are legal but commonly dropped
+    # by intermediaries, so clients differ over which to send.
+    # `x-session-affinity` and `x-opencode-session` are OpenCode and its Kilo
+    # Code fork -- the first beside the canonical header on a provider they do
+    # not recognise as their own, the second instead of it on one they do.
     [
         "x-opencode-session",
         "x-session-affinity",
