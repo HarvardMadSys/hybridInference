@@ -119,20 +119,45 @@ class _FakeCM:
     """
 
     def __init__(self, behavior):
-        # behavior is "disconnect" or a list[bytes] of body chunks.
+        # behavior is a connect-error token (see _connect_phase_error) or a
+        # list[bytes] of body chunks for a successful open.
         self._behavior = behavior
         self.entered = False
         self.exited = False
 
     async def __aenter__(self):
         self.entered = True
-        if self._behavior == "disconnect":
-            raise aiohttp.ServerDisconnectedError()
+        if isinstance(self._behavior, str):
+            raise _connect_phase_error(self._behavior)
         return _FakeResp(self._behavior)
 
     async def __aexit__(self, exc_type, exc, tb):
         self.exited = True
         return False
+
+
+def _connect_phase_error(token: str) -> BaseException:
+    """Build a connect-phase exception a stale/failed socket can raise.
+
+    aiohttp wraps socket errors (ECONNRESET, EPIPE) in ``ClientOSError``;
+    ``connect_error`` is a genuine fresh-connection failure that must NOT
+    retry. ``ClientConnectorError`` has a version-specific constructor, so
+    fall back to ``__new__`` when the simple form isn't accepted (keeps the
+    test robust whether ``aiohttp`` is the real package or the unit stub).
+    """
+    if token == "disconnect":
+        return aiohttp.ServerDisconnectedError()
+    if token == "reset":
+        return aiohttp.ClientOSError(104, "Connection reset by peer")
+    if token == "broken_pipe":
+        return aiohttp.ClientOSError(32, "Broken pipe")
+    if token == "connect_error":
+        cls = aiohttp.ClientConnectorError
+        try:
+            return cls("Connection refused")
+        except TypeError:
+            return cls.__new__(cls)
+    raise ValueError(f"unknown connect-phase token: {token!r}")
 
 
 def _fake_session_with_script(script: list):
@@ -170,6 +195,62 @@ async def test_stream_post_retries_once_on_stale_keepalive(monkeypatch):
     assert cms[0].entered is True  # __aexit__ is not called when __aenter__ raises
     assert cms[1].entered is True and cms[1].exited is True
     assert lines == ['data: {"x":1}', "data: [DONE]"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["reset", "broken_pipe"])
+async def test_stream_post_retries_once_on_stale_socket_reset(monkeypatch, failure):
+    """A stale pooled socket the upstream reset (ECONNRESET) or that we wrote
+    into after a half-close (EPIPE) surfaces as ClientOSError, not a clean
+    ServerDisconnectedError. It happens in the connect phase (before any
+    response byte), so it must retry once on a fresh connection — mirroring
+    the ServerDisconnectedError path — instead of surfacing a spurious 502."""
+    client = AsyncHTTPClient.shared()
+    body = [b'data: {"x":1}\n\n', b"data: [DONE]\n\n"]
+    ensure, cms = _fake_session_with_script([failure, body])
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", ensure)
+
+    lines: list[str] = []
+    async for line in client.stream_post("http://example/sse", json={}, mode="sse"):
+        lines.append(line)
+
+    assert len(cms) == 2  # first attempt failed, retry succeeded
+    assert cms[1].entered is True and cms[1].exited is True
+    assert lines == ['data: {"x":1}', "data: [DONE]"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_post_does_not_retry_on_connect_error(monkeypatch):
+    """A ClientConnectorError (DNS / refused / TLS on a *fresh* connection) is
+    a real connectivity failure, not a stale pooled socket — even though it
+    subclasses ClientOSError. It must propagate on the first attempt with no
+    retry, so a real upstream outage surfaces promptly."""
+    client = AsyncHTTPClient.shared()
+    ensure, cms = _fake_session_with_script(["connect_error", "connect_error"])
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", ensure)
+
+    with pytest.raises(aiohttp.ClientConnectorError):
+        async for _ in client.stream_post("http://example/sse", json={}, mode="sse"):
+            pass
+
+    assert len(cms) == 1  # no retry on a fresh-connection failure
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_post_gives_up_after_two_consecutive_resets(monkeypatch):
+    """If both connect attempts hit a reset, the second error propagates."""
+    client = AsyncHTTPClient.shared()
+    ensure, cms = _fake_session_with_script(["reset", "reset"])
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", ensure)
+
+    with pytest.raises(aiohttp.ClientOSError):
+        async for _ in client.stream_post("http://example/sse", json={}, mode="sse"):
+            pass
+
+    assert len(cms) == 2
 
 
 @pytest.mark.unit
