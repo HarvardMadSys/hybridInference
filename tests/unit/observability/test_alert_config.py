@@ -73,3 +73,49 @@ def test_circuit_open_page_on_usage_limit_can_be_turned_off(tmp_path: Path):
         )
     )
     assert load_alert_config(p).state_changes.circuit_open.page_on_usage_limit is False
+
+
+def test_auth_failure_spike_off_with_no_alerts_file(tmp_path: Path):
+    assert load_alert_config(tmp_path / "missing.yaml").rules.auth_failure_spike.enabled is False
+
+
+def test_auth_failure_spike_stays_off_when_only_thresholds_are_tuned(tmp_path: Path):
+    """A partial rule block must not resurrect the page.
+
+    Pydantic builds the nested model from whatever mapping the YAML supplies,
+    so a field-level ``default_factory`` never runs here — the model's own
+    ``enabled`` default is what keeps this off.
+    """
+    p = tmp_path / "alerts.yaml"
+    p.write_text(
+        textwrap.dedent(
+            """
+            rules:
+              auth_failure_spike:
+                window_sec: 120
+                threshold_count: 100
+            """
+        )
+    )
+    cfg = load_alert_config(p)
+    assert cfg.rules.auth_failure_spike.enabled is False
+    # The tuning still lands — it is only the paging that stays off.
+    assert cfg.rules.auth_failure_spike.window_sec == 120
+    assert cfg.rules.auth_failure_spike.threshold_count == 100
+
+
+def test_auth_failure_spike_can_be_turned_back_on(tmp_path: Path):
+    p = tmp_path / "alerts.yaml"
+    p.write_text(
+        textwrap.dedent(
+            """
+            rules:
+              auth_failure_spike:
+                enabled: true
+                threshold_count: 100
+            """
+        )
+    )
+    cfg = load_alert_config(p)
+    assert cfg.rules.auth_failure_spike.enabled is True
+    assert cfg.rules.auth_failure_spike.threshold_count == 100
