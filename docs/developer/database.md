@@ -134,7 +134,7 @@ request used:
 
 Those clients have two request paths, and only one of them sends the headers.
 The older `packages/opencode` path builds them directly; the newer
-`packages/core/session/runner/llm.ts` runner lost them and got them back
+`packages/core/src/session/runner/llm.ts` runner lost them and got them back
 upstream in `sst/opencode#43188` (2026-08-18). Kilo Code forked before that
 restore, so its core runner — the one `location-services.ts` registers — still
 sends nothing, and nothing else on the wire names the session. The gateway
