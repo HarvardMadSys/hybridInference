@@ -132,12 +132,21 @@ request used:
 | `metadata.session_id` or `client_metadata.session_id` in the request body | a client that labels the session where it labels everything else; Codex uses `client_metadata` |
 | `metadata.user_id` in the request body | Claude Code, which packs the run into `user_<hash>_account_<uuid>_session_<uuid>` |
 
-An OpenCode or Kilo build older than the one that restored those headers
-(`sst/opencode#43188`, 2026-08-18) sends no session header at all on its newer
-runner, and nothing else on the wire names the session — the gateway records
-none rather than inferring one from a field that was not meant to carry it.
-Upgrading is the fix; on the older runner a `chat.headers` plugin can set
-`X-Session-ID` from the session id it is handed.
+Those clients have two request paths, and only one of them sends the headers.
+The older `packages/opencode` path builds them directly; the newer
+`packages/core/session/runner/llm.ts` runner lost them and got them back
+upstream in `sst/opencode#43188` (2026-08-18). Kilo Code forked before that
+restore, so its core runner — the one `location-services.ts` registers — still
+sends nothing, and nothing else on the wire names the session. The gateway
+records none rather than inferring one from a field that was not meant to carry
+it.
+
+There is no client-side workaround for that path, and it is worth being exact
+about why: the `chat.headers` plugin hook exists only on the older path, which
+already sends the headers. Where the hook exists the fix is unnecessary, and
+where the headers are missing there is no hook to add them with. Upgrading
+OpenCode past the restore fixes OpenCode; Kilo needs the same change ported into
+its fork.
 
 The admin console's Recent Requests view shows the session under each row's
 client, and clicking it filters the list to that one conversation — an exact
