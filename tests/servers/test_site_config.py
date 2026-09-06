@@ -168,6 +168,7 @@ async def test_serves_validated_public_branding_with_docs_override(client, monke
         "docs_url": "https://override-docs.example.com",
         "status_url": "https://status.example.com",
         "github_url": "https://github.com/example/hybridInference",
+        "nav": [{"label": "Example Project", "url": "https://project.example.com"}],
     }
     assert public_branding["signup"] == {
         "turnstile_site_key": "",

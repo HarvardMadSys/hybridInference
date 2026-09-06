@@ -27,6 +27,7 @@ const configuredBranding = {
   orgUrl: 'https://org.example.test',
   statusUrl: 'https://status.example.test/',
   logoUrl: '/site-assets/logo.svg',
+  navLinks: [{ label: 'Example Project', url: 'https://project.example.test/' }],
 };
 
 let brandingOverride: Record<string, unknown> = configuredBranding;
@@ -79,6 +80,25 @@ describe('Header', () => {
     render(<Header />);
 
     expect(screen.queryByRole('link', { name: 'Status' })).not.toBeInTheDocument();
+  });
+
+  it('shows a distribution nav link to guests', () => {
+    render(<Header />);
+
+    const navLink = screen.getByRole('link', { name: 'Example Project' });
+
+    expect(navLink).toHaveAttribute('href', 'https://project.example.test/');
+    expect(navLink).toHaveAttribute('target', '_blank');
+    expect(navLink).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('renders no extra header links when the distribution lists none', () => {
+    brandingOverride = { ...configuredBranding, navLinks: [] };
+
+    render(<Header />);
+
+    expect(screen.queryByRole('link', { name: 'Example Project' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Status' })).toBeInTheDocument();
   });
 
   it('shows a dashboard link in the header for authenticated users', () => {

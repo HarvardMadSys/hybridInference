@@ -17,8 +17,25 @@ def test_example_branding_is_valid_and_complete() -> None:
     assert config.schema_version == 1
     assert config.organization.name == "Example Organization"
     assert config.example.api_key_env_var == "EXAMPLE_INFERENCE_API_KEY"
+    assert [(link.label, link.url) for link in config.links.nav] == [
+        ("Example Project", "https://project.example.com")
+    ]
     assert config.team == []
     assert config.sponsors == []
+
+
+def test_branding_written_before_nav_links_existed_still_loads(tmp_path: Path) -> None:
+    data = yaml.safe_load(_EXAMPLE.read_text())
+    del data["links"]["nav"]
+    path = tmp_path / "branding.yaml"
+    path.write_text(yaml.safe_dump(data))
+
+    config = load_branding_config(path)
+
+    # The strict model must not turn an added optional field into a loader
+    # failure for every distribution that has not adopted it yet.
+    assert config.links.nav == []
+    assert config.public_payload(docs_url="https://docs.example.com")["links"]["nav"] == []
 
 
 def test_public_payload_uses_snake_case_and_omits_absent_team_fields(tmp_path: Path) -> None:
@@ -118,6 +135,29 @@ def test_loader_rejects_values_the_runtime_client_cannot_consume(
     for key in keys[:-1]:
         target = target[key]
     target[keys[-1]] = value
+    path = tmp_path / "branding.yaml"
+    path.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(BrandingConfigError):
+        load_branding_config(path)
+
+
+@pytest.mark.parametrize(
+    "nav",
+    [
+        [{"label": "Example Project", "url": "http://insecure.example.com"}],
+        [{"label": "Example Project", "url": "javascript:alert(1)"}],
+        [{"label": "Example Project", "url": ""}],
+        [{"label": "", "url": "https://project.example.com"}],
+        [{"url": "https://project.example.com"}],
+        [{"label": "Example Project", "url": "https://project.example.com", "target": "_self"}],
+    ],
+)
+def test_loader_rejects_a_nav_link_the_console_cannot_render(
+    tmp_path: Path, nav: list[dict[str, str]]
+) -> None:
+    data = yaml.safe_load(_EXAMPLE.read_text())
+    data["links"]["nav"] = nav
     path = tmp_path / "branding.yaml"
     path.write_text(yaml.safe_dump(data))
 

@@ -13,6 +13,7 @@ const runtimeBranding = {
     docs_url: 'https://docs.example.test',
     status_url: 'https://status.example.test',
     github_url: 'https://github.com/example/runtime/',
+    nav: [{ label: 'Runtime Project', url: 'https://project.example.test/' }],
   },
   example: {
     api_base: 'https://api.example.test/',
@@ -103,6 +104,9 @@ describe('resolveRuntimeSiteConfig', () => {
       logoUrl: '/site-assets/logo.svg',
       faviconUrl: 'https://assets.example.test/favicon.ico',
     });
+    expect(resolved.branding.navLinks).toEqual([
+      { label: 'Runtime Project', url: 'https://project.example.test/' },
+    ]);
     expect(resolved.branding.team).toEqual(runtimeBranding.team);
     expect(resolved.branding.sponsors).toEqual([
       {
@@ -250,6 +254,35 @@ describe('resolveRuntimeSiteConfig', () => {
         },
       });
       expect(withUnjoinableLinkBase.branding).toBe(buildTimeSiteConfig.branding);
+    }
+  });
+
+  it('keeps runtime branding when a document predates the nav link field', () => {
+    const { nav: _omitted, ...linksWithoutNav } = runtimeBranding.links;
+    const resolved = resolveRuntimeSiteConfig({
+      ...runtimeDocument,
+      branding: { ...runtimeBranding, links: linksWithoutNav },
+    });
+
+    // The whole document must survive an older backend, not fall back to the
+    // neutral build-time identity over one absent optional key.
+    expect(resolved.branding.navLinks).toEqual([]);
+    expect(resolved.branding.siteHost).toBe('runtime.example.test');
+  });
+
+  it('preserves build-time branding when a nav link is unusable', () => {
+    for (const nav of [
+      [{ label: 'Runtime Project', url: 'javascript:alert(1)' }],
+      [{ label: 'Runtime Project', url: 'http://project.example.test/' }],
+      [{ label: 'Runtime Project', url: '' }],
+      [{ label: '', url: 'https://project.example.test/' }],
+      [{ label: 'Runtime Project', url: 'https://project.example.test/', target: '_self' }],
+    ]) {
+      const resolved = resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        branding: { ...runtimeBranding, links: { ...runtimeBranding.links, nav } },
+      });
+      expect(resolved.branding).toBe(buildTimeSiteConfig.branding);
     }
   });
 
