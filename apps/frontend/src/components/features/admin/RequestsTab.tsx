@@ -62,7 +62,13 @@ export function parseClientTool(ua: string | null | undefined): string | null {
   if (!s) return null;
   const patterns: Array<[RegExp, string]> = [
     [/claude-cli\/|claude-code\//i, 'claude-code'],
-    [/kilo[-_ ]?code\//i, 'kilo-code'],
+    // Kilo Code's LLM requests carry `kilo/<channel>/<version>/<client>`, not
+    // the `kilo-code/` its extension marketing uses, so the bare `kilo/` form
+    // has to be matched or every Kilo request falls through to the catch-all.
+    // Ordered before the `opencode` rule below because Kilo is an OpenCode
+    // fork and some of its non-LLM traffic still identifies as `opencode/`.
+    [/kilo[-_ ]?code\/|kilo\//i, 'kilo-code'],
+    [/opencode\//i, 'opencode'],
     [/roo[-_ ]?code\//i, 'roo-code'],
     [/cline\//i, 'cline'],
     [/cursor[-_ ]?(ide|agent|cli)?\//i, 'cursor'],

@@ -32,6 +32,17 @@ describe('parseClientTool', () => {
     expect(parseClientTool('codex-cli/0.5.0')).toBe('codex');
   });
 
+  it('recognizes OpenCode and Kilo Code by the agent they actually send', () => {
+    // Neither matched before: OpenCode had no rule at all, and Kilo's LLM
+    // requests identify as `kilo/...`, which the `kilo-code/` rule missed. Both
+    // fell through to the leading-token fallback below.
+    expect(parseClientTool('opencode/0.4.11')).toBe('opencode');
+    expect(parseClientTool('opencode/latest/0.4.11/cli')).toBe('opencode');
+    expect(parseClientTool('kilo/latest/1.9.0/cli')).toBe('kilo-code');
+    // The marketing spelling keeps working.
+    expect(parseClientTool('Kilo-Code/1.2.3')).toBe('kilo-code');
+  });
+
   it('falls back to the leading token for unknown slash-delimited agents', () => {
     expect(parseClientTool('myagent/1.0.0')).toBe('myagent');
   });

@@ -72,6 +72,11 @@ def test_classify_client_empty_or_missing() -> None:
         ("claude-code/0.1.0", "claude-code"),
         ("claude-cli/1.2.3", "claude-code"),
         ("Kilo-Code/1.2.3", "kilo-code"),
+        # The shapes their LLM requests actually carry, which matched nothing
+        # before and so scored as unknown rather than interactive.
+        ("kilo/latest/1.9.0/cli", "kilo-code"),
+        ("opencode/0.4.11", "opencode"),
+        ("opencode/latest/0.4.11/cli", "opencode"),
         ("cline/2.0.0", "cline"),
         ("codex-cli/0.5.0", "codex"),
         ("OpenAI/Python 1.40.0", "openai-python"),
@@ -92,6 +97,8 @@ def test_ua_automation_value_by_class() -> None:
     assert ua_automation_value("Mozilla/5.0 Chrome/120") == pytest.approx(0.1)  # browser
     assert ua_automation_value("OpenAI/Python 1.0") == pytest.approx(0.5)  # ambiguous SDK
     assert ua_automation_value("curl/8.0") == pytest.approx(0.85)  # raw HTTP lib
+    assert ua_automation_value("kilo/latest/1.9.0/cli") == pytest.approx(0.1)  # interactive
+    assert ua_automation_value("opencode/0.4.11") == pytest.approx(0.1)  # interactive
     assert ua_automation_value("myagent/1.0") == pytest.approx(0.6)  # unknown token
     assert ua_automation_value(None) == pytest.approx(0.7)  # absent UA
 

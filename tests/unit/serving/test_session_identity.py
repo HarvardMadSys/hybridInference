@@ -59,11 +59,21 @@ def test_canonical_header_wins_over_every_other_source() -> None:
 
 @pytest.mark.parametrize(
     "header",
-    # What Codex CLI actually sends is the hyphenated pair; the underscore
-    # spellings are accepted beside them because header names carrying
-    # underscores are legal but commonly dropped by intermediaries, so clients
-    # differ over which to send.
-    ["session-id", "session_id", "thread-id", "conversation_id"],
+    # Two idioms share this list. `session-id` / `thread-id` are what Codex CLI
+    # sends, hyphenated; the underscore spellings are accepted beside them
+    # because header names carrying underscores are legal but commonly dropped
+    # by intermediaries, so clients differ over which to send.
+    # `x-session-affinity` and `x-opencode-session` are OpenCode and its Kilo
+    # Code fork -- the first beside the canonical header on a provider they do
+    # not recognise as their own, the second instead of it on one they do.
+    [
+        "x-opencode-session",
+        "x-session-affinity",
+        "session-id",
+        "session_id",
+        "thread-id",
+        "conversation_id",
+    ],
 )
 def test_agent_session_headers(header: str) -> None:
     assert session_identity(_headers(**{header: "codex-run"})) == SessionIdentity(
@@ -281,3 +291,55 @@ def test_consume_session_fields_removes_a_container_the_declaration_emptied() ->
 @pytest.mark.parametrize("body", [None, "text", ["metadata"], {}, {"metadata": "u1"}])
 def test_consume_session_fields_tolerates_any_shape(body: Any) -> None:
     consume_session_fields(body)  # must not raise
+
+
+# --- OpenCode and its Kilo Code fork -----------------------------------------
+#
+# Both build the same header block: every request to a provider they do not
+# recognise as their own carries ``X-Session-Id`` and ``x-session-affinity``
+# set to the same ``ses_...`` id, and a request to their own provider carries
+# ``x-opencode-session`` instead. Kilo additionally forked before that block was
+# restored to the newer runner (opencode#43188), so a build of either can send
+# no session header at all; nothing on the wire names the session then, and the
+# gateway does not invent one.
+
+OPENCODE_SESSION = "ses_7f3a9c2e14b8d05a6e1f2c3b4d"
+
+
+def test_opencode_sends_both_the_canonical_header_and_the_affinity_header() -> None:
+    # The canonical header is one of the two, so it wins and the affinity
+    # header never decides -- but both name the same session either way.
+    identity = session_identity(
+        _headers(
+            **{
+                "X-Session-Id": OPENCODE_SESSION,
+                "x-session-affinity": OPENCODE_SESSION,
+            }
+        ),
+    )
+    assert identity == SessionIdentity(OPENCODE_SESSION, "x-session-id")
+
+
+def test_affinity_header_alone_still_names_the_session() -> None:
+    # An intermediary that drops one of the pair must not cost the session.
+    identity = session_identity(_headers(**{"x-session-affinity": OPENCODE_SESSION}))
+    assert identity == SessionIdentity(OPENCODE_SESSION, "x-session-affinity")
+
+
+def test_opencode_own_provider_header() -> None:
+    identity = session_identity(_headers(**{"x-opencode-session": OPENCODE_SESSION}))
+    assert identity == SessionIdentity(OPENCODE_SESSION, "x-opencode-session")
+
+
+def test_parent_session_header_is_not_read_as_the_session() -> None:
+    # A subagent request carries its parent's id beside its own. Reading the
+    # parent would merge every subagent run into the session that spawned it.
+    identity = session_identity(
+        _headers(
+            **{
+                "x-session-affinity": OPENCODE_SESSION,
+                "x-parent-session-id": "ses_parent",
+            }
+        ),
+    )
+    assert identity == SessionIdentity(OPENCODE_SESSION, "x-session-affinity")

@@ -18,6 +18,11 @@ the client used:
   beside them: header names may contain underscores, but it is unusual enough
   that intermediaries drop such headers by default (nginx does), so a client
   can sensibly send either.
+* ``x-session-affinity`` / ``x-opencode-session`` -- OpenCode and its Kilo Code
+  fork. Both already send ``X-Session-Id`` alongside the affinity header on any
+  provider they do not recognise as their own, so the canonical source usually
+  wins first; these are read because one arriving without the other means the
+  session is still knowable.
 * ``metadata.session_id`` / ``client_metadata.session_id`` in the request body
   -- a client that declares the session where it declares everything else.
   Codex uses ``client_metadata``.
@@ -60,7 +65,14 @@ CANONICAL_SESSION_HEADER = "X-Session-ID"
 #: outlive the run that opened it, and both spellings of each are accepted
 #: because header names with underscores, while legal, are dropped by default by
 #: some intermediaries (nginx among them) and clients differ over which to send.
-_AGENT_SESSION_HEADERS = ("session-id", "session_id", "thread-id", "conversation_id")
+_AGENT_SESSION_HEADERS = (
+    "x-opencode-session",
+    "x-session-affinity",
+    "session-id",
+    "session_id",
+    "thread-id",
+    "conversation_id",
+)
 
 #: Body objects a client declares its session in, most specific first. Codex
 #: puts it in ``client_metadata``; the Anthropic and OpenAI surfaces both define

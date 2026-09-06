@@ -128,8 +128,16 @@ request used:
 |---|---|
 | `X-Session-ID` header | anything speaking the gateway's own contract; wins whenever present |
 | `session-id` / `thread-id` headers (the `session_id` / `conversation_id` spellings too) | Codex CLI, which stamps its run on every request |
+| `x-session-affinity` / `x-opencode-session` headers | OpenCode and its Kilo Code fork, which send the affinity header beside `X-Session-ID` on any provider they do not recognise as their own, and `x-opencode-session` on one they do |
 | `metadata.session_id` or `client_metadata.session_id` in the request body | a client that labels the session where it labels everything else; Codex uses `client_metadata` |
 | `metadata.user_id` in the request body | Claude Code, which packs the run into `user_<hash>_account_<uuid>_session_<uuid>` |
+
+An OpenCode or Kilo build older than the one that restored those headers
+(`sst/opencode#43188`, 2026-08-18) sends no session header at all on its newer
+runner, and nothing else on the wire names the session — the gateway records
+none rather than inferring one from a field that was not meant to carry it.
+Upgrading is the fix; on the older runner a `chat.headers` plugin can set
+`X-Session-ID` from the session id it is handed.
 
 The admin console's Recent Requests view shows the session under each row's
 client, and clicking it filters the list to that one conversation — an exact

@@ -85,6 +85,7 @@ INTERACTIVE_CLIENTS = frozenset(
         "claude-code",
         "cline",
         "kilo-code",
+        "opencode",
         "roo-code",
         "cursor",
         "aider",
@@ -126,7 +127,11 @@ UA_VALUE_ABSENT = 0.7
 # Ordered (regex, label) table mirroring apps/frontend RequestsTab.parseClientTool.
 _CLIENT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"claude-cli/|claude-code/", re.I), "claude-code"),
-    (re.compile(r"kilo[-_ ]?code/", re.I), "kilo-code"),
+    # `kilo/...` is what Kilo Code's LLM requests actually send; `opencode/...`
+    # is OpenCode's. Kilo is ordered first because it is an OpenCode fork and
+    # some of its other traffic still identifies as `opencode/`.
+    (re.compile(r"kilo[-_ ]?code/|kilo/", re.I), "kilo-code"),
+    (re.compile(r"opencode/", re.I), "opencode"),
     (re.compile(r"roo[-_ ]?code/", re.I), "roo-code"),
     (re.compile(r"cline/", re.I), "cline"),
     (re.compile(r"cursor[-_ ]?(?:ide|agent|cli)?/", re.I), "cursor"),
