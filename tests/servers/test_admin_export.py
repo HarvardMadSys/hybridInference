@@ -296,6 +296,11 @@ def test_export_applies_session_id_filter():
     assert "l.session_id = $3" in query
     assert "session_id ILIKE" not in query
     assert call_args[0][3] == "7c6b5a49-3827"
+    # And the audit entry says which conversation was taken: two session-scoped
+    # exports with otherwise identical filters must not be indistinguishable in
+    # the log that exists to record what was accessed.
+    db.log_admin_action.assert_awaited_once()
+    assert db.log_admin_action.await_args.kwargs["details"]["session_id"] == "7c6b5a49-3827"
 
 
 def test_export_applies_model_id_filter():

@@ -204,6 +204,11 @@ async def admin_export_requests(
                     "range": f"{start_str}-{end_str}",
                     "include_content": include_content,
                     "user_id": user_id,
+                    # Which conversation's requests were taken. Without it two
+                    # session-scoped exports with otherwise identical filters
+                    # are indistinguishable in the audit log, which exists to
+                    # record exactly what was accessed.
+                    "session_id": session_id,
                     "model_id": model_id,
                     "errors_only": errors_only,
                     "request_type": request_type,
