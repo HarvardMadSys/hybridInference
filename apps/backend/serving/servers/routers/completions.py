@@ -55,6 +55,7 @@ from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip
+from serving.utils.session_identity import session_identity
 from serving.utils.synthetic_probe import is_trusted_probe
 from serving.utils.token_utils import normalize_usage
 
@@ -576,7 +577,15 @@ async def chat_completions(
     start_time = time.time()
     is_authenticated = bool(user_ctx.get("authenticated"))
     provider = "router"
-    session_id = request.headers.get("X-Session-ID")
+    # Whatever session the client declared, in whichever idiom it uses: the
+    # gateway's own header, an agent's session header, or the session carried in
+    # the request body (see serving/utils/session_identity.py). Coding agents
+    # declare one but never under the canonical header, so reading that header
+    # alone logged the whole agent fleet as session_id = NULL -- and left it out
+    # of RouteWise's prefix-cache cost adjustment, which is gated on the
+    # ``session_id`` this puts in ``params`` below.
+    declared_session = session_identity(request.headers, body)
+    session_id = declared_session.session_id if declared_session is not None else None
     requested_stream = bool(payload.stream)
     force_streaming = await _should_force_chat_completions_streaming(
         runtime_settings,
@@ -594,8 +603,9 @@ async def chat_completions(
     }
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
-    if session_id:
+    if declared_session is not None:
         metadata["session_id"] = session_id
+        metadata["session_id_source"] = declared_session.source
     # Present only when the caller authenticated with an agent-sandbox
     # capability token; lands in api_logs.agent_job_id, which is both the
     # owner's cost report and the ledger the job's budget is measured from.

@@ -115,6 +115,35 @@ fingerprint of the newest user message (`last_user_msg_chars`,
 Turning it on stores full prompts and responses. Weigh that against your users'
 expectations before you do.
 
+### Which session a request belongs to
+
+`api_logs.session_id` is what groups one conversation's requests together, and
+it is indexed for exactly that lookup. A client sets it with the gateway's own
+`X-Session-ID` header — but no coding agent sends that header, so the traffic
+the column is most useful on used to arrive unlabelled. Each agent does carry a
+session of its own, in its own idiom, and the gateway reads whichever one the
+request used:
+
+| Read from | Sent by |
+|---|---|
+| `X-Session-ID` header | anything speaking the gateway's own contract; wins whenever present |
+| `session-id` / `thread-id` headers (the `session_id` / `conversation_id` spellings too) | Codex CLI, which stamps its run on every request |
+| `metadata.session_id` or `client_metadata.session_id` in the request body | a client that labels the session where it labels everything else; Codex uses `client_metadata` |
+| `metadata.user_id` in the request body | Claude Code, which packs the run into `user_<hash>_account_<uuid>_session_<uuid>` |
+
+The admin console's Recent Requests view shows the session under each row's
+client, and clicking it filters the list to that one conversation — an exact
+match against the indexed column, so it stays a lookup rather than a scan.
+
+`metadata.session_id_source` on the same row names which of those it came from,
+so a value read out of a composite id is never mistaken for one a client
+declared under the documented header. Every source is client-supplied, and
+nothing is authorized, billed or rate-limited by a session id; a declaration
+over 128 characters, or one carrying control characters, is dropped rather than
+recorded. Like the derived columns above, the session is recorded whether or not
+`DB_STORE_FULL_CONTENT` is on: it is a label the client put on the request, not
+part of the conversation.
+
 ## Backup
 
 `pg_dump` in custom format, straight out of the container:

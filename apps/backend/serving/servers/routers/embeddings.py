@@ -28,6 +28,7 @@ from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip
+from serving.utils.session_identity import session_identity
 from serving.utils.synthetic_probe import is_trusted_probe
 from serving.utils.token_utils import normalize_usage
 
@@ -144,7 +145,17 @@ async def create_embeddings(
     request_id = f"emb_{uuid.uuid4().hex}"
     start_time = time.time()
     is_authenticated = bool(user_ctx.get("authenticated"))
-    session_id = http_request.headers.get("X-Session-ID")
+    # Resolved the same way as on the chat surfaces, so a client that labels its
+    # session one way does not have to label it another way here. The validated
+    # model drops anything the embeddings schema does not declare, so the body
+    # is read back raw for the declaration -- FastAPI has already parsed and
+    # cached it, so this costs nothing and cannot fail on a request that got
+    # this far.
+    try:
+        raw_body: Any = await http_request.json()
+    except Exception:  # pragma: no cover - validation would have rejected it
+        raw_body = None
+    declared_session = session_identity(http_request.headers, raw_body)
 
     # Synthetic health-probe traffic is suppressed from api_logs unless the
     # ``log_synthetic_probes`` toggle opts it in — mirrors the chat-completions
@@ -196,8 +207,9 @@ async def create_embeddings(
     }
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
-    if session_id:
-        metadata["session_id"] = session_id
+    if declared_session is not None:
+        metadata["session_id"] = declared_session.session_id
+        metadata["session_id_source"] = declared_session.source
 
     def _schedule_log(
         *,

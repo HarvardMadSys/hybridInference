@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-29 10:34+0800\n"
+"POT-Creation-Date: 2026-09-06 00:24+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -285,7 +285,10 @@ msgid ""
 "TABLE` acquires `ACCESS EXCLUSIVE` *before* Postgres evaluates `IF NOT "
 "EXISTS`, and a queued exclusive lock parks every reader behind it."
 msgstr ""
-"**表结构 DDL 由 Postgres 的系统目录（system catalog）把关**。每次启动先读 `pg_attribute` / `pg_indexes`，只发出真正缺失的那些 `ALTER`/`CREATE INDEX` 语句，所以稳态下的重启不会拿任何强表锁。这一点之所以重要，是因为 `ALTER TABLE` 是在 Postgres 求值 `IF NOT EXISTS` *之前*就取得 `ACCESS EXCLUSIVE` 锁的，而一个排队中的排他锁会把它身后的每个读者都堵住。"
+"**表结构 DDL 由 Postgres 的系统目录（system catalog）把关**。每次启动先读 `pg_attribute` / "
+"`pg_indexes`，只发出真正缺失的那些 `ALTER`/`CREATE INDEX` "
+"语句，所以稳态下的重启不会拿任何强表锁。这一点之所以重要，是因为 `ALTER TABLE` 是在 Postgres 求值 `IF NOT "
+"EXISTS` *之前*就取得 `ACCESS EXCLUSIVE` 锁的，而一个排队中的排他锁会把它身后的每个读者都堵住。"
 
 #: ../developer/database.md:73
 msgid ""
@@ -491,24 +494,112 @@ msgid ""
 msgstr "打开它就会存下完整的 prompt 和响应。动手之前，先掂量一下这与用户的预期是否相符。"
 
 #: ../developer/database.md:118
+msgid "Which session a request belongs to"
+msgstr "一次请求属于哪个会话"
+
+#: ../developer/database.md:120
+msgid ""
+"`api_logs.session_id` is what groups one conversation's requests "
+"together, and it is indexed for exactly that lookup. A client sets it "
+"with the gateway's own `X-Session-ID` header — but no coding agent sends "
+"that header, so the traffic the column is most useful on used to arrive "
+"unlabelled. Each agent does carry a session of its own, in its own idiom,"
+" and the gateway reads whichever one the request used:"
+msgstr ""
+"`api_logs.session_id` 就是把同一段对话的请求归到一起的那一列，索引也正是为这种查询建的。客户端可以用网关自己的 `X"
+"-Session-ID` 头来设置它——但没有哪个编程 agent 会发这个头，于是这一列最该发挥作用的那部分流量，过去反而都是没有标记的。每个 "
+"agent 其实都带着自己的会话标识，只是各有各的写法；网关会按请求实际用的那一种去读："
+
+#: ../developer/database.md
+msgid "Read from"
+msgstr "读取自"
+
+#: ../developer/database.md
+msgid "Sent by"
+msgstr "由谁发送"
+
+#: ../developer/database.md
+msgid "`X-Session-ID` header"
+msgstr "`X-Session-ID` 头"
+
+#: ../developer/database.md
+msgid "anything speaking the gateway's own contract; wins whenever present"
+msgstr "任何遵循网关自身约定的客户端；只要出现就优先采用"
+
+#: ../developer/database.md
+msgid ""
+"`session-id` / `thread-id` headers (the `session_id` / `conversation_id` "
+"spellings too)"
+msgstr "`session-id` / `thread-id` 头（`session_id` / `conversation_id` 这两种写法也认）"
+
+#: ../developer/database.md
+msgid "Codex CLI, which stamps its run on every request"
+msgstr "Codex CLI，它在每个请求上都盖上本次运行的标识"
+
+#: ../developer/database.md
+msgid "`metadata.session_id` or `client_metadata.session_id` in the request body"
+msgstr "请求体里的 `metadata.session_id` 或 `client_metadata.session_id`"
+
+#: ../developer/database.md
+msgid ""
+"a client that labels the session where it labels everything else; Codex "
+"uses `client_metadata`"
+msgstr "把会话标在它标注其它一切信息的同一处的客户端；Codex 用的是 `client_metadata`"
+
+#: ../developer/database.md
+msgid "`metadata.user_id` in the request body"
+msgstr "请求体里的 `metadata.user_id`"
+
+#: ../developer/database.md
+msgid ""
+"Claude Code, which packs the run into "
+"`user_<hash>_account_<uuid>_session_<uuid>`"
+msgstr "Claude Code，它把本次运行打包进 `user_<hash>_account_<uuid>_session_<uuid>`"
+
+#: ../developer/database.md:134
+msgid ""
+"The admin console's Recent Requests view shows the session under each "
+"row's client, and clicking it filters the list to that one conversation —"
+" an exact match against the indexed column, so it stays a lookup rather "
+"than a scan."
+msgstr "管理控制台的 Recent Requests 视图会把会话显示在每一行的客户端下方，点一下就把列表过滤成那一段对话——这里走的是对索引列的精确匹配，所以它始终是一次查找，而不是一次扫描。"
+
+#: ../developer/database.md:138
+msgid ""
+"`metadata.session_id_source` on the same row names which of those it came"
+" from, so a value read out of a composite id is never mistaken for one a "
+"client declared under the documented header. Every source is client-"
+"supplied, and nothing is authorized, billed or rate-limited by a session "
+"id; a declaration over 128 characters, or one carrying control "
+"characters, is dropped rather than recorded. Like the derived columns "
+"above, the session is recorded whether or not `DB_STORE_FULL_CONTENT` is "
+"on: it is a label the client put on the request, not part of the "
+"conversation."
+msgstr ""
+"同一行上的 `metadata.session_id_source` 会写明这个值是从哪一处读来的，这样从复合 id "
+"里解析出来的值，就不会被误当成客户端在那个文档化的头里显式声明的值。所有来源都由客户端提供，而且不会有任何鉴权、计费或限流依赖会话 id；超过 "
+"128 个字符、或者带控制字符的声明会被丢弃，而不是记录下来。和上面那些派生列一样，无论 `DB_STORE_FULL_CONTENT` "
+"是否打开，会话都会被记录：它是客户端贴在请求上的标签，而不是对话内容的一部分。"
+
+#: ../developer/database.md:147
 msgid "Backup"
 msgstr "备份"
 
-#: ../developer/database.md:120
+#: ../developer/database.md:149
 msgid "`pg_dump` in custom format, straight out of the container:"
 msgstr "直接从容器里做 custom 格式的 `pg_dump`："
 
-#: ../developer/database.md:127
+#: ../developer/database.md:156
 msgid ""
 "Do not add `-t` to `docker exec`: allocating a TTY corrupts the binary "
 "stream."
 msgstr "不要给 `docker exec` 加 `-t`：分配 TTY 会破坏二进制流。"
 
-#: ../developer/database.md:129
+#: ../developer/database.md:158
 msgid "Restore into an existing, running database:"
 msgstr "恢复到一个已存在且正在运行的数据库："
 
-#: ../developer/database.md:136
+#: ../developer/database.md:165
 msgid ""
 "Stop the backend (`make down`, or `docker stop hybridinference-backend`) "
 "before restoring over a live database, and remember that the backup "
@@ -519,11 +610,11 @@ msgstr ""
 "backend`），并且记住：备份里含有哈希后的 API key，以及——只要 `DB_STORE_FULL_CONTENT` "
 "曾经打开过——用户的 prompt 内容。请按相应的密级保管。"
 
-#: ../developer/database.md:141
+#: ../developer/database.md:170
 msgid "Reset"
 msgstr "重置"
 
-#: ../developer/database.md:143
+#: ../developer/database.md:172
 msgid ""
 "Deleting the database is more awkward than it looks, because the Postgres"
 " volume is declared `external:` in `deploy/docker/docker-compose.yml`:"
@@ -531,7 +622,7 @@ msgstr ""
 "删掉数据库比看上去别扭，因为 Postgres 的卷在 `deploy/docker/docker-compose.yml` 里声明为 "
 "`external:`："
 
-#: ../developer/database.md:153
+#: ../developer/database.md:182
 msgid ""
 "**`docker compose down --volumes` does not delete an external volume.** "
 "Nor does `make down`, which passes no `--volumes` at all. A reset that "
@@ -541,7 +632,7 @@ msgstr ""
 "**`docker compose down --volumes` 不会删除外部卷**。`make down` 也不会，它压根没传 "
 "`--volumes`。依赖这两者中任何一个的「重置」，都会静默地把每一行数据原样留在那里。要按名字删除这个卷："
 
-#: ../developer/database.md:163
+#: ../developer/database.md:192
 msgid ""
 "`make up` depends on the `docker-volumes` target, which recreates the "
 "named volume if it is missing, so the stack comes back on an empty "
@@ -552,7 +643,7 @@ msgstr ""
 "target，具名卷缺失时它会重新创建，于是整套栈在一个空数据库上起来，由启动时的初始化逻辑重建表结构。只要还有一丝想把数据找回来的可能，就先做一份"
 " dump。"
 
-#: ../developer/database.md:168
+#: ../developer/database.md:197
 msgid ""
 "The runnable example (`make demo-reset DISTRIBUTION=example`) uses its "
 "own, example-scoped volume and cannot delete "
@@ -561,11 +652,11 @@ msgstr ""
 "那个可运行的示例（`make demo-reset DISTRIBUTION=example`）用的是它自己的、限定在 example "
 "范围内的卷，删不掉 `hybridinference_postgres_data`。"
 
-#: ../developer/database.md:171
+#: ../developer/database.md:200
 msgid "Inspecting the database"
 msgstr "查看数据库"
 
-#: ../developer/database.md:177
+#: ../developer/database.md:206
 msgid ""
 "Useful starting points: `\\dt` for the table list and `\\d api_logs` for "
 "the request log's columns. `make ps` shows the published bindings — "
@@ -575,11 +666,11 @@ msgstr ""
 "几个好用的起点：`\\dt` 看表清单，`\\d api_logs` 看请求日志的列。`make ps` 会列出发布出来的绑定——Postgres"
 " 和 pgAdmin 都应该显示成 `127.0.0.1:...`；不是这样就说明数据库在这台机器之外也在监听。"
 
-#: ../developer/database.md:182
+#: ../developer/database.md:211
 msgid "Optional: pgAdmin"
 msgstr "可选：pgAdmin"
 
-#: ../developer/database.md:184
+#: ../developer/database.md:213
 msgid ""
 "The Compose stack ships a pgAdmin service for people who prefer a GUI. It"
 " is **profile-gated** — nothing starts it unless the `admin` profile is "
@@ -588,15 +679,15 @@ msgstr ""
 "Compose 栈里带了一个 pgAdmin 服务，给偏好图形界面的人用。它由 **profile 把关**——不点名 `admin` "
 "profile 就没有任何东西会启动它——而且它完全可选；上面的 `psql` 什么都能做。"
 
-#: ../developer/database.md:188
+#: ../developer/database.md:217
 msgid "Starting and restarting it"
 msgstr "启动与重启"
 
-#: ../developer/database.md:190
+#: ../developer/database.md:219
 msgid "The profile must be on *every* Compose command, not just the first:"
 msgstr "这个 profile 必须出现在*每一条* Compose 命令上，不只是第一条："
 
-#: ../developer/database.md:197
+#: ../developer/database.md:226
 msgid ""
 "Omitting it does not fail loudly, it just does the wrong thing in both "
 "directions: a plain `make up` starts every other service and skips "
@@ -608,15 +699,15 @@ msgstr ""
 "profile 的 `make down` 会把周围的一切都删掉，却留着 pgAdmin 容器在跑（然后 Compose "
 "报告网络仍在使用中）。重启的两半都要带上 `COMPOSE_PROFILES=admin`。"
 
-#: ../developer/database.md:203
+#: ../developer/database.md:232
 msgid "Authentication"
 msgstr "认证"
 
-#: ../developer/database.md:205
+#: ../developer/database.md:234
 msgid "Two independent gates, and by default neither is pgAdmin's own login:"
 msgstr "两道互相独立的关卡，而且默认情况下没有一道是 pgAdmin 自己的登录："
 
-#: ../developer/database.md:207
+#: ../developer/database.md:236
 msgid ""
 "`PGADMIN_CONFIG_SERVER_MODE` defaults to `False`, which serves pgAdmin "
 "with **no login of its own**. Set it to `True` in `.env` and pgAdmin asks"
@@ -627,7 +718,7 @@ msgstr ""
 "`.env` 里把它设为 `True`，pgAdmin 就会要 `PGADMIN_EMAIL` / "
 "`PGADMIN_PASSWORD`（这两个自身的默认值是 `admin@local.dev` / `admin`——启用之前先改掉）。"
 
-#: ../developer/database.md:211
+#: ../developer/database.md:240
 #, python-brace-format
 msgid ""
 "Reached through the console at `/pgadmin/`, the request is gated on an "
@@ -641,7 +732,7 @@ msgstr ""
 "handler（`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`）按管理员会话把关，它会请后端校验调用方。直接走它发布的端口（`127.0.0.1:${PGADMIN_PORT:-5050}`，只监听回环）进去时，这道关卡不生效——请用"
 " SSH 隧道："
 
-#: ../developer/database.md:222
+#: ../developer/database.md:251
 msgid ""
 "pgAdmin's *master password* prompt never appears: "
 "`PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED` is pinned to `\"False\"` in the"
@@ -651,19 +742,19 @@ msgstr ""
 "password）提示永远不会出现：`PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED` 在 Compose "
 "文件里被钉死为 `\"False\"`，而且没有任何环境变量能改它。"
 
-#: ../developer/database.md:226
+#: ../developer/database.md:255
 msgid "Registering the database"
 msgstr "注册数据库"
 
-#: ../developer/database.md:228
+#: ../developer/database.md:257
 msgid "`Servers` → right-click → `Register` → `Server`."
 msgstr "`Servers` → 右键 → `Register` → `Server`。"
 
-#: ../developer/database.md:229
+#: ../developer/database.md:258
 msgid "**General**: any name."
 msgstr "**General**：名字随便起。"
 
-#: ../developer/database.md:230
+#: ../developer/database.md:259
 msgid ""
 "**Connection**: host `postgres`, port `5432`, maintenance database "
 "`DB_NAME`, username `DB_USER`, password `DB_PASSWORD` — the container-"
@@ -673,15 +764,18 @@ msgstr ""
 "`DB_NAME`，username 填 `DB_USER`，password 填 "
 "`DB_PASSWORD`——都用容器内部的值，不是宿主机那侧的端口映射。"
 
-#: ../developer/database.md:234
+#: ../developer/database.md:263
 msgid "Resetting pgAdmin"
 msgstr "重置 pgAdmin"
 
-#: ../developer/database.md:236
+#: ../developer/database.md:265
 msgid ""
 "Its saved connections live in `hybridinference_pgadmin_data`, an ordinary"
 " project-local volume (not external, unlike the Postgres one):"
 msgstr ""
 "它保存的连接放在 `hybridinference_pgadmin_data`，这是个普通的项目内卷（不像 Postgres 那个卷，它不是 "
 "external）："
+
+#~ msgid "`session_id` / `conversation_id` headers"
+#~ msgstr "`session_id` / `conversation_id` 头"
 

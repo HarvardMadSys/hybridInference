@@ -712,6 +712,7 @@ def _build_recent_requests_filters(
     *,
     days: int,
     user_id: str | None = None,
+    session_id: str | None = None,
     model_id: str | None = None,
     status_code: int | None = None,
     errors_only: bool = False,
@@ -750,6 +751,16 @@ def _build_recent_requests_filters(
         )
         needs_user_join = True
 
+    if session_id:
+        # Exact match, and on the column rather than ``metadata->>'session_id'``:
+        # a session id is an identifier a caller either has or does not, and the
+        # column carries the ``(session_id, timestamp DESC)`` index that makes
+        # "the rest of this conversation" a cheap lookup rather than a scan of
+        # the whole lookback window. Substring matching it, as the user filter
+        # does, would forfeit both.
+        params.append(session_id)
+        clauses.append(f"l.session_id = ${len(params)}")
+
     if model_id:
         params.append(_escape_ilike_substring_term(model_id))
         clauses.append(f"l.model_id ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
@@ -787,6 +798,7 @@ async def admin_list_recent_requests(
     offset: int = 0,
     days: int = 7,
     user_id: str | None = None,
+    session_id: str | None = None,
     model_id: str | None = None,
     status_code: int | None = None,
     errors_only: bool = False,
@@ -801,6 +813,7 @@ async def admin_list_recent_requests(
     - offset: Pagination offset
     - days: Lookback window in days (default: 7, clamped to [1, 90])
     - user_id: Filter by user ID, name, or email (substring match)
+    - session_id: Filter to one session (exact match on ``api_logs.session_id``)
     - model_id: Filter by model ID
     - status_code: Filter by HTTP status code
     - errors_only: If true, only show requests with errors
@@ -819,6 +832,7 @@ async def admin_list_recent_requests(
     where_clauses, params, needs_user_join = _build_recent_requests_filters(
         days=days,
         user_id=user_id,
+        session_id=session_id,
         model_id=model_id,
         status_code=status_code,
         errors_only=errors_only,
@@ -859,6 +873,7 @@ async def admin_list_recent_requests(
                 l.metadata->>'referer' AS referer,
                 l.metadata->>'agent' AS agent,
                 l.metadata->>'session_id' AS session_id,
+                l.metadata->>'session_id_source' AS session_id_source,
                 l.metadata->>'surface' AS request_surface,
                 l.metadata->>'request_type' AS request_type,
                 l.metadata->'routewise' AS routewise,
@@ -888,6 +903,7 @@ async def admin_list_recent_requests(
             referer=row["referer"],
             agent=row["agent"],
             session_id=row["session_id"],
+            session_id_source=row["session_id_source"],
             request_surface=row["request_surface"],
             model_id=row["model_id"],
             provider=row["provider"],

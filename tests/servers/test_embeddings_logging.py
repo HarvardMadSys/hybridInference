@@ -637,3 +637,59 @@ async def test_embeddings_upstream_500_is_attributed(caplog):
     records = [r for r in caplog.records if r.getMessage() == "http_request"]
     assert records
     assert records[-1].provider == "local-embed"
+
+
+@pytest.mark.asyncio
+async def test_embeddings_records_a_declared_session():
+    """A session declared in the body reaches the log row on this surface too.
+
+    ``EmbeddingRequest`` ignores fields it does not declare, so the resolver
+    reads the raw body rather than the validated model — without that, the
+    surface would honour only the header sources while the other two honour
+    both, for no reason a client could predict.
+    """
+    adapter = _FakeAdapter(
+        response={
+            "object": "list",
+            "model": "emb-model",
+            "data": [{"object": "embedding", "index": 0, "embedding": [0.1]}],
+            "usage": {"prompt_tokens": 1, "total_tokens": 1},
+        }
+    )
+    logger = _CapturingLogger()
+    app = _build_app(adapter, logger)
+
+    resp = await _post(
+        app,
+        {"model": "emb-model", "input": "hello", "metadata": {"session_id": "emb-run-1"}},
+    )
+    assert resp.status_code == 200
+
+    _request_id, log_data = logger.calls[0]
+    assert log_data["metadata"]["session_id"] == "emb-run-1"
+    assert log_data["metadata"]["session_id_source"] == "metadata.session_id"
+
+
+@pytest.mark.asyncio
+async def test_embeddings_session_header_recorded():
+    adapter = _FakeAdapter(
+        response={
+            "object": "list",
+            "model": "emb-model",
+            "data": [{"object": "embedding", "index": 0, "embedding": [0.1]}],
+            "usage": {"prompt_tokens": 1, "total_tokens": 1},
+        }
+    )
+    logger = _CapturingLogger()
+    app = _build_app(adapter, logger)
+
+    resp = await _post(
+        app,
+        {"model": "emb-model", "input": "hello"},
+        headers={"X-Session-ID": "canonical-emb"},
+    )
+    assert resp.status_code == 200
+
+    _request_id, log_data = logger.calls[0]
+    assert log_data["metadata"]["session_id"] == "canonical-emb"
+    assert log_data["metadata"]["session_id_source"] == "x-session-id"

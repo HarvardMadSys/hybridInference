@@ -101,6 +101,14 @@ export function parseClientTool(ua: string | null | undefined): string | null {
   return null;
 }
 
+// A session id is a UUID or similar — too long for a dense row, but its head is
+// enough to see at a glance that a run of rows belongs to one conversation,
+// which is the whole reason the column exists. The full value is in the title
+// and in the expanded row.
+function shortSessionId(sessionId: string): string {
+  return sessionId.length > 10 ? `${sessionId.slice(0, 8)}…` : sessionId;
+}
+
 function applyOffsetJump(
   rawPage: string,
   total: number,
@@ -419,6 +427,9 @@ export function RequestsTab() {
   const [reqOffset, setReqOffset] = useState(0);
   const [reqUserFilter, setReqUserFilter] = useState('');
   const [reqModelFilter, setReqModelFilter] = useState('');
+  // Set by clicking a session on a row rather than typed, so it needs no
+  // debounce: one click, one fetch. Empty means "every session".
+  const [reqSessionFilter, setReqSessionFilter] = useState('');
   // Debounced copies of the text filters drive the fetch, so typing doesn't fire
   // a request per keystroke. The raw values above stay synchronous for the
   // inputs and for actions (Refresh/Export) that must read the current filters.
@@ -481,6 +492,7 @@ export function RequestsTab() {
           reqErrorsOnly,
           reqType === 'all' ? undefined : reqType,
           reqDays,
+          reqSessionFilter || undefined,
         );
         if (seq !== reqSeqRef.current) return;
         setReqEntries(d.requests);
@@ -491,7 +503,7 @@ export function RequestsTab() {
         if (seq === reqSeqRef.current) setReqLoading(false);
       }
     },
-    [reqOffset, reqErrorsOnly, reqType, reqDays],
+    [reqOffset, reqErrorsOnly, reqType, reqDays, reqSessionFilter],
   );
 
   // Debounce text-filter changes into the values that drive the fetch. Offset
@@ -668,6 +680,24 @@ export function RequestsTab() {
           onSubmit={flushFilterSearch}
           placeholder="Filter by model…"
         />
+        {reqSessionFilter ? (
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 py-1 pl-2 pr-1 text-[13px] text-gray-600">
+            <span className="text-gray-500">Session</span>
+            <span className="font-mono text-[12px] text-gray-800" title={reqSessionFilter}>
+              {shortSessionId(reqSessionFilter)}
+            </span>
+            <button
+              onClick={() => {
+                setReqSessionFilter('');
+                setReqOffset(0);
+              }}
+              aria-label="Clear session filter"
+              className="rounded px-1 text-gray-400 transition hover:bg-gray-200 hover:text-gray-700"
+            >
+              ×
+            </button>
+          </span>
+        ) : null}
         <label className="flex cursor-pointer select-none items-center gap-1.5 text-[13px] text-gray-600">
           <input
             type="checkbox"
@@ -987,6 +1017,23 @@ export function RequestsTab() {
                             }
                             return <span className="text-gray-300">—</span>;
                           })()}
+                          {req.session_id ? (
+                            <button
+                              onClick={(e) => {
+                                // The row itself expands on click; this is a
+                                // filter, so it must not also toggle the row.
+                                e.stopPropagation();
+                                setReqSessionFilter(req.session_id!);
+                                setReqOffset(0);
+                              }}
+                              className="mt-0.5 block max-w-[220px] truncate font-mono text-[10px] text-gray-400 transition hover:text-gray-700 hover:underline"
+                              title={`session ${req.session_id}${
+                                req.session_id_source ? ` (from ${req.session_id_source})` : ''
+                              } — click to show only this session`}
+                            >
+                              {shortSessionId(req.session_id)}
+                            </button>
+                          ) : null}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-[12px]">
                           {req.status_code != null ? (
@@ -1144,6 +1191,26 @@ export function RequestsTab() {
                                 <span className="text-gray-700 font-mono">
                                   {req.user_ip ?? '—'}
                                 </span>
+                              </div>
+                              <div className="col-span-full">
+                                <span className="text-gray-500">Session:</span>{' '}
+                                {req.session_id ? (
+                                  <>
+                                    <span className="text-gray-700 font-mono break-all">
+                                      {req.session_id}
+                                    </span>
+                                    {req.session_id_source ? (
+                                      <span
+                                        className="ml-1.5 text-gray-400"
+                                        title="Where the gateway read this session from. A value taken out of a client's composite user id is inferred; one sent under X-Session-ID was declared."
+                                      >
+                                        (from {req.session_id_source})
+                                      </span>
+                                    ) : null}
+                                  </>
+                                ) : (
+                                  <span className="text-gray-700">—</span>
+                                )}
                               </div>
                               <div className="col-span-full">
                                 <span className="text-gray-500">User agent:</span>{' '}

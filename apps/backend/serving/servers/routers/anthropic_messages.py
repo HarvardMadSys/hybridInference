@@ -61,6 +61,7 @@ from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip_info
+from serving.utils.session_identity import consume_session_fields, session_identity
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 logger = get_logger(__name__)
@@ -1248,6 +1249,22 @@ async def anthropic_messages(
 
     request_payload_for_log = copy.deepcopy(body)
 
+    # Which session this request belongs to. This is the surface Claude Code
+    # uses, and it sends no ``X-Session-ID``: it packs the run into
+    # ``metadata.user_id`` instead (see serving/utils/session_identity.py). Read
+    # that idiom or every request of a session logs session_id = NULL, and
+    # nothing downstream can put one session's rows back together. Resolved from
+    # the pristine copy above rather than ``body``, which dispatch rewrites from
+    # here on; recorded into the log metadata further down.
+    declared_session = session_identity(request.headers, request_payload_for_log)
+    # The body declarations are for the gateway, not for any provider:
+    # Anthropic's Messages metadata admits ``user_id`` alone, and the native path
+    # forwards this body verbatim, so leaving one in would turn a labelled
+    # request into an upstream 400. Consumed here -- after the log copy has
+    # preserved it, and before the OpenAI sanitizer reports dropped fields, so
+    # it is neither reported as dropped nor sent.
+    consume_session_fields(body)
+
     body["model"] = canonical
 
     # Reroute tiny-budget calls aimed at a reasoning model to a fast model so the
@@ -1409,6 +1426,11 @@ async def anthropic_messages(
         # other rung of its fallback chain is reachable.
         "endpoint_id": dispatch_endpoint_id,
     }
+    # The session resolved from the client's request, back where the body was
+    # still pristine (see above).
+    if declared_session is not None:
+        metadata["session_id"] = declared_session.session_id
+        metadata["session_id_source"] = declared_session.source
     # Agent-sandbox attribution (issue #1041). This surface is the one Claude
     # Code actually uses, so omitting it here would leave the flagship runtime's
     # spend unattributed — and the per-job budget reads this same ledger.

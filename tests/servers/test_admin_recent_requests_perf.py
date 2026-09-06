@@ -220,6 +220,61 @@ async def test_list_user_filter_matches_id_name_and_email(admin_client_capture):
 
 
 @pytest.mark.asyncio
+async def test_list_session_filter_is_an_exact_match_on_the_indexed_column(admin_client_capture):
+    """The session filter is exact, and reads the column rather than metadata.
+
+    A session id is an identifier a caller either has or does not, and the
+    column carries the ``(session_id, timestamp DESC)`` index that makes "the
+    rest of this conversation" a lookup instead of a scan. Substring-matching
+    it, or reading ``metadata->>'session_id'``, would forfeit both.
+    """
+    client, calls, _logger = admin_client_capture
+
+    resp = await client.get("/admin/recent-requests?session_id=7c6b5a49-3827")
+    assert resp.status_code == 200, resp.text
+
+    count_query, count_args = calls["fetchrow"][0]
+    select_query, select_args = calls["fetch"][0]
+
+    assert "l.session_id = $2" in count_query
+    assert "l.session_id = $2" in select_query
+    assert "ILIKE" not in count_query
+    assert count_args[1] == "7c6b5a49-3827"
+    assert select_args[1] == "7c6b5a49-3827"
+    # Filtering by session alone must not drag in the users join.
+    assert "LEFT JOIN users u ON u.id = l.user_id" not in count_query
+
+
+@pytest.mark.asyncio
+async def test_list_session_filter_composes_with_the_other_filters(admin_client_capture):
+    """Placeholder numbering stays correct when filters combine."""
+    client, calls, _logger = admin_client_capture
+
+    resp = await client.get("/admin/recent-requests?user_id=alice&session_id=sess-1&model_id=gpt")
+    assert resp.status_code == 200, resp.text
+
+    _select_query, select_args = calls["fetch"][0]
+    # days, user, session, model — in the order the builder appends them.
+    assert select_args[0] == 7
+    assert select_args[1] == "alice"
+    assert select_args[2] == "sess-1"
+    assert select_args[3] == "gpt"
+
+
+@pytest.mark.asyncio
+async def test_list_selects_the_session_and_its_source(admin_client_capture):
+    """The row carries where the session was read from, not just its value."""
+    client, calls, _logger = admin_client_capture
+
+    resp = await client.get("/admin/recent-requests")
+    assert resp.status_code == 200, resp.text
+
+    select_query, _select_args = calls["fetch"][0]
+    assert "l.metadata->>'session_id' AS session_id" in select_query
+    assert "l.metadata->>'session_id_source' AS session_id_source" in select_query
+
+
+@pytest.mark.asyncio
 async def test_list_user_filter_escapes_like_wildcards(admin_client_capture):
     client, calls, _logger = admin_client_capture
 
@@ -269,6 +324,7 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
                 "referer": None,
                 "agent": None,
                 "session_id": None,
+                "session_id_source": None,
                 "request_surface": None,
                 "routewise": None,
             },
@@ -300,6 +356,7 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
                 "referer": None,
                 "agent": None,
                 "session_id": None,
+                "session_id_source": None,
                 "request_surface": None,
                 "routewise": None,
             },
@@ -376,6 +433,7 @@ async def test_list_response_omits_prompt_and_response(admin_client_capture):
                     "referer": "https://example.com/app",
                     "agent": None,
                     "session_id": "sess-1",
+                    "session_id_source": "metadata.user_id",
                     "request_surface": "openai_chat_completions",
                     "routewise": None,
                     # Deliberately seed prompt/response into the row to prove
