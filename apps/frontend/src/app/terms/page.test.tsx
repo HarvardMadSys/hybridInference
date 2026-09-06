@@ -17,6 +17,10 @@ describe('TermsPage', () => {
       screen.getByRole('heading', { level: 1, name: /terms of service/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /acceptable use/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /eligibility and accounts/i })).toBeInTheDocument();
+    expect(
+      screen.getByText(/you must be at least 18 years old to create an account/i),
+    ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /logging and data use/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /no warranty/i })).toBeInTheDocument();
     expect(

@@ -19,7 +19,6 @@ describe('auth schemas', () => {
       password: 'SecurePass123',
       confirmPassword: 'DifferentPass123',
       userName: 'Example User',
-      acceptTerms: true,
     });
 
     expect(result.success).toBe(false);
@@ -30,7 +29,7 @@ describe('auth schemas', () => {
     }
   });
 
-  it('requires signup ToS acceptance', () => {
+  it('does not carry a ToS flag; consent is collected before the form', () => {
     const result = signupSchema.safeParse({
       email: 'user@example.org',
       password: 'SecurePass123',
@@ -39,21 +38,15 @@ describe('auth schemas', () => {
       acceptTerms: false,
     });
 
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.flatten().fieldErrors.acceptTerms).toContain(
-        'You must agree to the Terms of Service',
-      );
-    }
+    expect(result.success).toBe(true);
   });
 
-  it('accepts signup input when ToS is agreed', () => {
+  it('accepts minimal signup input', () => {
     const result = signupSchema.safeParse({
       email: 'user@example.org',
       password: 'SecurePass123',
       confirmPassword: 'SecurePass123',
       userName: 'Example User',
-      acceptTerms: true,
     });
 
     expect(result.success).toBe(true);
@@ -67,7 +60,6 @@ describe('auth schemas', () => {
       userName: 'Example User',
       useCase: 'a'.repeat(1900),
       discoverySource: 'b'.repeat(400),
-      acceptTerms: true,
     });
 
     expect(result.success).toBe(false);
@@ -86,7 +78,6 @@ describe('auth schemas', () => {
       userName: 'Example User',
       useCase: 'a'.repeat(1500),
       discoverySource: 'b'.repeat(400),
-      acceptTerms: true,
     });
 
     expect(result.success).toBe(true);
@@ -100,7 +91,6 @@ describe('auth schemas', () => {
       userName: 'Example User',
       useCase: 'a'.repeat(1900),
       discoverySource: 'b'.repeat(50),
-      acceptTerms: true,
     };
     const runtimeSchema = createSignupSchema('x'.repeat(100));
     const result = runtimeSchema.safeParse(input);
