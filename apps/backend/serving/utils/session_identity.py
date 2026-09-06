@@ -18,12 +18,22 @@ the client used:
   beside them: header names may contain underscores, but it is unusual enough
   that intermediaries drop such headers by default (nginx does), so a client
   can sensibly send either.
+* ``x-session-affinity`` / ``x-opencode-session`` -- OpenCode and its Kilo Code
+  fork. Both already send ``X-Session-Id`` alongside the affinity header on any
+  provider they do not recognise as their own, so the canonical source usually
+  wins first; these are read because one arriving without the other means the
+  session is still knowable.
 * ``metadata.session_id`` / ``client_metadata.session_id`` in the request body
   -- a client that declares the session where it declares everything else.
   Codex uses ``client_metadata``.
 * ``metadata.user_id`` in the request body -- Claude Code packs three ids into
   that one string (``user_<hash>_account_<uuid>_session_<uuid>``), so the
   trailing ``_session_`` segment is the run.
+* ``prompt_cache_key`` in the request body -- OpenCode and Kilo Code set
+  OpenAI's cache-routing hint to their session id. Read last, because the API
+  does not promise the value is a session, and forwarded upstream rather than
+  consumed, because unlike the declarations above it is a field the provider
+  itself acts on.
 
 The source is reported alongside the value and recorded as
 ``metadata.session_id_source``, because these are not equally strong claims: a
@@ -60,12 +70,30 @@ CANONICAL_SESSION_HEADER = "X-Session-ID"
 #: outlive the run that opened it, and both spellings of each are accepted
 #: because header names with underscores, while legal, are dropped by default by
 #: some intermediaries (nginx among them) and clients differ over which to send.
-_AGENT_SESSION_HEADERS = ("session-id", "session_id", "thread-id", "conversation_id")
+_AGENT_SESSION_HEADERS = (
+    "x-opencode-session",
+    "x-session-affinity",
+    "session-id",
+    "session_id",
+    "thread-id",
+    "conversation_id",
+)
 
 #: Body objects a client declares its session in, most specific first. Codex
 #: puts it in ``client_metadata``; the Anthropic and OpenAI surfaces both define
 #: a ``metadata`` map that a client can use for the same purpose.
 _BODY_SESSION_OBJECTS = ("metadata", "client_metadata")
+
+#: OpenAI's cache-routing hint, which OpenCode and Kilo Code both set to their
+#: own session id. Read *last* and never consumed: unlike the fields above this
+#: one is a real upstream parameter that raises a provider's cache hit rate, so
+#: the gateway forwards it untouched. It is also the weakest claim here -- the
+#: API only asks for a value that groups similar prompts, so a client is free to
+#: send one that is per-prompt or constant, and a constant would collapse every
+#: request behind it into one apparent session. That is why it loses to every
+#: other source and why the source is recorded: a grouping an operator finds
+#: implausible can be traced to the inference that produced it.
+_PROMPT_CACHE_KEY_FIELD = "prompt_cache_key"
 
 #: Longer than any session id a real client mints (a UUID is 36 chars), short
 #: enough that a declaration cannot bloat an indexed column. A value over the
@@ -187,12 +215,19 @@ def session_identity(
             return SessionIdentity(declared, f"{field}.session_id")
 
     # Claude Code declares nothing; its run is read out of the composite id it
-    # sends as ``metadata.user_id``, so this is the last thing tried.
+    # sends as ``metadata.user_id``.
     metadata = body.get("metadata")
     if isinstance(metadata, dict):
         derived = _claude_code_session_id(metadata)
         if derived is not None:
             return SessionIdentity(derived, "metadata.user_id")
+
+    # Last, and only because nothing better was sent: a cache-routing hint that
+    # OpenCode and Kilo Code happen to key by session. See
+    # :data:`_PROMPT_CACHE_KEY_FIELD` for why it ranks below everything above.
+    cache_key = normalize_session_id(body.get(_PROMPT_CACHE_KEY_FIELD))
+    if cache_key is not None:
+        return SessionIdentity(cache_key, _PROMPT_CACHE_KEY_FIELD)
 
     return None
 
@@ -217,6 +252,11 @@ def consume_session_fields(body: Any) -> None:
     A container that still carries something else the client sent is left as it
     is: that part is not this gateway's to consume, and it stands or falls
     upstream just as it did before any of this existed.
+
+    ``prompt_cache_key`` is deliberately *not* consumed even though
+    :func:`session_identity` reads it. It is a documented OpenAI parameter that
+    raises a provider's prefix-cache hit rate, so stripping it would trade a
+    real upstream saving for a label the gateway has already recorded.
 
     Mutates ``body`` in place. Anything that is not a mapping, and any container
     that does not carry the key, is left untouched.

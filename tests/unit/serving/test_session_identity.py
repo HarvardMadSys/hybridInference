@@ -63,7 +63,14 @@ def test_canonical_header_wins_over_every_other_source() -> None:
     # spellings are accepted beside them because header names carrying
     # underscores are legal but commonly dropped by intermediaries, so clients
     # differ over which to send.
-    ["session-id", "session_id", "thread-id", "conversation_id"],
+    [
+        "x-opencode-session",
+        "x-session-affinity",
+        "session-id",
+        "session_id",
+        "thread-id",
+        "conversation_id",
+    ],
 )
 def test_agent_session_headers(header: str) -> None:
     assert session_identity(_headers(**{header: "codex-run"})) == SessionIdentity(
@@ -281,3 +288,98 @@ def test_consume_session_fields_removes_a_container_the_declaration_emptied() ->
 @pytest.mark.parametrize("body", [None, "text", ["metadata"], {}, {"metadata": "u1"}])
 def test_consume_session_fields_tolerates_any_shape(body: Any) -> None:
     consume_session_fields(body)  # must not raise
+
+
+# --- OpenCode and its Kilo Code fork -----------------------------------------
+#
+# Both build the same header block: every request to a provider they do not
+# recognise as their own carries ``X-Session-Id`` and ``x-session-affinity``
+# set to the same ``ses_...`` id, and a request to their own provider carries
+# ``x-opencode-session`` instead. Kilo additionally forked before that block was
+# restored to the newer runner (opencode#43188), so a build of either can send
+# no session header at all -- which is what the cache-key fallback is for.
+
+OPENCODE_SESSION = "ses_7f3a9c2e14b8d05a6e1f2c3b4d"
+
+
+def test_opencode_sends_both_the_canonical_header_and_the_affinity_header() -> None:
+    # The canonical header is one of the two, so it wins and the affinity
+    # header never decides -- but both name the same session either way.
+    identity = session_identity(
+        _headers(
+            **{
+                "X-Session-Id": OPENCODE_SESSION,
+                "x-session-affinity": OPENCODE_SESSION,
+            }
+        ),
+    )
+    assert identity == SessionIdentity(OPENCODE_SESSION, "x-session-id")
+
+
+def test_affinity_header_alone_still_names_the_session() -> None:
+    # An intermediary that drops one of the pair must not cost the session.
+    identity = session_identity(_headers(**{"x-session-affinity": OPENCODE_SESSION}))
+    assert identity == SessionIdentity(OPENCODE_SESSION, "x-session-affinity")
+
+
+def test_opencode_own_provider_header() -> None:
+    identity = session_identity(_headers(**{"x-opencode-session": OPENCODE_SESSION}))
+    assert identity == SessionIdentity(OPENCODE_SESSION, "x-opencode-session")
+
+
+def test_parent_session_header_is_not_read_as_the_session() -> None:
+    # A subagent request carries its parent's id beside its own. Reading the
+    # parent would merge every subagent run into the session that spawned it.
+    identity = session_identity(
+        _headers(
+            **{
+                "x-session-affinity": OPENCODE_SESSION,
+                "x-parent-session-id": "ses_parent",
+            }
+        ),
+    )
+    assert identity == SessionIdentity(OPENCODE_SESSION, "x-session-affinity")
+
+
+def test_prompt_cache_key_is_read_when_nothing_else_is_declared() -> None:
+    body = {"messages": [], "prompt_cache_key": OPENCODE_SESSION}
+    assert session_identity(_headers(), body) == SessionIdentity(
+        OPENCODE_SESSION, "prompt_cache_key"
+    )
+
+
+def test_prompt_cache_key_loses_to_every_other_source() -> None:
+    body = {
+        "prompt_cache_key": "cache-key",
+        "metadata": {"session_id": "declared", "user_id": CLAUDE_CODE_USER_ID},
+    }
+    # A body declaration outranks it...
+    assert session_identity(_headers(), body) == SessionIdentity("declared", "metadata.session_id")
+    # ...as does the composite user id, which is at least session-shaped.
+    del body["metadata"]["session_id"]
+    assert session_identity(_headers(), body) == SessionIdentity(
+        CLAUDE_CODE_SESSION, "metadata.user_id"
+    )
+    # ...and so does any header.
+    assert session_identity(_headers(**{"session-id": "hdr"}), body) == SessionIdentity(
+        "hdr", "session-id"
+    )
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", 42, "x" * (MAX_SESSION_ID_CHARS + 1)])
+def test_unusable_prompt_cache_key_is_rejected(value: Any) -> None:
+    assert session_identity(_headers(), {"prompt_cache_key": value}) is None
+
+
+def test_prompt_cache_key_survives_consumption() -> None:
+    # It is a real OpenAI parameter that raises the provider's cache hit rate,
+    # not a declaration aimed at this gateway, so it must reach upstream intact
+    # even though the gateway read a session out of it.
+    body: dict[str, Any] = {
+        "messages": [],
+        "prompt_cache_key": OPENCODE_SESSION,
+        "metadata": {"session_id": "declared"},
+    }
+    assert session_identity(_headers(), body) == SessionIdentity("declared", "metadata.session_id")
+    consume_session_fields(body)
+    assert body == {"messages": [], "prompt_cache_key": OPENCODE_SESSION}
