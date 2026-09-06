@@ -11,7 +11,10 @@ happened to be doing in their most recent session.
 The analysis provider is this gateway's own OpenAI-compatible API. The API key and model are configured once in Admin → Settings (stored
 in ``site_settings`` and read server-side), not supplied per request. The
 analyze action runs site-wide from the Usage Insights tab or scoped to one user
-from that user's admin detail panel.
+from that user's admin detail panel. POST ``/admin/usage-insights/samples``
+returns the same random draw (user-turn text only, not assistant/tool turns)
+without calling the analysis model, so an admin can inspect the turns the
+report is based on.
 """
 
 from __future__ import annotations
@@ -28,6 +31,8 @@ from serving.http import AsyncHTTPClient
 from serving.schemas_admin import (
     UsageInsightsRequest,
     UsageInsightsResponse,
+    UsageInsightsSample,
+    UsageInsightsSamplesResponse,
     UsageInsightsSettings,
     UsageInsightsSettingsUpdate,
 )
@@ -455,6 +460,52 @@ async def update_usage_insights_settings(
     )
 
 
+async def _collect_samples(
+    conn, payload: UsageInsightsRequest
+) -> tuple[list[dict], str | None, str]:
+    """Resolve the scope, sample rows, and 404 when nothing is stored."""
+    user_id = await _resolve_user_id(conn, payload)
+    samples = await _fetch_samples(conn, user_id, payload)
+    if not samples:
+        raise HTTPException(404, "No requests with stored payloads found for the chosen scope.")
+    scope = payload.user_email or user_id or "all users"
+    return samples, user_id, scope
+
+
+@router.post("/usage-insights/samples", response_model=UsageInsightsSamplesResponse)
+async def admin_sample_usage(
+    request: Request,
+    payload: UsageInsightsRequest,
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> UsageInsightsSamplesResponse:
+    """Return the same random sample Analyze usage would send to the LLM.
+
+    Does not call the analysis model, so it does not need the Settings key and
+    returns immediately. Each sample is the request's user-turn text (plus the
+    system-prompt opener and client user-agent), not the full conversation.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    async with db_logger.pool.acquire() as conn:
+        samples, user_id, scope = await _collect_samples(conn, payload)
+
+    await log_admin_action(
+        db_logger,
+        get_client_ip(request),
+        "usage_insights_samples",
+        target_user_id=user_id,
+        details={"sampled_requests": len(samples), "scope": scope},
+    )
+
+    return UsageInsightsSamplesResponse(
+        samples=[UsageInsightsSample.model_validate(s) for s in samples],
+        sampled_requests=len(samples),
+        scope=scope,
+    )
+
+
 @router.post("/usage-insights/analyze", response_model=UsageInsightsResponse)
 async def admin_analyze_usage(
     request: Request,
@@ -479,14 +530,9 @@ async def admin_analyze_usage(
         )
 
     async with db_logger.pool.acquire() as conn:
-        user_id = await _resolve_user_id(conn, payload)
-        samples = await _fetch_samples(conn, user_id, payload)
-
-    if not samples:
-        raise HTTPException(404, "No requests with stored payloads found for the chosen scope.")
+        samples, user_id, scope = await _collect_samples(conn, payload)
 
     rendered, used = _render_samples(samples)
-    scope = payload.user_email or user_id or "all users"
     content = (
         f"Here is a sample of {used} request(s) sent through the gateway "
         f"(scope: {scope}). Analyze how the gateway is being used.\n\n{rendered}"

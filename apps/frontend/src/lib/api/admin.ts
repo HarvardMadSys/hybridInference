@@ -1055,6 +1055,35 @@ export async function analyzeUsageInsights(
   return jsonOrThrow<UsageInsightsResponse>(resp);
 }
 
+// The same random draw Analyze usage sends to the LLM, returned without calling
+// the analysis model. Each sample is user-turn text only (not assistant/tool).
+export interface UsageInsightsSample {
+  timestamp: string | null;
+  model_id: string | null;
+  provider: string | null;
+  user_agent: string | null;
+  referer: string | null;
+  system_opener: string | null;
+  user_messages: string[];
+}
+
+export interface UsageInsightsSamplesResponse {
+  samples: UsageInsightsSample[];
+  sampled_requests: number;
+  scope: string;
+}
+
+export async function sampleUsageInsights(
+  req: UsageInsightsRequest = {},
+): Promise<UsageInsightsSamplesResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/usage-insights/samples', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  return jsonOrThrow<UsageInsightsSamplesResponse>(resp);
+}
+
 // Stored analysis-provider config. The raw key is never returned — only whether
 // one is set and a masked tail hint.
 export interface UsageInsightsSettings {

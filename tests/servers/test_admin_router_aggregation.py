@@ -45,7 +45,7 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = 112  # includes role-quota, provider-key verification/probe, key min-role (db+env)
+    expected = 113  # includes role-quota, provider-key verification/probe, key min-role (db+env)
     # (incl. disable/enable/enable-env and the by-ref disable/enable pair used
     # by the quota dashboard), visibility, concurrency,
     # global + per-model routewise settings/probes/decisions, routing-weight,
@@ -53,7 +53,7 @@ def test_admin_router_has_expected_route_count() -> None:
     # alert-snooze GET/POST/DELETE,
     # site-updates CRUD routes (regenerate-api-key removed in #733),
     # users/turn-averages, users/ask-question-fractions, usage-insights/analyze,
-    # usage-insights/settings GET/PUT, and the per-user + bulk users
+    # usage-insights/samples, usage-insights/settings GET/PUT, and the per-user + bulk users
     # automation-score routes, plus provider-observability,
     # plus provider-definitions list/verify/create/update/delete,
     # plus provider availability list + disable/enable toggle,
@@ -65,6 +65,8 @@ def test_admin_router_has_expected_route_count() -> None:
     # and decode-throughput summary on the Recent Requests tab.
     # 111 -> 112: recent-requests/performance/trend, the bucketed time series
     # behind that summary's expandable rows.
+    # 112 -> 113: usage-insights/samples, the raw user-turn draw Analyze usage
+    # feeds the LLM, returned without calling the analysis model.
     routes = [r for r in _admin_api_routes() if r.path.startswith("/admin")]
     assert len(routes) == expected, (
         f"admin route count drifted: expected {expected}, got {len(routes)}"

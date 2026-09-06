@@ -456,6 +456,7 @@ describe('UserTable admin note', () => {
     // own "Automation" column header reads "Score ▸" while scoring is idle, so
     // it never collides with the panel here).
     expect(screen.getAllByRole('button', { name: 'Analyze usage' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'View user turns' })).toHaveLength(1);
     expect(screen.getAllByRole('button', { name: 'Compute automation score' })).toHaveLength(1);
     expect(screen.getAllByText('Usage insights')).toHaveLength(1);
   });

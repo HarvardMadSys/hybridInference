@@ -913,11 +913,12 @@ class AdminGrowthResponse(BaseModel):
 
 
 class UsageInsightsRequest(BaseModel):
-    """Request body for POST /admin/usage-insights/analyze.
+    """Request body for POST /admin/usage-insights/analyze and /samples.
 
     The analysis provider (gateway API key + model) is configured once
     in Admin → Settings and read server-side; the request only chooses the scope
     and sample size. Optionally analyze a single user (by id or email).
+    ``/samples`` returns the same draw without calling the analysis model.
     """
 
     user_id: str | None = Field(None, description="Limit the sample to this user id")
@@ -960,6 +961,26 @@ class UsageInsightsResponse(BaseModel):
     sampled_requests: int
     scope: str  # "all users" or the resolved user email/id
     generated_at: datetime
+
+
+class UsageInsightsSample(BaseModel):
+    """One sampled request's user-turn text, as Analyze usage would see it."""
+
+    timestamp: str | None = None
+    model_id: str | None = None
+    provider: str | None = None
+    user_agent: str | None = None
+    referer: str | None = None
+    system_opener: str | None = None
+    user_messages: list[str] = Field(default_factory=list)
+
+
+class UsageInsightsSamplesResponse(BaseModel):
+    """Response for POST /admin/usage-insights/samples."""
+
+    samples: list[UsageInsightsSample]
+    sampled_requests: int
+    scope: str
 
 
 # ========================================
