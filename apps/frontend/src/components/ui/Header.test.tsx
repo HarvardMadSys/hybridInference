@@ -92,6 +92,27 @@ describe('Header', () => {
     expect(navLink).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
+  it('places distribution nav links after the console own Status link', () => {
+    brandingOverride = {
+      ...configuredBranding,
+      navLinks: [
+        { label: 'Example Project', url: 'https://project.example.test/' },
+        { label: 'Example Forum', url: 'https://forum.example.test/' },
+      ],
+    };
+
+    render(<Header />);
+
+    // Order is deliberate: Status is the console's own link and leads, then
+    // the distribution's own links in the order it listed them.
+    const labels = screen
+      .getAllByRole('link')
+      .map((node) => node.textContent?.trim())
+      .filter((label) => ['Status', 'Example Project', 'Example Forum'].includes(label ?? ''));
+
+    expect(labels).toEqual(['Status', 'Example Project', 'Example Forum']);
+  });
+
   it('renders no extra header links when the distribution lists none', () => {
     brandingOverride = { ...configuredBranding, navLinks: [] };
 

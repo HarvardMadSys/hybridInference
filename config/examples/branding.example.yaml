@@ -18,7 +18,8 @@ links:
   docs_url: https://docs.example.com
   status_url: https://status.example.com
   github_url: https://github.com/example/hybridInference
-  # Extra header links, shown to signed-out visitors too, in this order.
+  # Extra header links, rendered after Status and shown to signed-out
+  # visitors too, in the order listed here.
   # Omit the key entirely for a console with only the named links above.
   nav:
     - label: Example Project

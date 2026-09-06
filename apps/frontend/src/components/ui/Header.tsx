@@ -47,6 +47,16 @@ export function Header() {
         )}
       </div>
       <div className="ml-auto flex flex-wrap items-center justify-end gap-1 sm:gap-2">
+        {branding.statusUrl && (
+          <a
+            href={branding.statusUrl}
+            className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Status
+          </a>
+        )}
         {branding.navLinks.map((link) => (
           <a
             key={link.url}
@@ -58,16 +68,6 @@ export function Header() {
             {link.label}
           </a>
         ))}
-        {branding.statusUrl && (
-          <a
-            href={branding.statusUrl}
-            className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Status
-          </a>
-        )}
         {state.isAuthenticated && (
           <>
             {features.rag && (
