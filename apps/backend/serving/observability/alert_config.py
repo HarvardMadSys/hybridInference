@@ -96,7 +96,15 @@ class Rules(BaseModel):
     failed_request_rate: RateRule = Field(default_factory=RateRule)
     fivexx_rate: RateRule = Field(default_factory=lambda: RateRule(threshold_pct=2.0))
     p95_latency_per_provider: LatencyRule = Field(default_factory=LatencyRule)
-    auth_failure_spike: CountRule = Field(default_factory=CountRule)
+    # Off by default: auth failures are internet background noise — scanners and
+    # bots retrying bad keys — so a spike names nothing an operator can act on.
+    # The per-IP blocklist (``utils/auth_failure_blocklist.py``) already refuses
+    # a repeat offender without anyone being paged. Only the *page* is dropped:
+    # every ``auth_failure`` log record is still emitted and still reaches the
+    # log stream, so the evidence for an investigation stays intact. A
+    # deployment that does want the page sets ``enabled: true`` under
+    # ``rules.auth_failure_spike`` in its alerts.yaml.
+    auth_failure_spike: CountRule = Field(default_factory=lambda: CountRule(enabled=False))
     prefix_cache_pending_leak: PendingPrefixCacheLeakConfig = Field(
         default_factory=PendingPrefixCacheLeakConfig,
         validation_alias=AliasChoices(

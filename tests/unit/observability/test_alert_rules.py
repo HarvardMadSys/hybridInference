@@ -514,12 +514,18 @@ async def test_p95_latency_per_provider_override(monkeypatch):
 
 
 async def test_auth_failure_spike_fires(monkeypatch):
+    """The rule still works — for a deployment that opts back in.
+
+    It is off by default (see ``test_auth_failure_spike_disabled_by_default``),
+    so this test enables it explicitly.
+    """
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     from serving.observability.alerts import reset_dedupe_state
 
     reset_dedupe_state()
 
     cfg = AlertConfig()
+    cfg.rules.auth_failure_spike.enabled = True
     cfg.rules.auth_failure_spike.window_sec = 60
     cfg.rules.auth_failure_spike.threshold_count = 50
     cfg.rules.auth_failure_spike.cooldown_sec = 1
@@ -551,6 +557,58 @@ async def test_auth_failure_spike_fires(monkeypatch):
                 )
             await _drain_until(handler, mock_alert)
             assert mock_alert.await_count >= 1
+        finally:
+            await engine.stop()
+
+
+async def test_auth_failure_spike_disabled_by_default(monkeypatch):
+    """A flood of auth failures must not page under the built-in config.
+
+    Bad keys are internet background noise; the per-IP blocklist handles a
+    repeat offender. The ``auth_failure`` records still flow through the
+    handler — only the Slack page is gone.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    assert cfg.rules.auth_failure_spike.enabled is False
+
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            # Well past the default threshold of 50 in a 60-second window.
+            for _ in range(120):
+                handler.queue.put_nowait(
+                    _fake_event(
+                        "auth_failure",
+                        remote_ip="1.2.3.4",
+                        key_prefix="abc123",
+                    )
+                )
+            # Drain fully before asserting, so a still-backlogged queue cannot
+            # make the "no alerts" check pass spuriously.
+            for _ in range(100):
+                if handler.queue.empty():
+                    break
+                await asyncio.sleep(0.01)
+            assert handler.queue.empty(), "Queue was not fully drained"
+            await asyncio.sleep(0.05)
+            assert mock_alert.await_count == 0
         finally:
             await engine.stop()
 
