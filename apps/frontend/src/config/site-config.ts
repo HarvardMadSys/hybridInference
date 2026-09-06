@@ -35,6 +35,15 @@ const assetUrlSchema = z.string().refine((value) => {
   return hasProtocol(value, ['https:']);
 }, 'must be empty, a /site-assets path, or HTTPS');
 
+// A listed nav link must have somewhere to go, so unlike the named links an
+// empty url is rejected rather than read as "hidden".
+const navLinkSchema = z
+  .object({
+    label: z.string().trim().min(1),
+    url: z.string().refine((value) => hasProtocol(value, ['https:']), 'must be HTTPS'),
+  })
+  .strict();
+
 const teamMemberSchema = z
   .object({
     name: z.string().trim().min(1),
@@ -72,6 +81,11 @@ const runtimeBrandingSchema = z
         docs_url: publicBaseLinkSchema,
         status_url: publicLinkSchema,
         github_url: publicBaseLinkSchema,
+        // Optional in both directions on purpose: the strict object rejects
+        // an unknown key, and a required one rejects a document that predates
+        // the field. Either would drop a rolling deployment's whole branding
+        // back to the neutral build-time values over one added link.
+        nav: z.array(navLinkSchema).optional(),
       })
       .strict(),
     example: z
@@ -196,6 +210,7 @@ function resolveBranding(input: unknown, displayName: string, supportEmail: stri
     docsUrl: document.links.docs_url,
     statusUrl: document.links.status_url,
     githubUrl,
+    navLinks: document.links.nav ?? [],
     commitUrlBase: githubUrl ? `${githubUrl}/commit` : '',
     contactEmail: supportEmail.trim(),
     exampleApiBase: document.example.api_base.replace(/\/+$/, ''),

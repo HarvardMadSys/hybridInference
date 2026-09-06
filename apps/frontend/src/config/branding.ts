@@ -21,6 +21,11 @@ export interface TeamMember {
   website?: string;
 }
 
+export interface NavLink {
+  label: string;
+  url: string;
+}
+
 export interface Sponsor {
   name: string;
   alt: string;
@@ -47,6 +52,7 @@ export interface Branding {
   docsUrl: string;
   statusUrl: string;
   githubUrl: string;
+  navLinks: NavLink[];
   commitUrlBase: string;
   contactEmail: string;
   exampleApiBase: string;
@@ -121,6 +127,9 @@ export const branding: Branding = {
   docsUrl: process.env.NEXT_PUBLIC_DOCS_URL || '',
   statusUrl: process.env.NEXT_PUBLIC_STATUS_URL || '',
   githubUrl,
+  // Extra header links are distribution identity by definition, so the
+  // neutral console ships none and only the runtime document adds any.
+  navLinks: [],
   commitUrlBase: `${githubUrl}/commit`,
   contactEmail: process.env.NEXT_PUBLIC_CONTACT_EMAIL || '',
 

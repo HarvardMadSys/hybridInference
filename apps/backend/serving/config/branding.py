@@ -127,12 +127,34 @@ class BrandingOrganization(_BrandingModel):
         return validate_public_https_url(value)
 
 
+class BrandingNavLink(_BrandingModel):
+    """One distribution-owned link rendered in the console navigation bar."""
+
+    label: NonEmptyString
+    url: NonEmptyString
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        """Require a public HTTPS destination.
+
+        Unlike the named links, an entry only exists because a distribution
+        listed it, so there is no "empty means hidden" reading to preserve:
+        a listed link with nowhere to go is a configuration error.
+        """
+        return validate_public_https_url(value)
+
+
 class BrandingLinks(_BrandingModel):
     """Public external links rendered by the console."""
 
     docs_url: str
     status_url: str
     github_url: str
+    # Extra header links a distribution wants beside the named ones. Empty
+    # upstream, and defaulted so a branding document written before this field
+    # existed keeps loading against the strict model.
+    nav: list[BrandingNavLink] = Field(default_factory=list)
 
     @field_validator("docs_url", "github_url")
     @classmethod
