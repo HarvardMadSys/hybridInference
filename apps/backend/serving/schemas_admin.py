@@ -742,6 +742,11 @@ class AdminRecentRequestItem(BaseModel):
     # a client label from user_agent.
     agent: str | None = None
     session_id: str | None = None
+    # Where the session id was read from ("x-session-id", "session-id",
+    # "metadata.session_id", "metadata.user_id", ...). A value derived from a
+    # client's composite id is a weaker claim than one declared under the
+    # gateway's own header, and the dashboard says which it is.
+    session_id_source: str | None = None
     request_surface: str | None = None
     model_id: str
     provider: str

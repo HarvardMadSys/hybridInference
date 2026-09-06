@@ -234,3 +234,93 @@ describe('RequestsTab row expansion', () => {
     expect(setPointerCaptureSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('RequestsTab session labelling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getRequestMetrics).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      windows: [],
+    });
+    vi.mocked(getRecentRequestContent).mockResolvedValue({
+      prompt: 'hello world',
+      response: 'hi there',
+      reasoning_content: null,
+    });
+    vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(listRecentRequests).mockResolvedValue({
+      requests: [
+        makeRequest({
+          session_id: '7c6b5a49-3827-1605-f4e3-d2c1b0a99887',
+          session_id_source: 'metadata.user_id',
+        }),
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+  });
+
+  afterEach(cleanup);
+
+  it("shows a row's session, shortened, with the full value and its source in the title", async () => {
+    render(<RequestsTab />);
+
+    const chip = await screen.findByTitle(/^session 7c6b5a49-3827-1605-f4e3-d2c1b0a99887/);
+    // A UUID is too long for a dense row; the head is enough to see that a run
+    // of rows belongs to one conversation.
+    expect(chip).toHaveTextContent('7c6b5a49…');
+    // Where it came from matters: a session read out of a client's composite
+    // user id is inferred, not declared.
+    expect(chip).toHaveAttribute('title', expect.stringContaining('from metadata.user_id'));
+  });
+
+  it('filters the list to one session when its chip is clicked, and clears again', async () => {
+    render(<RequestsTab />);
+
+    fireEvent.click(await screen.findByTitle(/^session 7c6b5a49/));
+
+    await waitFor(() =>
+      // sessionId is the 8th positional argument of listRecentRequests.
+      expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[7]).toBe(
+        '7c6b5a49-3827-1605-f4e3-d2c1b0a99887',
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear session filter' }));
+
+    await waitFor(() =>
+      expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[7]).toBeUndefined(),
+    );
+  });
+
+  it('shows the full session and its source in the expanded row', async () => {
+    render(<RequestsTab />);
+
+    fireEvent.click(await screen.findByText('gpt-4o-mini'));
+
+    expect(screen.getByText('Session:')).toBeInTheDocument();
+    expect(screen.getByText('7c6b5a49-3827-1605-f4e3-d2c1b0a99887')).toBeInTheDocument();
+    expect(screen.getByText('(from metadata.user_id)')).toBeInTheDocument();
+  });
+
+  it('renders a dash for a request that declared no session', async () => {
+    vi.mocked(listRecentRequests).mockResolvedValue({
+      requests: [makeRequest()],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    render(<RequestsTab />);
+
+    fireEvent.click(await screen.findByText('gpt-4o-mini'));
+
+    expect(screen.getByText('Session:')).toBeInTheDocument();
+    expect(screen.queryByTitle(/^session /)).not.toBeInTheDocument();
+  });
+});

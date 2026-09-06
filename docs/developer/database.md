@@ -131,6 +131,10 @@ request used:
 | `metadata.session_id` or `client_metadata.session_id` in the request body | a client that labels the session where it labels everything else; Codex uses `client_metadata` |
 | `metadata.user_id` in the request body | Claude Code, which packs the run into `user_<hash>_account_<uuid>_session_<uuid>` |
 
+The admin console's Recent Requests view shows the session under each row's
+client, and clicking it filters the list to that one conversation — an exact
+match against the indexed column, so it stays a lookup rather than a scan.
+
 `metadata.session_id_source` on the same row names which of those it came from,
 so a value read out of a composite id is never mistaken for one a client
 declared under the documented header. Every source is client-supplied, and

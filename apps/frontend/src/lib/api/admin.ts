@@ -519,7 +519,15 @@ export interface AdminRecentRequestItem {
   // prompt's "You are <Name>" opener. Preferred over user_agent for the client
   // column when present.
   agent?: string | null;
+  // Which conversation the request belongs to, as the client declared it
+  // (X-Session-ID, an agent session header, or a session carried in the
+  // request body).
   session_id?: string | null;
+  // Where that value was read from ("x-session-id", "session-id",
+  // "metadata.session_id", "metadata.user_id", ...). A session read out of a
+  // client's composite user id is a weaker claim than one declared under the
+  // gateway's own header, so the UI shows which it was.
+  session_id_source?: string | null;
   request_surface?: string | null;
   model_id: string;
   provider: string;
@@ -599,6 +607,10 @@ export async function listRecentRequests(
   errorsOnly = false,
   requestType?: 'chat' | 'embedding',
   days?: number,
+  // Exact session id, not a substring: the backend matches it against the
+  // indexed api_logs.session_id so pulling one conversation out of the stream
+  // is a lookup rather than a scan.
+  sessionId?: string,
 ): Promise<AdminRecentRequestsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (userId) params.set('user_id', userId);
@@ -606,6 +618,7 @@ export async function listRecentRequests(
   if (errorsOnly) params.set('errors_only', 'true');
   if (requestType) params.set('request_type', requestType);
   if (days != null) params.set('days', String(days));
+  if (sessionId) params.set('session_id', sessionId);
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }
