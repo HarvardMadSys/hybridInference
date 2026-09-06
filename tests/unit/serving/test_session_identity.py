@@ -300,7 +300,8 @@ def test_consume_session_fields_tolerates_any_shape(body: Any) -> None:
 # set to the same ``ses_...`` id, and a request to their own provider carries
 # ``x-opencode-session`` instead. Kilo additionally forked before that block was
 # restored to the newer runner (opencode#43188), so a build of either can send
-# no session header at all -- which is what the cache-key fallback is for.
+# no session header at all; nothing on the wire names the session then, and the
+# gateway does not invent one.
 
 OPENCODE_SESSION = "ses_7f3a9c2e14b8d05a6e1f2c3b4d"
 
@@ -342,47 +343,3 @@ def test_parent_session_header_is_not_read_as_the_session() -> None:
         ),
     )
     assert identity == SessionIdentity(OPENCODE_SESSION, "x-session-affinity")
-
-
-def test_prompt_cache_key_is_read_when_nothing_else_is_declared() -> None:
-    body = {"messages": [], "prompt_cache_key": OPENCODE_SESSION}
-    assert session_identity(_headers(), body) == SessionIdentity(
-        OPENCODE_SESSION, "prompt_cache_key"
-    )
-
-
-def test_prompt_cache_key_loses_to_every_other_source() -> None:
-    body = {
-        "prompt_cache_key": "cache-key",
-        "metadata": {"session_id": "declared", "user_id": CLAUDE_CODE_USER_ID},
-    }
-    # A body declaration outranks it...
-    assert session_identity(_headers(), body) == SessionIdentity("declared", "metadata.session_id")
-    # ...as does the composite user id, which is at least session-shaped.
-    del body["metadata"]["session_id"]
-    assert session_identity(_headers(), body) == SessionIdentity(
-        CLAUDE_CODE_SESSION, "metadata.user_id"
-    )
-    # ...and so does any header.
-    assert session_identity(_headers(**{"session-id": "hdr"}), body) == SessionIdentity(
-        "hdr", "session-id"
-    )
-
-
-@pytest.mark.parametrize("value", [None, "", "   ", 42, "x" * (MAX_SESSION_ID_CHARS + 1)])
-def test_unusable_prompt_cache_key_is_rejected(value: Any) -> None:
-    assert session_identity(_headers(), {"prompt_cache_key": value}) is None
-
-
-def test_prompt_cache_key_survives_consumption() -> None:
-    # It is a real OpenAI parameter that raises the provider's cache hit rate,
-    # not a declaration aimed at this gateway, so it must reach upstream intact
-    # even though the gateway read a session out of it.
-    body: dict[str, Any] = {
-        "messages": [],
-        "prompt_cache_key": OPENCODE_SESSION,
-        "metadata": {"session_id": "declared"},
-    }
-    assert session_identity(_headers(), body) == SessionIdentity("declared", "metadata.session_id")
-    consume_session_fields(body)
-    assert body == {"messages": [], "prompt_cache_key": OPENCODE_SESSION}
