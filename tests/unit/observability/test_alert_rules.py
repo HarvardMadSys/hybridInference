@@ -567,6 +567,15 @@ async def test_auth_failure_spike_disabled_by_default(monkeypatch):
     Bad keys are internet background noise; the per-IP blocklist handles a
     repeat offender. The ``auth_failure`` records still flow through the
     handler — only the Slack page is gone.
+
+    Synchronization is by *tracer*, not by sleeping. ``queue.empty()`` turns
+    true the moment the drain loop dequeues the last record, before it has run
+    the rules over it, so emptiness alone would let the assertion land early.
+    Instead the flood is followed by records that trip the failed-request-rate
+    rule, and the test waits for that alert: the drain loop is strictly FIFO
+    and awaits every rule per record, so its arrival proves all 120 auth
+    records were fully processed. It also proves the engine was alive — a
+    bare "nothing fired" assertion would pass just as well on a dead one.
     """
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     from serving.observability.alerts import reset_dedupe_state
@@ -575,6 +584,14 @@ async def test_auth_failure_spike_disabled_by_default(monkeypatch):
 
     cfg = AlertConfig()
     assert cfg.rules.auth_failure_spike.enabled is False
+    # The tracer rule, left on deliberately; the rest muted to keep the alert
+    # stream unambiguous.
+    cfg.rules.failed_request_rate.window_sec = 60
+    cfg.rules.failed_request_rate.threshold_pct = 5.0
+    cfg.rules.failed_request_rate.min_samples = 10
+    cfg.rules.failed_request_rate.cooldown_sec = 1
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
 
     handler = AlertingLogHandler(maxsize=1000)
     engine = AlertEngine(
@@ -600,15 +617,17 @@ async def test_auth_failure_spike_disabled_by_default(monkeypatch):
                         key_prefix="abc123",
                     )
                 )
-            # Drain fully before asserting, so a still-backlogged queue cannot
-            # make the "no alerts" check pass spuriously.
-            for _ in range(100):
-                if handler.queue.empty():
-                    break
-                await asyncio.sleep(0.01)
-            assert handler.queue.empty(), "Queue was not fully drained"
-            await asyncio.sleep(0.05)
-            assert mock_alert.await_count == 0
+            # The tracer, queued behind the flood.
+            for _ in range(10):
+                handler.queue.put_nowait(_fake_record(200, path="/v1/messages"))
+            for _ in range(2):
+                handler.queue.put_nowait(
+                    _fake_record(500, provider="anthropic", path="/v1/messages")
+                )
+            await _drain_until(handler, mock_alert)
+            assert mock_alert.await_count >= 1, "tracer never fired; engine not draining"
+            titles = [call.args[1] for call in mock_alert.await_args_list]
+            assert "Auth failure spike" not in titles, titles
         finally:
             await engine.stop()
 
