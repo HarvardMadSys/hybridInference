@@ -105,9 +105,16 @@ class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]
 
         Scoped to requests that actually used ``developer``: nothing about
         accepting a new role justifies rewriting traffic that never used it.
-        A request that carries several system messages of its own, or one left
-        mid-transcript, keeps that shape here — so the logged prompt is the one
-        the client sent — and is collapsed at the adapter boundary instead, by
+        Within that scope the merge is whole-list, not just the relabelled
+        message — a client's own system messages are hoisted and merged along
+        with it, and the folded shape is what gets logged. That is deliberate:
+        relabelling is what would otherwise introduce the duplicate, so this
+        layer cleans up after itself rather than emitting a shape only one
+        downstream adapter knows how to fix.
+
+        A request that never used ``developer`` is not touched here whatever
+        its system ordering, and is normalized at the adapter boundary
+        instead, by
         :meth:`~serving.adapters.openai_compat.OpenAICompatAdapter._prepare_messages`.
         """
         if not any(message.role == "developer" for message in self.messages):

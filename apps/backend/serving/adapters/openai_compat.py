@@ -384,13 +384,18 @@ class OpenAICompatAdapter(BaseAdapter):
         posting straight to ``/v1/chat/completions`` can send several system
         messages, or leave one mid-transcript when it re-sends a transcript.
 
-        Collapsing them here rather than at the northbound schema keeps the
-        logged prompt as the client sent it, and covers every inbound surface
-        at once. It also puts this path in line with the gateway's other
+        Collapsing them here rather than at the northbound schema covers
+        every inbound surface at once, and keeps the logged prompt as the
+        client sent it — bar a request that used ``developer``, which
+        :class:`~serving.schemas.ChatCompletionRequest` has to fold before
+        logging to relabel the role. It also puts this path in line with the
+        gateway's other
         adapters, which already hoist: ``claude`` gathers system text from
         anywhere in the list into the Anthropic top-level ``system`` field,
-        and ``gemini`` into ``systemInstruction``. A list already in the
-        accepted shape is passed through untouched.
+        and ``gemini`` into ``systemInstruction``. The ordering pass is a
+        no-op on a list already in the accepted shape — it hands back the
+        argument itself, no copy — while the profile normalization and
+        per-message cleaning below apply as they always have.
         """
         messages = merge_leading_system_messages(messages)
         messages = normalize_messages_for_profile(self._usage_profile, messages)
