@@ -398,14 +398,18 @@ class AsyncHTTPClient:
             # Incremental UTF-8 decode + line buffering
             import codecs
 
-            decoder = codecs.getincrementaldecoder("utf-8")()
+            # ``errors="replace"`` for the same reason as the SSE parser: the
+            # strict decoder raises for a whole 4 KiB read, and the handler that
+            # caught it dropped every line in that read. The comment it carried
+            # ("wait for next chunk to complete sequence") described something
+            # the incremental decoder already does on its own -- ``final=False``
+            # buffers a multibyte sequence split across chunks rather than
+            # raising -- so the except branch only ever fired on genuinely
+            # invalid bytes, and paid for one bad byte with the whole read.
+            decoder = codecs.getincrementaldecoder("utf-8")("replace")
             buffer = ""
             async for raw in resp.content.iter_chunked(4096):
-                try:
-                    text = decoder.decode(raw, final=False)
-                except UnicodeDecodeError:
-                    # Wait for next chunk to complete sequence
-                    text = ""
+                text = decoder.decode(raw, final=False)
                 if text:
                     buffer += text
                     while "\n" in buffer:

@@ -142,3 +142,45 @@ async def test_empty_body_yields_nothing(monkeypatch):
     lines = await _collect(AsyncHTTPClient.shared(), resp, monkeypatch)
 
     assert lines == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ndjson_bad_byte_no_longer_discards_the_whole_read(monkeypatch):
+    """One malformed byte must not take every line in the read with it.
+
+    Reachable through ``mode="auto"``: an upstream answering a stream endpoint
+    with ``application/json`` is routed to the NDJSON branch, where the strict
+    decoder used to raise for the entire 4 KiB read and the handler dropped all
+    of it.
+    """
+    resp = _Resp([b'{"a":1}\n{"b":"\xff"}\n{"c":3}\n'])
+    resp.headers = {"Content-Type": "application/x-ndjson"}
+
+    _patch_session(monkeypatch, resp)
+    lines = [
+        line
+        async for line in AsyncHTTPClient.shared().stream_post(
+            "http://example/ndjson", json={"stream": True}, mode="auto"
+        )
+    ]
+
+    assert lines == ['{"a":1}', '{"b":"�"}', '{"c":3}']
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ndjson_multibyte_split_across_reads_is_still_buffered(monkeypatch):
+    """Replacement must not fire for a sequence merely split across chunks."""
+    resp = _Resp([b'{"text":"', b"\xe4\xb8", b'\xad"}\n'])
+    resp.headers = {"Content-Type": "application/x-ndjson"}
+
+    _patch_session(monkeypatch, resp)
+    lines = [
+        line
+        async for line in AsyncHTTPClient.shared().stream_post(
+            "http://example/ndjson", json={"stream": True}, mode="auto"
+        )
+    ]
+
+    assert lines == ['{"text":"中"}']
