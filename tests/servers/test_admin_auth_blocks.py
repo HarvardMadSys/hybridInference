@@ -9,6 +9,8 @@ These cover seeing that block and ending it.
 
 from __future__ import annotations
 
+import json
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -23,6 +25,7 @@ from serving.utils.auth_failure_blocklist import (
     record_auth_failure,
     reset_auth_failure_block_state,
 )
+from serving.utils.logging import JsonFormatter
 
 AUTH = {"Authorization": "Bearer test-admin"}
 
@@ -169,7 +172,7 @@ async def test_clear_accepts_the_bucket_key_from_a_listing(admin_client, small_l
 
 
 @pytest.mark.asyncio
-async def test_audit_failure_does_not_mask_a_successful_clear(admin_client, small_limits):
+async def test_audit_failure_does_not_mask_a_successful_clear(admin_client, small_limits, caplog):
     """A store outage must not turn a lifted block into a 500.
 
     The block lives in process memory and is already lifted by the time the
@@ -185,17 +188,29 @@ async def test_audit_failure_does_not_mask_a_successful_clear(admin_client, smal
     await record_auth_failure("203.0.113.81")
     assert (await is_ip_blocked("203.0.113.81"))[0] is True
 
-    response = await client.post(
-        "/admin/auth-blocks/clear",
-        json={"ip": "203.0.113.81"},
-        headers=AUTH,
-    )
+    with caplog.at_level(logging.ERROR, logger="serving.servers.routers.admin.auth_blocks"):
+        response = await client.post(
+            "/admin/auth-blocks/clear",
+            json={"ip": "203.0.113.81"},
+            headers=AUTH,
+        )
 
     assert response.status_code == 200
     assert response.json() == {"ip_bucket": "203.0.113.81", "cleared": True}
     # The lift stands, so a retry does not report a confusing `cleared: false`.
     assert await is_ip_blocked("203.0.113.81") == (False, 0)
     audit.assert_awaited_once()
+
+    # With the row lost, this log is the only server-side record of the clear,
+    # so it has to carry what happened -- through the formatters, which drop
+    # any extra not in ``logging._STRUCTURED_LOG_KEYS``.
+    failures = [
+        r for r in caplog.records if getattr(r, "event", None) == "auth_block_clear_audit_failed"
+    ]
+    assert len(failures) == 1, caplog.records
+    rendered = json.loads(JsonFormatter().format(failures[0]))
+    assert rendered["ip_bucket"] == "203.0.113.81", rendered
+    assert rendered["cleared"] is True, rendered
 
 
 @pytest.mark.asyncio

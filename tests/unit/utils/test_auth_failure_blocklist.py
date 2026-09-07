@@ -496,3 +496,50 @@ async def test_clearing_restores_access_at_the_auth_layer(monkeypatch, clock):
     with pytest.raises(HTTPException) as excinfo:
         await auth_mod._authenticate_by_api_key(_make_request(ip), None, None, object())
     assert excinfo.value.status_code == 401
+
+
+# --- The log line an operator actually reads ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_block_events_keep_their_bucket_through_log_formatting(small_limits, clock, caplog):
+    """``ip_bucket`` must survive the formatters, not just reach the LogRecord.
+
+    Both formatters serialize ``extra=`` fields only when the key is listed in
+    ``logging._STRUCTURED_LOG_KEYS``, so an unlisted one is dropped at format
+    time and the deployed line is an event name plus a traceback. That is the
+    whole content of these records: "a source was blocked" is not actionable
+    without *which* source, and the bucket is also what the clear endpoint
+    takes back (Codex's finding).
+
+    Asserts the rendered output rather than membership in the tuple, so it
+    fails if the serialization path changes and not merely if the key is
+    removed.
+    """
+    import json as _json
+    import logging as _logging
+
+    from serving.utils.logging import JsonFormatter, PlainFormatter
+
+    ip = "203.0.113.90"
+    with caplog.at_level(_logging.WARNING, logger="serving.utils.auth_failure_blocklist"):
+        for _ in range(3):
+            await record_auth_failure(ip)
+        assert await clear_block(ip) is True
+
+    events = {getattr(r, "event", None): r for r in caplog.records}
+    assert {"auth_ip_blocked", "auth_ip_block_cleared"} <= set(events), list(events)
+
+    for name in ("auth_ip_blocked", "auth_ip_block_cleared"):
+        record = events[name]
+        plain = PlainFormatter().format(record)
+        assert ip in plain, (name, plain)
+        rendered = _json.loads(JsonFormatter().format(record))
+        assert rendered["ip_bucket"] == ip, (name, rendered)
+
+    # The blocking record also carries the numbers that explain *why* it
+    # tripped, which is what turns the line into a self-contained answer.
+    blocked = _json.loads(JsonFormatter().format(events["auth_ip_blocked"]))
+    assert blocked["threshold"] == 3
+    assert blocked["window_sec"] == 100
+    assert blocked["block_seconds"] == 1000

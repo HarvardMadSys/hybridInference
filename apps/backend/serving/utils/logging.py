@@ -86,6 +86,20 @@ _STRUCTURED_LOG_KEYS = (
     # Upstream rejection of the gateway's own credential
     # (routing/endpoint_health.py ``upstream_auth_misconfig``).
     "consecutive_auth_rejections",
+    # Auth-failure blocklist: ``auth_ip_blocked`` /
+    # ``auth_ip_block_cleared`` (utils/auth_failure_blocklist.py) and
+    # ``auth_block_clear_audit_failed`` (servers/routers/admin/auth_blocks.py).
+    # ``ip_bucket`` is the whole point of those lines -- an operator reading
+    # "a source was blocked" needs to know *which*, and it is what the clear
+    # endpoint takes back. Without these the records serialize to an event
+    # name and a traceback, which is also what made "the log records are still
+    # emitted, so an investigation loses no evidence" (#1370) weaker than it
+    # sounds.
+    "ip_bucket",
+    "cleared",
+    "threshold",
+    "window_sec",
+    "block_seconds",
 )
 
 
