@@ -392,7 +392,7 @@ def test_export_outcome_isolates_client_disconnects_and_is_audited():
     assert resp.status_code == 200
     mock_conn = db.pool.acquire.return_value.__aenter__.return_value
     query = mock_conn.fetch.call_args[0][0]
-    assert "l.status_code = 499" in query
+    assert "l.status_code = 499 AND l.metadata->>'terminal_state' = 'client_disconnect'" in query
     assert "l.error IS NOT NULL" not in query
 
     db.log_admin_action.assert_awaited_once()
@@ -422,7 +422,9 @@ def test_export_outcome_can_hold_back_disconnects():
     mock_conn = db.pool.acquire.return_value.__aenter__.return_value
     query = mock_conn.fetch.call_args[0][0]
     assert "l.error IS NOT NULL" in query
-    assert "l.status_code IS DISTINCT FROM 499" in query
+    # The disconnect test is the conjunction of status and terminal state, held
+    # back with IS NOT TRUE so a NULL-status failure stays in the export.
+    assert "l.metadata->>'terminal_state' = 'client_disconnect') IS NOT TRUE" in query
 
 
 def test_export_rejects_unknown_outcome():

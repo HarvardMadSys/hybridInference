@@ -397,8 +397,17 @@ describe('RequestsTab client disconnect classification', () => {
       truncated: false,
     });
     vi.mocked(listRecentRequests).mockResolvedValue({
-      requests: [makeRequest({ status_code: 499 })],
-      total: 1,
+      requests: [
+        makeRequest({
+          request_id: 'req_disconnect',
+          status_code: 499,
+          terminal_state: 'client_disconnect',
+        }),
+        // Same status, no cancellation marker: an upstream answered 499, which
+        // is a real failure the gateway only relayed.
+        makeRequest({ request_id: 'req_upstream_499', status_code: 499 }),
+      ],
+      total: 2,
       limit: 50,
       offset: 0,
     });
@@ -411,7 +420,7 @@ describe('RequestsTab client disconnect classification', () => {
     // "20 errors", which is what the card said before the split.
     render(<RequestsTab />);
 
-    const disconnects = await screen.findByTitle(/^Client disconnects \(499\)/);
+    const disconnects = await screen.findByTitle(/^Client disconnects: the caller hung up/);
     expect(disconnects).toHaveTextContent('17 disc');
     // The error count no longer carries them: the two are read side by side.
     const card = disconnects.closest('.rounded-xl');
@@ -421,7 +430,8 @@ describe('RequestsTab client disconnect classification', () => {
 
   it('filters the list by outcome', async () => {
     render(<RequestsTab />);
-    await screen.findByText('gpt-4o-mini');
+    // Two rows share this model, so match all of them.
+    await screen.findAllByText('gpt-4o-mini');
 
     // outcome is the 5th positional argument of listRecentRequests.
     expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[4]).toBe('all');
@@ -445,7 +455,8 @@ describe('RequestsTab client disconnect classification', () => {
 
   it('carries the outcome filter into the JSONL export', async () => {
     render(<RequestsTab />);
-    await screen.findByText('gpt-4o-mini');
+    // Two rows share this model, so match all of them.
+    await screen.findAllByText('gpt-4o-mini');
 
     fireEvent.change(screen.getByLabelText('Filter by outcome'), {
       target: { value: 'client_disconnect' },
@@ -463,7 +474,7 @@ describe('RequestsTab client disconnect classification', () => {
     );
   });
 
-  it('badges a 499 row apart from a failure', async () => {
+  it('badges an abandoned stream apart from a failure', async () => {
     // A column of red 499s reads as an outage; the gateway did not fail, the
     // caller hung up.
     render(<RequestsTab />);
@@ -472,5 +483,20 @@ describe('RequestsTab client disconnect classification', () => {
     expect(badge).toHaveTextContent('499');
     expect(badge.className).toContain('amber');
     expect(badge.className).not.toContain('red');
+  });
+
+  it('leaves an upstream’s own 499 badged as the error it is', async () => {
+    // Both failure handlers log whatever status the upstream exception carried,
+    // so the status alone cannot say the caller hung up — only the gateway's
+    // terminal_state can. Badging this amber would excuse a real failure.
+    render(<RequestsTab />);
+
+    await screen.findByTitle('Client disconnected before the stream completed');
+    const badges = screen.getAllByText('499');
+    expect(badges).toHaveLength(2);
+    const unmarked = badges.filter((b) => !b.getAttribute('title'));
+    expect(unmarked).toHaveLength(1);
+    expect(unmarked[0].className).toContain('red');
+    expect(unmarked[0].className).not.toContain('amber');
   });
 });

@@ -6,11 +6,17 @@ A caller that hangs up mid-stream is logged by
 failures — an hour of abandoned streams read as an hour of outage. These tests
 pin the split:
 
-- ``/admin/request-metrics`` counts 499s in ``client_disconnect_count`` and
+- ``/admin/request-metrics`` counts them in ``client_disconnect_count`` and
   keeps them out of ``error_count``, so the two can be read side by side.
 - ``/admin/recent-requests`` and the JSONL export accept an ``outcome`` filter
   that can isolate the disconnects or hold them out of the error list, while the
   older ``errors_only`` boolean keeps its exact meaning.
+
+The status alone is not the test. Both failure handlers log whatever status the
+upstream exception carried, so a provider that answers 499 is an ordinary
+failure at status 499 — it must stay in the error counts, not vanish into the
+disconnects. Every predicate therefore also requires the ``terminal_state`` the
+gateway's own cancellation path records.
 """
 
 from __future__ import annotations
@@ -26,7 +32,10 @@ from httpx import ASGITransport, AsyncClient
 from routing.executor import RouteExecutor
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
-from serving.servers.routers.admin._common import CLIENT_DISCONNECT_STATUS_CODE
+from serving.servers.routers.admin._common import (
+    CLIENT_DISCONNECT_STATUS_CODE,
+    CLIENT_DISCONNECT_TERMINAL_STATE,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -122,11 +131,18 @@ async def test_request_metrics_counts_disconnects_apart_from_errors():
     assert hour["buckets"][0]["client_disconnect_count"] == 3
     assert hour["buckets"][0]["error_count"] == 1
 
-    # The status is bound, not interpolated, and the error filter excludes it.
+    # Status and terminal state are both bound, not interpolated, and the
+    # disconnect test is their conjunction — never the status on its own.
     query, args = calls["fetch"][0]
     assert args[2] == CLIENT_DISCONNECT_STATUS_CODE
-    assert "AND status_code IS DISTINCT FROM $3::int" in query
+    assert args[3] == CLIENT_DISCONNECT_TERMINAL_STATE
     assert "WHERE status_code = $3::int" in query
+    assert "metadata->>'terminal_state' = $4" in query
+    # ``IS NOT TRUE``, not ``NOT``: on a row with no status or no metadata the
+    # conjunction is NULL, and plain ``NOT NULL`` is NULL — which would drop
+    # those rows out of error_count entirely.
+    assert "AND (status_code = $3::int" in query
+    assert "AND metadata->>'terminal_state' = $4) IS NOT TRUE" in query
 
 
 # ---------------------------------------------------------------------------
@@ -138,10 +154,13 @@ async def test_request_metrics_counts_disconnects_apart_from_errors():
 @pytest.mark.parametrize(
     ("outcome", "expected_sql"),
     [
-        ("client_disconnect", "l.status_code = 499"),
+        (
+            "client_disconnect",
+            "(l.status_code = 499 AND l.metadata->>'terminal_state' = 'client_disconnect')",
+        ),
         (
             "errors_excluding_disconnects",
-            "AND l.status_code IS DISTINCT FROM 499",
+            "AND l.metadata->>'terminal_state' = 'client_disconnect') IS NOT TRUE",
         ),
         ("errors", "l.error IS NOT NULL"),
     ],
@@ -166,7 +185,7 @@ async def test_list_outcome_all_applies_no_predicate(admin_client_capture):
     resp = await client.get("/admin/recent-requests?outcome=all")
     assert resp.status_code == 200, resp.text
     select_query, _ = calls["fetch"][0]
-    assert "l.status_code = 499" not in select_query
+    assert "terminal_state' = 'client_disconnect'" not in select_query
     assert "l.error IS NOT NULL" not in select_query
 
 
@@ -183,7 +202,7 @@ async def test_list_errors_only_still_includes_disconnects(admin_client_capture)
     assert resp.status_code == 200, resp.text
     select_query, _ = calls["fetch"][0]
     assert "l.error IS NOT NULL" in select_query
-    assert "IS DISTINCT FROM 499" not in select_query
+    assert "terminal_state" not in select_query.split("WHERE", 1)[1]
 
 
 @pytest.mark.asyncio
@@ -193,7 +212,7 @@ async def test_list_outcome_wins_over_errors_only(admin_client_capture):
     assert resp.status_code == 200, resp.text
     select_query, _ = calls["fetch"][0]
     assert "l.status_code = 499" in select_query
-    assert "l.error IS NOT NULL" not in select_query
+    assert "l.error IS NOT NULL" not in select_query.split("WHERE", 1)[1]
 
 
 @pytest.mark.asyncio

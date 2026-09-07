@@ -113,11 +113,46 @@ def _require_aware_utc(dt: datetime, name: str) -> datetime:
 # "errors only" predicate sweeps it up alongside real failures and a burst of
 # benign disconnects buries the handful of 5xx rows that matter.
 #
-# Matching on the status is exact and survives any rewording of the error text:
-# 499 is assigned nowhere else. This is the same reasoning that keeps 499 out of
-# ``serving.admin.failed_request_alerter.FAILURE_PREDICATE_SQL``, which must not
-# page Slack for client behavior.
+# The status alone does NOT identify that path. Both failure handlers log
+# whatever status they can pull off the upstream exception
+# (``completions_stream._extract_exception_status_code``,
+# ``routing_info._status_code_from_exception``), so an OpenAI-compatible
+# provider that answers 499 — anything behind nginx, including another gateway
+# running this software — is logged as an ordinary failure at status 499.
+# Classifying every 499 as a local disconnect would take that genuine upstream
+# failure out of the error counts and hide it from error triage, which is the
+# expensive direction to be wrong in.
+#
+# So a disconnect is the conjunction: status 499 AND the ``terminal_state`` the
+# cancellation path stamps into metadata. The status is kept in the predicate
+# even though the terminal state implies it — it narrows on an indexed column
+# before the JSONB extraction on a high-volume table.
+#
+# Rows written before ``terminal_state`` existed (2026-08-27) carry no such key
+# and so count as errors, exactly as they did before this split. That is the
+# safe fallback: a disconnect left among the errors is the status quo, while a
+# real failure moved out of them is a regression.
+#
+# Note that ``serving.admin.failed_request_alerter.FAILURE_PREDICATE_SQL``
+# excludes 499 as a whole class. That is deliberately looser — it decides what
+# pages Slack, not what an admin reads — and is left alone here.
 CLIENT_DISCONNECT_STATUS_CODE = 499
+CLIENT_DISCONNECT_TERMINAL_STATE = "client_disconnect"
+
+
+def client_disconnect_sql(column_prefix: str = "l.") -> str:
+    """Return the SQL predicate matching a gateway-recorded client disconnect.
+
+    ``column_prefix`` is the table alias (with its dot) the caller's query uses,
+    or ``""`` for an unaliased one. Only the module's own constants are
+    interpolated — nothing here takes caller input.
+    """
+    return (
+        f"({column_prefix}status_code = {CLIENT_DISCONNECT_STATUS_CODE} "
+        f"AND {column_prefix}metadata->>'terminal_state' "
+        f"= '{CLIENT_DISCONNECT_TERMINAL_STATE}')"
+    )
+
 
 # ``error`` set, or a status outside 2xx/3xx. Unchanged from the predicate the
 # ``errors_only`` flag has always applied — client disconnects included.
@@ -129,18 +164,18 @@ _OUTCOME_ANY_ERROR_SQL = (
 # are constant (no bind parameters), so a caller can append them to its WHERE
 # clauses without disturbing its own placeholder numbering.
 #
-# ``IS DISTINCT FROM`` (not ``<>``) keeps NULL-status error rows in
-# ``errors_excluding_disconnects``: a request that never got a status back is a
-# failure, not a disconnect.
+# ``IS NOT TRUE``, not ``NOT``: the disconnect predicate evaluates to NULL on a
+# row with no status or no metadata, and plain ``NOT NULL`` is NULL, which would
+# silently drop those rows from ``errors_excluding_disconnects``. A request that
+# never got a status back is a failure and must stay in that list.
 REQUEST_OUTCOME_FILTERS: dict[str, str] = {
     # No predicate — every row in the window.
     "all": "",
     "errors": _OUTCOME_ANY_ERROR_SQL,
     "errors_excluding_disconnects": (
-        f"({_OUTCOME_ANY_ERROR_SQL} "
-        f"AND l.status_code IS DISTINCT FROM {CLIENT_DISCONNECT_STATUS_CODE})"
+        f"({_OUTCOME_ANY_ERROR_SQL} AND {client_disconnect_sql()} IS NOT TRUE)"
     ),
-    "client_disconnect": f"l.status_code = {CLIENT_DISCONNECT_STATUS_CODE}",
+    "client_disconnect": client_disconnect_sql(),
 }
 
 

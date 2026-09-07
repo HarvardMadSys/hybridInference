@@ -555,6 +555,11 @@ export interface AdminRecentRequestItem {
   // "embedding" for /v1/embeddings traffic; null/undefined implies a
   // chat/completion request.
   request_type?: string | null;
+  // How the gateway ended the stream (`metadata.terminal_state`). Only its
+  // cancellation path sets it, so `'client_disconnect'` — not the bare 499 —
+  // is what identifies a caller that hung up: an upstream provider can answer
+  // 499 too, and that row is a real failure.
+  terminal_state?: string | null;
   // Conversation shape derived from the stored request payload's messages
   // array. null when the payload is absent or not a chat request.
   num_turns?: number | null;

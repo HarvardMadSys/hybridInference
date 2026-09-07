@@ -40,6 +40,7 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.admin._common import (
     CLIENT_DISCONNECT_STATUS_CODE,
+    CLIENT_DISCONNECT_TERMINAL_STATE,
     _build_histogram,
     _escape_ilike_substring_term,
     _round_or_none,
@@ -310,12 +311,16 @@ async def admin_get_request_metrics(
 ) -> AdminRequestMetricsResponse:
     """Return request count trends for admin dashboard lookback windows.
 
-    Client disconnects (status 499 — the caller hung up mid-stream) are counted
-    in their own ``client_disconnect_*`` field and excluded from ``error_*``.
-    They are split out rather than folded into the error counts because they are
-    client behavior, not a service fault: an hour of abandoned streams otherwise
-    reads as an hour of outage. No other status is stamped 499, so the two
-    counts cannot overlap.
+    Client disconnects — the caller hung up mid-stream — are counted in their own
+    ``client_disconnect_*`` field and excluded from ``error_*``. They are split
+    out rather than folded into the error counts because they are client
+    behavior, not a service fault: an hour of abandoned streams otherwise reads
+    as an hour of outage.
+
+    A disconnect is status 499 *and* the ``terminal_state`` the cancellation
+    path records, never the status on its own — an upstream that answers 499 is
+    a real failure and has to stay in ``error_*``. See
+    ``_common.client_disconnect_sql`` for the full reasoning.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
@@ -365,10 +370,12 @@ async def admin_get_request_metrics(
                                 OR status_code IS NULL
                                 OR status_code < 200
                                 OR status_code >= 400)
-                              AND status_code IS DISTINCT FROM $3::int
+                              AND (status_code = $3::int
+                                   AND metadata->>'terminal_state' = $4) IS NOT TRUE
                         ) AS error_count,
                         COUNT(*) FILTER (
                             WHERE status_code = $3::int
+                              AND metadata->>'terminal_state' = $4
                         ) AS client_disconnect_count,
                         COUNT(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
                             AS latency_count,
@@ -399,6 +406,7 @@ async def admin_get_request_metrics(
                 window_minutes,
                 bucket_minutes,
                 CLIENT_DISCONNECT_STATUS_CODE,
+                CLIENT_DISCONNECT_TERMINAL_STATE,
             )
 
             buckets = [
@@ -911,6 +919,10 @@ async def admin_list_recent_requests(
                 l.metadata->>'session_id_source' AS session_id_source,
                 l.metadata->>'surface' AS request_surface,
                 l.metadata->>'request_type' AS request_type,
+                -- How the gateway itself ended the stream. Only the
+                -- cancellation path sets it, so it is what separates a real
+                -- client disconnect from an upstream that answered 499.
+                l.metadata->>'terminal_state' AS terminal_state,
                 l.metadata->'routewise' AS routewise,
                 l.num_turns, l.num_user_turns, l.num_tool_calls
             FROM api_logs l
@@ -963,6 +975,7 @@ async def admin_list_recent_requests(
             error=row["error"],
             routewise=coerce_json_object(row.get("routewise")),
             request_type=row.get("request_type"),
+            terminal_state=row.get("terminal_state"),
             num_turns=row.get("num_turns"),
             num_user_turns=row.get("num_user_turns"),
             num_tool_calls=row.get("num_tool_calls"),

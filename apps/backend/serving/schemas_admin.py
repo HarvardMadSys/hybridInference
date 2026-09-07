@@ -780,6 +780,12 @@ class AdminRecentRequestItem(BaseModel):
     # "embedding" for /v1/embeddings traffic; None (legacy) implies a
     # chat/completion request.
     request_type: str | None = None
+    # How the gateway ended the stream, from metadata->>'terminal_state'.
+    # "client_disconnect" (the caller hung up) or "request_timeout" (the gateway
+    # deadline fired) — set only by ``completions_stream._finalize_cancelled``,
+    # so it is what distinguishes a real disconnect from an upstream that
+    # answered 499. None on every other row, legacy 499s included.
+    terminal_state: str | None = None
     # Conversation shape derived from the stored request payload's messages
     # array. None when the payload is absent (e.g. legacy rows) or not a chat
     # request. num_turns counts all messages; num_user_turns counts user-role

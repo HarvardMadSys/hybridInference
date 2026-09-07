@@ -29,10 +29,11 @@ import { FoldedText } from './requestContent';
 import { RequestPerformancePanel } from './RequestPerformancePanel';
 
 const REQ_PAGE_SIZE = 50;
-// nginx's "client closed request". The gateway stamps it on a stream the caller
-// abandoned (see completions_stream._finalize_cancelled), and nothing else uses
-// it, so the status alone identifies a disconnect.
-const CLIENT_DISCONNECT_STATUS = 499;
+// The terminal state `completions_stream._finalize_cancelled` stamps on a stream
+// the caller abandoned. The row's 499 alone is not enough to go by: both failure
+// handlers log whatever status the upstream exception carried, so a provider
+// that answers 499 lands here as an ordinary failure.
+const CLIENT_DISCONNECT_TERMINAL_STATE = 'client_disconnect';
 const REQUEST_TABLE_DRAG_THRESHOLD_PX = 4;
 
 type RequestTableScrollMetrics = {
@@ -409,7 +410,7 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
             <span className="text-red-500">{metric.error_requests.toLocaleString()}</span> err
           </div>
           {disconnects > 0 && (
-            <div title="Client disconnects (499): the caller hung up mid-stream. Counted apart from errors — not a service fault.">
+            <div title="Client disconnects: the caller hung up mid-stream (status 499 with the gateway's own cancellation marker). Counted apart from errors — not a service fault.">
               <span className="text-amber-600">{disconnects.toLocaleString()}</span> disc
             </div>
           )}
@@ -735,7 +736,7 @@ export function RequestsTab() {
               setReqOffset(0);
             }}
             aria-label="Filter by outcome"
-            title="Status 499 is the caller hanging up mid-stream. It is logged with an error string, so “Errors” includes it — the other two options read those rows on their own, or hold them out of the way."
+            title="A client disconnect is the caller hanging up mid-stream. It is logged with an error string, so “Errors” includes it — the other two options read those rows on their own, or hold them out of the way. An upstream that answers 499 stays an error."
             className="rounded-lg border border-gray-200 bg-white py-1.5 pl-2 pr-7 text-[13px] text-gray-700 focus:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900/5"
           >
             <option value="all">All</option>
@@ -967,10 +968,12 @@ export function RequestsTab() {
                 {reqEntries.map((req) => {
                   const isSuccess =
                     req.status_code != null && req.status_code >= 200 && req.status_code < 400;
-                  // 499 is the gateway's own "client closed request" code, not a
-                  // failure it caused — badge it apart from the red ones so a
-                  // column of them doesn't read as an outage.
-                  const isClientDisconnect = req.status_code === CLIENT_DISCONNECT_STATUS;
+                  // A stream the caller abandoned is not a failure the gateway
+                  // caused — badge it apart from the red ones so a column of
+                  // them doesn't read as an outage. Keyed on the terminal state
+                  // so an upstream's own 499 still reads as the error it is.
+                  const isClientDisconnect =
+                    req.terminal_state === CLIENT_DISCONNECT_TERMINAL_STATE;
                   const isExpanded = reqExpandedId === req.request_id;
                   const cachedTokens = req.cache_read_tokens ?? null;
                   const routewiseDecision = formatRouteWiseDecision(req);
