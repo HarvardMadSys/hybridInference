@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from serving.responses_translator import merge_leading_system_messages
+from serving.utils.messages import merge_leading_system_messages
 
 
 class ChatMessage(BaseModel):  # type: ignore[no-any-unimported]
@@ -103,11 +103,12 @@ class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]
         another if it were only relabelled. The merge is the same one the
         Responses path applies for the same shape and the same reason.
 
-        Scoped to requests that actually used ``developer``. A request that
-        already carries several system messages keeps them: it is a shape this
-        gateway forwards today, hoisting one out of the middle of a
-        conversation would change what the prompt means, and nothing about
+        Scoped to requests that actually used ``developer``: nothing about
         accepting a new role justifies rewriting traffic that never used it.
+        A request that carries several system messages of its own, or one left
+        mid-transcript, keeps that shape here — so the logged prompt is the one
+        the client sent — and is collapsed at the adapter boundary instead, by
+        :meth:`~serving.adapters.openai_compat.OpenAICompatAdapter._prepare_messages`.
         """
         if not any(message.role == "developer" for message in self.messages):
             return self

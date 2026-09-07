@@ -16,6 +16,7 @@ import aiohttp
 from serving.config.settings import get_settings
 from serving.stream import done_sentinel
 from serving.utils.logging import get_logger
+from serving.utils.messages import merge_leading_system_messages
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
@@ -371,7 +372,27 @@ class OpenAICompatAdapter(BaseAdapter):
                 payload[name] = params[name]
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Normalize request messages for the active provider profile."""
+        """Normalize request messages for OpenAI-compatible upstreams.
+
+        System-message ordering is normalized for every profile, not just
+        strict ones. sglang and vLLM — the local inference servers this
+        gateway is built around — reject a list with more than one ``system``
+        message, or one that is not first, with a 400 (``System message must
+        be at the beginning``), so the whole turn fails rather than degrading.
+        Both shapes reach here unrewritten: the northbound Anthropic surface
+        folds an inline system message into the top-level field, but a client
+        posting straight to ``/v1/chat/completions`` can send several system
+        messages, or leave one mid-transcript when it re-sends a transcript.
+
+        Collapsing them here rather than at the northbound schema keeps the
+        logged prompt as the client sent it, and covers every inbound surface
+        at once. It also puts this path in line with the gateway's other
+        adapters, which already hoist: ``claude`` gathers system text from
+        anywhere in the list into the Anthropic top-level ``system`` field,
+        and ``gemini`` into ``systemInstruction``. A list already in the
+        accepted shape is passed through untouched.
+        """
+        messages = merge_leading_system_messages(messages)
         messages = normalize_messages_for_profile(self._usage_profile, messages)
         return [self._clean_message(msg) for msg in messages]
 
