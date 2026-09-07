@@ -11,7 +11,10 @@ from fastapi.responses import StreamingResponse
 
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_db_logger, verify_admin_access
-from serving.servers.routers.admin._common import _escape_ilike_substring_term
+from serving.servers.routers.admin._common import (
+    _escape_ilike_substring_term,
+    resolve_request_outcome_filter,
+)
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -41,6 +44,7 @@ async def admin_export_requests(
     session_id: str | None = None,
     model_id: str | None = None,
     errors_only: bool = False,
+    outcome: str | None = None,
     request_type: str | None = None,
     include_content: bool = False,
     admin_id: str = Depends(verify_admin_access),
@@ -54,7 +58,11 @@ async def admin_export_requests(
     - user_id: Filter by user ID, name, or email (substring match)
     - session_id: Filter to one session (exact match on ``api_logs.session_id``)
     - model_id: Filter by model ID (substring match)
-    - errors_only: If true, only include requests with errors
+    - errors_only: If true, only include requests with errors. Equivalent to
+      ``outcome=errors``; kept for existing callers
+    - outcome: Outcome class to export, as on ``/admin/recent-requests``
+      (``"all"``, ``"errors"``, ``"errors_excluding_disconnects"`` or
+      ``"client_disconnect"``). Wins over ``errors_only``
     - request_type: ``"embedding"`` to export only embedding requests,
       ``"chat"`` to exclude them; any other value (or omission) applies no filter
     - include_content: If true, include prompt and response fields
@@ -99,11 +107,12 @@ async def admin_export_requests(
         params.append(_escape_ilike_substring_term(model_id))
         where_clauses.append(f"l.model_id ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
 
-    if errors_only:
-        where_clauses.append(
-            "(l.error IS NOT NULL OR l.status_code IS NULL "
-            "OR l.status_code < 200 OR l.status_code >= 400)"
-        )
+    # Same outcome vocabulary as the list view, so exporting the rows an admin
+    # has narrowed to "client disconnects" yields those rows and not the whole
+    # error stream. Constant predicate — no bind param to renumber.
+    outcome_sql = resolve_request_outcome_filter(outcome, errors_only=errors_only)
+    if outcome_sql:
+        where_clauses.append(outcome_sql)
 
     # Mirror the /admin/recent-requests request-type filter. Constant predicate
     # (no bind param), so it composes with the cursor/limit placeholders added
@@ -211,6 +220,7 @@ async def admin_export_requests(
                     "session_id": session_id,
                     "model_id": model_id,
                     "errors_only": errors_only,
+                    "outcome": outcome,
                     "request_type": request_type,
                 },
             )

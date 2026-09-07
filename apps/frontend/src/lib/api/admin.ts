@@ -399,11 +399,16 @@ export async function listAuditLog(
 // Recent Requests (Admin View)
 // ========================================
 
+// A client disconnect (status 499 — the caller hung up mid-stream) is counted
+// in `client_disconnect_count` and never in `error_count`, so the two can be
+// read side by side. Optional because a response cached from before the split
+// omits it.
 export interface AdminRequestMetricsBucket {
   start_time: string;
   request_count: number;
   success_count: number;
   error_count: number;
+  client_disconnect_count?: number;
   avg_latency_ms?: number | null;
 }
 
@@ -415,6 +420,7 @@ export interface AdminRequestMetricsWindow {
   total_requests: number;
   success_requests: number;
   error_requests: number;
+  client_disconnect_requests?: number;
   avg_latency_ms?: number | null;
   buckets: AdminRequestMetricsBucket[];
 }
@@ -599,12 +605,23 @@ export interface AdminRecentRequestsResponse {
   offset: number;
 }
 
+// Which outcome class of requests to list. `errors` is every non-2xx/3xx or
+// errored row — client disconnects (status 499, the caller hung up mid-stream)
+// included, which is what the backend's older `errors_only` flag has always
+// meant. The other two split that set so a burst of disconnects can be read on
+// its own, or kept out of the way while triaging real failures.
+export type RequestOutcome =
+  | 'all'
+  | 'errors'
+  | 'errors_excluding_disconnects'
+  | 'client_disconnect';
+
 export async function listRecentRequests(
   limit = 50,
   offset = 0,
   userId?: string,
   modelId?: string,
-  errorsOnly = false,
+  outcome: RequestOutcome = 'all',
   requestType?: 'chat' | 'embedding',
   days?: number,
   // Exact session id, not a substring: the backend matches it against the
@@ -615,7 +632,7 @@ export async function listRecentRequests(
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (userId) params.set('user_id', userId);
   if (modelId) params.set('model_id', modelId);
-  if (errorsOnly) params.set('errors_only', 'true');
+  if (outcome !== 'all') params.set('outcome', outcome);
   if (requestType) params.set('request_type', requestType);
   if (days != null) params.set('days', String(days));
   if (sessionId) params.set('session_id', sessionId);
@@ -1249,7 +1266,7 @@ export interface ExportRequestsParams {
   // session-scoped list must download that session and not a superset of it.
   sessionId?: string;
   modelId?: string;
-  errorsOnly?: boolean;
+  outcome?: RequestOutcome;
   requestType?: 'chat' | 'embedding';
   includeContent?: boolean;
 }
@@ -1262,7 +1279,7 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   if (params.userId) qs.set('user_id', params.userId);
   if (params.sessionId) qs.set('session_id', params.sessionId);
   if (params.modelId) qs.set('model_id', params.modelId);
-  if (params.errorsOnly) qs.set('errors_only', 'true');
+  if (params.outcome && params.outcome !== 'all') qs.set('outcome', params.outcome);
   if (params.requestType) qs.set('request_type', params.requestType);
   if (params.includeContent) qs.set('include_content', 'true');
 

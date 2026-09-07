@@ -15,6 +15,7 @@ import toast from 'react-hot-toast';
 import {
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
+  type RequestOutcome,
   clearErrorRequests,
   exportRequests,
   getRecentRequestContent,
@@ -28,6 +29,10 @@ import { FoldedText } from './requestContent';
 import { RequestPerformancePanel } from './RequestPerformancePanel';
 
 const REQ_PAGE_SIZE = 50;
+// nginx's "client closed request". The gateway stamps it on a stream the caller
+// abandoned (see completions_stream._finalize_cancelled), and nothing else uses
+// it, so the status alone identifies a disconnect.
+const CLIENT_DISCONNECT_STATUS = 499;
 const REQUEST_TABLE_DRAG_THRESHOLD_PX = 4;
 
 type RequestTableScrollMetrics = {
@@ -381,6 +386,10 @@ function SearchInput({
 
 function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
   const maxRequests = Math.max(...metric.buckets.map((bucket) => bucket.request_count), 1);
+  // Split out of `error_requests` by the backend, so the two are read side by
+  // side. Older payloads omit the field; treating that as 0 shows the card as it
+  // looked before the split rather than inventing a count.
+  const disconnects = metric.client_disconnect_requests ?? 0;
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -399,6 +408,11 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
           <div>
             <span className="text-red-500">{metric.error_requests.toLocaleString()}</span> err
           </div>
+          {disconnects > 0 && (
+            <div title="Client disconnects (499): the caller hung up mid-stream. Counted apart from errors — not a service fault.">
+              <span className="text-amber-600">{disconnects.toLocaleString()}</span> disc
+            </div>
+          )}
           <div>{formatLatency(metric.avg_latency_ms)} avg</div>
         </div>
       </div>
@@ -406,6 +420,10 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
         {metric.buckets.map((bucket) => {
           const height =
             bucket.request_count === 0 ? 2 : (bucket.request_count / maxRequests) * 100;
+          const bucketDisconnects = bucket.client_disconnect_count ?? 0;
+          // Disconnects are excluded here on purpose: a bar goes red to flag a
+          // window where the gateway is failing, and a run of callers hanging up
+          // mid-stream is not that.
           const isErrorHeavy = bucket.error_count > 0 && bucket.error_count >= bucket.success_count;
           return (
             <div
@@ -416,7 +434,7 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
               style={{ height: `${height}%` }}
               title={`${new Date(bucket.start_time).toLocaleString()}: ${
                 bucket.request_count
-              } requests, ${bucket.error_count} errors`}
+              } requests, ${bucket.error_count} errors, ${bucketDisconnects} client disconnects`}
             />
           );
         })}
@@ -441,7 +459,11 @@ export function RequestsTab() {
   // inputs and for actions (Refresh/Export) that must read the current filters.
   const [debouncedUserFilter, setDebouncedUserFilter] = useState('');
   const [debouncedModelFilter, setDebouncedModelFilter] = useState('');
-  const [reqErrorsOnly, setReqErrorsOnly] = useState(false);
+  // Outcome class shown in the table. Client disconnects (status 499 — the
+  // caller hung up mid-stream) are logged with an `error` string but are not a
+  // service fault, so "Errors" alone can be dominated by them; the other two
+  // options read them on their own or keep them out while triaging failures.
+  const [reqOutcome, setReqOutcome] = useState<RequestOutcome>('all');
   // Request-type and lookback-window filters. The admin view is a global,
   // time-ordered stream dominated by chat traffic, so sparse embedding requests
   // (tagged request_type="embedding") are easily buried below the first page —
@@ -495,7 +517,7 @@ export function RequestsTab() {
           reqOffset,
           userFilter || undefined,
           modelFilter || undefined,
-          reqErrorsOnly,
+          reqOutcome,
           reqType === 'all' ? undefined : reqType,
           reqDays,
           reqSessionFilter || undefined,
@@ -509,7 +531,7 @@ export function RequestsTab() {
         if (seq === reqSeqRef.current) setReqLoading(false);
       }
     },
-    [reqOffset, reqErrorsOnly, reqType, reqDays, reqSessionFilter],
+    [reqOffset, reqOutcome, reqType, reqDays, reqSessionFilter],
   );
 
   // Debounce text-filter changes into the values that drive the fetch. Offset
@@ -704,17 +726,23 @@ export function RequestsTab() {
             </button>
           </span>
         ) : null}
-        <label className="flex cursor-pointer select-none items-center gap-1.5 text-[13px] text-gray-600">
-          <input
-            type="checkbox"
-            checked={reqErrorsOnly}
+        <label className="flex select-none items-center gap-1.5 text-[13px] text-gray-600">
+          Outcome
+          <select
+            value={reqOutcome}
             onChange={(e) => {
-              setReqErrorsOnly(e.target.checked);
+              setReqOutcome(e.target.value as RequestOutcome);
               setReqOffset(0);
             }}
-            className="rounded border-gray-300 text-gray-900 focus:ring-gray-400"
-          />
-          Errors only
+            aria-label="Filter by outcome"
+            title="Status 499 is the caller hanging up mid-stream. It is logged with an error string, so “Errors” includes it — the other two options read those rows on their own, or hold them out of the way."
+            className="rounded-lg border border-gray-200 bg-white py-1.5 pl-2 pr-7 text-[13px] text-gray-700 focus:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900/5"
+          >
+            <option value="all">All</option>
+            <option value="errors">Errors</option>
+            <option value="errors_excluding_disconnects">Errors, no disconnects</option>
+            <option value="client_disconnect">Client disconnects</option>
+          </select>
         </label>
         <label className="flex select-none items-center gap-1.5 text-[13px] text-gray-600">
           Type
@@ -831,7 +859,7 @@ export function RequestsTab() {
                       userId: reqUserFilter || undefined,
                       sessionId: reqSessionFilter || undefined,
                       modelId: reqModelFilter || undefined,
-                      errorsOnly: reqErrorsOnly || undefined,
+                      outcome: reqOutcome === 'all' ? undefined : reqOutcome,
                       requestType: reqType === 'all' ? undefined : reqType,
                       includeContent: exportIncludeContent || undefined,
                     });
@@ -861,7 +889,7 @@ export function RequestsTab() {
         sessionFilter={reqSessionFilter}
         modelFilter={debouncedModelFilter}
         requestType={reqType}
-        errorsOnly={reqErrorsOnly}
+        outcome={reqOutcome}
         refreshKey={perfRefreshKey}
       />
 
@@ -939,6 +967,10 @@ export function RequestsTab() {
                 {reqEntries.map((req) => {
                   const isSuccess =
                     req.status_code != null && req.status_code >= 200 && req.status_code < 400;
+                  // 499 is the gateway's own "client closed request" code, not a
+                  // failure it caused — badge it apart from the red ones so a
+                  // column of them doesn't read as an outage.
+                  const isClientDisconnect = req.status_code === CLIENT_DISCONNECT_STATUS;
                   const isExpanded = reqExpandedId === req.request_id;
                   const cachedTokens = req.cache_read_tokens ?? null;
                   const routewiseDecision = formatRouteWiseDecision(req);
@@ -1046,10 +1078,17 @@ export function RequestsTab() {
                         <td className="whitespace-nowrap px-3 py-2.5 text-[12px]">
                           {req.status_code != null ? (
                             <span
+                              title={
+                                isClientDisconnect
+                                  ? 'Client disconnected before the stream completed'
+                                  : undefined
+                              }
                               className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${
                                 isSuccess
                                   ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20'
-                                  : 'bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20'
+                                  : isClientDisconnect
+                                    ? 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/20'
+                                    : 'bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20'
                               }`}
                             >
                               {req.status_code}

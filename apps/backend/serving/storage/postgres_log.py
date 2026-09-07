@@ -960,10 +960,11 @@ class PostgresLogStore(LogStore):
     async def delete_recent_error_requests(self, *, hours: int = 1) -> int:
         """Hard-delete error requests from ``api_logs`` in the last *hours*.
 
-        The error predicate mirrors the admin Recent Requests "errors only"
-        filter (``admin_list_recent_requests``) so this clears exactly the
-        rows that filter surfaces. Returns the deleted row count parsed from
-        the asyncpg command tag.
+        The error predicate mirrors the admin Recent Requests ``outcome=errors``
+        filter (``admin_list_recent_requests``) so this clears exactly the rows
+        that filter surfaces — client disconnects (status 499) included, since
+        that outcome class carries them. Returns the deleted row count parsed
+        from the asyncpg command tag.
         """
         hours = max(1, hours)
         async with self.pool.acquire() as conn:

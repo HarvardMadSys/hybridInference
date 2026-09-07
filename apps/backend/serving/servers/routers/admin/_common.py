@@ -101,3 +101,72 @@ def _require_aware_utc(dt: datetime, name: str) -> datetime:
             detail=f"`{name}` must be timezone-aware (e.g. ...Z or ...+00:00)",
         )
     return dt.astimezone(timezone.utc)
+
+
+# --- Recent Requests outcome classes -----------------------------------------
+#
+# A caller that hangs up mid-stream is logged by
+# ``completions_stream._finalize_cancelled`` as status 499 — nginx's "client
+# closed request" convention — precisely so the abort is not counted as a
+# service fault. The row still carries a non-null ``error``
+# ("Client disconnected before the stream completed"), so the historical
+# "errors only" predicate sweeps it up alongside real failures and a burst of
+# benign disconnects buries the handful of 5xx rows that matter.
+#
+# Matching on the status is exact and survives any rewording of the error text:
+# 499 is assigned nowhere else. This is the same reasoning that keeps 499 out of
+# ``serving.admin.failed_request_alerter.FAILURE_PREDICATE_SQL``, which must not
+# page Slack for client behavior.
+CLIENT_DISCONNECT_STATUS_CODE = 499
+
+# ``error`` set, or a status outside 2xx/3xx. Unchanged from the predicate the
+# ``errors_only`` flag has always applied — client disconnects included.
+_OUTCOME_ANY_ERROR_SQL = (
+    "(l.error IS NOT NULL OR l.status_code IS NULL OR l.status_code < 200 OR l.status_code >= 400)"
+)
+
+# Outcome filters for the Recent Requests list and its JSONL export. Predicates
+# are constant (no bind parameters), so a caller can append them to its WHERE
+# clauses without disturbing its own placeholder numbering.
+#
+# ``IS DISTINCT FROM`` (not ``<>``) keeps NULL-status error rows in
+# ``errors_excluding_disconnects``: a request that never got a status back is a
+# failure, not a disconnect.
+REQUEST_OUTCOME_FILTERS: dict[str, str] = {
+    # No predicate — every row in the window.
+    "all": "",
+    "errors": _OUTCOME_ANY_ERROR_SQL,
+    "errors_excluding_disconnects": (
+        f"({_OUTCOME_ANY_ERROR_SQL} "
+        f"AND l.status_code IS DISTINCT FROM {CLIENT_DISCONNECT_STATUS_CODE})"
+    ),
+    "client_disconnect": f"l.status_code = {CLIENT_DISCONNECT_STATUS_CODE}",
+}
+
+
+def resolve_request_outcome_filter(
+    outcome: str | None,
+    *,
+    errors_only: bool = False,
+) -> str:
+    """Return the SQL predicate for a Recent Requests ``outcome`` filter.
+
+    Returns an empty string when no outcome predicate applies. ``outcome`` wins
+    over the older boolean ``errors_only``, which stays supported so existing
+    callers (and bookmarked admin URLs) keep working: it is exactly
+    ``outcome="errors"``.
+
+    Unlike the ``request_type`` filter, an unrecognized value is rejected rather
+    than ignored. Silently dropping a mistyped outcome would answer "show me the
+    client disconnects" with the unfiltered stream, and an admin reading that
+    page has no way to tell it apart from a window with no disconnects in it.
+    """
+    if outcome is None or outcome == "":
+        return REQUEST_OUTCOME_FILTERS["errors"] if errors_only else ""
+    try:
+        return REQUEST_OUTCOME_FILTERS[outcome]
+    except KeyError:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"`outcome` must be one of: {', '.join(sorted(REQUEST_OUTCOME_FILTERS))}"),
+        ) from None

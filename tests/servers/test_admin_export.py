@@ -365,6 +365,89 @@ def test_export_applies_errors_only_filter():
     assert "l.error IS NOT NULL" in query
 
 
+def test_export_outcome_isolates_client_disconnects_and_is_audited():
+    """outcome=client_disconnect exports the 499s alone, and says so in the audit log.
+
+    The export mirrors the Requests tab's filters, so an admin who has narrowed
+    the table to client disconnects must download those rows — not the whole
+    error stream the older ``errors_only`` predicate would have matched.
+    """
+    from serving.servers.app import app
+    from serving.servers.deps import get_db_logger, verify_admin_access
+
+    row = _make_mock_row(error="Client disconnected before the stream completed", status_code=499)
+    db = _make_mock_db([[row], []])
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/admin/export/requests"
+            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z"
+            "&outcome=client_disconnect",
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    mock_conn = db.pool.acquire.return_value.__aenter__.return_value
+    query = mock_conn.fetch.call_args[0][0]
+    assert "l.status_code = 499" in query
+    assert "l.error IS NOT NULL" not in query
+
+    db.log_admin_action.assert_awaited_once()
+    assert db.log_admin_action.await_args.kwargs["details"]["outcome"] == "client_disconnect"
+
+
+def test_export_outcome_can_hold_back_disconnects():
+    """errors_excluding_disconnects keeps the error predicate but drops the 499s."""
+    from serving.servers.app import app
+    from serving.servers.deps import get_db_logger, verify_admin_access
+
+    row = _make_mock_row(error="boom", status_code=500)
+    db = _make_mock_db([[row], []])
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/admin/export/requests"
+            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z"
+            "&outcome=errors_excluding_disconnects",
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    mock_conn = db.pool.acquire.return_value.__aenter__.return_value
+    query = mock_conn.fetch.call_args[0][0]
+    assert "l.error IS NOT NULL" in query
+    assert "l.status_code IS DISTINCT FROM 499" in query
+
+
+def test_export_rejects_unknown_outcome():
+    """A mistyped outcome must not silently stream the unfiltered range."""
+    from serving.servers.app import app
+    from serving.servers.deps import get_db_logger, verify_admin_access
+
+    db = _make_mock_db([[], []])
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/admin/export/requests"
+            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z"
+            "&outcome=disconnects",
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 422
+    mock_conn = db.pool.acquire.return_value.__aenter__.return_value
+    mock_conn.fetch.assert_not_called()
+
+
 def test_export_request_type_filters_and_is_audited():
     """request_type adds the embedding predicate and is recorded in the audit log."""
     from serving.servers.app import app
