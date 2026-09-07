@@ -69,12 +69,22 @@ if "aiohttp" not in sys.modules:  # pragma: no cover - import-time shim
         guard can distinguish a genuine connect failure from a stale socket.
         """
 
+    class _ClientPayloadError(_ClientError):
+        """Stub for aiohttp.ClientPayloadError (body truncated mid-read).
+
+        A ClientError subclass as in aiohttp. This is the *body-phase* failure
+        the connect-phase retry deliberately excludes, and the one that must
+        propagate out of the SSE read loop rather than being treated as a clean
+        end of body.
+        """
+
     sys.modules["aiohttp"] = SimpleNamespace(
         ClientError=_ClientError,
         ClientResponseError=_ClientResponseError,
         ServerDisconnectedError=_ServerDisconnectedError,
         ClientOSError=_ClientOSError,
         ClientConnectorError=_ClientConnectorError,
+        ClientPayloadError=_ClientPayloadError,
         ClientTimeout=lambda total=None: None,
         ClientSession=_DummySession,
         TCPConnector=lambda **k: None,
