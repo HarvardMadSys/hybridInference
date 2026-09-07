@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -22,7 +23,7 @@ try:
 except ImportError:  # pragma: no cover - aiohttp is stubbed in unit tests
     _aiohttp_sentinel = object()
 
-from serving.servers.sse import SSEParser
+from serving.servers.sse import SSEMessage, SSEParser
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
@@ -323,19 +324,54 @@ class AsyncHTTPClient:
             parser = SSEParser()
             chunk_count = 0
             message_count = 0
-            async for raw in resp.content.iter_chunked(4096):
-                chunk_count += 1
-                if chunk_count <= 5 or chunk_count % 10 == 0:
-                    logger.debug(f"Chunk {chunk_count}: received {len(raw)} bytes")
-                    # Show first few bytes to debug encoding issues
-                    preview = raw[:200].decode("utf-8", errors="replace")
-                    logger.debug(f"Chunk {chunk_count} preview: {preview}")
 
-                messages = list(parser.feed(raw))
-                if messages and chunk_count <= 5:
-                    logger.debug(f"Chunk {chunk_count} parser produced {len(messages)} messages")
+            async def _frames() -> AsyncIterator[SSEMessage]:
+                """Yield parsed frames, including the one the body end held back.
 
-                for msg in messages:
+                The flush sits *after* the read loop, so it runs only on a clean
+                end of body: an aborted read (ClientPayloadError, a reset) raises
+                out of ``iter_chunked`` and never reaches it, which keeps a real
+                truncation a truncation rather than capping it with a frame that
+                was never fully received.
+                """
+                nonlocal chunk_count
+                async for raw in resp.content.iter_chunked(4096):
+                    chunk_count += 1
+                    if chunk_count <= 5 or chunk_count % 10 == 0:
+                        logger.debug(f"Chunk {chunk_count}: received {len(raw)} bytes")
+                        # Show first few bytes to debug encoding issues
+                        preview = raw[:200].decode("utf-8", errors="replace")
+                        logger.debug(f"Chunk {chunk_count} preview: {preview}")
+
+                    messages = parser.feed(raw)
+                    if messages and chunk_count <= 5:
+                        logger.debug(
+                            f"Chunk {chunk_count} parser produced {len(messages)} messages"
+                        )
+
+                    for msg in messages:
+                        yield msg
+
+                # Not every upstream terminates its last frame with the blank
+                # line SSE asks for -- some close the body right after
+                # ``data: [DONE]`` or the final ``finish_reason`` chunk. Emitting
+                # it here is what keeps that terminal signal: without the flush
+                # the frame dies in the parser's buffer, and the adapter reports
+                # a complete generation as an incomplete stream (which then
+                # counts against the endpoint's availability). The NDJSON branch
+                # below has always flushed its tail for the same reason.
+                for msg in parser.flush():
+                    logger.debug("Emitting SSE frame held back at end of body")
+                    yield msg
+
+            # ``aclosing`` so the inner generator is finalized the moment this
+            # one is -- on the [DONE] return, and on the client disconnect that
+            # closes this generator mid-stream. Without it the read loop would
+            # sit unfinalized until the event loop's async-generator hooks got
+            # to it, holding the response body open past the point the caller
+            # gave up on it.
+            async with aclosing(_frames()) as frames:
+                async for msg in frames:
                     if not msg.data:
                         logger.debug("Empty message data, skipping")
                         continue

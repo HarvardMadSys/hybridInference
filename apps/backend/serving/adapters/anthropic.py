@@ -28,7 +28,7 @@ from serving.stream import done_sentinel
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
 from .base import BaseAdapter
 from .claude_format import (
@@ -46,6 +46,31 @@ from .claude_format import (
 from .openai_compat import _COMPLETION_TIMEOUT_S
 
 logger = get_logger(__name__)
+
+
+async def _with_eof_frame_terminator(source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    r"""Yield ``source``'s bytes, then the frame terminator SSE requires at EOF.
+
+    The frame loop below accumulates into a buffer and parses a frame only once
+    it sees the ``\n\n`` delimiter. An upstream that closes the body straight
+    after its last event -- without that trailing blank line -- therefore leaves
+    the event unparsed, and here that event is usually ``message_delta`` /
+    ``message_stop``: the request's output-token count and its ``stop_reason``.
+    Losing them silently undercounts usage (and so cost).
+
+    Appending the delimiter at the end of a clean body completes that frame. The
+    scope is deliberately "clean EOF only": an aborted read raises out of
+    ``source`` before the terminator is reached, so a genuinely half-received
+    frame is still never parsed. Appending to a body that *did* end with the
+    delimiter is a no-op -- it produces one empty frame, which the loop ignores.
+
+    Only for a loop that consumes the bytes. The Anthropic-format passthrough
+    forwards every chunk to the client verbatim, so it drains its own residue
+    instead of taking bytes this helper synthesized.
+    """
+    async for chunk in source:
+        yield chunk
+    yield b"\n\n"
 
 
 class AnthropicAdapter(BaseAdapter):
@@ -250,7 +275,7 @@ class AnthropicAdapter(BaseAdapter):
                     headers=resp.headers,
                 )
             buf = b""
-            async for raw in resp.content.iter_any():
+            async for raw in _with_eof_frame_terminator(resp.content.iter_any()):
                 buf += raw
                 while b"\n\n" in buf:
                     frame, buf = buf.split(b"\n\n", 1)
@@ -393,6 +418,12 @@ class AnthropicAdapter(BaseAdapter):
                 while b"\n\n" in buf:
                     frame, buf = buf.split(b"\n\n", 1)
                     extract_anthropic_usage_from_sse(frame + b"\n\n", usage)
+            # Clean EOF with the last event left unterminated: complete it for
+            # usage extraction, or this request's output tokens go uncounted.
+            # Only our accounting needs this -- the client already received
+            # those bytes verbatim above, so nothing is added to the wire.
+            if buf.strip():
+                extract_anthropic_usage_from_sse(buf + b"\n\n", usage)
 
         self.last_stream_usage = usage  # keep for backward-compat with tests
         if usage_sink is not None:

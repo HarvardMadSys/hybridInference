@@ -80,6 +80,7 @@ _STRUCTURED_LOG_KEYS = (
     # Circuit-breaker state-change events (routing/routers.py).
     "consecutive_failures",
     "availability",
+    "trip_cause",
     "upstream_error",
     "offending_users",
     # Upstream rejection of the gateway's own credential

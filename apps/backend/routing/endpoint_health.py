@@ -438,6 +438,24 @@ class _CircuitBreaker:
                     )
                 )
 
+    def _trip_cause(
+        self, by_streak: bool, by_availability: bool, availability: float | None
+    ) -> str:
+        """Describe which threshold opened the circuit, and against what.
+
+        Both conditions can hold at once, and they mean different things to an
+        operator: a streak is this minute's outage, while the availability floor
+        is a slow burn that has been eating a fraction of every request.
+        """
+        causes = []
+        if by_streak:
+            causes.append(
+                f"consecutive_failures {self.consecutive_failures} >= {self.failure_threshold}"
+            )
+        if by_availability and availability is not None:
+            causes.append(f"availability {availability:.2f} < {self.min_availability:.2f}")
+        return " and ".join(causes) or "unknown"
+
     def on_failure(
         self,
         *,
@@ -452,10 +470,9 @@ class _CircuitBreaker:
                 offender in self._offenders or len(self._offenders) < _MAX_TRACKED_OFFENDERS
             ):
                 self._offenders[offender] += 1
-            trip = self.consecutive_failures >= self.failure_threshold
-            if availability is not None and availability < self.min_availability:
-                trip = True
-            if not trip:
+            by_streak = self.consecutive_failures >= self.failure_threshold
+            by_availability = availability is not None and availability < self.min_availability
+            if not (by_streak or by_availability):
                 return
 
             prev_state = self.state
@@ -569,6 +586,16 @@ class _CircuitBreaker:
                 "provider": self.provider,
                 "consecutive_failures": self.consecutive_failures,
                 "availability": f"{availability:.2f}" if availability is not None else "n/a",
+                # Which threshold actually fired, with the numbers it fired
+                # against. The two figures above do not say: the availability
+                # floor trips independently of the streak, so the usual card
+                # reads "Consecutive Failures: 1" and looks like a breaker that
+                # opens on a single error, when what happened is that the EWMA
+                # had already sagged under the floor and every later failure
+                # re-trips it. Naming the cause is the difference between
+                # "chase this one request" and "this endpoint has been failing
+                # a third of its requests for a while".
+                "trip_cause": self._trip_cause(by_streak, by_availability, availability),
                 "reason": reason or "unknown",
             }
             if detail:
@@ -592,6 +619,7 @@ class _CircuitBreaker:
                     "provider": self.provider,
                     "consecutive_failures": self.consecutive_failures,
                     "availability": availability,
+                    "trip_cause": context["trip_cause"],
                     "reason": reason or "unknown",
                     "upstream_error": detail,
                     "offending_users": dict(self._offenders) or None,
