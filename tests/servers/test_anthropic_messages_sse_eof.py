@@ -143,10 +143,17 @@ async def test_unterminated_terminal_event_is_still_accounted(
 
 
 @pytest.mark.asyncio
-async def test_client_bytes_are_unchanged_by_the_drain(
+async def test_recovered_event_is_terminated_on_the_client_stream(
     anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts, captured_log
 ):
-    """Completing the frame is our accounting's business, not the wire's."""
+    """The client must be able to dispatch the event we credited.
+
+    Per the SSE spec a consumer discards a pending event once it reaches end of
+    file, so forwarding the upstream's bytes alone would leave this surface
+    crediting the endpoint and logging content a compliant client never
+    observed. The delimiter carries nothing, so completing the frame cannot
+    change what the upstream said.
+    """
     body_bytes = _MESSAGE_START + _TEXT_DELTA + _UNTERMINATED_MESSAGE_DELTA
 
     async def _iter():
@@ -159,7 +166,60 @@ async def test_client_bytes_are_unchanged_by_the_drain(
     out = await _drain(anthropic_test_client)
     await asyncio.sleep(0)
 
+    # Upstream's bytes verbatim, plus only the delimiter it never sent.
+    assert out == body_bytes + b"\n\n"
+    assert captured_log["usage"]["output_tokens"] == 7
+
+
+@pytest.mark.asyncio
+async def test_properly_terminated_body_gains_no_bytes(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts, captured_log
+):
+    """With no residue there is nothing to complete, so the wire is untouched."""
+    body_bytes = _MESSAGE_START + _TEXT_DELTA + _UNTERMINATED_MESSAGE_DELTA + b"\n"
+
+    async def _iter():
+        yield body_bytes
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    out = await _drain(anthropic_test_client)
+    await asyncio.sleep(0)
+
     assert out == body_bytes
+
+
+@pytest.mark.asyncio
+async def test_truncated_residue_is_neither_credited_nor_terminated(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts, captured_log
+):
+    """An upstream that stopped mid-event is not dressed up as a complete one.
+
+    Completing the frame here would hand a compliant client a truncated
+    ``data:`` line to choke on, and crediting it would report content nobody
+    can read. Neither happens: the wire and the accounting agree that this
+    event was never delivered.
+    """
+    registry = anthropic_compat_router.endpoint_health_registry
+    calls: list[str] = []
+    monkeypatch.setattr(registry, "record_success", lambda endpoint_id: calls.append(endpoint_id))
+    # Cut mid-JSON, after the delta that would otherwise have credited success.
+    body_bytes = _MESSAGE_START + b'event: content_block_delta\ndata: {"type":"content_bl'
+
+    async def _iter():
+        yield body_bytes
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    out = await _drain(anthropic_test_client)
+    await asyncio.sleep(0)
+
+    assert out == body_bytes
+    assert calls == []
 
 
 @pytest.mark.asyncio

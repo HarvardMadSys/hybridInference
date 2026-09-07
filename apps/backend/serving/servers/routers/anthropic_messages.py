@@ -1503,16 +1503,30 @@ async def anthropic_messages(
                     finally:
                         await chunk_queue.put(_STREAM_SENTINEL)
 
-                def _account_sse(raw: bytes) -> None:
+                def _account_sse(raw: bytes) -> bool:
                     """Parse ``raw`` into events and apply them to this request's state.
 
                     Shared by the per-chunk path and the end-of-body drain so
-                    both account an event identically. Deliberately does not
-                    forward anything to the client -- the caller owns the wire.
+                    both account an event identically. Does not touch the wire --
+                    the caller owns that.
+
+                    Returns whether every event it extracted was well-formed,
+                    which is what tells the drain apart from a truncation: a
+                    complete event that merely lost its delimiter parses, and an
+                    upstream that stopped mid-event does not. Both
+                    ``_apply_sse_event`` and ``_is_non_empty_content_event``
+                    already swallow a malformed event, so a truncation accounts
+                    nothing either way; the return exists so the wire and the
+                    accounting cannot disagree about what was delivered.
                     """
                     nonlocal sse_buffer, response_acc, health_success_recorded
                     events, sse_buffer = _parse_sse_chunk(sse_buffer, raw)
+                    well_formed = bool(events)
                     for event_type, data in events:
+                        try:
+                            json.loads(data)
+                        except (json.JSONDecodeError, ValueError):
+                            well_formed = False
                         response_acc = _apply_sse_event(response_acc, event_type, data)
                         if not health_success_recorded and _is_non_empty_content_event(
                             event_type, data
@@ -1527,6 +1541,7 @@ async def anthropic_messages(
                             # is resident, so the endpoint is decoding and
                             # its prefix is safe to remember.
                             prefill_load.release(prefill_lease, prefill_confirmed=True)
+                    return well_formed
 
                 reader_task = asyncio.create_task(_reader())
                 idle_seconds = 0.0
@@ -1587,11 +1602,24 @@ async def anthropic_messages(
                             # Scoped to the sentinel on purpose. The idle-timeout
                             # break above and the ``raise item`` below leave a
                             # genuinely partial event unparsed, which is right --
-                            # there the stream really did stop early. Nothing is
-                            # yielded either way: the client already received
-                            # these bytes verbatim, so the wire stays byte-exact.
-                            if sse_buffer.strip():
-                                _account_sse(b"\n\n")
+                            # there the stream really did stop early.
+                            #
+                            # When the residue was a whole event, send the
+                            # delimiter on as well. Per the SSE spec a consumer
+                            # discards a pending event once it reaches end of
+                            # file, so these two bytes are the difference
+                            # between the client dispatching that event and
+                            # dropping it -- and without them this surface would
+                            # credit the endpoint and log response content that
+                            # a compliant client never observed. The delimiter
+                            # carries no content, so completing the frame cannot
+                            # alter what the upstream said; a client that had
+                            # already dispatched the event just sees a trailing
+                            # blank line, which SSE ignores. A truncated residue
+                            # gets neither the credit nor the delimiter, so it
+                            # is never dressed up as a complete answer.
+                            if sse_buffer.strip() and _account_sse(b"\n\n"):
+                                yield b"\n\n"
                             break
                         if isinstance(item, Exception):
                             raise item
