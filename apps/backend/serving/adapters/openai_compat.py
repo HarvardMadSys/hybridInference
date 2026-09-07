@@ -16,6 +16,7 @@ import aiohttp
 from serving.config.settings import get_settings
 from serving.stream import done_sentinel
 from serving.utils.logging import get_logger
+from serving.utils.messages import flatten_text_content, merge_leading_system_messages
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
@@ -69,25 +70,14 @@ except (TypeError, ValueError):
 
 def _normalize_text_content(content: Any) -> Any:
     """Normalize structured content blocks into plain text when needed."""
-    # A bare block mapping (not wrapped in a list) is still valid per the
-    # permissive `content: Any` schema; treat it as a one-element block list so
-    # text-only models receive a flattened string instead of a raw dict.
-    if isinstance(content, dict):
-        content = [content]
-    if not isinstance(content, list):
+    # Anything that is not a block mapping or a block list is already what the
+    # upstream expects (a plain string, or a scalar the schema let through) and
+    # is returned as-is rather than stringified. A bare block mapping not
+    # wrapped in a list is still valid per the permissive `content: Any`
+    # schema, so it flattens too.
+    if not isinstance(content, dict | list):
         return content
-
-    parts: list[str] = []
-    for part in content:
-        if isinstance(part, str):
-            parts.append(part)
-            continue
-        if not isinstance(part, dict):
-            continue
-        text = part.get("text")
-        if isinstance(text, str):
-            parts.append(text)
-    return "\n".join(p for p in parts if p)
+    return flatten_text_content(content)
 
 
 def _caller_role() -> str | None:
@@ -371,7 +361,32 @@ class OpenAICompatAdapter(BaseAdapter):
                 payload[name] = params[name]
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Normalize request messages for the active provider profile."""
+        """Normalize request messages for OpenAI-compatible upstreams.
+
+        System-message ordering is normalized for every profile, not just
+        strict ones. sglang and vLLM — the local inference servers this
+        gateway is built around — reject a list with more than one ``system``
+        message, or one that is not first, with a 400 (``System message must
+        be at the beginning``), so the whole turn fails rather than degrading.
+        Both shapes reach here unrewritten: the northbound Anthropic surface
+        folds an inline system message into the top-level field, but a client
+        posting straight to ``/v1/chat/completions`` can send several system
+        messages, or leave one mid-transcript when it re-sends a transcript.
+
+        Collapsing them here rather than at the northbound schema covers
+        every inbound surface at once, and keeps the logged prompt as the
+        client sent it — bar a request that used ``developer``, which
+        :class:`~serving.schemas.ChatCompletionRequest` has to fold before
+        logging to relabel the role. It also puts this path in line with the
+        gateway's other
+        adapters, which already hoist: ``claude`` gathers system text from
+        anywhere in the list into the Anthropic top-level ``system`` field,
+        and ``gemini`` into ``systemInstruction``. The ordering pass is a
+        no-op on a list already in the accepted shape — it hands back the
+        argument itself, no copy — while the profile normalization and
+        per-message cleaning below apply as they always have.
+        """
+        messages = merge_leading_system_messages(messages)
         messages = normalize_messages_for_profile(self._usage_profile, messages)
         return [self._clean_message(msg) for msg in messages]
 
