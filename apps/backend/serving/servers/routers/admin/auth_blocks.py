@@ -38,7 +38,10 @@ from serving.schemas_admin import (
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_operational_store, verify_admin_access
 from serving.utils.auth_failure_blocklist import clear_block, list_active_blocks
+from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip, normalize_ip_bucket
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/admin")
 
@@ -84,19 +87,37 @@ async def clear_auth_block(
     is blocked again on crossing the threshold; this grants no immunity, and
     ``auth_failure_block_exempt_ips`` remains the way to grant that.
 
-    Audited like any other admin mutation. The audit write is skipped when no
-    operational store is configured, matching :func:`log_admin_action`, so the
-    block is still lifted on a deployment without a database.
+    Audited, but best-effort — deliberately unlike the bare
+    :func:`log_admin_action` call every other admin mutation makes. Those write
+    the audit row through the same store the mutation itself went to, so a store
+    failure means nothing changed and propagating it is honest. Here the change
+    is to process memory and has *already* happened by the time the audit runs:
+    letting the write raise would answer 500 for a block that is genuinely
+    lifted, and the retry would then report ``cleared: false`` — unblocked, yet
+    reading as "nothing was blocked" — in precisely the store outage this
+    endpoint has to keep working through. So the lift is reported and the audit
+    failure is logged instead of returned. (A store that is merely absent needs
+    nothing here: ``log_admin_action`` already returns early for a falsy one.)
     """
     ip_bucket = normalize_ip_bucket(payload.ip)
     cleared = await clear_block(payload.ip)
 
-    await log_admin_action(
-        op_store,
-        get_client_ip(request),
-        "auth_blocks.clear",
-        None,
-        {"ip": payload.ip, "ip_bucket": ip_bucket, "cleared": cleared},
-    )
+    try:
+        await log_admin_action(
+            op_store,
+            get_client_ip(request),
+            "auth_blocks.clear",
+            None,
+            {"ip": payload.ip, "ip_bucket": ip_bucket, "cleared": cleared},
+        )
+    except Exception:
+        logger.exception(
+            "auth_block_clear_audit_failed",
+            extra={
+                "event": "auth_block_clear_audit_failed",
+                "ip_bucket": ip_bucket,
+                "cleared": cleared,
+            },
+        )
 
     return ClearAuthBlockResponse(ip_bucket=ip_bucket, cleared=cleared)

@@ -98,9 +98,13 @@ class AuthIpBlockedConfig(CountRule):
 
     ``threshold_count: 1`` -- the default -- means any single block pages, which
     is the point. Counting over ``window_sec`` rather than firing per address
-    keeps a scanner wave that blocks many buckets to one incident naming the
-    top offenders, instead of one message each. Raise the threshold to page
-    only on a wave; set ``enabled: false`` to go back to the log record alone.
+    keeps a scanner wave to one incident instead of a firing and a recovery per
+    bucket. Note what ``cooldown_sec`` then implies: only the first breach
+    message in that hour is delivered, so it names the block that opened the
+    incident and points at ``GET /admin/auth-blocks`` for the live list, rather
+    than carrying a total. Raise ``threshold_count`` to page only once a window
+    holds that many blocks; set ``enabled: false`` to go back to the log record
+    alone.
     """
 
     window_sec: int = 300

@@ -394,11 +394,23 @@ class AuthIpBlockedRule:
     bucket just began being refused in ``servers/auth.py``, ahead of any key
     lookup.
 
-    Counted over a window rather than fired per address, so a scanner wave that
-    blocks many buckets becomes one incident naming the top few and resolves on
-    its own once blocks stop arriving. With the default ``threshold_count: 1``
-    a single block is already a breach -- see :class:`AuthIpBlockedConfig` for
-    why that is the useful default.
+    One incident, not one per address: a per-bucket key would give every blocked
+    source its own incident, and since a resolution bypasses the send cooldown
+    (``alerts.alert_slack``), a wave would post a firing *and* a recovery per
+    bucket.
+
+    What that costs, and why it is the right trade: within ``cooldown_sec``
+    only the *first* breach message is delivered, so the message names the
+    block that opened the incident rather than a running total. The context
+    therefore describes that one block and points at
+    ``GET /admin/auth-blocks``, which is a live full list and strictly better
+    than a snapshot Slack would have frozen. ``blocks_in_window`` is the count
+    at the moment the message was built -- deliberately named so it cannot be
+    read as a total for the wave.
+
+    With the default ``threshold_count: 1`` a single block is already a breach;
+    raising it pages only once a window holds that many. See
+    :class:`AuthIpBlockedConfig`.
     """
 
     name = "auth_ip_blocked"
@@ -424,19 +436,17 @@ class AuthIpBlockedRule:
         items = self._window.items(now)
 
         def breach_context() -> dict[str, Any]:
-            counts: collections.Counter[str] = collections.Counter(
-                it["ip_bucket"] for it in items if it["ip_bucket"]
-            )
-            longest = max(
-                (it["block_seconds"] for it in items if it["block_seconds"] is not None),
-                default=None,
-            )
+            # The record being evaluated, not a top-N over the window: the
+            # cooldown delivers only the first breach message, so an aggregate
+            # built here would either be a total nobody receives or, worse, a
+            # "1 of 12" that reads as the whole picture. The live list is one
+            # request away, and the context says where.
             return {
-                "count": len(items),
-                "distinct_buckets": len(counts),
+                "ip_bucket": getattr(record, "ip_bucket", None) or "unknown",
+                "block_seconds": getattr(record, "block_seconds", None) or "n/a",
+                "blocks_in_window": len(items),
                 "window_sec": self._cfg.window_sec,
-                "blocked_buckets": ", ".join(b for b, _ in counts.most_common(5)) or "n/a",
-                "block_seconds": longest if longest is not None else "n/a",
+                "all_active_blocks": "GET /admin/auth-blocks",
                 # Spelled out because the remedy is counter-intuitive: the
                 # block is consulted before the presented key is read, so
                 # repairing a stale credential does not lift it.

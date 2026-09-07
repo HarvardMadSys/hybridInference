@@ -169,6 +169,36 @@ async def test_clear_accepts_the_bucket_key_from_a_listing(admin_client, small_l
 
 
 @pytest.mark.asyncio
+async def test_audit_failure_does_not_mask_a_successful_clear(admin_client, small_limits):
+    """A store outage must not turn a lifted block into a 500.
+
+    The block lives in process memory and is already lifted by the time the
+    audit write runs, so propagating the store error would report failure for
+    work that succeeded -- and the retry would answer `cleared: false`, which
+    reads as "nothing was blocked". That is the ambiguity, in exactly the store
+    outage this endpoint has to survive (Codex's finding).
+    """
+    client, audit = admin_client
+    audit.side_effect = RuntimeError("connection pool exhausted")
+
+    await record_auth_failure("203.0.113.81")
+    await record_auth_failure("203.0.113.81")
+    assert (await is_ip_blocked("203.0.113.81"))[0] is True
+
+    response = await client.post(
+        "/admin/auth-blocks/clear",
+        json={"ip": "203.0.113.81"},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ip_bucket": "203.0.113.81", "cleared": True}
+    # The lift stands, so a retry does not report a confusing `cleared: false`.
+    assert await is_ip_blocked("203.0.113.81") == (False, 0)
+    audit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_endpoints_require_admin_auth(admin_client, small_limits):
     """Neither endpoint is reachable without an admin credential."""
     client, _ = admin_client

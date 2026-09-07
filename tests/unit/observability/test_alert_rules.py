@@ -685,22 +685,24 @@ async def test_auth_ip_blocked_fires_on_a_single_block(monkeypatch):
             # The blocked bucket and the remedy travel with the alert: the fix
             # is not deducible from the title, since a corrected key does not
             # lift the block.
-            body = json.dumps(mock_alert.await_args_list[0].args[2])
-            assert "203.0.113.7" in body
-            assert "/admin/auth-blocks" in body
+            ctx = mock_alert.await_args_list[0].args[2]
+            assert ctx["ip_bucket"] == "203.0.113.7", ctx
+            assert "/admin/auth-blocks" in json.dumps(ctx)
         finally:
             await engine.stop()
 
 
-async def test_auth_ip_blocked_reports_one_incident_for_many_buckets(monkeypatch):
-    """A scanner wave that blocks many buckets stays one incident, naming them.
+async def test_auth_ip_blocked_wave_delivers_one_named_message(monkeypatch):
+    """A wave posts exactly one Slack message, and it names a real bucket.
 
-    Counting over the window rather than firing per address is what keeps a
-    wave from opening one incident per blocked source. The rule reports every
-    breached evaluation to the sink -- that is how ``alert_on_transition``
-    advances an incident's occurrence count -- so the invariant here is the
-    single shared ``dedupe_key``, not the number of sink calls. The cooldown
-    behind that key is what collapses them into one Slack message.
+    Patched at ``_post_to_slack``, not at ``alert_slack`` — the whole point is
+    to run the real dedupe and cooldown. An earlier version of this test mocked
+    ``alert_slack`` and asserted on the accumulated context of the *last* sink
+    call, which is not the call that becomes a message: ``alert_on_transition``
+    reports every breached evaluation, and ``alert_slack`` then drops the
+    repeats inside ``cooldown_sec``. So it was asserting on a payload no
+    operator would ever receive, and would have passed no matter what the
+    delivered message said (Codex's finding).
     """
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     from serving.observability.alerts import reset_dedupe_state
@@ -722,10 +724,13 @@ async def test_auth_ip_blocked_reports_one_incident_for_many_buckets(monkeypatch
         log_store=None,
     )
 
-    with patch(
-        "serving.observability.alerts.alert_slack",
-        new=AsyncMock(),
-    ) as mock_alert:
+    posted: list[dict] = []
+
+    async def _capture(_url, message):
+        posted.append(message)
+        return True
+
+    with patch("serving.observability.alerts._post_to_slack", new=_capture):
         await engine.start()
         try:
             for i in range(12):
@@ -736,23 +741,21 @@ async def test_auth_ip_blocked_reports_one_incident_for_many_buckets(monkeypatch
                         block_seconds=86400,
                     )
                 )
-            await _drain_until(handler, mock_alert)
-            blocked_calls = [
-                call
-                for call in mock_alert.await_args_list
-                if call.args[1] == "Auth-failure blocklist refusing a source"
-            ]
-            assert blocked_calls, mock_alert.await_args_list
-            # One incident: every report shares the rule's key, so no bucket
-            # gets an incident of its own.
-            assert {call.kwargs["dedupe_key"] for call in blocked_calls} == {"auth_ip_blocked"}
-            # And the incident grows to name the wave rather than one address.
-            final = blocked_calls[-1].args[2]
-            assert final["distinct_buckets"] == 12, final
-            assert final["count"] == 12, final
-            named = final["blocked_buckets"]
-            # Top-5 summary, so it stays readable at 12 buckets.
-            assert len(named.split(", ")) == 5, named
+            for _ in range(200):
+                if posted:
+                    break
+                await asyncio.sleep(0.01)
+
+            # One message for the wave, not twelve.
+            assert len(posted) == 1, posted
+            body = json.dumps(posted[0])
+            assert "Auth-failure blocklist refusing a source" in body
+            # It names the block that opened the incident -- the first one --
+            # rather than an aggregate the cooldown would never have delivered.
+            assert "198.51.100.0" in body, body
+            # And it says where the live full list is, which is what makes one
+            # named block a sufficient message.
+            assert "/admin/auth-blocks" in body, body
         finally:
             await engine.stop()
 
@@ -874,7 +877,7 @@ async def test_auth_ip_blocked_wiring_from_the_real_blocklist(monkeypatch):
                 ]
                 assert blocked, mock_alert.await_args_list
                 ctx = blocked[-1].args[2]
-                assert ctx["blocked_buckets"] == "203.0.113.99", ctx
+                assert ctx["ip_bucket"] == "203.0.113.99", ctx
                 assert ctx["block_seconds"] == 1000, ctx
             finally:
                 await engine.stop()
