@@ -632,6 +632,257 @@ async def test_auth_failure_spike_disabled_by_default(monkeypatch):
             await engine.stop()
 
 
+async def test_auth_ip_blocked_fires_on_a_single_block(monkeypatch):
+    """One block pages under the built-in config -- the companion rule is on.
+
+    ``auth_failure_spike`` treats bad keys as background noise and stays off.
+    The blocklist actually refusing a source is the opposite: a discrete
+    decision at a high threshold, naming an address, and reached by the
+    deployment's own callers when a credential goes stale. Its default
+    ``threshold_count`` of 1 has to make a single record a breach.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    assert cfg.rules.auth_ip_blocked.enabled is True
+    assert cfg.rules.auth_ip_blocked.threshold_count == 1
+    cfg.rules.auth_ip_blocked.cooldown_sec = 1
+    cfg.rules.failed_request_rate.enabled = False
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
+
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            handler.queue.put_nowait(
+                _fake_event(
+                    "auth_ip_blocked",
+                    ip_bucket="203.0.113.7",
+                    threshold=200,
+                    window_sec=86400,
+                    block_seconds=86400,
+                )
+            )
+            await _drain_until(handler, mock_alert)
+            assert mock_alert.await_count >= 1
+            titles = [call.args[1] for call in mock_alert.await_args_list]
+            assert "Auth-failure blocklist refusing a source" in titles, titles
+            # The blocked bucket and the remedy travel with the alert: the fix
+            # is not deducible from the title, since a corrected key does not
+            # lift the block.
+            body = json.dumps(mock_alert.await_args_list[0].args[2])
+            assert "203.0.113.7" in body
+            assert "/admin/auth-blocks" in body
+        finally:
+            await engine.stop()
+
+
+async def test_auth_ip_blocked_reports_one_incident_for_many_buckets(monkeypatch):
+    """A scanner wave that blocks many buckets stays one incident, naming them.
+
+    Counting over the window rather than firing per address is what keeps a
+    wave from opening one incident per blocked source. The rule reports every
+    breached evaluation to the sink -- that is how ``alert_on_transition``
+    advances an incident's occurrence count -- so the invariant here is the
+    single shared ``dedupe_key``, not the number of sink calls. The cooldown
+    behind that key is what collapses them into one Slack message.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    cfg.rules.auth_ip_blocked.cooldown_sec = 3600
+    cfg.rules.failed_request_rate.enabled = False
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
+
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            for i in range(12):
+                handler.queue.put_nowait(
+                    _fake_event(
+                        "auth_ip_blocked",
+                        ip_bucket=f"198.51.100.{i}",
+                        block_seconds=86400,
+                    )
+                )
+            await _drain_until(handler, mock_alert)
+            blocked_calls = [
+                call
+                for call in mock_alert.await_args_list
+                if call.args[1] == "Auth-failure blocklist refusing a source"
+            ]
+            assert blocked_calls, mock_alert.await_args_list
+            # One incident: every report shares the rule's key, so no bucket
+            # gets an incident of its own.
+            assert {call.kwargs["dedupe_key"] for call in blocked_calls} == {"auth_ip_blocked"}
+            # And the incident grows to name the wave rather than one address.
+            final = blocked_calls[-1].args[2]
+            assert final["distinct_buckets"] == 12, final
+            assert final["count"] == 12, final
+            named = final["blocked_buckets"]
+            # Top-5 summary, so it stays readable at 12 buckets.
+            assert len(named.split(", ")) == 5, named
+        finally:
+            await engine.stop()
+
+
+async def test_auth_ip_blocked_can_be_turned_off(monkeypatch):
+    """``enabled: false`` leaves the log record as the only trace.
+
+    Synchronized by tracer, not by sleeping, for the reason spelled out in
+    ``test_auth_failure_spike_disabled_by_default``.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    cfg.rules.auth_ip_blocked.enabled = False
+    # The tracer rule, left on deliberately.
+    cfg.rules.failed_request_rate.window_sec = 60
+    cfg.rules.failed_request_rate.threshold_pct = 5.0
+    cfg.rules.failed_request_rate.min_samples = 10
+    cfg.rules.failed_request_rate.cooldown_sec = 1
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
+
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            for i in range(5):
+                handler.queue.put_nowait(
+                    _fake_event("auth_ip_blocked", ip_bucket=f"198.51.100.{i}")
+                )
+            for _ in range(10):
+                handler.queue.put_nowait(_fake_record(200, path="/v1/messages"))
+            for _ in range(2):
+                handler.queue.put_nowait(
+                    _fake_record(500, provider="anthropic", path="/v1/messages")
+                )
+            await _drain_until(handler, mock_alert)
+            assert mock_alert.await_count >= 1, "tracer never fired; engine not draining"
+            titles = [call.args[1] for call in mock_alert.await_args_list]
+            assert "Auth-failure blocklist refusing a source" not in titles, titles
+        finally:
+            await engine.stop()
+
+
+async def test_auth_ip_blocked_wiring_from_the_real_blocklist(monkeypatch):
+    """The real blocking transition reaches the engine and pages.
+
+    The other tests in this group inject synthetic ``auth_ip_blocked`` records,
+    so they would keep passing if the blocklist's own log record never arrived
+    -- it is emitted by ``serving.utils.auth_failure_blocklist``, which reaches
+    the engine only by propagating to the root logger that ``bootstrap.py``
+    attaches the handler to. This drives ``record_auth_failure`` for real and
+    asserts the alert names the bucket it actually blocked.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.config.settings import settings
+    from serving.observability.alerts import reset_dedupe_state
+    from serving.utils.auth_failure_blocklist import (
+        record_auth_failure,
+        reset_auth_failure_block_state,
+    )
+
+    reset_dedupe_state()
+    reset_auth_failure_block_state()
+
+    monkeypatch.setattr(settings, "auth_failure_block_enabled", True)
+    monkeypatch.setattr(settings, "auth_failure_block_threshold", 2)
+    monkeypatch.setattr(settings, "auth_failure_block_window_sec", 100)
+    monkeypatch.setattr(settings, "auth_failure_block_duration_sec", 1000)
+    monkeypatch.setattr(settings, "auth_failure_block_exempt_ips", "")
+
+    cfg = AlertConfig()
+    cfg.rules.auth_ip_blocked.cooldown_sec = 1
+    cfg.rules.failed_request_rate.enabled = False
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
+
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    # Where bootstrap.py puts it, which is the whole point of this test.
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        with patch(
+            "serving.observability.alerts.alert_slack",
+            new=AsyncMock(),
+        ) as mock_alert:
+            await engine.start()
+            try:
+                assert await record_auth_failure("203.0.113.99") is False
+                assert await record_auth_failure("203.0.113.99") is True  # the transition
+
+                await _drain_until(handler, mock_alert)
+                blocked = [
+                    call
+                    for call in mock_alert.await_args_list
+                    if call.args[1] == "Auth-failure blocklist refusing a source"
+                ]
+                assert blocked, mock_alert.await_args_list
+                ctx = blocked[-1].args[2]
+                assert ctx["blocked_buckets"] == "203.0.113.99", ctx
+                assert ctx["block_seconds"] == 1000, ctx
+            finally:
+                await engine.stop()
+    finally:
+        root.removeHandler(handler)
+        reset_auth_failure_block_state()
+
+
 async def test_concurrency_rejected_never_alerts(monkeypatch):
     """A user exhausting its quota/concurrency must never page Slack.
 

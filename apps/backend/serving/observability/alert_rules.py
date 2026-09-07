@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
     from serving.observability.alert_config import (
         AlertConfig,
+        AuthIpBlockedConfig,
         CountRule,
         LatencyRule,
         PendingPrefixCacheLeakConfig,
@@ -383,6 +384,85 @@ class AuthFailureSpikeRule:
         )
 
 
+class AuthIpBlockedRule:
+    """Alert when the auth-failure blocklist starts refusing a source.
+
+    Fires on ``auth_ip_blocked``, which
+    ``utils/auth_failure_blocklist.py`` emits once per blocking transition --
+    not on the failures leading up to it, which is
+    :class:`AuthFailureSpikeRule` and is off by default. One record means one
+    bucket just began being refused in ``servers/auth.py``, ahead of any key
+    lookup.
+
+    Counted over a window rather than fired per address, so a scanner wave that
+    blocks many buckets becomes one incident naming the top few and resolves on
+    its own once blocks stop arriving. With the default ``threshold_count: 1``
+    a single block is already a breach -- see :class:`AuthIpBlockedConfig` for
+    why that is the useful default.
+    """
+
+    name = "auth_ip_blocked"
+
+    def __init__(self, cfg: AuthIpBlockedConfig) -> None:
+        self._cfg = cfg
+        self._window = _SlidingWindow(cfg.window_sec)
+
+    async def on_record(self, record: logging.LogRecord) -> None:
+        """Track blocking transitions and alert when the count reaches threshold in-window."""
+        if not self._cfg.enabled:
+            return
+        if getattr(record, "event", None) != "auth_ip_blocked":
+            return
+        now = time.time()
+        self._window.add(
+            now,
+            {
+                "ip_bucket": getattr(record, "ip_bucket", None),
+                "block_seconds": getattr(record, "block_seconds", None),
+            },
+        )
+        items = self._window.items(now)
+
+        def breach_context() -> dict[str, Any]:
+            counts: collections.Counter[str] = collections.Counter(
+                it["ip_bucket"] for it in items if it["ip_bucket"]
+            )
+            longest = max(
+                (it["block_seconds"] for it in items if it["block_seconds"] is not None),
+                default=None,
+            )
+            return {
+                "count": len(items),
+                "distinct_buckets": len(counts),
+                "window_sec": self._cfg.window_sec,
+                "blocked_buckets": ", ".join(b for b, _ in counts.most_common(5)) or "n/a",
+                "block_seconds": longest if longest is not None else "n/a",
+                # Spelled out because the remedy is counter-intuitive: the
+                # block is consulted before the presented key is read, so
+                # repairing a stale credential does not lift it.
+                "remedy": (
+                    "if this is a deployment-owned caller (monitor, CI job, service "
+                    "account), repair its credential and then clear the block via "
+                    "/admin/auth-blocks -- a corrected key does not lift it"
+                ),
+            }
+
+        await alert_on_transition(
+            key="auth_ip_blocked",
+            # ``>=``, not ``>``: here threshold_count is "how many blocks are a
+            # breach", and its default of 1 has to make a single block one.
+            # AuthFailureSpikeRule reads its threshold the other way -- as how
+            # much background noise to tolerate -- hence the strict ``>`` there.
+            breached=len(items) >= self._cfg.threshold_count,
+            severity=AlertSeverity.WARN,
+            title="Auth-failure blocklist refusing a source",
+            context=breach_context,
+            cooldown_sec=self._cfg.cooldown_sec,
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
+            now=now,
+        )
+
+
 class PendingPrefixCacheLeakRule:
     """Alert when pending RouteWise prefix-cache evictions exceed a threshold.
 
@@ -655,6 +735,7 @@ class AlertEngine:
         self._rules.append(FivexxRateRule(self._config.rules.fivexx_rate))
         self._rules.append(P95LatencyRule(self._config.rules.p95_latency_per_provider))
         self._rules.append(AuthFailureSpikeRule(self._config.rules.auth_failure_spike))
+        self._rules.append(AuthIpBlockedRule(self._config.rules.auth_ip_blocked))
         # No concurrency-exhausted rule: a user exhausting their per-user quota
         # or concurrency limit is expected user-facing rate limiting (429), not a
         # service fault, so it must never page Slack.
