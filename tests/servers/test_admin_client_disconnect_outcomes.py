@@ -126,7 +126,7 @@ async def test_request_metrics_counts_disconnects_apart_from_errors():
     query, args = calls["fetch"][0]
     assert args[2] == CLIENT_DISCONNECT_STATUS_CODE
     assert "AND status_code IS DISTINCT FROM $3::int" in query
-    assert "WHERE status_code = $3::int\n" in query
+    assert "WHERE status_code = $3::int" in query
 
 
 # ---------------------------------------------------------------------------
