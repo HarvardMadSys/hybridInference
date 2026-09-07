@@ -45,7 +45,7 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = 113  # includes role-quota, provider-key verification/probe, key min-role (db+env)
+    expected = 115  # includes role-quota, provider-key verification/probe, key min-role (db+env)
     # (incl. disable/enable/enable-env and the by-ref disable/enable pair used
     # by the quota dashboard), visibility, concurrency,
     # global + per-model routewise settings/probes/decisions, routing-weight,
@@ -67,6 +67,8 @@ def test_admin_router_has_expected_route_count() -> None:
     # behind that summary's expandable rows.
     # 112 -> 113: usage-insights/samples, the raw user-turn draw Analyze usage
     # feeds the LLM, returned without calling the analysis model.
+    # 113 -> 115: auth-blocks list + auth-blocks/clear, so an operator can see
+    # and lift an auth-failure IP block without restarting the gateway.
     routes = [r for r in _admin_api_routes() if r.path.startswith("/admin")]
     assert len(routes) == expected, (
         f"admin route count drifted: expected {expected}, got {len(routes)}"

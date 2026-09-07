@@ -8,9 +8,19 @@ failures in a day → blocked for a day).
 Mirrors the in-memory, per-process design of ``serving.utils.login_rate_limit``
 and ``serving.utils.signup_rate_limit``: state is a per-process dict and is
 intentionally lost on restart. Auth-failure flooding is a rate problem, not an
-audit problem, so durability is not worth the disk I/O; with multiple uvicorn
-workers each worker enforces its own copy, which only makes the block trigger
-sooner in aggregate and is acceptable for a shed-load defense.
+audit problem, so durability is not worth the disk I/O.
+
+With multiple uvicorn workers each worker counts only the failures it happens
+to serve, so the threshold is per worker, not per deployment: a source's
+failures spread across ``N`` workers and no single worker reaches
+``auth_failure_block_threshold`` until roughly ``N x`` that many have arrived
+in total. The block therefore triggers *later* than the configured threshold
+suggests, and once one worker blocks, only the share of traffic that worker
+serves is refused. That is acceptable for a shed-load defense -- the database
+cost still drops, and every worker converges on blocking a sustained source --
+but a deployment tuning the threshold, or reading :func:`list_active_blocks`,
+has to read both numbers per worker. The single-process default (see
+``deploy/systemd/``) has no such spread.
 
 IPv6 sources bucket on their ``/64`` via :func:`normalize_ip_bucket`, so an
 attacker cannot dodge the block by rotating RFC 4941 privacy addresses within a
@@ -29,6 +39,7 @@ import asyncio
 import ipaddress
 import time
 from collections import deque
+from dataclasses import dataclass
 
 from serving.config.settings import settings
 from serving.utils.logging import get_logger
@@ -209,6 +220,100 @@ async def record_auth_failure(ip: str) -> bool:
             },
         )
     return blocked_now
+
+
+@dataclass(frozen=True)
+class ActiveBlock:
+    """One source bucket currently refused at the API-key auth layer."""
+
+    ip_bucket: str
+    blocked_until: float
+    retry_after_sec: int
+
+
+async def list_active_blocks() -> list[ActiveBlock]:
+    """Return the buckets this process is refusing, longest remaining wait first.
+
+    Lapsed entries are dropped as they are read -- the same lazy expiry
+    :func:`is_ip_blocked` performs -- so a listing never reports a block that
+    would no longer be enforced.
+
+    Exemptions are deliberately *not* applied. An exempt address inside a
+    blocked bucket is already let through by :func:`is_ip_blocked`, and
+    omitting the bucket here would hide the fact that the rest of its ``/64``
+    is still refused, which is exactly what an operator is looking for.
+
+    Returns an empty list when the feature is disabled: nothing is being
+    enforced then, whatever state an earlier configuration left behind.
+
+    Per process, like every read in this module (see the module docstring): on
+    a multi-worker deployment this is one worker's view, not the deployment's.
+    """
+    if not settings.auth_failure_block_enabled:
+        return []
+    now = _now()
+    blocks: list[ActiveBlock] = []
+    async with _lock:
+        for key in list(_blocked_until):
+            until = _blocked_until[key]
+            if until <= now:
+                del _blocked_until[key]
+                continue
+            blocks.append(
+                ActiveBlock(
+                    ip_bucket=key,
+                    blocked_until=until,
+                    # Round up so a sub-second remainder never reports 0,
+                    # matching the Retry-After is_ip_blocked advertises.
+                    retry_after_sec=max(1, int(until - now + 0.999)),
+                )
+            )
+    blocks.sort(key=lambda b: (-b.blocked_until, b.ip_bucket))
+    return blocks
+
+
+async def clear_block(ip: str) -> bool:
+    """Lift an active block on *ip*'s bucket; return whether one was lifted.
+
+    The escape hatch for the situation this defense cannot tell apart from
+    abuse: a deployment's own monitor, or a shared egress address, that crossed
+    the threshold with a stale credential. Repairing that credential does not
+    by itself bring the caller back, because :func:`is_ip_blocked` is consulted
+    *before* the presented key is read (``servers/auth.py``) -- the bucket stays
+    refused for the remainder of ``auth_failure_block_duration_sec``. This
+    shortens that wait without restarting the gateway, which was otherwise the
+    only way to clear in-memory state.
+
+    Clears the counted history along with the deadline, so the bucket resumes
+    from zero instead of re-blocking on its next single failure. It does not
+    grant any lasting immunity: a source still presenting a bad key accrues
+    failures again and is refused again on crossing the threshold. Permanent
+    immunity is ``auth_failure_block_exempt_ips``.
+
+    Accepts a raw address or an already-normalized bucket key, so an operator
+    can paste back exactly what a listing or an ``auth_ip_blocked`` log record
+    showed; :func:`normalize_ip_bucket` maps both onto the same key. Returns
+    False when nothing was blocked -- already lapsed, never blocked, or the
+    feature is off.
+    """
+    if not settings.auth_failure_block_enabled:
+        return False
+    key = normalize_ip_bucket(ip)
+    now = _now()
+    async with _lock:
+        until = _blocked_until.pop(key, None)
+        # Drop the counted history either way: an operator clearing a bucket
+        # that is mid-window (counting up, not yet blocked) means the same
+        # thing by it, and leaving 199 spent failures behind would re-block on
+        # the next one.
+        _failures.pop(key, None)
+        lifted = until is not None and until > now
+    if lifted:
+        logger.warning(
+            "auth_ip_block_cleared",
+            extra={"event": "auth_ip_block_cleared", "ip_bucket": key},
+        )
+    return lifted
 
 
 def reset_auth_failure_block_state() -> None:

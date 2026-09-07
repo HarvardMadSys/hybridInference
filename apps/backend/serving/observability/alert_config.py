@@ -79,6 +79,39 @@ class AuthFailureSpikeConfig(CountRule):
     enabled: bool = False
 
 
+class AuthIpBlockedConfig(CountRule):
+    """Config for ``AuthIpBlockedRule``, which pages when the gateway blocks a source.
+
+    The companion to ``AuthFailureSpikeConfig``, and **on** where that one is
+    off, because the two describe different things. A spike of bad keys is
+    internet background noise. The blocklist actually *refusing* a source is a
+    discrete decision the gateway made, at a threshold high enough
+    (``auth_failure_block_threshold``, 200/day by default) that scanners rarely
+    reach it -- and it names an address an operator can act on.
+
+    It matters most when the blocked source turns out to be the deployment's
+    own: a monitor, a CI job, or a service account whose credential went stale
+    keeps retrying, crosses the threshold, and is then refused at
+    ``servers/auth.py`` *before* its key is read, so repairing the credential
+    does not bring it back inside the block window. Without this rule the first
+    symptom is whatever that caller was responsible for going quiet.
+
+    ``threshold_count: 1`` -- the default -- means any single block pages, which
+    is the point. Counting over ``window_sec`` rather than firing per address
+    keeps a scanner wave to one incident instead of a firing and a recovery per
+    bucket. Note what ``cooldown_sec`` then implies: only the first breach
+    message in that hour is delivered, so it names the block that opened the
+    incident and points at ``GET /admin/auth-blocks`` for the live list, rather
+    than carrying a total. Raise ``threshold_count`` to page only once a window
+    holds that many blocks; set ``enabled: false`` to go back to the log record
+    alone.
+    """
+
+    window_sec: int = 300
+    threshold_count: int = 1
+    cooldown_sec: int = 3600
+
+
 class PendingPrefixCacheLeakConfig(BaseModel):
     """Config for ``PendingPrefixCacheLeakRule``.
 
@@ -129,6 +162,9 @@ class Rules(BaseModel):
     # ``rules.auth_failure_spike``; see AuthFailureSpikeConfig for why, and for
     # why the default sits on that model rather than on this factory.
     auth_failure_spike: AuthFailureSpikeConfig = Field(default_factory=AuthFailureSpikeConfig)
+    # On by default, unlike auth_failure_spike above: this fires on the block
+    # itself, not on the failures leading to it. See AuthIpBlockedConfig.
+    auth_ip_blocked: AuthIpBlockedConfig = Field(default_factory=AuthIpBlockedConfig)
     prefix_cache_pending_leak: PendingPrefixCacheLeakConfig = Field(
         default_factory=PendingPrefixCacheLeakConfig,
         validation_alias=AliasChoices(

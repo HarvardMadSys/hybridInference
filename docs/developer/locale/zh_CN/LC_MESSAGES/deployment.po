@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-05 17:31-0400\n"
+"POT-Creation-Date: 2026-09-07 19:23+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -131,7 +131,10 @@ msgid ""
 "`service_healthy` — deliberately, so that a backend reporting unhealthy "
 "because its database logging is down does not stop the console from "
 "starting."
-msgstr "`frontend` 对 `backend` 的依赖用的是 `condition: service_started` 而不是 `service_healthy`——这是有意为之：backend 因为数据库日志写不进去而报告 unhealthy 时，不应该连带拦住控制台启动。"
+msgstr ""
+"`frontend` 对 `backend` 的依赖用的是 `condition: service_started` 而不是 "
+"`service_healthy`——这是有意为之：backend 因为数据库日志写不进去而报告 unhealthy "
+"时，不应该连带拦住控制台启动。"
 
 #: ../developer/deployment.md:37
 msgid "Putting it on the public internet"
@@ -475,6 +478,15 @@ msgstr ""
 
 #: ../developer/deployment.md:215
 msgid ""
+"The marker is about noise, not access. It cannot keep a monitor's own "
+"auth failures from tripping the repeated-auth-failure blocklist, because "
+"that decision is made before the presented key is read — see [A monitor "
+"or service account is suddenly getting 429s](#a-monitor-or-service-"
+"account-is-suddenly-getting-429s)."
+msgstr "这个标记管的是噪声，不是访问权限。它没法让监控自身的认证失败不去触发重复认证失败黑名单，因为那个判断发生在读取所带密钥之前——见[监控或服务账号突然开始收到 429](#a-monitor-or-service-account-is-suddenly-getting-429s)。"
+
+#: ../developer/deployment.md:221
+msgid ""
 "The one thing the marker never touches is billing: cost and quota are "
 "incremented unconditionally on every surface, for trusted and untrusted "
 "callers alike, so a probe cannot be used to obtain unmetered inference. "
@@ -487,17 +499,17 @@ msgstr ""
 " `api_logs` 里——好在请求看板里看到监控的真实延迟和花费——打开 `log_synthetic_probes` "
 "这个运行时设置即可；路由观测和 `X-Provider` 的行为不变。"
 
-#: ../developer/deployment.md:222
+#: ../developer/deployment.md:228
 msgid "Alerting"
 msgstr "告警"
 
-#: ../developer/deployment.md:224
+#: ../developer/deployment.md:230
 msgid ""
 "The backend has an in-process alert engine that posts to a Slack webhook."
 " It is off unless you turn it on:"
 msgstr "后端内置了一个进程内告警引擎，会向 Slack webhook 推送。不显式打开就是关闭的："
 
-#: ../developer/deployment.md:232
+#: ../developer/deployment.md:238
 msgid ""
 "If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to "
 "`SLACK_WEBHOOK_URL`, so one webhook can serve both code paths."
@@ -505,7 +517,7 @@ msgstr ""
 "`SLACK_ALERTS_WEBHOOK_URL` 为空时会回退到 `SLACK_WEBHOOK_URL`，所以一个 webhook "
 "可以同时服务两条代码路径。"
 
-#: ../developer/deployment.md:235
+#: ../developer/deployment.md:241
 msgid ""
 "Rules and thresholds are a deployment's own; this repository ships no "
 "alerts file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and "
@@ -516,11 +528,32 @@ msgstr ""
 "指向你自己的文件；或者不设置它，那就使用内置阈值。规则类型和求值逻辑在 "
 "`apps/backend/serving/observability/`。"
 
-#: ../developer/deployment.md:240
+#: ../developer/deployment.md:246
+msgid ""
+"Two auth rules are worth knowing apart, because their defaults differ on "
+"purpose:"
+msgstr "有两条认证相关的规则值得分清，因为它们的默认值是有意不同的："
+
+#: ../developer/deployment.md:249
+msgid ""
+"`rules.auth_failure_spike` is **off**. Bad keys are internet background "
+"noise, and a count of them names nothing to act on. The `auth_failure` "
+"log records are emitted regardless."
+msgstr "`rules.auth_failure_spike` 默认**关闭**。错误密钥属于互联网背景噪声，把它们数出来并指不出任何可操作的东西。无论这条规则开不开，`auth_failure` 日志记录都照常输出。"
+
+#: ../developer/deployment.md:252
+msgid ""
+"`rules.auth_ip_blocked` is **on**. This one fires when the blocklist "
+"starts *refusing* a source — a discrete decision at a much higher "
+"threshold, naming an address. It is on because the source is sometimes "
+"the deployment's own; see the troubleshooting entry below."
+msgstr "`rules.auth_ip_blocked` 默认**开启**。它在黑名单开始*拒绝*某个来源时触发——那是一个在高得多的阈值上做出、并且点名到具体地址的离散判断。之所以默认开启，是因为被拒的来源有时正是本部署自己的调用方；见下面的排查条目。"
+
+#: ../developer/deployment.md:257
 msgid "Database"
 msgstr "数据库"
 
-#: ../developer/deployment.md:242
+#: ../developer/deployment.md:259
 msgid ""
 "PostgreSQL 16 runs in the `postgres` service with its data in the Docker "
 "volume `hybridinference_postgres_data`. A psql shell:"
@@ -528,15 +561,15 @@ msgstr ""
 "PostgreSQL 16 跑在 `postgres` 服务里，数据放在 Docker 卷 "
 "`hybridinference_postgres_data` 中。开一个 psql shell："
 
-#: ../developer/deployment.md:249
+#: ../developer/deployment.md:266
 msgid "Schema details are in [Database](database.md)."
 msgstr "表结构细节见[数据库](database.md)。"
 
-#: ../developer/deployment.md:251
+#: ../developer/deployment.md:268
 msgid "pgAdmin (optional)"
 msgstr "pgAdmin（可选）"
 
-#: ../developer/deployment.md:257
+#: ../developer/deployment.md:274
 msgid ""
 "pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so "
 "an SSH tunnel to that port is enough to reach it. The console can also "
@@ -549,7 +582,7 @@ msgstr ""
 "`apps/frontend/src/app/pgadmin/[[...path]]/route.ts` 按 admin "
 "会话把关；该文件在任何非预期情况下都拒绝，包括连不上后端的时候。"
 
-#: ../developer/deployment.md:263
+#: ../developer/deployment.md:280
 msgid ""
 "One thing to get right: whether pgAdmin *also* asks for its own login is "
 "set by `PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The "
@@ -561,15 +594,15 @@ msgstr ""
 "决定，而两处的默认值并不一致。Compose 服务回退到 `False`，也就是完全不需要登录就能用 pgAdmin；`.env.example`"
 " 建议 `True`，也就是在控制台这道关卡之后再开启 pgAdmin 自己的登录。两者之中 `True` 更安全。"
 
-#: ../developer/deployment.md:269
+#: ../developer/deployment.md:286
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/deployment.md:271
+#: ../developer/deployment.md:288
 msgid "A service will not start"
 msgstr "某个服务起不来"
 
-#: ../developer/deployment.md:278
+#: ../developer/deployment.md:295
 #, python-brace-format
 msgid ""
 "`required variable DB_NAME is missing a value: DB_NAME must be set in "
@@ -583,27 +616,85 @@ msgstr ""
 "`DB_PASSWORD` 是用 `${VAR:?message}` 形式声明为必填的，所以冒号之后那半句是 Compose "
 "文件自己写的文案，也是这一行里最好 grep 的部分。"
 
-#: ../developer/deployment.md:283
+#: ../developer/deployment.md:300
 msgid ""
 "Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or "
 "`DB_PORT`."
 msgstr "端口已被占用——覆盖 `BACKEND_PORT`、`FRONTEND_PORT` 或 `DB_PORT`。"
 
-#: ../developer/deployment.md:284
+#: ../developer/deployment.md:301
 msgid ""
 "Database connection failed — check `make ps` for the `postgres` health "
 "status."
 msgstr "数据库连接失败——用 `make ps` 查看 `postgres` 的健康状态。"
 
-#: ../developer/deployment.md:286
+#: ../developer/deployment.md:303
+msgid "A monitor or service account is suddenly getting 429s"
+msgstr "监控或服务账号突然开始收到 429"
+
+#: ../developer/deployment.md:305
+msgid ""
+"`Too many authentication failures from this IP. Temporarily blocked.` is "
+"the gateway's own abuse defense, not a provider error and not a quota. "
+"Once a source accumulates `AUTH_FAILURE_BLOCK_THRESHOLD` failed "
+"authentications inside `AUTH_FAILURE_BLOCK_WINDOW_SEC` (200 in a day, by "
+"default) it is refused for `AUTH_FAILURE_BLOCK_DURATION_SEC` (a day)."
+msgstr "`Too many authentication failures from this IP. Temporarily blocked.` 是网关自己的滥用防护，既不是提供方的错误，也不是配额。一个来源在 `AUTH_FAILURE_BLOCK_WINDOW_SEC` 之内累计到 `AUTH_FAILURE_BLOCK_THRESHOLD` 次认证失败（默认是一天 200 次）之后，就会被拒绝 `AUTH_FAILURE_BLOCK_DURATION_SEC`（一天）。"
+
+#: ../developer/deployment.md:311
+msgid ""
+"The awkward case is a caller you own — a status monitor, a CI job, a "
+"service account — whose key was rotated, revoked, or never reached its "
+"environment. It retries on a schedule, crosses the threshold, and is then"
+" refused *ahead of the key check*, which has two consequences worth "
+"internalising:"
+msgstr "麻烦的情形是你自己的调用方——状态监控、CI 任务、服务账号——它的密钥被轮换了、被吊销了，或者根本没进到它的运行环境里。它按计划不断重试，越过阈值，然后就在*密钥检查之前*被拒绝，这带来两个值得记住的后果："
+
+#: ../developer/deployment.md:316
+msgid ""
+"**Repairing the credential does not lift the block.** The blocklist is "
+"consulted before the presented key is read, so a corrected key gets the "
+"same 429 until the deadline passes."
+msgstr "**修好凭据并不会解除封禁**。黑名单的判断发生在读取所带密钥之前，所以在期限走完之前，正确的密钥拿到的还是同一个 429。"
+
+#: ../developer/deployment.md:319
+msgid ""
+"**The 429 hides the original error.** Whatever the caller reports after "
+"the block is in place says nothing about whether the underlying 401/403 "
+"was fixed."
+msgstr "**429 掩盖了原始错误**。封禁生效之后，调用方报什么都说明不了底层那个 401/403 究竟修好了没有。"
+
+#: ../developer/deployment.md:322
+msgid "To recover, first fix the credential, then clear the block:"
+msgstr "要恢复，先修好凭据，再解除封禁："
+
+#: ../developer/deployment.md:337
+msgid ""
+"`cleared: false` means there was nothing to lift — it lapsed, or that "
+"bucket was never blocked. Clearing grants no immunity: a caller still "
+"presenting a bad key is blocked again on crossing the threshold. For a "
+"source that should never be blocked at all, list it in "
+"`AUTH_FAILURE_BLOCK_EXEMPT_IPS` (comma-separated addresses or CIDRs) "
+"instead."
+msgstr "`cleared: false` 表示没有什么可解除的——封禁已经到期，或者那个分桶从来没被封过。解除不授予任何豁免：仍然带着错误密钥的调用方，越过阈值后会再次被封。对于根本就不该被封的来源，应该把它列进 `AUTH_FAILURE_BLOCK_EXEMPT_IPS`（逗号分隔的地址或 CIDR）。"
+
+#: ../developer/deployment.md:343
+msgid ""
+"The blocklist is per-process, in-memory state. On the single-process "
+"default both endpoints are exact, and a restart also clears every block. "
+"Run multiple workers and each holds its own counts, so a listing shows "
+"only the worker that answered and clearing may take more than one call."
+msgstr "黑名单是进程内的内存状态。在默认的单进程部署下，这两个接口给出的都是准确结果，而且重启也会清掉所有封禁。跑多个 worker 时，每个 worker 各记一份计数，所以列表只反映应答的那个 worker，解除也可能需要调用多次。"
+
+#: ../developer/deployment.md:348
 msgid "Resetting the stack"
 msgstr "重置这套服务栈"
 
-#: ../developer/deployment.md:288
+#: ../developer/deployment.md:350
 msgid "**Stop and start, keeping data:**"
 msgstr "**停止再启动，保留数据：**"
 
-#: ../developer/deployment.md:294
+#: ../developer/deployment.md:356
 msgid ""
 "**Destroy the database and start clean.** `docker compose down -v` does "
 "*not* do this. `postgres_data` is declared `external: true` in "
@@ -615,7 +706,7 @@ msgstr ""
 "`deploy/docker/docker-compose.yml` 里声明为 `external: true`，而 Compose "
 "从不删除外部卷——`down -v` 会返回成功，却把卷原封不动地留着，于是 `make up` 又回到完全相同的数据上。要按名字删除它："
 
-#: ../developer/deployment.md:307
+#: ../developer/deployment.md:369
 msgid ""
 "`docker volume rm` is irreversible and takes every account, API key and "
 "request log with it. Take a `pg_dump` first if any of it matters."
@@ -623,7 +714,7 @@ msgstr ""
 "`docker volume rm` 不可逆，会连同每一个账户、每一把 API key 和所有请求日志一起带走。只要其中还有任何东西重要，先做一次"
 " `pg_dump`。"
 
-#: ../developer/deployment.md:311
+#: ../developer/deployment.md:373
 msgid ""
 "pgAdmin's own volume (`hybridinference_pgadmin_data`) and the on-call "
 "relay's (`hybridinference_codex_oncall_data`) are ordinary local volumes,"
@@ -638,7 +729,7 @@ msgstr ""
 "down`，这里没有任何命令会替你加上 `-v`——你得自己跑 `docker compose --profile admin --profile"
 " oncall down -v`，或者像上面那样按名字删卷。"
 
-#: ../developer/deployment.md:318
+#: ../developer/deployment.md:380
 msgid "Rebuilding after code changes"
 msgstr "改动代码后重新构建"
 

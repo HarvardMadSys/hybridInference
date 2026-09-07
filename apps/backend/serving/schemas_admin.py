@@ -2325,3 +2325,70 @@ class SetActiveAgentRunnerHostRequest(BaseModel):  # type: ignore[no-any-unimpor
         max_length=253,
         description="A host that has polled at least once, or null to unpin.",
     )
+
+
+class AuthBlockItem(BaseModel):  # type: ignore[no-any-unimported]
+    """One source bucket the auth-failure blocklist is currently refusing."""
+
+    ip_bucket: str = Field(
+        ...,
+        description=(
+            "The bucket being refused: a full IPv4 address, or the /64 network an "
+            "IPv6 source was collapsed onto."
+        ),
+    )
+    blocked_until: datetime = Field(..., description="When the block lapses (UTC).")
+    retry_after_sec: int = Field(
+        ...,
+        description="Seconds until it lapses -- the same value sent as Retry-After.",
+    )
+
+
+class ListAuthBlocksResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response payload for listing active auth-failure blocks."""
+
+    blocks: list[AuthBlockItem]
+    enabled: bool = Field(
+        ...,
+        description=(
+            "Whether auth-failure blocking is on. When false, `blocks` is empty "
+            "because nothing is being enforced."
+        ),
+    )
+    process_scoped: bool = Field(
+        True,
+        description=(
+            "Always true: the blocklist is per-process in-memory state, so this is "
+            "the answering worker's view. On a multi-worker deployment other "
+            "workers hold their own counts and blocks."
+        ),
+    )
+
+
+class ClearAuthBlockRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Ask the answering worker to lift one active auth-failure block."""
+
+    ip: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description=(
+            "A raw client address, or a bucket key exactly as a listing or an "
+            "`auth_ip_blocked` log record showed it (e.g. `2001:db8::/64`)."
+        ),
+    )
+
+
+class ClearAuthBlockResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Outcome of a clear request."""
+
+    ip_bucket: str = Field(..., description="The bucket the request resolved to.")
+    cleared: bool = Field(
+        ...,
+        description=(
+            "True when an active block was lifted. False when there was nothing to "
+            "lift -- already lapsed, never blocked, or blocking is disabled. Any "
+            "counted-but-not-yet-blocking failure history for the bucket is "
+            "discarded either way."
+        ),
+    )

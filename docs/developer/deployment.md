@@ -212,6 +212,12 @@ identity). From any other caller the header is ignored and the request is
 logged like ordinary traffic. A deployment that needs probes without auth wants
 an explicit mechanism — a shared secret, a source allowlist — not this header.
 
+The marker is about noise, not access. It cannot keep a monitor's own auth
+failures from tripping the repeated-auth-failure blocklist, because that
+decision is made before the presented key is read — see [A monitor or service
+account is suddenly getting
+429s](#a-monitor-or-service-account-is-suddenly-getting-429s).
+
 The one thing the marker never touches is billing: cost and quota are
 incremented unconditionally on every surface, for trusted and untrusted callers
 alike, so a probe cannot be used to obtain unmetered inference. To keep marked
@@ -236,6 +242,17 @@ Rules and thresholds are a deployment's own; this repository ships no alerts
 file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and the built-in
 thresholds apply. The rule types and evaluation live in
 `apps/backend/serving/observability/`.
+
+Two auth rules are worth knowing apart, because their defaults differ on
+purpose:
+
+- `rules.auth_failure_spike` is **off**. Bad keys are internet background
+  noise, and a count of them names nothing to act on. The `auth_failure` log
+  records are emitted regardless.
+- `rules.auth_ip_blocked` is **on**. This one fires when the blocklist starts
+  *refusing* a source — a discrete decision at a much higher threshold, naming
+  an address. It is on because the source is sometimes the deployment's own;
+  see the troubleshooting entry below.
 
 ## Database
 
@@ -282,6 +299,51 @@ make ps
   greppable part of the line.
 - Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT`.
 - Database connection failed — check `make ps` for the `postgres` health status.
+
+### A monitor or service account is suddenly getting 429s
+
+`Too many authentication failures from this IP. Temporarily blocked.` is the
+gateway's own abuse defense, not a provider error and not a quota. Once a source
+accumulates `AUTH_FAILURE_BLOCK_THRESHOLD` failed authentications inside
+`AUTH_FAILURE_BLOCK_WINDOW_SEC` (200 in a day, by default) it is refused for
+`AUTH_FAILURE_BLOCK_DURATION_SEC` (a day).
+
+The awkward case is a caller you own — a status monitor, a CI job, a service
+account — whose key was rotated, revoked, or never reached its environment. It
+retries on a schedule, crosses the threshold, and is then refused *ahead of the
+key check*, which has two consequences worth internalising:
+
+- **Repairing the credential does not lift the block.** The blocklist is
+  consulted before the presented key is read, so a corrected key gets the same
+  429 until the deadline passes.
+- **The 429 hides the original error.** Whatever the caller reports after the
+  block is in place says nothing about whether the underlying 401/403 was fixed.
+
+To recover, first fix the credential, then clear the block:
+
+```bash
+# Which sources is this worker refusing?
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:8000/admin/auth-blocks
+
+# Lift one. `ip` takes a raw address, or a bucket key exactly as listed
+# (IPv6 sources are bucketed to their /64).
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"ip": "203.0.113.7"}' \
+  http://localhost:8000/admin/auth-blocks/clear
+```
+
+`cleared: false` means there was nothing to lift — it lapsed, or that bucket was
+never blocked. Clearing grants no immunity: a caller still presenting a bad key
+is blocked again on crossing the threshold. For a source that should never be
+blocked at all, list it in `AUTH_FAILURE_BLOCK_EXEMPT_IPS` (comma-separated
+addresses or CIDRs) instead.
+
+The blocklist is per-process, in-memory state. On the single-process default
+both endpoints are exact, and a restart also clears every block. Run multiple
+workers and each holds its own counts, so a listing shows only the worker that
+answered and clearing may take more than one call.
 
 ### Resetting the stack
 

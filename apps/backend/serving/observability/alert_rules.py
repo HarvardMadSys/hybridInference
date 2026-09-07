@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
     from serving.observability.alert_config import (
         AlertConfig,
+        AuthIpBlockedConfig,
         CountRule,
         LatencyRule,
         PendingPrefixCacheLeakConfig,
@@ -383,6 +384,95 @@ class AuthFailureSpikeRule:
         )
 
 
+class AuthIpBlockedRule:
+    """Alert when the auth-failure blocklist starts refusing a source.
+
+    Fires on ``auth_ip_blocked``, which
+    ``utils/auth_failure_blocklist.py`` emits once per blocking transition --
+    not on the failures leading up to it, which is
+    :class:`AuthFailureSpikeRule` and is off by default. One record means one
+    bucket just began being refused in ``servers/auth.py``, ahead of any key
+    lookup.
+
+    One incident, not one per address: a per-bucket key would give every blocked
+    source its own incident, and since a resolution bypasses the send cooldown
+    (``alerts.alert_slack``), a wave would post a firing *and* a recovery per
+    bucket.
+
+    What that costs, and why it is the right trade: within ``cooldown_sec``
+    only the *first* breach message is delivered, so the message names the
+    block that opened the incident rather than a running total. The context
+    therefore describes that one block and points at
+    ``GET /admin/auth-blocks``, which is a live full list and strictly better
+    than a snapshot Slack would have frozen. ``blocks_in_window`` is the count
+    at the moment the message was built -- deliberately named so it cannot be
+    read as a total for the wave.
+
+    With the default ``threshold_count: 1`` a single block is already a breach;
+    raising it pages only once a window holds that many. See
+    :class:`AuthIpBlockedConfig`.
+    """
+
+    name = "auth_ip_blocked"
+
+    def __init__(self, cfg: AuthIpBlockedConfig) -> None:
+        self._cfg = cfg
+        self._window = _SlidingWindow(cfg.window_sec)
+
+    async def on_record(self, record: logging.LogRecord) -> None:
+        """Track blocking transitions and alert when the count reaches threshold in-window."""
+        if not self._cfg.enabled:
+            return
+        if getattr(record, "event", None) != "auth_ip_blocked":
+            return
+        now = time.time()
+        self._window.add(
+            now,
+            {
+                "ip_bucket": getattr(record, "ip_bucket", None),
+                "block_seconds": getattr(record, "block_seconds", None),
+            },
+        )
+        items = self._window.items(now)
+
+        def breach_context() -> dict[str, Any]:
+            # The record being evaluated, not a top-N over the window: the
+            # cooldown delivers only the first breach message, so an aggregate
+            # built here would either be a total nobody receives or, worse, a
+            # "1 of 12" that reads as the whole picture. The live list is one
+            # request away, and the context says where.
+            return {
+                "ip_bucket": getattr(record, "ip_bucket", None) or "unknown",
+                "block_seconds": getattr(record, "block_seconds", None) or "n/a",
+                "blocks_in_window": len(items),
+                "window_sec": self._cfg.window_sec,
+                "all_active_blocks": "GET /admin/auth-blocks",
+                # Spelled out because the remedy is counter-intuitive: the
+                # block is consulted before the presented key is read, so
+                # repairing a stale credential does not lift it.
+                "remedy": (
+                    "if this is a deployment-owned caller (monitor, CI job, service "
+                    "account), repair its credential and then clear the block via "
+                    "/admin/auth-blocks -- a corrected key does not lift it"
+                ),
+            }
+
+        await alert_on_transition(
+            key="auth_ip_blocked",
+            # ``>=``, not ``>``: here threshold_count is "how many blocks are a
+            # breach", and its default of 1 has to make a single block one.
+            # AuthFailureSpikeRule reads its threshold the other way -- as how
+            # much background noise to tolerate -- hence the strict ``>`` there.
+            breached=len(items) >= self._cfg.threshold_count,
+            severity=AlertSeverity.WARN,
+            title="Auth-failure blocklist refusing a source",
+            context=breach_context,
+            cooldown_sec=self._cfg.cooldown_sec,
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
+            now=now,
+        )
+
+
 class PendingPrefixCacheLeakRule:
     """Alert when pending RouteWise prefix-cache evictions exceed a threshold.
 
@@ -655,6 +745,7 @@ class AlertEngine:
         self._rules.append(FivexxRateRule(self._config.rules.fivexx_rate))
         self._rules.append(P95LatencyRule(self._config.rules.p95_latency_per_provider))
         self._rules.append(AuthFailureSpikeRule(self._config.rules.auth_failure_spike))
+        self._rules.append(AuthIpBlockedRule(self._config.rules.auth_ip_blocked))
         # No concurrency-exhausted rule: a user exhausting their per-user quota
         # or concurrency limit is expected user-facing rate limiting (429), not a
         # service fault, so it must never page Slack.
