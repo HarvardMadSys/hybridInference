@@ -39,9 +39,12 @@ from serving.servers.deps import (
     verify_admin_access,
 )
 from serving.servers.routers.admin._common import (
+    CLIENT_DISCONNECT_STATUS_CODE,
+    CLIENT_DISCONNECT_TERMINAL_STATE,
     _build_histogram,
     _escape_ilike_substring_term,
     _round_or_none,
+    resolve_request_outcome_filter,
 )
 from serving.storage.utils import coerce_json_object
 from serving.utils.request_ip import get_client_ip
@@ -306,7 +309,19 @@ async def admin_get_request_metrics(
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminRequestMetricsResponse:
-    """Return request count trends for admin dashboard lookback windows."""
+    """Return request count trends for admin dashboard lookback windows.
+
+    Client disconnects — the caller hung up mid-stream — are counted in their own
+    ``client_disconnect_*`` field and excluded from ``error_*``. They are split
+    out rather than folded into the error counts because they are client
+    behavior, not a service fault: an hour of abandoned streams otherwise reads
+    as an hour of outage.
+
+    A disconnect is status 499 *and* the ``terminal_state`` the cancellation
+    path records, never the status on its own — an upstream that answers 499 is
+    a real failure and has to stay in ``error_*``. See
+    ``_common.client_disconnect_sql`` for the full reasoning.
+    """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
 
@@ -351,11 +366,17 @@ async def admin_get_request_metrics(
                             WHERE status_code >= 200 AND status_code < 400
                         ) AS success_count,
                         COUNT(*) FILTER (
-                            WHERE error IS NOT NULL
-                               OR status_code IS NULL
-                               OR status_code < 200
-                               OR status_code >= 400
+                            WHERE (error IS NOT NULL
+                                OR status_code IS NULL
+                                OR status_code < 200
+                                OR status_code >= 400)
+                              AND (status_code = $3::int
+                                   AND metadata->>'terminal_state' = $4) IS NOT TRUE
                         ) AS error_count,
+                        COUNT(*) FILTER (
+                            WHERE status_code = $3::int
+                              AND metadata->>'terminal_state' = $4
+                        ) AS client_disconnect_count,
                         COUNT(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
                             AS latency_count,
                         SUM(latency_ms) FILTER (WHERE latency_ms IS NOT NULL)
@@ -372,6 +393,8 @@ async def admin_get_request_metrics(
                     COALESCE(bucketed_logs.request_count, 0) AS request_count,
                     COALESCE(bucketed_logs.success_count, 0) AS success_count,
                     COALESCE(bucketed_logs.error_count, 0) AS error_count,
+                    COALESCE(bucketed_logs.client_disconnect_count, 0)
+                        AS client_disconnect_count,
                     COALESCE(bucketed_logs.latency_count, 0) AS latency_count,
                     COALESCE(bucketed_logs.latency_sum_ms, 0) AS latency_sum_ms,
                     bucketed_logs.avg_latency_ms
@@ -382,6 +405,8 @@ async def admin_get_request_metrics(
                 """,
                 window_minutes,
                 bucket_minutes,
+                CLIENT_DISCONNECT_STATUS_CODE,
+                CLIENT_DISCONNECT_TERMINAL_STATE,
             )
 
             buckets = [
@@ -390,6 +415,7 @@ async def admin_get_request_metrics(
                     request_count=int(row["request_count"] or 0),
                     success_count=int(row["success_count"] or 0),
                     error_count=int(row["error_count"] or 0),
+                    client_disconnect_count=int(row["client_disconnect_count"] or 0),
                     avg_latency_ms=(
                         round(float(row["avg_latency_ms"]), 1)
                         if row["avg_latency_ms"] is not None
@@ -401,6 +427,7 @@ async def admin_get_request_metrics(
             total_requests = sum(bucket.request_count for bucket in buckets)
             success_requests = sum(bucket.success_count for bucket in buckets)
             error_requests = sum(bucket.error_count for bucket in buckets)
+            client_disconnect_requests = sum(bucket.client_disconnect_count for bucket in buckets)
             latency_count = sum(int(row["latency_count"] or 0) for row in rows)
             latency_sum_ms = sum(float(row["latency_sum_ms"] or 0) for row in rows)
             windows.append(
@@ -412,6 +439,7 @@ async def admin_get_request_metrics(
                     total_requests=total_requests,
                     success_requests=success_requests,
                     error_requests=error_requests,
+                    client_disconnect_requests=client_disconnect_requests,
                     avg_latency_ms=(
                         round(latency_sum_ms / latency_count, 1) if latency_count else None
                     ),
@@ -719,6 +747,7 @@ def _build_recent_requests_filters(
     model_id: str | None = None,
     status_code: int | None = None,
     errors_only: bool = False,
+    outcome: str | None = None,
     request_type: str | None = None,
 ) -> tuple[list[str], list[Any], bool]:
     """Build the WHERE clauses + bind params shared by the Recent Requests views.
@@ -772,11 +801,14 @@ def _build_recent_requests_filters(
         clauses.append(f"l.status_code = ${len(params) + 1}")
         params.append(status_code)
 
-    if errors_only:
-        clauses.append(
-            "(l.error IS NOT NULL OR l.status_code IS NULL "
-            "OR l.status_code < 200 OR l.status_code >= 400)"
-        )
+    # Outcome class: errors, errors excluding client disconnects, or the
+    # disconnects on their own. Supersedes the older ``errors_only`` boolean,
+    # which is still honored (as ``outcome="errors"``) when no outcome is given.
+    # The predicate is constant, so it composes with the LIMIT/OFFSET
+    # placeholders a caller appends after these params.
+    outcome_sql = resolve_request_outcome_filter(outcome, errors_only=errors_only)
+    if outcome_sql:
+        clauses.append(outcome_sql)
 
     # Optional request-type filter so admins can isolate embedding traffic
     # (tagged ``metadata.request_type = "embedding"``) from chat/completions,
@@ -805,6 +837,7 @@ async def admin_list_recent_requests(
     model_id: str | None = None,
     status_code: int | None = None,
     errors_only: bool = False,
+    outcome: str | None = None,
     request_type: str | None = None,
     admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
@@ -819,7 +852,13 @@ async def admin_list_recent_requests(
     - session_id: Filter to one session (exact match on ``api_logs.session_id``)
     - model_id: Filter by model ID
     - status_code: Filter by HTTP status code
-    - errors_only: If true, only show requests with errors
+    - errors_only: If true, only show requests with errors. Equivalent to
+      ``outcome=errors``; kept for existing callers and bookmarked URLs
+    - outcome: Outcome class to show — ``"all"``, ``"errors"`` (every non-2xx/3xx
+      or errored row, client disconnects included), ``"client_disconnect"``
+      (status 499 only) or ``"errors_excluding_disconnects"`` (real failures,
+      with the 499s filtered out). Wins over ``errors_only``; an unrecognized
+      value is a 422 rather than a silently unfiltered page
     - request_type: ``"embedding"`` to show only embedding requests, ``"chat"``
       to exclude them; any other value (or omission) applies no type filter
 
@@ -839,6 +878,7 @@ async def admin_list_recent_requests(
         model_id=model_id,
         status_code=status_code,
         errors_only=errors_only,
+        outcome=outcome,
         request_type=request_type,
     )
     where_sql = "WHERE " + " AND ".join(where_clauses)
@@ -879,6 +919,10 @@ async def admin_list_recent_requests(
                 l.metadata->>'session_id_source' AS session_id_source,
                 l.metadata->>'surface' AS request_surface,
                 l.metadata->>'request_type' AS request_type,
+                -- How the gateway itself ended the stream. Only the
+                -- cancellation path sets it, so it is what separates a real
+                -- client disconnect from an upstream that answered 499.
+                l.metadata->>'terminal_state' AS terminal_state,
                 l.metadata->'routewise' AS routewise,
                 l.num_turns, l.num_user_turns, l.num_tool_calls
             FROM api_logs l
@@ -931,6 +975,7 @@ async def admin_list_recent_requests(
             error=row["error"],
             routewise=coerce_json_object(row.get("routewise")),
             request_type=row.get("request_type"),
+            terminal_state=row.get("terminal_state"),
             num_turns=row.get("num_turns"),
             num_user_turns=row.get("num_user_turns"),
             num_tool_calls=row.get("num_tool_calls"),
@@ -1117,8 +1162,8 @@ async def admin_recent_requests_performance(
     - request_type: ``"embedding"`` / ``"chat"``, as on ``/recent-requests``
     - refresh: Bypass the short-lived per-filter cache (the panel's Refresh)
 
-    ``errors_only`` and ``status_code`` are deliberately not accepted — this
-    view is always scoped to successful requests.
+    ``errors_only``, ``outcome`` and ``status_code`` are deliberately not
+    accepted — this view is always scoped to successful requests.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -1469,9 +1514,11 @@ async def admin_clear_error_requests(
 ) -> AdminClearErrorRequestsResponse:
     """Hard-delete error requests logged within the last *hours* hours.
 
-    Clears exactly the rows surfaced by the Recent Requests "errors only"
-    filter (``error`` set, or a missing / non-2xx-3xx status code). Defaults
-    to the past hour. The action is recorded in the admin audit log.
+    Clears exactly the rows surfaced by the Recent Requests ``outcome=errors``
+    filter (``error`` set, or a missing / non-2xx-3xx status code), which
+    includes client disconnects — narrowing it to the ``errors`` an admin sees
+    under a different outcome would silently change what this button deletes.
+    Defaults to the past hour. The action is recorded in the admin audit log.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """

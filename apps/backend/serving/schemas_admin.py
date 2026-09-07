@@ -533,17 +533,28 @@ class HardDeleteUserResponse(BaseModel):
 
 
 class AdminRequestMetricsBucket(BaseModel):
-    """A single request-count bucket for admin traffic charts."""
+    """A single request-count bucket for admin traffic charts.
+
+    A client disconnect (status 499) is counted in ``client_disconnect_count``
+    and never in ``error_count`` or ``success_count``; the two error/disconnect
+    counts are disjoint by construction.
+    """
 
     start_time: datetime
     request_count: int
     success_count: int
     error_count: int
+    # Defaulted so a client reading an older cached response still validates.
+    client_disconnect_count: int = 0
     avg_latency_ms: float | None = None
 
 
 class AdminRequestMetricsWindow(BaseModel):
-    """Request metrics for a fixed lookback window."""
+    """Request metrics for a fixed lookback window.
+
+    Outcome totals are the sums of the window's buckets and split the same way —
+    see :class:`AdminRequestMetricsBucket`.
+    """
 
     key: str
     label: str
@@ -552,6 +563,7 @@ class AdminRequestMetricsWindow(BaseModel):
     total_requests: int
     success_requests: int
     error_requests: int
+    client_disconnect_requests: int = 0
     avg_latency_ms: float | None = None
     buckets: list[AdminRequestMetricsBucket]
 
@@ -768,6 +780,12 @@ class AdminRecentRequestItem(BaseModel):
     # "embedding" for /v1/embeddings traffic; None (legacy) implies a
     # chat/completion request.
     request_type: str | None = None
+    # How the gateway ended the stream, from metadata->>'terminal_state'.
+    # "client_disconnect" (the caller hung up) or "request_timeout" (the gateway
+    # deadline fired) — set only by ``completions_stream._finalize_cancelled``,
+    # so it is what distinguishes a real disconnect from an upstream that
+    # answered 499. None on every other row, legacy 499s included.
+    terminal_state: str | None = None
     # Conversation shape derived from the stored request payload's messages
     # array. None when the payload is absent (e.g. legacy rows) or not a chat
     # request. num_turns counts all messages; num_user_turns counts user-role

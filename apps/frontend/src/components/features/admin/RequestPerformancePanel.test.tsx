@@ -250,8 +250,8 @@ describe('RequestPerformancePanel', () => {
     expect(rowCells('glm-4.6:local-12003').slice(-4)).toEqual(['1k', '2k', '1.5k', '2.5k']);
   });
 
-  it('notes that "errors only" does not narrow the summary', async () => {
-    render(<RequestPerformancePanel {...defaultProps} errorsOnly />);
+  it('notes that an outcome filter does not narrow the summary', async () => {
+    render(<RequestPerformancePanel {...defaultProps} outcome="client_disconnect" />);
 
     expect(await screen.findByText(/not narrowed by/)).toBeInTheDocument();
   });

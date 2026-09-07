@@ -355,3 +355,148 @@ describe('RequestsTab session labelling', () => {
     expect(screen.queryByTitle(/^session /)).not.toBeInTheDocument();
   });
 });
+
+describe('RequestsTab client disconnect classification', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getRequestMetrics).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      windows: [
+        {
+          key: '1h',
+          label: 'Last 1 hour',
+          window_minutes: 60,
+          bucket_minutes: 5,
+          total_requests: 100,
+          success_requests: 80,
+          error_requests: 3,
+          client_disconnect_requests: 17,
+          avg_latency_ms: 950,
+          buckets: [
+            {
+              start_time: '2026-06-30T11:55:00.000Z',
+              request_count: 100,
+              success_count: 80,
+              error_count: 3,
+              client_disconnect_count: 17,
+              avg_latency_ms: 950,
+            },
+          ],
+        },
+      ],
+    });
+    vi.mocked(getRecentRequestContent).mockResolvedValue({
+      prompt: 'hello world',
+      response: 'hi there',
+      reasoning_content: null,
+    });
+    vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(listRecentRequests).mockResolvedValue({
+      requests: [
+        makeRequest({
+          request_id: 'req_disconnect',
+          status_code: 499,
+          terminal_state: 'client_disconnect',
+        }),
+        // Same status, no cancellation marker: an upstream answered 499, which
+        // is a real failure the gateway only relayed.
+        makeRequest({ request_id: 'req_upstream_499', status_code: 499 }),
+      ],
+      total: 2,
+      limit: 50,
+      offset: 0,
+    });
+  });
+
+  afterEach(cleanup);
+
+  it('counts the hour’s client disconnects apart from its errors', async () => {
+    // 17 abandoned streams and 3 real failures is a very different hour from
+    // "20 errors", which is what the card said before the split.
+    render(<RequestsTab />);
+
+    const disconnects = await screen.findByTitle(/^Client disconnects: the caller hung up/);
+    expect(disconnects).toHaveTextContent('17 disc');
+    // The error count no longer carries them: the two are read side by side.
+    const card = disconnects.closest('.rounded-xl');
+    expect(card).toHaveTextContent('3 err');
+    expect(card).toHaveTextContent('Last 1 hour');
+  });
+
+  it('filters the list by outcome', async () => {
+    render(<RequestsTab />);
+    // Two rows share this model, so match all of them.
+    await screen.findAllByText('gpt-4o-mini');
+
+    // outcome is the 5th positional argument of listRecentRequests.
+    expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[4]).toBe('all');
+
+    fireEvent.change(screen.getByLabelText('Filter by outcome'), {
+      target: { value: 'client_disconnect' },
+    });
+    await waitFor(() =>
+      expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[4]).toBe('client_disconnect'),
+    );
+
+    fireEvent.change(screen.getByLabelText('Filter by outcome'), {
+      target: { value: 'errors_excluding_disconnects' },
+    });
+    await waitFor(() =>
+      expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[4]).toBe(
+        'errors_excluding_disconnects',
+      ),
+    );
+  });
+
+  it('carries the outcome filter into the JSONL export', async () => {
+    render(<RequestsTab />);
+    // Two rows share this model, so match all of them.
+    await screen.findAllByText('gpt-4o-mini');
+
+    fireEvent.change(screen.getByLabelText('Filter by outcome'), {
+      target: { value: 'client_disconnect' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Export JSONL' }));
+    fireEvent.change(screen.getByLabelText(/Start date/i) ?? screen.getByLabelText('Start date'), {
+      target: { value: '2026-06-01' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+
+    await waitFor(() =>
+      expect(exportRequests).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'client_disconnect' }),
+      ),
+    );
+  });
+
+  it('badges an abandoned stream apart from a failure', async () => {
+    // A column of red 499s reads as an outage; the gateway did not fail, the
+    // caller hung up.
+    render(<RequestsTab />);
+
+    const badge = await screen.findByTitle('Client disconnected before the stream completed');
+    expect(badge).toHaveTextContent('499');
+    expect(badge.className).toContain('amber');
+    expect(badge.className).not.toContain('red');
+  });
+
+  it('leaves an upstream’s own 499 badged as the error it is', async () => {
+    // Both failure handlers log whatever status the upstream exception carried,
+    // so the status alone cannot say the caller hung up — only the gateway's
+    // terminal_state can. Badging this amber would excuse a real failure.
+    render(<RequestsTab />);
+
+    await screen.findByTitle('Client disconnected before the stream completed');
+    const badges = screen.getAllByText('499');
+    expect(badges).toHaveLength(2);
+    const unmarked = badges.filter((b) => !b.getAttribute('title'));
+    expect(unmarked).toHaveLength(1);
+    expect(unmarked[0].className).toContain('red');
+    expect(unmarked[0].className).not.toContain('amber');
+  });
+});

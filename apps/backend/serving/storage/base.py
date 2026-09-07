@@ -1471,9 +1471,9 @@ class LogStore(ABC):
         """Hard-delete error requests logged within the last *hours* hours.
 
         An "error" row matches the same predicate the admin Recent Requests
-        "errors only" filter uses: ``error IS NOT NULL`` OR a status code that
-        is missing or outside the 2xx/3xx success range. Returns the number of
-        deleted rows.
+        ``outcome=errors`` filter uses: ``error IS NOT NULL`` OR a status code
+        that is missing or outside the 2xx/3xx success range — which includes
+        client disconnects (status 499). Returns the number of deleted rows.
         """
 
     # -- admin: hard-delete user-owned rows ---------------------------------

@@ -5,6 +5,7 @@ import {
   AdminRequestPerfDistribution,
   AdminRequestPerfGroup,
   AdminRequestPerfTrendSeries,
+  type RequestOutcome,
   getRecentRequestsPerformance,
   getRecentRequestsPerformanceTrend,
 } from '@/lib/api/admin';
@@ -98,9 +99,9 @@ const WINDOW_LABEL = '24h';
  *
  * Follows the tab's user / model / type filters so the summary describes the
  * rows below it, but not its lookback: this panel always measures the last
- * `WINDOW_LABEL`. "Errors only" is not applied either: the backend always
- * scopes this view to successful streaming requests, since a failed or
- * non-streamed request has no meaningful first-token or decode timing.
+ * `WINDOW_LABEL`. The outcome filter is not applied either: the backend always
+ * scopes this view to successful streaming requests, since a failed, abandoned
+ * or non-streamed request has no meaningful first-token or decode timing.
  */
 export function RequestPerformancePanel({
   userFilter,
@@ -108,7 +109,7 @@ export function RequestPerformancePanel({
   modelFilter,
   requestType,
   refreshKey = 0,
-  errorsOnly = false,
+  outcome = 'all',
 }: {
   userFilter: string;
   // The session the table is scoped to, or '' for all of them. Without it the
@@ -118,7 +119,7 @@ export function RequestPerformancePanel({
   modelFilter: string;
   requestType: 'all' | 'chat' | 'embedding';
   refreshKey?: number;
-  errorsOnly?: boolean;
+  outcome?: RequestOutcome;
 }) {
   const [groups, setGroups] = useState<AdminRequestPerfGroup[]>([]);
   const [truncated, setTruncated] = useState(false);
@@ -273,7 +274,7 @@ export function RequestPerformancePanel({
           <p className="text-[11px] text-gray-400">
             Successful streaming requests over the last {WINDOW_LABEL}, split by the model and
             endpoint that served them. Select a route to see it over time
-            {errorsOnly ? ' (not narrowed by “errors only”)' : ''}.
+            {outcome !== 'all' ? ' (not narrowed by the outcome filter)' : ''}.
           </p>
         </div>
         {loading && (
