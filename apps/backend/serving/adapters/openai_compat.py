@@ -16,7 +16,7 @@ import aiohttp
 from serving.config.settings import get_settings
 from serving.stream import done_sentinel
 from serving.utils.logging import get_logger
-from serving.utils.messages import merge_leading_system_messages
+from serving.utils.messages import flatten_text_content, merge_leading_system_messages
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
@@ -70,25 +70,14 @@ except (TypeError, ValueError):
 
 def _normalize_text_content(content: Any) -> Any:
     """Normalize structured content blocks into plain text when needed."""
-    # A bare block mapping (not wrapped in a list) is still valid per the
-    # permissive `content: Any` schema; treat it as a one-element block list so
-    # text-only models receive a flattened string instead of a raw dict.
-    if isinstance(content, dict):
-        content = [content]
-    if not isinstance(content, list):
+    # Anything that is not a block mapping or a block list is already what the
+    # upstream expects (a plain string, or a scalar the schema let through) and
+    # is returned as-is rather than stringified. A bare block mapping not
+    # wrapped in a list is still valid per the permissive `content: Any`
+    # schema, so it flattens too.
+    if not isinstance(content, dict | list):
         return content
-
-    parts: list[str] = []
-    for part in content:
-        if isinstance(part, str):
-            parts.append(part)
-            continue
-        if not isinstance(part, dict):
-            continue
-        text = part.get("text")
-        if isinstance(text, str):
-            parts.append(text)
-    return "\n".join(p for p in parts if p)
+    return flatten_text_content(content)
 
 
 def _caller_role() -> str | None:

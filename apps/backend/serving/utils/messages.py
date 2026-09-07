@@ -10,17 +10,37 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["merge_leading_system_messages"]
+__all__ = ["flatten_text_content", "merge_leading_system_messages"]
 
 
-def _system_text(content: Any) -> str:
-    """Flatten a chat message's ``content`` (str or content-block list) to text."""
+def flatten_text_content(content: Any) -> str:
+    """Flatten a chat message's ``content`` to plain text.
+
+    The northbound ``content`` field is deliberately permissive (``Any``), so
+    every shape a client can legally send has to survive: a plain string, a
+    block list, a bare block mapping that was never wrapped in a list, and a
+    list mixing plain strings with blocks. A block contributes whatever string
+    sits under its ``text`` key regardless of its declared ``type`` -- clients
+    label text blocks ``text``, ``input_text`` and ``output_text``, and
+    dropping one over its label loses real instructions.
+
+    This is the single flattener for the OpenAI-compatible path:
+    :func:`merge_leading_system_messages` uses it to combine system prompts and
+    ``openai_compat._normalize_text_content`` uses it to flatten content for a
+    text-only model. They handled overlapping shapes differently once, and a
+    system prompt that one accepted came out empty from the other.
+    """
     if isinstance(content, str):
         return content
+    if isinstance(content, dict):
+        content = [content]
     if isinstance(content, list):
-        parts = [
-            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
-        ]
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
         return "\n".join(p for p in parts if p)
     return "" if content is None else str(content)
 
@@ -52,7 +72,9 @@ def merge_leading_system_messages(messages: list[dict[str, Any]]) -> list[dict[s
     others = [m for m in messages if m.get("role") != "system"]
     if len(systems) == 1:
         return [systems[0], *others]
-    merged_text = "\n\n".join(t for t in (_system_text(m.get("content")) for m in systems) if t)
+    merged_text = "\n\n".join(
+        t for t in (flatten_text_content(m.get("content")) for m in systems) if t
+    )
     leading = dict(systems[0])
     leading["content"] = merged_text
     return [leading, *others]

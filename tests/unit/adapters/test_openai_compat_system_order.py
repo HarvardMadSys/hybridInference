@@ -173,3 +173,57 @@ async def test_tool_transcript_keeps_its_ordering_around_the_hoist():
     assert [m["role"] for m in sent] == ["system", "user", "assistant", "tool"]
     assert sent[2]["tool_calls"][0]["id"] == "call_1"
     assert sent[3]["tool_call_id"] == "call_1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_merged_system_prompts_survive_every_accepted_content_shape():
+    """Merging must not lose text the adapter accepts elsewhere.
+
+    ``content`` is ``Any`` on the northbound schema, and ``_clean_message``
+    already flattens a plain-string list, a bare block mapping and a block
+    whose ``type`` is not literally ``text``. A merge that recognized only
+    ``{"type": "text"}`` blocks turned the first shape into an empty system
+    prompt and the second into a Python repr — worse than the 400 it replaced,
+    because a permissive upstream accepted the corrupted prompt and answered.
+    """
+    for label, contents in {
+        "plain-string lists": (["alpha"], ["beta"]),
+        "bare block mapping": ({"type": "text", "text": "alpha"}, "beta"),
+        "block typed input_text": ([{"type": "input_text", "text": "alpha"}], "beta"),
+        "mixed string and block": (["alpha"], [{"text": "beta"}]),
+    }.items():
+        sent = await _sent_messages(
+            _adapter(),
+            [
+                {"role": "system", "content": contents[0]},
+                {"role": "system", "content": contents[1]},
+                {"role": "user", "content": "hi"},
+            ],
+        )
+
+        assert sent[0] == {"role": "system", "content": "alpha\n\nbeta"}, label
+        assert sent[1] == {"role": "user", "content": "hi"}, label
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_single_system_message_keeps_its_content_verbatim():
+    # The no-merge path hands the message to `_clean_message` untouched, so a
+    # multimodal route still gets its blocks rather than a flattened string.
+    config = ModelConfig(
+        id="vision",
+        name="Vision",
+        provider="zhipu",
+        base_url="http://mock.local/v1",
+        input_modalities=["text", "image"],
+    )
+    adapter = OpenAICompatAdapter(config)
+    adapter.http = MagicMock()
+
+    blocks = [{"type": "text", "text": "alpha"}]
+    sent = await _sent_messages(
+        adapter, [{"role": "user", "content": "hi"}, {"role": "system", "content": blocks}]
+    )
+
+    assert sent[0] == {"role": "system", "content": blocks}
