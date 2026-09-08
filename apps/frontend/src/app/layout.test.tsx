@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildTimeSiteConfig } from '@/config/site-config';
 
-const state = vi.hoisted(() => ({ siteConfig: undefined as unknown }));
+const state = vi.hoisted(() => ({ siteConfig: undefined as unknown, error: null as Error | null }));
 
 vi.mock('next/font/google', () => ({
   Crimson_Text: () => ({ variable: 'runtime-font' }),
@@ -15,7 +15,10 @@ vi.mock('next/script', () => ({
 }));
 
 vi.mock('@/config/site-config.server', () => ({
-  loadRuntimeSiteConfig: async () => state.siteConfig,
+  loadRuntimeSiteConfig: async () => {
+    if (state.error) throw state.error;
+    return state.siteConfig;
+  },
 }));
 
 vi.mock('@/components/providers', () => ({
@@ -52,7 +55,15 @@ function runtimeConfig(statcounterProjectId = '12345') {
 
 describe('RootLayout runtime identity', () => {
   beforeEach(() => {
+    state.error = null;
     state.siteConfig = runtimeConfig();
+  });
+
+  it('propagates configuration failures to the global error boundary before rendering the app', async () => {
+    state.error = new Error('configuration unavailable');
+
+    await expect(generateMetadata()).rejects.toBe(state.error);
+    await expect(RootLayout({ children: <p>signup form</p> })).rejects.toBe(state.error);
   });
 
   it('uses runtime identity for metadata and the initial provider value', async () => {

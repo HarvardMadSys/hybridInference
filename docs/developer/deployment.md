@@ -99,6 +99,14 @@ rebuild. Recreate the frontend with `make up` after changing its runtime
 environment; restart the backend after changing the branding document it
 loads.
 
+The console requires a valid `/site-config` response before rendering normal
+pages. A failed HTTP request, a three-second timeout, or invalid JSON/schema
+shows a retryable configuration error instead of silently enabling build-time
+feature defaults. Check the frontend logs and backend connectivity, then retry
+the page after recovery. Valid neutral defaults and legacy documents remain
+supported; operators do not need to add custom settings just to start the
+example deployment.
+
 The Compose file still exposes the old branding variables as build arguments
 for source compatibility. The Dockerfile also retains the two legacy agent
 arguments for explicit pre-W7 downstream build pipelines, but upstream Compose

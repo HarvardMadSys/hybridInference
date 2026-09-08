@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildTimeSiteConfig, resolveRuntimeSiteConfig } from './site-config';
+import { SiteConfigLoadError } from './site-config-error';
 
 const runtimeBranding = {
   app_description: 'Runtime description',
@@ -193,51 +194,53 @@ describe('resolveRuntimeSiteConfig', () => {
     expect(resolved.features).toEqual({ publicSignup: false, rag: false, agents: false });
   });
 
-  it('preserves build-time branding when a branding field is unsafe or malformed', () => {
-    const resolved = resolveRuntimeSiteConfig({
-      ...runtimeDocument,
-      branding: {
-        ...runtimeBranding,
-        assets: { ...runtimeBranding.assets, logo_url: 'javascript:alert(1)' },
-      },
-    });
+  it('rejects unsafe or malformed branding without silently replacing operator settings', () => {
+    expect(() =>
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        branding: {
+          ...runtimeBranding,
+          assets: { ...runtimeBranding.assets, logo_url: 'javascript:alert(1)' },
+        },
+      }),
+    ).toThrow(SiteConfigLoadError);
 
-    expect(resolved.branding).toBe(buildTimeSiteConfig.branding);
+    expect(() =>
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        branding: { ...runtimeBranding, internal_service_url: 'http://private.service' },
+      }),
+    ).toThrow(SiteConfigLoadError);
 
-    const withUnknownField = resolveRuntimeSiteConfig({
-      ...runtimeDocument,
-      branding: { ...runtimeBranding, internal_service_url: 'http://private.service' },
-    });
-    expect(withUnknownField.branding).toBe(buildTimeSiteConfig.branding);
-    expect(JSON.stringify(withUnknownField)).not.toContain('private.service');
-
-    const withUncompiledSponsorClass = resolveRuntimeSiteConfig({
-      ...runtimeDocument,
-      branding: {
-        ...runtimeBranding,
-        sponsors: [
-          {
-            ...runtimeBranding.sponsors[0],
-            class_name: 'absolute bg-[url(javascript:alert(1))]',
-          },
-        ],
-      },
-    });
-    expect(withUncompiledSponsorClass.branding).toBe(buildTimeSiteConfig.branding);
+    expect(() =>
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        branding: {
+          ...runtimeBranding,
+          sponsors: [
+            {
+              ...runtimeBranding.sponsors[0],
+              class_name: 'absolute bg-[url(javascript:alert(1))]',
+            },
+          ],
+        },
+      }),
+    ).toThrow(SiteConfigLoadError);
 
     for (const apiBase of [
       'https://api.example.test?tenant=example',
       'https://api.example.test?',
       'https://api.example.test#completion',
     ]) {
-      const withUnjoinableApiBase = resolveRuntimeSiteConfig({
-        ...runtimeDocument,
-        branding: {
-          ...runtimeBranding,
-          example: { ...runtimeBranding.example, api_base: apiBase },
-        },
-      });
-      expect(withUnjoinableApiBase.branding).toBe(buildTimeSiteConfig.branding);
+      expect(() =>
+        resolveRuntimeSiteConfig({
+          ...runtimeDocument,
+          branding: {
+            ...runtimeBranding,
+            example: { ...runtimeBranding.example, api_base: apiBase },
+          },
+        }),
+      ).toThrow(SiteConfigLoadError);
     }
 
     for (const [key, value] of [
@@ -246,14 +249,15 @@ describe('resolveRuntimeSiteConfig', () => {
       ['github_url', 'https://github.com/example/runtime?tab=readme'],
       ['github_url', 'https://github.com/example/runtime#readme'],
     ] as const) {
-      const withUnjoinableLinkBase = resolveRuntimeSiteConfig({
-        ...runtimeDocument,
-        branding: {
-          ...runtimeBranding,
-          links: { ...runtimeBranding.links, [key]: value },
-        },
-      });
-      expect(withUnjoinableLinkBase.branding).toBe(buildTimeSiteConfig.branding);
+      expect(() =>
+        resolveRuntimeSiteConfig({
+          ...runtimeDocument,
+          branding: {
+            ...runtimeBranding,
+            links: { ...runtimeBranding.links, [key]: value },
+          },
+        }),
+      ).toThrow(SiteConfigLoadError);
     }
   });
 
@@ -270,7 +274,7 @@ describe('resolveRuntimeSiteConfig', () => {
     expect(resolved.branding.siteHost).toBe('runtime.example.test');
   });
 
-  it('preserves build-time branding when a nav link is unusable', () => {
+  it('rejects unusable nav links', () => {
     for (const nav of [
       [{ label: 'Runtime Project', url: 'javascript:alert(1)' }],
       [{ label: 'Runtime Project', url: 'http://project.example.test/' }],
@@ -278,19 +282,24 @@ describe('resolveRuntimeSiteConfig', () => {
       [{ label: '', url: 'https://project.example.test/' }],
       [{ label: 'Runtime Project', url: 'https://project.example.test/', target: '_self' }],
     ]) {
-      const resolved = resolveRuntimeSiteConfig({
-        ...runtimeDocument,
-        branding: { ...runtimeBranding, links: { ...runtimeBranding.links, nav } },
-      });
-      expect(resolved.branding).toBe(buildTimeSiteConfig.branding);
+      expect(() =>
+        resolveRuntimeSiteConfig({
+          ...runtimeDocument,
+          branding: { ...runtimeBranding, links: { ...runtimeBranding.links, nav } },
+        }),
+      ).toThrow(SiteConfigLoadError);
     }
   });
 
-  it('rejects malformed or unsupported-version documents without changing the fallback', () => {
-    expect(resolveRuntimeSiteConfig({ distribution: {} })).toBe(buildTimeSiteConfig);
-    expect(resolveRuntimeSiteConfig({ ...runtimeDocument, schema_version: 2 })).toBe(
-      buildTimeSiteConfig,
-    );
+  it.each([
+    null,
+    {},
+    { distribution: {} },
+    { ...runtimeDocument, schema_version: 2 },
+    { ...runtimeDocument, features: {} },
+    { ...runtimeDocument, features: { routers: [], public_signup: 'false', rag: false } },
+  ])('rejects malformed or unsupported-version documents: %j', (document) => {
+    expect(() => resolveRuntimeSiteConfig(document)).toThrow(SiteConfigLoadError);
   });
 });
 

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { branding as buildTimeBranding, sponsorClassNameSchema, type Branding } from './branding';
+import { SiteConfigLoadError } from './site-config-error';
 
 function hasProtocol(value: string, protocols: readonly string[]): boolean {
   if (/\s/.test(value) || value.includes('\\')) return false;
@@ -196,7 +197,9 @@ function resolveBranding(input: unknown, displayName: string, supportEmail: stri
   if (input === null) return buildTimeBranding;
 
   const parsed = runtimeBrandingSchema.safeParse(input);
-  if (!parsed.success) return buildTimeBranding;
+  if (!parsed.success) {
+    throw new SiteConfigLoadError('Runtime site configuration contains invalid branding.');
+  }
 
   const document = parsed.data;
   const githubUrl = document.links.github_url.replace(/\/+$/, '');
@@ -267,7 +270,11 @@ function resolveLegacyBranding(
 
 export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
   const parsed = siteConfigDocumentSchema.safeParse(input);
-  if (!parsed.success) return buildTimeSiteConfig;
+  if (!parsed.success) {
+    throw new SiteConfigLoadError(
+      'Runtime site configuration is invalid or uses an unsupported schema.',
+    );
+  }
 
   const document = parsed.data;
   let branding: Branding;
