@@ -1019,24 +1019,20 @@ msgid "None"
 msgstr "无"
 
 #: ../developer/architecture.md
-msgid "Routing disclosure"
-msgstr "路由信息披露"
+msgid "Public routing disclosure"
+msgstr "公开路由信息披露"
 
 #: ../developer/architecture.md
-msgid "`GET /routing`, `GET /admin/routing`"
+msgid "`GET /routing`"
 msgstr ""
-
-#: ../developer/architecture.md
-msgid "**None at this commit**"
-msgstr "**在当前 commit 上没有**"
 
 #: ../developer/architecture.md
 msgid "Admin"
 msgstr "管理员"
 
 #: ../developer/architecture.md
-msgid "`GET /admin/stats` and the rest of `/admin/*`"
-msgstr "`GET /admin/stats` 以及 `/admin/*` 的其余部分"
+msgid "`GET /admin/routing`, `GET /admin/stats` and the rest of `/admin/*`"
+msgstr "`GET /admin/routing`、`GET /admin/stats` 以及 `/admin/*` 的其余部分"
 
 #: ../developer/architecture.md
 msgid "Accounts and console APIs"
@@ -1052,16 +1048,17 @@ msgstr "混合"
 
 #: ../developer/architecture.md:415
 msgid ""
-"`GET /routing` and `GET /admin/routing` carry no authentication "
-"dependency at this commit. Both return every route's provider label, "
-"**upstream base URL**, and traffic weight; `/admin/routing` additionally "
-"includes unpublished routes. If your gateway is reachable from the "
-"internet, block these two paths at your reverse proxy unless you intend "
-"to publish your upstream topology."
+"`GET /routing` requires no authentication and returns each published route's "
+"provider label, **upstream base URL**, and traffic weight. If your gateway is "
+"reachable from the internet, block this path at your reverse proxy unless you "
+"intend to publish your upstream topology. `GET /admin/routing` additionally "
+"includes unpublished routes and routing-manager status, but requires an "
+"administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header."
 msgstr ""
-"在当前 commit 上，`GET /routing` 和 `GET /admin/routing` 没有挂任何认证依赖。两者都会返回每条路由的 "
-"provider 标签、**上游 base URL** 和流量权重；`/admin/routing` "
-"还额外包含未发布的路由。如果你的网关能从公网访问，除非你有意公开自己的上游拓扑，否则请在反向代理上封掉这两个路径。"
+"`GET /routing` 不需要认证，会返回每条已发布路由的 provider 标签、**上游 base URL** 和流量权重。"
+"如果你的网关能从公网访问，除非你有意公开自己的上游拓扑，否则请在反向代理上封掉这个路径。"
+"`GET /admin/routing` 还额外包含未发布的路由和路由管理器状态，但需要在 "
+"`Authorization: Bearer ...` 请求头中提供管理员的 JWT 或 `ADMIN_TOKEN`。"
 
 #: ../developer/architecture.md:422
 msgid ""
@@ -1153,4 +1150,3 @@ msgstr ""
 "**扩展点是声明式的**。新 provider：一个 `kind`；如果它的 API 不是 OpenAI 兼容的，再加一个 "
 "adapter。新的路由行为：在 `apps/backend/routing/strategies/` "
 "下放一个自注册的模块。两者都不需要动请求处理器。"
-
