@@ -376,8 +376,9 @@ model whose credentials were unset.
 `GET /routing` requires no credentials and returns, for every published route,
 the upstream `base_url`, its provider label and its weight — that is, your
 complete upstream topology including any host and port embedded in a base URL.
-Its alias `GET /admin/routing` carries no admin dependency either at this
-revision, unlike the rest of `/admin/*`, and additionally reports routes that
-`/routing` hides. Block both at your reverse proxy on any gateway reachable from
-the internet, and treat their output as sensitive.
+Block `/routing` at your reverse proxy on any gateway reachable from the
+internet unless you intend to publish this topology. `GET /admin/routing`
+additionally reports unpublished routes and requires an administrator's JWT
+or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header. Treat both endpoints'
+output as sensitive.
 ```

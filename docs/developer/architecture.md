@@ -407,16 +407,17 @@ Client-facing groups, all served by the same app:
 | Anthropic-compatible inference | `POST /v1/messages`, `POST /anthropic/v1/messages`, `…/count_tokens` | API key |
 | Model catalog | `GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET /anthropic/v1/models` | Optional — a key only widens what is listed |
 | Health | `GET /health`, `/health/ready`, `/health/deep` | None |
-| Routing disclosure | `GET /routing`, `GET /admin/routing` | **None at this commit** |
-| Admin | `GET /admin/stats` and the rest of `/admin/*` | Admin |
+| Public routing disclosure | `GET /routing` | None |
+| Admin | `GET /admin/routing`, `GET /admin/stats` and the rest of `/admin/*` | Admin |
 | Accounts and console APIs | `/auth/*`, `/user/*`, `/site-config` | Mixed |
 
 ```{warning}
-`GET /routing` and `GET /admin/routing` carry no authentication dependency at
-this commit. Both return every route's provider label, **upstream base URL**, and
-traffic weight; `/admin/routing` additionally includes unpublished routes. If
-your gateway is reachable from the internet, block these two paths at your
-reverse proxy unless you intend to publish your upstream topology.
+`GET /routing` requires no authentication and returns each published route's
+provider label, **upstream base URL**, and traffic weight. If your gateway is
+reachable from the internet, block this path at your reverse proxy unless you
+intend to publish your upstream topology. `GET /admin/routing` additionally
+includes unpublished routes and routing-manager status, but requires an
+administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header.
 ```
 
 `/v1/models` shape-shifts by client: an Anthropic-family client calling it

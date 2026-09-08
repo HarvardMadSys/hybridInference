@@ -42,9 +42,11 @@ async def get_stats(
 
 @router.get("/routing")
 async def admin_get_routing(
-    router_exec=Depends(get_router), services=Depends(get_services)
+    router_exec=Depends(get_router),
+    services=Depends(get_services),
+    _admin_id: str = Depends(verify_admin_access),
 ) -> dict[str, Any]:
-    """Admin alias for routing information."""
+    """Return all routing information for an authenticated administrator."""
     routing_info = {}
     for model_id, route in router_exec.routes.items():
         routing_info[model_id] = [
