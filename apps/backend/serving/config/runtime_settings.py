@@ -26,7 +26,7 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
     "user_auth_enabled": {
         "type": "bool",
         "default": True,
-        "description": "Enable user authentication (JWT-based)",
+        "description": "Require user API keys for inference requests (does not disable account login)",
     },
     "signup_enabled": {
         "type": "bool",

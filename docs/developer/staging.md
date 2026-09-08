@@ -108,10 +108,19 @@ JWT_SECRET_KEY=<generated>
 API_KEY_SECRET=<generated>
 ```
 
-Neither secret is enforced at startup: an empty `JWT_SECRET_KEY` or
-`API_KEY_SECRET` logs one `critical` line and the gateway keeps going with
-insecure tokens and insecure API-key hashing
-(`apps/backend/serving/servers/app.py`). Generate both.
+Startup rejects an empty or whitespace-only `JWT_SECRET_KEY` or `API_KEY_SECRET`
+before opening stores or starting background tasks. Only the combination
+`DB_ENABLED=false` and `USER_AUTH_ENABLED=false` is exempt; disabling inference
+authentication alone leaves database-backed login and API-key management
+enabled. Existing database overrides cannot waive this requirement.
+
+Before upgrading, verify that both secrets are configured and preserve their
+existing values. Keep them consistent across replicas and restarts; the gateway
+never generates or rotates them automatically. The admin settings API also
+rejects enabling `user_auth_enabled` with missing secrets, returning HTTP 400
+with the missing variable names without changing the setting or its cache.
+See [Installation](installation.md) for secret generation and the optional
+legacy admin token.
 
 `CORS_ALLOWED_ORIGINS` already defaults to eight origins — ports 3000, 3001 and
 3002 on both `http://localhost` and `http://127.0.0.1`, plus

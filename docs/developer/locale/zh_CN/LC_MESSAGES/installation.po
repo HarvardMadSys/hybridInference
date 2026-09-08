@@ -132,15 +132,20 @@ msgstr ""
 
 #: ../developer/installation.md:40
 msgid ""
-"Two more are not enforced by Compose but should be set before anyone "
-"signs up: `JWT_SECRET_KEY` and `API_KEY_SECRET`. Both ship empty, and "
-"`apps/backend/serving/servers/app.py` logs a `CRITICAL` line and keeps "
-"running with insecure tokens and insecure API-key hashing if they stay "
-"that way. Generate each one:"
+"The backend also requires `JWT_SECRET_KEY` and `API_KEY_SECRET` at startup. "
+"Both ship empty; an empty or whitespace-only value stops startup before stores "
+"or background tasks are initialized. The error names the missing variables, "
+"never their values. Generate each secret separately:"
 msgstr ""
-"还有两个 Compose 不强制、但在有人注册之前就该设好：`JWT_SECRET_KEY` 和 "
-"`API_KEY_SECRET`。两者出厂都是空的；如果一直空着，`apps/backend/serving/servers/app.py` "
-"会打一条 `CRITICAL` 日志，然后带着不安全的 token 和不安全的 API key 哈希继续运行。各生成一个："
+"后端启动时还要求配置 `JWT_SECRET_KEY` 和 `API_KEY_SECRET`。两者默认都为空；"
+"空值或仅含空白字符的值会在存储或后台任务初始化之前阻止启动。错误信息只列出缺失的变量名，"
+"不会输出变量值。请分别生成每个密钥："
+
+msgid "Save both values in your deployment's secret configuration and reuse them across replicas and restarts. On upgrade, check that both are present without replacing existing values: changing the JWT secret invalidates access tokens, and changing the API-key secret makes existing API-key hashes unverifiable. The gateway does not generate or rotate these secrets automatically."
+msgstr "将两个值保存在部署的密钥配置中，并在所有副本和重启后复用。升级时检查两者是否存在，不要替换原值：更换 JWT 密钥会使访问令牌失效，更换 API-key 密钥会使已有 API key 的哈希无法验证。网关不会自动生成或轮换这些密钥。"
+
+msgid "The only exemption is an explicitly database-free, auth-disabled gateway: `DB_ENABLED=false` **and** `USER_AUTH_ENABLED=false`, as in Stage 1 of the [Router Tutorial](router-tutorial.md). Disabling inference authentication alone does not disable database-backed login or API-key management, so both secrets are still required when the database is enabled. `ADMIN_TOKEN` remains optional; leaving it blank disables only legacy admin-token access."
+msgstr "唯一的例外是明确关闭数据库和鉴权的网关：`DB_ENABLED=false` **并且** `USER_AUTH_ENABLED=false`，例如[路由器教程](router-tutorial.md)的第一阶段。仅关闭推理鉴权不会关闭基于数据库的登录或 API-key 管理，因此启用数据库时仍需要两把密钥。`ADMIN_TOKEN` 仍为可选项；留空只会禁用旧式管理员令牌访问。"
 
 #: ../developer/installation.md:50
 msgid "Then start the stack:"
@@ -344,16 +349,16 @@ msgid "`USER_AUTH_ENABLED`"
 msgstr ""
 
 #: ../developer/installation.md
-msgid "`1` (default) requires an API key on `/v1/*`; `0` allows every request"
-msgstr "`1`（默认）要求 `/v1/*` 带 API key；`0` 放行所有请求"
+msgid "`1` (default) requires user API keys for inference requests; `0` allows anonymous inference but does not disable account login or admin authentication"
+msgstr "`1`（默认）要求推理请求携带用户 API key；`0` 允许匿名推理，但不会关闭账号登录或管理员鉴权"
 
 #: ../developer/installation.md
 msgid "`ADMIN_TOKEN`"
 msgstr ""
 
 #: ../developer/installation.md
-msgid "bearer token for the `/admin/*` endpoints"
-msgstr "`/admin/*` 端点使用的 bearer token"
+msgid "optional legacy bearer token for the `/admin/*` endpoints; blank disables only this access path"
+msgstr "`/admin/*` 端点使用的可选旧式 bearer token；留空只会禁用这一访问方式"
 
 #: ../developer/installation.md
 msgid "`DB_ENABLED`"
@@ -634,4 +639,3 @@ msgstr "**端口已被占用**——在 `.env` 里覆盖 `BACKEND_PORT`、`FRONT
 
 #~ msgid "this gateway's own public origin; blank derives it from the request"
 #~ msgstr "本网关自己的公网 origin；留空则从请求中推导"
-
