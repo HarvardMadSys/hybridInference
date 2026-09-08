@@ -76,6 +76,18 @@ def _empty_services():
     return SimpleNamespace(router=SimpleNamespace(routes={}))
 
 
+def _services_with_runtime_provider(provider: str, model_id: str = "runtime-model"):
+    adapter = SimpleNamespace(
+        config=SimpleNamespace(
+            id=model_id,
+            provider=provider,
+            route_metadata={},
+        )
+    )
+    route = SimpleNamespace(raw_adapters=[(adapter, 1.0, "runtime-route")])
+    return SimpleNamespace(router=SimpleNamespace(routes={model_id: route}))
+
+
 @pytest.mark.asyncio
 async def test_update_builtin_provider_is_rejected(monkeypatch):
     store = FakeProviderDefinitionStore()
@@ -245,6 +257,64 @@ async def test_delete_custom_provider_hard_deletes_definition_and_keys(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_list_provider_definitions_omits_unconfigured_selectable_providers(monkeypatch):
+    store = FakeProviderDefinitionStore()
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=store,
+        services=_empty_services(),
+    )
+
+    providers = {row.provider for row in response.providers}
+    assert providers.isdisjoint(provider_definitions.SELECTABLE_PROVIDER_TARGETS)
+    assert providers == set()
+
+
+@pytest.mark.asyncio
+async def test_list_provider_definitions_includes_runtime_provider(monkeypatch):
+    store = FakeProviderDefinitionStore()
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(
+        provider_definitions.dynamic_keys,
+        "get_known_providers",
+        lambda: {"featherless"},
+    )
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=store,
+        services=_services_with_runtime_provider("chutes"),
+    )
+
+    assert [row.provider for row in response.providers] == ["chutes"]
+
+
+@pytest.mark.asyncio
+async def test_list_provider_definitions_omits_stale_runtime_provider(monkeypatch):
+    store = FakeProviderDefinitionStore()
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(
+        provider_definitions.dynamic_keys,
+        "get_known_providers",
+        lambda: {"chutes"},
+    )
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=store,
+        services=_empty_services(),
+    )
+
+    assert response.providers == []
+
+
+@pytest.mark.asyncio
 async def test_list_provider_definitions_excludes_openrouter_pinned_route_targets(monkeypatch):
     store = FakeProviderDefinitionStore()
     openrouter_spec = provider_definitions.ConfigProviderSpec(
@@ -271,6 +341,41 @@ async def test_list_provider_definitions_excludes_openrouter_pinned_route_target
     assert "openrouter" in providers
     assert "deepinfra" not in providers
     assert "parasail" not in providers
+
+
+@pytest.mark.asyncio
+async def test_list_provider_definitions_ignores_legacy_builtin_definition_row(monkeypatch):
+    store = FakeProviderDefinitionStore(
+        {
+            "chutes": ProviderDefinitionRow(
+                provider="chutes",
+                display_name="Legacy Chutes",
+                adapter_kind="openai_compat",
+                default_base_url="https://legacy-chutes.test/v1",
+                status="active",
+                created_at=None,  # type: ignore[arg-type]
+                updated_at=None,  # type: ignore[arg-type]
+            )
+        }
+    )
+    registered_rows = []
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
+    monkeypatch.setattr(
+        provider_definitions.provider_registry,
+        "register_provider_definition",
+        registered_rows.append,
+    )
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=store,
+        services=_empty_services(),
+    )
+
+    assert response.providers == []
+    assert registered_rows == []
 
 
 def test_configured_provider_specs_include_config_declared_providers(tmp_path, monkeypatch):
@@ -582,3 +687,138 @@ models:
     monkeypatch.setenv("MODELS_CONFIG", str(models_config))
 
     assert provider_definitions.config_route_provider_labels() == set()
+
+
+def _services_with_runtime_routes(*adapters):
+    routes = {}
+    for index, (model_id, provider, route_metadata, pinned) in enumerate(adapters):
+        adapter = SimpleNamespace(
+            config=SimpleNamespace(
+                id=model_id,
+                provider=provider,
+                route_metadata=route_metadata,
+                openrouter_pinned_provider=pinned,
+            )
+        )
+        routes[model_id] = SimpleNamespace(raw_adapters=[(adapter, 1.0, f"runtime-route-{index}")])
+    return SimpleNamespace(router=SimpleNamespace(routes=routes))
+
+
+@pytest.mark.asyncio
+async def test_list_provider_definitions_credits_pinned_runtime_routes_to_openrouter(
+    monkeypatch,
+):
+    """A pinned OpenRouter route is an OpenRouter route, not a ``parasail`` provider.
+
+    The Routing tab stores the bare target name (``parasail``, ``deepinfra``)
+    as the route's upstream while ``config.provider`` stays ``openrouter``.
+    Listing every label attached to a live route materialized ghost rows with
+    no keys and no base URL for what are routing preferences. The registry row
+    is the credential owner: OpenRouter for a pin, the key-pool provider for a
+    relabelled route.
+    """
+    store = FakeProviderDefinitionStore()
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=store,
+        services=_services_with_runtime_routes(
+            (
+                "minimax-fast",
+                "openrouter",
+                {
+                    "route_provider": "parasail",
+                    "upstream_provider": "parasail",
+                    "provider_type": "quota",
+                },
+                "parasail",
+            ),
+            (
+                "minimax-m2.5",
+                "openrouter",
+                {"route_provider": "deepinfra", "upstream_provider": "deepinfra"},
+                "deepinfra",
+            ),
+            (
+                "local-chat",
+                "gpu-a",
+                {"key_provider": "vllm", "upstream_provider": "vllm"},
+                None,
+            ),
+        ),
+    )
+
+    providers = {row.provider: row for row in response.providers}
+    assert set(providers) == {"openrouter", "vllm"}
+    assert providers["openrouter"].models_count == 2
+    assert providers["openrouter"].default_base_url
+
+
+@pytest.mark.asyncio
+async def test_create_provider_definition_rejects_key_provider_aliases(monkeypatch):
+    """A slug the key registry folds into another provider cannot be custom.
+
+    ``kimi_coding`` normalizes to ``kimi`` everywhere keys and routes are
+    grouped, so a custom provider by that name would show 0 models and could
+    be deleted while its routes still ran.
+    """
+    store = FakeProviderDefinitionStore()
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await provider_definitions.create_provider_definition(
+            CreateProviderDefinitionRequest(
+                provider="kimi_coding",
+                display_name="Kimi coding plan",
+                adapter_kind="openai_compat",
+                default_base_url="https://kimi.example.test/v1",
+                api_key="secret-key-1234567890",
+                probe_model_id="kimi-k2",
+            ),
+            admin_id="admin",
+            op_store=store,
+            services=_empty_services(),
+        )
+
+    assert excinfo.value.status_code == 409
+    assert store.upserts == []
+
+
+@pytest.mark.asyncio
+async def test_list_provider_definitions_ignores_alias_named_definition_row(monkeypatch):
+    store = FakeProviderDefinitionStore(
+        {
+            "kimi_coding": ProviderDefinitionRow(
+                provider="kimi_coding",
+                display_name="Legacy Kimi coding",
+                adapter_kind="openai_compat",
+                default_base_url="https://kimi.example.test/v1",
+                status="active",
+                created_at=None,  # type: ignore[arg-type]
+                updated_at=None,  # type: ignore[arg-type]
+            )
+        }
+    )
+    registered_rows = []
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
+    monkeypatch.setattr(
+        provider_definitions.provider_registry,
+        "register_provider_definition",
+        registered_rows.append,
+    )
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=store,
+        services=_empty_services(),
+    )
+
+    assert response.providers == []
+    assert registered_rows == []

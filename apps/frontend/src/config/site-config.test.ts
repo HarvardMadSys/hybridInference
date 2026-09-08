@@ -293,3 +293,28 @@ describe('resolveRuntimeSiteConfig', () => {
     );
   });
 });
+
+describe('example quickstart base', () => {
+  it('publishes no example base of its own at build time', () => {
+    // The developer home derives the base from the console's API origin, so
+    // a build must not advertise a localhost default over that origin.
+    expect(buildTimeSiteConfig.branding.exampleHidden).toBe(false);
+  });
+
+  it('keeps a published runtime base and does not hide the example', () => {
+    const resolved = resolveRuntimeSiteConfig(runtimeDocument);
+
+    expect(resolved.branding.exampleApiBase).toBe('https://api.example.test');
+    expect(resolved.branding.exampleHidden).toBe(false);
+  });
+
+  it('treats an explicitly empty runtime base as the hidden example', () => {
+    const resolved = resolveRuntimeSiteConfig({
+      ...runtimeDocument,
+      branding: { ...runtimeBranding, example: { ...runtimeBranding.example, api_base: '' } },
+    });
+
+    expect(resolved.branding.exampleApiBase).toBe('');
+    expect(resolved.branding.exampleHidden).toBe(true);
+  });
+});

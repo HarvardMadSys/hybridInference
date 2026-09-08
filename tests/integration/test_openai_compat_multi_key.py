@@ -24,6 +24,7 @@ import pytest
 
 from serving.adapters.base import ModelConfig
 from serving.adapters.openai_compat import OpenAICompatAdapter
+from serving.utils import context as req_ctx
 
 
 def _make_config(api_keys: list[str]) -> ModelConfig:
@@ -78,7 +79,12 @@ async def test_multi_key_rotates_on_429():
         assert headers["Authorization"] == "Bearer k2"
         return success_payload
 
-    with patch.object(adapter.http, "json_post", side_effect=fake_json_post):
+    # Keep this test independent of request context left by earlier tests on the
+    # same xdist worker. This path intentionally models an anonymous caller.
+    with (
+        req_ctx.push(affinity_key="_anon", user_role=None),
+        patch.object(adapter.http, "json_post", side_effect=fake_json_post),
+    ):
         result = await adapter.chat_completion([{"role": "user", "content": "hi"}])
 
     assert call_count["n"] == 2

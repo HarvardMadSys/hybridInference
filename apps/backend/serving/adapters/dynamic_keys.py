@@ -465,6 +465,15 @@ def normalize_key_provider(provider: str) -> str:
     return _KEY_PROVIDER_ALIASES.get(provider, provider)
 
 
+def aliased_key_providers() -> frozenset[str]:
+    """Return the provider names that normalize to a different provider.
+
+    These are reserved: a custom provider by such a name would have its keys
+    and routes grouped under the alias target everywhere else.
+    """
+    return frozenset(_KEY_PROVIDER_ALIASES)
+
+
 def configured_env_keys_for_provider(provider: str) -> list[str]:
     """Return provider keys configured through base + numbered env vars."""
     spec = _PROVIDER_ENV_KEY_VARS.get(provider)

@@ -137,9 +137,20 @@ def _base_url_with_provider_default(provider: str, base_url: str) -> str:
 def _config_managed_provider_names(
     config_specs: dict[str, ConfigProviderSpec] | None = None,
 ) -> set[str]:
-    """Return provider slugs managed by code or config/models.yaml."""
+    """Return provider slugs managed by code or config/models.yaml.
+
+    Key-provider aliases (``kimi_coding`` → ``kimi``) count as code-managed:
+    keys and routes under such a name are grouped under the alias target
+    everywhere else, so a custom provider by that name would list no models
+    and could be deleted while its routes still ran.
+    """
     specs = config_specs if config_specs is not None else _configured_provider_specs()
-    return set(PROVIDER_TARGETS) | set(SELECTABLE_PROVIDER_TARGETS) | set(specs)
+    return (
+        set(PROVIDER_TARGETS)
+        | set(SELECTABLE_PROVIDER_TARGETS)
+        | set(dynamic_keys.aliased_key_providers())
+        | set(specs)
+    )
 
 
 def config_route_provider_labels(
@@ -162,9 +173,9 @@ def config_route_provider_labels(
 def _registry_provider_names(
     config_specs: dict[str, ConfigProviderSpec] | None = None,
 ) -> set[str]:
-    """Return built-in provider slugs that belong in the provider registry."""
+    """Return config-declared provider slugs that belong in the registry."""
     specs = config_specs if config_specs is not None else _configured_provider_specs()
-    return set(SELECTABLE_PROVIDER_TARGETS) | set(specs)
+    return set(specs)
 
 
 def _is_config_managed_provider(
@@ -326,6 +337,28 @@ def _canonical_model_id(model_id: str, route: Any) -> str:
     return str(getattr(cfg, "id", model_id) or model_id)
 
 
+def _credential_owner(value: str) -> str:
+    """Reduce a provider reference to the provider that owns its credentials.
+
+    A pinned OpenRouter route is referenced three ways — ``openrouter[parasail]``
+    in config, the bare target name ``parasail`` in the Routing tab's route
+    metadata, and ``openrouter`` on the adapter itself — and the credential
+    owner is OpenRouter in every case; ``parasail`` is a routing preference,
+    not a provider the registry can hold keys for. Any other route target
+    resolves to its key provider, and everything else to its key-pool name.
+    """
+    try:
+        base, pin = parse_openrouter_kind(value)
+    except ValueError:
+        base, pin = value, None
+    if pin is not None:
+        return "openrouter"
+    target = PROVIDER_TARGETS.get(base)
+    if target is not None:
+        return dynamic_keys.normalize_key_provider(target.key_provider)
+    return dynamic_keys.normalize_key_provider(base)
+
+
 def _provider_candidates_for_adapter(adapter: Any) -> set[str]:
     cfg = getattr(adapter, "config", None)
     metadata = getattr(cfg, "route_metadata", None) or {}
@@ -339,7 +372,44 @@ def _provider_candidates_for_adapter(adapter: Any) -> set[str]:
     for value in candidates:
         if isinstance(value, str) and value.strip():
             normalized.add(dynamic_keys.normalize_key_provider(value.strip()))
+            normalized.add(_credential_owner(value.strip()))
     return normalized
+
+
+def _runtime_provider_for_adapter(adapter: Any) -> str | None:
+    """Return the one provider a live route belongs to in the registry.
+
+    The credential owner wins: a relabelled route keeps its keys under the
+    provider it talks to, and a pinned OpenRouter route is an OpenRouter
+    route. Listing every candidate label instead materializes ghost rows —
+    ``parasail`` with no keys and no base URL — for preferences that are not
+    providers.
+    """
+    cfg = getattr(adapter, "config", None)
+    if getattr(cfg, "openrouter_pinned_provider", None):
+        return "openrouter"
+    metadata = getattr(cfg, "route_metadata", None) or {}
+    for key in ("key_provider", "upstream_provider"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return _credential_owner(value.strip())
+    provider = getattr(cfg, "provider", None)
+    if isinstance(provider, str) and provider.strip():
+        return _credential_owner(provider.strip())
+    return None
+
+
+def _runtime_route_providers(services) -> set[str]:
+    """Return the providers that currently own at least one live route."""
+    router_obj = getattr(services, "router", None)
+    routes = getattr(router_obj, "routes", {}) if router_obj is not None else {}
+    providers: set[str] = set()
+    for route in routes.values():
+        for adapter in _route_adapters(route):
+            provider = _runtime_provider_for_adapter(adapter)
+            if provider:
+                providers.add(provider)
+    return providers
 
 
 def _models_by_provider(services) -> dict[str, set[str]]:
@@ -575,9 +645,7 @@ async def list_provider_definitions(
     definition_rows = {row.provider: row for row in await op_store.list_provider_definitions()}
 
     config_specs = _configured_provider_specs()
-    db_row_providers = set(definition_rows)
-    runtime_known_providers = dynamic_keys.get_known_providers() - db_row_providers
-    built_in_providers = _registry_provider_names(config_specs) | runtime_known_providers
+    reserved_providers = _config_managed_provider_names(config_specs)
 
     # The definitions table only surfaces genuine custom providers. A row whose
     # slug matches a built-in name is ignored: built-ins are read-only and
@@ -586,14 +654,22 @@ async def list_provider_definitions(
     custom_rows = {
         provider: row
         for provider, row in definition_rows.items()
-        if provider not in built_in_providers
+        if provider not in reserved_providers
     }
+    runtime_models_by_provider = _models_by_provider(services)
+    # The dynamic-key registry is an ever-seen whitelist, so it can retain a
+    # provider after its final runtime route is removed. Derive runtime entries
+    # from the live route table instead so stale registrations stay hidden —
+    # and from each route's credential owner, not from every label attached to
+    # it, so a pinned OpenRouter target never surfaces as its own provider.
+    active_route_providers = _runtime_route_providers(services) - set(custom_rows)
+    built_in_providers = _registry_provider_names(config_specs) | active_route_providers
     for row in custom_rows.values():
         provider_registry.register_provider_definition(row)
 
     providers = built_in_providers | set(custom_rows)
     models_by_provider = _merge_config_models_by_provider(
-        _models_by_provider(services),
+        runtime_models_by_provider,
         config_specs,
     )
     rows = [
