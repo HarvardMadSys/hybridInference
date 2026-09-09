@@ -1,9 +1,15 @@
 # FreeInference Cloud Agent 登录与开源边界设计
 
 - 日期：2026-09-01
-- 状态：Proposed
+- 状态：历史基线；接入、数据最小化和 session 撤销目标由 2026-09-09 P0 草案补充
 - 范围：登录认证归属、Hosted/Self-hosted 边界、开源边界
 - 涉及仓库：`hybridInference`、`freeinference-cloud-agent`
+
+2026-09-09 更新：后续实施顺序与新的版本化接口见
+[可选接入分步计划](../plans/2026-09-09-cloud-agent-integration-stepwise.zh.md) 和
+[integration 契约](../../../contracts/cloud-agent-integration/README.md)。新契约仍是草案，
+尚未改变运行时行为。本文第 7、8 节的进度记录属于 2026-09-01 的历史核对，不能作为当前
+部署证据；与新草案冲突的数据/session 目标以新草案为准。
 
 ## 1. 要解决的问题
 
@@ -128,9 +134,11 @@ Hosted 与 Self-hosted 使用相同的服务边界。区别只是 Cloud Agent �
 4. FreeInference 完成用户认证和 consent，浏览器以 `GET` 返回 Cloud Agent callback。
 5. Cloud Agent BFF 验证 `state`，在服务端 exchange code，并验证 issuer、audience、签名和 expiry。
 6. Cloud Agent 建立自己的 HttpOnly、Secure、SameSite session，跳转到应用页面。
-7. 特权操作和每次 inference grant mint 都重新查询 FreeInference 用户状态。
+7. 目标接口中，特权操作重新查询 installation 范围的 access；每次 inference grant mint
+   检查账号状态、用户对此安装的授权及版本。
 
-浏览器 JavaScript 不持有 identity bearer token、PKCE verifier 或 code exchange secret。Cloud Agent session 是小时级授权缓存，不是另一套长期账号凭证。
+浏览器 JavaScript 不持有 identity bearer token、PKCE verifier 或 code exchange secret。
+Cloud Agent session 保存小时级身份引用；权限单独查询，不在 session TTL 内一直沿用旧授权。
 
 ### 4.2 权限真相源
 
@@ -143,11 +151,15 @@ Hosted 与 Self-hosted 使用相同的服务边界。区别只是 Cloud Agent �
 | 用户能否操作某个 repository | Cloud Agent 与 Git provider |
 | runner 能否为某个 job 调用模型 | HybridInference short-lived grant |
 
-Cloud Agent 可以缓存展示所需的 email、role 和 opaque external user ID，但不能把缓存变成新的平台真相源。
+后续目标只保留 opaque external user ID 与必要的会话/授权版本，不再自动复制或缓存主站
+email、name、全局 role。Gateway 返回应用能力判断，Agent 保留自己业务对象的 ownership
+判断。现有 profile 字段通过单独的最小身份迁移退出，不能据此声称当前代码已经不传 profile。
 
 ### 4.3 用户标识
 
-现阶段继续把 identity token 的 `sub` 当作 opaque external user ID。没有第二个真实 issuer 之前，不增加 `(issuer, subject)` schema，也不提前迁移生产数据。
+继续把 identity token 的 `sub` 当作 opaque external user ID，不重写已有业务 owner。
+新增 Agent 单例 binding 保存固定的 `(gateway_instance_id, issuer)` 身份空间；有业务数据
+的数据库拒绝绑定另一身份空间。v1 不引入多身份空间 principal 表。
 
 如果以后需要学校 SSO、GitHub、Google 或企业 IdP，federation 应加在 HybridInference identity 层。所有上层应用随后复用同一个 canonical identity，而不是各自实现登录 provider。
 

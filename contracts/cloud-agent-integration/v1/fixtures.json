@@ -1,0 +1,2262 @@
+{
+  "valid": [
+    {
+      "name": "discovery_installed_families",
+      "schema": "Discovery",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "https://inference.example.org/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants",
+          "subject_operations_url": "https://inference.example.org/internal/cloud-agent/v1/subject-operations"
+        },
+        "supported_versions": {
+          "identity": [
+            2
+          ],
+          "access": [
+            1
+          ],
+          "catalog": [
+            1
+          ],
+          "grants": [
+            1
+          ],
+          "binding": [
+            1
+          ],
+          "subject_lifecycle": [
+            1
+          ]
+        },
+        "supported_scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "supported_permissions": [
+          "agent.use",
+          "agent.admin"
+        ],
+        "limits": {
+          "pairing_ttl_seconds": 600,
+          "pending_ttl_seconds": 600,
+          "identity_code_ttl_seconds": 60,
+          "identity_token_ttl_seconds": 600,
+          "session_ttl_seconds": 28800,
+          "access_cache_max_seconds": 30,
+          "grant_max_ttl_seconds": 900,
+          "credential_overlap_max_seconds": 300,
+          "credential_max_generations": 2
+        }
+      }
+    },
+    {
+      "name": "core_only_discovery_without_lifecycle",
+      "schema": "Discovery",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "https://inference.example.org/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants"
+        },
+        "supported_versions": {
+          "identity": [
+            2
+          ],
+          "access": [
+            1
+          ],
+          "catalog": [
+            1
+          ],
+          "grants": [
+            1
+          ],
+          "binding": [
+            1
+          ]
+        },
+        "supported_scopes": [
+          "access",
+          "catalog",
+          "grants"
+        ],
+        "supported_permissions": [
+          "agent.use",
+          "agent.admin"
+        ],
+        "limits": {
+          "pairing_ttl_seconds": 600,
+          "pending_ttl_seconds": 600,
+          "identity_code_ttl_seconds": 60,
+          "identity_token_ttl_seconds": 600,
+          "session_ttl_seconds": 28800,
+          "access_cache_max_seconds": 30,
+          "grant_max_ttl_seconds": 900,
+          "credential_overlap_max_seconds": 300,
+          "credential_max_generations": 2
+        }
+      }
+    },
+    {
+      "name": "future_and_current_advertised_majors",
+      "schema": "Discovery",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "https://inference.example.org/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants",
+          "subject_operations_url": "https://inference.example.org/internal/cloud-agent/v1/subject-operations"
+        },
+        "supported_versions": {
+          "identity": [
+            2,
+            3
+          ],
+          "access": [
+            1,
+            2
+          ],
+          "catalog": [
+            1,
+            2
+          ],
+          "grants": [
+            1,
+            2
+          ],
+          "binding": [
+            1,
+            2
+          ],
+          "subject_lifecycle": [
+            1,
+            2
+          ]
+        },
+        "supported_scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "supported_permissions": [
+          "agent.use",
+          "agent.admin"
+        ],
+        "limits": {
+          "pairing_ttl_seconds": 600,
+          "pending_ttl_seconds": 600,
+          "identity_code_ttl_seconds": 60,
+          "identity_token_ttl_seconds": 600,
+          "session_ttl_seconds": 28800,
+          "access_cache_max_seconds": 30,
+          "grant_max_ttl_seconds": 900,
+          "credential_overlap_max_seconds": 300,
+          "credential_max_generations": 2
+        }
+      }
+    },
+    {
+      "name": "approved_pairing_configuration",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "core_only_pairing_without_lifecycle",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1
+        }
+      }
+    },
+    {
+      "name": "explicit_replacement_and_lifecycle_handover",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        },
+        "replace_installation_id": "old-installation",
+        "transfer_subject_operations_from_installation_id": "old-installation"
+      }
+    },
+    {
+      "name": "synthetic_pairing_code_response",
+      "schema": "PairingResponse",
+      "value": {
+        "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "expires_in": 600,
+        "configuration": {
+          "public_origin": "https://agents.example.org",
+          "callback_url": "https://agents.example.org/api/v1/session/callback",
+          "scopes": [
+            "access",
+            "catalog",
+            "grants",
+            "subject_lifecycle"
+          ],
+          "contract_versions": {
+            "identity": 2,
+            "access": 1,
+            "catalog": 1,
+            "grants": 1,
+            "binding": 1,
+            "subject_lifecycle": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "synthetic_pending_redeem",
+      "schema": "PairingRedeemRequest",
+      "value": {
+        "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "request_id": "pairing-request-01",
+        "agent_instance_id": "agent-instance-01",
+        "credential_id": "credential-01",
+        "credential_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "expected": {
+          "gateway_instance_id": "gateway-instance-01",
+          "issuer": "https://inference.example.org",
+          "public_origin": "https://agents.example.org",
+          "callback_url": "https://agents.example.org/api/v1/session/callback",
+          "contract_versions": {
+            "identity": 2,
+            "access": 1,
+            "catalog": 1,
+            "grants": 1,
+            "binding": 1,
+            "subject_lifecycle": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "active_binding_without_agent_local_generation",
+      "schema": "BindingMetadata",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "agent_instance_id": "agent-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "audience": "agent-client-01",
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "state": "ACTIVE",
+        "credential_epoch": 1,
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        },
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "https://inference.example.org/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants",
+          "subject_operations_url": "https://inference.example.org/internal/cloud-agent/v1/subject-operations"
+        }
+      }
+    },
+    {
+      "name": "core_only_binding_without_lifecycle",
+      "schema": "BindingMetadata",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "agent_instance_id": "agent-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "audience": "agent-client-01",
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants"
+        ],
+        "state": "ACTIVE",
+        "credential_epoch": 1,
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1
+        },
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "https://inference.example.org/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants"
+        }
+      }
+    },
+    {
+      "name": "active_self_response",
+      "schema": "BindingResponse",
+      "value": {
+        "binding": {
+          "gateway_instance_id": "gateway-instance-01",
+          "issuer": "https://inference.example.org",
+          "agent_instance_id": "agent-instance-01",
+          "installation_id": "installation-01",
+          "client_id": "agent-client-01",
+          "audience": "agent-client-01",
+          "public_origin": "https://agents.example.org",
+          "callback_url": "https://agents.example.org/api/v1/session/callback",
+          "scopes": [
+            "access",
+            "catalog",
+            "grants",
+            "subject_lifecycle"
+          ],
+          "state": "ACTIVE",
+          "credential_epoch": 1,
+          "contract_versions": {
+            "identity": 2,
+            "access": 1,
+            "catalog": 1,
+            "grants": 1,
+            "binding": 1,
+            "subject_lifecycle": 1
+          },
+          "endpoints": {
+            "authorize_url": "https://inference.example.org/authorize",
+            "token_url": "https://inference.example.org/v1/identity/token",
+            "jwks_url": "https://inference.example.org/v1/identity/jwks",
+            "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+            "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+            "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+            "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants",
+            "subject_operations_url": "https://inference.example.org/internal/cloud-agent/v1/subject-operations"
+          }
+        },
+        "credential": {
+          "credential_id": "credential-01",
+          "credential_epoch": 1,
+          "state": "ACTIVE",
+          "created_at": "2026-09-09T00:00:00Z",
+          "expires_at": null,
+          "revoked_at": null
+        }
+      }
+    },
+    {
+      "name": "synthetic_rotation_registration",
+      "schema": "RotationRequest",
+      "value": {
+        "request_id": "rotation-request-02",
+        "credential_id": "credential-02",
+        "credential_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "overlap_seconds": 300
+      }
+    },
+    {
+      "name": "installation_revocation_result",
+      "schema": "InstallationRevocation",
+      "value": {
+        "installation_id": "installation-01",
+        "state": "REVOKED",
+        "revoked_at": "2026-09-09T00:01:00Z",
+        "already_revoked": false
+      }
+    },
+    {
+      "name": "identity_v2_code_request",
+      "schema": "IdentityCodeRequest",
+      "value": {
+        "contract_version": 2,
+        "client_id": "agent-client-01",
+        "redirect_uri": "https://agents.example.org/api/v1/session/callback",
+        "code_challenge": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "code_challenge_method": "S256"
+      }
+    },
+    {
+      "name": "identity_v2_token_request",
+      "schema": "IdentityTokenRequest",
+      "value": {
+        "contract_version": 2,
+        "code": "synthetic-one-time-code",
+        "code_verifier": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+        "client_id": "agent-client-01",
+        "redirect_uri": "https://agents.example.org/api/v1/session/callback"
+      }
+    },
+    {
+      "name": "synthetic_identity_token_response_shape_only",
+      "schema": "IdentityTokenResponse",
+      "value": {
+        "contract_version": 2,
+        "access_token": "synthetic.not-a-signed.jwt",
+        "token_type": "Bearer",
+        "expires_in": 600
+      }
+    },
+    {
+      "name": "minimal_identity_claims",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "opaque-user-01",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": "gateway-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "authorization_version": 4
+      }
+    },
+    {
+      "name": "opaque_non_ulid_subject",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "not-a-uuid-or-ulid",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": "gateway-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "authorization_version": 4
+      }
+    },
+    {
+      "name": "minimal_agent_session",
+      "schema": "AgentSessionV2",
+      "value": {
+        "ver": 2,
+        "sub": "opaque-user-01",
+        "namespace_id": "gateway-instance-01",
+        "binding_epoch": 2,
+        "authorization_version": 4,
+        "sid": "synthetic-session-01",
+        "iat": 1800000000,
+        "exp": 1800028800
+      }
+    },
+    {
+      "name": "version_bound_access_request",
+      "schema": "AccessRequest",
+      "value": {
+        "subject": "opaque-user-01",
+        "authorization_version": 4
+      }
+    },
+    {
+      "name": "allowed_access",
+      "schema": "AccessResponse",
+      "value": {
+        "subject": "opaque-user-01",
+        "authorization_version": 4,
+        "allowed": true,
+        "permissions": [
+          "agent.use",
+          "agent.admin"
+        ],
+        "valid_for_seconds": 30
+      }
+    },
+    {
+      "name": "policy_denied_access",
+      "schema": "AccessResponse",
+      "value": {
+        "subject": "opaque-user-01",
+        "authorization_version": 4,
+        "allowed": false,
+        "permissions": [],
+        "valid_for_seconds": 30
+      }
+    },
+    {
+      "name": "filtered_model_catalog",
+      "schema": "ModelCatalog",
+      "value": {
+        "user_id": "opaque-user-01",
+        "authorization_version": 4,
+        "models": [
+          "example-chat"
+        ],
+        "aliases": {
+          "chat": "example-chat"
+        },
+        "reasoning_efforts": {
+          "example-chat": [
+            "low",
+            "high"
+          ]
+        }
+      }
+    },
+    {
+      "name": "max_lifetime_grant_request",
+      "schema": "GrantMintRequest",
+      "value": {
+        "user_id": "opaque-user-01",
+        "authorization_version": 4,
+        "external_job_id": "job-01",
+        "external_attempt_id": "attempt-01",
+        "allowed_models": [
+          "example-chat"
+        ],
+        "ttl_seconds": 900
+      }
+    },
+    {
+      "name": "effective_grant",
+      "schema": "Grant",
+      "value": {
+        "grant_id": "grant-01",
+        "installation_id": "installation-01",
+        "user_id": "opaque-user-01",
+        "authorization_version": 4,
+        "external_job_id": "job-01",
+        "external_attempt_id": "attempt-01",
+        "allowed_models": [
+          "example-chat"
+        ],
+        "expires_at": "2026-09-09T00:15:00Z",
+        "revoked_at": null
+      }
+    },
+    {
+      "name": "synthetic_flat_grant_mint_response",
+      "schema": "GrantMintResponse",
+      "value": {
+        "grant_id": "grant-01",
+        "installation_id": "installation-01",
+        "user_id": "opaque-user-01",
+        "authorization_version": 4,
+        "external_job_id": "job-01",
+        "external_attempt_id": "attempt-01",
+        "allowed_models": [
+          "example-chat"
+        ],
+        "expires_at": "2026-09-09T00:15:00Z",
+        "revoked_at": null,
+        "token": "agr.synthetic-not-a-real-token"
+      }
+    },
+    {
+      "name": "owned_job_usage",
+      "schema": "GrantUsage",
+      "value": {
+        "grant_id": "grant-01",
+        "installation_id": "installation-01",
+        "external_job_id": "job-01",
+        "spent_usd": 0.12,
+        "request_count": 2,
+        "tokens_in": 10,
+        "tokens_out": 20
+      }
+    },
+    {
+      "name": "pending_subject_purge",
+      "schema": "SubjectOperation",
+      "value": {
+        "operation_id": "operation-01",
+        "agent_instance_id": "agent-instance-01",
+        "namespace_id": "gateway-instance-01",
+        "subject": "opaque-user-01",
+        "instruction": "purge",
+        "state": "pending",
+        "created_at": "2026-09-09T00:00:00Z",
+        "completed_at": null
+      }
+    },
+    {
+      "name": "subject_outbox_page",
+      "schema": "SubjectOperationPage",
+      "value": {
+        "items": [
+          {
+            "operation_id": "operation-01",
+            "agent_instance_id": "agent-instance-01",
+            "namespace_id": "gateway-instance-01",
+            "subject": "opaque-user-01",
+            "instruction": "purge",
+            "state": "pending",
+            "created_at": "2026-09-09T00:00:00Z",
+            "completed_at": null
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "purge_in_progress",
+      "schema": "SubjectOperationAck",
+      "value": {
+        "state": "in_progress"
+      }
+    },
+    {
+      "name": "purge_completion_with_bounded_backup_retention",
+      "schema": "SubjectOperationAck",
+      "value": {
+        "state": "completed",
+        "completion": {
+          "tombstone_persisted": true,
+          "writes_fenced": true,
+          "active_data_deleted": true,
+          "backup_retention_until": "2026-10-09T00:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "completed_subject_operation",
+      "schema": "SubjectOperation",
+      "value": {
+        "operation_id": "operation-01",
+        "agent_instance_id": "agent-instance-01",
+        "namespace_id": "gateway-instance-01",
+        "subject": "opaque-user-01",
+        "instruction": "purge",
+        "state": "completed",
+        "created_at": "2026-09-09T00:00:00Z",
+        "completed_at": "2026-09-09T00:01:00Z"
+      }
+    },
+    {
+      "name": "credential_invalid_is_not_installation_revocation",
+      "schema": "ErrorEnvelope",
+      "value": {
+        "detail": {
+          "error": {
+            "type": "credential_invalid",
+            "message": "The credential is invalid."
+          }
+        }
+      }
+    },
+    {
+      "name": "explicit_installation_revocation_error",
+      "schema": "ErrorEnvelope",
+      "value": {
+        "detail": {
+          "error": {
+            "type": "installation_revoked",
+            "message": "This installation is revoked."
+          }
+        }
+      }
+    },
+    {
+      "name": "old_authorization_version_error",
+      "schema": "ErrorEnvelope",
+      "value": {
+        "detail": {
+          "error": {
+            "type": "authorization_version_mismatch",
+            "message": "Start a new authorization flow."
+          }
+        }
+      }
+    },
+    {
+      "name": "internal_http_api_shape_requires_operator_trust",
+      "schema": "Discovery",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "http://gateway.internal.example.org:8080/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants"
+        },
+        "supported_versions": {
+          "identity": [
+            2
+          ],
+          "access": [
+            1
+          ],
+          "catalog": [
+            1
+          ],
+          "grants": [
+            1
+          ],
+          "binding": [
+            1
+          ]
+        },
+        "supported_scopes": [
+          "access",
+          "catalog",
+          "grants"
+        ],
+        "supported_permissions": [
+          "agent.use",
+          "agent.admin"
+        ],
+        "limits": {
+          "pairing_ttl_seconds": 600,
+          "pending_ttl_seconds": 600,
+          "identity_code_ttl_seconds": 60,
+          "identity_token_ttl_seconds": 600,
+          "session_ttl_seconds": 28800,
+          "access_cache_max_seconds": 30,
+          "grant_max_ttl_seconds": 900,
+          "credential_overlap_max_seconds": 300,
+          "credential_max_generations": 2
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "identity_profile_email_forbidden",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "opaque-user-01",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": "gateway-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "authorization_version": 4,
+        "email": "sentinel@example.org"
+      }
+    },
+    {
+      "name": "identity_platform_role_forbidden",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "opaque-user-01",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": "gateway-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "authorization_version": 4,
+        "role": "admin"
+      }
+    },
+    {
+      "name": "identity_display_name_forbidden",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "opaque-user-01",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": "gateway-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "authorization_version": 4,
+        "name": "Synthetic profile sentinel"
+      }
+    },
+    {
+      "name": "identity_namespace_must_be_string",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "opaque-user-01",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": 123,
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "authorization_version": 4
+      }
+    },
+    {
+      "name": "identity_client_must_not_be_empty",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "opaque-user-01",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": "gateway-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "",
+        "authorization_version": 4
+      }
+    },
+    {
+      "name": "identity_subject_max128",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": "gateway-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "authorization_version": 4
+      }
+    },
+    {
+      "name": "identity_reject_legacy_version",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 1,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "opaque-user-01",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": "gateway-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "authorization_version": 4
+      }
+    },
+    {
+      "name": "identity_noninteger_authorization_version",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "opaque-user-01",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": "gateway-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "authorization_version": "4"
+      }
+    },
+    {
+      "name": "session_profile_forbidden",
+      "schema": "AgentSessionV2",
+      "value": {
+        "ver": 2,
+        "sub": "opaque-user-01",
+        "namespace_id": "gateway-instance-01",
+        "binding_epoch": 2,
+        "authorization_version": 4,
+        "sid": "synthetic-session-01",
+        "iat": 1800000000,
+        "exp": 1800028800,
+        "email": "sentinel@example.org"
+      }
+    },
+    {
+      "name": "session_role_forbidden",
+      "schema": "AgentSessionV2",
+      "value": {
+        "ver": 2,
+        "sub": "opaque-user-01",
+        "namespace_id": "gateway-instance-01",
+        "binding_epoch": 2,
+        "authorization_version": 4,
+        "sid": "synthetic-session-01",
+        "iat": 1800000000,
+        "exp": 1800028800,
+        "role": "admin"
+      }
+    },
+    {
+      "name": "session_cannot_use_config_generation_as_epoch",
+      "schema": "AgentSessionV2",
+      "value": {
+        "ver": 2,
+        "sub": "opaque-user-01",
+        "namespace_id": "gateway-instance-01",
+        "binding_epoch": 2,
+        "authorization_version": 4,
+        "sid": "synthetic-session-01",
+        "iat": 1800000000,
+        "exp": 1800028800,
+        "config_generation": 3
+      }
+    },
+    {
+      "name": "session_legacy_format_forbidden",
+      "schema": "AgentSessionV2",
+      "value": {
+        "ver": 1,
+        "sub": "opaque-user-01",
+        "namespace_id": "gateway-instance-01",
+        "binding_epoch": 2,
+        "authorization_version": 4,
+        "sid": "synthetic-session-01",
+        "iat": 1800000000,
+        "exp": 1800028800
+      }
+    },
+    {
+      "name": "code_plain_pkce_forbidden",
+      "schema": "IdentityCodeRequest",
+      "value": {
+        "contract_version": 2,
+        "client_id": "agent-client-01",
+        "redirect_uri": "https://agents.example.org/api/v1/session/callback",
+        "code_challenge": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "code_challenge_method": "plain"
+      }
+    },
+    {
+      "name": "token_reject_legacy_version",
+      "schema": "IdentityTokenRequest",
+      "value": {
+        "contract_version": 1,
+        "code": "synthetic-one-time-code",
+        "code_verifier": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+        "client_id": "agent-client-01",
+        "redirect_uri": "https://agents.example.org/api/v1/session/callback"
+      }
+    },
+    {
+      "name": "token_reject_short_verifier",
+      "schema": "IdentityTokenRequest",
+      "value": {
+        "contract_version": 2,
+        "code": "synthetic-one-time-code",
+        "code_verifier": "short",
+        "client_id": "agent-client-01",
+        "redirect_uri": "https://agents.example.org/api/v1/session/callback"
+      }
+    },
+    {
+      "name": "identity_token_ttl_cannot_expand",
+      "schema": "IdentityTokenResponse",
+      "value": {
+        "contract_version": 2,
+        "access_token": "synthetic.not-a-signed.jwt",
+        "token_type": "Bearer",
+        "expires_in": 601
+      }
+    },
+    {
+      "name": "access_zero_version_forbidden",
+      "schema": "AccessRequest",
+      "value": {
+        "subject": "opaque-user-01",
+        "authorization_version": 0
+      }
+    },
+    {
+      "name": "caller_cannot_supply_installation_id",
+      "schema": "AccessRequest",
+      "value": {
+        "subject": "opaque-user-01",
+        "authorization_version": 4,
+        "installation_id": "someone-elses-installation"
+      }
+    },
+    {
+      "name": "access_cache_above30_forbidden",
+      "schema": "AccessResponse",
+      "value": {
+        "subject": "opaque-user-01",
+        "authorization_version": 4,
+        "allowed": true,
+        "permissions": [
+          "agent.use",
+          "agent.admin"
+        ],
+        "valid_for_seconds": 31
+      }
+    },
+    {
+      "name": "denied_access_cannot_carry_permissions",
+      "schema": "AccessResponse",
+      "value": {
+        "subject": "opaque-user-01",
+        "authorization_version": 4,
+        "allowed": false,
+        "permissions": [
+          "agent.use",
+          "agent.admin"
+        ],
+        "valid_for_seconds": 30
+      }
+    },
+    {
+      "name": "application_permissions_are_not_platform_roles",
+      "schema": "AccessResponse",
+      "value": {
+        "subject": "opaque-user-01",
+        "authorization_version": 4,
+        "allowed": true,
+        "permissions": [
+          "admin"
+        ],
+        "valid_for_seconds": 30
+      }
+    },
+    {
+      "name": "agent_admin_alone_lacks_required_use",
+      "schema": "AccessResponse",
+      "value": {
+        "subject": "opaque-user-01",
+        "authorization_version": 4,
+        "allowed": true,
+        "permissions": [
+          "agent.admin"
+        ],
+        "valid_for_seconds": 30
+      }
+    },
+    {
+      "name": "access_profile_forbidden",
+      "schema": "AccessResponse",
+      "value": {
+        "subject": "opaque-user-01",
+        "authorization_version": 4,
+        "allowed": true,
+        "permissions": [
+          "agent.use",
+          "agent.admin"
+        ],
+        "valid_for_seconds": 30,
+        "email": "sentinel@example.org"
+      }
+    },
+    {
+      "name": "catalog_profile_forbidden",
+      "schema": "ModelCatalog",
+      "value": {
+        "user_id": "opaque-user-01",
+        "authorization_version": 4,
+        "models": [
+          "example-chat"
+        ],
+        "aliases": {
+          "chat": "example-chat"
+        },
+        "reasoning_efforts": {
+          "example-chat": [
+            "low",
+            "high"
+          ]
+        },
+        "role": "admin"
+      }
+    },
+    {
+      "name": "binding_missing_core_scope",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "binding_global_user_scope_forbidden",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle",
+          "users.read"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "binding_duplicate_scopes_forbidden",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "access"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "lifecycle_handover_requires_lifecycle_scope",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        },
+        "transfer_subject_operations_from_installation_id": "old-installation"
+      }
+    },
+    {
+      "name": "lifecycle_selection_requires_version",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1
+        }
+      }
+    },
+    {
+      "name": "lifecycle_discovery_requires_version",
+      "schema": "Discovery",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "https://inference.example.org/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants",
+          "subject_operations_url": "https://inference.example.org/internal/cloud-agent/v1/subject-operations"
+        },
+        "supported_versions": {
+          "identity": [
+            2
+          ],
+          "access": [
+            1
+          ],
+          "catalog": [
+            1
+          ],
+          "grants": [
+            1
+          ],
+          "binding": [
+            1
+          ]
+        },
+        "supported_scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "supported_permissions": [
+          "agent.use",
+          "agent.admin"
+        ],
+        "limits": {
+          "pairing_ttl_seconds": 600,
+          "pending_ttl_seconds": 600,
+          "identity_code_ttl_seconds": 60,
+          "identity_token_ttl_seconds": 600,
+          "session_ttl_seconds": 28800,
+          "access_cache_max_seconds": 30,
+          "grant_max_ttl_seconds": 900,
+          "credential_overlap_max_seconds": 300,
+          "credential_max_generations": 2
+        }
+      }
+    },
+    {
+      "name": "lifecycle_discovery_requires_endpoint",
+      "schema": "Discovery",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "https://inference.example.org/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants"
+        },
+        "supported_versions": {
+          "identity": [
+            2
+          ],
+          "access": [
+            1
+          ],
+          "catalog": [
+            1
+          ],
+          "grants": [
+            1
+          ],
+          "binding": [
+            1
+          ],
+          "subject_lifecycle": [
+            1
+          ]
+        },
+        "supported_scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "supported_permissions": [
+          "agent.use",
+          "agent.admin"
+        ],
+        "limits": {
+          "pairing_ttl_seconds": 600,
+          "pending_ttl_seconds": 600,
+          "identity_code_ttl_seconds": 60,
+          "identity_token_ttl_seconds": 600,
+          "session_ttl_seconds": 28800,
+          "access_cache_max_seconds": 30,
+          "grant_max_ttl_seconds": 900,
+          "credential_overlap_max_seconds": 300,
+          "credential_max_generations": 2
+        }
+      }
+    },
+    {
+      "name": "lifecycle_binding_requires_version",
+      "schema": "BindingMetadata",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "agent_instance_id": "agent-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "audience": "agent-client-01",
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "state": "ACTIVE",
+        "credential_epoch": 1,
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1
+        },
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "https://inference.example.org/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants",
+          "subject_operations_url": "https://inference.example.org/internal/cloud-agent/v1/subject-operations"
+        }
+      }
+    },
+    {
+      "name": "lifecycle_binding_requires_endpoint",
+      "schema": "BindingMetadata",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "agent_instance_id": "agent-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "audience": "agent-client-01",
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "state": "ACTIVE",
+        "credential_epoch": 1,
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        },
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "https://inference.example.org/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants"
+        }
+      }
+    },
+    {
+      "name": "callback_reject_fragment",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback#fragment",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "pairing_reject_raw_service_secret_body",
+      "schema": "PairingRedeemRequest",
+      "value": {
+        "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "request_id": "pairing-request-01",
+        "agent_instance_id": "agent-instance-01",
+        "credential_id": "credential-01",
+        "credential_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "expected": {
+          "gateway_instance_id": "gateway-instance-01",
+          "issuer": "https://inference.example.org",
+          "public_origin": "https://agents.example.org",
+          "callback_url": "https://agents.example.org/api/v1/session/callback",
+          "contract_versions": {
+            "identity": 2,
+            "access": 1,
+            "catalog": 1,
+            "grants": 1,
+            "binding": 1,
+            "subject_lifecycle": 1
+          }
+        },
+        "secret": "synthetic-do-not-send-in-body"
+      }
+    },
+    {
+      "name": "pairing_reject_caller_scope_override",
+      "schema": "PairingRedeemRequest",
+      "value": {
+        "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "request_id": "pairing-request-01",
+        "agent_instance_id": "agent-instance-01",
+        "credential_id": "credential-01",
+        "credential_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "expected": {
+          "gateway_instance_id": "gateway-instance-01",
+          "issuer": "https://inference.example.org",
+          "public_origin": "https://agents.example.org",
+          "callback_url": "https://agents.example.org/api/v1/session/callback",
+          "contract_versions": {
+            "identity": 2,
+            "access": 1,
+            "catalog": 1,
+            "grants": 1,
+            "binding": 1,
+            "subject_lifecycle": 1
+          }
+        },
+        "scopes": [
+          "users.read"
+        ]
+      }
+    },
+    {
+      "name": "pairing_hash_must_be_sha256_hex",
+      "schema": "PairingRedeemRequest",
+      "value": {
+        "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "request_id": "pairing-request-01",
+        "agent_instance_id": "agent-instance-01",
+        "credential_id": "credential-01",
+        "credential_hash": "not-a-sha256-digest",
+        "expected": {
+          "gateway_instance_id": "gateway-instance-01",
+          "issuer": "https://inference.example.org",
+          "public_origin": "https://agents.example.org",
+          "callback_url": "https://agents.example.org/api/v1/session/callback",
+          "contract_versions": {
+            "identity": 2,
+            "access": 1,
+            "catalog": 1,
+            "grants": 1,
+            "binding": 1,
+            "subject_lifecycle": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "binding_cannot_expose_agent_local_generation",
+      "schema": "BindingMetadata",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "agent_instance_id": "agent-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "audience": "agent-client-01",
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "state": "ACTIVE",
+        "credential_epoch": 1,
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        },
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "https://inference.example.org/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants",
+          "subject_operations_url": "https://inference.example.org/internal/cloud-agent/v1/subject-operations"
+        },
+        "config_generation": 3
+      }
+    },
+    {
+      "name": "binding_client_must_not_be_empty",
+      "schema": "BindingMetadata",
+      "value": {
+        "gateway_instance_id": "gateway-instance-01",
+        "issuer": "https://inference.example.org",
+        "agent_instance_id": "agent-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "",
+        "audience": "agent-client-01",
+        "public_origin": "https://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "state": "ACTIVE",
+        "credential_epoch": 1,
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        },
+        "endpoints": {
+          "authorize_url": "https://inference.example.org/authorize",
+          "token_url": "https://inference.example.org/v1/identity/token",
+          "jwks_url": "https://inference.example.org/v1/identity/jwks",
+          "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
+          "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
+          "catalog_url": "https://inference.example.org/internal/cloud-agent/v1/model-catalog",
+          "grants_url": "https://inference.example.org/internal/cloud-agent/v1/grants",
+          "subject_operations_url": "https://inference.example.org/internal/cloud-agent/v1/subject-operations"
+        }
+      }
+    },
+    {
+      "name": "rotation_overlap_above300_forbidden",
+      "schema": "RotationRequest",
+      "value": {
+        "request_id": "rotation-request-02",
+        "credential_id": "credential-02",
+        "credential_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "overlap_seconds": 301
+      }
+    },
+    {
+      "name": "rotation_reject_raw_service_secret_body",
+      "schema": "RotationRequest",
+      "value": {
+        "request_id": "rotation-request-02",
+        "credential_id": "credential-02",
+        "credential_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "overlap_seconds": 300,
+        "secret": "synthetic-do-not-send-in-body"
+      }
+    },
+    {
+      "name": "grant_lifetime_above900_forbidden",
+      "schema": "GrantMintRequest",
+      "value": {
+        "user_id": "opaque-user-01",
+        "authorization_version": 4,
+        "external_job_id": "job-01",
+        "external_attempt_id": "attempt-01",
+        "allowed_models": [
+          "example-chat"
+        ],
+        "ttl_seconds": 901
+      }
+    },
+    {
+      "name": "grant_zero_lifetime_forbidden",
+      "schema": "GrantMintRequest",
+      "value": {
+        "user_id": "opaque-user-01",
+        "authorization_version": 4,
+        "external_job_id": "job-01",
+        "external_attempt_id": "attempt-01",
+        "allowed_models": [
+          "example-chat"
+        ],
+        "ttl_seconds": 0
+      }
+    },
+    {
+      "name": "grant_caller_cannot_supply_installation_id",
+      "schema": "GrantMintRequest",
+      "value": {
+        "user_id": "opaque-user-01",
+        "authorization_version": 4,
+        "external_job_id": "job-01",
+        "external_attempt_id": "attempt-01",
+        "allowed_models": [
+          "example-chat"
+        ],
+        "ttl_seconds": 900,
+        "installation_id": "someone-elses-installation"
+      }
+    },
+    {
+      "name": "grant_no_per_job_dollar_budget",
+      "schema": "GrantMintRequest",
+      "value": {
+        "user_id": "opaque-user-01",
+        "authorization_version": 4,
+        "external_job_id": "job-01",
+        "external_attempt_id": "attempt-01",
+        "allowed_models": [
+          "example-chat"
+        ],
+        "ttl_seconds": 900,
+        "budget_usd": 10
+      }
+    },
+    {
+      "name": "purge_profile_forbidden",
+      "schema": "SubjectOperation",
+      "value": {
+        "operation_id": "operation-01",
+        "agent_instance_id": "agent-instance-01",
+        "namespace_id": "gateway-instance-01",
+        "subject": "opaque-user-01",
+        "instruction": "purge",
+        "state": "pending",
+        "created_at": "2026-09-09T00:00:00Z",
+        "completed_at": null,
+        "email": "sentinel@example.org"
+      }
+    },
+    {
+      "name": "purge_incomplete_cannot_have_completion_timestamp",
+      "schema": "SubjectOperation",
+      "value": {
+        "operation_id": "operation-01",
+        "agent_instance_id": "agent-instance-01",
+        "namespace_id": "gateway-instance-01",
+        "subject": "opaque-user-01",
+        "instruction": "purge",
+        "state": "pending",
+        "created_at": "2026-09-09T00:00:00Z",
+        "completed_at": "2026-09-09T00:01:00Z"
+      }
+    },
+    {
+      "name": "purge_completed_requires_completion_timestamp",
+      "schema": "SubjectOperation",
+      "value": {
+        "operation_id": "operation-01",
+        "agent_instance_id": "agent-instance-01",
+        "namespace_id": "gateway-instance-01",
+        "subject": "opaque-user-01",
+        "instruction": "purge",
+        "state": "completed",
+        "created_at": "2026-09-09T00:00:00Z",
+        "completed_at": null
+      }
+    },
+    {
+      "name": "purge_ack_requires_durable_write_fence",
+      "schema": "SubjectOperationAck",
+      "value": {
+        "state": "completed",
+        "completion": {
+          "tombstone_persisted": true,
+          "writes_fenced": false,
+          "active_data_deleted": true,
+          "backup_retention_until": "2026-10-09T00:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "purge_ack_requires_durable_tombstone",
+      "schema": "SubjectOperationAck",
+      "value": {
+        "state": "completed",
+        "completion": {
+          "tombstone_persisted": false,
+          "writes_fenced": true,
+          "active_data_deleted": true,
+          "backup_retention_until": "2026-10-09T00:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "purge_ack_requires_active_data_deletion",
+      "schema": "SubjectOperationAck",
+      "value": {
+        "state": "completed",
+        "completion": {
+          "tombstone_persisted": true,
+          "writes_fenced": true,
+          "active_data_deleted": false,
+          "backup_retention_until": "2026-10-09T00:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "purge_in_progress_cannot_claim_completion",
+      "schema": "SubjectOperationAck",
+      "value": {
+        "state": "in_progress",
+        "completion": {
+          "tombstone_persisted": true,
+          "writes_fenced": true,
+          "active_data_deleted": true,
+          "backup_retention_until": "2026-10-09T00:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "identity_missing_namespace",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "opaque-user-01",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01",
+        "authorization_version": 4
+      }
+    },
+    {
+      "name": "identity_missing_client",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "opaque-user-01",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": "gateway-instance-01",
+        "installation_id": "installation-01",
+        "authorization_version": 4
+      }
+    },
+    {
+      "name": "identity_missing_authorization_version",
+      "schema": "IdentityClaimsV2",
+      "value": {
+        "ver": 2,
+        "iss": "https://inference.example.org",
+        "aud": "agent-client-01",
+        "sub": "opaque-user-01",
+        "iat": 1800000000,
+        "exp": 1800000600,
+        "gateway_instance_id": "gateway-instance-01",
+        "installation_id": "installation-01",
+        "client_id": "agent-client-01"
+      }
+    },
+    {
+      "name": "session_missing_authorization_version",
+      "schema": "AgentSessionV2",
+      "value": {
+        "ver": 2,
+        "sub": "opaque-user-01",
+        "namespace_id": "gateway-instance-01",
+        "binding_epoch": 2,
+        "sid": "synthetic-session-01",
+        "iat": 1800000000,
+        "exp": 1800028800
+      }
+    },
+    {
+      "name": "session_missing_namespace",
+      "schema": "AgentSessionV2",
+      "value": {
+        "ver": 2,
+        "sub": "opaque-user-01",
+        "binding_epoch": 2,
+        "authorization_version": 4,
+        "sid": "synthetic-session-01",
+        "iat": 1800000000,
+        "exp": 1800028800
+      }
+    },
+    {
+      "name": "code_missing_explicit_v2_negotiation",
+      "schema": "IdentityCodeRequest",
+      "value": {
+        "client_id": "agent-client-01",
+        "redirect_uri": "https://agents.example.org/api/v1/session/callback",
+        "code_challenge": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "code_challenge_method": "S256"
+      }
+    },
+    {
+      "name": "access_version_is_required",
+      "schema": "AccessRequest",
+      "value": {
+        "subject": "opaque-user-01"
+      }
+    },
+    {
+      "name": "grant_subject_version_is_required",
+      "schema": "GrantMintRequest",
+      "value": {
+        "user_id": "opaque-user-01",
+        "external_job_id": "job-01",
+        "external_attempt_id": "attempt-01",
+        "allowed_models": [
+          "example-chat"
+        ],
+        "ttl_seconds": 900
+      }
+    },
+    {
+      "name": "origin_reject_userinfo",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://user:password@agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "origin_reject_path",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org/path",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "origin_reject_trailing_slash",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org/",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "origin_reject_fragment",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org#fragment",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "origin_reject_query",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org?callback=other",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "origin_reject_non_http_scheme",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "file:///tmp/agents",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "pairing_ttl_cannot_expand",
+      "schema": "PairingResponse",
+      "value": {
+        "code": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "expires_in": 601,
+        "configuration": {
+          "public_origin": "https://agents.example.org",
+          "callback_url": "https://agents.example.org/api/v1/session/callback",
+          "scopes": [
+            "access",
+            "catalog",
+            "grants",
+            "subject_lifecycle"
+          ],
+          "contract_versions": {
+            "identity": 2,
+            "access": 1,
+            "catalog": 1,
+            "grants": 1,
+            "binding": 1,
+            "subject_lifecycle": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "discovery_limit_pairing_ttl_seconds_cannot_expand",
+      "schema": "IntegrationLimits",
+      "value": {
+        "pairing_ttl_seconds": 601,
+        "pending_ttl_seconds": 600,
+        "identity_code_ttl_seconds": 60,
+        "identity_token_ttl_seconds": 600,
+        "session_ttl_seconds": 28800,
+        "access_cache_max_seconds": 30,
+        "grant_max_ttl_seconds": 900,
+        "credential_overlap_max_seconds": 300,
+        "credential_max_generations": 2
+      }
+    },
+    {
+      "name": "discovery_limit_pending_ttl_seconds_cannot_expand",
+      "schema": "IntegrationLimits",
+      "value": {
+        "pairing_ttl_seconds": 600,
+        "pending_ttl_seconds": 601,
+        "identity_code_ttl_seconds": 60,
+        "identity_token_ttl_seconds": 600,
+        "session_ttl_seconds": 28800,
+        "access_cache_max_seconds": 30,
+        "grant_max_ttl_seconds": 900,
+        "credential_overlap_max_seconds": 300,
+        "credential_max_generations": 2
+      }
+    },
+    {
+      "name": "discovery_limit_identity_code_ttl_seconds_cannot_expand",
+      "schema": "IntegrationLimits",
+      "value": {
+        "pairing_ttl_seconds": 600,
+        "pending_ttl_seconds": 600,
+        "identity_code_ttl_seconds": 61,
+        "identity_token_ttl_seconds": 600,
+        "session_ttl_seconds": 28800,
+        "access_cache_max_seconds": 30,
+        "grant_max_ttl_seconds": 900,
+        "credential_overlap_max_seconds": 300,
+        "credential_max_generations": 2
+      }
+    },
+    {
+      "name": "discovery_limit_identity_token_ttl_seconds_cannot_expand",
+      "schema": "IntegrationLimits",
+      "value": {
+        "pairing_ttl_seconds": 600,
+        "pending_ttl_seconds": 600,
+        "identity_code_ttl_seconds": 60,
+        "identity_token_ttl_seconds": 601,
+        "session_ttl_seconds": 28800,
+        "access_cache_max_seconds": 30,
+        "grant_max_ttl_seconds": 900,
+        "credential_overlap_max_seconds": 300,
+        "credential_max_generations": 2
+      }
+    },
+    {
+      "name": "discovery_limit_session_ttl_seconds_cannot_expand",
+      "schema": "IntegrationLimits",
+      "value": {
+        "pairing_ttl_seconds": 600,
+        "pending_ttl_seconds": 600,
+        "identity_code_ttl_seconds": 60,
+        "identity_token_ttl_seconds": 600,
+        "session_ttl_seconds": 28801,
+        "access_cache_max_seconds": 30,
+        "grant_max_ttl_seconds": 900,
+        "credential_overlap_max_seconds": 300,
+        "credential_max_generations": 2
+      }
+    },
+    {
+      "name": "discovery_limit_access_cache_max_seconds_cannot_expand",
+      "schema": "IntegrationLimits",
+      "value": {
+        "pairing_ttl_seconds": 600,
+        "pending_ttl_seconds": 600,
+        "identity_code_ttl_seconds": 60,
+        "identity_token_ttl_seconds": 600,
+        "session_ttl_seconds": 28800,
+        "access_cache_max_seconds": 31,
+        "grant_max_ttl_seconds": 900,
+        "credential_overlap_max_seconds": 300,
+        "credential_max_generations": 2
+      }
+    },
+    {
+      "name": "discovery_limit_grant_max_ttl_seconds_cannot_expand",
+      "schema": "IntegrationLimits",
+      "value": {
+        "pairing_ttl_seconds": 600,
+        "pending_ttl_seconds": 600,
+        "identity_code_ttl_seconds": 60,
+        "identity_token_ttl_seconds": 600,
+        "session_ttl_seconds": 28800,
+        "access_cache_max_seconds": 30,
+        "grant_max_ttl_seconds": 901,
+        "credential_overlap_max_seconds": 300,
+        "credential_max_generations": 2
+      }
+    },
+    {
+      "name": "discovery_limit_credential_overlap_max_seconds_cannot_expand",
+      "schema": "IntegrationLimits",
+      "value": {
+        "pairing_ttl_seconds": 600,
+        "pending_ttl_seconds": 600,
+        "identity_code_ttl_seconds": 60,
+        "identity_token_ttl_seconds": 600,
+        "session_ttl_seconds": 28800,
+        "access_cache_max_seconds": 30,
+        "grant_max_ttl_seconds": 900,
+        "credential_overlap_max_seconds": 301,
+        "credential_max_generations": 2
+      }
+    },
+    {
+      "name": "discovery_limit_credential_max_generations_cannot_expand",
+      "schema": "IntegrationLimits",
+      "value": {
+        "pairing_ttl_seconds": 600,
+        "pending_ttl_seconds": 600,
+        "identity_code_ttl_seconds": 60,
+        "identity_token_ttl_seconds": 600,
+        "session_ttl_seconds": 28800,
+        "access_cache_max_seconds": 30,
+        "grant_max_ttl_seconds": 900,
+        "credential_overlap_max_seconds": 300,
+        "credential_max_generations": 3
+      }
+    },
+    {
+      "name": "purge_ack_requires_completion_proofs",
+      "schema": "SubjectOperationAck",
+      "value": {
+        "state": "completed"
+      }
+    },
+    {
+      "name": "error_requires_fastapi_detail_envelope",
+      "schema": "ErrorEnvelope",
+      "value": {
+        "error": {
+          "type": "credential_invalid",
+          "message": "Invalid credential."
+        }
+      }
+    },
+    {
+      "name": "error_cannot_carry_profile",
+      "schema": "ErrorEnvelope",
+      "value": {
+        "detail": {
+          "error": {
+            "type": "credential_invalid",
+            "message": "Invalid credential.",
+            "email": "sentinel@example.org"
+          }
+        }
+      }
+    },
+    {
+      "name": "public_origin_requires_https",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "http://agents.example.org",
+        "callback_url": "https://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    },
+    {
+      "name": "callback_requires_https",
+      "schema": "PairingCreateRequest",
+      "value": {
+        "public_origin": "https://agents.example.org",
+        "callback_url": "http://agents.example.org/api/v1/session/callback",
+        "scopes": [
+          "access",
+          "catalog",
+          "grants",
+          "subject_lifecycle"
+        ],
+        "contract_versions": {
+          "identity": 2,
+          "access": 1,
+          "catalog": 1,
+          "grants": 1,
+          "binding": 1,
+          "subject_lifecycle": 1
+        }
+      }
+    }
+  ]
+}

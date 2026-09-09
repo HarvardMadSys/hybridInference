@@ -1,0 +1,1315 @@
+openapi: 3.1.0
+info:
+  title: Cloud Agent integration (PROPOSED)
+  version: 1.0.0-proposed
+  x-owner: HarvardMadSys/hybridInference
+  x-implementation-status: implementation-pending
+  description: |
+    P0 proposal for the Gateway-owned service boundary. This document adds no
+    runtime endpoint, storage, migration or authentication behavior. The existing
+    /v1/identity paths currently implement a legacy profile-bearing contract;
+    the identity.v2 behavior described here is also implementation pending.
+
+    Installation clients MUST negotiate identity.v2 and the other v1 families.
+    Legacy identity.v1 is available only through explicitly registered legacy
+    clients; a new installation must never fall back to it. The browser authorize
+    URL is a Console page discovered at runtime, not a Gateway API path.
+
+    All objects below are field allowlists. No platform profiles, global roles,
+    account credentials, model-provider keys or global ledger are returned.
+    User IDs remain opaque strings, at most 128 characters. Gateway provides
+    identity, application permissions and inference authorization; Agent retains
+    task ownership, leases, fencing and its own database.
+
+    HTTP error bodies use FastAPI's detail.error envelope. Branch on error.type,
+    not status alone. A timeout, invalid credential or retired credential does
+    not prove installation revocation. Only authenticated, explicit installation
+    revocation information invalidates the binding as REVOKED.
+
+    JSON Schema validates shapes and scalar limits. Runtime implementations must
+    additionally enforce the cross-field and state invariants in descriptions:
+    exact namespace/client/callback matching, time deltas, authorization versions,
+    transactional idempotency, credential possession and purge fencing.
+servers:
+  - url: https://inference.example.org
+    description: Illustrative Gateway origin; no deployed implementation implied.
+tags:
+  - name: binding
+  - name: administration
+  - name: identity
+  - name: access
+  - name: grants
+  - name: subject-lifecycle
+x-contract-families:
+  identity: 2
+  access: 1
+  catalog: 1
+  grants: 1
+  binding: 1
+  subject_lifecycle: 1
+x-error-status-codes:
+  "400": [invalid_request, invalid_grant, pairing_invalid, unsupported_contract_version]
+  "401": [credential_invalid, credential_revoked, gateway_session_required]
+  "403": [gateway_admin_required, insufficient_scope, installation_revoked, installation_not_active, subject_unavailable, subject_not_authorized, authorization_version_mismatch]
+  "404": [integration_not_configured, identity_not_configured, unknown_installation, unknown_grant, grant_not_live, unknown_subject_operation]
+  "409": [pairing_conflict, installation_conflict, namespace_mismatch, callback_mismatch, credential_conflict, credential_overlap_limit, grant_conflict, operation_conflict, purge_not_complete]
+  "410": [pairing_expired, pending_expired]
+  "422": [validation_error]
+  "500": [identity_key_misconfigured]
+  "503": [temporarily_unavailable, ledger_unavailable, ambiguous_model_catalog]
+
+paths:
+  /.well-known/cloud-agent-integration:
+    get:
+      tags: [binding]
+      operationId: discoverCloudAgentIntegration
+      summary: Discover enabled integration capabilities
+      description: |
+        Public, non-secret metadata. A disabled or unsupported integration returns
+        integration_not_configured (404). Discovery does not confer trust: Agent
+        first trusts the operator-supplied Gateway origin and pins its instance
+        and canonical issuer. Discovered credential-bearing endpoints must stay
+        on that origin or an operator-approved internal API origin. Do not forward
+        credentials across redirects. Internal self-hosted origins are permitted
+        by explicit deployment policy; no official domain is required.
+      security: []
+      responses:
+        "200":
+          description: Enabled version families, endpoints and limits.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Discovery" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /admin/integrations/cloud-agent/pairings:
+    post:
+      tags: [administration]
+      operationId: createCloudAgentPairing
+      summary: Approve an installation configuration and issue a one-time code
+      description: |
+        Requires the Gateway's own administrator authentication and policy check.
+        Agent application permission agent.admin and installation credentials do
+        not authorize this route. The Console proposes the Agent-origin callback
+        /api/v1/session/callback; the administrator approves its exact URL.
+        Persist only the code hash and immutable configuration snapshot. Code
+        lifetime is 600 seconds. This is administrator approval and subsequent
+        credential possession, not automatic verification of domain ownership;
+        Gateway need not fetch the submitted Agent URL.
+
+        Replacement and pending-operation transfer require explicit administrator
+        selection. At activation, verify the same Agent instance and identity
+        namespace, perform any approved replacement atomically, and transfer
+        unacknowledged lifecycle operations exactly once. Agent must drain or
+        checkpoint before replacement. Ordinary rotation preserves installation.
+      security:
+        - gatewayAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PairingCreateRequest" }
+      responses:
+        "201":
+          description: The only response carrying the one-time pairing code; never log it.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PairingResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/integrations/cloud-agent/pairings/redeem:
+    post:
+      tags: [binding]
+      operationId: redeemCloudAgentPairing
+      summary: Atomically consume a pairing code and create one pending installation
+      description: |
+        Possession of the body code is the only authorization here; there is no
+        service bearer token yet. Agent generates at least 32 random bytes, encodes
+        them as an unpadded base64url bearer string, and encrypts that string locally
+        with its credential ID and request ID before sending its hash. Hash the
+        UTF-8 bytes of the exact bearer string. Gateway stores only the hash and
+        non-secret result, never the raw secret in a request body.
+        Redeem compares the expected namespace/origin/callback/versions to trusted
+        discovery and the administrator's configuration. Scopes come exclusively
+        from the approved snapshot, never from the redeem caller.
+
+        Persist the full request digest in the same transaction as consumption.
+        Digest canonicalized request fields and immutable approved metadata, not
+        JSON text order; comparing stored normalized fields is also sufficient.
+        The same code, request ID and identical request recover the same result
+        during the 600-second pending window, even after a lost response or restart.
+        Changed input or another request ID returns pairing_conflict (409). A new
+        code cannot create a second ACTIVE installation for the same Agent instance.
+        PENDING credentials have no access/catalog/grant/lifecycle authority.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PairingRedeemRequest" }
+      responses:
+        "200":
+          description: Recoverable non-secret pending binding and credential metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BindingResponse" }
+        "409": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/integrations/cloud-agent/activate:
+    post:
+      tags: [binding]
+      operationId: activateCloudAgentInstallation
+      summary: Prove possession of the pending credential and activate
+      description: |
+        Installation is derived from the verified bearer secret. PENDING may call
+        this route; a repeat by the same ACTIVE credential is idempotent. Reject
+        expired pending records. Activation transaction enforces at most one ACTIVE
+        installation per Agent instance. An approved replacement revokes the old
+        installation, its credentials, authorizations and live grants in the same
+        transaction. Never revive a revoked installation or grant.
+      security:
+        - installationCredential: []
+      responses:
+        "200":
+          description: ACTIVE binding; Agent durably activates its local snapshot.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BindingResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/integrations/cloud-agent/self:
+    get:
+      tags: [binding]
+      operationId: getCloudAgentInstallation
+      summary: Read authenticated binding and credential status
+      description: |
+        PENDING and ACTIVE credentials can recover their own metadata. Agent polls
+        binding state at least every 30 seconds. For a hash-matching credential of
+        a revoked installation, return installation_revoked; an unknown/malformed
+        secret returns credential_invalid, and a retired credential for an active
+        installation returns credential_revoked. These facts are not interchangeable.
+        No arbitrary installation ID, credential secret or Agent-local generation
+        is returned. Network failure preserves the binding as DEGRADED locally.
+      security:
+        - installationCredential: []
+      responses:
+        "200":
+          description: Non-secret metadata for the authenticated installation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BindingResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/integrations/cloud-agent/credentials:
+    post:
+      tags: [binding]
+      operationId: registerCloudAgentCredential
+      summary: Register one locally persisted rotation candidate hash
+      description: |
+        Requires an ACTIVE installation credential. Register the locally generated,
+        encrypted candidate before using it. Same request ID and identical body
+        are idempotent; changes conflict. At most two non-revoked generations may
+        exist, including a pending candidate or retiring predecessor; reject a
+        third until one is retired. Registering does not invalidate the active key.
+        Candidate expires after 600 seconds without activation. Scope cannot expand.
+      security:
+        - installationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RotationRequest" }
+      responses:
+        "201":
+          description: Non-secret candidate metadata and agreed overlap.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RotationResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/integrations/cloud-agent/credentials/{credential_id}/activate:
+    post:
+      tags: [binding]
+      operationId: activateCloudAgentCredential
+      summary: Prove possession of the candidate and begin bounded overlap
+      description: |
+        Authenticate using the candidate secret, whose derived credential ID must
+        equal the path ID. Activate idempotently and retire the predecessor after
+        the agreed overlap (default and maximum 300 seconds). Retries must not
+        extend that deadline. Ordinary rotation preserves installation, namespace,
+        client and Agent session binding_epoch; Agent increases config_generation
+        and updates all workers' snapshots. Explicitly revoked credentials never
+        become valid through rollback. A retiring credential may finish authorized
+        work within overlap, but cannot create another rotation candidate.
+      security:
+        - installationCredential: []
+      parameters:
+        - $ref: "#/components/parameters/CredentialId"
+      responses:
+        "200":
+          description: Current binding and predecessor's fixed retirement deadline.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BindingResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/integrations/cloud-agent/disconnect:
+    post:
+      tags: [binding]
+      operationId: disconnectCloudAgentInstallation
+      summary: Revoke only the caller's installation
+      description: |
+        Agent first stops new work, claims, renewal and protected interactions and
+        durably enters DISCONNECTING. Gateway atomically revokes the installation,
+        credentials, authorizations and live grants. A repeat with the same
+        hash-matching revoked credential may return the prior revocation result
+        for this route only; it conveys no other authority. Unknown credentials
+        remain credential_invalid. If Gateway is unreachable, keep retrying from
+        durable DISCONNECTING state and do not claim remote revocation succeeded.
+        Detach preserves namespace, pending purge operations, history and volumes.
+      security:
+        - installationCredential: []
+      responses:
+        "200":
+          description: Confirmed remote revocation, including an idempotent repeat.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstallationRevocation" }
+        "401": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /admin/integrations/cloud-agent/{installation_id}/revoke:
+    post:
+      tags: [administration]
+      operationId: revokeCloudAgentInstallation
+      summary: Revoke a Gateway-admin-selected installation
+      description: |
+        Gateway administrator authority is required, independent of Agent app
+        permissions. Transactionally revoke the installation, credentials, user
+        authorizations and live grants. Next model request is refused. Idempotent;
+        pending lifecycle operations stay durable and remote purge is not complete.
+      security:
+        - gatewayAdmin: []
+      parameters:
+        - $ref: "#/components/parameters/InstallationId"
+      responses:
+        "200":
+          description: Confirmed revocation; no Agent database deletion implied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstallationRevocation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/identity/jwks:
+    get:
+      tags: [identity]
+      operationId: getCloudAgentIdentityJwks
+      summary: Read the existing public identity verification keys
+      description: |
+        Existing GET path retained. No secret is published. Cache by pinned issuer
+        and Agent-local config generation; refresh on unknown kid. RS256 only.
+      security: []
+      responses:
+        "200":
+          description: Current and retiring public keys.
+          headers:
+            Cache-Control: { schema: { type: string, const: "public, max-age=300" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Jwks" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/identity/code:
+    post:
+      tags: [identity]
+      operationId: createCloudAgentIdentityCode
+      summary: Issue a v2 authorization code after the Gateway user's consent
+      description: |
+        Existing POST path with PROPOSED installation-aware v2 behavior. Called
+        by Gateway's Console only after explicit consent for the trusted registered
+        installation shown on its authorize page. Identity comes from the Gateway
+        session, never a supplied subject. Resolve client and callback from the
+        ACTIVE installation and validate the exact callback and S256 challenge.
+        Establish or verify the user's allowed application authorization, then bind
+        the single-use 60-second code to installation/client/callback/PKCE/subject
+        and current authorization_version. Gateway role-to-permission rules stay
+        server-side. Unversioned/non-v2 requests for installation clients fail;
+        an explicit legacy client retains its existing separate contract.
+      security:
+        - gatewaySession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdentityCodeRequest" }
+      responses:
+        "200":
+          description: One-time code bound to this consent; never log it.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IdentityCodeResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/identity/token:
+    post:
+      tags: [identity]
+      operationId: exchangeCloudAgentIdentityCode
+      summary: Exchange a code and PKCE proof for a minimal v2 identity JWT
+      description: |
+        Existing POST path; no client secret or installation bearer is required.
+        Agent BFF proves possession with the PKCE verifier. Before issuing, check
+        code client/callback/version/PKCE, ACTIVE installation, active account and
+        current authorization_version. Codes are consumed atomically; mismatched,
+        expired or replayed exchanges return invalid_grant. No refresh token.
+        BFF verifies state, signature, issuer, audience, installation/client,
+        namespace and time, then creates AgentSessionV2 using the token's subject
+        and authorization_version. Profile claims are rejected, never stripped
+        and silently accepted as a legacy fallback.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdentityTokenRequest" }
+      responses:
+        "200":
+          description: RS256 identity.v2 JWT with IdentityClaimsV2 only.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IdentityTokenResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /internal/cloud-agent/v1/access:
+    post:
+      tags: [access]
+      operationId: checkCloudAgentAccess
+      summary: Evaluate current application permissions for a version-bound subject
+      description: |
+        Requires an ACTIVE installation credential with access scope. Derive the
+        installation from the credential and require the subject's active consent.
+        Compare the request's authorization_version (from the verified session)
+        with the Gateway's current installation+subject version; mismatch returns
+        authorization_version_mismatch. Never update an old session to the returned
+        version: revoke then re-consent must not revive old cookies.
+
+        Policy may return allowed:false with no permissions. Unknown, inactive
+        and unconsented subjects all return the same subject_unavailable outcome;
+        version mismatch is reported only for an otherwise authorized subject.
+        Catalog and grant mint/renew follow this same rule, preventing an active
+        installation from enumerating unrelated subjects.
+        Cache only in memory, keyed by binding/namespace/subject/version, for no
+        more than 30 seconds. Sensitive actions require a fresh decision. Recheck
+        SSE, terminals and continuing tool access at least every 30 seconds; when
+        expired and unavailable, fail closed. Local resource ownership still applies.
+      security:
+        - installationCredential: []
+      x-required-scopes: [access]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccessRequest" }
+      responses:
+        "200":
+          description: Short-lived application decision with no platform profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /internal/cloud-agent/v1/model-catalog:
+    get:
+      tags: [access]
+      operationId: getCloudAgentModelCatalog
+      summary: Read models visible to this installation's authorized subject
+      description: |
+        Requires catalog scope, active account/consent and matching authorization
+        version. Return canonical chat-model IDs, eligible aliases and necessary
+        model parameters only. Alias targets must be in models; ambiguous model
+        names fail with ambiguous_model_catalog. No platform role is returned.
+      security:
+        - installationCredential: []
+      x-required-scopes: [catalog]
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/OpaqueId" }
+        - name: authorization_version
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/AuthorizationVersion" }
+      responses:
+        "200":
+          description: Filtered catalog, independent of Gateway role naming.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelCatalog" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /internal/cloud-agent/v1/grants:
+    post:
+      tags: [grants]
+      operationId: mintCloudAgentGrant
+      summary: Mint or recover one installation-scoped attempt grant
+      description: |
+        Requires grants scope, active account/consent and matching authorization
+        version. Idempotency key is (credential-derived installation_id,
+        external_job_id, external_attempt_id). A changed subject, authorization
+        version or effective model scope conflicts; a revoked grant never revives.
+        Clamp models to the current visible catalog. Default lifetime 300 seconds,
+        maximum 900. New requests outside the declared TTL range are rejected.
+        Return effective scope and expiry. This grant buys inference only, never
+        tools, profiles or service administration. Gateway rechecks account,
+        installation, consent/version, grant, model and quota on EVERY model
+        request, including after a user or installation revocation. Agent's
+        renewal loop additionally enforces its own current attempt/lease fence.
+      security:
+        - installationCredential: []
+      x-required-scopes: [grants]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GrantMintRequest" }
+      responses:
+        "200":
+          description: Effective grant and its short-lived inference bearer token.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GrantMintResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /internal/cloud-agent/v1/grants/{grant_id}/renew:
+    post:
+      tags: [grants]
+      operationId: renewCloudAgentGrant
+      summary: Extend an owned live grant after rechecking authorization
+      description: |
+        Requires grants scope and credential-derived ownership. Recheck active
+        account/consent and compare the grant's stored authorization_version to
+        current authorization. Renew from now by 300 seconds, never above 900.
+        No token is reissued. Foreign grant IDs return unknown_grant; revoked or
+        expired owned grants return grant_not_live and cannot be revived.
+      security:
+        - installationCredential: []
+      x-required-scopes: [grants]
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      responses:
+        "200":
+          description: Effective renewed grant, without a bearer token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Grant" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /internal/cloud-agent/v1/grants/{grant_id}/revoke:
+    post:
+      tags: [grants]
+      operationId: revokeCloudAgentGrant
+      summary: Idempotently revoke an owned grant
+      description: |
+        Requires an ACTIVE installation credential, grants scope and ownership.
+        Cleanup remains permitted after this subject's consent was revoked; it
+        grants no new capability. Foreign/unknown IDs return unknown_grant.
+      security:
+        - installationCredential: []
+      x-required-scopes: [grants]
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      responses:
+        "200":
+          description: Revoked, including an idempotent repeat.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GrantRevocation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /internal/cloud-agent/v1/grants/{grant_id}/usage:
+    get:
+      tags: [grants]
+      operationId: getCloudAgentGrantUsage
+      summary: Read only this installation's job-attributed usage
+      description: |
+        Requires an ACTIVE installation credential, grants scope and ownership.
+        Historical attribution remains readable after subject consent revocation.
+        Query the ledger by installation_id AND external_job_id; never return the
+        account's global ledger. Foreign/unknown grant IDs return unknown_grant.
+        Usage is informational, not a new per-task spending limit. An unavailable
+        ledger returns ledger_unavailable, never fabricated zero usage.
+      security:
+        - installationCredential: []
+      x-required-scopes: [grants]
+      parameters:
+        - $ref: "#/components/parameters/GrantId"
+      responses:
+        "200":
+          description: Gateway-billed totals for this installation's external job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GrantUsage" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /internal/cloud-agent/v1/subject-operations:
+    get:
+      tags: [subject-lifecycle]
+      operationId: pullCloudAgentSubjectOperations
+      summary: Pull durable purge instructions for this installation instance
+      description: |
+        Requires an ACTIVE installation credential and dedicated subject_lifecycle
+        scope, independent of subject consent/account-active checks: deletion must
+        still work after account removal. No profile is exposed. Revoked
+        installations cannot pull. A reconnect in the same namespace requires
+        explicit Gateway administrator transfer of pending operations for the
+        same Agent instance, or the Agent operator runs the same local purge tool.
+        Rotation within one installation needs no transfer.
+
+        Cursors only paginate; they neither acknowledge nor discard instructions.
+        Unacknowledged operations remain recoverable after restart and may be
+        delivered repeatedly. Gateway keeps incomplete/complete states distinct
+        and never treats an offline installation as having completed a purge.
+      security:
+        - installationCredential: []
+      x-required-scopes: [subject_lifecycle]
+      parameters:
+        - name: cursor
+          in: query
+          schema: { $ref: "#/components/schemas/Cursor" }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+      responses:
+        "200":
+          description: This installation's minimal lifecycle outbox page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubjectOperationPage" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /internal/cloud-agent/v1/subject-operations/{operation_id}/ack:
+    post:
+      tags: [subject-lifecycle]
+      operationId: acknowledgeCloudAgentSubjectOperation
+      summary: Record progress or durable fenced purge completion
+      description: |
+        Requires ACTIVE installation, subject_lifecycle scope and operation
+        ownership; no subject consent is required. Unknown/foreign operation IDs
+        return unknown_subject_operation. Same acknowledgement is idempotent;
+        conflicting completion or regression from completed returns operation_conflict.
+
+        Before completed acknowledgement, Agent persists a subject tombstone,
+        quiesces new and in-flight work, and fences all delayed Runner/tool/artifact
+        writes across workers and restarts. Then purge covered sessions, Git/MCP
+        credentials, jobs, workspaces, object storage, sandboxes and indexes. Retain
+        the minimal tombstone so late writes cannot recreate deleted data. Backups
+        follow the declared bounded retention window; record its deadline or null
+        only when no retained copy remains. Claiming completed without durable
+        fencing and covered active-data deletion is purge_not_complete (409).
+        Acknowledgement is evidence of a required Agent process, not itself a purge.
+      security:
+        - installationCredential: []
+      x-required-scopes: [subject_lifecycle]
+      parameters:
+        - $ref: "#/components/parameters/OperationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubjectOperationAck" }
+      responses:
+        "200":
+          description: Durably recorded operation state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubjectOperation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        default: { $ref: "#/components/responses/Error" }
+
+components:
+  securitySchemes:
+    gatewayAdmin:
+      type: http
+      scheme: bearer
+      description: Gateway session authenticated and authorized as its own administrator; never an installation credential or Agent app permission.
+    gatewaySession:
+      type: http
+      scheme: bearer
+      description: Gateway user's session used by Gateway Console for consent/code issuance only. Agent neither receives nor stores it.
+    installationCredential:
+      type: http
+      scheme: bearer
+      description: |
+        Agent-generated token from at least 32 random bytes encoded as unpadded
+        base64url, kept encrypted only in Agent's storage. Gateway verifies the
+        lowercase hex SHA256 of the UTF-8 bytes of that exact token in constant time and
+        derives installation_id, credential state and scopes. No installation_id
+        from a caller body is trusted. PENDING can only activate/read self; rotation
+        candidate can only prove itself through its activation path. Retiring
+        credentials retain ordinary scopes until their fixed overlap expiry.
+        Scoped internal calls require ACTIVE installation, and installation-wide
+        revocation overrides individual credential state. Never send this bearer
+        to browsers, Runner/Sandbox, model providers, or unapproved origins.
+  parameters:
+    InstallationId:
+      name: installation_id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/OpaqueId" }
+    CredentialId:
+      name: credential_id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/OpaqueId" }
+    GrantId:
+      name: grant_id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/OpaqueId" }
+    OperationId:
+      name: operation_id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/OpaqueId" }
+  responses:
+    Error:
+      description: |
+        Structured error; see x-error-status-codes. Messages contain no tokens,
+        pairing codes, profile data or sensitive request values. Shape validation
+        errors use validation_error in this envelope rather than echoing input.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+  schemas:
+    OpaqueId:
+      type: string
+      minLength: 1
+      maxLength: 128
+      description: Opaque nonempty identifier. Do not parse as ULID/UUID, infer authority or rewrite historical user IDs.
+    AuthorizationVersion:
+      type: integer
+      minimum: 1
+      description: |
+        Opaque monotonic version per installation+subject, not a role rank.
+        Gateway increments it on consent revocation/security invalidation and
+        never resets it on re-consent. Codes, identity, sessions and grants bind
+        to it; a mismatch rejects old authority even after new consent.
+    Origin:
+      type: string
+      format: uri
+      maxLength: 2048
+      pattern: '^https://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$'
+      description: |
+        Canonical origin only: no userinfo, path, trailing slash, query or fragment.
+        Runtime URL parsing also validates host/port and canonical equality. Agent
+        public origins require HTTPS for the Secure BFF cookie. No production-domain
+        allowlist or public ownership claim. Internal Gateway API origins have a
+        separate, explicit deployment policy and may allow HTTP.
+    HttpUrl:
+      type: string
+      format: uri
+      maxLength: 2048
+      pattern: '^https?://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?(?:/[^\s?#]*)?$'
+      description: Absolute endpoint/issuer URL without userinfo, query or fragment; runtime validates host/port and trusted origin.
+    CallbackUrl:
+      $ref: "#/components/schemas/HttpUrl"
+      pattern: '^https://'
+      description: Exact HTTPS callback on the approved Agent public origin; browser-facing BFF cookies require Secure transport.
+    ServiceScope:
+      type: string
+      enum: [access, catalog, grants, subject_lifecycle]
+    InstallationScopes:
+      type: array
+      minItems: 3
+      maxItems: 4
+      uniqueItems: true
+      items: { $ref: "#/components/schemas/ServiceScope" }
+      allOf:
+        - contains: { const: access }
+        - contains: { const: catalog }
+        - contains: { const: grants }
+      description: Core access/catalog/grants are required; subject_lifecycle is a separately approved optional scope. No global user/profile/admin scope exists.
+    ApplicationPermission:
+      type: string
+      enum: [agent.use, agent.admin]
+    ContractVersions:
+      type: object
+      additionalProperties: false
+      required: [identity, access, catalog, grants, binding]
+      properties:
+        identity: { type: integer, const: 2 }
+        access: { type: integer, const: 1 }
+        catalog: { type: integer, const: 1 }
+        grants: { type: integer, const: 1 }
+        binding: { type: integer, const: 1 }
+        subject_lifecycle: { type: integer, const: 1 }
+    SupportedContractVersions:
+      type: object
+      additionalProperties: false
+      required: [identity, access, catalog, grants, binding]
+      properties:
+        identity: { type: array, minItems: 1, uniqueItems: true, items: { type: integer, minimum: 1 } }
+        access: { type: array, minItems: 1, uniqueItems: true, items: { type: integer, minimum: 1 } }
+        catalog: { type: array, minItems: 1, uniqueItems: true, items: { type: integer, minimum: 1 } }
+        grants: { type: array, minItems: 1, uniqueItems: true, items: { type: integer, minimum: 1 } }
+        binding: { type: array, minItems: 1, uniqueItems: true, items: { type: integer, minimum: 1 } }
+        subject_lifecycle: { type: array, minItems: 1, uniqueItems: true, items: { type: integer, minimum: 1 } }
+      description: Advertised positive majors can include future versions. Negotiate a common supported major; installation selection stays identity2/core1 and cannot fall back to legacy identity1. Absent optional lifecycle does not disable core integration.
+    IntegrationEndpoints:
+      type: object
+      additionalProperties: false
+      required: [authorize_url, token_url, jwks_url, integration_api_url, access_url, catalog_url, grants_url]
+      properties:
+        authorize_url:
+          $ref: "#/components/schemas/HttpUrl"
+          description: Gateway Console browser page (normally /authorize), not an API route in this OpenAPI file.
+        token_url: { $ref: "#/components/schemas/HttpUrl" }
+        jwks_url: { $ref: "#/components/schemas/HttpUrl" }
+        integration_api_url: { $ref: "#/components/schemas/HttpUrl" }
+        access_url: { $ref: "#/components/schemas/HttpUrl" }
+        catalog_url: { $ref: "#/components/schemas/HttpUrl" }
+        grants_url: { $ref: "#/components/schemas/HttpUrl" }
+        subject_operations_url: { $ref: "#/components/schemas/HttpUrl" }
+    IntegrationLimits:
+      type: object
+      additionalProperties: false
+      required: [pairing_ttl_seconds, pending_ttl_seconds, identity_code_ttl_seconds, identity_token_ttl_seconds, session_ttl_seconds, access_cache_max_seconds, grant_max_ttl_seconds, credential_overlap_max_seconds, credential_max_generations]
+      properties:
+        pairing_ttl_seconds: { type: integer, const: 600 }
+        pending_ttl_seconds: { type: integer, const: 600 }
+        identity_code_ttl_seconds: { type: integer, const: 60 }
+        identity_token_ttl_seconds: { type: integer, const: 600 }
+        session_ttl_seconds: { type: integer, const: 28800 }
+        access_cache_max_seconds: { type: integer, const: 30 }
+        grant_max_ttl_seconds: { type: integer, const: 900 }
+        credential_overlap_max_seconds: { type: integer, const: 300 }
+        credential_max_generations: { type: integer, const: 2 }
+    Discovery:
+      type: object
+      additionalProperties: false
+      required: [gateway_instance_id, issuer, endpoints, supported_versions, supported_scopes, supported_permissions, limits]
+      properties:
+        gateway_instance_id: { $ref: "#/components/schemas/OpaqueId" }
+        issuer: { $ref: "#/components/schemas/HttpUrl" }
+        endpoints: { $ref: "#/components/schemas/IntegrationEndpoints" }
+        supported_versions: { $ref: "#/components/schemas/SupportedContractVersions" }
+        supported_scopes: { $ref: "#/components/schemas/InstallationScopes" }
+        supported_permissions:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          contains: { const: agent.use }
+          items: { $ref: "#/components/schemas/ApplicationPermission" }
+        limits: { $ref: "#/components/schemas/IntegrationLimits" }
+      allOf:
+        - if: { properties: { supported_scopes: { contains: { const: subject_lifecycle } } } }
+          then:
+            properties:
+              supported_versions: { required: [subject_lifecycle] }
+              endpoints: { required: [subject_operations_url] }
+    PairingCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [public_origin, callback_url, scopes, contract_versions]
+      properties:
+        public_origin: { $ref: "#/components/schemas/Origin" }
+        callback_url: { $ref: "#/components/schemas/CallbackUrl" }
+        scopes: { $ref: "#/components/schemas/InstallationScopes" }
+        contract_versions: { $ref: "#/components/schemas/ContractVersions" }
+        replace_installation_id:
+          $ref: "#/components/schemas/OpaqueId"
+          description: Explicit Gateway administrator approval to replace this installation of the same Agent instance at activation.
+        transfer_subject_operations_from_installation_id:
+          $ref: "#/components/schemas/OpaqueId"
+          description: Explicit Gateway administrator handover of pending operations for the same Agent instance and namespace; requires subject_lifecycle scope. Never inferred from a fresh credential.
+      allOf:
+        - if: { properties: { scopes: { contains: { const: subject_lifecycle } } } }
+          then:
+            properties:
+              contract_versions: { required: [subject_lifecycle] }
+        - if: { required: [transfer_subject_operations_from_installation_id] }
+          then:
+            properties:
+              scopes: { contains: { const: subject_lifecycle } }
+      description: Callback origin must exactly match public_origin. Selected versions/scopes must be supported by discovery; optional lifecycle requires its advertised family and endpoint. Configuration is approved and snapshotted before issuing the code.
+    PairingCode:
+      type: string
+      minLength: 43
+      maxLength: 128
+      pattern: '^[A-Za-z0-9_-]+$'
+      description: Base64url encoding of at least 32 random bytes; schema length cannot establish entropy. One-time, never logged.
+    PairingResponse:
+      type: object
+      additionalProperties: false
+      required: [code, expires_in, configuration]
+      properties:
+        code: { $ref: "#/components/schemas/PairingCode" }
+        expires_in: { type: integer, const: 600 }
+        configuration: { $ref: "#/components/schemas/PairingCreateRequest" }
+    ExpectedBinding:
+      type: object
+      additionalProperties: false
+      required: [gateway_instance_id, issuer, public_origin, callback_url, contract_versions]
+      properties:
+        gateway_instance_id: { $ref: "#/components/schemas/OpaqueId" }
+        issuer: { $ref: "#/components/schemas/HttpUrl" }
+        public_origin: { $ref: "#/components/schemas/Origin" }
+        callback_url: { $ref: "#/components/schemas/CallbackUrl" }
+        contract_versions: { $ref: "#/components/schemas/ContractVersions" }
+    CredentialHash:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+      description: Lowercase hex SHA256 of UTF-8 bytes of the exact unpadded-base64url bearer token string (not its decoded random bytes). Never the raw secret.
+    PairingRedeemRequest:
+      type: object
+      additionalProperties: false
+      required: [code, request_id, agent_instance_id, credential_id, credential_hash, expected]
+      properties:
+        code: { $ref: "#/components/schemas/PairingCode" }
+        request_id: { $ref: "#/components/schemas/OpaqueId" }
+        agent_instance_id: { $ref: "#/components/schemas/OpaqueId" }
+        credential_id: { $ref: "#/components/schemas/OpaqueId" }
+        credential_hash: { $ref: "#/components/schemas/CredentialHash" }
+        expected: { $ref: "#/components/schemas/ExpectedBinding" }
+    BindingMetadata:
+      type: object
+      additionalProperties: false
+      required: [gateway_instance_id, issuer, agent_instance_id, installation_id, client_id, audience, public_origin, callback_url, scopes, state, credential_epoch, contract_versions, endpoints]
+      properties:
+        gateway_instance_id: { $ref: "#/components/schemas/OpaqueId" }
+        issuer: { $ref: "#/components/schemas/HttpUrl" }
+        agent_instance_id: { $ref: "#/components/schemas/OpaqueId" }
+        installation_id: { $ref: "#/components/schemas/OpaqueId" }
+        client_id: { $ref: "#/components/schemas/OpaqueId" }
+        audience: { $ref: "#/components/schemas/OpaqueId" }
+        public_origin: { $ref: "#/components/schemas/Origin" }
+        callback_url: { $ref: "#/components/schemas/CallbackUrl" }
+        scopes: { $ref: "#/components/schemas/InstallationScopes" }
+        state: { type: string, enum: [PENDING, ACTIVE, REVOKED] }
+        credential_epoch: { type: integer, minimum: 1 }
+        contract_versions: { $ref: "#/components/schemas/ContractVersions" }
+        endpoints: { $ref: "#/components/schemas/IntegrationEndpoints" }
+      allOf:
+        - if: { properties: { scopes: { contains: { const: subject_lifecycle } } } }
+          then:
+            properties:
+              contract_versions: { required: [subject_lifecycle] }
+              endpoints: { required: [subject_operations_url] }
+      description: |
+        Non-secret Gateway metadata. client_id equals the identity audience. The
+        stable (gateway_instance_id, issuer) identifies Agent DB's singleton
+        namespace; a populated Agent DB rejects another namespace. Callback's
+        origin equals public_origin. Agent-local config_generation and session
+        binding_epoch are independent and deliberately absent from this response.
+    CredentialMetadata:
+      type: object
+      additionalProperties: false
+      required: [credential_id, credential_epoch, state, created_at, expires_at, revoked_at]
+      properties:
+        credential_id: { $ref: "#/components/schemas/OpaqueId" }
+        credential_epoch: { type: integer, minimum: 1 }
+        state: { type: string, enum: [PENDING, ACTIVE, RETIRING, REVOKED] }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: [string, "null"], format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+      description: RETIRING requires a fixed expires_at no later than activation+300s; PENDING expires within 600s. REVOKED requires revoked_at. These state/time relations also require runtime validation.
+    BindingResponse:
+      type: object
+      additionalProperties: false
+      required: [binding, credential]
+      properties:
+        binding: { $ref: "#/components/schemas/BindingMetadata" }
+        credential: { $ref: "#/components/schemas/CredentialMetadata" }
+        retiring_credentials:
+          type: array
+          maxItems: 1
+          items: { $ref: "#/components/schemas/CredentialMetadata" }
+    RotationRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id, credential_id, credential_hash]
+      properties:
+        request_id: { $ref: "#/components/schemas/OpaqueId" }
+        credential_id: { $ref: "#/components/schemas/OpaqueId" }
+        credential_hash: { $ref: "#/components/schemas/CredentialHash" }
+        overlap_seconds: { type: integer, minimum: 0, maximum: 300, default: 300 }
+    RotationResponse:
+      type: object
+      additionalProperties: false
+      required: [candidate, overlap_seconds]
+      properties:
+        candidate: { $ref: "#/components/schemas/CredentialMetadata" }
+        overlap_seconds: { type: integer, minimum: 0, maximum: 300 }
+    InstallationRevocation:
+      type: object
+      additionalProperties: false
+      required: [installation_id, state, revoked_at, already_revoked]
+      properties:
+        installation_id: { $ref: "#/components/schemas/OpaqueId" }
+        state: { type: string, const: REVOKED }
+        revoked_at: { type: string, format: date-time }
+        already_revoked: { type: boolean }
+    IdentityCodeRequest:
+      type: object
+      additionalProperties: false
+      required: [contract_version, client_id, redirect_uri, code_challenge]
+      properties:
+        contract_version: { type: integer, const: 2 }
+        client_id: { $ref: "#/components/schemas/OpaqueId" }
+        redirect_uri: { $ref: "#/components/schemas/CallbackUrl" }
+        code_challenge: { type: string, pattern: '^[A-Za-z0-9_-]{43}$' }
+        code_challenge_method: { type: string, const: S256, default: S256 }
+    IdentityCodeResponse:
+      type: object
+      additionalProperties: false
+      required: [code, expires_in]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 512 }
+        expires_in: { type: integer, const: 60 }
+    IdentityTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [contract_version, code, code_verifier, client_id, redirect_uri]
+      properties:
+        contract_version: { type: integer, const: 2 }
+        code: { type: string, minLength: 1, maxLength: 512 }
+        code_verifier: { type: string, pattern: '^[A-Za-z0-9._~-]{43,128}$' }
+        client_id: { $ref: "#/components/schemas/OpaqueId" }
+        redirect_uri: { $ref: "#/components/schemas/CallbackUrl" }
+    IdentityTokenResponse:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type, expires_in, contract_version]
+      properties:
+        access_token:
+          type: string
+          minLength: 1
+          description: RS256 compact JWT whose decoded payload must satisfy IdentityClaimsV2 and runtime signature/namespace/time/version checks.
+        token_type: { type: string, const: Bearer }
+        expires_in: { type: integer, const: 600 }
+        contract_version: { type: integer, const: 2 }
+    IdentityClaimsV2:
+      type: object
+      additionalProperties: false
+      required: [ver, iss, aud, sub, iat, exp, gateway_instance_id, installation_id, client_id, authorization_version]
+      properties:
+        ver: { type: integer, const: 2 }
+        iss: { $ref: "#/components/schemas/HttpUrl" }
+        aud: { $ref: "#/components/schemas/OpaqueId" }
+        sub: { $ref: "#/components/schemas/OpaqueId" }
+        iat: { type: integer, minimum: 0 }
+        exp: { type: integer, minimum: 0 }
+        gateway_instance_id: { $ref: "#/components/schemas/OpaqueId" }
+        installation_id: { $ref: "#/components/schemas/OpaqueId" }
+        client_id: { $ref: "#/components/schemas/OpaqueId" }
+        authorization_version: { $ref: "#/components/schemas/AuthorizationVersion" }
+      x-max-lifetime-seconds: 600
+      description: |
+        Minimal identity.v2 JWT payload; all other claims, including email/name/
+        role, are forbidden. Runtime requires iat < exp <= iat+600, valid current
+        time/signature, aud == client_id == binding audience, exact installation
+        and gateway_instance_id, and iss == pinned canonical issuer. This is
+        identity for one BFF exchange, not a reusable inference/service credential.
+    AgentSessionV2:
+      type: object
+      additionalProperties: false
+      required: [ver, sub, namespace_id, binding_epoch, authorization_version, sid, iat, exp]
+      properties:
+        ver: { type: integer, const: 2 }
+        sub: { $ref: "#/components/schemas/OpaqueId" }
+        namespace_id: { $ref: "#/components/schemas/OpaqueId" }
+        binding_epoch: { type: integer, minimum: 1 }
+        authorization_version: { $ref: "#/components/schemas/AuthorizationVersion" }
+        sid: { $ref: "#/components/schemas/OpaqueId" }
+        iat: { type: integer, minimum: 0 }
+        exp: { type: integer, minimum: 0 }
+      x-max-lifetime-seconds: 28800
+      description: |
+        Agent-owned signed session payload, not a Gateway endpoint response.
+        Runtime requires iat < exp <= iat+28800; namespace_id equals the pinned
+        gateway_instance_id, binding_epoch equals the current local epoch, and
+        access validates authorization_version. Ordinary credential rotation
+        changes config_generation only and does not log users out. Revocation,
+        rebind or explicit security invalidation increases binding_epoch. Reject
+        old formats and old authorization versions after re-consent; never copy
+        profiles or refresh a session's version from an access response. Cookie
+        is HttpOnly, Secure, SameSite=Lax, scoped to Agent origin without a shared
+        Domain. Logout deletes the Agent session, not the Gateway's session.
+    Jwks:
+      type: object
+      additionalProperties: false
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [kty, use, alg, kid, n, e]
+            properties:
+              kty: { type: string, const: RSA }
+              use: { type: string, const: sig }
+              alg: { type: string, const: RS256 }
+              kid: { $ref: "#/components/schemas/OpaqueId" }
+              n: { type: string, pattern: '^[A-Za-z0-9_-]+$' }
+              e: { type: string, pattern: '^[A-Za-z0-9_-]+$' }
+    AccessRequest:
+      type: object
+      additionalProperties: false
+      required: [subject, authorization_version]
+      properties:
+        subject: { $ref: "#/components/schemas/OpaqueId" }
+        authorization_version: { $ref: "#/components/schemas/AuthorizationVersion" }
+    AccessResponse:
+      type: object
+      additionalProperties: false
+      required: [subject, authorization_version, allowed, permissions, valid_for_seconds]
+      properties:
+        subject: { $ref: "#/components/schemas/OpaqueId" }
+        authorization_version: { $ref: "#/components/schemas/AuthorizationVersion" }
+        allowed: { type: boolean }
+        permissions:
+          type: array
+          maxItems: 2
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/ApplicationPermission" }
+        valid_for_seconds: { type: integer, minimum: 0, maximum: 30 }
+      allOf:
+        - if: { properties: { allowed: { const: false } } }
+          then: { properties: { permissions: { maxItems: 0 } } }
+          else: { properties: { permissions: { contains: { const: agent.use } } } }
+      description: Returned subject and version must equal the authenticated session-derived request; agent.admin includes agent.use. Permissions never enter the long-lived session or persistent profile.
+    ModelCatalog:
+      type: object
+      additionalProperties: false
+      required: [user_id, authorization_version, models, aliases, reasoning_efforts]
+      properties:
+        user_id: { $ref: "#/components/schemas/OpaqueId" }
+        authorization_version: { $ref: "#/components/schemas/AuthorizationVersion" }
+        models:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+        aliases:
+          type: object
+          propertyNames: { type: string, minLength: 1 }
+          additionalProperties: { type: string, minLength: 1 }
+        reasoning_efforts:
+          type: object
+          propertyNames: { type: string, minLength: 1 }
+          additionalProperties:
+            type: array
+            uniqueItems: true
+            items: { type: string, minLength: 1 }
+      description: Only aliases/model-parameter maps have dynamic keys; both must be limited to the returned visible models. No arbitrary metadata or role/profile field is permitted.
+    GrantMintRequest:
+      type: object
+      additionalProperties: false
+      required: [user_id, authorization_version, external_job_id, external_attempt_id]
+      properties:
+        user_id: { $ref: "#/components/schemas/OpaqueId" }
+        authorization_version: { $ref: "#/components/schemas/AuthorizationVersion" }
+        external_job_id: { $ref: "#/components/schemas/OpaqueId" }
+        external_attempt_id: { $ref: "#/components/schemas/OpaqueId" }
+        allowed_models:
+          type: [array, "null"]
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+          description: Omitted or null requests all currently visible models; explicit lists can only narrow them.
+        ttl_seconds: { type: integer, minimum: 1, maximum: 900, default: 300 }
+    Grant:
+      type: object
+      additionalProperties: false
+      required: [grant_id, installation_id, user_id, authorization_version, external_job_id, external_attempt_id, allowed_models, expires_at, revoked_at]
+      properties:
+        grant_id: { $ref: "#/components/schemas/OpaqueId" }
+        installation_id: { $ref: "#/components/schemas/OpaqueId" }
+        user_id: { $ref: "#/components/schemas/OpaqueId" }
+        authorization_version: { $ref: "#/components/schemas/AuthorizationVersion" }
+        external_job_id: { $ref: "#/components/schemas/OpaqueId" }
+        external_attempt_id: { $ref: "#/components/schemas/OpaqueId" }
+        allowed_models:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+      description: Effective scope; expires_at is no later than mint/renew time+900s. Installation comes from authenticated service credential. Revocation/consent version checks apply on the next inference request.
+    GrantMintResponse:
+      type: object
+      additionalProperties: false
+      required: [grant_id, installation_id, user_id, authorization_version, external_job_id, external_attempt_id, allowed_models, expires_at, revoked_at, token]
+      properties:
+        grant_id: { $ref: "#/components/schemas/OpaqueId" }
+        installation_id: { $ref: "#/components/schemas/OpaqueId" }
+        user_id: { $ref: "#/components/schemas/OpaqueId" }
+        authorization_version: { $ref: "#/components/schemas/AuthorizationVersion" }
+        external_job_id: { $ref: "#/components/schemas/OpaqueId" }
+        external_attempt_id: { $ref: "#/components/schemas/OpaqueId" }
+        allowed_models:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+        token:
+          type: string
+          minLength: 1
+          description: Existing agr.-prefixed inference bearer format. Returned only from mint; never a service credential or tool credential.
+      description: Same flat effective-grant response shape as the existing mint, with installation and authorization-version ownership added. Runtime expiry is bounded exactly as for Grant.
+    GrantRevocation:
+      type: object
+      additionalProperties: false
+      required: [grant_id, revoked, already_revoked]
+      properties:
+        grant_id: { $ref: "#/components/schemas/OpaqueId" }
+        revoked: { type: boolean, const: true }
+        already_revoked: { type: boolean }
+    GrantUsage:
+      type: object
+      additionalProperties: false
+      required: [grant_id, installation_id, external_job_id, spent_usd, request_count, tokens_in, tokens_out]
+      properties:
+        grant_id: { $ref: "#/components/schemas/OpaqueId" }
+        installation_id: { $ref: "#/components/schemas/OpaqueId" }
+        external_job_id: { $ref: "#/components/schemas/OpaqueId" }
+        spent_usd: { type: number, minimum: 0 }
+        request_count: { type: integer, minimum: 0 }
+        tokens_in: { type: integer, minimum: 0 }
+        tokens_out: { type: integer, minimum: 0 }
+    Cursor:
+      type: string
+      minLength: 1
+      maxLength: 512
+      description: Opaque installation-scoped outbox page cursor, never authority to consume another installation's operations.
+    SubjectOperation:
+      type: object
+      additionalProperties: false
+      required: [operation_id, agent_instance_id, namespace_id, subject, instruction, state, created_at, completed_at]
+      properties:
+        operation_id: { $ref: "#/components/schemas/OpaqueId" }
+        agent_instance_id: { $ref: "#/components/schemas/OpaqueId" }
+        namespace_id: { $ref: "#/components/schemas/OpaqueId" }
+        subject: { $ref: "#/components/schemas/OpaqueId" }
+        instruction: { type: string, const: purge }
+        state: { type: string, enum: [pending, in_progress, completed] }
+        created_at: { type: string, format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+      allOf:
+        - if: { properties: { state: { const: completed } } }
+          then: { properties: { completed_at: { type: string, format: date-time } } }
+          else: { properties: { completed_at: { type: "null" } } }
+      description: Agent verifies the operation belongs to its pinned namespace and stable instance. The outbox stores minimal lifecycle data, not a user profile or task mirror.
+    SubjectOperationPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/SubjectOperation" }
+        next_cursor:
+          oneOf:
+            - $ref: "#/components/schemas/Cursor"
+            - type: "null"
+    PurgeCompletion:
+      type: object
+      additionalProperties: false
+      required: [tombstone_persisted, writes_fenced, active_data_deleted, backup_retention_until]
+      properties:
+        tombstone_persisted: { type: boolean, const: true }
+        writes_fenced: { type: boolean, const: true }
+        active_data_deleted: { type: boolean, const: true }
+        backup_retention_until:
+          type: [string, "null"]
+          format: date-time
+          description: Latest declared expiry of any retained backup copy; null only if no retained copy remains. Restore must reapply tombstones before accepting writes.
+    SubjectOperationAck:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state: { type: string, enum: [in_progress, completed] }
+        completion: { $ref: "#/components/schemas/PurgeCompletion" }
+      allOf:
+        - if: { properties: { state: { const: completed } } }
+          then: { required: [completion] }
+          else: { not: { required: [completion] } }
+      description: Completion evidence is required only for completed. State and proofs must be durably verified by the Agent purge workflow, not inferred from receipt of the operation.
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [detail]
+      properties:
+        detail:
+          type: object
+          additionalProperties: false
+          required: [error]
+          properties:
+            error:
+              type: object
+              additionalProperties: false
+              required: [type, message]
+              properties:
+                type:
+                  type: string
+                  enum: [invalid_request, invalid_grant, pairing_invalid, unsupported_contract_version, credential_invalid, credential_revoked, gateway_session_required, gateway_admin_required, insufficient_scope, installation_revoked, installation_not_active, subject_unavailable, subject_not_authorized, authorization_version_mismatch, integration_not_configured, identity_not_configured, unknown_installation, unknown_grant, grant_not_live, unknown_subject_operation, pairing_conflict, installation_conflict, namespace_mismatch, callback_mismatch, credential_conflict, credential_overlap_limit, grant_conflict, operation_conflict, purge_not_complete, pairing_expired, pending_expired, validation_error, identity_key_misconfigured, temporarily_unavailable, ledger_unavailable, ambiguous_model_catalog]
+                message: { type: string, minLength: 1, maxLength: 512 }
