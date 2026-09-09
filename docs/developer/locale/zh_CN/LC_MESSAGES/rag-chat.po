@@ -535,3 +535,9 @@ msgstr "没有答案缓存，没有重排序，历史被截断到最近几轮。
 #~ msgid "see `apps/backend/serving/rag/config.py`"
 #~ msgstr "见 `apps/backend/serving/rag/config.py`"
 
+
+msgid "With `DISTRIBUTION_CONFIG_MODE=active`, setting `features.rag: false` in the distribution manifest disables both RAG endpoints for all users, including admins: authenticated requests receive `403` before the index is read or any model call starts. This covers streaming and non-streaming chat. A value of `true`, `null`, or an omitted field preserves the existing RAG behavior and authentication requirements. Intentional `dark` mode (also the default when the mode is unset) does not enforce manifest feature restrictions."
+msgstr "当 `DISTRIBUTION_CONFIG_MODE=active` 时，在 distribution manifest 中设置 `features.rag: false` 会对所有用户（包括管理员）关闭两个 RAG 端点：已鉴权请求会在读取索引或发起任何模型调用之前收到 `403`。这同时覆盖流式和非流式聊天。值为 `true`、`null` 或省略该字段时，保留现有 RAG 行为和鉴权要求。显式选择 `dark` 模式（未设置模式时也默认使用它）不会执行 manifest 中的功能限制。"
+
+msgid "An empty or unknown mode, a missing active manifest path, or an invalid active manifest makes authenticated RAG requests return `503` with a generic error. Unknown keys in `features` or at the manifest root are rejected during validation so a misspelled or misplaced restriction cannot silently disappear. Correct the configuration and restart the backend; successful manifest loads are cached for the life of the process. These restrictions apply to the docs assistant endpoints; the general model APIs retain their existing access rules."
+msgstr "模式为空或无法识别、active 模式缺少 manifest 路径，或者 active manifest 无效时，已鉴权的 RAG 请求会收到 `503` 和通用错误信息。校验会拒绝 `features` 或 manifest 顶层的未知键，防止限制因拼写或位置错误而静默丢失。修正配置后重启后端；成功加载的 manifest 会缓存到进程结束。这些限制适用于文档助手端点；通用模型 API 保留现有访问规则。"

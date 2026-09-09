@@ -72,7 +72,9 @@ services:
       # these lines are what carry it from that file into the container, which
       # the --env-file layer alone does not do.
       DISTRIBUTION_CONFIG_PATH: ${DISTRIBUTION_CONFIG_PATH-}
-      DISTRIBUTION_CONFIG_MODE: ${DISTRIBUTION_CONFIG_MODE-}
+      # Preserve the code's dark default when unset; an explicitly empty or
+      # misspelled mode is a configuration error for the RAG feature policy.
+      DISTRIBUTION_CONFIG_MODE: ${DISTRIBUTION_CONFIG_MODE-dark}
       # Which environment alerts are labelled with. Left unset upstream so
       # the existing inference from the base URL still applies; a
       # deployment states it outright, because inferring it makes the

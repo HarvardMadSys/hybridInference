@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from serving.config.distribution import get_distribution_config
+from serving.config.settings import get_settings
 from serving.rag.chunker import Chunk
 from serving.rag.config import load_rag_settings
 from serving.rag.embedder import HashEmbedder
@@ -128,6 +131,109 @@ def test_status_requires_auth(tmp_path, monkeypatch):
 
     app.dependency_overrides[get_current_user] = _deny
     assert TestClient(app).get("/v1/rag/status").status_code == 401
+
+
+def _configure_distribution(tmp_path, monkeypatch, *, mode="active", features="  rag: false"):
+    manifest = tmp_path / "distribution.yaml"
+    manifest.write_text(
+        "schema_version: 1\ndistribution:\n  id: test\nfeatures:\n" + features + "\n"
+    )
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
+    get_settings.cache_clear()
+    get_distribution_config.cache_clear()
+    return manifest
+
+
+def _request_rag(client, endpoint):
+    if endpoint == "status":
+        return client.get("/v1/rag/status")
+    return client.post(
+        "/v1/rag/chat",
+        json={"messages": [{"role": "user", "content": "hi"}], "stream": endpoint == "stream"},
+    )
+
+
+@pytest.mark.parametrize("endpoint", ["status", "json", "stream"])
+@pytest.mark.parametrize("role", ["user", "admin"])
+def test_disabled_rag_rejects_before_index_or_upstream(
+    client, tmp_path, monkeypatch, endpoint, role
+):
+    _configure_distribution(tmp_path, monkeypatch)
+    client.app.dependency_overrides[get_current_user] = lambda: {"user_id": "u1", "role": role}
+    calls = []
+    for name in ("_load_store", "_gateway_embed", "_gateway_chat_json", "_open_chat_stream"):
+        spy = AsyncMock(return_value=None)
+        monkeypatch.setattr(rag_module, name, spy)
+        calls.append(spy)
+    response = _request_rag(client, endpoint)
+    assert response.status_code == 403
+    assert response.json()["detail"] == "RAG is disabled for this deployment."
+    for spy in calls:
+        spy.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("mode", "features"),
+    [
+        ("active", "  rag: true"),
+        ("active", "  rag: null"),
+        ("active", "  {}"),
+        ("dark", "  rag: false"),
+    ],
+)
+@pytest.mark.parametrize("endpoint", ["status", "json", "stream"])
+def test_rag_preserves_enabled_and_legacy_paths(
+    client, tmp_path, monkeypatch, mode, features, endpoint
+):
+    _configure_distribution(tmp_path, monkeypatch, mode=mode, features=features)
+    capture = {}
+    monkeypatch.setattr(rag_module, "_gateway_chat_json", _fake_chat_json(capture))
+    monkeypatch.setattr(rag_module, "_open_chat_stream", _fake_open_stream(["answer"], capture))
+    assert _request_rag(client, endpoint).status_code == 200
+    if endpoint != "status":
+        assert capture["on_behalf_of"] == "u1"
+
+
+@pytest.mark.parametrize("endpoint", ["status", "json", "stream"])
+@pytest.mark.parametrize(
+    "problem",
+    ["empty-mode", "typo-mode", "no-path", "missing-file", "bad-yaml", "typo-key", "root-key"],
+)
+def test_invalid_rag_policy_fails_closed(client, tmp_path, monkeypatch, endpoint, problem):
+    manifest = _configure_distribution(tmp_path, monkeypatch)
+    if problem == "empty-mode":
+        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "")
+    elif problem == "typo-mode":
+        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "activ")
+    elif problem == "no-path":
+        monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH")
+    elif problem == "missing-file":
+        manifest.unlink()
+    elif problem == "bad-yaml":
+        manifest.write_text("private-secret: [")
+    elif problem == "typo-key":
+        manifest.write_text(manifest.read_text().replace("rag:", "RAG:"))
+    elif problem == "root-key":
+        manifest.write_text(manifest.read_text().replace("features:\n  rag:", "rag:"))
+    get_settings.cache_clear()
+    index = AsyncMock(return_value=None)
+    monkeypatch.setattr(rag_module, "_load_store", index)
+    response = _request_rag(client, endpoint)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "RAG configuration is unavailable."
+    index.assert_not_awaited()
+
+
+@pytest.mark.parametrize("endpoint", ["status", "json", "stream"])
+def test_disabled_rag_still_requires_auth(client, tmp_path, monkeypatch, endpoint):
+    _configure_distribution(tmp_path, monkeypatch)
+
+    def _deny():
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    client.app.dependency_overrides[get_current_user] = _deny
+    assert _request_rag(client, endpoint).status_code == 401
 
 
 def test_chat_non_streaming_returns_answer_and_sources(client, monkeypatch):

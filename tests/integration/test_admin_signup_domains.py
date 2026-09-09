@@ -7,6 +7,7 @@ integration tests in ``test_signup_flow.py`` (which run under ``dbtest``).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -15,6 +16,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.auth import signup_policy
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
 
@@ -83,6 +85,57 @@ def _row(domain: str, *, is_wildcard: bool = False) -> dict[str, Any]:
         "created_by": None,
         "created_by_email": None,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adding", [True, False], ids=["add-first", "remove-last"])
+async def test_admin_mutation_supersedes_inflight_allowlist_read(admin_client, monkeypatch, adding):
+    """A pre-mutation DB snapshot cannot restore or return the invalidated flag."""
+    client, op_store, _log, _audit = admin_client
+    monkeypatch.setattr(signup_policy, "_ALLOWLIST_EMPTY_LOCK", asyncio.Lock())
+    signup_policy.invalidate_allowlist_cache()
+    query_started = asyncio.Event()
+    release_query = asyncio.Event()
+    empty = adding
+    reads = 0
+
+    async def read_empty():
+        nonlocal reads
+        reads += 1
+        snapshot = empty
+        if reads == 1:
+            query_started.set()
+            await release_query.wait()
+        return snapshot
+
+    async def mutate(*args, **kwargs):
+        nonlocal empty
+        empty = not adding
+        return _row("acme.com") if adding else True
+
+    op_store.signup_allowlist_is_empty.side_effect = read_empty
+    op_store.add_signup_allowed_domain.side_effect = mutate
+    op_store.remove_signup_allowed_domain.side_effect = mutate
+    pending = asyncio.create_task(signup_policy.allowlist_is_empty(op_store))
+    try:
+        await asyncio.wait_for(query_started.wait(), timeout=2)
+        if adding:
+            response = await client.post(
+                "/admin/signup-domains", headers=AUTH, json={"domain": "acme.com"}
+            )
+            assert response.status_code == 201
+        else:
+            response = await client.delete("/admin/signup-domains/acme.com", headers=AUTH)
+            assert response.status_code == 204
+        release_query.set()
+        assert await asyncio.wait_for(pending, timeout=2) is (not adding)
+        assert await signup_policy.allowlist_is_empty(op_store) is (not adding)
+        assert reads == 2
+    finally:
+        release_query.set()
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        signup_policy.invalidate_allowlist_cache()
 
 
 # ---------------------------------------------------------------------------

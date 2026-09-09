@@ -121,6 +121,22 @@ impersonation is disabled entirely.
 
 ## Endpoints
 
+With `DISTRIBUTION_CONFIG_MODE=active`, setting `features.rag: false` in the
+distribution manifest disables both RAG endpoints for all users, including
+admins: authenticated requests receive `403` before the index is read or any
+model call starts. This covers streaming and non-streaming chat. A value of
+`true`, `null`, or an omitted field preserves the existing RAG behavior and
+authentication requirements. Intentional `dark` mode (also the default when
+the mode is unset) does not enforce manifest feature restrictions.
+
+An empty or unknown mode, a missing active manifest path, or an invalid active
+manifest makes authenticated RAG requests return `503` with a generic error.
+Unknown keys in `features` or at the manifest root are rejected during
+validation so a misspelled or misplaced restriction cannot silently disappear.
+Correct the configuration and restart the backend; successful manifest loads
+are cached for the life of the process. These restrictions apply to the docs
+assistant endpoints; the general model APIs retain their existing access rules.
+
 Both live under the gateway and authenticate with the dashboard JWT
 (`get_current_user`), so the Next.js chat page calls them with the session token
 it already holds.

@@ -218,6 +218,12 @@ def test_the_bottom_of_the_precedence_names_files_that_exist() -> None:
         )
 
 
+def test_compose_preserves_dark_mode_default_without_hiding_empty_mode() -> None:
+    """Unset mode must stay dark; explicitly empty mode must remain an error."""
+    environment = _compose()["services"]["backend"]["environment"]
+    assert environment["DISTRIBUTION_CONFIG_MODE"] == "${DISTRIBUTION_CONFIG_MODE-dark}"
+
+
 def test_compose_leaves_the_config_paths_to_the_precedence() -> None:
     """Compose must supply none of them, or the manifest can never win.
 

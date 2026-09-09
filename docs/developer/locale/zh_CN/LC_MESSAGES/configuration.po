@@ -278,17 +278,8 @@ msgstr ""
 "会被加载并校验，解析器把它*本来会*改动的内容记进日志，但当前的解析结果仍然有效："
 
 #: ../developer/configuration.md:148
-msgid ""
-"Setting only `DISTRIBUTION_CONFIG_PATH` therefore cannot change "
-"behaviour; you get a warning telling you the mode defaulted to `dark`. "
-"Any unrecognised mode value also degrades to `dark` with a warning, so a "
-"typo can only suppress a planned activation, never cause one. Enable a "
-"manifest by running dark first, reading the comparison lines, and only "
-"then setting `active`."
-msgstr ""
-"因此，只设置 `DISTRIBUTION_CONFIG_PATH` 改变不了任何行为；你会收到一条警告，告诉你模式取了默认值 "
-"`dark`。任何无法识别的模式值同样会降级为 `dark` 并给出警告，所以拼错只可能压掉一次计划中的启用，绝不会误触发一次启用。启用 "
-"manifest 的做法是：先跑 dark，读那些对比行，确认之后再设成 `active`。"
+msgid "Setting only `DISTRIBUTION_CONFIG_PATH` therefore cannot change behaviour; you get a warning telling you the mode defaulted to `dark`. For config-path resolution, an empty or unrecognised mode also degrades to `dark` with a warning. The RAG feature policy rejects these invalid modes: authenticated requests to both `/v1/rag/status` and `/v1/rag/chat` return `503`. Only an unset mode defaults to `dark`; an explicitly empty mode is invalid, including in Compose. Enable a manifest by running dark first, reading the comparison lines, and only then setting `active`."
+msgstr "因此，只设置 `DISTRIBUTION_CONFIG_PATH` 不会改变行为；系统会警告模式默认使用了 `dark`。对于配置路径解析，模式为空或无法识别时也会记录警告并退回 `dark`。RAG 功能策略会拒绝这些无效模式：已鉴权的 `/v1/rag/status` 和 `/v1/rag/chat` 请求都会返回 `503`。只有未设置模式时才默认使用 `dark`；显式设为空是无效配置，Compose 中也是如此。启用 manifest 时，应先运行 dark 模式、检查比较日志，再设置为 `active`。"
 
 #: ../developer/configuration.md:154
 msgid ""
@@ -815,3 +806,12 @@ msgstr ""
 "任何能从公网访问到的网关，除非你有意公开这个拓扑，否则请在反向代理上挡住 `/routing`。"
 "`GET /admin/routing` 还会额外返回未发布的路由，需要在 `Authorization: Bearer ...` "
 "请求头中提供管理员的 JWT 或 `ADMIN_TOKEN`。请把两个接口的输出都当作敏感信息对待。"
+
+msgid "Mode warnings are logged once per distinct value per process. When diagnosing RAG configuration errors, check the startup logs and the backend's effective `DISTRIBUTION_CONFIG_MODE` and `DISTRIBUTION_CONFIG_PATH`, rather than expecting the warning to repeat on every request. Correct the values and restart the backend. See [Docs RAG Assistant](rag-chat.md) for the feature restriction."
+msgstr "每个进程对每个不同的模式值只记录一次警告。排查 RAG 配置错误时，请检查启动日志及后端实际使用的 `DISTRIBUTION_CONFIG_MODE` 和 `DISTRIBUTION_CONFIG_PATH`，不要期待每次请求都重复警告。修正取值后重启后端。功能限制详见[文档 RAG 助手](rag-chat.md)。"
+
+msgid "The manifest root and `features` are closed schemas: unknown keys are rejected, including misspelled feature names or feature flags placed at the root. This changes the earlier behavior that silently ignored these keys. Before upgrading an active deployment, validate its actual overlay with the new backend code; the repository's example manifests do not validate privately maintained overlays. Correct misspellings and keep operator-specific metadata in a separate file. With `DISTRIBUTION_CONFIG_PATH` set to the deployed manifest, run:"
+msgstr "manifest 顶层与 `features` 使用封闭 schema：未知键会被拒绝，包括拼错的功能名称以及误放到顶层的功能开关。这改变了此前静默忽略这些键的行为。升级 active 部署前，请用新后端代码校验实际 overlay；仓库内的示例 manifest 不能替代对私有 overlay 的校验。请修正拼写，并将运维人员自定义的元数据保存在独立文件中。将 `DISTRIBUTION_CONFIG_PATH` 设为部署中的 manifest 路径后运行："
+
+msgid "This is not exhaustive typo detection: `paths`, `site`, `distribution`, and `deployment` still ignore unknown section keys for compatibility. In particular, check `paths.models` and the resolved model-registry log before activating an overlay; an unknown path key is treated as an omitted path and can select a legacy default. Strict validation of those sections is a separate compatibility change."
+msgstr "这不是完整的拼写错误检测：为了兼容，`paths`、`site`、`distribution` 和 `deployment` 仍会忽略各节内的未知键。启用 overlay 前，尤其要检查 `paths.models` 和解析后的模型注册表日志；未知的路径键会被当作未配置路径处理，从而可能选择旧默认值。收紧这些节的校验属于另一项兼容性变更。"

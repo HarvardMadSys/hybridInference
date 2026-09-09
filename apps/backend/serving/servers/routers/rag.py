@@ -33,6 +33,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
+from serving.config.distribution import DistributionConfigError, get_active_distribution_config
 from serving.rag.config import RagSettings, load_rag_settings
 from serving.rag.embedder import HashEmbedder
 from serving.rag.pipeline import build_messages, sources_payload
@@ -286,9 +287,22 @@ async def _embed_query(
     return await _gateway_embed(settings, store.embed_model, query, on_behalf_of)
 
 
+def _require_rag_enabled(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Authenticate the caller, then enforce the deployment's RAG restriction."""
+    try:
+        distribution = get_active_distribution_config()
+    except DistributionConfigError:
+        raise HTTPException(status_code=503, detail="RAG configuration is unavailable.") from None
+    if distribution is not None and distribution.features.rag is False:
+        raise HTTPException(status_code=403, detail="RAG is disabled for this deployment.")
+    return user
+
+
 @router.get("/status")
 async def rag_status(
-    _user: dict[str, Any] = Depends(get_current_user),
+    _user: dict[str, Any] = Depends(_require_rag_enabled),
 ) -> dict[str, Any]:
     """Report whether the index is built and which models it uses."""
     settings = load_rag_settings()
@@ -305,7 +319,7 @@ async def rag_status(
 @router.post("/chat")
 async def rag_chat(
     body: RagChatRequest,
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(_require_rag_enabled),
 ) -> Any:
     """Answer the latest user question, grounded in retrieved docs."""
     settings = load_rag_settings()
