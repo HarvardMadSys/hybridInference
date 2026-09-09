@@ -691,9 +691,9 @@ msgstr ""
 #: ../developer/adding-models.md
 #, python-brace-format
 msgid ""
-"When a `${VAR}`-backed key or `base_url` resolves empty, skip just this "
-"route instead of dropping the model"
-msgstr "当由 `${VAR}` 提供的 key 或 `base_url` 解析为空时，只跳过这一条路由，而不是丢弃整个模型"
+"Skip this route with a warning when a `${VAR}`-backed key, `base_url`, or "
+"`embeddings_path` resolves unset or blank"
+msgstr "当由 `${VAR}` 提供的 key、`base_url` 或 `embeddings_path` 未设置或解析为空白时，记录警告并跳过这一条路由"
 
 #: ../developer/adding-models.md
 msgid "`provider` / `provider_display_name`"
@@ -1115,12 +1115,14 @@ msgstr "网关返回的 401 表示你的**网关** API key 缺失或无效，或
 msgid ""
 "A 401 surfaced from the route can mean the **upstream** key is wrong. Some "
 "gateways also return 401 for an unmatched path, so check the request URL and "
-"`embeddings_path` before replacing a valid key. The backend logs the failure "
-"as `upstream_auth_misconfig` with the endpoint id and the upstream's own error body."
+"`embeddings_path` before replacing a valid key. Chat routing logs these failures "
+"as `upstream_auth_misconfig`; embeddings instead logs "
+"`Embedding request failed for model=...` with the upstream status and message."
 msgstr ""
 "从路由透出来的 401 可能表示**上游**的 key 不对。有些网关也会对未匹配的路径返回 401，"
-"所以替换有效的 key 之前，先检查请求 URL 和 `embeddings_path`。后端会把失败记为 "
-"`upstream_auth_misconfig`，并带上端点 id 和上游自己的错误响应体。"
+"所以替换有效的 key 之前，先检查请求 URL 和 `embeddings_path`。Chat 路由会把这些失败记为 "
+"`upstream_auth_misconfig`；embeddings 则记录 `Embedding request failed for model=...`，"
+"并带上上游的状态码和错误消息。"
 
 #: ../developer/adding-models.md:703
 #, python-brace-format
@@ -1151,6 +1153,19 @@ msgstr "OpenAI 兼容网关可能使用不同于 `/v1` 的 API 前缀。在该�
 #: ../developer/adding-models.md:531
 msgid "This sends requests to `https://gateway.example/api/v2/embeddings`. The override belongs to one route and does not affect its fallbacks. Without it, a base URL ending in `/v1` gets `/embeddings`; any other base gets `/v1/embeddings`, as before. Trailing slashes on the base URL are removed before joining the path."
 msgstr "该配置会把请求发送到 `https://gateway.example/api/v2/embeddings`。覆盖项仅属于这一条路由，不影响其备用路由。若未设置，仍沿用原来的规则：以 `/v1` 结尾的基础 URL 追加 `/embeddings`，其他基础 URL 追加 `/v1/embeddings`。拼接路径前会移除基础 URL 末尾的斜杠。"
+
+#: ../developer/adding-models.md:536
+msgid "Declare `embeddings_path` only inside `route:`. A model-level declaration, including on a shorthand model without a route list, is rejected. Surrounding whitespace is trimmed, but whitespace-only strings, non-string values other than `null`, and parent (`..`) path segments are rejected. Explicit `null` and `\"\"` still select the default URL inference."
+msgstr "`embeddings_path` 只能在 `route:` 内声明。模型级声明会被拒绝，包括不含路由列表的简写模型。路径前后的空白会被移除，但纯空白字符串、除 `null` 外的非字符串值，以及父级（`..`）路径段会被拒绝。显式的 `null` 和 `\"\"` 仍使用默认的 URL 推导规则。"
+
+#: ../developer/adding-models.md:542
+#, python-brace-format
+msgid "A whole-value `${VAR}` reference must resolve to a non-blank path; it is not an instruction to use the default if the variable is missing. A missing or blank variable aborts startup for a required route. With `optional: true`, only that route is skipped, with a warning naming the model, route, and variable."
+msgstr "完整值形式的 `${VAR}` 引用必须解析为非空白路径，并不表示变量缺失时使用默认值。对于必需路由，变量未设置或为空白会阻止启动。设置 `optional: true` 时，只跳过这一条路由，并记录包含模型、路由和变量名称的警告。"
+
+#: ../developer/adding-models.md:547
+msgid "Other invalid `embeddings_path` declarations abort startup even on optional routes, so the gateway cannot start serving a partially loaded registry after one of these errors. This does not change how other model configuration errors are handled."
+msgstr "其他非法的 `embeddings_path` 声明即使位于可选路由上，也会阻止启动，避免网关在这类错误发生后使用只加载了一部分的模型注册表提供服务。这不会改变其他模型配置错误的处理方式。"
 
 #: ../developer/adding-models.md:707
 msgid "Response format errors"
