@@ -1031,6 +1031,45 @@ describe('ProviderRoutesTab', () => {
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
   });
 
+  it('offers discovered OpenRouter pins for a quota route the policy allows', async () => {
+    // This deployment's policy lets OpenRouter carry a quota route.
+    const quotaCapableOptions = providerOptions.map((option) => {
+      if (option.provider !== 'openrouter') return option;
+      return {
+        ...option,
+        route_types: ['on_demand' as const, 'quota' as const, 'concurrency' as const],
+      };
+    });
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: quotaCapableOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) =>
+      providerKeysResponse(provider),
+    );
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
+
+    const providerSelect = screen.getByLabelText('Provider');
+    expect(providerSelect).toHaveValue('openrouter');
+    const routingSelect = screen.getByLabelText('OpenRouter routing');
+    // A quota route is metered against one provider, so the discovered pins
+    // are the choices; Auto is not, and Custom stays as the escape hatch.
+    expect(routingSelect).toHaveValue('provider:deepinfra');
+    expect(
+      within(routingSelect).getByRole('option', { name: 'Provider: DeepInfra' }),
+    ).toBeInTheDocument();
+    expect(
+      within(routingSelect).getByRole('option', { name: 'Provider: Parasail' }),
+    ).toBeInTheDocument();
+    expect(within(routingSelect).queryByRole('option', { name: 'Auto' })).not.toBeInTheDocument();
+    expect(within(routingSelect).getByRole('option', { name: /^Custom/ })).toBeInTheDocument();
+  });
+
   it('adds a runtime OpenRouter provider route as concurrency', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,

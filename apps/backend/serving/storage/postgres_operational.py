@@ -1101,6 +1101,21 @@ class PostgresOperationalStore(OperationalStore):
 
         return counts
 
+    async def list_user_activity_providers(self, *, days: int = 30) -> list[str]:
+        """Distinct ``api_logs.provider`` values seen in the last *days* days.
+
+        Same table and window as the ``provider`` filter in ``list_users``.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT provider FROM api_logs "
+                "WHERE provider IS NOT NULL AND provider <> '' "
+                "AND timestamp >= NOW() - make_interval(days => $1) "
+                "ORDER BY provider",
+                days,
+            )
+        return [str(row["provider"]) for row in rows]
+
     async def list_users(
         self,
         *,

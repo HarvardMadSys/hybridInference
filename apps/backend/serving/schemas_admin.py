@@ -1079,6 +1079,21 @@ class RoutableProvider(BaseModel):
     disabled: bool = Field(..., description="True if an admin has disabled this provider")
 
 
+class UserFilterProvider(BaseModel):
+    """A provider the Users tab's provider filter can select."""
+
+    provider: str = Field(..., description="Provider label as recorded in api_logs")
+    display_name: str = Field(..., description="Human-readable name; the label when none is known")
+    in_logs: bool = Field(..., description="Seen in api_logs within the filter's 30-day window")
+    routable: bool = Field(..., description="Present in the live routing table")
+
+
+class ListUserFilterProvidersResponse(BaseModel):
+    """Union of providers seen in the filter window and providers routed today."""
+
+    providers: list[UserFilterProvider]
+
+
 class ListRoutableProvidersResponse(BaseModel):
     """All distinct providers in the routing table with their disabled state."""
 

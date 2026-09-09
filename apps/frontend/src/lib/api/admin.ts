@@ -139,6 +139,25 @@ export async function getBulkCostHistory(
   return jsonOrThrow<BulkCostHistoryResponse>(resp);
 }
 
+export interface UserFilterProvider {
+  provider: string;
+  display_name: string;
+  /** Seen in api_logs within the provider filter's 30-day window. */
+  in_logs: boolean;
+  /** Present in the live routing table. */
+  routable: boolean;
+}
+
+export interface ListUserFilterProvidersResponse {
+  providers: UserFilterProvider[];
+}
+
+/** Providers the Users tab's filter can select: the 30-day log window plus the routing table. */
+export async function getUserFilterProviders(): Promise<ListUserFilterProvidersResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/users/providers');
+  return jsonOrThrow<ListUserFilterProvidersResponse>(resp);
+}
+
 export async function getUsersSummary(): Promise<UsersSummary> {
   const resp = await fetchWithAuth(API_BASE, '/admin/users/summary');
   return jsonOrThrow<UsersSummary>(resp);

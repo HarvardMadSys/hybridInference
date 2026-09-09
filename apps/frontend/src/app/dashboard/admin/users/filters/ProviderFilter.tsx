@@ -2,21 +2,27 @@
 
 import { useEffect, useState } from 'react';
 
-import { getRoutableProviders, type RoutableProvider } from '@/lib/api/admin';
+import { getUserFilterProviders, type UserFilterProvider } from '@/lib/api/admin';
 
 interface Props {
   value: string | null;
   onChange: (v: string | null) => void;
 }
 
-// The choices are whatever this gateway routes to, read from the routing
-// table, so the filter never advertises a vendor the deployment does not use.
+function optionLabel(provider: UserFilterProvider): string {
+  const name = provider.display_name || provider.provider;
+  return provider.routable ? name : `${name} (no longer routed)`;
+}
+
+// The filter matches api_logs over the last 30 days, so the choices are what
+// that window can match — a provider removed from the routing table stays
+// selectable while its traffic is in the log — plus whatever is routed today.
 export function ProviderFilter({ value, onChange }: Props) {
-  const [providers, setProviders] = useState<RoutableProvider[]>([]);
+  const [providers, setProviders] = useState<UserFilterProvider[]>([]);
 
   useEffect(() => {
     let cancelled = false;
-    getRoutableProviders()
+    getUserFilterProviders()
       .then((resp) => {
         if (!cancelled) setProviders(resp.providers);
       })
@@ -28,10 +34,7 @@ export function ProviderFilter({ value, onChange }: Props) {
     };
   }, []);
 
-  const options = providers.map((p) => ({
-    value: p.provider,
-    label: p.display_name || p.provider,
-  }));
+  const options = providers.map((p) => ({ value: p.provider, label: optionLabel(p) }));
   if (value && !options.some((option) => option.value === value)) {
     options.push({ value, label: value });
   }

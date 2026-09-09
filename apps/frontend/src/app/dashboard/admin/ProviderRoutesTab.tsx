@@ -511,7 +511,10 @@ function openRouterProviderOptionsForCreate(
   routeType: ProviderRouteType,
   routes: ProviderRoute[],
 ) {
-  if (routeType !== 'on_demand' && routeType !== 'concurrency') return [];
+  // Whether OpenRouter may carry this route type at all is the provider
+  // option's route_types (the deployment's policy), checked by the provider
+  // selector; here only the pins already used for the type drop out, and a
+  // metered type (quota, concurrency) must name a provider rather than Auto.
   const usedPins = new Set(
     routes
       .filter(
