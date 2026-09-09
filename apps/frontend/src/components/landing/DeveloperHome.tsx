@@ -116,9 +116,13 @@ function isAbsoluteUrl(value: string): boolean {
 // header carries no sign-in link, so this is the page that has to offer one.
 function homeLinks(auth: ReturnType<typeof useAuth>['state'], publicSignup: boolean): HomeLink[] {
   if (!auth.isAuthenticated) {
-    const links: HomeLink[] = [{ href: '/login', label: 'Sign in', primary: true }];
-    if (publicSignup) links.push({ href: '/signup', label: 'Sign up' });
-    return links;
+    if (publicSignup) {
+      return [
+        { href: '/signup', label: 'Sign up', primary: true },
+        { href: '/login', label: 'Sign in' },
+      ];
+    }
+    return [{ href: '/login', label: 'Sign in', primary: true }];
   }
   const links: HomeLink[] = [{ href: '/dashboard', label: 'Dashboard', primary: true }];
   if (hasRole(auth.user?.role, 'internal')) {
