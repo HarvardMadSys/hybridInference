@@ -6,6 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.auth.signup_policy import distribution_allows_public_signup
+from serving.config.distribution import DistributionConfigError
 from serving.config.runtime_settings import (
     RUNTIME_SETTINGS_REGISTRY,
     RuntimeSettings,
@@ -124,6 +126,23 @@ async def update_runtime_setting_endpoint(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if key == "signup_enabled" and value is True:
+        try:
+            allowed = distribution_allows_public_signup()
+        except DistributionConfigError:
+            raise HTTPException(
+                status_code=503,
+                detail="Cannot enable signup until the distribution configuration is valid.",
+            ) from None
+        if not allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "The active manifest disables public signup. Change features.public_signup "
+                    "to true or null and restart the backend before enabling this setting."
+                ),
+            )
 
     old_row = await op_store.get_setting(key)
     old_value: Any = None

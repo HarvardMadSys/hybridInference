@@ -1,5 +1,6 @@
 """The signup API and public configuration must expose the same policy."""
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -59,7 +60,6 @@ async def signup_client(monkeypatch):
         ("active", None, True, False, False),
         ("active", None, True, None, True),
         ("dark", "false", True, None, True),
-        ("typo", "false", True, None, True),
         (None, None, False, None, False),
         (None, None, True, False, False),
         (None, None, False, True, True),
@@ -145,3 +145,117 @@ async def test_runtime_toggle_updates_both_endpoints_without_restarting(signup_c
     assert (await client.get("/site-config")).json()["features"]["public_signup"] is True
     assert (await client.post("/auth/signup", json=create_signup_request())).status_code == 201
     store.create_user.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["", "activ", "active"])
+async def test_invalid_distribution_selection_cannot_enable_signup(
+    signup_client, monkeypatch, tmp_path, mode
+):
+    client, store = signup_client
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
+    if mode != "active":
+        manifest = tmp_path / "distribution.yaml"
+        manifest.write_text(
+            "schema_version: 1\ndistribution: {id: example}\nfeatures: {public_signup: false}\n"
+        )
+        monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    get_settings.cache_clear()
+
+    response = await client.post("/auth/signup", json=create_signup_request())
+    assert response.status_code == 403
+    assert (await client.get("/site-config")).status_code == 503
+    store.create_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "contents",
+    [
+        None,
+        "not: [valid yaml",
+        "schema_version: 1\ndistribution: {id: example}\nfeatures: {public-signup: false}\n",
+        "schema_version: 1\ndistribution: {id: example}\nfeatures: {publicSignup: false}\n",
+        "schema_version: 1\ndistribution: {id: example}\npublic_signup: false\n",
+    ],
+)
+async def test_invalid_active_manifest_cannot_create_accounts(
+    signup_client, monkeypatch, tmp_path, contents
+):
+    client, store = signup_client
+    manifest = tmp_path / "private-manifest.yaml"
+    if contents is not None:
+        manifest.write_text(contents)
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
+    get_settings.cache_clear()
+
+    response = await client.post("/auth/signup", json=create_signup_request())
+    assert response.status_code == 403
+    response = await client.get("/site-config")
+    assert response.status_code == 503
+    assert "private-manifest" not in response.text
+    store.create_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [None, "dark", "active"])
+@pytest.mark.parametrize("failure", [ConnectionError, RuntimeError, ValueError])
+async def test_runtime_read_failure_preserves_identity_and_closes_signup(
+    signup_client, monkeypatch, tmp_path, caplog, mode, failure
+):
+    client, store = signup_client
+    if mode is not None:
+        manifest = tmp_path / "distribution.yaml"
+        manifest.write_text(
+            "schema_version: 1\ndistribution: {id: example, display_name: Example Router}\n"
+            "site: {public_base_url: 'https://example.test'}\n"
+            "features: {public_signup: true, rag: false}\n"
+        )
+        monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
+    get_settings.cache_clear()
+    runtime = init_runtime_settings(store)
+    await runtime.get_bool("signup_enabled")
+    # A previously enabled value must not survive an expired policy read.
+    runtime.invalidate_key("signup_enabled")
+    store.get_setting.side_effect = failure("private-database secret-canary")
+
+    configuration = await client.get("/site-config")
+    assert configuration.status_code == 200
+    body = configuration.json()
+    assert body["features"]["public_signup"] is False
+    if mode == "active":
+        assert body["distribution"]["display_name"] == "Example Router"
+        assert body["site"]["public_base_url"] == "https://example.test"
+        assert body["features"]["rag"] is False
+    else:
+        assert body["distribution"]["id"] == "neutral"
+    assert (await client.post("/auth/signup", json=create_signup_request())).status_code == 403
+    store.create_user.assert_not_awaited()
+    assert "public signup is disabled" in caplog.text
+    assert "secret-canary" not in caplog.text
+    assert "private-database" not in caplog.text
+
+    store.get_setting.side_effect = None
+    assert (await client.get("/site-config")).json()["features"]["public_signup"] is True
+
+
+@pytest.mark.asyncio
+async def test_hung_runtime_read_cannot_exhaust_console_configuration_deadline(signup_client):
+    client, store = signup_client
+    cancelled = asyncio.Event()
+
+    async def stuck_read(key):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    store.get_setting.side_effect = stuck_read
+    init_runtime_settings(store)
+    response = await asyncio.wait_for(client.get("/site-config"), timeout=2)
+
+    assert response.status_code == 200
+    assert response.json()["features"]["public_signup"] is False
+    assert cancelled.is_set()

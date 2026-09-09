@@ -11,11 +11,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from serving.auth.signup_policy import is_public_signup_enabled
-from serving.config.distribution import get_distribution_config
-from serving.config.settings import get_settings
+from serving.config.distribution import DistributionConfigError, get_active_distribution_config
 from serving.config.site_identity import get_site_identity
 
 router = APIRouter()
@@ -39,11 +38,13 @@ async def get_site_config() -> dict[str, Any]:
     special-case its absence. Public signup always reports the effective
     backend policy, including environment and runtime settings.
     """
-    config = (
-        get_distribution_config()
-        if get_settings().distribution_config_mode.strip().lower() == "active"
-        else None
-    )
+    try:
+        config = get_active_distribution_config()
+    except DistributionConfigError:
+        raise HTTPException(
+            status_code=503,
+            detail="Site configuration is unavailable. Check the distribution manifest and mode.",
+        ) from None
     public_signup = await is_public_signup_enabled()
     if config is None:
         return {

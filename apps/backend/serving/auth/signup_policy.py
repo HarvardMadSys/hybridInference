@@ -24,9 +24,10 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from serving.config.distribution import get_distribution_config
+from serving.config.distribution import DistributionConfigError, get_active_distribution_config
 from serving.config.runtime_settings import get_runtime_settings_instance
 from serving.config.settings import get_settings
+from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from serving.storage.base import OperationalStore
@@ -37,6 +38,18 @@ if TYPE_CHECKING:
 _ALLOWLIST_EMPTY_TTL_SECONDS: float = 30.0
 _ALLOWLIST_EMPTY_CACHE: dict[str, tuple[float, bool]] = {}
 _ALLOWLIST_EMPTY_LOCK = asyncio.Lock()
+_SIGNUP_POLICY_TIMEOUT_SECONDS = 1.0
+logger = get_logger(__name__)
+
+
+def distribution_allows_public_signup() -> bool:
+    """Check the manifest restriction before applying the operational toggle.
+
+    Invalid distribution selections raise ``DistributionConfigError`` so
+    callers can distinguish invalid configuration from an explicit closure.
+    """
+    distribution = get_active_distribution_config()
+    return distribution is None or distribution.features.public_signup is not False
 
 
 async def is_public_signup_enabled() -> bool:
@@ -47,18 +60,30 @@ async def is_public_signup_enabled() -> bool:
     Dark/absent manifests and true/null feature values preserve the existing
     runtime-over-environment signup policy.
     """
-    settings = get_settings()
-    if settings.distribution_config_mode.strip().lower() == "active":
-        distribution = get_distribution_config()
-        if distribution is not None and distribution.features.public_signup is False:
+    try:
+        if not distribution_allows_public_signup():
             return False
+    except DistributionConfigError:
+        logger.error("Distribution configuration is invalid; public signup is disabled.")
+        return False
 
     try:
         runtime_settings = get_runtime_settings_instance()
     except RuntimeError:
         # Database-free deployments do not initialize the runtime store.
-        return settings.signup_enabled
-    return await runtime_settings.get_bool("signup_enabled")
+        return get_settings().signup_enabled
+    try:
+        # Stay within the console's three-second configuration deadline even
+        # when the database accepts a connection but never answers the query.
+        return await asyncio.wait_for(
+            runtime_settings.get_bool("signup_enabled"), timeout=_SIGNUP_POLICY_TIMEOUT_SECONDS
+        )
+    except Exception:
+        # An unknown runtime override may be false even if the environment is
+        # true. Close registration, preserve the rest of /site-config, and do
+        # not leak raw driver exceptions or connection details into logs.
+        logger.warning("Runtime signup policy could not be read; public signup is disabled.")
+        return False
 
 
 def invalidate_allowlist_cache() -> None:

@@ -99,7 +99,9 @@ continues with no models registered.
 
 A manifest is one versioned YAML document that names a deployment and tells the
 gateway where its config files are. `config/examples/distribution.example.yaml`
-is the annotated reference; the shape is:
+is the annotated reference. Both examples below and in that file close public
+signup when activated; change `public_signup` to `true` or null if this
+deployment should accept new accounts through the public signup API:
 
 ```yaml
 schema_version: 1
@@ -140,6 +142,11 @@ reopen it. To enable public signup, change the manifest to `true` or leave the
 field unset/null and restart the backend, then ensure the effective
 `signup_enabled` setting is enabled.
 
+The admin API rejects attempts to set `signup_enabled=true` while the active
+manifest disables signup (HTTP 400, without saving the setting). Manifest root
+and `features` fields reject unknown keys, including `public-signup`,
+`publicSignup`, or a `public_signup` field at the manifest root.
+
 When the manifest allows signup, the runtime `signup_enabled` setting takes
 precedence over `SIGNUP_ENABLED` (default `true`). The same rule applies with
 no manifest or in dark mode; dark-mode feature values have no effect.
@@ -147,6 +154,13 @@ no manifest or in dark mode; dark-mode feature values have no effect.
 so the console follows the backend policy. Email verification, domain-based
 approval, and quotas remain separate checks; allowing registration does not
 bypass them.
+
+If a runtime signup-setting read fails or exceeds one second, the gateway
+temporarily disables public signup. A valid `/site-config` response still
+returns HTTP 200 with its identity and branding intact and
+`public_signup: false`; registration returns HTTP 403 without creating an account. It does not
+fall back to an environment value that could reopen registration. The next
+request retries the runtime read, so recovery does not require a restart.
 
 ### Dark mode is the default, and that is deliberate
 
@@ -161,15 +175,22 @@ resolution stays effective:
 ```
 
 Setting only `DISTRIBUTION_CONFIG_PATH` therefore cannot change behaviour; you
-get a warning telling you the mode defaulted to `dark`. Any unrecognised mode
-value also degrades to `dark` with a warning, so a typo can only suppress a
-planned activation, never cause one. Enable a manifest by running dark first,
-reading the comparison lines, and only then setting `active`.
+get a warning telling you the mode defaulted to `dark`. Config-path resolution
+treats an unrecognised mode as `dark` with a warning. Signup and `/site-config`
+are stricter: an explicitly empty or unknown mode, or `active` without a
+manifest path, closes signup (HTTP 403) and makes `/site-config` report an
+unavailable configuration (HTTP 503). Compose uses `dark` when the mode is
+unset. Enable a manifest by running dark first, reading the comparison lines,
+and only then setting `active`.
 
 Failure behaviour differs by mode, on purpose. In dark mode a manifest that will
 not load is logged and skipped. In active mode the manifest *is* where the paths
 come from, so a manifest that will not load — a lost overlay mount, a YAML error
 — refuses to start rather than quietly serving a different registry.
+
+If an invalid active manifest reaches the HTTP handlers, signup remains closed
+and `/site-config` returns HTTP 503 without exposing file paths or parser
+errors. It cannot return a valid identity until the manifest is repaired.
 
 ### Identity, and what the manifest must not contain
 
@@ -177,7 +198,7 @@ come from, so a manifest that will not load — a lost overlay mount, a YAML err
 `distribution.display_name` / `site:` feed backend-rendered content (transactional
 emails, attribution headers) through `get_site_identity()` in
 `apps/backend/serving/config/site_identity.py`. Both are gated on
-`DISTRIBUTION_CONFIG_MODE=active`; in any other mode `/site-config` returns a
+`DISTRIBUTION_CONFIG_MODE=active`; in dark mode `/site-config` returns a
 neutral document and identity falls back to `SITE_NAME` / `SITE_PUBLIC_BASE_URL`
 / `SITE_DOCS_URL` / `SITE_SUPPORT_EMAIL` or to neutral defaults.
 

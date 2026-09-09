@@ -115,6 +115,31 @@ async def test_update_bool_setting(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_cannot_enable_signup_against_active_manifest(admin_client, monkeypatch, tmp_path):
+    from serving.config.settings import get_settings
+
+    client, op_store, log_action = admin_client
+    manifest = tmp_path / "distribution.yaml"
+    manifest.write_text(
+        "schema_version: 1\ndistribution: {id: example}\nfeatures: {public_signup: false}\n"
+    )
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
+    get_settings.cache_clear()
+
+    response = await client.patch(
+        "/admin/settings/signup_enabled",
+        json={"value": True},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 400
+    assert "manifest" in response.json()["detail"]
+    op_store.set_setting.assert_not_awaited()
+    log_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_update_unknown_setting_returns_404(admin_client):
     client, _, _ = admin_client
 

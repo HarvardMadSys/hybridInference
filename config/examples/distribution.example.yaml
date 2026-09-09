@@ -42,7 +42,9 @@ site:
 
 features:
   routers: [fixed]
-  public_signup: true
+  # Active mode closes both the signup API and UI. Use true/null to let the
+  # runtime signup_enabled / SIGNUP_ENABLED setting decide instead.
+  public_signup: false
   rag: false
 
 paths:
