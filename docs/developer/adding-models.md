@@ -9,6 +9,13 @@ There is a single guide for both needs. Depending on your case, follow one of:
 2. Integrate a new provider — add or wire an adapter, then the registry YAML and
    environment.
 
+Both paths edit the registry and restart the gateway. When a database is
+configured, a model, a route or a key can instead be added from the admin
+console while the gateway runs — see
+[Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console).
+That path carries no catalog metadata, so a model that needs a context length,
+modalities or aliases still belongs here.
+
 For a model you serve yourself on vLLM, SGLang, or Ollama, see
 [Adding a New Local Model](add-local-model.md), which owns route registration for
 local servers.
