@@ -670,6 +670,14 @@ def register_from_models_yaml(
                 if "processor" in r:
                     adapter_cfg["processor"] = r["processor"]
 
+                # The embeddings path belongs to this endpoint, not the model:
+                # a custom-version gateway may have a standard /v1 fallback.
+                if "embeddings_path" in r:
+                    embeddings_path = r["embeddings_path"]
+                    if embeddings_path is not None and not isinstance(embeddings_path, str):
+                        raise ValueError("Route embeddings_path must be a string or null")
+                    adapter_cfg["embeddings_path"] = expand_env(embeddings_path)
+
                 # Whether this endpoint's server runs sglang priority scheduling.
                 # Route-level, because it is a fact about one server rather than
                 # about the model: the same model routinely has a local sglang

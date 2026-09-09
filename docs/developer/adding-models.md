@@ -499,6 +499,7 @@ Beyond the model fields above, a route entry accepts:
 | `kind` | string | Adapter kind (see below). Defaults to the model's `provider` |
 | `weight` | float | Relative share of traffic (default 1.0). `0` keeps the route configured but unselected |
 | `api_keys` | list[string] | Key pool for this endpoint, instead of `api_key`. Setting both is an error. The whole pool is one endpoint for latency and quota accounting; split genuinely separate resources into separate routes |
+| `embeddings_path` | string | OpenAI-compatible embeddings path appended to this route's `base_url`; a leading slash is optional. Omitted, null, or empty keeps the default URL inference |
 | `optional` | bool | When a `${VAR}`-backed key or `base_url` resolves empty, skip just this route instead of dropping the model |
 | `provider` / `provider_display_name` | string | Analytics label override only — it renames the row in the dashboard and does **not** select an adapter; that is `kind`. See [Naming a route in the dashboard](add-local-model.md#naming-a-route-in-the-dashboard) |
 | `provider_type` | string | RouteWise cost category: `on_demand`, `quota`, or `concurrency` |
@@ -508,6 +509,29 @@ A route reports its `kind` as the provider label — the value recorded in
 `api_logs.provider` and grouped on by every provider-scoped admin view. Two
 routes of the same kind therefore share one dashboard row; `provider:` splits
 them.
+
+#### Custom embeddings paths
+
+An OpenAI-compatible gateway may use an API prefix other than `/v1`. Set
+`embeddings_path` on that route to avoid appending an unwanted `/v1` segment:
+
+```yaml
+models:
+  - id: text-embedding-example
+    name: Example embeddings
+    provider: openai_compat
+    model_type: embedding
+    route:
+      - kind: openai_compat
+        base_url: https://gateway.example/api/v2
+        api_key: ${EMBEDDING_API_KEY}
+        embeddings_path: /embeddings
+```
+
+This sends requests to `https://gateway.example/api/v2/embeddings`. The override
+belongs to one route and does not affect its fallbacks. Without it, a base URL
+ending in `/v1` gets `/embeddings`; any other base gets `/v1/embeddings`, as
+before. Trailing slashes on the base URL are removed before joining the path.
 
 ### Supported adapter kinds
 
@@ -723,12 +747,13 @@ through `apps/backend/serving/servers/deps.py`.
 
 - A 401 from the gateway means your **gateway** API key was missing or invalid,
   or auth is enabled and you sent no `Authorization` header.
-- A 401 surfaced from the route means the **upstream** key is wrong. The backend
-  logs it as `upstream_auth_misconfig` with the endpoint id and the upstream's
-  own error body.
+- A 401 surfaced from the route can mean the **upstream** key is wrong. Some
+  gateways also return 401 for an unmatched path, so check the request URL and
+  `embeddings_path` before replacing a valid key. The backend logs the failure
+  as `upstream_auth_misconfig` with the endpoint id and the upstream's own error body.
 - Check that `${ENV_VAR}` expansion resolved: only a value of exactly the form
   `${NAME}` is expanded, and only for `base_url`, `api_key`, `api_keys`, and
-  `provider_model_id`.
+  `provider_model_id`, plus route-level `embeddings_path`.
 
 ### Response format errors
 
