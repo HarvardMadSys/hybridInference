@@ -1,0 +1,67 @@
+name: Bug report
+description: Something in the gateway or console behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to report bugs in HybridInference's gateway or console.
+
+        Please redact credentials, API keys and cookies from anything you paste.
+        For a security vulnerability, use
+        [private reporting](https://github.com/HarvardMadSys/hybridInference/security/advisories/new)
+        instead of this form.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Commit SHA, image tag, or the SHA on the console home page.
+      placeholder: e.g. 6437fd41, or ghcr.io/... :dev
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >-
+        For API issues, include the request and response, ideally as a `curl`,
+        whether it was streaming, and the model and route involved. For console
+        issues, include the page, browser, steps to reproduce and screenshots
+        if helpful. Redact credentials and personal information from attachments.
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: >-
+        The `models.yaml` / `routing.yaml` entry for the affected model, with
+        keys and hostnames removed.
+      render: yaml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Gateway log lines around the failure, redacted.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues.
+          required: true
+        - label: I removed credentials, keys and cookies from everything above.
+          required: true
