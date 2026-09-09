@@ -146,15 +146,50 @@ resolution stays effective:
 ```
 
 Setting only `DISTRIBUTION_CONFIG_PATH` therefore cannot change behaviour; you
-get a warning telling you the mode defaulted to `dark`. Any unrecognised mode
-value also degrades to `dark` with a warning, so a typo can only suppress a
-planned activation, never cause one. Enable a manifest by running dark first,
-reading the comparison lines, and only then setting `active`.
+get a warning telling you the mode defaulted to `dark`. For config-path
+resolution, an empty or unrecognised mode also degrades to `dark` with a warning.
+The RAG feature policy rejects these invalid modes: authenticated requests to
+both `/v1/rag/status` and `/v1/rag/chat` return `503`. Only an unset mode defaults
+to `dark`; an explicitly empty mode is invalid, including in Compose. Enable a
+manifest by running dark first, reading the comparison lines, and only then
+setting `active`.
+
+Mode warnings are logged once per distinct value per process. When diagnosing
+RAG configuration errors, check the startup logs and the backend's effective
+`DISTRIBUTION_CONFIG_MODE` and `DISTRIBUTION_CONFIG_PATH`, rather than expecting
+the warning to repeat on every request. Correct the values and restart the
+backend. See [Docs RAG Assistant](rag-chat.md) for the feature restriction.
 
 Failure behaviour differs by mode, on purpose. In dark mode a manifest that will
 not load is logged and skipped. In active mode the manifest *is* where the paths
 come from, so a manifest that will not load — a lost overlay mount, a YAML error
 — refuses to start rather than quietly serving a different registry.
+
+The manifest root and `features` are closed schemas: unknown keys are rejected,
+including misspelled feature names or feature flags placed at the root. This
+changes the earlier behavior that silently ignored these keys. Before upgrading
+an active deployment, validate its actual overlay with the new backend code;
+the repository's example manifests do not validate privately maintained
+overlays. Correct misspellings and keep operator-specific metadata in a separate
+file. With `DISTRIBUTION_CONFIG_PATH` set to the deployed manifest, run:
+
+```bash
+uv run python - <<'PY'
+import os
+from pathlib import Path
+from serving.config.distribution import load_distribution_config
+
+load_distribution_config(Path(os.environ["DISTRIBUTION_CONFIG_PATH"]))
+print("Manifest valid.")
+PY
+```
+
+This is not exhaustive typo detection: `paths`, `site`, `distribution`, and
+`deployment` still ignore unknown section keys for compatibility. In particular,
+check `paths.models` and the resolved model-registry log before activating an
+overlay; an unknown path key is treated as an omitted path and can select a
+legacy default. Strict validation of those sections is a separate compatibility
+change.
 
 ### Identity, and what the manifest must not contain
 

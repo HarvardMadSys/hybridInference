@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 # avoids a DB round-trip when the feature is unused. ~30s TTL keeps
 # stale-window short while still cushioning bursty signup traffic.
 _ALLOWLIST_EMPTY_TTL_SECONDS: float = 30.0
+_ALLOWLIST_EMPTY_MAX_READS = 3
 _ALLOWLIST_EMPTY_GENERATION = 0
 _ALLOWLIST_EMPTY_CACHE: dict[str, tuple[float, bool]] = {}
 _ALLOWLIST_EMPTY_LOCK = asyncio.Lock()
@@ -49,7 +50,9 @@ async def allowlist_is_empty(op_store: OperationalStore) -> bool:
     """Return True when no rows exist in ``signup_allowed_domains``.
 
     Cached in-process for ``_ALLOWLIST_EMPTY_TTL_SECONDS`` to keep the
-    signup hot path off the DB when the allowlist is unused.
+    signup hot path off the DB when the allowlist is unused. After repeated
+    concurrent edits, return an uncached False so the caller checks the
+    email's current domain eligibility instead of assuming auto-approval.
     """
     now = time.monotonic()
     cached = _ALLOWLIST_EMPTY_CACHE.get("v")
@@ -62,7 +65,7 @@ async def allowlist_is_empty(op_store: OperationalStore) -> bool:
         cached = _ALLOWLIST_EMPTY_CACHE.get("v")
         if cached is not None and (now - cached[0]) < _ALLOWLIST_EMPTY_TTL_SECONDS:
             return cached[1]
-        while True:
+        for _ in range(_ALLOWLIST_EMPTY_MAX_READS):
             generation = _ALLOWLIST_EMPTY_GENERATION
             is_empty = await op_store.signup_allowlist_is_empty()
             if generation != _ALLOWLIST_EMPTY_GENERATION:
@@ -71,6 +74,9 @@ async def allowlist_is_empty(op_store: OperationalStore) -> bool:
                 continue
             _ALLOWLIST_EMPTY_CACHE["v"] = (time.monotonic(), is_empty)
             return is_empty
+        # Bound lock occupancy during bulk edits. An invalidated True is not
+        # evidence that the list is empty, even if we avoid caching it.
+        return False
 
 
 async def is_domain_allowed(email: str, op_store: OperationalStore) -> bool:

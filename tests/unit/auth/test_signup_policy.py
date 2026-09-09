@@ -149,3 +149,24 @@ async def test_allowlist_is_empty_reflects_population():
     store = _FakeStore([("acme.com", False)])
     invalidate_allowlist_cache()
     assert await allowlist_is_empty(store) is False
+
+
+@pytest.mark.asyncio
+async def test_repeated_admin_edits_bound_reads_without_returning_stale_empty(monkeypatch):
+    """Churn cannot monopolize the lock or turn an invalidated True into approval."""
+    store = _FakeStore([])
+
+    async def read_during_edits():
+        store.is_empty_calls += 1
+        if store.is_empty_calls <= 3:
+            # An edit completes after each of the first three empty snapshots.
+            invalidate_allowlist_cache()
+        return True
+
+    monkeypatch.setattr(store, "signup_allowlist_is_empty", read_during_edits)
+    assert await allowlist_is_empty(store) is False
+    assert store.is_empty_calls == 3
+    # The conservative answer was not cached, and the lock was released.
+    assert await allowlist_is_empty(store) is True
+    assert await allowlist_is_empty(store) is True
+    assert store.is_empty_calls == 4
