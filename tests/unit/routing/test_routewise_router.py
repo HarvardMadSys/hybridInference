@@ -789,6 +789,85 @@ class TestRouteWiseRouterScaffold:
         assert router.route_table is route_table
         assert router.fixed_router is route_table
 
+    def _two_model_table(self):
+        """Return a shared table holding this router's model plus a foreign one."""
+        mine = _make_adapter(model_id="mine", endpoint_id="mine:api")
+        theirs = _make_adapter(model_id="theirs", endpoint_id="theirs:api")
+        table = _FakeRouteTable()
+        table.add("mine", [(mine, 1.0)])
+        table.add("theirs", [(theirs, 1.0)])
+        return table, mine, theirs
+
+    def test_model_scope_excludes_foreign_models_from_route_derived_state(self):
+        """A scoped router classifies only its own model out of a shared table."""
+        table, _mine, _theirs = self._two_model_table()
+
+        router = RouteWiseRouter(config=RouteWiseConfig())
+        router.attach_route_table(table, model_scope={"mine"})
+
+        assert set(router.classified) == {"mine"}
+        assert set(router.route_candidates) == {"mine"}
+        # _endpoint_adapter is what the active probe loop walks; a foreign
+        # endpoint here is a real upstream request for a model we never route.
+        assert set(router._endpoint_adapter) == {"mine:api"}
+
+    def test_unscoped_router_still_classifies_every_model(self):
+        """Omitting a scope keeps the previous whole-table behavior."""
+        table, _mine, _theirs = self._two_model_table()
+
+        router = RouteWiseRouter(route_table=table, config=RouteWiseConfig())
+
+        assert set(router.classified) == {"mine", "theirs"}
+
+    @pytest.mark.asyncio
+    async def test_model_scope_keeps_foreign_endpoints_out_of_probe_targets(self):
+        """The regression: probing must not call a model this router never routes."""
+        table, mine, theirs = self._two_model_table()
+
+        async def stream(_messages, **_params):
+            yield 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+
+        mine.stream_chat_completion = stream
+        theirs.stream_chat_completion = AsyncMock(side_effect=AssertionError("probed foreign"))
+
+        router = RouteWiseRouter(config=RouteWiseConfig())
+        router.attach_route_table(table, model_scope={"mine"})
+
+        results = await router.run_probe_once(idle_only=False)
+
+        assert [result.endpoint_id for result in results] == ["mine:api"]
+        theirs.stream_chat_completion.assert_not_called()
+        # The DB lease key doubles as the operator-visible scope signal.
+        assert router._probe_lease_key() == "routewise-probe:mine"
+
+    def test_model_scope_survives_an_unscoped_reattach(self):
+        """A caller that rebinds the full table cannot widen an existing scope.
+
+        Publishing a runtime model re-attaches the whole route table without
+        knowing which model the router serves, so the scope has to be sticky.
+        """
+        table, _mine, _theirs = self._two_model_table()
+
+        router = RouteWiseRouter(config=RouteWiseConfig())
+        router.attach_route_table(table, model_scope={"mine"})
+
+        router.attach_route_table(table)
+
+        assert set(router.classified) == {"mine"}
+        assert set(router._endpoint_adapter) == {"mine:api"}
+
+    def test_model_scope_survives_route_table_refresh(self):
+        """Weight/disabled-provider refreshes rebuild inside the same scope."""
+        table, _mine, _theirs = self._two_model_table()
+
+        router = RouteWiseRouter(config=RouteWiseConfig())
+        router.attach_route_table(table, model_scope={"mine"})
+
+        router.refresh_route_table()
+
+        assert set(router.classified) == {"mine"}
+        assert set(router._endpoint_adapter) == {"mine:api"}
+
     def test_legacy_fixed_router_attribute_assignment_updates_route_table(self):
         router = RouteWiseRouter(config=RouteWiseConfig())
         route_table = _FakeRouteTable()

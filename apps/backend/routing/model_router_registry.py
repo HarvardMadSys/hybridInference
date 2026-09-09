@@ -13,6 +13,7 @@ from ``routing.yaml``'s ``default_router`` field) is used.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +28,23 @@ if TYPE_CHECKING:
     from routing.routers import FixedRouter
 
 logger = get_logger(__name__)
+
+
+def _attach_accepts_model_scope(attach: Any) -> bool:
+    """Report whether a route-table binding hook takes ``model_scope``.
+
+    In-tree strategies always do. The check exists for the external strategies
+    the ``attach_fixed_router`` fallback below still supports: calling those
+    with the keyword would raise, and an unscoped bind is the pre-existing
+    behavior rather than a regression.
+    """
+    try:
+        parameters = inspect.signature(attach).parameters
+    except (TypeError, ValueError):  # pragma: no cover - exotic callables
+        return False
+    if "model_scope" in parameters:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
 
 
 class StaleRouterStrategyChangeError(RuntimeError):
@@ -175,7 +193,15 @@ class ModelRouterRegistry:
                 # expose the former binding hook.
                 attach = getattr(router, "attach_fixed_router", None)
             if attach is not None:
-                attach(shared_fixed)
+                # The shared table carries every model; this router serves one.
+                # Without the scope a strategy that derives background work
+                # from the table (RouteWise's active latency probe) would act
+                # on the whole fleet, including models routed by `fixed` and
+                # admin-only models this router must never call.
+                if _attach_accepts_model_scope(attach):
+                    attach(shared_fixed, model_scope={canonical_model_id})
+                else:
+                    attach(shared_fixed)
         logger.info(
             "router_initialized",
             extra={
