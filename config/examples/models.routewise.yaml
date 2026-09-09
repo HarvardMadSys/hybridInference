@@ -188,12 +188,13 @@ models:
       # A prepaid subscription, drawn down until the window resets.
       # `quota_source` is a selector, not a fetcher: RouteWise matches all
       # three of `provider` / `usage_label` / `unit` exactly against the usage
-      # records a built-in provider fetcher returns, and only two fetchers are
-      # registered (`ProviderQuotaSnapshotStore` in
-      # routing/routewise/quota.py): `chutes` and `minimax`.
+      # records the provider's quota fetcher returns. The gateway ships no
+      # fetchers; a backend extension registers one per provider through
+      # `register_quota_fetcher` (Configuration -> Backend extensions), and a
+      # `quota_source` naming a provider with no fetcher never becomes ready.
       #
-      # The `kind:` and the credential are part of that contract. Each quota
-      # fetcher discovers its own keys by provider -- `fetch_chutes` looks for
+      # The `kind:` and the credential are part of that contract. A quota
+      # fetcher discovers its own keys by provider -- one for `chutes` looks for
       # `CHUTES_API_KEY` and for keys bound to `chutes` routes -- so a route
       # served through the generic `openai_compat` adapter under an unrelated
       # key never joins that pool. Inference would still authenticate, and the

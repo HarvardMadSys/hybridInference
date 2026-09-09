@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from serving.admin.provider_quotas import fetch_chutes, fetch_minimax
+from serving.admin.provider_quotas import quota_fetcher
 from serving.schemas_admin import ProviderQuotaResult
 from serving.utils.logging import get_logger
 
@@ -94,11 +94,27 @@ class ProviderQuotaSnapshotStore:
         *,
         fetchers: dict[str, QuotaFetcher] | None = None,
     ) -> None:
-        self._fetchers = fetchers or {"chutes": fetch_chutes, "minimax": fetch_minimax}
+        # An explicit table wins (tests); otherwise each provider resolves at
+        # refresh time through the registry backend extensions populate, so a
+        # fetcher registered at startup is seen without rebuilding the store.
+        self._fetchers = fetchers
         self._snapshots: dict[QuotaSource, ProviderQuotaSnapshot] = {}
         self._local_increments: dict[QuotaSource, int] = {}
         self._local_fallback_sources: set[QuotaSource] = set()
         self._lock = threading.Lock()
+
+    def _fetcher_for(self, provider: str) -> QuotaFetcher | None:
+        """Resolve a provider's fetcher: the explicit table, else the registry."""
+        if self._fetchers is not None:
+            return self._fetchers.get(provider)
+        spec = quota_fetcher(provider)
+        if spec is None:
+            return None
+
+        async def run() -> list[ProviderQuotaResult]:
+            return await spec.fetch(None, None)
+
+        return run
 
     def get(self, source: QuotaSource) -> ProviderQuotaSnapshot | None:
         """Return the effective snapshot for a quota source, if available."""
@@ -155,7 +171,8 @@ class ProviderQuotaSnapshotStore:
         unique_sources = {
             source
             for source in sources
-            if source.provider in self._fetchers and source not in local_fallback_sources
+            if self._fetcher_for(source.provider) is not None
+            and source not in local_fallback_sources
         }
         if not unique_sources:
             return
@@ -165,7 +182,7 @@ class ProviderQuotaSnapshotStore:
             sources_by_provider.setdefault(source.provider, []).append(source)
 
         for provider, provider_sources in sources_by_provider.items():
-            fetcher = self._fetchers.get(provider)
+            fetcher = self._fetcher_for(provider)
             if fetcher is None:
                 continue
             try:

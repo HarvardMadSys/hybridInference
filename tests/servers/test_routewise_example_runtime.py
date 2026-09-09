@@ -29,6 +29,7 @@ from routing.routewise.candidates import QuotaSource
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
 from serving.admin import provider_quotas
+from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 from serving.servers.registry import register_from_models_yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -176,73 +177,6 @@ def _example_providers(tmp_path: Path):
             server.server_close()
 
 
-class _FakeResponse:
-    def __init__(self, status: int, payload: object) -> None:
-        self.status = status
-        self._payload = payload
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def json(self):
-        return self._payload
-
-
-class _FakeSession:
-    """Serves the three Chutes endpoints the real fetcher calls, nothing else.
-
-    Only the wire is fake. `_parse_chutes_usage`, `_fetch_chutes_daily_cap`
-    and `_fetch_chutes_request_counts` all run for real against these
-    payloads, so a change in how any of them parses breaks the test.
-    """
-
-    def __init__(self, routes: dict[str, object], *, expected_key: str) -> None:
-        self._routes = routes
-        self._expected_key = expected_key
-        self.requested: list[str] = []
-        self.seen_keys: set[str] = set()
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    def get(self, url: str, **kwargs):
-        self.requested.append(url)
-        # The fetcher must arrive holding the route's own key. Accepting any
-        # Authorization header would let the quota chain pass while wired to a
-        # credential the route never declared.
-        supplied = (kwargs.get("headers") or {}).get("Authorization", "")
-        self.seen_keys.add(supplied)
-        if supplied != f"Bearer {self._expected_key}":
-            return _FakeResponse(401, {"error": "unauthorized"})
-        if url not in self._routes:
-            return _FakeResponse(404, {})
-        return _FakeResponse(200, self._routes[url])
-
-
-def _chutes_wire_payloads(daily_cap: int, requests_today: int) -> dict[str, object]:
-    """Responses shaped like the endpoints in serving/admin/provider_quotas.py."""
-    now = datetime.now(timezone.utc)
-    bucket = now.replace(minute=0, second=0, microsecond=0)
-    return {
-        "https://api.chutes.ai/users/me/subscription_usage": {
-            "four_hour": {"usage": 0.5, "cap": 10.0},
-            "monthly": {"usage": 3.0, "cap": 100.0},
-        },
-        "https://api.chutes.ai/users/me/quotas": [
-            {"chute_id": "*", "quota": daily_cap},
-        ],
-        "https://api.chutes.ai/users/me/usage?limit=2000": {
-            "items": [{"bucket": bucket.isoformat(), "count": requests_today}],
-        },
-    }
-
-
 def _example_with_reference_routes_enabled(tmp_path: Path) -> Path:
     """The shipped example with its commented reference routes turned on.
 
@@ -269,27 +203,31 @@ def _example_with_reference_routes_enabled(tmp_path: Path) -> Path:
 
 
 @pytest.mark.unit
-class TestRouteWiseExampleQuotaCredentialChain:
-    """The quota reference route, driven through everything but the wire.
+class TestRouteWiseExampleQuotaSourceChain:
+    """The quota reference route, driven through everything but the vendor.
 
-    An earlier version of this guard asserted on strings and then injected a
-    whole fake fetcher, so it stayed green when the example named a variable
-    nothing reads. Here the only stub is `aiohttp.ClientSession`: registry
-    registration, `_discover_provider_keys`, `fetch_chutes`, its three parsers,
+    The gateway ships no quota fetchers, so the chain this guards is: the
+    example's route registers, RouteWise builds a quota pool for it, the pool's
+    snapshot store resolves the route's `quota_source` through the fetcher
+    registry, and a fetcher registered for that provider makes the pool ready.
+    Only the fetcher is a stand-in: registry registration, `QuotaSource`,
     `_find_usage` and `QuotaPool` all run for real.
     """
 
-    async def test_example_quota_route_reaches_a_ready_pool(self, tmp_path, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _isolated_registry(self):
+        provider_quotas.reset_quota_fetchers()
+        yield
+        provider_quotas.reset_quota_fetchers()
+
+    def _example_quota_pool(self, tmp_path, monkeypatch):
         route = next(r for r in _commented_reference_routes() if r["provider_type"] == "quota")
         source = QuotaSource.from_raw(route["quota_source"])
         daily_cap = int(route["quota"]["limit"])
-
-        route_key = "sk-chutes-from-the-route"
-
         # Only the variables the example itself names. A route that asks for a
         # variable nothing sets resolves to nothing and never registers.
         monkeypatch.setenv("CHUTES_BASE_URL", "https://llm.chutes.ai/v1")
-        monkeypatch.setenv("CHUTES_API_KEY", route_key)
+        monkeypatch.setenv("CHUTES_API_KEY", "sk-chutes-from-the-route")
         monkeypatch.setenv("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1")
         monkeypatch.setenv("FEATHERLESS_API_KEY", "sk-featherless-test")
 
@@ -300,22 +238,7 @@ class TestRouteWiseExampleQuotaCredentialChain:
         assert source.provider in kinds, (
             f"no {source.provider!r} route registered from the example: {sorted(kinds)}. "
             "Either the kind or the credential variable names something that does "
-            "not resolve, and the quota fetcher would never see this route."
-        )
-
-        # Take the variable away now that registration is done. Whatever the
-        # fetcher finds from here has to come from the pool the route itself
-        # registered -- which is the only thing that ties the credential the
-        # gateway infers with to the credential it accounts quota against.
-        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
-
-        session = _FakeSession(
-            _chutes_wire_payloads(daily_cap, requests_today=7), expected_key=route_key
-        )
-        monkeypatch.setattr(
-            provider_quotas.aiohttp,
-            "ClientSession",
-            lambda *a, **k: session,
+            "not resolve, and no quota fetcher would ever see this route."
         )
 
         # The router's own pools, not a hand-built stand-in: this is the object
@@ -328,33 +251,64 @@ class TestRouteWiseExampleQuotaCredentialChain:
         pool = router.quota_pools[pool_id]
         assert pool.source == source, f"pool bound to {pool.source}, example documents {source}"
         assert pool.ready is False, "a pool cannot be ready before its first snapshot lands"
+        return source, daily_cap, router, pool
 
+    async def test_example_quota_route_reaches_a_ready_pool(self, tmp_path, monkeypatch):
+        source, daily_cap, router, pool = self._example_quota_pool(tmp_path, monkeypatch)
+        calls: list[tuple[object, object]] = []
+
+        async def fetch(operational_store=None, services=None):
+            calls.append((operational_store, services))
+            return [
+                ProviderQuotaResult(
+                    name=source.provider,
+                    display_name=source.provider.title(),
+                    key_configured=True,
+                    key_masked="sk-chute...oute",
+                    fetched_at=datetime.now(timezone.utc),
+                    ok=True,
+                    error=None,
+                    usages=[
+                        ProviderQuotaUsage(
+                            label=source.usage_label,
+                            used=7,
+                            limit=daily_cap,
+                            unit=source.unit,
+                            reset_at=None,
+                        )
+                    ],
+                )
+            ]
+
+        provider_quotas.register_quota_fetcher(source.provider, source.provider.title(), fetch)
         store = router.quota_snapshots
-        assert source.provider in store._fetchers, (
-            f"{source.provider!r} has no registered fetcher; RouteWise registers "
-            f"{sorted(store._fetchers)}"
-        )
+
         await store.refresh_once([source])
 
-        assert session.requested, "the real fetcher never reached the wire"
-        assert session.seen_keys == {f"Bearer {route_key}"}, (
-            f"the fetcher authenticated with {session.seen_keys}, not the key the "
-            f"example's route declares. Inference and quota accounting would then "
-            "be running on different credentials."
+        assert calls == [(None, None)], (
+            "the store must resolve the example's quota_source through the registry"
         )
         snapshot = store.get(source)
         assert snapshot is not None, (
             f"the example documents quota_source {(source.provider, source.usage_label, source.unit)}, "
-            f"but nothing in the fetcher's output matched it. Requested: {session.requested}"
+            "but nothing in the fetcher's output matched it"
         )
         assert snapshot.limit == float(daily_cap)
         assert snapshot.used == 7.0
-
         assert pool.ready is True, (
             "the router's quota pool never became ready, so RouteWise would keep "
             "skipping this provider as unpriceable"
         )
         assert pool.remaining == daily_cap - 7
+
+    async def test_example_quota_route_stays_unready_without_a_fetcher(self, tmp_path, monkeypatch):
+        source, _daily_cap, router, pool = self._example_quota_pool(tmp_path, monkeypatch)
+        store = router.quota_snapshots
+
+        await store.refresh_once([source])
+
+        assert store.get(source) is None
+        assert pool.ready is False
 
 
 # Booted in a subprocess so each budget_alpha gets a genuinely fresh process:

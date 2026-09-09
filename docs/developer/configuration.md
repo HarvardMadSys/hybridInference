@@ -287,6 +287,18 @@ live code reloads, and restart the backend when changing the mounted extension.
 See [Deployment-local adapters](adding-models.md#deployment-local-adapters) for
 a minimal factory example.
 
+Quota reporting is an extension point of the same shape. The gateway ships the
+Providers tab's framework — key discovery, per-key result rows, the
+disabled-key cards, `gather_all` — but no fetcher for any vendor's account or
+usage endpoint: which vendors' pages get read is a property of a deployment. An
+extension's `register()` calls
+`serving.admin.provider_quotas.register_quota_fetcher(provider, display_name, fetch)`;
+`fetch` is awaited as `fetch(operational_store, services)` and returns one
+`ProviderQuotaResult` per configured key, converting its own failures into
+results rather than raising. RouteWise `quota_source:` routes resolve through
+the same registry, so a deployment that meters a provider registers exactly
+one fetcher for it.
+
 ## The example distribution
 
 `distributions/example/` is a complete, runnable overlay kept in the repository

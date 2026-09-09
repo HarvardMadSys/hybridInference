@@ -147,15 +147,24 @@ describe('RoutewiseDecisionsPanel', () => {
   });
 
   it('uses distinct stable colors for selection distribution endpoints', async () => {
-    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    const first = render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
 
-    expect(await screen.findByTestId('bar-openrouter[wandb]')).toHaveAttribute(
-      'data-fill',
-      '#8b5cf6',
-    );
+    const wandb = (await screen.findByTestId('bar-openrouter[wandb]')).getAttribute('data-fill');
+    const highspeed = screen
+      .getByTestId('bar-openrouter[minimax/highspeed]')
+      .getAttribute('data-fill');
+    expect(wandb).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(highspeed).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(wandb).not.toBe(highspeed);
+
+    // Colors derive from the endpoint id, not from a vendor table, so a fresh
+    // render assigns the same ones.
+    first.unmount();
+    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    expect(await screen.findByTestId('bar-openrouter[wandb]')).toHaveAttribute('data-fill', wandb);
     expect(screen.getByTestId('bar-openrouter[minimax/highspeed]')).toHaveAttribute(
       'data-fill',
-      '#10b981',
+      highspeed,
     );
   });
 
