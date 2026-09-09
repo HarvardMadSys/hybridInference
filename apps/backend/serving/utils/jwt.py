@@ -10,13 +10,15 @@ from ulid import ULID
 
 
 def get_jwt_secret() -> str:
-    """Get JWT secret key from environment.
+    """Get the JWT secret from the same settings validated at startup.
 
     Raises:
         ValueError: If JWT_SECRET_KEY is not set.
     """
-    secret = os.getenv("JWT_SECRET_KEY", "")
-    if not secret:
+    from serving.config.settings import get_settings
+
+    secret = get_settings().jwt_secret_key
+    if not secret.strip():
         raise ValueError("JWT_SECRET_KEY must be set in environment")
     return secret
 

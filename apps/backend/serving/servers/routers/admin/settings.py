@@ -11,13 +11,14 @@ from serving.config.runtime_settings import (
     RuntimeSettings,
     get_runtime_settings,
 )
+from serving.config.settings import get_settings
 from serving.schemas_admin import (
     ListSettingsResponse,
     RuntimeSettingItem,
     UpdateSettingRequest,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, verify_admin_access
+from serving.servers.deps import database_enabled, get_operational_store, verify_admin_access
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
@@ -116,6 +117,14 @@ async def update_runtime_setting_endpoint(
                 detail=f"Setting '{key}' value {value} is above max ({hi})",
             )
 
+    if key == "user_auth_enabled" and value is True:
+        try:
+            get_settings().validate_auth_secrets(
+                database_enabled=database_enabled(), user_auth_enabled=True
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     old_row = await op_store.get_setting(key)
     old_value: Any = None
     if old_row is not None:
@@ -129,8 +138,6 @@ async def update_runtime_setting_endpoint(
         else:
             old_value = raw
     else:
-        from serving.config.settings import get_settings
-
         old_value = getattr(get_settings(), key, entry["default"])
 
     await op_store.set_setting(key, str(value), expected_type, admin_id)

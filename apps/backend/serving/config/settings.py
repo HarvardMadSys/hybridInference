@@ -228,6 +228,38 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
+    def validate_auth_secrets(
+        self, *, database_enabled: bool, user_auth_enabled: bool | None = None
+    ) -> None:
+        """Reject missing secrets before starting or enabling authentication.
+
+        Database-backed deployments expose login and API-key management even
+        when inference API-key authentication is disabled. Only a database-free,
+        explicitly auth-disabled gateway can run without either secret.
+
+        Raises:
+            ValueError: If a required secret is empty or whitespace-only. The
+                message names missing settings, never their values.
+        """
+        auth_enabled = self.user_auth_enabled if user_auth_enabled is None else user_auth_enabled
+        if not database_enabled and not auth_enabled:
+            return
+
+        missing = [
+            name
+            for name, value in (
+                ("JWT_SECRET_KEY", self.jwt_secret_key),
+                ("API_KEY_SECRET", self.api_key_secret),
+            )
+            if not value.strip()
+        ]
+        if missing:
+            raise ValueError(
+                "Authentication configuration incomplete: set "
+                + ", ".join(missing)
+                + " to non-blank values before starting the gateway or enabling user authentication."
+            )
+
 
 @lru_cache
 def get_settings() -> Settings:

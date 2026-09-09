@@ -5,12 +5,14 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from ..config.settings import settings
+from ..config.settings import get_settings, settings
 from ..utils.logging import attach_quiet_access_filter
 from . import bootstrap
+from .deps import database_enabled
 from .middleware.error import FallbackErrorMiddleware, install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
 from .middleware.request_id import RequestIdMiddleware
@@ -45,6 +47,13 @@ if TYPE_CHECKING:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - initialize and cleanup resources."""
+    # Resolve DB_ENABLED from dotenv as well as the process environment before
+    # validating. Bootstrap also loads dotenv for its standalone callers, but
+    # auth configuration must fail before it opens stores or starts tasks.
+    load_dotenv()
+    startup_settings = get_settings()
+    startup_settings.validate_auth_secrets(database_enabled=database_enabled())
+
     # Attach after uvicorn's own logging setup, which would otherwise wipe filters
     # added at import time. LOG_LEVEL=DEBUG disables suppression.
     attach_quiet_access_filter()
@@ -52,11 +61,7 @@ async def lifespan(app: FastAPI):
     import logging as _logging
 
     _sec_logger = _logging.getLogger(__name__)
-    if not settings.jwt_secret_key:
-        _sec_logger.critical("jwt_secret_key is empty — tokens will be insecure")
-    if not settings.api_key_secret:
-        _sec_logger.critical("api_key_secret is empty — API key generation will be insecure")
-    if not settings.admin_token:
+    if not startup_settings.admin_token:
         _sec_logger.warning("admin_token is empty — legacy admin-token access is disabled")
 
     services: AppServices = await bootstrap.initialize()

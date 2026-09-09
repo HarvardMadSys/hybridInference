@@ -287,14 +287,18 @@ msgstr ""
 
 #: ../developer/staging.md:111
 msgid ""
-"Neither secret is enforced at startup: an empty `JWT_SECRET_KEY` or "
-"`API_KEY_SECRET` logs one `critical` line and the gateway keeps going "
-"with insecure tokens and insecure API-key hashing "
-"(`apps/backend/serving/servers/app.py`). Generate both."
+"Startup rejects an empty or whitespace-only `JWT_SECRET_KEY` or `API_KEY_SECRET` "
+"before opening stores or starting background tasks. Only the combination "
+"`DB_ENABLED=false` and `USER_AUTH_ENABLED=false` is exempt; disabling inference "
+"authentication alone leaves database-backed login and API-key management "
+"enabled. Existing database overrides cannot waive this requirement."
 msgstr ""
-"这两个密钥在启动时都不是强制的：`JWT_SECRET_KEY` 或 `API_KEY_SECRET` 为空时，只会记一行 `critical` "
-"日志，网关照常运行下去，只是 token 不安全、API key "
-"的哈希也不安全（`apps/backend/serving/servers/app.py`）。两个都要生成。"
+"启动时会在打开存储或启动后台任务之前拒绝空值或仅含空白字符的 `JWT_SECRET_KEY` 或 `API_KEY_SECRET`。"
+"只有同时设置 `DB_ENABLED=false` 和 `USER_AUTH_ENABLED=false` 才能豁免；"
+"仅关闭推理鉴权仍会保留基于数据库的登录和 API-key 管理功能。已有的数据库设置覆盖也不能免除这一要求。"
+
+msgid "Before upgrading, verify that both secrets are configured and preserve their existing values. Keep them consistent across replicas and restarts; the gateway never generates or rotates them automatically. The admin settings API also rejects enabling `user_auth_enabled` with missing secrets, returning HTTP 400 with the missing variable names without changing the setting or its cache. See [Installation](installation.md) for secret generation and the optional legacy admin token."
+msgstr "升级前请确认两把密钥都已配置，并保留原值。所有副本和重启后的密钥应保持一致；网关不会自动生成或轮换密钥。管理设置 API 也会拒绝在缺密钥时启用 `user_auth_enabled`，返回 HTTP 400 和缺失的变量名，不修改设置或缓存。密钥生成和可选旧式管理员令牌的说明见[安装](installation.md)。"
 
 #: ../developer/staging.md:116
 msgid ""
@@ -522,4 +526,3 @@ msgstr "`make up` 会重新创建这个空卷，后端则在启动时重建表�
 
 #~ msgid "`CODEX_ONCALL_PORT`"
 #~ msgstr ""
-
