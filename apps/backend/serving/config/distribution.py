@@ -94,6 +94,8 @@ class DistributionFeatures(_ManifestModel):
     """Feature toggles a distribution opts into."""
 
     routers: list[str] = Field(default_factory=list)
+    # In active mode, false disables the signup API as well as its UI.
+    # True/None defer to the effective runtime/environment signup setting.
     public_signup: bool | None = None
     rag: bool | None = None
 

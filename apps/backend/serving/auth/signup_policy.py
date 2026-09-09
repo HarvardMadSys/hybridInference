@@ -1,4 +1,8 @@
-"""Signup approval policy backed by an admin-editable domain allowlist.
+"""Public signup availability and domain-based approval policy.
+
+An active manifest can disable public signup. Otherwise the runtime
+``signup_enabled`` setting (falling back to the environment) decides whether
+registration is available. The API and console share this decision.
 
 The allowlist is stored in ``signup_allowed_domains``. Match rules:
 
@@ -20,6 +24,10 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+from serving.config.distribution import get_distribution_config
+from serving.config.runtime_settings import get_runtime_settings_instance
+from serving.config.settings import get_settings
+
 if TYPE_CHECKING:
     from serving.storage.base import OperationalStore
 
@@ -29,6 +37,28 @@ if TYPE_CHECKING:
 _ALLOWLIST_EMPTY_TTL_SECONDS: float = 30.0
 _ALLOWLIST_EMPTY_CACHE: dict[str, tuple[float, bool]] = {}
 _ALLOWLIST_EMPTY_LOCK = asyncio.Lock()
+
+
+async def is_public_signup_enabled() -> bool:
+    """Resolve signup availability for both registration and public site config.
+
+    An explicit ``public_signup: false`` in an active manifest is a hard
+    restriction; runtime or environment settings cannot reopen registration.
+    Dark/absent manifests and true/null feature values preserve the existing
+    runtime-over-environment signup policy.
+    """
+    settings = get_settings()
+    if settings.distribution_config_mode.strip().lower() == "active":
+        distribution = get_distribution_config()
+        if distribution is not None and distribution.features.public_signup is False:
+            return False
+
+    try:
+        runtime_settings = get_runtime_settings_instance()
+    except RuntimeError:
+        # Database-free deployments do not initialize the runtime store.
+        return settings.signup_enabled
+    return await runtime_settings.get_bool("signup_enabled")
 
 
 def invalidate_allowlist_cache() -> None:

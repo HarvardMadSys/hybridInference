@@ -815,3 +815,9 @@ msgstr ""
 "任何能从公网访问到的网关，除非你有意公开这个拓扑，否则请在反向代理上挡住 `/routing`。"
 "`GET /admin/routing` 还会额外返回未发布的路由，需要在 `Authorization: Bearer ...` "
 "请求头中提供管理员的 JWT 或 `ADMIN_TOKEN`。请把两个接口的输出都当作敏感信息对待。"
+
+msgid "With an active manifest, `features.public_signup: false` disables both the signup UI and `POST /auth/signup` (HTTP 403, without creating an account). Neither `SIGNUP_ENABLED=true` nor a runtime `signup_enabled=true` override can reopen it. To enable public signup, change the manifest to `true` or leave the field unset/null and restart the backend, then ensure the effective `signup_enabled` setting is enabled."
+msgstr "在 active 模式下，manifest 中的 `features.public_signup: false` 会同时关闭注册界面和 `POST /auth/signup`（返回 HTTP 403，不创建账号）。`SIGNUP_ENABLED=true` 和运行时的 `signup_enabled=true` 覆盖值都不能重新开启注册。要开放公开注册，请将 manifest 中该字段改为 `true` 或留空/null，重启后端，并确保最终生效的 `signup_enabled` 设置已开启。"
+
+msgid "When the manifest allows signup, the runtime `signup_enabled` setting takes precedence over `SIGNUP_ENABLED` (default `true`). The same rule applies with no manifest or in dark mode; dark-mode feature values have no effect. `GET /site-config` reports the resulting boolean in `features.public_signup`, so the console follows the backend policy. Email verification, domain-based approval, and quotas remain separate checks; allowing registration does not bypass them."
+msgstr "当 manifest 允许注册时，运行时 `signup_enabled` 设置优先于 `SIGNUP_ENABLED`（默认 `true`）。未配置 manifest 或使用 dark 模式时也遵循同一规则；dark 模式下的功能字段不影响实际行为。`GET /site-config` 在 `features.public_signup` 中返回最终布尔值，使控制台与后端策略一致。邮箱验证、按域名审批和配额仍是独立检查，允许注册不会绕过它们。"

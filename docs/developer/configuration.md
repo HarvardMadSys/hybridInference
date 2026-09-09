@@ -133,6 +133,21 @@ export DISTRIBUTION_CONFIG_PATH=distributions/<name>/distribution.yaml
 export DISTRIBUTION_CONFIG_MODE=active
 ```
 
+With an active manifest, `features.public_signup: false` disables both the
+signup UI and `POST /auth/signup` (HTTP 403, without creating an account).
+Neither `SIGNUP_ENABLED=true` nor a runtime `signup_enabled=true` override can
+reopen it. To enable public signup, change the manifest to `true` or leave the
+field unset/null and restart the backend, then ensure the effective
+`signup_enabled` setting is enabled.
+
+When the manifest allows signup, the runtime `signup_enabled` setting takes
+precedence over `SIGNUP_ENABLED` (default `true`). The same rule applies with
+no manifest or in dark mode; dark-mode feature values have no effect.
+`GET /site-config` reports the resulting boolean in `features.public_signup`,
+so the console follows the backend policy. Email verification, domain-based
+approval, and quotas remain separate checks; allowing registration does not
+bypass them.
+
 ### Dark mode is the default, and that is deliberate
 
 `DISTRIBUTION_CONFIG_MODE` defaults to `dark`. In dark mode the manifest is
