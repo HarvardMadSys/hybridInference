@@ -335,6 +335,57 @@ msgstr ""
 "manifest 里绝不能放密钥。凭据留在环境变量里，而且 `schema_version: 1` 有意不把环境变量插值进 manifest "
 "的取值。"
 
+#: ../developer/configuration.md
+msgid "Backend extensions"
+msgstr "后端扩展"
+
+#: ../developer/configuration.md
+msgid ""
+"`BACKEND_EXTENSIONS` is an optional comma-delimited list of trusted, local Python "
+"module names. It is empty by default. Each module must expose a synchronous "
+"`register()` function that takes no arguments. The gateway imports and registers "
+"each module once per process, after loading dotenv and before constructing "
+"runtime routes or consuming their registries. An import or registration failure "
+"aborts startup; the gateway does not silently use a different adapter."
+msgstr ""
+"`BACKEND_EXTENSIONS` 是可选的、以逗号分隔的受信任本地 Python 模块名列表，默认值为空。"
+"每个模块必须提供同步、无参数的 `register()` 函数。网关加载 dotenv 后、构造运行时路由或使用相关注册表前，"
+"在每个进程中导入并注册每个模块一次。导入或注册失败会中止启动；网关不会悄悄换用其他适配器。"
+
+#: ../developer/configuration.md
+msgid ""
+"Extensions register factories through "
+"`serving.servers.registry.register_adapter_factory(kind, factory, *, override=False)`. "
+"A factory receives a configuration dictionary and returns an adapter, before "
+"built-in provider defaults are applied. Registering an existing extension kind "
+"is an error. Replacing a built-in kind requires `override=True` and emits a log "
+"entry. Registered kinds also become reserved provider labels. The startup "
+"`register()` function may populate the existing runtime-setting and provider "
+"metadata dictionaries before their consumers run; it must mutate those shared "
+"dictionaries rather than replace them."
+msgstr ""
+"扩展通过 `serving.servers.registry.register_adapter_factory(kind, factory, *, override=False)` 注册工厂。"
+"工厂在内置 provider 默认值应用前接收配置字典并返回适配器。注册已存在的扩展 kind 会报错。"
+"替换内置 kind 必须设置 `override=True`，且会记录日志。注册的 kind 也会成为保留的 provider 标签。"
+"启动时的 `register()` 函数可在使用方运行前，填充现有的运行时设置和 provider 元数据字典；"
+"必须修改这些共享字典，而不能替换它们。"
+
+#: ../developer/configuration.md
+msgid ""
+"The deployment must make these modules importable, for example through its "
+"read-only overlay mount. This executes trusted server code, not user-supplied "
+"configuration: do not derive module names from requests or allow an admin form "
+"to choose them. The loader does not fetch remote modules or load code per "
+"request. Import all extension code during startup, avoid later lazy imports or "
+"live code reloads, and restart the backend when changing the mounted extension. "
+"See [Deployment-local adapters](adding-models.md#deployment-local-adapters) for "
+"a minimal factory example."
+msgstr ""
+"部署必须确保这些模块可导入，例如通过只读 overlay 挂载提供模块。这里执行的是受信任的服务端代码，"
+"不是用户提交的配置：不要从请求推导模块名，也不要允许管理表单选择模块。加载器不会获取远程模块，"
+"也不会逐请求加载代码。请在启动阶段导入全部扩展代码，避免之后的延迟导入或代码热重载，"
+"并在修改挂载的扩展后重启后端。最小工厂示例见[部署本地适配器](adding-models.md#deployment-local-adapters)。"
+
 #: ../developer/configuration.md:173
 msgid "The example distribution"
 msgstr "示例 distribution"
@@ -447,12 +498,12 @@ msgstr ""
 
 #: ../developer/configuration.md:239
 msgid ""
-"**The adapter kinds are defined in one place.** The dispatch in "
-"`_make_adapter` (`apps/backend/serving/servers/registry.py`) is the "
-"source of truth. At this revision it accepts:"
+"**Adapter construction is centralized.** `_make_adapter` "
+"(`apps/backend/serving/servers/registry.py`) checks registered extension factories "
+"first, then dispatches these built-in kinds:"
 msgstr ""
-"**adapter 的 kind "
-"只在一个地方定义**。`_make_adapter`（`apps/backend/serving/servers/registry.py`）里的分派逻辑就是唯一的事实来源。在当前修订版本里它接受："
+"**适配器统一构造**。`_make_adapter`（`apps/backend/serving/servers/registry.py`）"
+"先检查已注册的扩展工厂，然后分派以下内置 kind："
 
 #: ../developer/configuration.md
 msgid "Adapter"
@@ -461,19 +512,11 @@ msgstr "适配器"
 #: ../developer/configuration.md
 msgid ""
 "`openai_compat`, `staging`, `vllm`, `sglang`, `ollama`, `chutes`, "
-"`featherless`, `cliproxy`, `deepseek`, `kimi`, `minimax`"
+"`featherless`, `cliproxy`, `deepseek`, `zai`, `kimi`, `minimax`"
 msgstr ""
 
 #: ../developer/configuration.md
 msgid "`OpenAICompatAdapter`"
-msgstr ""
-
-#: ../developer/configuration.md
-msgid "`kimi_coding`, `zai`"
-msgstr ""
-
-#: ../developer/configuration.md
-msgid "`CodingIdentityAdapter`"
 msgstr ""
 
 #: ../developer/configuration.md
@@ -512,31 +555,31 @@ msgstr ""
 msgid ""
 "Local inference servers have no dedicated adapter: `vllm`, `sglang` and "
 "`ollama` are OpenAI-compatible kinds that differ only in their provider "
-"label and usage handling. Anything else raises `ValueError: Unknown "
-"adapter kind: <kind>` at startup. To re-derive the list from the code "
-"rather than trusting this table:"
+"label and usage handling. A kind that is neither built-in nor explicitly "
+"registered by an extension raises `ValueError: Unknown adapter kind: <kind>` "
+"during registry loading. To re-derive the built-in list from the code:"
 msgstr ""
 "本地推理服务器没有专用 adapter：`vllm`、`sglang` 和 `ollama` 都是 OpenAI 兼容的 kind，区别只在 "
-"provider 标签和用量处理上。其他任何值都会在启动时抛出 `ValueError: Unknown adapter kind: "
-"<kind>`。如果不想信这张表，而想从代码里重新推出这个列表："
+"provider 标签和用量处理上。既非内置、也未由扩展显式注册的 kind，会在加载注册表时抛出 "
+"`ValueError: Unknown adapter kind: <kind>`。要从代码中重新得出内置列表："
 
 #: ../developer/configuration.md:261
 msgid ""
 "A `grep` for `if kind` misses most of it: the OpenAI-compat arm is a "
-"single `if kind in (` followed by the eleven names on their own lines, so"
+"single `if kind in (` followed by the names on their own lines, so"
 " none of them appear in the output."
 msgstr ""
-"用 `grep` 找 `if kind` 会漏掉其中大部分：OpenAI-compat 那一支是一个 `if kind in (`，后面十一个名字各占一行，所以它们一个都不会出现在输出里。"
+"用 `grep` 找 `if kind` 会漏掉其中大部分：OpenAI-compat 那一支是一个 `if kind in (`，后面的名字各占一行，所以它们一个都不会出现在输出里。"
 
 #: ../developer/configuration.md:265
 msgid ""
 "The neighbouring `RESERVED_PROVIDER_LABELS` set in the same module is a "
 "different, larger list — the labels a route may not borrow as a custom "
-"`provider:` — and includes names such as `openai` and `router` that are "
-"*not* adapter kinds."
+"`provider:` — and includes registered extension kinds and names such as "
+"`openai` and `router` that are *not* adapter kinds."
 msgstr ""
 "同一个模块里紧挨着的 `RESERVED_PROVIDER_LABELS` 集合是另一份不同的、更长的列表——那是路由不能拿去当自定义 "
-"`provider:` 的标签——其中还包含 `openai`、`router` 这类*并不是* adapter kind 的名字。"
+"`provider:` 的标签——其中还包含已注册的扩展 kind，以及 `openai`、`router` 这类*并不是* adapter kind 的名字。"
 
 #: ../developer/configuration.md:270
 #, python-brace-format

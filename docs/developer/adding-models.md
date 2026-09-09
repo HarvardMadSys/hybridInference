@@ -114,9 +114,10 @@ those, **do not write an adapter class.** Register a provider profile and add
 the kind to the OpenAI-compat dispatch tuple in
 `apps/backend/serving/servers/registry.py` (`_make_adapter`):
 
-`_make_adapter` is one long `if kind ...` / `elif kind ...` chain over the
-route's `kind`. Add an arm to it for the profile, then add the kind to the
-OpenAI-compat tuple further down the same function:
+After checking deployment-local factories, `_make_adapter` dispatches built-in
+kinds through an `if kind ...` / `elif kind ...` chain. Add an arm for the
+profile, then add the kind to the OpenAI-compat tuple further down the same
+function:
 
 ```python
 # ...among the per-kind arms of _make_adapter:
@@ -134,6 +135,7 @@ if kind in (
     "openai_compat",
     "staging",
     "deepseek",
+    "zai",
     "kimi",
     "minimax",
     "your_provider",  # <-- add it here
@@ -141,12 +143,9 @@ if kind in (
     return OpenAICompatAdapter(model_cfg)
 ```
 
-This is how `deepseek`, `kimi`, and `minimax` are integrated today: a
+This is how `deepseek`, `zai`, `kimi`, and `minimax` are integrated today: a
 per-provider profile in `apps/backend/serving/adapters/profiles.py` carries the
-usage-metric or path quirks, and `OpenAICompatAdapter` does the rest. `zai` and
-`kimi_coding` use the same profile mechanism but are gated on a coding-tool
-identity, so `_make_adapter` short-circuits them to `CodingIdentityAdapter` (a
-thin `OpenAICompatAdapter` subclass) before reaching that tuple.
+usage-metric or path quirks, and `OpenAICompatAdapter` does the rest.
 
 Write a dedicated adapter only when the provider speaks a genuinely non-OpenAI
 wire format — Gemini's `generateContent`, the Anthropic Messages API,
@@ -527,16 +526,43 @@ with provider-specific profiles applied automatically.
 | `featherless` | OpenAI-compat | Featherless.ai hosted inference |
 | `cliproxy` | OpenAI-compat | CLI proxy endpoint for OpenAI-compatible models |
 | `deepseek` | OpenAI-compat | DeepSeek API (applies the DeepSeek usage profile) |
-| `kimi` | OpenAI-compat | Moonshot/Kimi pay-per-token API (applies the Kimi usage profile) |
-| `kimi_coding` | OpenAI-compat | Kimi coding-plan endpoint; dispatches to `CodingIdentityAdapter` |
-| `zai` | OpenAI-compat | Z.AI GLM coding plan: the chat path is `/chat/completions` appended to the base URL rather than the default `/v1/chat/completions`, because Z.AI's base URL already carries its version segment (`profiles.default_chat_path`). Dispatches to `CodingIdentityAdapter`, which presents a coding-tool `User-Agent` and a leading system message |
+| `kimi` | OpenAI-compat | Moonshot/Kimi pay-per-token API under `/v1` (applies the Kimi usage profile) |
+| `zai` | OpenAI-compat | Z.AI's ordinary API under `/api/paas/v4/`; the Z.AI profile appends `/chat/completions` without adding another version segment |
 | `minimax` | OpenAI-compat | MiniMax API (applies the MiniMax usage profile) |
 | `openrouter` | Custom | OpenRouter aggregator. Use the bracket form `openrouter[<slug>]` to pin a sub-provider |
 | `gemini` | Custom | Google Gemini API (message format translation) |
 | `claude` | Custom | Anthropic Claude via Google Vertex |
 | `anthropic` | Custom | Direct Anthropic Messages API client |
 
-Any other `kind` raises `ValueError: Unknown adapter kind` during registry load.
+Other kinds must be explicitly registered by a startup extension; otherwise
+registry loading raises `ValueError: Unknown adapter kind`.
+
+### Deployment-local adapters
+
+A deployment can register a local factory without editing the built-in dispatch.
+Its module exposes a synchronous, no-argument `register()` function:
+
+```python
+from serving.adapters import ModelConfig, OpenAICompatAdapter
+from serving.servers.registry import register_adapter_factory
+
+
+def make_example_adapter(cfg):
+    return OpenAICompatAdapter(ModelConfig(**cfg))
+
+
+def register():
+    register_adapter_factory("example_service", make_example_adapter)
+```
+
+Set `BACKEND_EXTENSIONS` to this module's import name and use
+`kind: example_service` in the model registry. The factory receives the route's
+configuration dictionary and returns an adapter. It runs before built-in
+provider defaults, so it must supply any profile or path defaults it needs.
+Duplicate registrations fail; replacing a built-in kind requires
+`register_adapter_factory(kind, factory, override=True)` and is logged.
+See [Backend extensions](configuration.md#backend-extensions) for the startup
+and deployment requirements.
 
 ### Hybrid routing
 

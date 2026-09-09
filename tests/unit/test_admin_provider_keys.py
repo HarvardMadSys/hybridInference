@@ -308,7 +308,7 @@ async def client(monkeypatch, store):
         "CHUTES_API_KEY",
         "DEEPSEEK_API_KEY",
         "FEATHERLESS_API_KEY",
-        "KIMI_CODING_API_KEY",
+        "MOONSHOT_API_KEY",
         "MINIMAX_API_KEY",
         "OLLAMA_API_KEY",
         "STAGING_API_KEY",
@@ -489,25 +489,26 @@ async def test_verify_provider_key_can_probe_raw_route_entries(client):
 
 
 @pytest.mark.asyncio
-async def test_verify_provider_key_matches_kimi_coding_route(client):
-    """Kimi keys verify against the coding-plan route kind."""
+async def test_verify_provider_key_matches_extension_alias_route(client, monkeypatch):
+    """Keys grouped under an alias retain the route's reconstruction kind."""
+    monkeypatch.setitem(dynamic_keys._KEY_PROVIDER_ALIASES, "extension_alias", "example")
     http, store = client
-    kimi_adapter = OpenAICompatAdapter(
+    adapter = OpenAICompatAdapter(
         ModelConfig(
-            id="kimi-k2.7-code",
-            name="kimi-k2.7-code",
-            provider="kimi_coding",
-            base_url="https://kimi.example/v1",
-            api_keys=["env-kimi-coding-key-1234567890"],
-            provider_model_id="kimi-for-coding",
-            endpoint_id="kimi-k2.7-code:kimi-api",
+            id="example-chat",
+            name="example-chat",
+            provider="extension_alias",
+            base_url="https://api.example.test/v1",
+            api_keys=["env-example-key-1234567890"],
+            provider_model_id="example-model",
+            endpoint_id="example-chat:example-api",
         )
     )
-    dynamic_keys.register_adapter_for_provider("kimi", kimi_adapter)
+    dynamic_keys.register_adapter_for_provider("example", adapter)
     store.services.router.routes = {
-        "kimi-k2.7-code": SimpleNamespace(adapters=[(kimi_adapter, 1.0)]),
+        "example-chat": SimpleNamespace(adapters=[(adapter, 1.0)]),
     }
-    api_key = "kimi-candidate-key-aaaaaaaa"
+    api_key = "example-candidate-key-aaaaaaaa"
     dry_run_adapter = MagicMock()
     dry_run_adapter.chat_completion = AsyncMock(return_value={"id": "ok"})
 
@@ -517,15 +518,15 @@ async def test_verify_provider_key_matches_kimi_coding_route(client):
     ) as make_adapter:
         resp = await http.post(
             "/admin/provider-keys/verify",
-            json={"provider": "kimi", "api_key": api_key},
+            json={"provider": "example", "api_key": api_key},
             headers=AUTH,
         )
 
     assert resp.status_code == 200, resp.text
     kind, cfg = make_adapter.call_args.args
-    assert kind == "kimi_coding"
+    assert kind == "extension_alias"
     assert cfg["api_key"] == api_key
-    assert cfg["provider_model_id"] == "kimi-for-coding"
+    assert cfg["provider_model_id"] == "example-model"
 
 
 @pytest.mark.asyncio
@@ -615,18 +616,19 @@ async def test_verify_provider_key_requires_registered_route(client):
 
 
 @pytest.mark.asyncio
-async def test_list_provider_key_providers_comes_from_runtime_registry(client):
+async def test_list_provider_key_providers_comes_from_runtime_registry(client, monkeypatch):
     """Provider choices for Keys are independent from quota-card support."""
     http, _store = client
+    monkeypatch.setitem(dynamic_keys._KEY_PROVIDER_ALIASES, "extension_alias", "example")
     dynamic_keys.register_known_provider("featherless")
-    dynamic_keys.register_known_provider("kimi_coding")
+    dynamic_keys.register_known_provider("extension_alias")
 
     resp = await http.get("/admin/provider-keys/providers", headers=AUTH)
 
     assert resp.status_code == 200
     assert "featherless" in resp.json()["providers"]
-    assert "kimi" in resp.json()["providers"]
-    assert "kimi_coding" not in resp.json()["providers"]
+    assert "example" in resp.json()["providers"]
+    assert "extension_alias" not in resp.json()["providers"]
 
 
 @pytest.mark.asyncio

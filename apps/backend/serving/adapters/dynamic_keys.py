@@ -55,16 +55,14 @@ _PROVIDER_ENV_KEY_VARS: dict[str, tuple[str, str]] = {
     "chutes": ("CHUTES_API_KEY", "CHUTES_API_KEY"),
     "deepseek": ("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
     "featherless": ("FEATHERLESS_API_KEY", "FEATHERLESS_API_KEY"),
-    "kimi": ("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEY"),
+    "kimi": ("MOONSHOT_API_KEY", "MOONSHOT_API_KEY"),
     "minimax": ("MINIMAX_API_KEY", "MINIMAX_API_KEY"),
     "ollama": ("OLLAMA_API_KEY", "OLLAMA_API_KEY"),
     "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
     "staging": ("STAGING_API_KEY", "STAGING_API_KEY"),
     "zai": ("ZAI_API_KEY", "ZAI_API_KEY"),
 }
-_KEY_PROVIDER_ALIASES = {
-    "kimi_coding": "kimi",
-}
+_KEY_PROVIDER_ALIASES: dict[str, str] = {}
 
 
 def reset() -> None:

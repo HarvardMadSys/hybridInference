@@ -170,6 +170,34 @@ Manifests must not contain secrets. Credentials stay in the environment, and
 `schema_version: 1` deliberately does not interpolate environment variables into
 manifest values.
 
+## Backend extensions
+
+`BACKEND_EXTENSIONS` is an optional comma-delimited list of trusted, local Python
+module names. It is empty by default. Each module must expose a synchronous
+`register()` function that takes no arguments. The gateway imports and registers
+each module once per process, after loading dotenv and before constructing
+runtime routes or consuming their registries. An import or registration failure
+aborts startup; the gateway does not silently use a different adapter.
+
+Extensions register factories through
+`serving.servers.registry.register_adapter_factory(kind, factory, *, override=False)`.
+A factory receives a configuration dictionary and returns an adapter, before
+built-in provider defaults are applied. Registering an existing extension kind
+is an error. Replacing a built-in kind requires `override=True` and emits a log
+entry. Registered kinds also become reserved provider labels. The startup
+`register()` function may populate the existing runtime-setting and provider
+metadata dictionaries before their consumers run; it must mutate those shared
+dictionaries rather than replace them.
+
+The deployment must make these modules importable, for example through its
+read-only overlay mount. This executes trusted server code, not user-supplied
+configuration: do not derive module names from requests or allow an admin form
+to choose them. The loader does not fetch remote modules or load code per
+request. Import all extension code during startup, avoid later lazy imports or
+live code reloads, and restart the backend when changing the mounted extension.
+See [Deployment-local adapters](adding-models.md#deployment-local-adapters) for
+a minimal factory example.
+
 ## The example distribution
 
 `distributions/example/` is a complete, runnable overlay kept in the repository
@@ -236,14 +264,13 @@ route is synthesised from the top-level `provider:`, `base_url` and `api_key`.
 `provider` is also the label written to `api_logs.provider` and shown in metrics,
 which is why a route may override it independently with `provider:`.
 
-**The adapter kinds are defined in one place.** The dispatch in
-`_make_adapter` (`apps/backend/serving/servers/registry.py`) is the source of
-truth. At this revision it accepts:
+**Adapter construction is centralized.** `_make_adapter`
+(`apps/backend/serving/servers/registry.py`) checks registered extension factories
+first, then dispatches these built-in kinds:
 
 | Kind | Adapter |
 |---|---|
-| `openai_compat`, `staging`, `vllm`, `sglang`, `ollama`, `chutes`, `featherless`, `cliproxy`, `deepseek`, `kimi`, `minimax` | `OpenAICompatAdapter` |
-| `kimi_coding`, `zai` | `CodingIdentityAdapter` |
+| `openai_compat`, `staging`, `vllm`, `sglang`, `ollama`, `chutes`, `featherless`, `cliproxy`, `deepseek`, `zai`, `kimi`, `minimax` | `OpenAICompatAdapter` |
 | `openrouter`, `openrouter[<slug>]` | `OpenRouterAdapter` |
 | `claude` | `ClaudeAdapter` |
 | `gemini` | `GeminiAdapter` |
@@ -251,21 +278,22 @@ truth. At this revision it accepts:
 
 Local inference servers have no dedicated adapter: `vllm`, `sglang` and `ollama`
 are OpenAI-compatible kinds that differ only in their provider label and usage
-handling. Anything else raises `ValueError: Unknown adapter kind: <kind>` at
-startup. To re-derive the list from the code rather than trusting this table:
+handling. A kind that is neither built-in nor explicitly registered by an
+extension raises `ValueError: Unknown adapter kind: <kind>` during registry
+loading. To re-derive the built-in list from the code:
 
 ```bash
 sed -n '/def _make_adapter/,/Unknown adapter kind/p' apps/backend/serving/servers/registry.py
 ```
 
 A `grep` for `if kind` misses most of it: the OpenAI-compat arm is a single
-`if kind in (` followed by the eleven names on their own lines, so none of them
+`if kind in (` followed by the names on their own lines, so none of them
 appear in the output.
 
 The neighbouring `RESERVED_PROVIDER_LABELS` set in the same module is a
 different, larger list — the labels a route may not borrow as a custom
-`provider:` — and includes names such as `openai` and `router` that are *not*
-adapter kinds.
+`provider:` — and includes registered extension kinds and names such as `openai`
+and `router` that are *not* adapter kinds.
 
 **Environment interpolation in the registry is whole-value only.** In
 `models.yaml`, a value is expanded only when the entire string is exactly

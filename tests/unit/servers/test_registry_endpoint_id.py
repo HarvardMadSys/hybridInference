@@ -100,7 +100,7 @@ def test_minimax_routes_request_stream_usage() -> None:
 
 @pytest.mark.parametrize(
     "kind",
-    ["deepseek", "zai", "kimi", "kimi_coding", "vllm"],
+    ["deepseek", "zai", "kimi", "sglang", "vllm"],
 )
 def test_tool_capable_kinds_request_stream_usage(kind: str) -> None:
     # Regression: tool-call-only streams reported completion_tokens=0 because

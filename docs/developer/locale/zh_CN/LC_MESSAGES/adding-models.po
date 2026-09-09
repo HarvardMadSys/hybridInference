@@ -216,28 +216,24 @@ msgstr ""
 
 #: ../developer/adding-models.md:117
 msgid ""
-"`_make_adapter` is one long `if kind ...` / `elif kind ...` chain over "
-"the route's `kind`. Add an arm to it for the profile, then add the kind "
-"to the OpenAI-compat tuple further down the same function:"
+"After checking deployment-local factories, `_make_adapter` dispatches built-in "
+"kinds through an `if kind ...` / `elif kind ...` chain. Add an arm for the "
+"profile, then add the kind to the OpenAI-compat tuple further down the same "
+"function:"
 msgstr ""
-"`_make_adapter` 是一条很长的 `if kind ...` / `elif kind ...` 链，分派依据是路由的 `kind`。先在这条链上为你的 profile 加一个分支，再把这个 kind 加进同一个函数里更下面的 OpenAI-compat 元组："
+"检查部署本地注册的工厂后，`_make_adapter` 通过 `if kind ...` / `elif kind ...` "
+"分支链分派内置 kind。先为 profile 添加一个分支，再把这个 kind 加进同一函数下方的 OpenAI-compat 元组："
 
 #: ../developer/adding-models.md:144
 msgid ""
-"This is how `deepseek`, `kimi`, and `minimax` are integrated today: a "
+"This is how `deepseek`, `zai`, `kimi`, and `minimax` are integrated today: a "
 "per-provider profile in `apps/backend/serving/adapters/profiles.py` "
 "carries the usage-metric or path quirks, and `OpenAICompatAdapter` does "
-"the rest. `zai` and `kimi_coding` use the same profile mechanism but are "
-"gated on a coding-tool identity, so `_make_adapter` short-circuits them "
-"to `CodingIdentityAdapter` (a thin `OpenAICompatAdapter` subclass) before"
-" reaching that tuple."
+"the rest."
 msgstr ""
-"`deepseek`、`kimi` 和 `minimax` "
+"`deepseek`、`zai`、`kimi` 和 `minimax` "
 "现在就是这样接入的：`apps/backend/serving/adapters/profiles.py` 里每个 provider 一份的 "
-"profile 承载用量指标或路径上的差异，其余全部交给 `OpenAICompatAdapter`。`zai` 和 `kimi_coding` "
-"用的是同一套 profile 机制，但它们额外绑定了一个 coding 工具身份，所以 `_make_adapter` "
-"会在走到那个元组之前，先把它们短路到 `CodingIdentityAdapter`（`OpenAICompatAdapter` "
-"的一个很薄的子类）。"
+"profile 承载用量指标或路径上的差异，其余全部交给 `OpenAICompatAdapter`。"
 
 #: ../developer/adding-models.md:151
 msgid ""
@@ -851,16 +847,8 @@ msgid "`kimi`"
 msgstr ""
 
 #: ../developer/adding-models.md
-msgid "Moonshot/Kimi pay-per-token API (applies the Kimi usage profile)"
-msgstr "Moonshot/Kimi 按 token 计费的 API（套用 Kimi 用量 profile）"
-
-#: ../developer/adding-models.md
-msgid "`kimi_coding`"
-msgstr ""
-
-#: ../developer/adding-models.md
-msgid "Kimi coding-plan endpoint; dispatches to `CodingIdentityAdapter`"
-msgstr "Kimi coding 套餐端点；分发到 `CodingIdentityAdapter`"
+msgid "Moonshot/Kimi pay-per-token API under `/v1` (applies the Kimi usage profile)"
+msgstr "Moonshot/Kimi 位于 `/v1` 下的按 token 计费 API（套用 Kimi 用量 profile）"
 
 #: ../developer/adding-models.md
 msgid "`zai`"
@@ -868,13 +856,10 @@ msgstr ""
 
 #: ../developer/adding-models.md
 msgid ""
-"Z.AI GLM coding plan: the chat path is `/chat/completions` appended to "
-"the base URL rather than the default `/v1/chat/completions`, because "
-"Z.AI's base URL already carries its version segment "
-"(`profiles.default_chat_path`). Dispatches to `CodingIdentityAdapter`, "
-"which presents a coding-tool `User-Agent` and a leading system message"
+"Z.AI's ordinary API under `/api/paas/v4/`; the Z.AI profile appends "
+"`/chat/completions` without adding another version segment"
 msgstr ""
-"Z.AI GLM coding 套餐：chat 路径是在 base URL 后面拼 `/chat/completions`，而不是默认的 `/v1/chat/completions`，因为 Z.AI 的 base URL 里已经带了版本段（`profiles.default_chat_path`）。它分发到 `CodingIdentityAdapter`——后者会带上 coding 工具的 `User-Agent` 和一条前置 system 消息"
+"Z.AI 位于 `/api/paas/v4/` 下的普通 API；Z.AI profile 追加 `/chat/completions`，不再添加版本段"
 
 #: ../developer/adding-models.md
 msgid "`minimax`"
@@ -924,9 +909,36 @@ msgstr "直连 Anthropic Messages API 的客户端"
 
 #: ../developer/adding-models.md:539
 msgid ""
-"Any other `kind` raises `ValueError: Unknown adapter kind` during "
-"registry load."
-msgstr "其他任何 `kind` 都会在加载注册表时抛出 `ValueError: Unknown adapter kind`。"
+"Other kinds must be explicitly registered by a startup extension; otherwise "
+"registry loading raises `ValueError: Unknown adapter kind`."
+msgstr "其他 kind 必须由启动扩展显式注册，否则加载注册表时会抛出 `ValueError: Unknown adapter kind`。"
+
+#: ../developer/adding-models.md
+msgid "Deployment-local adapters"
+msgstr "部署本地适配器"
+
+#: ../developer/adding-models.md
+msgid ""
+"A deployment can register a local factory without editing the built-in dispatch. "
+"Its module exposes a synchronous, no-argument `register()` function:"
+msgstr ""
+"部署可以注册本地工厂，而不修改内置分派逻辑。模块需要提供同步、无参数的 `register()` 函数："
+
+#: ../developer/adding-models.md
+msgid ""
+"Set `BACKEND_EXTENSIONS` to this module's import name and use "
+"`kind: example_service` in the model registry. The factory receives the route's "
+"configuration dictionary and returns an adapter. It runs before built-in "
+"provider defaults, so it must supply any profile or path defaults it needs. "
+"Duplicate registrations fail; replacing a built-in kind requires "
+"`register_adapter_factory(kind, factory, override=True)` and is logged. "
+"See [Backend extensions](configuration.md#backend-extensions) for the startup "
+"and deployment requirements."
+msgstr ""
+"将 `BACKEND_EXTENSIONS` 设为此模块的导入名，并在模型注册表中使用 `kind: example_service`。"
+"工厂接收路由配置字典并返回适配器。它在内置 provider 默认值应用之前运行，因此必须自行补充需要的 profile 或路径默认值。"
+"重复注册会失败；替换内置 kind 必须使用 `register_adapter_factory(kind, factory, override=True)`，且会记录日志。"
+"启动和部署要求见[后端扩展](configuration.md#backend-extensions)。"
 
 #: ../developer/adding-models.md:541
 msgid "Hybrid routing"
@@ -1253,4 +1265,3 @@ msgstr ""
 
 #~ msgid "Rate limiting"
 #~ msgstr "限流"
-

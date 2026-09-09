@@ -551,14 +551,15 @@ msgid ""
 "carry different provider labels so their traffic stays in separate "
 "cohorts. A route may not borrow a label that `_make_adapter` already "
 "derives from a kind — `RESERVED_PROVIDER_LABELS` in "
-"`apps/backend/serving/servers/registry.py` rejects those."
+"`apps/backend/serving/servers/registry.py` rejects those, including kinds "
+"registered by startup extensions."
 msgstr ""
 "`provider` 是路由上的一个标签。它默认取 adapter 的 kind，也可以在模型注册表里用逐路由的 `provider:` "
 "覆盖。它是 `api_logs.provider` 记录下来的东西，是按 provider "
 "分组的仪表盘的分组依据，也是管理员禁用开关作用的对象。两台本地 vLLM 机器可以带不同的 provider "
 "标签，好让它们的流量留在不同的分组里。一条路由不能借用 `_make_adapter` 已经从某个 kind "
 "派生出来的标签——`apps/backend/serving/servers/registry.py` 中的 "
-"`RESERVED_PROVIDER_LABELS` 会拒绝这些标签。"
+"`RESERVED_PROVIDER_LABELS` 会拒绝这些标签，包括启动扩展注册的 kind。"
 
 #: ../developer/architecture.md:252
 #, python-brace-format
@@ -694,32 +695,23 @@ msgstr ""
 msgid "The Gemini API"
 msgstr "Gemini API"
 
-#: ../developer/architecture.md
-msgid "`coding_identity.py`"
-msgstr ""
-
-#: ../developer/architecture.md
-msgid "`CodingIdentityAdapter`"
-msgstr ""
-
-#: ../developer/architecture.md
-msgid "OpenAI-compatible providers that gate access on a coding-tool identity"
-msgstr "以编码工具身份作为准入条件的 OpenAI 兼容 provider"
-
 #: ../developer/architecture.md:288
 #, python-brace-format
 msgid ""
-"`_make_adapter` maps a route's `kind:` onto one of these and pre-seeds "
-"provider-specific configuration — a usage profile, a non-standard chat "
-"path, or whether it is safe to send `stream_options: {include_usage: "
-"true}`. Adding a provider that is already OpenAI-compatible usually means"
-" adding a `kind` here rather than writing a new class; see [Adding a New "
-"Model](adding-models.md)."
+"`_make_adapter` first checks the factory table populated by explicitly enabled "
+"[backend extensions](configuration.md#backend-extensions). Without a registered "
+"factory, it maps a route's `kind:` onto a built-in adapter and pre-seeds "
+"provider-specific configuration — a usage profile, a non-standard chat path, or "
+"whether it is safe to send `stream_options: {include_usage: true}`. An extension "
+"factory instead receives the configuration dictionary before those defaults. "
+"Adding a provider that is already OpenAI-compatible usually means selecting a "
+"profile, not writing a new class; see [Adding a New Model](adding-models.md)."
 msgstr ""
-"`_make_adapter` 把一条路由的 `kind:` 映射到上面这些当中的一个，并预置 provider "
-"特有的配置——一份用量画像、一条非标准的 chat 路径，或者能否安全地发送 `stream_options: {include_usage: "
-"true}`。接入一个本身就 OpenAI 兼容的 provider，通常意味着在这里加一个 `kind`，而不是写一个新类；见[添加新模型"
-"](adding-models.md)。"
+"`_make_adapter` 首先检查显式启用的[后端扩展](configuration.md#backend-extensions)填充的工厂表。"
+"如果没有注册工厂，它会将路由的 `kind:` 映射到内置适配器，并预置 provider 特有的配置——用量 profile、"
+"非标准 chat 路径，或是否可以安全发送 `stream_options: {include_usage: true}`。"
+"扩展工厂则在这些默认值应用前接收配置字典。接入本身已兼容 OpenAI 的 provider 通常只需选择 profile，"
+"不必编写新类；见[添加新模型](adding-models.md)。"
 
 #: ../developer/architecture.md:294
 msgid ""
