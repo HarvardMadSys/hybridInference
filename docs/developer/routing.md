@@ -261,8 +261,26 @@ any internal hostnames in a route's base URL. Put it behind your reverse proxy,
 or do not expose it.
 ```
 
-Runtime route and weight administration lives under `/admin/routing/...` and
-does require admin authentication.
+Runtime administration lives under `/admin/...`, requires admin
+authentication, and is backed by the operational store. The routing-related
+endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /admin/routing` | The weight distribution, including unpublished routes. |
+| `GET /admin/routing/provider-routes` | Every route the gateway serves, per model, tagged `source: yaml`, `override` or `runtime`; `.../{model_id}` for one model. |
+| `POST /admin/routing/provider-route-models` | Create a runtime model with its first route. |
+| `POST /admin/routing/provider-route-candidates/{model_id}` | Add a route to a model; `PATCH` and `DELETE` on `.../{model_id}/{route_id}` edit or remove it. |
+| `PUT /admin/routing/provider-routes/{model_id}/{route_id}` | Retarget a registry route; `DELETE` restores the YAML route. |
+| `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}` | Set or clear a weight override. |
+| `PATCH /admin/routing/provider-route-strategies/{model_id}` | Switch a model's router. |
+| `/admin/routewise/model-settings` | Per-model RouteWise tuning — see [RouteWise](#routewise). |
+
+Each `POST` or `PUT` that changes a route has a `...-verifications` twin that
+tries the upstream without saving anything. Which admin-console tab drives
+which endpoint, what each one stores, and how the stored state combines with
+the registry at boot is in
+[Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console).
 
 ## Adding a routing strategy
 

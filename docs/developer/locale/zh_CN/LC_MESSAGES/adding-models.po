@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-29 10:34+0800\n"
+"POT-Creation-Date: 2026-09-09 17:53+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -53,6 +53,16 @@ msgstr "接入新的 provider——先添加或接上 adapter，再改注册表 
 
 #: ../developer/adding-models.md:12
 msgid ""
+"Both paths edit the registry and restart the gateway. When a database is "
+"configured, a model, a route or a key can instead be added from the admin"
+" console while the gateway runs — see [Runtime configuration from the "
+"admin console](configuration.md#runtime-configuration-from-the-admin-"
+"console). That path carries no catalog metadata, so a model that needs a "
+"context length, modalities or aliases still belongs here."
+msgstr "这两条路都要改注册表并重启网关。配置了数据库之后，模型、路由或 key 也可以在网关运行时直接从管理控制台添加——见[从管理控制台做运行时配置](configuration.md#runtime-configuration-from-the-admin-console)。那条路不携带目录元数据，所以需要上下文长度、模态或别名的模型仍然属于这里。"
+
+#: ../developer/adding-models.md:19
+msgid ""
 "For a model you serve yourself on vLLM, SGLang, or Ollama, see [Adding a "
 "New Local Model](add-local-model.md), which owns route registration for "
 "local servers."
@@ -60,11 +70,11 @@ msgstr ""
 "如果模型是你自己用 vLLM、SGLang 或 Ollama 提供服务的，见[添加新的本地模型](add-local-"
 "model.md)——本地服务器的路由注册由那一篇负责。"
 
-#: ../developer/adding-models.md:16
+#: ../developer/adding-models.md:23
 msgid "Where your model registry lives"
 msgstr "模型注册表在哪里"
 
-#: ../developer/adding-models.md:18
+#: ../developer/adding-models.md:25
 msgid ""
 "**There is no `config/models.yaml` in this repository.** The backend "
 "resolves the registry path at startup in "
@@ -74,13 +84,13 @@ msgstr ""
 "**本仓库里没有 `config/models.yaml`**。后端在启动时于 "
 "`apps/backend/serving/config/distribution.py`（`resolve_config_path(\"models\")`）解析注册表路径，优先级如下："
 
-#: ../developer/adding-models.md:23
+#: ../developer/adding-models.md:30
 msgid ""
 "**`MODELS_CONFIG_PATH`** (legacy alias `MODELS_CONFIG`). An explicit path"
 " always wins."
 msgstr "**`MODELS_CONFIG_PATH`**（旧别名 `MODELS_CONFIG`）。显式给出的路径始终优先。"
 
-#: ../developer/adding-models.md:25
+#: ../developer/adding-models.md:32
 msgid ""
 "**A distribution manifest's `paths.models`** — used only when "
 "`DISTRIBUTION_CONFIG_PATH` names a manifest *and* "
@@ -94,13 +104,13 @@ msgstr ""
 "里的相对路径按 manifest 自身所在目录解析。`DISTRIBUTION_CONFIG_MODE` 默认是 `dark`：manifest "
 "会被加载、校验并写进日志以供比对，但不会真正生效。"
 
-#: ../developer/adding-models.md:30
+#: ../developer/adding-models.md:37
 msgid ""
 "**`config/examples/models.openrouter.yaml`** — the bundled reference "
 "registry a fresh checkout serves when nothing else is configured."
 msgstr "**`config/examples/models.openrouter.yaml`**——仓库自带的参考注册表；全新检出在没有配置其他来源时就用它对外提供服务。"
 
-#: ../developer/adding-models.md:33
+#: ../developer/adding-models.md:40
 msgid ""
 "Routing configuration follows the same chain (`ROUTING_CONFIG_PATH` / "
 "`paths.routing`, defaulting to `config/examples/routing.minimal.yaml`)."
@@ -108,11 +118,11 @@ msgstr ""
 "路由配置走同一条解析链（`ROUTING_CONFIG_PATH` / `paths.routing`，默认为 "
 "`config/examples/routing.minimal.yaml`）。"
 
-#: ../developer/adding-models.md:36
+#: ../developer/adding-models.md:43
 msgid "So a self-hoster has two shapes to choose from:"
 msgstr "所以自建部署有两种形态可选："
 
-#: ../developer/adding-models.md:38
+#: ../developer/adding-models.md:45
 msgid ""
 "**Point at a file.** Keep your registry wherever you like and set "
 "`MODELS_CONFIG_PATH=/path/to/models.yaml`. This is what the quickstart in"
@@ -121,7 +131,7 @@ msgstr ""
 "**指向一个文件**。注册表放在任意位置，设置 `MODELS_CONFIG_PATH=/path/to/models.yaml` "
 "即可。`README.md` 里的快速开始就是这么做的。"
 
-#: ../developer/adding-models.md:41
+#: ../developer/adding-models.md:48
 msgid ""
 "**Ship an overlay.** Create `distributions/<name>/` containing a "
 "`distribution.yaml` manifest and a `config/models.yaml`, then set "
@@ -136,55 +146,54 @@ msgstr ""
 "`DISTRIBUTION_CONFIG_MODE=active`。`distributions/example/` 是一个可以直接复制的可用 "
 "overlay；`config/examples/distribution.example.yaml` 是一份带注释的 manifest。"
 
-#: ../developer/adding-models.md:48
+#: ../developer/adding-models.md:55
 msgid ""
 "Throughout this guide, \"your model registry\" means whichever file that "
 "resolution picks."
 msgstr "本指南中所说的「你的模型注册表」，指的就是上述解析过程最终选中的那个文件。"
 
-#: ../developer/adding-models.md:51
+#: ../developer/adding-models.md:58
 msgid ""
 "If no registry is found at the resolved path, the backend logs an error, "
 "serves an empty `/v1/models`, and reports every model as not found."
 msgstr "如果解析出的路径上没有注册表，后端会记录一条错误日志，`/v1/models` 返回空列表，并把每个模型都报为 not found。"
 
-#: ../developer/adding-models.md:54
+#: ../developer/adding-models.md:61
 msgid "Quick Start: adding a model to an existing provider"
 msgstr "快速开始：为已有 provider 添加模型"
 
-#: ../developer/adding-models.md:56
+#: ../developer/adding-models.md:63
 msgid "If the provider already has an adapter, you only need configuration."
 msgstr "如果该 provider 已经有 adapter，只需要改配置。"
 
-#: ../developer/adding-models.md:58
+#: ../developer/adding-models.md:65
 msgid "**Add a model entry** to your model registry:"
 msgstr "在模型注册表中**添加一条模型条目**："
 
-#: ../developer/adding-models.md:88
+#: ../developer/adding-models.md:95
 msgid ""
 "The route inherits `base_url` and `api_key` from the model, so it only "
 "has to carry what differs. Repeat them on a route entry when a second "
 "route points somewhere else."
-msgstr ""
-"这条路由从模型那里继承 `base_url` 和 `api_key`，所以它只需要写出不同的部分。当第二条路由指向别处时，再在那条路由上重写它们。"
+msgstr "这条路由从模型那里继承 `base_url` 和 `api_key`，所以它只需要写出不同的部分。当第二条路由指向别处时，再在那条路由上重写它们。"
 
-#: ../developer/adding-models.md:92
+#: ../developer/adding-models.md:99
 msgid ""
 "**Set the environment variables** in `.env` at the repository root (the "
 "backend's settings loader reads that file):"
 msgstr "在仓库根目录的 `.env` 里**设置环境变量**（后端的配置加载器读的就是这个文件）："
 
-#: ../developer/adding-models.md:100
+#: ../developer/adding-models.md:107
 msgid "**Restart the backend** to load the new model."
 msgstr "**重启后端**以加载新模型。"
 
-#: ../developer/adding-models.md:102
+#: ../developer/adding-models.md:109
 msgid ""
 "**Verify** (see [Step 5: verify through the gateway](#step-5-verify-"
 "through-the-gateway))."
 msgstr "**验证**（见[第 5 步：通过网关验证](#step-5-verify-through-the-gateway)）。"
 
-#: ../developer/adding-models.md:104
+#: ../developer/adding-models.md:111
 msgid ""
 "Note on aliases: to let clients also call the model under a second name —"
 " an OpenRouter-style vendor slug, or the raw model path your serving "
@@ -194,15 +203,15 @@ msgstr ""
 "关于 aliases：如果想让客户端也能用第二个名字调用这个模型——比如 OpenRouter 风格的厂商 "
 "slug，或者你的推理运行时使用的原始模型路径——把这些名字列进 `aliases`。它们解析到同一组路由。"
 
-#: ../developer/adding-models.md:108
+#: ../developer/adding-models.md:115
 msgid "Adding a New Provider"
 msgstr "添加新的 provider"
 
-#: ../developer/adding-models.md:110
+#: ../developer/adding-models.md:117
 msgid "Step 1: decide whether you need an adapter at all"
 msgstr "第 1 步：先判断到底需不需要 adapter"
 
-#: ../developer/adding-models.md:112
+#: ../developer/adding-models.md:119
 msgid ""
 "Most new providers expose an OpenAI-style `/chat/completions` endpoint. "
 "For those, **do not write an adapter class.** Register a provider profile"
@@ -214,28 +223,28 @@ msgstr ""
 "`apps/backend/serving/servers/registry.py` 中的 OpenAI "
 "兼容分发元组（`_make_adapter`）："
 
-#: ../developer/adding-models.md:117
+#: ../developer/adding-models.md:124
 msgid ""
-"After checking deployment-local factories, `_make_adapter` dispatches built-in "
-"kinds through an `if kind ...` / `elif kind ...` chain. Add an arm for the "
-"profile, then add the kind to the OpenAI-compat tuple further down the same "
-"function:"
+"After checking deployment-local factories, `_make_adapter` dispatches "
+"built-in kinds through an `if kind ...` / `elif kind ...` chain. Add an "
+"arm for the profile, then add the kind to the OpenAI-compat tuple further"
+" down the same function:"
 msgstr ""
-"检查部署本地注册的工厂后，`_make_adapter` 通过 `if kind ...` / `elif kind ...` "
-"分支链分派内置 kind。先为 profile 添加一个分支，再把这个 kind 加进同一函数下方的 OpenAI-compat 元组："
+"检查部署本地注册的工厂后，`_make_adapter` 通过 `if kind ...` / `elif kind ...` 分支链分派内置 "
+"kind。先为 profile 添加一个分支，再把这个 kind 加进同一函数下方的 OpenAI-compat 元组："
 
-#: ../developer/adding-models.md:144
+#: ../developer/adding-models.md:153
 msgid ""
-"This is how `deepseek`, `zai`, `kimi`, and `minimax` are integrated today: a "
-"per-provider profile in `apps/backend/serving/adapters/profiles.py` "
-"carries the usage-metric or path quirks, and `OpenAICompatAdapter` does "
-"the rest."
+"This is how `deepseek`, `zai`, `kimi`, and `minimax` are integrated "
+"today: a per-provider profile in "
+"`apps/backend/serving/adapters/profiles.py` carries the usage-metric or "
+"path quirks, and `OpenAICompatAdapter` does the rest."
 msgstr ""
 "`deepseek`、`zai`、`kimi` 和 `minimax` "
 "现在就是这样接入的：`apps/backend/serving/adapters/profiles.py` 里每个 provider 一份的 "
 "profile 承载用量指标或路径上的差异，其余全部交给 `OpenAICompatAdapter`。"
 
-#: ../developer/adding-models.md:151
+#: ../developer/adding-models.md:157
 msgid ""
 "Write a dedicated adapter only when the provider speaks a genuinely non-"
 "OpenAI wire format — Gemini's `generateContent`, the Anthropic Messages "
@@ -247,11 +256,11 @@ msgstr ""
 "`generateContent`、Anthropic Messages API、OpenRouter 用来锁定 sub-provider 的 "
 "body 字段。`gemini`、`claude`、`anthropic` 和 `openrouter` 都属于这一类，各自有独立的分发分支："
 
-#: ../developer/adding-models.md:161
+#: ../developer/adding-models.md:167
 msgid "Step 2: write the adapter (custom protocols only)"
 msgstr "第 2 步：编写 adapter（仅限自定义协议）"
 
-#: ../developer/adding-models.md:163
+#: ../developer/adding-models.md:169
 msgid ""
 "Create a new file under `apps/backend/serving/adapters/`, for example "
 "`apps/backend/serving/adapters/your_provider.py`. The backend package "
@@ -262,27 +271,27 @@ msgstr ""
 "`apps/backend/serving/adapters/your_provider.py`。后端的包根目录是 "
 "`apps/backend`，因此 import 写成 `serving.…` / `routing.…`："
 
-#: ../developer/adding-models.md:318
+#: ../developer/adding-models.md:324
 msgid "Export it from `apps/backend/serving/adapters/__init__.py`:"
 msgstr "在 `apps/backend/serving/adapters/__init__.py` 里导出它："
 
-#: ../developer/adding-models.md:329
+#: ../developer/adding-models.md:335
 msgid "and import it at the top of `apps/backend/serving/servers/registry.py`:"
 msgstr "并在 `apps/backend/serving/servers/registry.py` 顶部导入它："
 
-#: ../developer/adding-models.md:338
+#: ../developer/adding-models.md:344
 msgid "Step 3: add the model to your registry"
 msgstr "第 3 步：把模型加进注册表"
 
-#: ../developer/adding-models.md:371
+#: ../developer/adding-models.md:377
 msgid "Step 4: configure environment variables"
 msgstr "第 4 步：配置环境变量"
 
-#: ../developer/adding-models.md:373
+#: ../developer/adding-models.md:379
 msgid "Add to `.env`:"
 msgstr "加进 `.env`："
 
-#: ../developer/adding-models.md:380
+#: ../developer/adding-models.md:386
 #, python-brace-format
 msgid ""
 "A route whose `${VAR}`-backed `api_key`, `api_keys`, or `base_url` "
@@ -295,27 +304,27 @@ msgstr ""
 "提供而解析结果为空，这条路由不会被注册。默认情况下整个模型都会被丢弃，后端会记录哪些模型被跳过、哪些变量没设置。给路由标上 `optional: "
 "true`，就只跳过这一条路由，模型的其余部分照常注册。"
 
-#: ../developer/adding-models.md:386
+#: ../developer/adding-models.md:392
 msgid "Step 5: verify through the gateway"
 msgstr "第 5 步：通过网关验证"
 
-#: ../developer/adding-models.md:388
+#: ../developer/adding-models.md:394
 msgid "Start the backend. From a checkout, the quickstart form is:"
 msgstr "启动后端。在一个检出里，最快的启动形式是："
 
-#: ../developer/adding-models.md:396
+#: ../developer/adding-models.md:402
 msgid ""
 "With the bundled Docker Compose setup, `make build s=backend` rebuilds "
 "and restarts the backend instead."
 msgstr "如果用仓库自带的 Docker Compose，则改用 `make build s=backend` 重新构建并重启 backend。"
 
-#: ../developer/adding-models.md:399
+#: ../developer/adding-models.md:405
 msgid ""
 "`GET /v1/models` accepts an anonymous request — it resolves an API key "
 "only to decide whether to include admin-visible entries:"
 msgstr "`GET /v1/models` 接受匿名请求——它解析 API key 只是为了决定要不要包含仅管理员可见的条目："
 
-#: ../developer/adding-models.md:406
+#: ../developer/adding-models.md:412
 msgid ""
 "`POST /v1/chat/completions` runs through `verify_api_key`, so **it "
 "returns 401 without a valid gateway API key** unless the backend is "
@@ -326,26 +335,28 @@ msgstr ""
 " 401**，除非后端以 `USER_AUTH_ENABLED=false` 运行。请发送你为自己的网关签发的 key（是网关的 key，不是上游"
 " provider 的）："
 
-#: ../developer/adding-models.md:423
+#: ../developer/adding-models.md:429
 msgid "Streaming test:"
 msgstr "流式测试："
 
-#: ../developer/adding-models.md:437
+#: ../developer/adding-models.md:443
 msgid "Configuration Reference"
 msgstr "配置参考"
 
-#: ../developer/adding-models.md:439
+#: ../developer/adding-models.md:445
 msgid "Model fields"
 msgstr "模型字段"
 
-#: ../developer/adding-models.md:441
+#: ../developer/adding-models.md:447
 msgid ""
 "These keys are read from a model entry and passed to `ModelConfig` "
 "(`apps/backend/serving/adapters/base.py`). Most of them can also be set "
 "on a route entry, where the route value wins; `id` and `name` identify "
 "the model itself and are read only at the model level."
 msgstr ""
-"这些键从模型条目里读出并传给 `ModelConfig`（`apps/backend/serving/adapters/base.py`）。其中大多数也可以设在单条路由上，此时路由上的值优先；`id` 和 `name` 标识的是模型本身，只在模型层级读取。"
+"这些键从模型条目里读出并传给 "
+"`ModelConfig`（`apps/backend/serving/adapters/base.py`）。其中大多数也可以设在单条路由上，此时路由上的值优先；`id`"
+" 和 `name` 标识的是模型本身，只在模型层级读取。"
 
 #: ../developer/adding-models.md
 msgid "Field"
@@ -398,7 +409,9 @@ msgid ""
 " an adapter, while `provider:` on a *route* is only an analytics label — "
 "see the route-fields table"
 msgstr ""
-"provider/adapter 的种类；在没有给出 `route:` 列表时，它同时是 `route[].kind` 的默认值。注意这里有个同名陷阱：模型层级的 `provider:` 选的是 adapter，而*路由*上的 `provider:` 只是一个分析标签——见路由字段表"
+"provider/adapter 的种类；在没有给出 `route:` 列表时，它同时是 `route[].kind` "
+"的默认值。注意这里有个同名陷阱：模型层级的 `provider:` 选的是 adapter，而*路由*上的 `provider:` "
+"只是一个分析标签——见路由字段表"
 
 #: ../developer/adding-models.md
 msgid "`base_url`"
@@ -438,7 +451,8 @@ msgid ""
 " embedding models bypass the weighted router and use their routes as an "
 "ordered fallback chain"
 msgstr ""
-"`\"chat\"`（默认）或 `\"embedding\"`。别名 `type:` 与之等价；embedding 模型绕过加权 router，把自己的多条路由当作有序的回退链使用"
+"`\"chat\"`（默认）或 `\"embedding\"`。别名 `type:` 与之等价；embedding 模型绕过加权 "
+"router，把自己的多条路由当作有序的回退链使用"
 
 #: ../developer/adding-models.md
 msgid "`aliases`"
@@ -612,7 +626,8 @@ msgid ""
 "`input_cache_writes` are USD per 1M tokens; `request` is USD per request "
 "and `image` USD per image"
 msgstr ""
-"基础成本信息。`prompt`、`completion`、`input_cache_reads` 和 `input_cache_writes` 的单位是每 100 万 token 美元；`request` 是每次请求美元，`image` 是每张图美元"
+"基础成本信息。`prompt`、`completion`、`input_cache_reads` 和 `input_cache_writes` "
+"的单位是每 100 万 token 美元；`request` 是每次请求美元，`image` 是每张图美元"
 
 #: ../developer/adding-models.md
 msgid "`pricing_schedule`"
@@ -628,7 +643,7 @@ msgstr ""
 "只按 UTC 计的生效时间，加上每天重复的价格时间窗：`effective_at` 之前继续使用 `pricing`；之后，落在每个左闭右开 "
 "`[start, end)` 窗口之外的时段适用 `default`，而窗口自带的 `pricing` 覆盖基础字段"
 
-#: ../developer/adding-models.md:473
+#: ../developer/adding-models.md:479
 msgid ""
 "A few model-entry keys are not `ModelConfig` fields and are consumed "
 "elsewhere: `route` (below), `router` and `router_params` (per-model "
@@ -637,15 +652,15 @@ msgstr ""
 "模型条目里有几个键并不是 `ModelConfig` 的字段，而是在别处被消费：`route`（见下）、`router` 和 "
 "`router_params`（按模型选择 router）、`admin_only`、`required_role`。"
 
-#: ../developer/adding-models.md:477
+#: ../developer/adding-models.md:483
 msgid "Route configuration"
 msgstr "路由配置"
 
-#: ../developer/adding-models.md:479
+#: ../developer/adding-models.md:485
 msgid "Routes give one model several endpoints with weighted distribution:"
 msgstr "路由让一个模型拥有多个端点，并按权重分配流量："
 
-#: ../developer/adding-models.md:496
+#: ../developer/adding-models.md:502
 msgid "Beyond the model fields above, a route entry accepts:"
 msgstr "除上面的模型字段之外，路由条目还接受："
 
@@ -685,14 +700,27 @@ msgstr ""
 "`api_key`。两者同时设置会报错。在延迟统计和配额记账上，整个池算作一个端点；真正互相独立的资源要拆成不同的路由"
 
 #: ../developer/adding-models.md
+msgid "`embeddings_path`"
+msgstr "`embeddings_path`"
+
+#: ../developer/adding-models.md
+msgid ""
+"OpenAI-compatible embeddings path appended to this route's `base_url`; a "
+"leading slash is optional. Omitted, null, or empty keeps the default URL "
+"inference"
+msgstr ""
+"追加到该路由 `base_url` 后的 OpenAI 兼容 embeddings 路径；开头的斜杠可省略。未设置、null "
+"或空字符串均保留默认的 URL 推导规则"
+
+#: ../developer/adding-models.md
 msgid "`optional`"
 msgstr ""
 
 #: ../developer/adding-models.md
 #, python-brace-format
 msgid ""
-"Skip this route with a warning when a `${VAR}`-backed key, `base_url`, or "
-"`embeddings_path` resolves unset or blank"
+"Skip this route with a warning when a `${VAR}`-backed key, `base_url`, or"
+" `embeddings_path` resolves unset or blank"
 msgstr "当由 `${VAR}` 提供的 key、`base_url` 或 `embeddings_path` 未设置或解析为空白时，记录警告并跳过这一条路由"
 
 #: ../developer/adding-models.md
@@ -705,7 +733,8 @@ msgid ""
 "does **not** select an adapter; that is `kind`. See [Naming a route in "
 "the dashboard](add-local-model.md#naming-a-route-in-the-dashboard)"
 msgstr ""
-"只覆盖分析统计里的标签——它重命名的是仪表盘里的那一行，**不会**选择 adapter，选 adapter 的是 `kind`。见[在仪表盘中给路由命名](add-local-model.md#naming-a-route-in-the-dashboard)"
+"只覆盖分析统计里的标签——它重命名的是仪表盘里的那一行，**不会**选择 adapter，选 adapter 的是 "
+"`kind`。见[在仪表盘中给路由命名](add-local-model.md#naming-a-route-in-the-dashboard)"
 
 #: ../developer/adding-models.md
 msgid "`provider_type`"
@@ -729,7 +758,7 @@ msgstr ""
 msgid "RouteWise pool and budget metadata"
 msgstr "RouteWise 的资源池与预算元数据"
 
-#: ../developer/adding-models.md:508
+#: ../developer/adding-models.md:515
 msgid ""
 "A route reports its `kind` as the provider label — the value recorded in "
 "`api_logs.provider` and grouped on by every provider-scoped admin view. "
@@ -739,11 +768,72 @@ msgstr ""
 "一条路由用自己的 `kind` 作为 provider 标签上报——这个值记录在 `api_logs.provider` 里，所有按 "
 "provider 划分的管理视图都以它分组。因此同一个 kind 的两条路由会共用仪表盘上的同一行；用 `provider:` 才能把它们分开。"
 
-#: ../developer/adding-models.md:513
+#: ../developer/adding-models.md:520
+msgid "Custom embeddings paths"
+msgstr "自定义 embeddings 路径"
+
+#: ../developer/adding-models.md:522
+msgid ""
+"An OpenAI-compatible gateway may use an API prefix other than `/v1`. Set "
+"`embeddings_path` on that route to avoid appending an unwanted `/v1` "
+"segment:"
+msgstr ""
+"OpenAI 兼容网关可能使用不同于 `/v1` 的 API 前缀。在该路由上设置 `embeddings_path`，即可避免追加多余的 "
+"`/v1` 路径段："
+
+#: ../developer/adding-models.md:538
+msgid ""
+"This sends requests to `https://gateway.example/api/v2/embeddings`. The "
+"override belongs to one route and does not affect its fallbacks. Without "
+"it, a base URL ending in `/v1` gets `/embeddings`; any other base gets "
+"`/v1/embeddings`, as before. Trailing slashes on the base URL are removed"
+" before joining the path."
+msgstr ""
+"该配置会把请求发送到 "
+"`https://gateway.example/api/v2/embeddings`。覆盖项仅属于这一条路由，不影响其备用路由。若未设置，仍沿用原来的规则：以"
+" `/v1` 结尾的基础 URL 追加 `/embeddings`，其他基础 URL 追加 `/v1/embeddings`。拼接路径前会移除基础"
+" URL 末尾的斜杠。"
+
+#: ../developer/adding-models.md:543
+msgid ""
+"Declare `embeddings_path` only inside `route:`. A model-level "
+"declaration, including on a shorthand model without a route list, is "
+"rejected. Surrounding whitespace is trimmed, but whitespace-only strings,"
+" non-string values other than `null`, and parent (`..`) path segments are"
+" rejected. Explicit `null` and `\"\"` still select the default URL "
+"inference."
+msgstr ""
+"`embeddings_path` 只能在 `route:` "
+"内声明。模型级声明会被拒绝，包括不含路由列表的简写模型。路径前后的空白会被移除，但纯空白字符串、除 `null` "
+"外的非字符串值，以及父级（`..`）路径段会被拒绝。显式的 `null` 和 `\"\"` 仍使用默认的 URL 推导规则。"
+
+#: ../developer/adding-models.md:549
+#, python-brace-format
+msgid ""
+"A whole-value `${VAR}` reference must resolve to a non-blank path; it is "
+"not an instruction to use the default if the variable is missing. A "
+"missing or blank variable aborts startup for a required route. With "
+"`optional: true`, only that route is skipped, with a warning naming the "
+"model, route, and variable."
+msgstr ""
+"完整值形式的 `${VAR}` 引用必须解析为非空白路径，并不表示变量缺失时使用默认值。对于必需路由，变量未设置或为空白会阻止启动。设置 "
+"`optional: true` 时，只跳过这一条路由，并记录包含模型、路由和变量名称的警告。"
+
+#: ../developer/adding-models.md:554
+msgid ""
+"Other invalid `embeddings_path` declarations abort startup even on "
+"optional routes, so the gateway cannot start serving a partially loaded "
+"registry after one of these errors. This does not change how other model "
+"configuration errors are handled."
+msgstr ""
+"其他非法的 `embeddings_path` "
+"声明即使位于可选路由上，也会阻止启动，避免网关在这类错误发生后使用只加载了一部分的模型注册表提供服务。这不会改变其他模型配置错误的处理方式。"
+
+#: ../developer/adding-models.md:559
 msgid "Supported adapter kinds"
 msgstr "支持的 adapter kind"
 
-#: ../developer/adding-models.md:515
+#: ../developer/adding-models.md:561
 msgid ""
 "The `kind` field in each route entry selects the backend adapter. All "
 "kinds marked **OpenAI-compat** share the same `OpenAICompatAdapter` "
@@ -847,7 +937,9 @@ msgid "`kimi`"
 msgstr ""
 
 #: ../developer/adding-models.md
-msgid "Moonshot/Kimi pay-per-token API under `/v1` (applies the Kimi usage profile)"
+msgid ""
+"Moonshot/Kimi pay-per-token API under `/v1` (applies the Kimi usage "
+"profile)"
 msgstr "Moonshot/Kimi 位于 `/v1` 下的按 token 计费 API（套用 Kimi 用量 profile）"
 
 #: ../developer/adding-models.md
@@ -859,7 +951,8 @@ msgid ""
 "Z.AI's ordinary API under `/api/paas/v4/`; the Z.AI profile appends "
 "`/chat/completions` without adding another version segment"
 msgstr ""
-"Z.AI 位于 `/api/paas/v4/` 下的普通 API；Z.AI profile 追加 `/chat/completions`，不再添加版本段"
+"Z.AI 位于 `/api/paas/v4/` 下的普通 API；Z.AI profile 追加 "
+"`/chat/completions`，不再添加版本段"
 
 #: ../developer/adding-models.md
 msgid "`minimax`"
@@ -907,57 +1000,59 @@ msgstr ""
 msgid "Direct Anthropic Messages API client"
 msgstr "直连 Anthropic Messages API 的客户端"
 
-#: ../developer/adding-models.md:539
+#: ../developer/adding-models.md:584
 msgid ""
-"Other kinds must be explicitly registered by a startup extension; otherwise "
-"registry loading raises `ValueError: Unknown adapter kind`."
+"Other kinds must be explicitly registered by a startup extension; "
+"otherwise registry loading raises `ValueError: Unknown adapter kind`."
 msgstr "其他 kind 必须由启动扩展显式注册，否则加载注册表时会抛出 `ValueError: Unknown adapter kind`。"
 
-#: ../developer/adding-models.md
+#: ../developer/adding-models.md:587
 msgid "Deployment-local adapters"
 msgstr "部署本地适配器"
 
-#: ../developer/adding-models.md
+#: ../developer/adding-models.md:589
 msgid ""
-"A deployment can register a local factory without editing the built-in dispatch. "
-"Its module exposes a synchronous, no-argument `register()` function:"
-msgstr ""
-"部署可以注册本地工厂，而不修改内置分派逻辑。模块需要提供同步、无参数的 `register()` 函数："
+"A deployment can register a local factory without editing the built-in "
+"dispatch. Its module exposes a synchronous, no-argument `register()` "
+"function:"
+msgstr "部署可以注册本地工厂，而不修改内置分派逻辑。模块需要提供同步、无参数的 `register()` 函数："
 
-#: ../developer/adding-models.md
+#: ../developer/adding-models.md:605
 msgid ""
-"Set `BACKEND_EXTENSIONS` to this module's import name and use "
-"`kind: example_service` in the model registry. The factory receives the route's "
+"Set `BACKEND_EXTENSIONS` to this module's import name and use `kind: "
+"example_service` in the model registry. The factory receives the route's "
 "configuration dictionary and returns an adapter. It runs before built-in "
-"provider defaults, so it must supply any profile or path defaults it needs. "
-"Duplicate registrations fail; replacing a built-in kind requires "
+"provider defaults, so it must supply any profile or path defaults it "
+"needs. Duplicate registrations fail; replacing a built-in kind requires "
 "`register_adapter_factory(kind, factory, override=True)` and is logged. "
-"See [Backend extensions](configuration.md#backend-extensions) for the startup "
-"and deployment requirements."
+"See [Backend extensions](configuration.md#backend-extensions) for the "
+"startup and deployment requirements."
 msgstr ""
-"将 `BACKEND_EXTENSIONS` 设为此模块的导入名，并在模型注册表中使用 `kind: example_service`。"
-"工厂接收路由配置字典并返回适配器。它在内置 provider 默认值应用之前运行，因此必须自行补充需要的 profile 或路径默认值。"
-"重复注册会失败；替换内置 kind 必须使用 `register_adapter_factory(kind, factory, override=True)`，且会记录日志。"
-"启动和部署要求见[后端扩展](configuration.md#backend-extensions)。"
+"将 `BACKEND_EXTENSIONS` 设为此模块的导入名，并在模型注册表中使用 `kind: "
+"example_service`。工厂接收路由配置字典并返回适配器。它在内置 provider 默认值应用之前运行，因此必须自行补充需要的 "
+"profile 或路径默认值。重复注册会失败；替换内置 kind 必须使用 `register_adapter_factory(kind, "
+"factory, override=True)`，且会记录日志。启动和部署要求见[后端扩展](configuration.md#backend-"
+"extensions)。"
 
-#: ../developer/adding-models.md:541
+#: ../developer/adding-models.md:614
 msgid "Hybrid routing"
 msgstr "混合路由"
 
-#: ../developer/adding-models.md:543
+#: ../developer/adding-models.md:616
 msgid ""
 "Weighted routes are applied at registration time. The routing config file"
 " (resolved via `ROUTING_CONFIG_PATH` / the manifest's `paths.routing`) "
 "can then adjust weights centrally through `RoutingManager`. See "
 "[Routing](routing.md)."
 msgstr ""
-"加权路由在注册时生效。之后，路由配置文件（通过 `ROUTING_CONFIG_PATH` / manifest 的 `paths.routing` 解析）可以经 `RoutingManager` 集中调整权重。见[路由](routing.md)。"
+"加权路由在注册时生效。之后，路由配置文件（通过 `ROUTING_CONFIG_PATH` / manifest 的 "
+"`paths.routing` 解析）可以经 `RoutingManager` 集中调整权重。见[路由](routing.md)。"
 
-#: ../developer/adding-models.md:548
+#: ../developer/adding-models.md:621
 msgid "BaseAdapter API reference"
 msgstr "BaseAdapter API 参考"
 
-#: ../developer/adding-models.md:550
+#: ../developer/adding-models.md:623
 msgid ""
 "All adapters inherit from `BaseAdapter` "
 "(`apps/backend/serving/adapters/base.py`) and implement:"
@@ -965,27 +1060,27 @@ msgstr ""
 "所有 adapter 都继承自 "
 "`BaseAdapter`（`apps/backend/serving/adapters/base.py`），并实现："
 
-#: ../developer/adding-models.md:565
+#: ../developer/adding-models.md:638
 msgid "Utility methods provided by the base class:"
 msgstr "基类提供的工具方法："
 
-#: ../developer/adding-models.md:595
+#: ../developer/adding-models.md:668
 msgid "Available attributes:"
 msgstr "可用的属性："
 
-#: ../developer/adding-models.md:602
+#: ../developer/adding-models.md:675
 msgid "Advanced features"
 msgstr "进阶功能"
 
-#: ../developer/adding-models.md:604
+#: ../developer/adding-models.md:677
 msgid "Multi-modal support"
 msgstr "多模态支持"
 
-#: ../developer/adding-models.md:606
+#: ../developer/adding-models.md:679
 msgid "For models accepting images:"
 msgstr "对于接受图像输入的模型："
 
-#: ../developer/adding-models.md:612
+#: ../developer/adding-models.md:685
 msgid ""
 "Handle the image content blocks in your adapter's `chat_completion`. A "
 "route may declare narrower `input_modalities` than the model, so a text-"
@@ -994,28 +1089,27 @@ msgstr ""
 "在 adapter 的 `chat_completion` 里处理图像内容块。单条路由可以声明比模型更窄的 "
 "`input_modalities`，这样纯文本的回退路由就永远不会收到媒体内容。"
 
-#: ../developer/adding-models.md:616
+#: ../developer/adding-models.md:689
 msgid "Tool / function calling"
 msgstr "工具 / function calling"
 
-#: ../developer/adding-models.md:622
+#: ../developer/adding-models.md:695
 msgid "Parse the provider's tool calls into OpenAI shape and pass them through:"
 msgstr "把 provider 返回的工具调用解析成 OpenAI 的结构再透传出去："
 
-#: ../developer/adding-models.md:644
+#: ../developer/adding-models.md:717
 msgid "Structured output (JSON mode)"
 msgstr "结构化输出（JSON mode）"
 
-#: ../developer/adding-models.md:650
+#: ../developer/adding-models.md:723
 msgid "Handle the `response_format` parameter:"
 msgstr "处理 `response_format` 参数："
 
-#: ../developer/adding-models.md:657
+#: ../developer/adding-models.md:730
 msgid "Rate limiting (there is none per provider)"
-msgstr ""
-"限流（按 provider 的限流并不存在）"
+msgstr "限流（按 provider 的限流并不存在）"
 
-#: ../developer/adding-models.md:659
+#: ../developer/adding-models.md:732
 msgid ""
 "There is no per-provider rate limiter to turn on; this section records "
 "where one would go. `apps/backend/serving/servers/bootstrap.py` does not "
@@ -1026,13 +1120,19 @@ msgid ""
 "go in `apps/backend/serving/admin/provider_quotas.py` (or a new module) "
 "and be surfaced through `apps/backend/serving/servers/deps.py`."
 msgstr ""
-"没有按 provider 的限流器可以开启；本节记录的是它将来该放在哪里。`apps/backend/serving/servers/bootstrap.py` 并没有配置按 provider 的限流器。那里接线的唯一进程内限流器是 `UserConcurrencyLimiter`。鉴权流程的静态限流值在 `apps/backend/serving/config/settings.py`（`signup_rate_limit_*` 和 `login_rate_limit_*` 字段）。若要做按 provider 的令牌桶或配额，应放进 `apps/backend/serving/admin/provider_quotas.py`（或一个新模块），并通过 `apps/backend/serving/servers/deps.py` 暴露出来。"
+"没有按 provider "
+"的限流器可以开启；本节记录的是它将来该放在哪里。`apps/backend/serving/servers/bootstrap.py` "
+"并没有配置按 provider 的限流器。那里接线的唯一进程内限流器是 `UserConcurrencyLimiter`。鉴权流程的静态限流值在 "
+"`apps/backend/serving/config/settings.py`（`signup_rate_limit_*` 和 "
+"`login_rate_limit_*` 字段）。若要做按 provider 的令牌桶或配额，应放进 "
+"`apps/backend/serving/admin/provider_quotas.py`（或一个新模块），并通过 "
+"`apps/backend/serving/servers/deps.py` 暴露出来。"
 
-#: ../developer/adding-models.md:668
+#: ../developer/adding-models.md:741
 msgid "Examples"
 msgstr "示例"
 
-#: ../developer/adding-models.md:670
+#: ../developer/adding-models.md:743
 msgid ""
 "**OpenAI-compatible provider.** DeepSeek has no adapter file. "
 "`_make_adapter` in `apps/backend/serving/servers/registry.py` sets "
@@ -1044,7 +1144,7 @@ msgstr ""
 "`provider_profile = \"deepseek\"` 并返回 `OpenAICompatAdapter`；profile 本身在 "
 "`apps/backend/serving/adapters/profiles.py`。"
 
-#: ../developer/adding-models.md:674
+#: ../developer/adding-models.md:747
 msgid ""
 "**Custom API format.** See `apps/backend/serving/adapters/gemini.py` for "
 "message conversion against a non-OpenAI wire format."
@@ -1052,7 +1152,7 @@ msgstr ""
 "**自定义 API 格式**。针对非 OpenAI wire 格式的消息转换，见 "
 "`apps/backend/serving/adapters/gemini.py`。"
 
-#: ../developer/adding-models.md:676
+#: ../developer/adding-models.md:749
 msgid ""
 "**Local deployment.** vLLM and SGLang reuse "
 "`apps/backend/serving/adapters/openai_compat.py`. The `vllm` and `sglang`"
@@ -1063,15 +1163,15 @@ msgstr ""
 "`apps/backend/serving/adapters/openai_compat.py`。`vllm` 和 `sglang` 这两个 "
 "kind 分发到同一个类；本地与远程的行为差异来自 `base_url` 和路由层，而不是来自专门的 adapter。"
 
-#: ../developer/adding-models.md:681
+#: ../developer/adding-models.md:754
 msgid "Troubleshooting"
 msgstr "排查"
 
-#: ../developer/adding-models.md:683
+#: ../developer/adding-models.md:756
 msgid "Model not appearing in `/v1/models`"
 msgstr "模型没有出现在 `/v1/models` 里"
 
-#: ../developer/adding-models.md:685
+#: ../developer/adding-models.md:758
 msgid ""
 "Confirm the registry the backend actually loaded. It logs `Registered N "
 "routes from <path>` at startup, and logs an error naming the path when no"
@@ -1080,11 +1180,11 @@ msgstr ""
 "确认后端实际加载的是哪份注册表。它在启动时会记录 `Registered N routes from "
 "<path>`；如果那个路径上没有注册表，则会记录一条写明路径的错误日志。"
 
-#: ../developer/adding-models.md:688
+#: ../developer/adding-models.md:761
 msgid "Check the YAML syntax and indentation under `models:`."
 msgstr "检查 `models:` 下的 YAML 语法和缩进。"
 
-#: ../developer/adding-models.md:689
+#: ../developer/adding-models.md:762
 #, python-brace-format
 msgid ""
 "Check for skipped models: a route whose `${VAR}`-backed key or `base_url`"
@@ -1094,37 +1194,38 @@ msgstr ""
 "检查是否有模型被跳过：一条路由的 key 或 `base_url` 若由 `${VAR}` "
 "提供且解析为空，该模型就会被丢弃，日志里会同时写出模型名和未设置的变量名。"
 
-#: ../developer/adding-models.md:692
+#: ../developer/adding-models.md:765
 msgid ""
 "If using `aliases`, verify the canonical `id` appears exactly once and "
 "aliases do not collide with another model's. A duplicate alias resolves "
 "to whichever model loads last, and is logged as a warning."
 msgstr "如果用了 `aliases`，确认规范的 `id` 只出现一次，且别名没有和别的模型撞名。重复的别名会解析到最后加载的那个模型，并记录一条警告。"
 
-#: ../developer/adding-models.md:696
+#: ../developer/adding-models.md:769
 msgid "Authentication failures"
 msgstr "鉴权失败"
 
-#: ../developer/adding-models.md:698
+#: ../developer/adding-models.md:771
 msgid ""
 "A 401 from the gateway means your **gateway** API key was missing or "
 "invalid, or auth is enabled and you sent no `Authorization` header."
 msgstr "网关返回的 401 表示你的**网关** API key 缺失或无效，或者鉴权已开启而你没有发送 `Authorization` 头。"
 
-#: ../developer/adding-models.md:700
+#: ../developer/adding-models.md:773
 msgid ""
-"A 401 surfaced from the route can mean the **upstream** key is wrong. Some "
-"gateways also return 401 for an unmatched path, so check the request URL and "
-"`embeddings_path` before replacing a valid key. Chat routing logs these failures "
-"as `upstream_auth_misconfig`; embeddings instead logs "
-"`Embedding request failed for model=...` with the upstream status and message."
+"A 401 surfaced from the route can mean the **upstream** key is wrong. "
+"Some gateways also return 401 for an unmatched path, so check the request"
+" URL and `embeddings_path` before replacing a valid key. Chat routing "
+"logs these failures as `upstream_auth_misconfig`; embeddings instead logs"
+" `Embedding request failed for model=...` with the upstream status and "
+"message."
 msgstr ""
-"从路由透出来的 401 可能表示**上游**的 key 不对。有些网关也会对未匹配的路径返回 401，"
-"所以替换有效的 key 之前，先检查请求 URL 和 `embeddings_path`。Chat 路由会把这些失败记为 "
-"`upstream_auth_misconfig`；embeddings 则记录 `Embedding request failed for model=...`，"
-"并带上上游的状态码和错误消息。"
+"从路由透出来的 401 可能表示**上游**的 key 不对。有些网关也会对未匹配的路径返回 401，所以替换有效的 key 之前，先检查请求 "
+"URL 和 `embeddings_path`。Chat 路由会把这些失败记为 "
+"`upstream_auth_misconfig`；embeddings 则记录 `Embedding request failed for "
+"model=...`，并带上上游的状态码和错误消息。"
 
-#: ../developer/adding-models.md:703
+#: ../developer/adding-models.md:778
 #, python-brace-format
 msgid ""
 "Check that `${ENV_VAR}` expansion resolved: only a value of exactly the "
@@ -1132,93 +1233,61 @@ msgid ""
 "`api_keys`, and `provider_model_id`, plus route-level `embeddings_path`."
 msgstr ""
 "确认 `${ENV_VAR}` 展开成功：只有恰好是 `${NAME}` 这种形式的取值才会被展开，而且只对 "
-"`base_url`、`api_key`、`api_keys` 和 `provider_model_id`，以及路由级的 `embeddings_path` 生效。"
+"`base_url`、`api_key`、`api_keys` 和 `provider_model_id`，以及路由级的 "
+"`embeddings_path` 生效。"
 
-#: ../developer/adding-models.md:0
-msgid "`embeddings_path`"
-msgstr "`embeddings_path`"
-
-#: ../developer/adding-models.md:0
-msgid "OpenAI-compatible embeddings path appended to this route's `base_url`; a leading slash is optional. Omitted, null, or empty keeps the default URL inference"
-msgstr "追加到该路由 `base_url` 后的 OpenAI 兼容 embeddings 路径；开头的斜杠可省略。未设置、null 或空字符串均保留默认的 URL 推导规则"
-
-#: ../developer/adding-models.md:513
-msgid "Custom embeddings paths"
-msgstr "自定义 embeddings 路径"
-
-#: ../developer/adding-models.md:515
-msgid "An OpenAI-compatible gateway may use an API prefix other than `/v1`. Set `embeddings_path` on that route to avoid appending an unwanted `/v1` segment:"
-msgstr "OpenAI 兼容网关可能使用不同于 `/v1` 的 API 前缀。在该路由上设置 `embeddings_path`，即可避免追加多余的 `/v1` 路径段："
-
-#: ../developer/adding-models.md:531
-msgid "This sends requests to `https://gateway.example/api/v2/embeddings`. The override belongs to one route and does not affect its fallbacks. Without it, a base URL ending in `/v1` gets `/embeddings`; any other base gets `/v1/embeddings`, as before. Trailing slashes on the base URL are removed before joining the path."
-msgstr "该配置会把请求发送到 `https://gateway.example/api/v2/embeddings`。覆盖项仅属于这一条路由，不影响其备用路由。若未设置，仍沿用原来的规则：以 `/v1` 结尾的基础 URL 追加 `/embeddings`，其他基础 URL 追加 `/v1/embeddings`。拼接路径前会移除基础 URL 末尾的斜杠。"
-
-#: ../developer/adding-models.md:536
-msgid "Declare `embeddings_path` only inside `route:`. A model-level declaration, including on a shorthand model without a route list, is rejected. Surrounding whitespace is trimmed, but whitespace-only strings, non-string values other than `null`, and parent (`..`) path segments are rejected. Explicit `null` and `\"\"` still select the default URL inference."
-msgstr "`embeddings_path` 只能在 `route:` 内声明。模型级声明会被拒绝，包括不含路由列表的简写模型。路径前后的空白会被移除，但纯空白字符串、除 `null` 外的非字符串值，以及父级（`..`）路径段会被拒绝。显式的 `null` 和 `\"\"` 仍使用默认的 URL 推导规则。"
-
-#: ../developer/adding-models.md:542
-#, python-brace-format
-msgid "A whole-value `${VAR}` reference must resolve to a non-blank path; it is not an instruction to use the default if the variable is missing. A missing or blank variable aborts startup for a required route. With `optional: true`, only that route is skipped, with a warning naming the model, route, and variable."
-msgstr "完整值形式的 `${VAR}` 引用必须解析为非空白路径，并不表示变量缺失时使用默认值。对于必需路由，变量未设置或为空白会阻止启动。设置 `optional: true` 时，只跳过这一条路由，并记录包含模型、路由和变量名称的警告。"
-
-#: ../developer/adding-models.md:547
-msgid "Other invalid `embeddings_path` declarations abort startup even on optional routes, so the gateway cannot start serving a partially loaded registry after one of these errors. This does not change how other model configuration errors are handled."
-msgstr "其他非法的 `embeddings_path` 声明即使位于可选路由上，也会阻止启动，避免网关在这类错误发生后使用只加载了一部分的模型注册表提供服务。这不会改变其他模型配置错误的处理方式。"
-
-#: ../developer/adding-models.md:707
+#: ../developer/adding-models.md:782
 msgid "Response format errors"
 msgstr "响应格式错误"
 
-#: ../developer/adding-models.md:709
+#: ../developer/adding-models.md:784
 msgid "Ensure `format_response()` returns the OpenAI-compatible structure."
 msgstr "确保 `format_response()` 返回 OpenAI 兼容的结构。"
 
-#: ../developer/adding-models.md:710
+#: ../developer/adding-models.md:785
 msgid "Validate that `UsageInfo` fields are integers."
 msgstr "校验 `UsageInfo` 的各字段都是整数。"
 
-#: ../developer/adding-models.md:711
+#: ../developer/adding-models.md:786
 msgid ""
 "Check `finish_reason` is one of `stop`, `length`, `content_filter`, "
 "`tool_calls`."
 msgstr "检查 `finish_reason` 是 `stop`、`length`、`content_filter`、`tool_calls` 之一。"
 
-#: ../developer/adding-models.md:713
+#: ../developer/adding-models.md:788
 msgid ""
 "For streaming, emit the first non-empty content chunk as soon as it is "
 "available so time-to-first-token is recorded accurately."
 msgstr "流式场景下，第一个非空内容分片一可用就立刻发出，这样首 token 时延（time-to-first-token）才会被准确记录。"
 
-#: ../developer/adding-models.md:716
+#: ../developer/adding-models.md:791
 msgid "Streaming issues"
 msgstr "流式问题"
 
-#: ../developer/adding-models.md:718
+#: ../developer/adding-models.md:793
 #, python-brace-format
 msgid "Ensure chunks are SSE-formatted: `data: {json}\\n\\n`."
 msgstr "确保分片是 SSE 格式：`data: {json}\\n\\n`。"
 
-#: ../developer/adding-models.md:719
+#: ../developer/adding-models.md:794
 msgid "Send the final usage chunk before `data: [DONE]`."
 msgstr "在 `data: [DONE]` 之前发送最后那个 usage 分片。"
 
-#: ../developer/adding-models.md:720
+#: ../developer/adding-models.md:795
 msgid "Handle JSON parsing errors gracefully."
 msgstr "妥善处理 JSON 解析错误。"
 
-#: ../developer/adding-models.md:722
+#: ../developer/adding-models.md:797
 msgid "Best practices"
 msgstr "最佳实践"
 
-#: ../developer/adding-models.md:724
+#: ../developer/adding-models.md:799
 msgid ""
 "**Error handling** — use `self.http.json_post_with_retry()` and surface "
 "provider faults with useful messages."
 msgstr "**错误处理**——用 `self.http.json_post_with_retry()`，并用有价值的信息把 provider 的故障暴露出来。"
 
-#: ../developer/adding-models.md:726
+#: ../developer/adding-models.md:801
 msgid ""
 "**Usage accounting** — prefer provider-reported usage; fall back to "
 "`estimate_prompt_tokens()` / `estimate_text_tokens()`."
@@ -1226,7 +1295,7 @@ msgstr ""
 "**用量记账**——优先采用 provider 上报的 usage；拿不到再回退到 `estimate_prompt_tokens()` / "
 "`estimate_text_tokens()`。"
 
-#: ../developer/adding-models.md:728
+#: ../developer/adding-models.md:803
 msgid ""
 "**Streaming helpers** — use `format_stream_chunk()`, "
 "`make_final_usage_chunk()`, and `done_sentinel()` for consistent SSE."
@@ -1234,62 +1303,58 @@ msgstr ""
 "**流式辅助函数**——用 `format_stream_chunk()`、`make_final_usage_chunk()` 和 "
 "`done_sentinel()` 保证 SSE 输出一致。"
 
-#: ../developer/adding-models.md:730
+#: ../developer/adding-models.md:805
 msgid ""
 "**Type safety** — full type hints, and keep request/response shapes "
 "aligned with `apps/backend/serving/schemas.py`."
 msgstr "**类型安全**——写完整的类型标注，并让请求/响应的结构与 `apps/backend/serving/schemas.py` 保持一致。"
 
-#: ../developer/adding-models.md:732
+#: ../developer/adding-models.md:807
 msgid ""
 "**Testing** — exercise both streaming and non-streaming paths, and try "
 "large prompts to validate token clamping."
 msgstr "**测试**——流式和非流式两条路径都要跑到，并用大 prompt 验证 token 的钳制逻辑。"
 
-#: ../developer/adding-models.md:734
+#: ../developer/adding-models.md:809
 msgid ""
 "**Docs & style** — Google-style docstrings in English; keep provider-"
 "specific logic out of shared code."
 msgstr "**文档与风格**——用英文写 Google 风格的 docstring；不要把 provider 专属的逻辑塞进共享代码。"
 
-#: ../developer/adding-models.md:736
+#: ../developer/adding-models.md:811
 #, python-brace-format
 msgid ""
 "**Secrets** — use `${ENV_VAR}` in YAML rather than hardcoding keys or "
 "endpoints, and keep the values in `.env`."
 msgstr "**密钥**——在 YAML 里用 `${ENV_VAR}`，不要硬编码 key 或端点，取值放在 `.env` 中。"
 
-#: ../developer/adding-models.md:739
+#: ../developer/adding-models.md:814
 msgid "See also"
 msgstr "另见"
 
-#: ../developer/adding-models.md:741
+#: ../developer/adding-models.md:816
 msgid ""
 "[Adding a New Local Model](add-local-model.md) — registering a self-"
 "hosted vLLM/SGLang/Ollama server"
 msgstr "[添加新的本地模型](add-local-model.md)——注册自建的 vLLM/SGLang/Ollama 服务器"
 
-#: ../developer/adding-models.md:743
+#: ../developer/adding-models.md:818
 msgid ""
 "[Quickstart](router-tutorial.md) — a runnable deployment from first "
 "request to local server"
-msgstr ""
-"[快速开始](router-tutorial.md)——一次可运行的部署，从第一个请求到本地服务器"
+msgstr "[快速开始](router-tutorial.md)——一次可运行的部署，从第一个请求到本地服务器"
 
-#: ../developer/adding-models.md:745
+#: ../developer/adding-models.md:820
 msgid "[Routing through OpenRouter](openrouter.md) — architecture and endpoints"
-msgstr ""
-"[通过 OpenRouter 路由](openrouter.md)——架构与端点"
+msgstr "[通过 OpenRouter 路由](openrouter.md)——架构与端点"
 
-#: ../developer/adding-models.md:746
+#: ../developer/adding-models.md:821
 msgid "[Routing](routing.md) — central weight overrides and strategies"
-msgstr ""
-"[路由](routing.md)——集中式权重覆盖与策略"
+msgstr "[路由](routing.md)——集中式权重覆盖与策略"
 
-#: ../developer/adding-models.md:747
+#: ../developer/adding-models.md:822
 msgid "[Configuration](configuration.md) — environment and YAML configuration"
-msgstr ""
-"[配置](configuration.md)——环境变量与 YAML 配置"
+msgstr "[配置](configuration.md)——环境变量与 YAML 配置"
 
 #~ msgid ""
 #~ "Provider/adapter kind; also the default "
@@ -1302,3 +1367,4 @@ msgstr ""
 
 #~ msgid "Rate limiting"
 #~ msgstr "限流"
+

@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-06 22:11+0000\n"
+"POT-Creation-Date: 2026-09-09 17:53+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -392,8 +392,11 @@ msgid ""
 msgstr ""
 
 #: ../developer/database.md
-msgid "Everything the admin UI can change about routing without editing YAML"
-msgstr "管理界面不用改 YAML 就能调整的全部路由相关内容"
+msgid ""
+"Everything the admin console can change about routing without editing "
+"YAML — see [Runtime configuration from the admin "
+"console](configuration.md#runtime-configuration-from-the-admin-console)"
+msgstr "管理控制台不用改 YAML 就能调整的全部路由相关内容——见[从管理控制台做运行时配置](configuration.md#runtime-configuration-from-the-admin-console)"
 
 #: ../developer/database.md
 msgid "Cost and quota"
@@ -875,4 +878,7 @@ msgstr ""
 #~ "上根本不发任何会话头，而链路上也没有别的东西能指明这次会话——这时网关宁可什么都不记，也不从一个本就不是用来承载会话的字段里去推断。升级是正解；在旧"
 #~ " runner 上，可以用一个 `chat.headers` 插件，把它拿到的会话 "
 #~ "id 设成 `X-Session-ID`。"
+
+#~ msgid "Everything the admin UI can change about routing without editing YAML"
+#~ msgstr "管理界面不用改 YAML 就能调整的全部路由相关内容"
 

@@ -205,6 +205,11 @@ route:
 adapters or examples for; add your own names freely. The bundled default
 registry needs only `OPENROUTER_API_KEY`.
 
+Once a database is configured, keys can also be added from the admin console
+(**Providers → Keys**) with no restart; they join the same pool as the keys the
+registry names. See
+[Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console).
+
 ### Where the config files live
 
 There is no `config/models.yaml` or `config/routing.yaml` in this repository.
