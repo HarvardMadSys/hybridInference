@@ -93,6 +93,9 @@ class DistributionSite(_ManifestModel):
 class DistributionFeatures(_ManifestModel):
     """Feature toggles a distribution opts into."""
 
+    # Security restrictions must not disappear because a key was misspelled.
+    model_config = ConfigDict(extra="forbid")
+
     routers: list[str] = Field(default_factory=list)
     public_signup: bool | None = None
     rag: bool | None = None
@@ -115,6 +118,9 @@ class DistributionDeployment(_ManifestModel):
 
 class DistributionConfig(_ManifestModel):
     """Validated distribution manifest."""
+
+    # In particular, reject feature fields accidentally placed at the root.
+    model_config = ConfigDict(extra="forbid")
 
     _branding_config: BrandingConfig | None = PrivateAttr(default=None)
 
@@ -269,9 +275,10 @@ def _log_once(key: tuple[str, ...], message: str, *, level: str = "info") -> Non
 def _effective_mode() -> str:
     """Normalize the configured mode; unknown values degrade to ``dark``.
 
-    ``dark`` is the fail-safe direction: the manifest is loaded and compared
-    but never changes effective resolution, so a typo can only suppress a
-    planned activation — never activate one.
+    This fallback applies to config-path resolution, where it prevents an
+    accidental activation. Security policy and public identity use
+    ``get_active_distribution_config`` to reject unknown modes instead of
+    silently discarding a restriction.
     """
     raw = get_settings().distribution_config_mode.strip().lower()
     if raw in _VALID_MODES:
@@ -284,6 +291,31 @@ def _effective_mode() -> str:
         level="warning",
     )
     return "dark"
+
+
+def get_active_distribution_config() -> DistributionConfig | None:
+    """Return the active manifest, or None for intentional dark mode.
+
+    Unlike config-path migration, consumers of identity and security policy
+    cannot treat an invalid selection as an unconfigured deployment.
+
+    Raises:
+        DistributionConfigError: For an unknown/empty mode, an active mode
+            without a manifest path, or an invalid active manifest.
+    """
+    settings = get_settings()
+    mode = _effective_mode()
+    if settings.distribution_config_mode.strip().lower() not in _VALID_MODES:
+        raise DistributionConfigError(
+            "Invalid DISTRIBUTION_CONFIG_MODE; expected 'active' or 'dark'."
+        )
+    if mode == "dark":
+        return None
+    if not settings.distribution_config_path.strip():
+        message = "DISTRIBUTION_CONFIG_MODE=active requires DISTRIBUTION_CONFIG_PATH."
+        _log_once(("active-without-path",), message, level="error")
+        raise DistributionConfigError(message)
+    return get_distribution_config()
 
 
 def _explicitly_configured(field_name: str) -> bool:
