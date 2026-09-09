@@ -4,6 +4,8 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let agentsEnabled = false;
+let agentsUrl = '';
+let role = 'internal';
 
 vi.mock('@/components/providers', () => ({
   useAuth: () => ({
@@ -12,7 +14,7 @@ vi.mock('@/components/providers', () => ({
         id: 'internal-user',
         email: 'internal@example.test',
         user_name: 'Internal User',
-        role: 'internal',
+        role,
       },
     },
   }),
@@ -22,6 +24,7 @@ vi.mock('@/components/providers/SiteConfigProvider', () => ({
   useSiteConfig: () => ({
     branding: { docsUrl: '' },
     features: { agents: agentsEnabled },
+    agentsUrl,
   }),
 }));
 
@@ -38,6 +41,8 @@ describe('DashboardView runtime agents gate', () => {
 
   beforeEach(() => {
     agentsEnabled = false;
+    agentsUrl = '';
+    role = 'internal';
   });
 
   it('hides the Agents link when the server-only proxy pair is unavailable', () => {
@@ -49,9 +54,29 @@ describe('DashboardView runtime agents gate', () => {
 
   it('shows the Agents link when the runtime feature is enabled', () => {
     agentsEnabled = true;
+    agentsUrl = '/agents';
 
     render(<DashboardView />);
 
     expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('href', '/agents');
+  });
+
+  it('links the tile directly to a standalone agent site', () => {
+    agentsEnabled = true;
+    agentsUrl = 'https://agents.example.test/';
+
+    render(<DashboardView />);
+
+    expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute('href', agentsUrl);
+  });
+
+  it('keeps the standalone agent tile restricted to internal users', () => {
+    agentsEnabled = true;
+    agentsUrl = 'https://agents.example.test/';
+    role = 'free';
+
+    render(<DashboardView />);
+
+    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument();
   });
 });

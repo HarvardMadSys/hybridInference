@@ -59,6 +59,14 @@ network alias. A different backend target requires rebuilding the console.
 every request. With either variable unset, `/agents` truthfully answers 404;
 an invalid target or an unreachable configured service answers 502.
 
+For an agent served on its own hostname, set `AGENT_PUBLIC_URL` to its public
+HTTPS URL (without credentials). The dashboard's Agents tile uses that URL
+at runtime, independently of the proxy targets; `/agents` remains disabled
+when either proxy target is unset. With no public URL, the tile links to
+`/agents` only when both proxy targets are configured. The tile remains
+restricted to internal users. Unlike the private targets, the public URL is
+included in the browser's site configuration.
+
 | Source | Destination | Note |
 |---|---|---|
 | `/agents/api/:path*` | `${AGENT_CONTROL_PLANE_INTERNAL_URL}/:path*` | prefix **stripped** — the control plane serves its routes at its own root |

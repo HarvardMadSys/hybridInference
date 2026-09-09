@@ -65,13 +65,14 @@ def test_no_contract_variable_ships_a_value() -> None:
 # `/agents` route reads the two internal URLs at runtime (legacy images may
 # still have equivalent rewrites compiled in), and the deploy scripts grep
 # .env for the network name to decide whether the console joins the standalone
-# stack's Docker network. Everything else with the prefix moved out with the
-# cloud agent.
+# stack's Docker network. The public URL supplies the dashboard link for an
+# independently hosted agent. Everything else with the prefix moved out.
 SURVIVING_AGENT_VARS = frozenset(
     {
         "AGENT_WEB_INTERNAL_URL",
         "AGENT_CONTROL_PLANE_INTERNAL_URL",
         "AGENT_NETWORK_NAME",
+        "AGENT_PUBLIC_URL",
     }
 )
 

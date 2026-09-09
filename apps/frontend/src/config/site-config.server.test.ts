@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildTimeSiteConfig } from './site-config';
 import { loadRuntimeSiteConfig } from './site-config.server';
@@ -12,6 +12,12 @@ const runtimeDocument = {
 };
 
 describe('loadRuntimeSiteConfig', () => {
+  beforeEach(() => {
+    vi.stubEnv('AGENT_PUBLIC_URL', '');
+    vi.stubEnv('AGENT_WEB_INTERNAL_URL', '');
+    vi.stubEnv('AGENT_CONTROL_PLANE_INTERNAL_URL', '');
+  });
+
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
@@ -42,7 +48,7 @@ describe('loadRuntimeSiteConfig', () => {
     expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it('enables the public agents feature only when both private destinations exist', async () => {
+  it('links to the local proxy when both private destinations exist', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({ ok: true, json: async () => runtimeDocument }),
@@ -53,8 +59,61 @@ describe('loadRuntimeSiteConfig', () => {
     const resolved = await loadRuntimeSiteConfig();
 
     expect(resolved.features.agents).toBe(true);
+    expect(resolved.agentsUrl).toBe('/agents');
     expect(JSON.stringify(resolved)).not.toContain('agent-web');
     expect(JSON.stringify(resolved)).not.toContain('agent-api');
+  });
+
+  it('shows the standalone agent without re-enabling the retired proxy', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => runtimeDocument }),
+    );
+    vi.stubEnv('AGENT_PUBLIC_URL', 'https://agents.example.test/');
+
+    const resolved = await loadRuntimeSiteConfig();
+
+    expect(resolved.features.agents).toBe(true);
+    expect(resolved.agentsUrl).toBe('https://agents.example.test/');
+  });
+
+  it('prefers the public address while a deployment still has proxy targets', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => runtimeDocument }),
+    );
+    vi.stubEnv('AGENT_PUBLIC_URL', ' https://agents.example.test/workspace ');
+    vi.stubEnv('AGENT_WEB_INTERNAL_URL', 'http://agent-web:3000');
+    vi.stubEnv('AGENT_CONTROL_PLANE_INTERNAL_URL', 'http://agent-api:8000');
+
+    const resolved = await loadRuntimeSiteConfig();
+
+    expect(resolved.agentsUrl).toBe('https://agents.example.test/workspace');
+    expect(JSON.stringify(resolved)).not.toContain('agent-web');
+    expect(JSON.stringify(resolved)).not.toContain('agent-api');
+  });
+
+  it.each([
+    'not a URL',
+    'javascript:alert(1)',
+    '//agents.example.test',
+    'http://agents.example.test',
+    'https://user:password@agents.example.test',
+    'https://agents.example.test/path with spaces',
+    'https://agents.example.test\\\\elsewhere',
+  ])('does not publish an invalid public address: %s', async (url) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => runtimeDocument }),
+    );
+    vi.stubEnv('AGENT_PUBLIC_URL', url);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const resolved = await loadRuntimeSiteConfig();
+
+    expect(resolved.features.agents).toBe(false);
+    expect(resolved.agentsUrl).toBe('');
+    expect(JSON.stringify(resolved)).not.toContain(url);
   });
 
   it('keeps agents disabled when only one private destination exists', async () => {

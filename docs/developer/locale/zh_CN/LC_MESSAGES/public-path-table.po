@@ -181,6 +181,22 @@ msgstr ""
 "`apps/frontend/src/app/agents/[[...path]]/route.ts` 会在每次请求时读取两个 agent "
 "目标。任一变量未设置时，`/agents` 会如实返回 404；目标无效或已配置服务无法访问时返回 502。"
 
+#: ../developer/public-path-table.md:62
+msgid ""
+"For an agent served on its own hostname, set `AGENT_PUBLIC_URL` to its public "
+"HTTPS URL (without credentials). The dashboard's Agents tile uses that URL "
+"at runtime, independently of the proxy targets; `/agents` remains disabled "
+"when either proxy target is unset. With no public URL, the tile links to "
+"`/agents` only when both proxy targets are configured. The tile remains "
+"restricted to internal users. Unlike the private targets, the public URL is "
+"included in the browser's site configuration."
+msgstr ""
+"若 agent 使用独立域名，将 `AGENT_PUBLIC_URL` 设为其公开 HTTPS URL（不含凭据）。"
+"Dashboard 的 Agents 方块在运行时使用这个 URL，不依赖代理目标；任一代理目标未设置时，"
+"`/agents` 仍保持关闭。未配置公开 URL 时，只有两个代理目标都已配置，方块才会链接到 "
+"`/agents`。方块仍仅向 internal 用户开放。与私有代理目标不同，公开 URL 会包含在"
+"浏览器的站点配置中。"
+
 #: ../developer/public-path-table.md
 msgid "Source"
 msgstr "源路径"

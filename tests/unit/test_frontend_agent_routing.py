@@ -38,6 +38,13 @@ def test_the_agent_urls_are_runtime_environment() -> None:
         assert environment[name] == f"${{{name}-}}"
 
 
+def test_the_public_agent_link_is_runtime_only() -> None:
+    """A standalone agent can move without rebuilding the neutral console."""
+    frontend = _frontend()
+    assert frontend["environment"]["AGENT_PUBLIC_URL"] == "${AGENT_PUBLIC_URL-}"
+    assert "AGENT_PUBLIC_URL" not in frontend["build"]["args"]
+
+
 def test_backend_internal_url_is_one_build_time_contract() -> None:
     """Rewrites and server fetches cannot be retargeted independently."""
     frontend = _frontend()
