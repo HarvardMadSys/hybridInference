@@ -176,6 +176,7 @@ const siteConfigDocumentSchema = z.union([
 
 export interface RuntimeSiteConfig {
   branding: Branding;
+  agentsUrl: string;
   distribution: {
     id: string;
     release: string;
@@ -189,6 +190,7 @@ export interface RuntimeSiteConfig {
 
 export const buildTimeSiteConfig: RuntimeSiteConfig = {
   branding: buildTimeBranding,
+  agentsUrl: '',
   distribution: { id: 'legacy', release: '' },
   features: { publicSignup: true, rag: true, agents: false },
 };
@@ -294,6 +296,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
 
   return {
     branding,
+    agentsUrl: '',
     distribution: {
       id: document.distribution.id,
       release: document.distribution.release,
@@ -301,19 +304,17 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
     features: {
       publicSignup: document.features.public_signup ?? buildTimeSiteConfig.features.publicSignup,
       rag: document.features.rag ?? buildTimeSiteConfig.features.rag,
-      // Never trust or infer this from public JSON. Only the server-side
-      // loader may enable it after seeing both private proxy destinations.
+      // Only the server-side loader may enable the entry point, from an
+      // explicit public URL or a configured local proxy.
       agents: false,
     },
   };
 }
 
-export function withAgentsFeature(
-  siteConfig: RuntimeSiteConfig,
-  agents: boolean,
-): RuntimeSiteConfig {
+export function withAgentsUrl(siteConfig: RuntimeSiteConfig, agentsUrl: string): RuntimeSiteConfig {
   return {
     ...siteConfig,
-    features: { ...siteConfig.features, agents },
+    agentsUrl,
+    features: { ...siteConfig.features, agents: Boolean(agentsUrl) },
   };
 }

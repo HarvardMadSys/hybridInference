@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DeveloperHome } from '@/components/landing';
@@ -25,7 +25,7 @@ let authState = {
 const NOTICE = 'Requests are logged by this deployment for research purposes.';
 
 let dataPolicyNotice = NOTICE;
-let distributionId = 'legacy';
+let distributionId = 'example';
 let publicSignup = true;
 let exampleModel = 'example-chat';
 let exampleApiBase = 'http://localhost:13001';
@@ -36,6 +36,10 @@ let exampleHidden = false;
 const env = vi.hoisted(() => ({ apiBase: '' }));
 
 const branding = {
+  appName: 'FreeInference',
+  siteHost: 'staging.freeinference.org',
+  orgTagline: 'Built at Harvard SEAS · MadSys Lab',
+  orgUrl: 'https://madsys.seas.harvard.edu',
   exampleApiKeyEnvVar: 'HYBRIDINFERENCE_API_KEY',
   get exampleApiBase() {
     return exampleApiBase;
@@ -171,7 +175,7 @@ describe('HomePage', () => {
   beforeEach(() => {
     authState = { loading: false, isAuthenticated: false, user: null };
     dataPolicyNotice = NOTICE;
-    distributionId = 'legacy';
+    distributionId = 'example';
     publicSignup = true;
     exampleModel = 'example-chat';
     exampleApiBase = 'http://localhost:13001';
@@ -180,11 +184,12 @@ describe('HomePage', () => {
     stubGateway();
   });
 
-  it('renders the developer home for every deployment, with no marketing copy', async () => {
+  it('renders the developer home for the example, with no marketing copy', async () => {
     render(<HomePage />);
 
-    expect(screen.getByRole('heading', { name: /your gateway is running/i })).toBeInTheDocument();
-    expect(screen.queryByText(/local example/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /your local gateway is running/i }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText(/frontier|research community|free to use|no credit card/i),
     ).not.toBeInTheDocument();
@@ -196,6 +201,67 @@ describe('HomePage', () => {
     });
 
     await waitFor(() => expect(screen.getByText('Healthy')).toBeInTheDocument());
+  });
+
+  it.each(['freeinference', 'legacy', 'custom-deployment'])(
+    'preserves the full marketing homepage for %s',
+    (id) => {
+      distributionId = id;
+      const fetchMock = stubGateway();
+
+      render(<HomePage />);
+
+      expect(
+        screen.getByRole('heading', {
+          name: 'FreeInference for open-source, research and education',
+        }),
+      ).toBeInTheDocument();
+      expect(screen.getByText(branding.orgTagline)).toBeInTheDocument();
+      expect(
+        screen.getByRole('heading', { name: /why staging.freeinference.org/i }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Supported use cases' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('heading', { name: 'Get started in three steps' }),
+      ).toBeInTheDocument();
+      expect(screen.getByText('Quickstart')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Sign up free' })).toHaveAttribute('href', '/signup');
+      expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
+      [/updates banner/i, /^updates$/i, /sponsors/i].forEach((pattern) => {
+        expect(screen.getByLabelText(pattern)).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/your (local )?gateway is running/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('Gateway health')).not.toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([FREE_USER, ADMIN_USER])(
+    'keeps the FreeInference landing for a signed-in $role user',
+    (user) => {
+      distributionId = 'freeinference';
+      signIn(user);
+
+      render(<HomePage />);
+
+      expect(
+        screen.getByRole('heading', {
+          name: 'FreeInference for open-source, research and education',
+        }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Your models')).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Admin Console' })).not.toBeInTheDocument();
+    },
+  );
+
+  it('honours disabled public signup on the FreeInference landing', () => {
+    distributionId = 'freeinference';
+    publicSignup = false;
+
+    render(<HomePage />);
+
+    expect(screen.queryByRole('link', { name: 'Sign up free' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
   });
 
   it('labels the example distribution as the local example', () => {
@@ -259,7 +325,9 @@ describe('HomePage', () => {
     expect(screen.getByText('Public models')).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByText('Degraded')).toBeInTheDocument();
-      expect(screen.getByText('example-chat, local-embedding')).toBeInTheDocument();
+      const models = within(screen.getByRole('list', { name: 'Public models' }));
+      expect(models.getByText('example-chat')).toBeInTheDocument();
+      expect(models.getByText('local-embedding')).toBeInTheDocument();
     });
     // An empty API base means same-origin requests, exactly like every other
     // console call.
@@ -286,13 +354,61 @@ describe('HomePage', () => {
     render(<HomePage />);
 
     expect(screen.getByText('Your models')).toBeInTheDocument();
-    // The id also appears in the quickstart's "Uses" line; check the cell.
+    // The id also appears in the quickstart's "Uses" line; check the list.
     await waitFor(() =>
-      expect(screen.getByText('gated-chat', { selector: 'dd' })).toBeInTheDocument(),
+      expect(
+        within(screen.getByRole('list', { name: 'Your models' })).getByText('gated-chat'),
+      ).toBeInTheDocument(),
     );
     expect(requestedPaths(fetchMock)).toContain('/user/models');
     expect(requestedPaths(fetchMock)).not.toContain('/v1/models');
     expect(curlCommand()).toHaveTextContent('"model": "gated-chat"');
+  });
+
+  it('previews a large catalog and lets visitors expand and collapse the full list', async () => {
+    const models = Array.from({ length: 9 }, (_, index) => `model-${index + 1}`);
+    exampleModel = 'model-9';
+    stubGateway({ status: 'healthy' }, models);
+
+    render(<HomePage />);
+
+    const toggle = await screen.findByRole('button', { name: 'Show all 9' });
+    const list = screen.getByRole('list', { name: 'Public models' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(6);
+    expect(within(list).queryByText('model-9')).not.toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveAttribute('aria-controls', list.id);
+    // Collapsing the display must not trim the catalog used by the quickstart.
+    expect(curlCommand()).toHaveTextContent('"model": "model-9"');
+
+    fireEvent.click(toggle);
+
+    expect(within(list).getAllByRole('listitem')).toHaveLength(9);
+    expect(within(list).getByText('model-9')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show fewer' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show fewer' }));
+
+    expect(within(list).getAllByRole('listitem')).toHaveLength(6);
+    expect(screen.getByRole('button', { name: 'Show all 9' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('shows every model in a small catalog without an expansion control', async () => {
+    const model = 'a-model-with-a-long-name-that-must-remain-readable-without-truncation';
+    stubGateway({ status: 'healthy' }, [model]);
+
+    render(<HomePage />);
+
+    const list = await screen.findByRole('list', { name: 'Public models' });
+    expect(within(list).getByText(model)).toBeInTheDocument();
+    expect(within(list).getAllByRole('listitem')).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: /show all|show fewer/i })).not.toBeInTheDocument();
   });
 
   it('waits for the session to resolve before choosing a catalog', async () => {
@@ -377,8 +493,9 @@ describe('HomePage', () => {
 
     expect(curlCommand()).toHaveTextContent('"model": "llama-3.3-70b"');
     await waitFor(() => expect(curlCommand()).toHaveTextContent('"model": "glm-local"'));
-    expect(screen.getByText('glm-local', { selector: 'code' })).toBeInTheDocument();
-    expect(screen.getByText('embed-local, glm-local')).toBeInTheDocument();
+    const models = within(screen.getByRole('list', { name: 'Public models' }));
+    expect(models.getByText('glm-local')).toBeInTheDocument();
+    expect(models.getByText('embed-local')).toBeInTheDocument();
   });
 
   it('tells anonymous visitors to sign in when no chat model is public', async () => {
@@ -427,7 +544,7 @@ describe('HomePage', () => {
       expect(screen.getByText('Unavailable')).toBeInTheDocument();
     });
     expect(
-      screen.getByRole('heading', { name: /your gateway needs attention/i }),
+      screen.getByRole('heading', { name: /your local gateway needs attention/i }),
     ).toBeInTheDocument();
   });
 

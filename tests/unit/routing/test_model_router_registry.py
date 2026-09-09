@@ -668,6 +668,54 @@ class TestModelRouterRegistry:
         # Routes registered on the shared instance are visible.
         assert "glm-4.7" in router.routes
 
+    def test_routewise_router_is_scoped_to_the_model_it_was_built_for(self):
+        """A RouteWise model must not pull the whole fleet into its route state.
+
+        The shared FixedRouter carries every model. Binding it unscoped made a
+        router built for one model classify all of them, so its background
+        latency probe sent real upstream requests for models routed by
+        ``fixed`` — including admin-only ones it must never call.
+        """
+        from unittest.mock import MagicMock
+
+        from routing.model_router_registry import ModelRouterRegistry
+        from routing.routers import FixedRouter
+
+        def _adapter(model_id: str) -> MagicMock:
+            adapter = MagicMock()
+            adapter.config.id = model_id
+            adapter.config.provider = "openai_compat"
+            adapter.config.endpoint_id = f"{model_id}:api"
+            adapter.config.provider_type = "on_demand"
+            adapter.config.on_demand = False
+            adapter.config.pricing = {"prompt": "1.0", "completion": "2.0"}
+            return adapter
+
+        shared_fixed = FixedRouter()
+        shared_fixed.register_route("routed-by-routewise", [(_adapter("routed-by-routewise"), 1.0)])
+        shared_fixed.register_route("routed-by-fixed", [(_adapter("routed-by-fixed"), 1.0)])
+        shared_fixed.register_route(
+            "admin-only-model",
+            [(_adapter("admin-only-model"), 1.0)],
+            required_role="admin",
+        )
+
+        reg = ModelRouterRegistry(
+            models_config={
+                "routed-by-routewise": {"router": "routewise"},
+                "routed-by-fixed": {"router": "fixed"},
+                "admin-only-model": {"router": "fixed"},
+            },
+            default_router_name="fixed",
+            shared_fixed_router=shared_fixed,
+        )
+
+        router = reg.get_router("routed-by-routewise")
+
+        assert set(router.classified) == {"routed-by-routewise"}
+        assert set(router._endpoint_adapter) == {"routed-by-routewise:api"}
+        assert router._probe_lease_key() == "routewise-probe:routed-by-routewise"
+
     def test_managed_routers_returns_unique_start_stop_capable_routers(self):
         from routing.model_router_registry import ModelRouterRegistry
         from routing.routers import FixedRouter

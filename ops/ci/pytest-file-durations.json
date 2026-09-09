@@ -92,7 +92,6 @@
     "tests/unit/adapters/test_claude_images.py": 0.021682,
     "tests/unit/adapters/test_claude_message_merge.py": 0.053363,
     "tests/unit/adapters/test_claude_vertex_stream.py": 0.108262,
-    "tests/unit/adapters/test_coding_identity_adapter.py": 0.097953,
     "tests/unit/adapters/test_gemini_toolcalls_and_stream.py": 0.008948,
     "tests/unit/adapters/test_gemini_usage.py": 0.038901,
     "tests/unit/adapters/test_key_pool.py": 0.751274,

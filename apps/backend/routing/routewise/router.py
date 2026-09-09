@@ -41,7 +41,7 @@ from llm_routewise.core import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Mapping
+    from collections.abc import AsyncIterator, Collection, Iterable, Mapping
 
     from routing.protocols import RoutingRequestOptions
     from routing.route_table import RouteTableView
@@ -289,6 +289,11 @@ class RouteWiseRouter:
         self._adapter_endpoint_ids: dict[int, str] = {}
         self._endpoint_adapter: dict[str, Any] = {}
         self._endpoint_models: dict[str, set[str]] = {}
+        # Canonical model ids this router is responsible for. ``None`` means
+        # "every model in the attached table" and is only correct for a router
+        # that genuinely serves the whole table. The registry narrows this to
+        # the one model it built the router for; see attach_route_table.
+        self._model_scope: frozenset[str] | None = None
 
         self.predictor = BucketMeanOutputPredictor(
             default_output=self.config.output_default_tokens,
@@ -368,18 +373,42 @@ class RouteWiseRouter:
     # Lifecycle / registry binding
     # ------------------------------------------------------------------
 
-    def attach_route_table(self, route_table: RouteTableView) -> None:
-        """Bind the shared read-only route table after strategy construction."""
+    def attach_route_table(
+        self,
+        route_table: RouteTableView,
+        *,
+        model_scope: Collection[str] | None = None,
+    ) -> None:
+        """Bind the shared read-only route table after strategy construction.
+
+        The table is process-wide and carries every model, including ones this
+        router does not serve. ``model_scope`` restricts every route-derived
+        structure — candidates, endpoint adapters, latency profiles, resource
+        pools, quota sources and active probe targets — to those canonical
+        model ids.
+
+        The scope is sticky: it is remembered across later re-attachments, so a
+        caller that re-binds the full table without knowing about scoping (a
+        runtime model publish, say) cannot silently widen this router back to
+        the whole fleet. Passing ``None`` keeps the current scope.
+        """
         with self._route_commit_lock:
+            if model_scope is not None:
+                self._model_scope = frozenset(model_scope)
             self.route_table = route_table
             self.pending_prefix_cache.clear()
             self._last_lp_statuses = {}
             self._last_lp_weights = {}
             self._rebuild_from_route_table()
 
-    def attach_fixed_router(self, route_table: RouteTableView) -> None:
+    def attach_fixed_router(
+        self,
+        route_table: RouteTableView,
+        *,
+        model_scope: Collection[str] | None = None,
+    ) -> None:
         """Compatibility alias for :meth:`attach_route_table` for one release."""
-        self.attach_route_table(route_table)
+        self.attach_route_table(route_table, model_scope=model_scope)
 
     @property
     def fixed_router(self) -> RouteTableView | None:
@@ -933,8 +962,15 @@ class RouteWiseRouter:
         route_table = self.route_table
         if route_table is None:
             return
+        scope = self._model_scope
         for effective_route in route_table.iter_effective_routes():
             model_id = effective_route.canonical_model_id
+            if scope is not None and model_id not in scope:
+                # Not this router's model. Classifying it here would put its
+                # endpoints into _endpoint_adapter, which is what the active
+                # probe loop walks — the router would then send real upstream
+                # requests for models it never routes.
+                continue
             if model_id in self.route_candidates:
                 continue
             candidates = build_provider_candidates(model_id, effective_route.adapters)

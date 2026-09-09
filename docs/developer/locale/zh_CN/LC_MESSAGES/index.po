@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-31 14:50+0800\n"
+"POT-Creation-Date: 2026-09-09 17:53+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -20,27 +20,27 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
 
-#: ../developer/index.rst:82
+#: ../developer/index.rst:86
 msgid "Getting Started"
 msgstr "入门"
 
-#: ../developer/index.rst:90
+#: ../developer/index.rst:94
 msgid "Concepts"
 msgstr "概念"
 
-#: ../developer/index.rst:98
+#: ../developer/index.rst:102
 msgid "Guides"
 msgstr "指南"
 
-#: ../developer/index.rst:109
+#: ../developer/index.rst:113
 msgid "Operations"
 msgstr "运维"
 
-#: ../developer/index.rst:120
+#: ../developer/index.rst:123
 msgid "Contributing"
 msgstr "参与贡献"
 
-#: ../developer/index.rst:126
+#: ../developer/index.rst:129
 msgid "Project"
 msgstr "项目"
 
@@ -196,33 +196,43 @@ msgid ":doc:`adding-models`"
 msgstr ""
 
 #: ../developer/index.rst:64
+msgid ""
+"Add a provider, a key or a model from the admin console, without editing "
+"YAML or restarting"
+msgstr "不改 YAML、不重启，直接从管理控制台添加 provider、key 或模型"
+
+#: ../developer/index.rst:66
+msgid ":doc:`configuration`, under *Runtime configuration from the admin console*"
+msgstr ""
+
+#: ../developer/index.rst:68
 msgid "Change how an endpoint gets chosen, or write your own strategy"
 msgstr "改变端点的选中方式，或自己写一个策略"
 
-#: ../developer/index.rst:65
+#: ../developer/index.rst:69
 msgid ":doc:`routing`"
 msgstr ""
 
-#: ../developer/index.rst:66
+#: ../developer/index.rst:70
 msgid "Send a patch"
 msgstr "提交一个补丁"
 
-#: ../developer/index.rst:67
+#: ../developer/index.rst:71
 msgid ":doc:`contributing`"
 msgstr ""
 
-#: ../developer/index.rst:70
+#: ../developer/index.rst:74
 msgid "Scope of this site"
 msgstr "本站的范围"
 
-#: ../developer/index.rst:72
+#: ../developer/index.rst:76
 msgid ""
 "These pages document the software, not any one installation of it. Which "
 "models a given gateway serves, and how to get an account on it, are the "
 "operator's to publish separately."
 msgstr "这些页面记录的是软件本身，而不是它的某一次具体安装。某个网关服务哪些模型、怎样在它上面拿到账号，由运营方另行公布。"
 
-#: ../developer/index.rst:76
+#: ../developer/index.rst:80
 msgid ""
 "That separation is built into the repository: a deployment keeps its "
 "identity, its configuration-file locations and its feature switches in a "

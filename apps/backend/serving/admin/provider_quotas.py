@@ -35,6 +35,9 @@ from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 8
+PROVIDER_USAGE_BASE_URLS: dict[str, tuple[str, str]] = {
+    "kimi": ("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1"),
+}
 _FEATHERLESS_CONCURRENCY_URL = "https://api.featherless.ai/account/concurrency"
 _FEATHERLESS_FETCH_LOCK: asyncio.Lock | None = None
 _FEATHERLESS_FETCH_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
@@ -1294,13 +1297,9 @@ def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
 
 
 def _kimi_usages_url() -> str:
-    """Resolve the Kimi coding-plan usage endpoint, honoring ``KIMI_CODING_BASE_URL``.
-
-    The base already includes the ``/coding/v1`` prefix (e.g.
-    ``https://api.kimi.com/coding/v1``), matching the value used for inference
-    requests. The official Kimi Code CLI fetches quota from ``{base}/usages``.
-    """
-    base = (os.getenv("KIMI_CODING_BASE_URL") or "https://api.kimi.com/coding/v1").rstrip("/")
+    """Resolve the optional usage endpoint from deployment provider metadata."""
+    env_var, default = PROVIDER_USAGE_BASE_URLS["kimi"]
+    base = (os.getenv(env_var) or default).rstrip("/")
     return f"{base}/usages"
 
 
@@ -1452,7 +1451,7 @@ def _parse_kimi_usage(payload: Any) -> list[ProviderQuotaUsage]:
 
 
 async def _fetch_kimi_for_key(key: str) -> ProviderQuotaResult:
-    """Fetch coding-plan quota for a single Kimi API key."""
+    """Fetch optional quota information for a single Kimi API key."""
     url = _kimi_usages_url()
     headers = {
         "Authorization": f"Bearer {key}",
@@ -1468,8 +1467,7 @@ async def _fetch_kimi_for_key(key: str) -> ProviderQuotaResult:
         ):
             if resp.status in (301, 302, 303, 307, 308, 401, 403):
                 return _err("kimi", "Kimi", key, "auth_failed")
-            # The usage endpoint exists only for coding-plan keys; a plain
-            # Moonshot API key gets a 404 here.
+            # Not every compatible endpoint exposes quota information.
             if resp.status == 404:
                 return _err("kimi", "Kimi", key, "no_quota_api")
             if resp.status >= 400:
@@ -1518,15 +1516,12 @@ async def _fetch_kimi_for_key(key: str) -> ProviderQuotaResult:
 
 
 async def fetch_kimi(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
-    """Fetch coding-plan quota from Kimi for all configured API keys.
-
-    Endpoint discovered from the official Kimi Code CLI ``/usage`` command,
-    which queries ``{base}/usages`` with ``Authorization: Bearer`` auth.
-    """
+    """Fetch optional Kimi quota information for all configured API keys."""
+    base_var, numbered_prefix = dynamic_keys._PROVIDER_ENV_KEY_VARS["kimi"]
     keys = await _discover_provider_keys(
         "kimi",
-        "KIMI_CODING_API_KEY",
-        "KIMI_CODING_API_KEY",
+        base_var,
+        numbered_prefix,
         operational_store,
     )
     if not keys:

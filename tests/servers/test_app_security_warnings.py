@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -26,15 +25,9 @@ async def test_empty_admin_token_warning_describes_only_the_legacy_path(
 
     monkeypatch.setattr(app_module.bootstrap, "initialize", initialize)
     monkeypatch.setattr(app_module.bootstrap, "shutdown", shutdown)
-    monkeypatch.setattr(
-        app_module,
-        "settings",
-        SimpleNamespace(
-            jwt_secret_key="configured-jwt-secret",
-            api_key_secret="configured-api-key-secret",
-            admin_token="",
-        ),
-    )
+    monkeypatch.setenv("JWT_SECRET_KEY", "configured-jwt-secret")
+    monkeypatch.setenv("API_KEY_SECRET", "configured-api-key-secret")
+    monkeypatch.setenv("ADMIN_TOKEN", "")
     caplog.set_level(logging.WARNING, logger=app_module.__name__)
 
     app = FastAPI()

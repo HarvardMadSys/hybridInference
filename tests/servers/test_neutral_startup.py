@@ -5,7 +5,7 @@ deployment-specific, and supplies a single provider key must get a
 working, neutral gateway. This test *is* that criterion, executable.
 
 It runs in a subprocess with a deliberately bare environment (no
-DISTRIBUTION_CONFIG_PATH, no SITE_* overrides, DB disabled) so it cannot
+DISTRIBUTION_CONFIG_PATH, no SITE_* overrides, DB and user auth disabled) so it cannot
 inherit the shared suite's deployment-flavored test settings, and it
 boots the real app through its lifespan rather than inspecting config.
 """
@@ -59,6 +59,10 @@ def test_neutral_deployment_serves_the_reference_registry() -> None:
         "HOME": os.environ.get("HOME", ""),
         "PYTHONPATH": str(_REPO_ROOT / "apps" / "backend"),
         "DB_ENABLED": "false",
+        # This acceptance case is a database-free router, not an account
+        # deployment. Opt out explicitly rather than starting with auth on
+        # and missing secrets (which must now fail before serving traffic).
+        "USER_AUTH_ENABLED": "false",
         "MODELS_CONFIG_PATH": _EXAMPLE_REGISTRY,
         "OPENROUTER_API_KEY": "sk-or-neutral-startup-dummy",
     }

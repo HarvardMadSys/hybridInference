@@ -28,7 +28,6 @@ BUILT_IN_DISPLAY_NAMES: dict[str, str] = {
     "featherless": "Featherless",
     "gemini": "Gemini",
     "kimi": "Kimi",
-    "kimi_coding": "Kimi (coding plan)",
     "minimax": "MiniMax",
     "ollama": "Ollama",
     "openai": "OpenAI",

@@ -37,15 +37,27 @@ have values** — `deploy/docker/docker-compose.yml` declares them with Compose'
 | `DB_USER` | **empty; you must fill it in** |
 | `DB_PASSWORD` | **empty; you must fill it in** |
 
-Two more are not enforced by Compose but should be set before anyone signs up:
-`JWT_SECRET_KEY` and `API_KEY_SECRET`. Both ship empty, and
-`apps/backend/serving/servers/app.py` logs a `CRITICAL` line and keeps running
-with insecure tokens and insecure API-key hashing if they stay that way.
-Generate each one:
+The backend also requires `JWT_SECRET_KEY` and `API_KEY_SECRET` at startup.
+Both ship empty; an empty or whitespace-only value stops startup before stores
+or background tasks are initialized. The error names the missing variables,
+never their values. Generate each secret separately:
 
 ```bash
 python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
+
+Save both values in your deployment's secret configuration and reuse them
+across replicas and restarts. On upgrade, check that both are present without
+replacing existing values: changing the JWT secret invalidates access tokens,
+and changing the API-key secret makes existing API-key hashes unverifiable.
+The gateway does not generate or rotate these secrets automatically.
+
+The only exemption is an explicitly database-free, auth-disabled gateway:
+`DB_ENABLED=false` **and** `USER_AUTH_ENABLED=false`, as in Stage 1 of the
+[Router Tutorial](router-tutorial.md). Disabling inference authentication alone
+does not disable database-backed login or API-key management, so both secrets
+are still required when the database is enabled. `ADMIN_TOKEN` remains optional;
+leaving it blank disables only legacy admin-token access.
 
 Then start the stack:
 
@@ -162,8 +174,8 @@ the default registry needs, everything in `.env.example` is optional. The ones y
 
 | Variable | Effect |
 |---|---|
-| `USER_AUTH_ENABLED` | `1` (default) requires an API key on `/v1/*`; `0` allows every request |
-| `ADMIN_TOKEN` | bearer token for the `/admin/*` endpoints |
+| `USER_AUTH_ENABLED` | `1` (default) requires user API keys for inference requests; `0` allows anonymous inference but does not disable account login or admin authentication |
+| `ADMIN_TOKEN` | optional legacy bearer token for the `/admin/*` endpoints; blank disables only this access path |
 | `DB_ENABLED` | `false` runs the gateway with no database |
 | `DB_STORE_FULL_CONTENT` | `false` (default) hashes prompts and responses instead of storing them |
 | `FRONTEND_URL` | absolute URL your users click in verification and reset emails |
@@ -192,6 +204,11 @@ route:
 `.env.example` ships blank placeholders for the providers this project has
 adapters or examples for; add your own names freely. The bundled default
 registry needs only `OPENROUTER_API_KEY`.
+
+Once a database is configured, keys can also be added from the admin console
+(**Providers → Keys**) with no restart; they join the same pool as the keys the
+registry names. See
+[Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console).
 
 ### Where the config files live
 

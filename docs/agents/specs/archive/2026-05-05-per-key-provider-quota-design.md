@@ -3,6 +3,8 @@
 **Date:** 2026-05-05
 **Status:** Approved
 
+> This is a partial historical reference, with deployment-specific setup and implementation instructions omitted.
+
 ## Problem
 
 The admin dashboard Providers > Quota tab shows one card per upstream provider,
@@ -18,14 +20,12 @@ provider name and renders a single card with sub-sections per key.
 
 ## Env Var Discovery
 
-Numbered suffix convention:
+Numbered suffix convention, illustrated with API keys:
 
 | Provider | Base env var | Additional keys |
 |----------|-------------|-----------------|
 | Chutes | `CHUTES_API_KEY` | `CHUTES_API_KEY2`, `CHUTES_API_KEY3`, ... |
 | ZAI | `ZAI_API_KEY` | `ZAI_API_KEY2`, `ZAI_API_KEY3`, ... |
-| MiniMax | `MINIMAX_SESSION_COOKIE` | `MINIMAX_SESSION_COOKIE2`, ... |
-| Ollama | `OLLAMA_SESSION_COOKIE` | `OLLAMA_SESSION_COOKIE2`, ... |
 
 Discovery: iterate `BASE + str(i)` for `i` in `[2, 3, ...]` until the env var
 is missing. The base var (`i=1` or no suffix) always counts as the first key.
@@ -54,8 +54,7 @@ When a provider has a single key, `key_index=None` and behavior is unchanged.
 Each fetcher is refactored into two layers:
 
 1. **Key discovery** — `_discover_keys(base_env, suffix_env)` returns a list of
-   `(index, key_value)` tuples. For cookie-based providers, the base env var
-   name differs (`*_SESSION_COOKIE`).
+   `(index, key_value)` tuples.
 
 2. **Per-key fetch** — the existing fetcher logic (HTTP call + parse) becomes
    an inner function `fetch_<provider>_for_key(key: str) -> ProviderQuotaResult`
@@ -73,7 +72,7 @@ Each fetcher is refactored into two layers:
 ```python
 def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, str]]:
     """Return (index, value) for all non-empty env vars.
-    
+
     index=1 for base_var, index=N for numbered_prefix+N.
     """
     keys: list[tuple[int, str]] = []

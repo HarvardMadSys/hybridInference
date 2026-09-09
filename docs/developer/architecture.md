@@ -247,7 +247,8 @@ overridden per route with `provider:` in the model registry. It is what
 admin disable switch targets. Two local vLLM boxes can carry different provider
 labels so their traffic stays in separate cohorts. A route may not borrow a
 label that `_make_adapter` already derives from a kind — `RESERVED_PROVIDER_LABELS`
-in `apps/backend/serving/servers/registry.py` rejects those.
+in `apps/backend/serving/servers/registry.py` rejects those, including kinds
+registered by startup extensions.
 
 `endpoint_id` is the unique key for *one endpoint of one model*, minted by
 `_make_provider_id` as `{model_id}:{location}`:
@@ -283,13 +284,15 @@ errors in a shape the router understands. Adapters live in
 | `anthropic.py` | `AnthropicAdapter` | The Anthropic Messages API directly |
 | `claude.py` | `ClaudeAdapter` | Claude served through Google Vertex |
 | `gemini.py` | `GeminiAdapter` | The Gemini API |
-| `coding_identity.py` | `CodingIdentityAdapter` | OpenAI-compatible providers that gate access on a coding-tool identity |
 
-`_make_adapter` maps a route's `kind:` onto one of these and pre-seeds
+`_make_adapter` first checks the factory table populated by explicitly enabled
+[backend extensions](configuration.md#backend-extensions). Without a registered
+factory, it maps a route's `kind:` onto a built-in adapter and pre-seeds
 provider-specific configuration — a usage profile, a non-standard chat path, or
-whether it is safe to send `stream_options: {include_usage: true}`. Adding a
-provider that is already OpenAI-compatible usually means adding a `kind` here
-rather than writing a new class; see [Adding a New Model](adding-models.md).
+whether it is safe to send `stream_options: {include_usage: true}`. An extension
+factory instead receives the configuration dictionary before those defaults.
+Adding a provider that is already OpenAI-compatible usually means selecting a
+profile, not writing a new class; see [Adding a New Model](adding-models.md).
 
 Key rotation is an adapter concern. When a route declares `api_keys:` (plural),
 `OpenAICompatAdapter` draws from a pool: a key that hits a key-specific or

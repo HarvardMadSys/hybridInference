@@ -470,7 +470,7 @@ and resolve before proceeding. (Settings cleanup is Task 3 — if `bootstrap.py:
 
 - [ ] **Step 1: Drop subscription settings from `serving/config/settings.py`**
 
-In `serving/config/settings.py`, delete lines 100–112 (the entire codex + claude_sub blocks). Replace this region:
+In `serving/config/settings.py`, remove the Codex and Claude subscription settings blocks shown below:
 
 ```python
     # Codex subscription
@@ -486,17 +486,7 @@ In `serving/config/settings.py`, delete lines 100–112 (the entire codex + clau
     claude_sub_token_refresh_margin: int = 300  # 5 min (tokens last ~1 hour)
     claude_sub_account_cooldown: int = 60
     claude_sub_failure_threshold: int = 3
-
-    # Provider quota cookies (admin dashboard "Providers" tab)
 ```
-
-with just the trailing comment + following content:
-
-```python
-    # Provider quota cookies (admin dashboard "Providers" tab)
-```
-
-(i.e., delete the 13 lines from `# Codex subscription` through the blank line after `claude_sub_failure_threshold: int = 3`.)
 
 - [ ] **Step 2: Edit `serving/schemas.py:65` — generic reasoning_effort comment**
 
@@ -681,7 +671,7 @@ In `.env.example`, delete line 37:
 CODEX_BASE_URL=https://chatgpt.com/backend-api/codex
 ```
 
-Also delete the blank line that immediately follows (line 38), so the file flows from `MINIMAX_GROUP_ID=` directly into `# Local self-hosted endpoints …`.
+Also delete the blank line that immediately follows (line 38), keeping one blank line before `# Local self-hosted endpoints …`.
 
 - [ ] **Step 3: Verify**
 

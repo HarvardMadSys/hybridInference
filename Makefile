@@ -259,7 +259,7 @@ DISTRIBUTION_COMPOSE_FILE := $(if $(DISTRIBUTION_PATH),$(wildcard $(DISTRIBUTION
 ifneq ($(DISTRIBUTION_COMPOSE_FILE),)
 COMPOSE_FILE_ARGS += -f $(DISTRIBUTION_COMPOSE_FILE)
 endif
-# Standalone cloud agent on the same host (freeinference-cloud-agent). Opting
+# Standalone cloud agent on the same host (hybridInference-cloud-agent). Opting
 # in attaches the console to that stack's network so the `/agents` rewrites
 # from #1206 can resolve `web` and `control-plane`; without it they resolve
 # nothing and the console answers 500 for a page it is configured to serve.

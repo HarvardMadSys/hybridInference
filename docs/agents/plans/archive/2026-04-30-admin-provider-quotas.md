@@ -1,14 +1,14 @@
 # Admin Dashboard — Provider Quotas Tab Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> This is a partial historical reference, with deployment-specific instructions omitted. Original task numbering is retained.
 
 **Goal:** Add a new "Providers" tab to the admin dashboard showing each upstream LLM provider's masked API key and live remaining quota (Chutes, ZAI, MiniMax, Ollama Cloud).
 
 **Architecture:** New `GET /admin/provider-quotas` endpoint runs 4 async fetchers in parallel via `asyncio.gather`, returns a unified shape; frontend renders a grid of provider cards on the new tab.
 
-**Tech Stack:** FastAPI, Pydantic, aiohttp (matches existing serving HTTP client convention), pytest with `unittest.mock.AsyncMock`, BeautifulSoup4 for HTML scraping (Ollama), Next.js + Tailwind for frontend.
+**Tech Stack:** FastAPI, Pydantic, aiohttp (matches existing serving HTTP client convention), pytest with `unittest.mock.AsyncMock`, Next.js + Tailwind for frontend.
 
-**Spec:** [docs/agents/specs/2026-04-30-admin-provider-quotas-design.md](docs/agents/specs/2026-04-30-admin-provider-quotas-design.md)
+**Spec:** [Admin Dashboard — Provider Quotas Tab](../../specs/archive/2026-04-30-admin-provider-quotas-design.md)
 
 ---
 
@@ -20,13 +20,10 @@
 - `test/servers/test_admin_provider_quotas.py` — backend tests
 
 **Modified files:**
-- `serving/config/settings.py` — add `minimax_session_cookie`, `ollama_session_cookie`
 - `serving/schemas_admin.py` — add `ProviderQuotaUsage`, `ProviderQuotaResult`, `AdminProviderQuotasResponse`
 - `serving/servers/routers/admin.py` — add `GET /admin/provider-quotas` route
 - `frontend/src/lib/api/admin.ts` — add types + `getProviderQuotas()`
 - `frontend/src/app/dashboard/admin/page.tsx` — add `providers` tab and UI
-- `pyproject.toml` — add `beautifulsoup4` dep
-- `.env.example` — document new env vars (if file exists; else create)
 
 ---
 
@@ -64,48 +61,6 @@ Expected: `On branch jason/claude/admin-provider-quotas`, HEAD at the latest dev
 
 ---
 
-## Task 1: Add cookie settings to Pydantic config
-
-**Files:**
-- Modify: `serving/config/settings.py`
-
-- [ ] **Step 1: Add `minimax_session_cookie` and `ollama_session_cookie` fields**
-
-Find the `# Claude subscription` block in `serving/config/settings.py` (around line 79). After the `claude_sub_failure_threshold` field, add a new block:
-
-```python
-    # Provider quota cookies (admin dashboard "Providers" tab)
-    # Pasted from browser DevTools after logging into the provider's web dashboard.
-    # Re-paste when the cookie expires.
-    minimax_session_cookie: str = ""
-    ollama_session_cookie: str = ""
-```
-
-- [ ] **Step 2: Verify the file imports cleanly**
-
-```bash
-cd /srv/hybridInference/.worktrees/admin-provider-quotas
-uv run python -c "from serving.config.settings import settings; print('minimax:', repr(settings.minimax_session_cookie)); print('ollama:', repr(settings.ollama_session_cookie))"
-```
-
-Expected: prints both as `''` (empty string defaults).
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add serving/config/settings.py
-git commit -m "feat(admin): add cookie env vars for MiniMax/Ollama quota fetchers
-
-Two new env vars (MINIMAX_SESSION_COOKIE, OLLAMA_SESSION_COOKIE) used
-by the upcoming provider-quotas admin endpoint. Both default to empty
-string; admin pastes them from browser DevTools and re-pastes when
-they expire.
-
-Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
-```
-
----
-
 ## Task 2: Add Pydantic schemas for the response
 
 **Files:**
@@ -135,7 +90,7 @@ class ProviderQuotaResult(BaseModel):
     name: str = Field(..., description="Lowercase identifier: chutes | zai | minimax | ollama")
     display_name: str = Field(..., description="Human-readable name")
     key_configured: bool = Field(..., description="True if credentials are present in env")
-    key_masked: str | None = Field(None, description="Masked key/cookie (None if not configured)")
+    key_masked: str | None = Field(None, description="Masked credential (None if not configured)")
     fetched_at: datetime | None = Field(None, description="When the quota was fetched (UTC)")
     ok: bool = Field(..., description="True if quota fetch succeeded")
     error: str | None = Field(
@@ -217,12 +172,6 @@ class TestMaskKey:
     def test_short_key_returns_placeholder(self):
         assert _mask_key("short") == "***configured***"
 
-    def test_long_cookie_string_gets_masked(self):
-        cookie = "session=abc123def456ghi789jkl012mno345"
-        result = _mask_key(cookie)
-        assert result.startswith("session=")
-        assert "..." in result
-        assert len(result) == 8 + 3 + 4
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -254,7 +203,7 @@ from __future__ import annotations
 
 
 def _mask_key(key: str) -> str:
-    """Mask an API key or cookie for display.
+    """Mask an API key for display.
 
     Returns first 8 + '...' + last 4 if key is at least 16 chars; otherwise
     returns a generic placeholder so we never leak short secrets.
@@ -270,7 +219,7 @@ def _mask_key(key: str) -> str:
 uv run pytest test/servers/test_admin_provider_quotas.py -v
 ```
 
-Expected: all 5 tests pass.
+Expected: all 4 tests pass.
 
 - [ ] **Step 6: Commit**
 
@@ -703,450 +652,6 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 ---
 
-## Task 6: Implement MiniMax fetcher (TDD)
-
-**Files:**
-- Modify: `serving/admin/provider_quotas.py`
-- Modify: `test/servers/test_admin_provider_quotas.py`
-
-- [ ] **Step 1: Append failing tests for `fetch_minimax`**
-
-```python
-from serving.admin.provider_quotas import fetch_minimax
-
-
-class TestFetchMinimax:
-    @pytest.mark.asyncio
-    async def test_not_configured_when_cookie_missing(self, monkeypatch):
-        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
-        result = await fetch_minimax()
-        assert result.ok is False
-        assert result.error == "not_configured"
-        assert result.name == "minimax"
-
-    @pytest.mark.asyncio
-    async def test_auth_failed_on_cookie_rejected(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
-        # MiniMax returns HTTP 200 with status_code 1004 in body when cookie missing
-        payload = {"base_resp": {"status_code": 1004, "status_msg": "cookie is missing, log in again"}}
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=200, json_data=payload)):
-            result = await fetch_minimax()
-        assert result.ok is False
-        assert result.error == "auth_failed"
-
-    @pytest.mark.asyncio
-    async def test_success_parses_remains(self, monkeypatch):
-        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
-        payload = {
-            "base_resp": {"status_code": 0, "status_msg": "success"},
-            "data": {
-                "model_remains": [
-                    {
-                        "model_name": "MiniMax-M2.7",
-                        "remain_count": 720,
-                        "total_count": 1000,
-                        "start_time": "2026-04-29T00:00:00Z",
-                        "end_time": "2026-04-30T00:00:00Z",
-                    }
-                ]
-            },
-        }
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=_mock_aiohttp_get(status=200, json_data=payload)):
-            result = await fetch_minimax()
-        assert result.ok is True
-        assert len(result.usages) >= 1
-        u = result.usages[0]
-        # used = total - remain
-        assert u.used == 280.0
-        assert u.limit == 1000.0
-```
-
-- [ ] **Step 2: Run to verify failure**
-
-```bash
-uv run pytest test/servers/test_admin_provider_quotas.py::TestFetchMinimax -v
-```
-
-Expected: ImportError.
-
-- [ ] **Step 3: Implement `fetch_minimax`**
-
-Append to `serving/admin/provider_quotas.py`:
-
-```python
-async def fetch_minimax() -> ProviderQuotaResult:
-    """Fetch coding-plan quota from MiniMax via cookie-authed endpoint.
-
-    The endpoint requires browser session cookies; API key auth returns
-    `{"base_resp": {"status_code": 1004, "status_msg": "cookie missing"}}`.
-    """
-    cookie = os.getenv("MINIMAX_SESSION_COOKIE", "")
-    if not cookie:
-        return ProviderQuotaResult(
-            name="minimax",
-            display_name="MiniMax",
-            key_configured=False,
-            key_masked=None,
-            fetched_at=_now(),
-            ok=False,
-            error="not_configured",
-            usages=[],
-        )
-
-    url = "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains"
-    headers = {"Cookie": cookie}
-    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
-
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status in (401, 403):
-                    return _err("minimax", "MiniMax", cookie, "auth_failed")
-                if resp.status >= 400:
-                    return _err("minimax", "MiniMax", cookie, "unexpected")
-                try:
-                    data: dict[str, Any] = await resp.json()
-                except Exception:
-                    return _err("minimax", "MiniMax", cookie, "parse_error")
-    except asyncio.TimeoutError:
-        return _err("minimax", "MiniMax", cookie, "timeout")
-    except aiohttp.ClientError:
-        return _err("minimax", "MiniMax", cookie, "unexpected")
-    except Exception:
-        logger.exception("fetch_minimax: unexpected error")
-        return _err("minimax", "MiniMax", cookie, "unexpected")
-
-    base_resp = data.get("base_resp") if isinstance(data.get("base_resp"), dict) else None
-    if base_resp and base_resp.get("status_code") == 1004:
-        return _err("minimax", "MiniMax", cookie, "auth_failed")
-    if base_resp and base_resp.get("status_code") not in (None, 0):
-        return _err("minimax", "MiniMax", cookie, "unexpected")
-
-    body = data.get("data") if isinstance(data.get("data"), dict) else data
-    model_remains = body.get("model_remains") if isinstance(body, dict) else None
-    if not isinstance(model_remains, list) or not model_remains:
-        return _err("minimax", "MiniMax", cookie, "parse_error")
-
-    usages: list[ProviderQuotaUsage] = []
-    for entry in model_remains:
-        if not isinstance(entry, dict):
-            continue
-        model_name = str(entry.get("model_name", "Coding plan"))
-        remain = entry.get("remain_count")
-        total = entry.get("total_count")
-        end = entry.get("end_time")
-        reset_dt = None
-        if isinstance(end, str):
-            try:
-                reset_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
-            except ValueError:
-                reset_dt = None
-        used = None
-        if isinstance(remain, (int, float)) and isinstance(total, (int, float)):
-            used = float(total - remain)
-        usages.append(
-            ProviderQuotaUsage(
-                label=model_name,
-                used=used,
-                limit=float(total) if isinstance(total, (int, float)) else None,
-                unit="requests",
-                reset_at=reset_dt,
-            )
-        )
-
-    if not usages:
-        return _err("minimax", "MiniMax", cookie, "parse_error")
-
-    return ProviderQuotaResult(
-        name="minimax",
-        display_name="MiniMax",
-        key_configured=True,
-        key_masked=_mask_key(cookie),
-        fetched_at=_now(),
-        ok=True,
-        error=None,
-        usages=usages,
-    )
-```
-
-- [ ] **Step 4: Run tests**
-
-```bash
-uv run pytest test/servers/test_admin_provider_quotas.py::TestFetchMinimax -v
-```
-
-Expected: all 3 tests pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add serving/admin/provider_quotas.py test/servers/test_admin_provider_quotas.py
-git commit -m "feat(admin): add MiniMax provider quota fetcher
-
-Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
-```
-
----
-
-## Task 7: Add `beautifulsoup4` dependency
-
-**Files:**
-- Modify: `pyproject.toml`
-
-- [ ] **Step 1: Add `beautifulsoup4` to dependencies**
-
-Open `pyproject.toml`, locate the main `dependencies = [...]` list (around line 14), and add (in alphabetical position):
-
-```
-    "beautifulsoup4>=4.12.0",
-```
-
-- [ ] **Step 2: Sync the lockfile**
-
-```bash
-cd /srv/hybridInference/.worktrees/admin-provider-quotas
-uv lock
-```
-
-Expected: `uv.lock` is updated to include `beautifulsoup4`.
-
-- [ ] **Step 3: Verify it imports**
-
-```bash
-uv run python -c "from bs4 import BeautifulSoup; print(BeautifulSoup('<p>hi</p>', 'html.parser').get_text())"
-```
-
-Expected: prints `hi`.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add pyproject.toml uv.lock
-git commit -m "chore(deps): add beautifulsoup4 for Ollama settings page scrape
-
-Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
-```
-
----
-
-## Task 8: Implement Ollama fetcher (TDD)
-
-**Files:**
-- Modify: `serving/admin/provider_quotas.py`
-- Modify: `test/servers/test_admin_provider_quotas.py`
-
-The Ollama settings page exact HTML structure is unknown without a logged-in session. The fetcher uses a defensive parser that looks for usage figures by text proximity (e.g., "session", "weekly", "of"). If the parser can't find usage data, it returns `parse_error`. The admin can paste their cookie and check the resulting error to know if the parser needs updating.
-
-- [ ] **Step 1: Append failing tests for `fetch_ollama`**
-
-```python
-from serving.admin.provider_quotas import fetch_ollama
-
-
-class TestFetchOllama:
-    @pytest.mark.asyncio
-    async def test_not_configured_when_cookie_missing(self, monkeypatch):
-        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
-        result = await fetch_ollama()
-        assert result.ok is False
-        assert result.error == "not_configured"
-        assert result.name == "ollama"
-
-    @pytest.mark.asyncio
-    async def test_redirected_to_login_returns_auth_failed(self, monkeypatch):
-        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
-        # If cookie is invalid, ollama.com redirects to a sign-in page.
-        # We simulate by returning HTML with no usage data and a sign-in link.
-        html = "<html><body><a href='/signin'>Sign in</a></body></html>"
-        response_mock = MagicMock()
-        response_mock.status = 200
-        response_mock.text = AsyncMock(return_value=html)
-        response_mock.json = AsyncMock(return_value={})
-        cm = MagicMock()
-        cm.__aenter__ = AsyncMock(return_value=response_mock)
-        cm.__aexit__ = AsyncMock(return_value=None)
-        session = MagicMock()
-        session.get = MagicMock(return_value=cm)
-        session_cm = MagicMock()
-        session_cm.__aenter__ = AsyncMock(return_value=session)
-        session_cm.__aexit__ = AsyncMock(return_value=None)
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=session_cm):
-            result = await fetch_ollama()
-        assert result.ok is False
-        assert result.error in ("auth_failed", "parse_error")
-
-    @pytest.mark.asyncio
-    async def test_parses_session_and_weekly_usage(self, monkeypatch):
-        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
-        # Simulated HTML with the usage labels we look for.
-        html = """
-        <html><body>
-          <h2>Usage</h2>
-          <div>Session usage: 42 of 100 requests</div>
-          <div>Weekly usage: 320 of 5000 requests</div>
-        </body></html>
-        """
-        response_mock = MagicMock()
-        response_mock.status = 200
-        response_mock.text = AsyncMock(return_value=html)
-        response_mock.json = AsyncMock(return_value={})
-        cm = MagicMock()
-        cm.__aenter__ = AsyncMock(return_value=response_mock)
-        cm.__aexit__ = AsyncMock(return_value=None)
-        session = MagicMock()
-        session.get = MagicMock(return_value=cm)
-        session_cm = MagicMock()
-        session_cm.__aenter__ = AsyncMock(return_value=session)
-        session_cm.__aexit__ = AsyncMock(return_value=None)
-        with patch("serving.admin.provider_quotas.aiohttp.ClientSession", return_value=session_cm):
-            result = await fetch_ollama()
-        assert result.ok is True
-        assert len(result.usages) >= 2
-        labels = [u.label.lower() for u in result.usages]
-        assert any("session" in label for label in labels)
-        assert any("week" in label for label in labels)
-        session_use = next(u for u in result.usages if "session" in u.label.lower())
-        assert session_use.used == 42.0
-        assert session_use.limit == 100.0
-```
-
-- [ ] **Step 2: Run to verify failure**
-
-```bash
-uv run pytest test/servers/test_admin_provider_quotas.py::TestFetchOllama -v
-```
-
-Expected: ImportError on `fetch_ollama`.
-
-- [ ] **Step 3: Implement `fetch_ollama`**
-
-Append to `serving/admin/provider_quotas.py`:
-
-```python
-import re
-
-from bs4 import BeautifulSoup
-
-
-_USAGE_PATTERN = re.compile(
-    r"(?P<label>session|weekly|monthly|daily)\s+usage[:\s]+(?P<used>[\d,]+)\s+of\s+(?P<limit>[\d,]+)\s+(?P<unit>requests?|tokens?|messages?)",
-    re.IGNORECASE,
-)
-
-
-async def fetch_ollama() -> ProviderQuotaResult:
-    """Scrape Ollama Cloud usage from the settings page (cookie-authenticated).
-
-    Ollama exposes no quota API; we GET https://ollama.com/settings with the
-    admin's session cookie and parse usage figures from the HTML. If the
-    page structure changes, the fetcher returns parse_error so the admin
-    knows the parser needs updating.
-    """
-    cookie = os.getenv("OLLAMA_SESSION_COOKIE", "")
-    if not cookie:
-        return ProviderQuotaResult(
-            name="ollama",
-            display_name="Ollama Cloud",
-            key_configured=False,
-            key_masked=None,
-            fetched_at=_now(),
-            ok=False,
-            error="not_configured",
-            usages=[],
-        )
-
-    url = "https://ollama.com/settings"
-    headers = {
-        "Cookie": cookie,
-        "User-Agent": "Mozilla/5.0 (compatible; freeinference-admin/1.0)",
-        "Accept": "text/html,application/xhtml+xml",
-    }
-    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
-
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers, allow_redirects=False) as resp:
-                if resp.status in (301, 302, 303, 307, 308, 401, 403):
-                    return _err("ollama", "Ollama Cloud", cookie, "auth_failed")
-                if resp.status >= 400:
-                    return _err("ollama", "Ollama Cloud", cookie, "unexpected")
-                html = await resp.text()
-    except asyncio.TimeoutError:
-        return _err("ollama", "Ollama Cloud", cookie, "timeout")
-    except aiohttp.ClientError:
-        return _err("ollama", "Ollama Cloud", cookie, "unexpected")
-    except Exception:
-        logger.exception("fetch_ollama: unexpected error")
-        return _err("ollama", "Ollama Cloud", cookie, "unexpected")
-
-    usages = _parse_ollama_html(html)
-    if not usages:
-        # Authenticated pages have usage figures; their absence usually
-        # means cookie expired and we got a sign-in page instead.
-        if "sign in" in html.lower() or "login" in html.lower():
-            return _err("ollama", "Ollama Cloud", cookie, "auth_failed")
-        return _err("ollama", "Ollama Cloud", cookie, "parse_error")
-
-    return ProviderQuotaResult(
-        name="ollama",
-        display_name="Ollama Cloud",
-        key_configured=True,
-        key_masked=_mask_key(cookie),
-        fetched_at=_now(),
-        ok=True,
-        error=None,
-        usages=usages,
-    )
-
-
-def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
-    """Best-effort extraction of usage figures from the Ollama settings page.
-
-    Looks for text matches like 'Session usage: 42 of 100 requests'. Returns
-    empty list if no recognizable usage rows found.
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text(" ", strip=True)
-    usages: list[ProviderQuotaUsage] = []
-    for match in _USAGE_PATTERN.finditer(text):
-        try:
-            used = float(match.group("used").replace(",", ""))
-            limit = float(match.group("limit").replace(",", ""))
-        except ValueError:
-            continue
-        unit = match.group("unit").lower().rstrip("s") + "s"  # normalize plural
-        label = f"{match.group('label').capitalize()} usage"
-        usages.append(
-            ProviderQuotaUsage(
-                label=label,
-                used=used,
-                limit=limit,
-                unit=unit,
-                reset_at=None,
-            )
-        )
-    return usages
-```
-
-- [ ] **Step 4: Run tests**
-
-```bash
-uv run pytest test/servers/test_admin_provider_quotas.py::TestFetchOllama -v
-```
-
-Expected: all 3 tests pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add serving/admin/provider_quotas.py test/servers/test_admin_provider_quotas.py
-git commit -m "feat(admin): add Ollama Cloud quota scraper (HTML parse)
-
-Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
-```
-
----
-
 ## Task 9: Add the admin route (TDD)
 
 **Files:**
@@ -1156,43 +661,12 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Append failing test for `gather_all` aggregator**
 
-Add to `test/servers/test_admin_provider_quotas.py`:
+Add aggregator tests to `test/servers/test_admin_provider_quotas.py` that stub all provider fetchers:
 
-```python
-from serving.admin.provider_quotas import gather_all
+- Verify all four provider results are returned when each stub reports `not_configured`.
+- Make one stub raise and verify it becomes an `unexpected` result while the other results remain available.
 
-
-class TestGatherAll:
-    @pytest.mark.asyncio
-    async def test_gather_all_returns_four_results_even_if_one_raises(self, monkeypatch):
-        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
-        monkeypatch.delenv("ZAI_API_KEY", raising=False)
-        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
-
-        results = await gather_all()
-        assert len(results) == 4
-        names = {r.name for r in results}
-        assert names == {"chutes", "zai", "minimax", "ollama"}
-        assert all(r.error == "not_configured" for r in results)
-
-    @pytest.mark.asyncio
-    async def test_gather_all_handles_unexpected_exception(self, monkeypatch):
-        async def boom():
-            raise RuntimeError("simulated failure")
-
-        # Patch one fetcher to raise; the gather should still return 4 results
-        monkeypatch.setattr("serving.admin.provider_quotas.fetch_chutes", boom)
-        monkeypatch.delenv("ZAI_API_KEY", raising=False)
-        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
-
-        results = await gather_all()
-        assert len(results) == 4
-        chutes = next(r for r in results if r.name == "chutes")
-        assert chutes.ok is False
-        assert chutes.error == "unexpected"
-```
+Keep these tests independent of operator credentials and outbound HTTP calls.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1258,64 +732,12 @@ Expected: 2 tests pass.
 
 - [ ] **Step 5: Append failing test for the admin route**
 
-```python
-class TestProviderQuotasRoute:
-    @pytest.mark.asyncio
-    async def test_route_requires_admin_auth(self, admin_client):
-        # No Authorization header → 401
-        resp = await admin_client.get("/admin/provider-quotas")
-        assert resp.status_code == 401
+Use the existing admin auth fixtures in `test/servers/` and stub `gather_all` with a fixed response:
 
-    @pytest.mark.asyncio
-    async def test_route_returns_aggregated_response(self, admin_client, monkeypatch, admin_jwt_header):
-        # Wire all four env vars away → all return not_configured
-        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
-        monkeypatch.delenv("ZAI_API_KEY", raising=False)
-        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+- A request without admin credentials returns HTTP 401.
+- An authenticated request returns HTTP 200, `generated_at`, and the stubbed provider results.
 
-        resp = await admin_client.get("/admin/provider-quotas", headers=admin_jwt_header)
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "generated_at" in body
-        assert len(body["providers"]) == 4
-        assert {p["name"] for p in body["providers"]} == {"chutes", "zai", "minimax", "ollama"}
-```
-
-The `admin_client` and `admin_jwt_header` fixtures should already exist in `test/servers/conftest_auth.py` or `test_admin.py`. Inspect those before running:
-
-```bash
-grep -rn "admin_jwt_header\|admin_client" test/servers/conftest*.py test/servers/test_admin*.py | head -10
-```
-
-If `admin_jwt_header` doesn't exist by that exact name, find the equivalent (e.g. `admin_token_header`, or a fixture that returns `{"Authorization": "Bearer <token>"}`) and use the existing one. Update the test code to match. **Do not invent fixtures** — adapt to whatever the conftest provides.
-
-If no admin auth fixture exists, replace the second test with a simpler one that mocks `verify_admin_access`:
-
-```python
-    @pytest.mark.asyncio
-    async def test_route_returns_aggregated_response(self, admin_app, monkeypatch):
-        from httpx import ASGITransport, AsyncClient
-        from serving.servers.deps import verify_admin_access
-
-        async def _fake_admin(*args, **kwargs):
-            return "admin@test"
-
-        admin_app.dependency_overrides[verify_admin_access] = _fake_admin
-
-        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
-        monkeypatch.delenv("ZAI_API_KEY", raising=False)
-        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
-
-        transport = ASGITransport(app=admin_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/admin/provider-quotas")
-        admin_app.dependency_overrides.clear()
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body["providers"]) == 4
-```
+Do not rely on provider environment variables or make outbound HTTP calls in route tests.
 
 - [ ] **Step 6: Run to verify failure**
 
@@ -1737,43 +1159,6 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 ---
 
-## Task 12: Document the new env vars
-
-**Files:**
-- Modify: `.env.example` (or create if missing)
-
-- [ ] **Step 1: Check if `.env.example` exists**
-
-```bash
-ls /srv/hybridInference/.worktrees/admin-provider-quotas/.env.example 2>&1 || echo MISSING
-```
-
-If MISSING, just skip this task (the cookie env vars are documented in the spec and in the settings.py docstring).
-
-- [ ] **Step 2: If it exists, append a new section**
-
-Append to `.env.example`:
-
-```
-# ====== Admin Dashboard: Provider Quotas Tab ======
-# Browser session cookies pasted from DevTools after logging in.
-# Used by the Admin Dashboard "Providers" tab to fetch live quota.
-# Re-paste when these expire.
-MINIMAX_SESSION_COOKIE=
-OLLAMA_SESSION_COOKIE=
-```
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add .env.example
-git commit -m "docs: document MINIMAX_SESSION_COOKIE and OLLAMA_SESSION_COOKIE
-
-Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
-```
-
----
-
 ## Task 13: Manual verification
 
 **Files:** none.
@@ -1853,10 +1238,9 @@ gh pr create --base dev --title "feat(admin): provider quotas tab" --body "$(cat
 ## Summary
 - New "Providers" tab in admin dashboard showing masked API key + live quota for Chutes, ZAI, MiniMax, Ollama Cloud
 - Backend endpoint `GET /admin/provider-quotas` aggregates 4 async fetchers in parallel; never returns 500 from a provider failure
-- Two new env vars: `MINIMAX_SESSION_COOKIE`, `OLLAMA_SESSION_COOKIE` (browser session cookies, since those providers require cookie auth)
 
 ## Spec
-- `docs/agents/specs/2026-04-30-admin-provider-quotas-design.md`
+- `docs/agents/specs/archive/2026-04-30-admin-provider-quotas-design.md`
 
 ## Test plan
 - [ ] `make test` passes locally
@@ -1880,16 +1264,15 @@ Print the URL returned by `gh pr create`.
 After implementing every task above, verify against the spec:
 
 - [ ] **Spec coverage**
-  - Section 2 (per-provider fetcher): Tasks 4–8 implement all four
+  - Per-provider fetchers: Tasks 4–5 cover the API-key examples retained here
   - Section 3 (backend endpoint and data shape): Tasks 2 + 9
   - Section 4 (frontend tab): Tasks 10–11
-  - Section 5 (error handling, testing, security): covered across Tasks 4–9 (each fetcher has explicit timeout/auth/parse tests; the route never raises)
-  - Configuration changes: Tasks 1 + 12
+  - Error handling, testing, security: Tasks 4, 5, and 9 cover timeout/auth/parse handling and aggregation
 
 - [ ] **Type consistency**
   - Backend `ProviderQuotaResult` ↔ frontend `ProviderQuotaResult` field-by-field match (`name`, `display_name`, `key_configured`, `key_masked`, `fetched_at`, `ok`, `error`, `usages`)
-  - Function names: `fetch_chutes`, `fetch_zai`, `fetch_minimax`, `fetch_ollama`, `gather_all`, `_mask_key`, `_err`, `_now`, `_parse_chutes_usage`, `_parse_ollama_html` — all referenced consistently
+  - Function names: `fetch_chutes`, `fetch_zai`, `fetch_minimax`, `fetch_ollama`, `gather_all`, `_mask_key`, `_err`, `_now`, `_parse_chutes_usage` — all referenced consistently
   - Tab names: `'users' | 'requests' | 'providers' | 'audit'` consistent across `useState` type, `onTabChange` signature, URL parsing, and tab-button list
-  - Env var names: `CHUTES_API_KEY`, `ZAI_API_KEY`, `MINIMAX_SESSION_COOKIE`, `OLLAMA_SESSION_COOKIE` — same in code and tests
+  - API-key env var names: `CHUTES_API_KEY`, `ZAI_API_KEY` — same in code and tests
 
-- [ ] **No placeholders** — every step contains either real code, a real command, or a documented decision (e.g., the `admin_jwt_header` fixture lookup in Task 9 step 5 explicitly tells the engineer how to adapt to whatever exists).
+- [ ] **Test isolation** — aggregator and route tests use stubs and do not depend on operator credentials.

@@ -29,6 +29,7 @@ from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
+from serving.extensions import load_backend_extensions
 from serving.http import AsyncHTTPClient
 from serving.servers.routewise_compat import (
     EnvelopeNotCalibratedError,
@@ -47,7 +48,7 @@ from serving.utils.logging import get_logger, setup_logging
 
 from .concurrency import UserConcurrencyLimiter
 from .deps import AppServices, database_enabled
-from .registry import ModelRegistrationInfo, register_from_models_yaml
+from .registry import EmbeddingsPathConfigError, ModelRegistrationInfo, register_from_models_yaml
 from .routewise_rebuild import rebuild_cached_routewise_routers
 
 if TYPE_CHECKING:
@@ -576,6 +577,10 @@ async def _init_router_and_models(
                 "or copy one of the files in config/examples/ to that path.",
                 models_path,
             )
+    except EmbeddingsPathConfigError:
+        # A rejected explicit path must abort startup, not leave the server
+        # running on whatever models were registered before the bad entry.
+        raise
     except Exception as exc:
         logger.warning(f"Failed to load models.yaml: {exc}")
 
@@ -627,6 +632,7 @@ async def initialize() -> AppServices:
     # Load environment first so logging picks up LOG_FORMAT/LOG_LEVEL.
     load_dotenv()
     setup_logging()
+    load_backend_extensions()
 
     if os.environ.get("EXPERIMENT_MODE"):
         logger.warning(

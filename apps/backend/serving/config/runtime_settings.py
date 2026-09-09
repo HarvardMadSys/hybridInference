@@ -26,7 +26,7 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
     "user_auth_enabled": {
         "type": "bool",
         "default": True,
-        "description": "Enable user authentication (JWT-based)",
+        "description": "Require user API keys for inference requests (does not disable account login)",
     },
     "signup_enabled": {
         "type": "bool",
@@ -89,17 +89,6 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "the whole budget on hidden reasoning and return empty content. "
             "Tool-permission/safety-check calls are never rerouted regardless of "
             "this setting. Off by default."
-        ),
-    },
-    "coding_identity_enabled": {
-        "type": "bool",
-        "default": True,
-        "description": (
-            "Inject the coding-tool identity on coding-plan requests (Kimi "
-            "coding plan and Z.AI GLM coding plan): set User-Agent: "
-            "claude-code/0.1.0 and prepend a 'You are OpenCode' system message. "
-            "Disable to forward the caller's own User-Agent and skip the system "
-            "message."
         ),
     },
     "user_concurrency_free": {

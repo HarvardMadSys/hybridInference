@@ -177,6 +177,11 @@ overrode it — and complete the browser flow:
    the example's explicit `ADMIN_EMAILS` value in
    `distributions/example/deploy/docker-compose.demo.yml`.
 
+The **Providers** and **Routing** tabs are where a provider, a key or a model
+is added to a running gateway;
+[Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console)
+walks through them.
+
 The UI and API share one origin. Requests to `/v1`, `/auth`, `/user`, and
 `/admin` on port `13001` are rewritten by the frontend to the backend inside
 the Compose network (`apps/frontend/next.config.js`).

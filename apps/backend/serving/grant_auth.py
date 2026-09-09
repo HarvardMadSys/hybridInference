@@ -36,11 +36,15 @@ account exactly like any other traffic, attributed via
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from serving import grants, quota
 from serving.model_access import get_disabled_models_from_preferences
 from serving.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 logger = get_logger(__name__)
 
@@ -250,3 +254,40 @@ async def _active_subject(op_store: Any, user_id: str) -> dict[str, Any]:
     if user is None or user.get("status") != "active":
         raise AgentModelAuthError("This account may not call models.", status_code=403)
     return user
+
+
+#: Version of the ledger attribution written into ``api_logs.metadata`` for a
+#: grant-authenticated request. Bumped if the meaning of a key changes, so a
+#: window query can tell rows written under an older convention apart from
+#: rows that carry none.
+LEDGER_ATTRIBUTION_VERSION = 1
+
+#: ``agent_job_id`` stays a column: the cost report and its partial index key
+#: on it. The rest is read back from ``metadata`` by the usage window query.
+METADATA_GRANT_ID = "agent_grant_id"
+METADATA_REQUEST_STARTED_AT = "request_started_at"
+METADATA_ATTRIBUTION_VERSION = "attribution_version"
+
+
+def ledger_attribution(user_ctx: Mapping[str, Any] | None, *, started_at: float) -> dict[str, Any]:
+    """Return the metadata keys that tie an ``api_logs`` row to one grant.
+
+    Empty for anything but a grant-authenticated request, so ordinary traffic
+    gains no keys. ``started_at`` is the handler's own wall-clock start
+    (``time.time()``): ``api_logs.timestamp`` is the insert time of a write
+    scheduled after the response completed, and a window keyed on it would
+    misplace every request that was still running when the window closed.
+    """
+    if not user_ctx:
+        return {}
+    grant_id = user_ctx.get("agent_grant_id")
+    if not grant_id:
+        return {}
+    attribution: dict[str, Any] = {
+        METADATA_GRANT_ID: grant_id,
+        METADATA_REQUEST_STARTED_AT: datetime.fromtimestamp(started_at, tz=UTC).isoformat(),
+        METADATA_ATTRIBUTION_VERSION: LEDGER_ATTRIBUTION_VERSION,
+    }
+    if user_ctx.get("agent_job_id"):
+        attribution["agent_job_id"] = user_ctx["agent_job_id"]
+    return attribution
