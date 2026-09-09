@@ -71,14 +71,12 @@ ATTRIBUTION: dict[str, str] = {
         "it out — one deployment of this software is not the software"
     ),
     ".github/ISSUE_TEMPLATE/config.yml": (
-        "the Discussions and advisory URLs, and a contact link routing "
-        "FreeInference service questions to their operator — the same scoping "
-        "SECURITY.md does, at the point where a reporter picks a form"
+        "links to this repository's Discussions and private vulnerability "
+        "reporting, so contributors can reach the appropriate project channel"
     ),
     ".github/ISSUE_TEMPLATE/bug_report.yml": (
-        "the advisory URL, and the deployment dropdown that separates a "
-        "self-hosted instance from the public one — the distinction the "
-        "triager needs, so naming it is the feature"
+        "links to this repository's private vulnerability reporting so "
+        "security reports do not go into public bug reports"
     ),
     ".github/ISSUE_TEMPLATE/feature_request.yml": (
         "links directly to this repository's RFC form so contributors can "

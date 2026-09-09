@@ -5,29 +5,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        Report HybridInference gateway and console bugs from any deployment,
-        including FreeInference, here. For FreeInference account, quota or
-        model-access support, use the email in section 10 (Contact) of its
-        [service terms](https://freeinference.org/terms).
+        Use this form to report bugs in HybridInference's gateway or console.
 
         Please redact credentials, API keys and cookies from anything you paste.
         For a security vulnerability, use
         [private reporting](https://github.com/HarvardMadSys/hybridInference/security/advisories/new)
         instead of this form.
-
-  - type: dropdown
-    id: deployment
-    attributes:
-      label: Which deployment is this?
-      description: >-
-        Where did you observe the software defect? FreeInference is a public
-        service built with HybridInference.
-      options:
-        - Self-hosted (my own instance)
-        - FreeInference (the public service)
-        - Not sure
-    validations:
-      required: true
 
   - type: input
     id: version
