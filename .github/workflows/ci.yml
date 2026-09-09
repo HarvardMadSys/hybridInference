@@ -625,6 +625,11 @@ jobs:
           # with shallow clones on the self-hosted runner pool.
           fetch-depth: 0
 
+      # Same-user self-hosted runners share Buildx default builder state.
+      # Keep builds, retries, Compose, and post-step cleanup within each job.
+      - name: Isolate the Buildx config per job
+        run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -749,6 +754,9 @@ jobs:
             echo "EXAMPLE_RESET_STATE_FILE=${RUNNER_TEMP}/hi-tutorial-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-reset.json"
           } >> "${GITHUB_ENV}"
           echo "frontend_port=${frontend_port}" >> "${GITHUB_OUTPUT}"
+
+      - name: Isolate the Buildx config per job
+        run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -1224,6 +1232,9 @@ jobs:
           # with shallow clones on the self-hosted runner pool.
           fetch-depth: 0
 
+      - name: Isolate the Buildx config per job
+        run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
+
       - name: Set up Docker Buildx
         if: needs.publish-backend-precheck.outputs.existing == ''
         uses: docker/setup-buildx-action@v3
@@ -1277,6 +1288,9 @@ jobs:
         if: needs.publish-backend-precheck.outputs.existing == ''
         with:
           fetch-depth: 0
+
+      - name: Isolate the Buildx config per job
+        run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
 
       - name: Set up Docker Buildx
         if: needs.publish-backend-precheck.outputs.existing == ''
@@ -1428,6 +1442,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Isolate the Buildx config per job
+        run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
+
       - name: Set up Docker Buildx
         if: needs.publish-console-precheck.outputs.existing == ''
         uses: docker/setup-buildx-action@v3
@@ -1492,6 +1509,9 @@ jobs:
         if: needs.publish-console-precheck.outputs.existing == ''
         with:
           fetch-depth: 0
+
+      - name: Isolate the Buildx config per job
+        run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
 
       - name: Set up Docker Buildx
         if: needs.publish-console-precheck.outputs.existing == ''
