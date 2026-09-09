@@ -611,3 +611,375 @@ def test_usage_without_a_ledger_says_so_rather_than_reporting_zero(store: FakeSt
     response = http.get(f"/internal/agent-grants/{grant_id}/usage", headers=AUTH)
     assert response.status_code == 503
     assert response.json()["error"]["type"] == "ledger_unavailable"
+
+
+# ---------------------------------------------------------------------------
+# Usage over a window — what a retained thread needs to attribute one turn
+# ---------------------------------------------------------------------------
+
+T0 = datetime(2026, 9, 9, 7, 0, tzinfo=UTC)
+T1 = T0 + timedelta(seconds=60)
+_METRICS = ("tokens_in", "tokens_out", "cache_read", "cache_write", "reasoning", "spent_usd")
+
+
+class FakeWindowLedger(FakeLedger):
+    """The two window reads, over rows shaped like ``api_logs``.
+
+    The fake keeps the *report's* contract — sums over rows that carry a
+    metric, counts of rows that do not — so the route is tested against the
+    same shape the Postgres store returns. The SQL itself is covered by the
+    integration test.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.window_rows: list[dict[str, Any]] = []
+        self.queries: list[dict[str, Any]] = []
+
+    def _select(self, job: str, grant: str, since: datetime, until: datetime) -> list[dict]:
+        rows = [
+            r
+            for r in self.window_rows
+            if r["job"] == job and r["grant"] == grant and since <= r["started_at"] < until
+        ]
+        return sorted(rows, key=lambda r: (r["started_at"], r["request_id"]))
+
+    async def get_agent_grant_usage(self, *, agent_job_id, grant_id, since, until):
+        self.queries.append(
+            {"job": agent_job_id, "grant": grant_id, "since": since, "until": until}
+        )
+        rows = self._select(agent_job_id, grant_id, since, until)
+        metrics = {}
+        for name in _METRICS:
+            known = [r[name] for r in rows if r.get(name) is not None]
+            metrics[name] = {
+                "value": sum(known) if known else None,
+                "known_rows": len(known),
+                "unknown_rows": len(rows) - len(known),
+            }
+        return {
+            "calls": len({r["request_id"] for r in rows}),
+            "rows": len(rows),
+            "estimated_calls": sum(1 for r in rows if r.get("estimated")),
+            "metrics": metrics,
+        }
+
+    async def list_agent_grant_requests(
+        self, *, agent_job_id, grant_id, since, until, limit, after=None
+    ):
+        rows = self._select(agent_job_id, grant_id, since, until)
+        if after is not None:
+            rows = [r for r in rows if (r["started_at"], r["request_id"]) > after]
+        return [
+            {
+                "request_id": r["request_id"],
+                "request_started_at": r["started_at"],
+                "logged_at": r["started_at"] + timedelta(seconds=1),
+                "model_id": "glm-5.1",
+                "served_model_id": "glm-5.1",
+                "prompt_tokens": r.get("tokens_in"),
+                "completion_tokens": r.get("tokens_out"),
+                "cache_read_tokens": r.get("cache_read"),
+                "cache_write_tokens": r.get("cache_write"),
+                "reasoning_tokens": r.get("reasoning"),
+                "cost_usd": r.get("spent_usd"),
+                "ttft_ms": 5,
+                "latency_ms": 50,
+                "status_code": r.get("status", 200),
+                "usage_estimated": bool(r.get("estimated")),
+            }
+            for r in rows[:limit]
+        ]
+
+
+def _seed(ledger: FakeWindowLedger, grant_id: str) -> None:
+    """Three rows inside the window, plus the rows the query must ignore."""
+    from decimal import Decimal
+
+    def row(request_id: str, *, grant: str = grant_id, offset_s: int, **metrics: Any) -> None:
+        ledger.window_rows.append(
+            {
+                "request_id": request_id,
+                "job": "job_1",
+                "grant": grant,
+                "started_at": T0 + timedelta(seconds=offset_s),
+                **metrics,
+            }
+        )
+
+    row(
+        "r-first",
+        offset_s=0,
+        tokens_in=100,
+        tokens_out=10,
+        cache_read=80,
+        cache_write=0,
+        spent_usd=Decimal("0.001"),
+    )
+    row(
+        "r-second",
+        offset_s=30,
+        tokens_in=200,
+        tokens_out=20,
+        cache_read=0,
+        cache_write=0,
+        reasoning=5,
+        spent_usd=Decimal("0.002"),
+        estimated=True,
+    )
+    # A cancelled stream: logged, counted as a call, nothing known about it.
+    row("r-cancelled", offset_s=45, status=499)
+    # Another grant on the same job: a retained thread re-minting across generations.
+    row("r-other-grant", grant="agr_other", offset_s=10, tokens_in=999, tokens_out=999)
+    # Started after the window closed.
+    row("r-later", offset_s=120, tokens_in=999, tokens_out=999)
+
+
+@pytest.fixture
+def window_ledger() -> FakeWindowLedger:
+    fake = FakeWindowLedger()
+    fake.rows["job_1"] = {"cost": 1.25, "tokens_in": 900, "tokens_out": 300, "calls": 7}
+    return fake
+
+
+@pytest.fixture
+def window_client(store: FakeStore, window_ledger: FakeWindowLedger) -> TestClient:
+    app = FastAPI()
+    app.include_router(agent_grants.router)
+    install_error_handlers(app)
+    app.dependency_overrides[get_operational_store] = lambda: store
+    app.dependency_overrides[get_log_store] = lambda: window_ledger
+    app.dependency_overrides[get_router] = lambda: object()
+    app.dependency_overrides[get_model_visibility_resolver] = lambda: None
+    return TestClient(app)
+
+
+def _usage(http: TestClient, grant_id: str, **params: Any):
+    return http.get(f"/internal/agent-grants/{grant_id}/usage", params=params, headers=AUTH)
+
+
+def test_windowed_usage_sums_only_this_grant_inside_the_window(window_client, window_ledger):
+    grant_id = _mint(window_client).json()["grant_id"]
+    _seed(window_ledger, grant_id)
+
+    response = _usage(
+        window_client, grant_id, since=T0.isoformat(), until=T1.isoformat(), detail="totals"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema_version"] == agent_grants.USAGE_SCHEMA_VERSION
+    assert body["source"] == "gateway_api_logs"
+    assert body["attribution"] == "grant_time_window"
+    assert body["grant_id"] == grant_id
+    assert body["external_job_id"] == "job_1"
+    assert body["window"] == {
+        "since": T0.isoformat(),
+        "until": T1.isoformat(),
+        "basis": "request_started_at",
+    }
+    assert body["finalized"] is False
+    assert body["totals"] == {
+        "calls": 3,
+        "tokens_in": 300,
+        "tokens_out": 30,
+        "cache_read": 80,
+        "cache_write": 0,
+        "reasoning": 5,
+        "spent_usd": "0.003",
+    }
+    assert body["unknown_rows"] == {
+        "tokens_in": 1,
+        "tokens_out": 1,
+        "cache_read": 1,
+        "cache_write": 1,
+        "reasoning": 2,
+        "spent_usd": 1,
+    }
+    assert body["estimated_calls"] == 1
+    assert "requests" not in body
+
+    # The ledger was asked about this grant on its job, with aware UTC bounds.
+    query = window_ledger.queries[-1]
+    assert (query["job"], query["grant"]) == ("job_1", grant_id)
+    assert (query["since"], query["until"]) == (T0, T1)
+    assert query["since"].tzinfo is not None
+
+
+def test_an_empty_window_reports_zero_calls_and_no_known_metric(window_client, window_ledger):
+    """Nothing was recorded is a different claim from "consumed nothing"."""
+    grant_id = _mint(window_client).json()["grant_id"]
+    body = _usage(
+        window_client, grant_id, since=T0.isoformat(), until=T1.isoformat(), detail="totals"
+    ).json()
+    assert body["totals"] == {"calls": 0, **dict.fromkeys(_METRICS)}
+    assert body["unknown_rows"] == dict.fromkeys(_METRICS, 0)
+    assert body["estimated_calls"] == 0
+
+
+def test_until_defaults_to_the_read_time_and_is_echoed(window_client):
+    grant_id = _mint(window_client).json()["grant_id"]
+    body = _usage(window_client, grant_id, since=T0.isoformat(), detail="totals").json()
+    until = datetime.fromisoformat(body["window"]["until"])
+    assert until.tzinfo is not None
+    assert body["window"]["until"] == body["as_of"]
+    assert until > T0
+
+
+def test_windowed_usage_is_asked_in_utc_whatever_offset_the_caller_used(
+    window_client, window_ledger
+):
+    grant_id = _mint(window_client).json()["grant_id"]
+    _seed(window_ledger, grant_id)
+    body = _usage(
+        window_client,
+        grant_id,
+        since="2026-09-09T15:00:00+08:00",
+        until="2026-09-09T15:01:00+08:00",
+        detail="totals",
+    ).json()
+    assert body["window"]["since"] == T0.isoformat()
+    assert body["totals"]["calls"] == 3
+
+
+def test_requests_detail_pages_in_start_order_behind_a_bound_cursor(window_client, window_ledger):
+    grant_id = _mint(window_client).json()["grant_id"]
+    _seed(window_ledger, grant_id)
+    window = {"since": T0.isoformat(), "until": T1.isoformat()}
+
+    first = _usage(window_client, grant_id, detail="requests", limit=2, **window).json()
+    assert first["totals"]["calls"] == 3, "totals cover the window, not the page"
+    assert [r["request_id"] for r in first["requests"]] == ["r-first", "r-second"]
+    assert first["next_cursor"]
+
+    row = first["requests"][0]
+    assert set(row) == {
+        "request_id",
+        "request_started_at",
+        "logged_at",
+        "model",
+        "served_model_id",
+        "tokens_in",
+        "tokens_out",
+        "cache_read",
+        "cache_write",
+        "reasoning",
+        "spent_usd",
+        "ttft_ms",
+        "latency_ms",
+        "status_code",
+        "usage_estimated",
+    }
+    assert row["request_started_at"] == T0.isoformat()
+    assert row["spent_usd"] == "0.001"
+    assert row["usage_estimated"] is False
+    assert first["requests"][1]["usage_estimated"] is True
+
+    second = _usage(
+        window_client, grant_id, detail="requests", limit=2, cursor=first["next_cursor"], **window
+    ).json()
+    assert [r["request_id"] for r in second["requests"]] == ["r-cancelled"]
+    assert second["requests"][0]["tokens_in"] is None
+    assert second["requests"][0]["status_code"] == 499
+    assert second["next_cursor"] is None
+
+
+def test_a_cursor_from_another_window_is_refused(window_client, window_ledger):
+    grant_id = _mint(window_client).json()["grant_id"]
+    _seed(window_ledger, grant_id)
+    cursor = _usage(
+        window_client,
+        grant_id,
+        detail="requests",
+        limit=1,
+        since=T0.isoformat(),
+        until=T1.isoformat(),
+    ).json()["next_cursor"]
+
+    moved = _usage(
+        window_client,
+        grant_id,
+        detail="requests",
+        limit=1,
+        cursor=cursor,
+        since=T0.isoformat(),
+        until=(T1 + timedelta(seconds=1)).isoformat(),
+    )
+    assert moved.status_code == 422
+    assert moved.json()["error"]["type"] == "invalid_cursor"
+
+    garbage = _usage(
+        window_client,
+        grant_id,
+        detail="requests",
+        cursor="not-a-cursor",
+        since=T0.isoformat(),
+        until=T1.isoformat(),
+    )
+    assert garbage.status_code == 422
+    assert garbage.json()["error"]["type"] == "invalid_cursor"
+
+
+@pytest.mark.parametrize(
+    ("params", "fragment"),
+    [
+        pytest.param({"detail": "totals"}, "since", id="since-missing"),
+        pytest.param({"since": T0.isoformat()}, "detail", id="detail-missing"),
+        pytest.param({"since": T0.isoformat(), "detail": "rows"}, "detail", id="detail-unknown"),
+        pytest.param({"since": "2026-09-09T07:00:00", "detail": "totals"}, "offset", id="naive"),
+        pytest.param({"since": "yesterday", "detail": "totals"}, "ISO 8601", id="not-a-time"),
+        pytest.param(
+            {"since": T0.isoformat(), "until": T0.isoformat(), "detail": "totals"},
+            "earlier",
+            id="empty-window",
+        ),
+        pytest.param(
+            {"since": T0.isoformat(), "detail": "totals", "limit": 5}, "limit", id="limit-on-totals"
+        ),
+        pytest.param(
+            {"since": T0.isoformat(), "detail": "requests", "limit": 0}, "between", id="limit-zero"
+        ),
+        pytest.param(
+            {"since": T0.isoformat(), "detail": "requests", "limit": 501},
+            "between",
+            id="limit-too-large",
+        ),
+    ],
+)
+def test_an_unusable_window_query_is_a_422(window_client, params, fragment):
+    grant_id = _mint(window_client).json()["grant_id"]
+    response = _usage(window_client, grant_id, **params)
+    assert response.status_code == 422
+    assert response.json()["error"]["type"] == "invalid_usage_query"
+    assert fragment in response.json()["error"]["message"]
+
+
+def test_the_legacy_report_is_untouched_by_the_window_parameters(window_client):
+    """A consumer that never sends the new parameters sees the old shape."""
+    grant_id = _mint(window_client).json()["grant_id"]
+    body = _usage(window_client, grant_id).json()
+    assert set(body) == {
+        "grant_id",
+        "external_job_id",
+        "spent_usd",
+        "request_count",
+        "tokens_in",
+        "tokens_out",
+    }
+    assert body["spent_usd"] == 1.25
+
+
+def test_a_windowed_report_without_a_ledger_says_so_rather_than_reporting_zero(
+    store: FakeStore,
+) -> None:
+    app = FastAPI()
+    app.include_router(agent_grants.router)
+    install_error_handlers(app)
+    app.dependency_overrides[get_operational_store] = lambda: store
+    app.dependency_overrides[get_log_store] = lambda: None
+    app.dependency_overrides[get_router] = lambda: object()
+    app.dependency_overrides[get_model_visibility_resolver] = lambda: None
+    http = TestClient(app)
+    grant_id = _mint(http).json()["grant_id"]
+    response = _usage(http, grant_id, since=T0.isoformat(), detail="totals")
+    assert response.status_code == 503
+    assert response.json()["error"]["type"] == "ledger_unavailable"

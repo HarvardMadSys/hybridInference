@@ -18,9 +18,14 @@ and the gateway's existing per-user quota continues to govern *how much*.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
 
 from serving import grants
@@ -229,9 +234,106 @@ async def renew_grant(
     return _grant_response(row)
 
 
+#: Shape version of the windowed usage response. Bumped for any change a
+#: consumer could not detect from the fields themselves.
+USAGE_SCHEMA_VERSION = 1
+USAGE_DEFAULT_LIMIT = 100
+USAGE_MAX_LIMIT = 500
+_USAGE_DETAILS = ("totals", "requests")
+_USAGE_METRICS = ("tokens_in", "tokens_out", "cache_read", "cache_write", "reasoning", "spent_usd")
+
+
+def _invalid_query(message: str) -> Any:
+    return _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_usage_query", message)
+
+
+def _parse_instant(value: str, *, name: str) -> datetime:
+    """Parse one window bound: ISO 8601 with an explicit offset, kept in UTC."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise _invalid_query(f"`{name}` must be an ISO 8601 timestamp.") from None
+    if parsed.tzinfo is None:
+        # A naive bound would be read in the database session's zone, which
+        # is not a thing the caller chose.
+        raise _invalid_query(f"`{name}` must carry a UTC offset.")
+    return parsed.astimezone(UTC)
+
+
+def _encode_cursor(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str, *, expected: dict[str, Any]) -> tuple[datetime, str]:
+    """Reject a cursor minted for another grant, window or ordering.
+
+    The cursor is opaque to the caller but not to us: it carries the query it
+    belongs to, so a page fetched with different parameters cannot silently
+    continue from the wrong place.
+    """
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+        after_started_at, after_request_id = payload["a"]
+        bound = {key: payload[key] for key in expected}
+        started_at = datetime.fromisoformat(after_started_at)
+    except (binascii.Error, ValueError, KeyError, TypeError):
+        raise _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_cursor", "That cursor is not valid."
+        ) from None
+    if bound != expected or started_at.tzinfo is None or not isinstance(after_request_id, str):
+        raise _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "invalid_cursor",
+            "That cursor belongs to a different query.",
+        )
+    return started_at.astimezone(UTC), after_request_id
+
+
+def _money(value: Any) -> str | None:
+    """Render a ledger amount as a fixed-point decimal string, never a float."""
+    if value is None:
+        return None
+    return format(Decimal(str(value)), "f")
+
+
+def _integer(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
+def _instant(value: datetime | None) -> str | None:
+    return None if value is None else value.astimezone(UTC).isoformat()
+
+
+def _request_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "request_id": row["request_id"],
+        "request_started_at": _instant(row["request_started_at"]),
+        "logged_at": _instant(row["logged_at"]),
+        "model": row["model_id"],
+        "served_model_id": row["served_model_id"],
+        "tokens_in": _integer(row["prompt_tokens"]),
+        "tokens_out": _integer(row["completion_tokens"]),
+        "cache_read": _integer(row["cache_read_tokens"]),
+        "cache_write": _integer(row["cache_write_tokens"]),
+        "reasoning": _integer(row["reasoning_tokens"]),
+        "spent_usd": _money(row["cost_usd"]),
+        "ttft_ms": _integer(row["ttft_ms"]),
+        "latency_ms": _integer(row["latency_ms"]),
+        "status_code": _integer(row["status_code"]),
+        "usage_estimated": bool(row["usage_estimated"]),
+    }
+
+
 @router.get("/{grant_id}/usage")
 async def grant_usage(
     grant_id: str,
+    since: str | None = Query(None),
+    until: str | None = Query(None),
+    detail: str | None = Query(None),
+    limit: int | None = Query(None),
+    cursor: str | None = Query(None),
     store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
 ) -> dict[str, Any]:
@@ -243,20 +345,37 @@ async def grant_usage(
     what a job cost, and reading it as a ceiling would reintroduce the per-job
     budget the design removed.
 
-    Numbers come from the billing ledger, keyed by the grant's
-    ``external_job_id``, so they reflect what the gateway actually billed
-    rather than anything an agent reports about itself.
+    Numbers come from the billing ledger, so they reflect what the gateway
+    actually billed rather than anything an agent reports about itself.
+
+    Two shapes share the route. Without query parameters it answers as it
+    always has: the job's lifetime totals keyed by ``external_job_id``. With
+    ``since`` and ``detail`` it answers for one grant over one window of
+    request start times — what a retained thread needs to attribute a single
+    turn, where one grant outlives many turns and one job id outlives many
+    grants — with each metric summed over the rows that reported it and the
+    rows that did not counted beside it (``unknown_rows``). ``finalized`` is
+    always false: the ledger is written after the response completes with no
+    settlement barrier, so a later read may see more rows.
 
     Args:
-        grant_id: The grant whose job to report on.
+        grant_id: The grant whose spend to report.
+        since: Inclusive lower bound (ISO 8601 with offset). Required with
+            ``detail``.
+        until: Exclusive upper bound; defaults to now and is echoed back.
+        detail: ``totals`` or ``requests``; the latter adds a page of rows.
+        limit: Page size for ``requests`` (1..500, default 100).
+        cursor: Continuation from a previous ``requests`` page.
         store: Operational store.
         log_store: Billing ledger.
 
     Returns:
-        Spend, call count, and token totals for the grant's job.
+        Spend, call count and token totals for the grant's job, or the
+        windowed report described above.
 
     Raises:
-        HTTPException: 404 for an unknown grant, 503 without a ledger.
+        HTTPException: 404 for an unknown grant, 422 for an unusable window,
+            page size or cursor, 503 without a ledger.
     """
     store = _require_store(store)
     row = await store.get_agent_grant(grant_id)
@@ -272,15 +391,99 @@ async def grant_usage(
         )
 
     job_id = row["external_job_id"]
-    usage = await log_store.get_agent_job_usage(job_id)
-    return {
+    windowed = any(value is not None for value in (since, until, detail, limit, cursor))
+    if not windowed:
+        usage = await log_store.get_agent_job_usage(job_id)
+        return {
+            "grant_id": grant_id,
+            "external_job_id": job_id,
+            "spent_usd": float(await log_store.get_agent_job_cost(job_id)),
+            "request_count": int(usage.get("calls", 0)),
+            "tokens_in": int(usage.get("tokens_in", 0)),
+            "tokens_out": int(usage.get("tokens_out", 0)),
+        }
+
+    if detail not in _USAGE_DETAILS:
+        raise _invalid_query("`detail` must be `totals` or `requests`.")
+    if since is None:
+        raise _invalid_query("`since` is required for a windowed report.")
+    as_of = datetime.now(UTC)
+    window_since = _parse_instant(since, name="since")
+    window_until = _parse_instant(until, name="until") if until is not None else as_of
+    if window_since >= window_until:
+        raise _invalid_query("`since` must be earlier than `until`.")
+    if limit is not None and detail != "requests":
+        raise _invalid_query("`limit` applies to `detail=requests` only.")
+    if cursor is not None and detail != "requests":
+        raise _invalid_query("`cursor` applies to `detail=requests` only.")
+    page_size = USAGE_DEFAULT_LIMIT if limit is None else limit
+    if not 1 <= page_size <= USAGE_MAX_LIMIT:
+        raise _invalid_query(f"`limit` must be between 1 and {USAGE_MAX_LIMIT}.")
+
+    cursor_scope = {
+        "v": USAGE_SCHEMA_VERSION,
+        "g": grant_id,
+        "s": window_since.isoformat(),
+        "u": window_until.isoformat(),
+    }
+    after = _decode_cursor(cursor, expected=cursor_scope) if cursor is not None else None
+
+    summary = await log_store.get_agent_grant_usage(
+        agent_job_id=job_id, grant_id=grant_id, since=window_since, until=window_until
+    )
+    metrics = summary["metrics"]
+    totals: dict[str, Any] = {"calls": int(summary["calls"])}
+    unknown_rows: dict[str, int] = {}
+    for name in _USAGE_METRICS:
+        metric = metrics[name]
+        value = metric["value"]
+        totals[name] = _money(value) if name == "spent_usd" else _integer(value)
+        unknown_rows[name] = int(metric["unknown_rows"])
+
+    body: dict[str, Any] = {
+        "schema_version": USAGE_SCHEMA_VERSION,
+        "source": "gateway_api_logs",
         "grant_id": grant_id,
         "external_job_id": job_id,
-        "spent_usd": float(await log_store.get_agent_job_cost(job_id)),
-        "request_count": int(usage.get("calls", 0)),
-        "tokens_in": int(usage.get("tokens_in", 0)),
-        "tokens_out": int(usage.get("tokens_out", 0)),
+        "attribution": "grant_time_window",
+        "window": {
+            "since": window_since.isoformat(),
+            "until": window_until.isoformat(),
+            "basis": "request_started_at",
+        },
+        "as_of": as_of.isoformat(),
+        "finalized": False,
+        "totals": totals,
+        "unknown_rows": unknown_rows,
+        "estimated_calls": int(summary["estimated_calls"]),
     }
+    if detail == "requests":
+        # One row past the page tells us whether a next page exists without a
+        # second count query, and is not returned.
+        rows = await log_store.list_agent_grant_requests(
+            agent_job_id=job_id,
+            grant_id=grant_id,
+            since=window_since,
+            until=window_until,
+            limit=page_size + 1,
+            after=after,
+        )
+        page = rows[:page_size]
+        body["requests"] = [_request_row(r) for r in page]
+        body["next_cursor"] = (
+            _encode_cursor(
+                {
+                    **cursor_scope,
+                    "a": [
+                        page[-1]["request_started_at"].astimezone(UTC).isoformat(),
+                        page[-1]["request_id"],
+                    ],
+                }
+            )
+            if len(rows) > page_size
+            else None
+        )
+    return body
 
 
 @router.post("/{grant_id}/revoke")
