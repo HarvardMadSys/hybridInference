@@ -25,7 +25,7 @@ let authState = {
 const NOTICE = 'Requests are logged by this deployment for research purposes.';
 
 let dataPolicyNotice = NOTICE;
-let distributionId = 'legacy';
+let distributionId = 'example';
 let publicSignup = true;
 let exampleModel = 'example-chat';
 let exampleApiBase = 'http://localhost:13001';
@@ -36,6 +36,10 @@ let exampleHidden = false;
 const env = vi.hoisted(() => ({ apiBase: '' }));
 
 const branding = {
+  appName: 'FreeInference',
+  siteHost: 'staging.freeinference.org',
+  orgTagline: 'Built at Harvard SEAS · MadSys Lab',
+  orgUrl: 'https://madsys.seas.harvard.edu',
   exampleApiKeyEnvVar: 'HYBRIDINFERENCE_API_KEY',
   get exampleApiBase() {
     return exampleApiBase;
@@ -171,7 +175,7 @@ describe('HomePage', () => {
   beforeEach(() => {
     authState = { loading: false, isAuthenticated: false, user: null };
     dataPolicyNotice = NOTICE;
-    distributionId = 'legacy';
+    distributionId = 'example';
     publicSignup = true;
     exampleModel = 'example-chat';
     exampleApiBase = 'http://localhost:13001';
@@ -180,11 +184,12 @@ describe('HomePage', () => {
     stubGateway();
   });
 
-  it('renders the developer home for every deployment, with no marketing copy', async () => {
+  it('renders the developer home for the example, with no marketing copy', async () => {
     render(<HomePage />);
 
-    expect(screen.getByRole('heading', { name: /your gateway is running/i })).toBeInTheDocument();
-    expect(screen.queryByText(/local example/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: /your local gateway is running/i }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText(/frontier|research community|free to use|no credit card/i),
     ).not.toBeInTheDocument();
@@ -196,6 +201,67 @@ describe('HomePage', () => {
     });
 
     await waitFor(() => expect(screen.getByText('Healthy')).toBeInTheDocument());
+  });
+
+  it.each(['freeinference', 'legacy', 'custom-deployment'])(
+    'preserves the full marketing homepage for %s',
+    (id) => {
+      distributionId = id;
+      const fetchMock = stubGateway();
+
+      render(<HomePage />);
+
+      expect(
+        screen.getByRole('heading', {
+          name: 'FreeInference for open-source, research and education',
+        }),
+      ).toBeInTheDocument();
+      expect(screen.getByText(branding.orgTagline)).toBeInTheDocument();
+      expect(
+        screen.getByRole('heading', { name: /why staging.freeinference.org/i }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Supported use cases' })).toBeInTheDocument();
+      expect(
+        screen.getByRole('heading', { name: 'Get started in three steps' }),
+      ).toBeInTheDocument();
+      expect(screen.getByText('Quickstart')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Sign up free' })).toHaveAttribute('href', '/signup');
+      expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
+      [/updates banner/i, /^updates$/i, /sponsors/i].forEach((pattern) => {
+        expect(screen.getByLabelText(pattern)).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/your (local )?gateway is running/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('Gateway health')).not.toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([FREE_USER, ADMIN_USER])(
+    'keeps the FreeInference landing for a signed-in $role user',
+    (user) => {
+      distributionId = 'freeinference';
+      signIn(user);
+
+      render(<HomePage />);
+
+      expect(
+        screen.getByRole('heading', {
+          name: 'FreeInference for open-source, research and education',
+        }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Your models')).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Admin Console' })).not.toBeInTheDocument();
+    },
+  );
+
+  it('honours disabled public signup on the FreeInference landing', () => {
+    distributionId = 'freeinference';
+    publicSignup = false;
+
+    render(<HomePage />);
+
+    expect(screen.queryByRole('link', { name: 'Sign up free' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
   });
 
   it('labels the example distribution as the local example', () => {
@@ -427,7 +493,7 @@ describe('HomePage', () => {
       expect(screen.getByText('Unavailable')).toBeInTheDocument();
     });
     expect(
-      screen.getByRole('heading', { name: /your gateway needs attention/i }),
+      screen.getByRole('heading', { name: /your local gateway needs attention/i }),
     ).toBeInTheDocument();
   });
 
