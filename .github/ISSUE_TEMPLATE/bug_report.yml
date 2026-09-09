@@ -5,6 +5,11 @@ body:
   - type: markdown
     attributes:
       value: |
+        Report HybridInference gateway and console bugs from any deployment,
+        including FreeInference, here. For FreeInference account, quota or
+        model-access support, use the email in section 10 (Contact) of its
+        [service terms](https://freeinference.org/terms).
+
         Please redact credentials, API keys and cookies from anything you paste.
         For a security vulnerability, use
         [private reporting](https://github.com/HarvardMadSys/hybridInference/security/advisories/new)
@@ -15,9 +20,8 @@ body:
     attributes:
       label: Which deployment is this?
       description: >-
-        This repository is the software. FreeInference is one deployment of it,
-        run by its operator — account, quota and model-availability questions
-        for that service are not tracked here.
+        Where did you observe the software defect? FreeInference is a public
+        service built with HybridInference.
       options:
         - Self-hosted (my own instance)
         - FreeInference (the public service)
@@ -46,9 +50,10 @@ body:
     attributes:
       label: How to reproduce
       description: >-
-        The request you sent and the response you got, ideally as a `curl`.
-        Say whether it was streaming, and which model and route were involved.
-      render: shell
+        For API issues, include the request and response, ideally as a `curl`,
+        whether it was streaming, and the model and route involved. For console
+        issues, include the page, browser, steps to reproduce and screenshots
+        if helpful. Redact credentials and personal information from attachments.
     validations:
       required: true
 

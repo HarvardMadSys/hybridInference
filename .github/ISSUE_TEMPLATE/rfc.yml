@@ -1,4 +1,4 @@
-name: RFC
+name: RFC / Design proposal
 description: Propose a design that changes routing semantics, storage, or a public surface
 title: "RFC: "
 labels: ["enhancement"]

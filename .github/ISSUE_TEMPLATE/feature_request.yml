@@ -6,8 +6,9 @@ body:
     attributes:
       value: |
         For a change large enough to affect routing semantics, the storage
-        schema, or a public API surface, open an **RFC** instead — it gets the
-        design discussed before anyone writes the code.
+        schema, or a public API surface, open an
+        [RFC / Design proposal](https://github.com/HarvardMadSys/hybridInference/issues/new?template=rfc.yml)
+        instead to discuss the design before implementation.
 
   - type: textarea
     id: problem

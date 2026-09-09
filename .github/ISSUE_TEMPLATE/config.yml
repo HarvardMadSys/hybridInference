@@ -10,5 +10,7 @@ contact_links:
     url: https://github.com/HarvardMadSys/hybridInference/security/advisories/new
     about: Report privately as a draft advisory. Please do not open a public issue for it.
   - name: FreeInference account, quota or model availability
-    url: https://freeinference.org/
-    about: FreeInference is one deployment of this software, not the software itself. Anything specific to that service belongs to its operator.
+    url: https://freeinference.org/terms
+    about: >-
+      For service support, use the email in section 10 (Contact).
+      HybridInference software defects found on FreeInference belong in Bug report.

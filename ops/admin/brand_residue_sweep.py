@@ -80,6 +80,10 @@ ATTRIBUTION: dict[str, str] = {
         "self-hosted instance from the public one — the distinction the "
         "triager needs, so naming it is the feature"
     ),
+    ".github/ISSUE_TEMPLATE/feature_request.yml": (
+        "links directly to this repository's RFC form so contributors can "
+        "follow the design-proposal workflow from the feature form"
+    ),
     "docs/developer/index.rst": (
         "the repository and issue-tracker URLs — a published doc site that "
         "cannot name its own source is the defect, not the naming"
