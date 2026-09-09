@@ -12,7 +12,7 @@ import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 export function DashboardView() {
   const { state } = useAuth();
-  const { branding, features } = useSiteConfig();
+  const { branding, features, agentsUrl } = useSiteConfig();
   const displayName = state.user?.user_name || state.user?.email;
 
   return (
@@ -114,8 +114,8 @@ export function DashboardView() {
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {features.agents && (
-              <Link
-                href="/agents"
+              <a
+                href={agentsUrl}
                 className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
               >
                 <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -127,7 +127,7 @@ export function DashboardView() {
                   />
                 </svg>
                 Agents
-              </Link>
+              </a>
             )}
             <Link
               href="/dashboard/playground"
