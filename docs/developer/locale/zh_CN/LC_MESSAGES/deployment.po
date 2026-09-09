@@ -81,10 +81,6 @@ msgstr ""
 msgid "built from `deploy/docker/Dockerfile.frontend`"
 msgstr "由 `deploy/docker/Dockerfile.frontend` 构建"
 
-#: ../developer/deployment.md
-#, python-brace-format
-msgid "`${FRONTEND_HOST:-0.0.0.0}:${FRONTEND_PORT:-3001}`"
-msgstr ""
 
 #: ../developer/deployment.md
 msgid "`postgres`"
@@ -99,25 +95,6 @@ msgstr ""
 msgid "`127.0.0.1:${DB_PORT:-5432}`"
 msgstr ""
 
-#: ../developer/deployment.md:20
-#, python-brace-format
-msgid ""
-"The frontend defaults to `0.0.0.0` so a reverse proxy on the host can "
-"reach it; the backend and the database default to loopback. All three "
-"join one bridge network defined in the same Compose file, on which the "
-"backend reaches the database as `postgres:5432`. Only `DB_PORT` from "
-"`.env` reaches this file, and only as the host half of the mapping "
-"(`127.0.0.1:${DB_PORT:-5432}:5432`); the host-side bind address is hard-"
-"coded to loopback. `DB_HOST` is pinned to `postgres` in the Compose file "
-"and is ignored under Compose — it matters only for a backend started "
-"directly from source."
-msgstr ""
-"frontend 默认监听 `0.0.0.0`，好让宿主机上的反向代理能访问到它；backend 和数据库默认只监听 "
-"loopback。三者都加入同一个 Compose 文件里定义的 bridge 网络，backend 在这个网络上以 "
-"`postgres:5432` 访问数据库。`.env` 里真正传到这个文件的只有 "
-"`DB_PORT`，而且只作为映射的宿主机那一半（`127.0.0.1:${DB_PORT:-5432}:5432`）；宿主机侧的绑定地址是写死在"
-" loopback 上的。`DB_HOST` 在 Compose 文件里被钉成 `postgres`，在 Compose "
-"下会被忽略——它只对直接从源码启动的 backend 有意义。"
 
 #: ../developer/deployment.md:29
 msgid ""
@@ -140,17 +117,6 @@ msgstr ""
 msgid "Putting it on the public internet"
 msgstr "把它放到公网上"
 
-#: ../developer/deployment.md:39
-#, python-brace-format
-msgid ""
-"Nothing in the stack terminates TLS, and this repository ships no "
-"reverse-proxy config to copy: certificates and the proxy in front of the "
-"two published ports are yours to supply. Point it at "
-"`${BACKEND_HOST}:${BACKEND_PORT}` and "
-"`${FRONTEND_HOST}:${FRONTEND_PORT}`."
-msgstr ""
-"这套服务栈里没有任何一环负责终结 TLS，本仓库也不提供可以照抄的反向代理配置：证书，以及挡在这两个发布端口前面的代理，都要你自己准备。把它指向 "
-"`${BACKEND_HOST}:${BACKEND_PORT}` 和 `${FRONTEND_HOST}:${FRONTEND_PORT}`。"
 
 #: ../developer/deployment.md:44
 msgid ""
@@ -771,3 +737,60 @@ msgstr "改动代码后重新构建"
 
 msgid "The console requires a valid `/site-config` response before rendering normal pages. A failed HTTP request, a three-second timeout, or invalid JSON/schema shows a retryable configuration error instead of silently enabling build-time feature defaults. Check the frontend logs and backend connectivity, then retry the page after recovery. Valid neutral defaults and legacy documents remain supported; operators do not need to add custom settings just to start the example deployment."
 msgstr "控制台只有收到有效的 `/site-config` 响应才会渲染正常页面。HTTP 请求失败、超过三秒的超时或无效的 JSON/配置格式会显示可重试的配置错误，而不会悄悄启用构建时的默认功能。请检查前端日志和后端连通性，恢复后重试页面。有效的中性默认配置和旧版配置仍受支持；部署者不必为了启动示例部署而添加自定义设置。"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/deployment.md:0
+msgid "`${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-3001}`"
+msgstr "`${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-3001}`"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/deployment.md:20
+msgid ""
+"All three published ports default to loopback. A reverse proxy on the same "
+"host can reach the console at `127.0.0.1:3001`. The containers also join "
+"one bridge network defined in the same Compose file, on which the backend "
+"reaches the database as `postgres:5432`. Only `DB_PORT` from `.env` reaches"
+" this file, and only as the host half of the mapping "
+"(`127.0.0.1:${DB_PORT:-5432}:5432`); the host-side bind address is hard-"
+"coded to loopback. `DB_HOST` is pinned to `postgres` in the Compose file "
+"and is ignored under Compose — it matters only for a backend started "
+"directly from source."
+msgstr ""
+"三个发布端口都默认绑定到回环地址。同机运行的反向代理可以通过 `127.0.0.1:3001` 访问控制台。容器还会加入同一 Compose "
+"文件定义的桥接网络，后端通过该网络中的 `postgres:5432` 访问数据库。`.env` 中只有 `DB_PORT` "
+"会传入此文件，并且只用于端口映射的宿主机一侧（`127.0.0.1:${DB_PORT:-5432}:5432`）；宿主机绑定地址固定为回环地址。Compose"
+" 文件将 `DB_HOST` 固定为 `postgres`，因此 Compose 模式会忽略该环境变量；它仅对直接从源码启动的后端生效。"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/deployment.md:39
+msgid ""
+"Nothing in the stack terminates TLS, and this repository ships no reverse-"
+"proxy config to copy: certificates and the proxy in front of the two "
+"published ports are yours to supply. A proxy running on the host can use "
+"`127.0.0.1:3001` for the console or `127.0.0.1:8080` for direct gateway "
+"access. A proxy container on the same Docker network can use "
+"`frontend:3001` or `backend:8080`."
+msgstr ""
+"服务栈不负责终止 TLS，仓库也没有可直接复制的反向代理配置；证书和发布端口前面的代理由部署者提供。宿主机上的代理可通过 "
+"`127.0.0.1:3001` 访问控制台，或通过 `127.0.0.1:8080` 直接访问网关。同一 Docker 网络中的代理容器可使用 "
+"`frontend:3001` 或 `backend:8080`。"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/deployment.md:45
+msgid ""
+"If your proxy runs on another machine, set `FRONTEND_HOST` to a reachable "
+"host interface in `.env`; `0.0.0.0` binds all IPv4 interfaces. Restrict "
+"access to the intended proxy and run `make up` to recreate the port "
+"mapping. The console forwards API routes as well as serving pages, so "
+"exposing its port also exposes those routes. Set `BACKEND_HOST` separately "
+"only if direct gateway access is needed."
+msgstr ""
+"如果代理运行在另一台机器上，在 `.env` 中把 `FRONTEND_HOST` 设置为可达的宿主机接口地址；`0.0.0.0` 会绑定所有 "
+"IPv4 接口。将访问限制为预期的代理，并运行 `make up` 重新创建端口映射。控制台在提供页面的同时也会转发 API "
+"路由，因此公开它的端口也会公开这些路由。仅在需要直接访问网关时，才单独设置 `BACKEND_HOST`。"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/deployment.md:52
+msgid ""
+"Earlier releases defaulted the frontend host to `0.0.0.0`. Deployments that"
+" relied on that default must set `FRONTEND_HOST` explicitly before "
+"upgrading. See [Releases and upgrades](releases.md) for the upgrade "
+"checklist."
+msgstr ""
+"较早版本的前端默认绑定 `0.0.0.0`。依赖这个默认值的部署必须在升级前显式设置 "
+"`FRONTEND_HOST`。升级检查事项见[发布与升级](releases.md)。"

@@ -217,9 +217,6 @@ msgstr "FastAPI 网关；用 `BACKEND_HOST` / `BACKEND_PORT` 覆盖监听地址"
 msgid "`frontend`"
 msgstr ""
 
-#: ../developer/installation.md
-msgid "`0.0.0.0:3001`"
-msgstr ""
 
 #: ../developer/installation.md
 msgid "Next.js console; override with `FRONTEND_HOST` / `FRONTEND_PORT`"
@@ -237,14 +234,6 @@ msgstr ""
 msgid "override with `DB_PORT`"
 msgstr "用 `DB_PORT` 覆盖"
 
-#: ../developer/installation.md:85
-msgid ""
-"pgAdmin and the Codex on-call relay are in the Compose file too but are "
-"gated behind profiles, so nothing starts them unless you ask (see "
-"[Deployment Guide](deployment.md))."
-msgstr ""
-"pgAdmin 和 Codex on-call relay 也在 Compose 文件里，但被 profile "
-"挡着，不主动要求就不会有东西启动它们（见[部署指南](deployment.md)）。"
 
 #: ../developer/installation.md:89
 msgid "Which models the fresh stack serves"
@@ -313,15 +302,6 @@ msgid ""
 "the database container:"
 msgstr "想在不启动整套服务栈的情况下对着 Postgres 开发，就只起数据库容器："
 
-#: ../developer/installation.md:155
-msgid ""
-"Or set `DB_ENABLED=false` in `.env` and run with no database at all: the "
-"gateway still routes requests, and `/health` reports "
-"`\"database_configured\": false`. Accounts, API keys and request history "
-"need the database."
-msgstr ""
-"或者在 `.env` 里设 `DB_ENABLED=false`，完全不带数据库运行：网关照样路由请求，`/health` 会报告 "
-"`\"database_configured\": false`。账户、API key 和请求历史则需要数据库。"
 
 #: ../developer/installation.md:159
 msgid "Configuration"
@@ -675,3 +655,47 @@ msgstr "**端口已被占用**——在 `.env` 里覆盖 `BACKEND_PORT`、`FRONT
 #~ msgid "this gateway's own public origin; blank derives it from the request"
 #~ msgstr "本网关自己的公网 origin；留空则从请求中推导"
 
+#: ../../claude/worktree/public-developer-readiness/docs/developer/installation.md:0
+msgid "`127.0.0.1:3001`"
+msgstr "`127.0.0.1:3001`"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/installation.md:85
+msgid ""
+"These ports are reachable from the host by default. A reverse proxy on the "
+"same host can use the loopback address; access from another machine "
+"requires an explicit host override. See [Deployment Guide](deployment.md) "
+"before exposing the console, which also forwards API requests."
+msgstr ""
+"这些端口默认可从宿主机访问。同机运行的反向代理可以使用回环地址；从其他机器访问则需要显式覆盖监听地址。控制台也会转发 API "
+"请求，公开它之前请先阅读[部署指南](deployment.md)。"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/installation.md:90
+msgid "pgAdmin is in the Compose file too, behind the optional `admin` profile."
+msgstr "Compose 文件中也包含 pgAdmin，通过可选的 `admin` profile 启动。"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/installation.md:151
+msgid ""
+"Open `http://localhost:3001`. The explicit backend URL makes the console's "
+"API proxy reach the gateway running on the host. Its default, "
+"`http://backend:8080`, is a Docker network address; the frontend process "
+"does not load the repository root's `.env`. Reuse the override whenever you"
+" start the console, and adjust the port if your backend uses a different "
+"one. Check the complete proxy path with `curl "
+"http://localhost:3001/health`."
+msgstr ""
+"打开 `http://localhost:3001`。显式指定后端 URL 后，控制台的 API 代理才能访问宿主机上运行的网关。默认值 "
+"`http://backend:8080` 是 Docker 网络地址；前端进程不会加载仓库根目录的 "
+"`.env`。每次启动控制台时都要带上这个覆盖值；如果后端使用其他端口，也应相应修改。用 `curl "
+"http://localhost:3001/health` 检查完整代理链路。"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/installation.md:166
+msgid ""
+"For a local gateway without accounts or a database, set both "
+"`DB_ENABLED=false` and `USER_AUTH_ENABLED=false` in `.env`. It still routes"
+" requests, and `/health` reports `\"database_configured\": false`. "
+"Accounts, API keys and request history need the database and both "
+"authentication secrets."
+msgstr ""
+"如果本地网关不需要账户或数据库，在 `.env` 中同时设置 `DB_ENABLED=false` 和 "
+"`USER_AUTH_ENABLED=false`。它仍能路由请求，`/health` 会报告 `\"database_configured\": "
+"false`。账户、API key 和请求历史需要数据库及两个认证密钥。"

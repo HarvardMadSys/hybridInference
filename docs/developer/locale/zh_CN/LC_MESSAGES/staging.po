@@ -49,9 +49,6 @@ msgstr "生产部署的操作流程见[部署指南](deployment.md)；想零依�
 msgid "What the compose file starts"
 msgstr "compose 文件会启动什么"
 
-#: ../developer/staging.md:16
-msgid "`deploy/docker/docker-compose.yml` defines five services:"
-msgstr "`deploy/docker/docker-compose.yml` 定义了五个服务："
 
 #: ../developer/staging.md
 msgid "Service"
@@ -141,9 +138,6 @@ msgstr ""
 msgid "`BACKEND_HOST`, `BACKEND_PORT`"
 msgstr ""
 
-#: ../developer/staging.md
-msgid "`0.0.0.0:3001`"
-msgstr ""
 
 #: ../developer/staging.md
 msgid "`FRONTEND_HOST`, `FRONTEND_PORT`"
@@ -176,31 +170,8 @@ msgid ""
 "moves the port but never the bind address."
 msgstr "只有 `backend` 和 `frontend` 支持覆盖监听地址。另外两个在 Compose 文件里把 `127.0.0.1` 写死了，所以它们的 `*_PORT` 变量能改端口，但改不了绑定地址。"
 
-#: ../developer/staging.md:50
-msgid "The console default is not loopback — change it"
-msgstr "控制台的默认地址不是回环地址——改掉它"
 
-#: ../developer/staging.md:52
-msgid ""
-"The frontend is the one service whose default host is `0.0.0.0`, so out "
-"of the box it answers on every interface of the machine. That is not only"
-" a console exposure: `apps/frontend/next.config.js` rewrites `/v1/*`, "
-"`/anthropic/*`, `/auth/*`, `/user/*`, `/admin/*`, `/health` and several "
-"`/internal/*` paths to `BACKEND_INTERNAL_URL`. Anyone who can reach port "
-"3001 can therefore reach the API that the `127.0.0.1:8080` publish was "
-"meant to keep private."
-msgstr ""
-"frontend 是唯一一个默认 host 为 `0.0.0.0` "
-"的服务，所以开箱状态下它在这台机器的每个网络接口上都应答。被暴露的不只是控制台：`apps/frontend/next.config.js` 会把"
-" `/v1/*`、`/anthropic/*`、`/auth/*`、`/user/*`、`/admin/*`、`/health` 以及若干 "
-"`/internal/*` 路径重写到 `BACKEND_INTERNAL_URL`。于是任何能连到 3001 端口的人，都能连到那个本想靠 "
-"`127.0.0.1:8080` 这个发布地址保持私有的 API。"
 
-#: ../developer/staging.md:59
-msgid ""
-"If you intend to reach the instance over an SSH tunnel (the next "
-"section), pin the console to loopback as well:"
-msgstr "如果打算通过 SSH 隧道访问这个实例（见下一节），要把控制台也钉在回环地址上："
 
 #: ../developer/staging.md:66
 msgid ""
@@ -526,3 +497,34 @@ msgstr "`make up` 会重新创建这个空卷，后端则在启动时重建表�
 
 #~ msgid "`CODEX_ONCALL_PORT`"
 #~ msgstr ""
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/staging.md:16
+msgid "`deploy/docker/docker-compose.yml` defines four services:"
+msgstr "`deploy/docker/docker-compose.yml` 定义了四个服务："
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/staging.md:0
+msgid "`127.0.0.1:3001`"
+msgstr "`127.0.0.1:3001`"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/staging.md:50
+msgid "Keep the console and its API proxy on loopback"
+msgstr "让控制台及其 API 代理保持在回环地址上"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/staging.md:52
+msgid ""
+"The frontend defaults to loopback, just like the backend. It also forwards "
+"`/v1/*`, `/anthropic/*`, `/auth/*`, `/user/*`, `/admin/*`, `/health` and "
+"several `/internal/*` paths to `BACKEND_INTERNAL_URL`. Publishing the "
+"console on a network therefore exposes those API routes even when the "
+"backend's own port is bound to loopback."
+msgstr ""
+"前端与后端一样默认绑定回环地址。它还会把 "
+"`/v1/*`、`/anthropic/*`、`/auth/*`、`/user/*`、`/admin/*`、`/health` 和若干 "
+"`/internal/*` 路径转发给 "
+"`BACKEND_INTERNAL_URL`。因此，即使后端端口仍绑定回环地址，将控制台发布到网络上也会公开这些 API 路由。"
+
+#: ../../claude/worktree/public-developer-readiness/docs/developer/staging.md:58
+msgid ""
+"For an instance reached through an SSH tunnel, keep the default. If a "
+"copied deployment environment overrides it, explicitly restore:"
+msgstr "通过 SSH 隧道访问的实例应保持默认值。如果复制来的部署环境覆盖了该值，请显式恢复："

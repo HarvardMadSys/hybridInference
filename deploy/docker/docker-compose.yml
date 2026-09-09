@@ -184,7 +184,7 @@ services:
       # directory; unset means `/site-assets/*` answers 404.
       SITE_ASSETS_DIR: ${SITE_ASSETS_DIR-}
     ports:
-      - "${FRONTEND_HOST:-0.0.0.0}:${FRONTEND_PORT:-3001}:3001"
+      - "${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-3001}:3001"
     depends_on:
       backend:
         # Ordering only, deliberately not service_healthy. The console is a

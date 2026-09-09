@@ -25,17 +25,26 @@ those to the provider — and any particular installation's operational setup,
 including [FreeInference](https://freeinference.org/), which is one deployment
 of this software rather than the software itself.
 
-## What this software leaves to you
+## Deployment configuration
 
-Two things are the operator's responsibility by design, and neither is a
-vulnerability in the project:
+- **Credentials.** Supply your own provider keys, `JWT_SECRET_KEY` and
+  `API_KEY_SECRET`. Empty or whitespace-only authentication secrets stop the
+  gateway before it opens stores or starts background tasks whenever the
+  database or user authentication is enabled. Only a gateway with both
+  `DB_ENABLED=false` and `USER_AUTH_ENABLED=false` can start without them.
+  Disabling inference authentication alone does not disable database-backed
+  login or API-key management. Keep existing secrets across upgrades; see
+  [Installation](docs/developer/installation.md) for setup and rotation effects.
+  A blank `ADMIN_TOKEN` disables only the optional legacy admin-token path.
+- **Exposure.** The supplied Compose stack publishes the frontend, backend and
+  database on loopback by default. `FRONTEND_HOST` and `BACKEND_HOST` can
+  explicitly expose the application ports on another interface. The console
+  forwards API routes, so exposing it also exposes those routes. Configure TLS
+  and network access for the deployment, and follow
+  [Trusted Proxies and Client IPs](docs/developer/trusted-proxies-and-client-ips.md)
+  before trusting forwarded client addresses for rate limiting and abuse blocking.
 
-- **Credentials.** The repository ships none. Provider keys, `JWT_SECRET_KEY`
-  and `API_KEY_SECRET` all come from your environment, and the gateway logs a
-  `critical` line and keeps running with insecure defaults if the last two are
-  unset. See [Installation](docs/developer/installation.md).
-- **Exposure.** Defaults bind to loopback; publishing the console or the API to
-  a network, and terminating TLS in front of it, is a deployment decision. The
-  client-address rules that rate limiting and abuse blocking depend on are in
-  [Trusted Proxies and Client IPs](docs/developer/trusted-proxies-and-client-ips.md),
-  which is worth reading before you put one behind a proxy.
+The runnable example contains conspicuous local-only credentials for its
+authenticated demo. Replace those when creating a deployment of your own.
+Release support and upgrade expectations are documented in
+[Releases and upgrades](docs/developer/releases.md).

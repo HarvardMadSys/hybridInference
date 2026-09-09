@@ -1,0 +1,252 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-10 00:09+0800\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/releases.md:1
+msgid "Releases and upgrades"
+msgstr "发布与升级"
+
+#: ../developer/releases.md:3
+msgid ""
+"Use a published release as the starting point for an installation you operate. "
+"Contributions target `dev`. This page explains how to identify what is running and "
+"plan an upgrade; initial setup is in [Installation](installation.md), and service "
+"commands are in [Deployment](deployment.md)."
+msgstr ""
+"运营自己的部署时，使用已发布版本作为起点。贡献提交到 "
+"`dev`。本页说明如何确认运行版本和规划升级；初次安装请看[安装](installation.md)，服务操作命令请看[部署](deployment.md)。"
+
+#: ../developer/releases.md:8
+msgid "Release identity and support"
+msgstr "版本标识与支持"
+
+#: ../developer/releases.md:10
+msgid ""
+"The manually dispatched `Sync dev to main` workflow fast-forwards `main` to the "
+"fetched `dev` tip and creates a [GitHub "
+"release](https://github.com/HarvardMadSys/hybridInference/releases) with generated "
+"change notes. Tags use the UTC date, `YYYYMMDD`; another release on the same date "
+"gets `.1`, `.2`, and so on. These are date-based releases, not semantic-version "
+"compatibility promises."
+msgstr ""
+"手动触发的 `Sync dev to main` 工作流将 `main` 快进到抓取到的 `dev` 最新提交，并创建带有自动生成变更说明的 [GitHub "
+"release](https://github.com/HarvardMadSys/hybridInference/releases)。Tag 使用 UTC 日期，格式为"
+" `YYYYMMDD`；同一天再次发布时依次追加 `.1`、`.2`。这是按日期命名的版本，不代表语义化版本的兼容性承诺。"
+
+#: ../developer/releases.md
+msgid "Identifier"
+msgstr "标识"
+
+#: ../developer/releases.md
+msgid "What it tells you"
+msgstr "说明"
+
+#: ../developer/releases.md
+msgid "A published date tag"
+msgstr "已发布的日期 tag"
+
+#: ../developer/releases.md
+msgid "A fixed source snapshot with GitHub release notes"
+msgstr "带有 GitHub 发布说明的固定源码快照"
+
+#: ../developer/releases.md
+msgid "`main`"
+msgstr ""
+
+#: ../developer/releases.md
+msgid "The branch advanced by the release workflow; it moves over time"
+msgstr "发布工作流推进的分支，会随时间变化"
+
+#: ../developer/releases.md
+msgid "`dev` or a feature branch"
+msgstr "`dev` 或功能分支"
+
+#: ../developer/releases.md
+msgid "Development work that may be newer than the latest release"
+msgstr "可能比最新发布版本更新的开发内容"
+
+#: ../developer/releases.md
+msgid "A full commit SHA"
+msgstr "完整 commit SHA"
+
+#: ../developer/releases.md
+msgid "The exact source revision; include local modifications separately"
+msgstr "确切的源码版本；本地改动需另行说明"
+
+#: ../developer/releases.md
+msgid "An image digest, `image@sha256:…`"
+msgstr "镜像摘要，`image@sha256:…`"
+
+#: ../developer/releases.md
+msgid "The exact container artifact, which may differ from the host checkout"
+msgstr "确切的容器产物，可能与宿主机 checkout 不同"
+
+#: ../developer/releases.md:25
+msgid ""
+"CI publishes backend and console candidates with `dev-<full-sha>` tags and short-SHA "
+"aliases. A candidate tag identifies development output; it does not mean a date "
+"release exists for that commit. The `0.1.0` values in `pyproject.toml` and "
+"`apps/frontend/package.json` are package metadata and do not identify a particular "
+"deployed build."
+msgstr ""
+"CI 发布的后端和控制台候选镜像使用 `dev-<full-sha>` tag，同时提供短 SHA 别名。候选 tag 标识开发产物，不表示该 commit "
+"已有日期发布版本。`pyproject.toml` 和 `apps/frontend/package.json` 中的 `0.1.0` "
+"是包元数据，不能确定某个实际部署的构建版本。"
+
+#: ../developer/releases.md:31
+msgid ""
+"Report problems against the latest published release when possible. Fixes normally "
+"land on `dev` and reach a later release. There is no documented LTS branch, "
+"guaranteed backport window or response-time commitment; do not assume an older "
+"release receives fixes automatically. An older-version report is still useful: "
+"include its exact revision and whether the problem also occurs on the latest release."
+" Security reports follow [the security "
+"policy](https://github.com/HarvardMadSys/hybridInference/blob/dev/SECURITY.md)."
+msgstr ""
+"尽可能在最新发布版本上报告问题。修复通常先进入 `dev`，再随后续版本发布。目前没有文档约定的 LTS "
+"分支、保证的回移修复期限或响应时间承诺；不要假定旧版本会自动获得修复。旧版本的问题报告仍然有用：请注明确切版本，以及最新发布版本是否也有同样的问题。安全问题遵循[安全政策](https://github.com/HarvardMadSys/hybridInference/blob/dev/SECURITY.md)。"
+
+#: ../developer/releases.md:39
+msgid "Include the version in a bug report"
+msgstr "在 bug 报告中附上版本"
+
+#: ../developer/releases.md:41
+msgid "For source installs, run these in the checkout used to build or start the service:"
+msgstr "对于源码安装，在用于构建或启动服务的 checkout 中运行："
+
+#: ../developer/releases.md:50
+msgid ""
+"The second command reports an error when HEAD is not exactly tagged; report the SHA "
+"in that case. Mention local changes without pasting secrets or private configuration."
+msgstr "HEAD 没有对应的精确 tag 时，第二条命令会报错；这种情况下请报告 SHA。说明本地改动，但不要粘贴密钥或私有配置。"
+
+#: ../developer/releases.md:54
+msgid "For the standard Compose stack, inspect the running artifacts:"
+msgstr "对于标准 Compose 栈，检查运行中的产物："
+
+#: ../developer/releases.md:61
+msgid ""
+"Use your deployment's container names if they differ. Include any pinned image "
+"digests from its deployment configuration. The console footer also shows the build "
+"SHA when supplied at build time; `build dev` / `local build` means that metadata was "
+"omitted. The footer identifies the console build, so report the backend revision "
+"separately when the two were deployed independently."
+msgstr ""
+"如果部署使用不同的容器名，请替换为实际名称。附上部署配置中固定使用的镜像摘要。构建时提供 SHA 后，控制台页脚也会显示该值；`build dev` / `local "
+"build` 表示未提供对应元数据。页脚标识的是控制台构建版本，因此前后端独立部署时，还需另行报告后端版本。"
+
+#: ../developer/releases.md:67
+msgid "Compatibility and breaking changes"
+msgstr "兼容性与破坏性变更"
+
+#: ../developer/releases.md:69
+msgid ""
+"Read the notes and linked PRs for every release between your installed version and "
+"the target. A date tag alone does not establish compatibility, and the OpenAI-"
+"compatible API does not imply support for every provider extension. Check the "
+"endpoints, streaming behavior and model settings your clients use."
+msgstr ""
+"阅读当前安装版本到目标版本之间每次发布的说明及关联 PR。日期 tag 本身不能证明兼容性，OpenAI 兼容 API 也不意味着支持所有 provider "
+"扩展。检查你的客户端实际使用的端点、流式行为和模型配置。"
+
+#: ../developer/releases.md:74
+msgid ""
+"Contributors changing an HTTP contract, authentication, an environment or YAML "
+"setting, a default, or database schema should state the old and new behavior in the "
+"PR. Identify who must act, give the configuration or migration steps, and explain "
+"whether the previous version can still use the resulting data. Mark breaking changes "
+"explicitly in the PR and release notes; autogenerated commit summaries alone do not "
+"explain how an operator should upgrade."
+msgstr ""
+"修改 HTTP 契约、认证、环境变量或 YAML 配置项、默认值或数据库 schema 时，贡献者应在 PR "
+"中说明前后行为。写清楚哪些使用者需要采取行动，给出配置或迁移步骤，并说明旧版本是否还能使用变更后的数据。在 PR 和发布说明中明确标记破坏性变更；自动生成的 commit"
+" 摘要不足以说明运维人员应如何升级。"
+
+#: ../developer/releases.md:81
+msgid "Upgrade and rollback"
+msgstr "升级与回滚"
+
+#: ../developer/releases.md:83
+msgid ""
+"Record the current and target release/commit, backend and console image identities, "
+"and the active distribution/configuration. Keep the previous artifacts available so "
+"rollback does not depend on rebuilding them."
+msgstr "记录当前和目标 release/commit、后端和控制台镜像标识，以及生效的 distribution 和配置。保留旧产物，使回滚不依赖重新构建。"
+
+#: ../developer/releases.md:86
+msgid ""
+"Read the target's configuration requirements. Preserve the deployment's existing "
+"`.env`, overlay and secrets; merge required changes instead of replacing them with "
+"fresh example files. Keep `JWT_SECRET_KEY` and `API_KEY_SECRET` stable across "
+"replicas and upgrades. Changing the former invalidates access tokens; changing the "
+"latter makes existing API-key hashes unverifiable. An upgrade is not a secret-"
+"rotation procedure."
+msgstr ""
+"阅读目标版本的配置要求。保留部署现有的 `.env`、overlay 和密钥，合入必需的变化，不要用新的示例文件覆盖它们。在各副本和升级前后保持 "
+"`JWT_SECRET_KEY` 和 `API_KEY_SECRET` 不变。更改前者会使访问 token 失效，更改后者会使现有 API key "
+"的哈希无法验证。升级不是密钥轮换流程。"
+
+#: ../developer/releases.md:92
+msgid ""
+"Back up each configured database and check that the backup restores into a separate "
+"database. Protect a matching copy of the configuration and secrets. See [Database "
+"backup](database.md#backup) for the standard Postgres commands; use the storage "
+"provider's backup procedure for other deployments."
+msgstr ""
+"备份每个已配置的数据库，并确认备份可恢复到独立数据库。妥善保存配套的配置和密钥副本。标准 Postgres "
+"命令见[数据库备份](database.md#backup)；其他部署请采用存储提供方的备份流程。"
+
+#: ../developer/releases.md:96
+msgid ""
+"Rehearse on an isolated local or staging deployment, using separate storage and "
+"suitable test data. The application creates and updates schema on startup, so merely "
+"starting a new backend against a database can change it. Check startup logs and "
+"`/health/ready`, then login, an existing API key, a routed request and streaming if "
+"your clients use it."
+msgstr ""
+"在隔离的本地或 staging 部署中演练，使用独立存储和适当的测试数据。应用在启动时创建和更新 "
+"schema，因此仅仅让新后端连接数据库并启动，就可能修改它。检查启动日志和 `/health/ready`，然后验证登录、现有 API "
+"key、一次路由请求，以及客户端使用的流式请求。"
+
+#: ../developer/releases.md:101
+msgid ""
+"Deploy the selected revision using your existing deployment method. For the standard "
+"stack built from source, `make build` rebuilds and recreates services from the "
+"current checkout; `make restart` keeps existing images. See "
+"[Deployment](deployment.md#what-a-change-actually-requires) for the distinction "
+"between rebuilding code and reloading configuration. Check the running artifact "
+"identities and repeat the rehearsal checks before sending normal traffic to it."
+msgstr ""
+"使用现有部署方式部署选定版本。对于从源码构建的标准栈，`make build` 会根据当前 checkout 重新构建并重建服务容器；`make restart` "
+"继续使用现有镜像。重新构建代码与重新加载配置的区别，见[部署](deployment.md#what-a-change-actually-"
+"requires)。检查运行中的产物标识，并在恢复正常流量前重复演练时的检查。"
+
+#: ../developer/releases.md:109
+msgid ""
+"Returning to a previous image does not undo database changes. If the previous version"
+" is compatible with the upgraded schema and data, restore its matching application "
+"artifacts and configuration. Otherwise, stop application writers and restore the "
+"matching pre-upgrade database backup before restarting the previous version. This "
+"discards writes made since the backup, so account for those writes in the recovery "
+"plan. There is no general automatic schema downgrade command; `make down` preserves "
+"data and deleting a volume is a reset, not a rollback."
+msgstr ""
+"切回旧镜像不会撤销数据库变更。如果旧版本与升级后的 schema "
+"和数据兼容，可以恢复配套的应用产物和配置。否则，应先停止应用写入，恢复配套的升级前数据库备份，再启动旧版本。这会丢弃备份之后的写入，因此恢复计划必须考虑这些数据。目前没有通用的自动"
+" schema 降级命令；`make down` 会保留数据，删除 volume 是重置而非回滚。"
