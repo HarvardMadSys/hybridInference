@@ -3187,7 +3187,11 @@ async def test_real_routewise_runtime_model_is_privately_staged_then_rebound_to_
         assert staged_route.published is True
         assert active_routewise.route_table is route_executor
         assert runtime_model_id in active_routewise.route_candidates
-        assert runtime_model_id in existing_routewise.route_candidates
+        # Publishing re-binds the live table on the new model's router. That
+        # re-bind must not widen an unrelated RouteWise router past its own
+        # model, or its background latency probe would start calling this
+        # model's upstream too.
+        assert set(existing_routewise.route_candidates) == {existing_model_id}
         assert registry.get_router_override(runtime_model_id) == "routewise"
         assert services.managed_routers == [active_routewise]
     finally:

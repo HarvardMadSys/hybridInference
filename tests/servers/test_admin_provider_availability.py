@@ -159,10 +159,15 @@ async def test_disable_unknown_provider_returns_404(admin_client):
 @pytest.mark.asyncio
 async def test_disable_and_reenable_provider_rebuilds_routewise_candidates(admin_client):
     client, _, _, registry = admin_client
-    routewise = registry.get_router("model-a")
+    # Each RouteWise model owns a router scoped to itself, so a rebuild has to
+    # be observed on that model's own router rather than through a peer's.
+    router_a = registry.get_router("model-a")
+    router_b = registry.get_router("model-b")
 
+    assert set(router_a.route_candidates) == {"model-a"}
+    assert set(router_b.route_candidates) == {"model-b"}
     assert {
-        candidate.adapter.config.provider for candidate in routewise.route_candidates["model-a"]
+        candidate.adapter.config.provider for candidate in router_a.route_candidates["model-a"]
     } == {"openrouter", "zai"}
 
     disabled = await client.patch(
@@ -173,9 +178,9 @@ async def test_disable_and_reenable_provider_rebuilds_routewise_candidates(admin
 
     assert disabled.status_code == 200
     assert [
-        candidate.adapter.config.provider for candidate in routewise.route_candidates["model-a"]
+        candidate.adapter.config.provider for candidate in router_a.route_candidates["model-a"]
     ] == ["zai"]
-    assert routewise.route_candidates["model-b"] == []
+    assert router_b.route_candidates["model-b"] == []
 
     enabled = await client.patch(
         "/admin/providers/openrouter/disabled",
@@ -185,10 +190,10 @@ async def test_disable_and_reenable_provider_rebuilds_routewise_candidates(admin
 
     assert enabled.status_code == 200
     assert {
-        candidate.adapter.config.provider for candidate in routewise.route_candidates["model-a"]
+        candidate.adapter.config.provider for candidate in router_a.route_candidates["model-a"]
     } == {"openrouter", "zai"}
     assert [
-        candidate.adapter.config.provider for candidate in routewise.route_candidates["model-b"]
+        candidate.adapter.config.provider for candidate in router_b.route_candidates["model-b"]
     ] == ["openrouter"]
 
 
