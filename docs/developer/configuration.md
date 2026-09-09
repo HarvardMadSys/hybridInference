@@ -159,8 +159,15 @@ If a runtime signup-setting read fails or exceeds one second, the gateway
 temporarily disables public signup. A valid `/site-config` response still
 returns HTTP 200 with its identity and branding intact and
 `public_signup: false`; registration returns HTTP 403 without creating an account. It does not
-fall back to an environment value that could reopen registration. The next
-request retries the runtime read, so recovery does not require a restart.
+fall back to an environment value that could reopen registration.
+
+Because `/site-config` is unauthenticated and read while rendering every
+console page, the gateway does not repeat a failing read for every request.
+Callers that arrive together while the setting's cache is cold share one
+store round-trip, and a failed read is reused for five seconds, so an outage
+costs one timeout per window rather than one per request. Recovery needs no
+restart: the window expires on its own, and writing `signup_enabled` through
+the administrator API clears it at once.
 
 ### Dark mode is the default, and that is deliberate
 

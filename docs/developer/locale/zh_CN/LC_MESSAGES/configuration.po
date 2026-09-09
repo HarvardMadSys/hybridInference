@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-29 10:34+0800\n"
+"POT-Creation-Date: 2026-09-09 16:37+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -33,7 +33,8 @@ msgid ""
 "reference) and [Routing](routing.md) (what the routing engine does with "
 "the result)."
 msgstr ""
-"本页说明运行中的网关如何找到自己的配置：读哪些文件、这些文件放在哪里，以及当多个层级指向同一个文件时哪一层胜出。它与[添加新模型](adding-models.md)（逐字段的模型注册表参考）和[路由](routing.md)（路由引擎拿到结果后做什么）互为概念上的配套。"
+"本页说明运行中的网关如何找到自己的配置：读哪些文件、这些文件放在哪里，以及当多个层级指向同一个文件时哪一层胜出。它与[添加新模型](adding-"
+"models.md)（逐字段的模型注册表参考）和[路由](routing.md)（路由引擎拿到结果后做什么）互为概念上的配套。"
 
 #: ../developer/configuration.md:9
 msgid "What the gateway reads at startup"
@@ -59,8 +60,7 @@ msgstr ""
 msgid ""
 "The model registry: every model id the gateway serves and the upstream "
 "routes behind it"
-msgstr ""
-"模型注册表：网关对外提供的每一个模型 id，以及它背后的上游路由"
+msgstr "模型注册表：网关对外提供的每一个模型 id，以及它背后的上游路由"
 
 #: ../developer/configuration.md
 msgid "`register_from_models_yaml` in `apps/backend/serving/servers/registry.py`"
@@ -118,7 +118,9 @@ msgid ""
 "rather than overriding anything. Without an alerts file the built-in "
 "thresholds apply."
 msgstr ""
-"只有模型注册表是承重的。没有它，网关照样启动、照样提供 `/health`，`GET /v1/models` 返回一个空列表。没有路由文件，注册表自己的每条路由权重继续生效——一份全新的 clone 拿到的其实也是这个效果，因为内置默认值 `config/examples/routing.minimal.yaml` 声明的是空的端点池，不会覆盖任何东西。没有告警文件，则采用内置阈值。"
+"只有模型注册表是承重的。没有它，网关照样启动、照样提供 `/health`，`GET /v1/models` "
+"返回一个空列表。没有路由文件，注册表自己的每条路由权重继续生效——一份全新的 clone 拿到的其实也是这个效果，因为内置默认值 "
+"`config/examples/routing.minimal.yaml` 声明的是空的端点池，不会覆盖任何东西。没有告警文件，则采用内置阈值。"
 
 #: ../developer/configuration.md:25
 msgid ""
@@ -199,7 +201,8 @@ msgid ""
 "**The distribution manifest's `paths:` section** — only when "
 "`DISTRIBUTION_CONFIG_MODE=active`; see below."
 msgstr ""
-"**distribution manifest 的 `paths:` 段**——仅当 `DISTRIBUTION_CONFIG_MODE=active` 时；见下文。"
+"**distribution manifest 的 `paths:` 段**——仅当 "
+"`DISTRIBUTION_CONFIG_MODE=active` 时；见下文。"
 
 #: ../developer/configuration.md:78
 msgid ""
@@ -255,23 +258,92 @@ msgid ""
 "tells the gateway where its config files are. "
 "`config/examples/distribution.example.yaml` is the annotated reference. "
 "Both examples below and in that file close public signup when activated; "
-"change `public_signup` to `true` or null if this deployment should accept "
-"new accounts through the public signup API:"
+"change `public_signup` to `true` or null if this deployment should accept"
+" new accounts through the public signup API:"
 msgstr ""
 "manifest 是一份带版本号的 YAML "
 "文档，它给部署命名，并告诉网关这个部署的配置文件在哪里。`config/examples/distribution.example.yaml` "
-"是带注释的参考。下方和该文件中的示例在激活后都会关闭公开注册；如果部署应该接受公开注册 API "
-"创建的新账号，请把 `public_signup` 改为 `true` 或 null："
+"是带注释的参考。下方和该文件中的示例在激活后都会关闭公开注册；如果部署应该接受公开注册 API 创建的新账号，请把 `public_signup`"
+" 改为 `true` 或 null："
 
-#: ../developer/configuration.md:129
+#: ../developer/configuration.md:131
 msgid "Point the gateway at it with two environment variables:"
 msgstr "用两个环境变量把网关指向它："
 
-#: ../developer/configuration.md:136
+#: ../developer/configuration.md:138
+msgid ""
+"With an active manifest, `features.public_signup: false` disables both "
+"the signup UI and `POST /auth/signup` (HTTP 403, without creating an "
+"account). Neither `SIGNUP_ENABLED=true` nor a runtime "
+"`signup_enabled=true` override can reopen it. To enable public signup, "
+"change the manifest to `true` or leave the field unset/null and restart "
+"the backend, then ensure the effective `signup_enabled` setting is "
+"enabled."
+msgstr ""
+"在 active 模式下，manifest 中的 `features.public_signup: false` 会同时关闭注册界面和 `POST"
+" /auth/signup`（返回 HTTP 403，不创建账号）。`SIGNUP_ENABLED=true` 和运行时的 "
+"`signup_enabled=true` 覆盖值都不能重新开启注册。要开放公开注册，请将 manifest 中该字段改为 `true` "
+"或留空/null，重启后端，并确保最终生效的 `signup_enabled` 设置已开启。"
+
+#: ../developer/configuration.md:145
+msgid ""
+"The admin API rejects attempts to set `signup_enabled=true` while the "
+"active manifest disables signup (HTTP 400, without saving the setting). "
+"Manifest root and `features` fields reject unknown keys, including "
+"`public-signup`, `publicSignup`, or a `public_signup` field at the "
+"manifest root."
+msgstr ""
+"active manifest 关闭注册时，管理员 API 会拒绝设置 `signup_enabled=true`（返回 HTTP "
+"400，不保存设置）。manifest 根节点和 `features` 会拒绝未知字段，包括 `public-"
+"signup`、`publicSignup`，以及写在 manifest 根节点的 `public_signup`。"
+
+#: ../developer/configuration.md:150
+msgid ""
+"When the manifest allows signup, the runtime `signup_enabled` setting "
+"takes precedence over `SIGNUP_ENABLED` (default `true`). The same rule "
+"applies with no manifest or in dark mode; dark-mode feature values have "
+"no effect. `GET /site-config` reports the resulting boolean in "
+"`features.public_signup`, so the console follows the backend policy. "
+"Email verification, domain-based approval, and quotas remain separate "
+"checks; allowing registration does not bypass them."
+msgstr ""
+"当 manifest 允许注册时，运行时 `signup_enabled` 设置优先于 `SIGNUP_ENABLED`（默认 "
+"`true`）。未配置 manifest 或使用 dark 模式时也遵循同一规则；dark 模式下的功能字段不影响实际行为。`GET /site-"
+"config` 在 `features.public_signup` "
+"中返回最终布尔值，使控制台与后端策略一致。邮箱验证、按域名审批和配额仍是独立检查，允许注册不会绕过它们。"
+
+#: ../developer/configuration.md:158
+msgid ""
+"If a runtime signup-setting read fails or exceeds one second, the gateway"
+" temporarily disables public signup. A valid `/site-config` response "
+"still returns HTTP 200 with its identity and branding intact and "
+"`public_signup: false`; registration returns HTTP 403 without creating an"
+" account. It does not fall back to an environment value that could reopen"
+" registration."
+msgstr ""
+"如果运行时注册设置读取失败或超过一秒，网关会暂时关闭公开注册。有效的 `/site-config` 响应仍返回 HTTP "
+"200，保留站点身份和品牌，并返回 `public_signup: false`；注册返回 HTTP "
+"403，不创建账号。系统不会回退到可能重新开放注册的环境变量值。"
+
+#: ../developer/configuration.md:164
+msgid ""
+"Because `/site-config` is unauthenticated and read while rendering every "
+"console page, the gateway does not repeat a failing read for every "
+"request. Callers that arrive together while the setting's cache is cold "
+"share one store round-trip, and a failed read is reused for five seconds,"
+" so an outage costs one timeout per window rather than one per request. "
+"Recovery needs no restart: the window expires on its own, and writing "
+"`signup_enabled` through the administrator API clears it at once."
+msgstr ""
+"由于 `/site-config` 无需鉴权，且每次渲染控制台页面都会读取它，网关不会为每个请求重复一次失败的读取。缓存尚未预热时并发到达的调用方共享同一次存储往返，"
+"失败的读取会复用五秒，因此一次故障只在每个窗口内产生一次超时，而不是每个请求各产生一次。恢复无需重启：该窗口会自行过期，通过管理员 API 写入 "
+"`signup_enabled` 也会立即清除它。"
+
+#: ../developer/configuration.md:172
 msgid "Dark mode is the default, and that is deliberate"
 msgstr "默认是 dark 模式，这是有意为之"
 
-#: ../developer/configuration.md:138
+#: ../developer/configuration.md:174
 msgid ""
 "`DISTRIBUTION_CONFIG_MODE` defaults to `dark`. In dark mode the manifest "
 "is loaded and validated, and the resolver logs what it *would* change, "
@@ -280,24 +352,25 @@ msgstr ""
 "`DISTRIBUTION_CONFIG_MODE` 默认为 `dark`。dark 模式下，manifest "
 "会被加载并校验，解析器把它*本来会*改动的内容记进日志，但当前的解析结果仍然有效："
 
-#: ../developer/configuration.md:148
+#: ../developer/configuration.md:184
 msgid ""
 "Setting only `DISTRIBUTION_CONFIG_PATH` therefore cannot change "
 "behaviour; you get a warning telling you the mode defaulted to `dark`. "
-"Config-path resolution treats an unrecognised mode as `dark` with a warning. "
-"Signup and `/site-config` are stricter: an explicitly empty or unknown mode, "
-"or `active` without a manifest path, closes signup (HTTP 403) and makes "
-"`/site-config` report an unavailable configuration (HTTP 503). Compose uses "
-"`dark` when the mode is unset. Enable a manifest by running dark first, "
-"reading the comparison lines, and only then setting `active`."
+"Config-path resolution treats an unrecognised mode as `dark` with a "
+"warning. Signup and `/site-config` are stricter: an explicitly empty or "
+"unknown mode, or `active` without a manifest path, closes signup (HTTP "
+"403) and makes `/site-config` report an unavailable configuration (HTTP "
+"503). Compose uses `dark` when the mode is unset. Enable a manifest by "
+"running dark first, reading the comparison lines, and only then setting "
+"`active`."
 msgstr ""
 "因此，只设置 `DISTRIBUTION_CONFIG_PATH` 改变不了任何行为；你会收到一条警告，告诉你模式取了默认值 "
-"`dark`。配置路径解析会把无法识别的模式视为 `dark` 并记录警告。注册和 `/site-config` 更严格："
-"显式设置为空或未知模式，或选择 `active` 却未设置 manifest 路径时，会关闭注册（HTTP 403），"
-"并让 `/site-config` 报告配置不可用（HTTP 503）。模式未设置时，Compose 使用 `dark`。启用 "
-"manifest 的做法是：先跑 dark，读那些对比行，确认之后再设成 `active`。"
+"`dark`。配置路径解析会把无法识别的模式视为 `dark` 并记录警告。注册和 `/site-config` "
+"更严格：显式设置为空或未知模式，或选择 `active` 却未设置 manifest 路径时，会关闭注册（HTTP 403），并让 `/site-"
+"config` 报告配置不可用（HTTP 503）。模式未设置时，Compose 使用 `dark`。启用 manifest 的做法是：先跑 "
+"dark，读那些对比行，确认之后再设成 `active`。"
 
-#: ../developer/configuration.md:154
+#: ../developer/configuration.md:193
 msgid ""
 "Failure behaviour differs by mode, on purpose. In dark mode a manifest "
 "that will not load is logged and skipped. In active mode the manifest "
@@ -309,21 +382,30 @@ msgstr ""
 "manifest 来的，所以加载不了的 manifest——overlay 挂载丢了、YAML "
 "写错了——会拒绝启动，而不是悄悄用另一份注册表对外服务。"
 
-#: ../developer/configuration.md:159
-msgid "Identity, and what the manifest must not contain"
+#: ../developer/configuration.md:198
+msgid ""
+"If an invalid active manifest reaches the HTTP handlers, signup remains "
+"closed and `/site-config` returns HTTP 503 without exposing file paths or"
+" parser errors. It cannot return a valid identity until the manifest is "
+"repaired."
 msgstr ""
-"站点标识，以及 manifest 里不能放什么"
+"如果 HTTP 处理函数遇到无效的 active manifest，注册保持关闭，`/site-config` 返回 HTTP "
+"503，不暴露文件路径或解析错误。在 manifest 修复前，接口无法返回有效的站点身份。"
 
-#: ../developer/configuration.md:161
+#: ../developer/configuration.md:202
+msgid "Identity, and what the manifest must not contain"
+msgstr "站点标识，以及 manifest 里不能放什么"
+
+#: ../developer/configuration.md:204
 msgid ""
 "`site:` and `features:` are served as a public subset by `GET /site-"
 "config`, and `distribution.display_name` / `site:` feed backend-rendered "
 "content (transactional emails, attribution headers) through "
 "`get_site_identity()` in `apps/backend/serving/config/site_identity.py`. "
-"Both are gated on `DISTRIBUTION_CONFIG_MODE=active`; in dark mode "
-"`/site-config` returns a neutral document and identity falls back to "
-"`SITE_NAME` / `SITE_PUBLIC_BASE_URL` / `SITE_DOCS_URL` / "
-"`SITE_SUPPORT_EMAIL` or to neutral defaults."
+"Both are gated on `DISTRIBUTION_CONFIG_MODE=active`; in dark mode `/site-"
+"config` returns a neutral document and identity falls back to `SITE_NAME`"
+" / `SITE_PUBLIC_BASE_URL` / `SITE_DOCS_URL` / `SITE_SUPPORT_EMAIL` or to "
+"neutral defaults."
 msgstr ""
 "`site:` 和 `features:` 会由 `GET /site-config` "
 "以公开子集的形式对外提供；`distribution.display_name` 与 `site:` 则通过 "
@@ -333,7 +415,7 @@ msgstr ""
 "返回一份中立文档，站点标识回退到 `SITE_NAME` / `SITE_PUBLIC_BASE_URL` / `SITE_DOCS_URL` /"
 " `SITE_SUPPORT_EMAIL`，或者回退到中立的默认值。"
 
-#: ../developer/configuration.md:169
+#: ../developer/configuration.md:212
 msgid ""
 "Manifests must not contain secrets. Credentials stay in the environment, "
 "and `schema_version: 1` deliberately does not interpolate environment "
@@ -342,62 +424,63 @@ msgstr ""
 "manifest 里绝不能放密钥。凭据留在环境变量里，而且 `schema_version: 1` 有意不把环境变量插值进 manifest "
 "的取值。"
 
-#: ../developer/configuration.md
+#: ../developer/configuration.md:216
 msgid "Backend extensions"
 msgstr "后端扩展"
 
-#: ../developer/configuration.md
+#: ../developer/configuration.md:218
 msgid ""
-"`BACKEND_EXTENSIONS` is an optional comma-delimited list of trusted, local Python "
-"module names. It is empty by default. Each module must expose a synchronous "
-"`register()` function that takes no arguments. The gateway imports and registers "
-"each module once per process, after loading dotenv and before constructing "
-"runtime routes or consuming their registries. An import or registration failure "
-"aborts startup; the gateway does not silently use a different adapter."
+"`BACKEND_EXTENSIONS` is an optional comma-delimited list of trusted, "
+"local Python module names. It is empty by default. Each module must "
+"expose a synchronous `register()` function that takes no arguments. The "
+"gateway imports and registers each module once per process, after loading"
+" dotenv and before constructing runtime routes or consuming their "
+"registries. An import or registration failure aborts startup; the gateway"
+" does not silently use a different adapter."
 msgstr ""
-"`BACKEND_EXTENSIONS` 是可选的、以逗号分隔的受信任本地 Python 模块名列表，默认值为空。"
-"每个模块必须提供同步、无参数的 `register()` 函数。网关加载 dotenv 后、构造运行时路由或使用相关注册表前，"
-"在每个进程中导入并注册每个模块一次。导入或注册失败会中止启动；网关不会悄悄换用其他适配器。"
+"`BACKEND_EXTENSIONS` 是可选的、以逗号分隔的受信任本地 Python 模块名列表，默认值为空。每个模块必须提供同步、无参数的 "
+"`register()` 函数。网关加载 dotenv "
+"后、构造运行时路由或使用相关注册表前，在每个进程中导入并注册每个模块一次。导入或注册失败会中止启动；网关不会悄悄换用其他适配器。"
 
-#: ../developer/configuration.md
+#: ../developer/configuration.md:225
 msgid ""
 "Extensions register factories through "
-"`serving.servers.registry.register_adapter_factory(kind, factory, *, override=False)`. "
-"A factory receives a configuration dictionary and returns an adapter, before "
-"built-in provider defaults are applied. Registering an existing extension kind "
-"is an error. Replacing a built-in kind requires `override=True` and emits a log "
-"entry. Registered kinds also become reserved provider labels. The startup "
-"`register()` function may populate the existing runtime-setting and provider "
-"metadata dictionaries before their consumers run; it must mutate those shared "
+"`serving.servers.registry.register_adapter_factory(kind, factory, *, "
+"override=False)`. A factory receives a configuration dictionary and "
+"returns an adapter, before built-in provider defaults are applied. "
+"Registering an existing extension kind is an error. Replacing a built-in "
+"kind requires `override=True` and emits a log entry. Registered kinds "
+"also become reserved provider labels. The startup `register()` function "
+"may populate the existing runtime-setting and provider metadata "
+"dictionaries before their consumers run; it must mutate those shared "
 "dictionaries rather than replace them."
 msgstr ""
-"扩展通过 `serving.servers.registry.register_adapter_factory(kind, factory, *, override=False)` 注册工厂。"
-"工厂在内置 provider 默认值应用前接收配置字典并返回适配器。注册已存在的扩展 kind 会报错。"
-"替换内置 kind 必须设置 `override=True`，且会记录日志。注册的 kind 也会成为保留的 provider 标签。"
-"启动时的 `register()` 函数可在使用方运行前，填充现有的运行时设置和 provider 元数据字典；"
-"必须修改这些共享字典，而不能替换它们。"
+"扩展通过 `serving.servers.registry.register_adapter_factory(kind, factory, *,"
+" override=False)` 注册工厂。工厂在内置 provider 默认值应用前接收配置字典并返回适配器。注册已存在的扩展 kind "
+"会报错。替换内置 kind 必须设置 `override=True`，且会记录日志。注册的 kind 也会成为保留的 provider "
+"标签。启动时的 `register()` 函数可在使用方运行前，填充现有的运行时设置和 provider "
+"元数据字典；必须修改这些共享字典，而不能替换它们。"
 
-#: ../developer/configuration.md
+#: ../developer/configuration.md:235
 msgid ""
-"The deployment must make these modules importable, for example through its "
-"read-only overlay mount. This executes trusted server code, not user-supplied "
-"configuration: do not derive module names from requests or allow an admin form "
-"to choose them. The loader does not fetch remote modules or load code per "
-"request. Import all extension code during startup, avoid later lazy imports or "
-"live code reloads, and restart the backend when changing the mounted extension. "
-"See [Deployment-local adapters](adding-models.md#deployment-local-adapters) for "
-"a minimal factory example."
+"The deployment must make these modules importable, for example through "
+"its read-only overlay mount. This executes trusted server code, not user-"
+"supplied configuration: do not derive module names from requests or allow"
+" an admin form to choose them. The loader does not fetch remote modules "
+"or load code per request. Import all extension code during startup, avoid"
+" later lazy imports or live code reloads, and restart the backend when "
+"changing the mounted extension. See [Deployment-local adapters](adding-"
+"models.md#deployment-local-adapters) for a minimal factory example."
 msgstr ""
-"部署必须确保这些模块可导入，例如通过只读 overlay 挂载提供模块。这里执行的是受信任的服务端代码，"
-"不是用户提交的配置：不要从请求推导模块名，也不要允许管理表单选择模块。加载器不会获取远程模块，"
-"也不会逐请求加载代码。请在启动阶段导入全部扩展代码，避免之后的延迟导入或代码热重载，"
-"并在修改挂载的扩展后重启后端。最小工厂示例见[部署本地适配器](adding-models.md#deployment-local-adapters)。"
+"部署必须确保这些模块可导入，例如通过只读 overlay "
+"挂载提供模块。这里执行的是受信任的服务端代码，不是用户提交的配置：不要从请求推导模块名，也不要允许管理表单选择模块。加载器不会获取远程模块，也不会逐请求加载代码。请在启动阶段导入全部扩展代码，避免之后的延迟导入或代码热重载，并在修改挂载的扩展后重启后端。最小工厂示例见[部署本地适配器"
+"](adding-models.md#deployment-local-adapters)。"
 
-#: ../developer/configuration.md:173
+#: ../developer/configuration.md:244
 msgid "The example distribution"
 msgstr "示例 distribution"
 
-#: ../developer/configuration.md:175
+#: ../developer/configuration.md:246
 msgid ""
 "`distributions/example/` is a complete, runnable overlay kept in the "
 "repository as a teaching artifact: a manifest, a one-model registry "
@@ -405,9 +488,11 @@ msgid ""
 "overlays, and smoke scripts. Walk through it with the [Quickstart"
 "](router-tutorial.md):"
 msgstr ""
-"`distributions/example/` 是一个完整、可运行的 overlay，作为教学用的样例留在仓库里：一份 manifest、一份只含单个模型的注册表（指向随仓库自带、无需凭据的假 provider）、Compose overlay，以及冒烟脚本。可以配合[快速开始](router-tutorial.md)走一遍："
+"`distributions/example/` 是一个完整、可运行的 overlay，作为教学用的样例留在仓库里：一份 "
+"manifest、一份只含单个模型的注册表（指向随仓库自带、无需凭据的假 provider）、Compose "
+"overlay，以及冒烟脚本。可以配合[快速开始](router-tutorial.md)走一遍："
 
-#: ../developer/configuration.md:185
+#: ../developer/configuration.md:256
 msgid ""
 "It carries a marker file, `EXAMPLE_OVERLAY`, whose presence keeps it out "
 "of automatic discovery. The Makefile picks a distribution like this:"
@@ -415,39 +500,39 @@ msgstr ""
 "它带着一个标记文件 `EXAMPLE_OVERLAY`，只要这个文件在，它就不会被自动发现选中。Makefile 挑选 distribution "
 "的规则是这样的："
 
-#: ../developer/configuration.md:188
+#: ../developer/configuration.md:259
 msgid ""
 "Overlays are discovered from `distributions/*/deploy/*.env`, minus any "
 "directory containing `EXAMPLE_OVERLAY`."
 msgstr "overlay 从 `distributions/*/deploy/*.env` 发现，并排除任何含有 `EXAMPLE_OVERLAY` 的目录。"
 
-#: ../developer/configuration.md:190
+#: ../developer/configuration.md:261
 msgid ""
 "Exactly one candidate: it is selected automatically, and `make` prints "
 "which identity it is compiling in."
 msgstr "恰好只有一个候选：自动选中它，`make` 会打印它正在按哪一个站点标识编译。"
 
-#: ../developer/configuration.md:192
+#: ../developer/configuration.md:263
 msgid "Several candidates: `make` fails and asks you to name one."
 msgstr "有多个候选：`make` 失败，并要求你指定其中一个。"
 
-#: ../developer/configuration.md:193
+#: ../developer/configuration.md:264
 msgid ""
 "None (the state of a fresh clone of this repository): no overlay is "
 "selected, and the stack is neutral."
 msgstr "一个都没有（刚克隆本仓库时就是这个状态）：不选任何 overlay，整套服务保持中立。"
 
-#: ../developer/configuration.md:196
+#: ../developer/configuration.md:267
 msgid ""
 "`DISTRIBUTION=<name>` selects one by name — including the example, which "
 "is only ever selected explicitly. `DISTRIBUTION=none` opts out."
 msgstr "`DISTRIBUTION=<name>` 按名字选择——示例也在其中，而它只可能被显式选中。`DISTRIBUTION=none` 表示不选。"
 
-#: ../developer/configuration.md:199
+#: ../developer/configuration.md:270
 msgid "What a fresh clone does with no configuration at all"
 msgstr "全新克隆、完全没有配置时会怎样"
 
-#: ../developer/configuration.md:201
+#: ../developer/configuration.md:272
 msgid ""
 "Start the gateway in a clean checkout with no `MODELS_CONFIG_PATH`, no "
 "manifest and no overlay, and the built-in default applies: it serves "
@@ -461,32 +546,31 @@ msgstr ""
 "`config/examples/models.openrouter.yaml`。这个文件注册了三个模型——两个直接走 OpenRouter "
 "的路由，一个把本地 OpenAI 兼容服务器排在前面、以 OpenRouter 作为自动回退——而它们需要的都是同一把凭据。"
 
-#: ../developer/configuration.md:213
+#: ../developer/configuration.md:284
 msgid ""
 "Without that variable every model in the file is skipped — its route's "
 "only API key expands to empty — and the gateway says so before serving "
 "anything:"
 msgstr "没有这个变量，文件里的每个模型都会被跳过——它那条路由唯一的 API key 展开后是空的——网关会在开始对外服务之前就把这件事说出来："
 
-#: ../developer/configuration.md:222
+#: ../developer/configuration.md:293
 msgid ""
 "This is the fastest way to a gateway that routes real traffic. Replace "
 "the file with your own registry once you know what you want to serve."
 msgstr "这是让网关跑上真实流量的最快路径。等你想清楚要提供哪些模型，再用自己的注册表替换这个文件。"
 
-#: ../developer/configuration.md:225
+#: ../developer/configuration.md:296
 msgid "The model registry"
 msgstr "模型注册表"
 
-#: ../developer/configuration.md:227
+#: ../developer/configuration.md:298
 msgid ""
 "[Adding a New Model](adding-models.md) is the field reference. Three "
 "things belong here because they are properties of *configuration loading*"
 " rather than of any one field:"
-msgstr ""
-"[添加新模型](adding-models.md) 是逐字段的参考。有三件事属于本页，因为它们是*配置加载*的性质，而不是某一个字段的性质："
+msgstr "[添加新模型](adding-models.md) 是逐字段的参考。有三件事属于本页，因为它们是*配置加载*的性质，而不是某一个字段的性质："
 
-#: ../developer/configuration.md:231
+#: ../developer/configuration.md:302
 msgid ""
 "**A route's `kind:` picks the adapter; the model's `provider:` is its "
 "default.** Each entry under `route:` names a `kind:`, and `kind` is what "
@@ -503,14 +587,14 @@ msgstr ""
 "合成出一条路由。`provider` 同时也是写入 `api_logs.provider`、并在指标里展示的标签，所以一条路由可以用 "
 "`provider:` 单独覆盖它。"
 
-#: ../developer/configuration.md:239
+#: ../developer/configuration.md:310
 msgid ""
 "**Adapter construction is centralized.** `_make_adapter` "
-"(`apps/backend/serving/servers/registry.py`) checks registered extension factories "
-"first, then dispatches these built-in kinds:"
+"(`apps/backend/serving/servers/registry.py`) checks registered extension "
+"factories first, then dispatches these built-in kinds:"
 msgstr ""
-"**适配器统一构造**。`_make_adapter`（`apps/backend/serving/servers/registry.py`）"
-"先检查已注册的扩展工厂，然后分派以下内置 kind："
+"**适配器统一构造**。`_make_adapter`（`apps/backend/serving/servers/registry.py`）先检查已注册的扩展工厂，然后分派以下内置"
+" kind："
 
 #: ../developer/configuration.md
 msgid "Adapter"
@@ -558,27 +642,29 @@ msgstr ""
 msgid "`AnthropicAdapter`"
 msgstr ""
 
-#: ../developer/configuration.md:252
+#: ../developer/configuration.md:322
 msgid ""
 "Local inference servers have no dedicated adapter: `vllm`, `sglang` and "
 "`ollama` are OpenAI-compatible kinds that differ only in their provider "
 "label and usage handling. A kind that is neither built-in nor explicitly "
-"registered by an extension raises `ValueError: Unknown adapter kind: <kind>` "
-"during registry loading. To re-derive the built-in list from the code:"
+"registered by an extension raises `ValueError: Unknown adapter kind: "
+"<kind>` during registry loading. To re-derive the built-in list from the "
+"code:"
 msgstr ""
 "本地推理服务器没有专用 adapter：`vllm`、`sglang` 和 `ollama` 都是 OpenAI 兼容的 kind，区别只在 "
-"provider 标签和用量处理上。既非内置、也未由扩展显式注册的 kind，会在加载注册表时抛出 "
-"`ValueError: Unknown adapter kind: <kind>`。要从代码中重新得出内置列表："
+"provider 标签和用量处理上。既非内置、也未由扩展显式注册的 kind，会在加载注册表时抛出 `ValueError: Unknown "
+"adapter kind: <kind>`。要从代码中重新得出内置列表："
 
-#: ../developer/configuration.md:261
+#: ../developer/configuration.md:332
 msgid ""
 "A `grep` for `if kind` misses most of it: the OpenAI-compat arm is a "
-"single `if kind in (` followed by the names on their own lines, so"
-" none of them appear in the output."
+"single `if kind in (` followed by the names on their own lines, so none "
+"of them appear in the output."
 msgstr ""
-"用 `grep` 找 `if kind` 会漏掉其中大部分：OpenAI-compat 那一支是一个 `if kind in (`，后面的名字各占一行，所以它们一个都不会出现在输出里。"
+"用 `grep` 找 `if kind` 会漏掉其中大部分：OpenAI-compat 那一支是一个 `if kind in "
+"(`，后面的名字各占一行，所以它们一个都不会出现在输出里。"
 
-#: ../developer/configuration.md:265
+#: ../developer/configuration.md:336
 msgid ""
 "The neighbouring `RESERVED_PROVIDER_LABELS` set in the same module is a "
 "different, larger list — the labels a route may not borrow as a custom "
@@ -586,9 +672,10 @@ msgid ""
 "`openai` and `router` that are *not* adapter kinds."
 msgstr ""
 "同一个模块里紧挨着的 `RESERVED_PROVIDER_LABELS` 集合是另一份不同的、更长的列表——那是路由不能拿去当自定义 "
-"`provider:` 的标签——其中还包含已注册的扩展 kind，以及 `openai`、`router` 这类*并不是* adapter kind 的名字。"
+"`provider:` 的标签——其中还包含已注册的扩展 kind，以及 `openai`、`router` 这类*并不是* adapter "
+"kind 的名字。"
 
-#: ../developer/configuration.md:270
+#: ../developer/configuration.md:341
 #, python-brace-format
 msgid ""
 "**Environment interpolation in the registry is whole-value only.** In "
@@ -598,17 +685,17 @@ msgstr ""
 "**注册表里的环境变量插值只支持整值替换**。在 `models.yaml` 里，只有当整个字符串恰好是 `${VAR}` 时才会展开。没有 "
 "`${VAR:-default}`，也没有嵌在字符串中间的替换："
 
-#: ../developer/configuration.md:283
+#: ../developer/configuration.md:354
 msgid ""
 "The routing file uses a different, more capable expander (see below). Do "
 "not carry habits from one file to the other."
 msgstr "路由文件用的是另一个更强的展开器（见下文）。不要把一个文件里的习惯带到另一个文件上。"
 
-#: ../developer/configuration.md:286
+#: ../developer/configuration.md:357
 msgid "The routing file"
 msgstr "路由文件"
 
-#: ../developer/configuration.md:288
+#: ../developer/configuration.md:359
 msgid ""
 "`routing.yaml` is optional. It configures the deployment-wide weight "
 "strategy and the health probe loop. The schema is `RoutingConfig` in "
@@ -701,7 +788,7 @@ msgstr ""
 msgid "Free-form mapping."
 msgstr "自由格式的映射。"
 
-#: ../developer/configuration.md:301
+#: ../developer/configuration.md:372
 msgid ""
 "Each deployment entry needs both an `endpoint:` (which must start with "
 "`http://` or `https://`) and a non-empty `models:` list; an entry with an"
@@ -716,7 +803,7 @@ msgstr ""
 "initialize`，并继续使用注册表自己的权重。而 `endpoint:` "
 "展开为空的条目只会被单独丢弃，并给出一条警告点名那些被孤立的模型，所以一个没设置的变量不会让其余端点全部作废。"
 
-#: ../developer/configuration.md:323
+#: ../developer/configuration.md:394
 msgid ""
 "How it is applied: `RoutingManager` groups each model's registered "
 "adapters into local and remote — an adapter joins a group when its "
@@ -736,7 +823,7 @@ msgstr ""
 "块另有设置），在每组内部平均分摊权重，最后重新归一化，使一个模型各条路由的权重之和为 "
 "1.0。当某个模型的一组为空时，全部权重归另一组。在这里什么都匹配不上的模型，保留它 `route:` 列表里的权重。"
 
-#: ../developer/configuration.md:334
+#: ../developer/configuration.md:405
 msgid ""
 "Health probing covers `local_deployment` endpoints only — remote "
 "providers do not serve the gateway's `/health` path and would be marked "
@@ -749,7 +836,7 @@ msgstr ""
 "路径，会因此被判为不健康。每次探测都是对端点 origin 根路径加 `/health` 发一个 "
 "`GET`。探测失败的端点会被排除在分组之外，它的权重转给仍然存活的路由；一旦某次探测成功，它会自动回归。"
 
-#: ../developer/configuration.md:340
+#: ../developer/configuration.md:411
 #, python-brace-format
 msgid ""
 "Unlike the model registry, this file's expander handles `${VAR}`, "
@@ -757,7 +844,7 @@ msgid ""
 "depth."
 msgstr "与模型注册表不同，这个文件的展开器支持 `${VAR}`、`${VAR:-default}`，以及嵌在更长字符串里的变量，且在任意嵌套深度上都有效。"
 
-#: ../developer/configuration.md:343
+#: ../developer/configuration.md:414
 msgid ""
 "`routing_strategy:` and `routing_parameter:` are the deprecated spellings"
 " of `default_router:` and per-model `router_params:`. They still load, "
@@ -769,11 +856,11 @@ msgstr ""
 "`router_params:` 的已废弃写法。它们仍然能加载，并会记录一条废弃警告。每模型的 router 选择（模型注册表里的 "
 "`router:` / `router_params:`）会覆盖 `default_router`，其说明见[路由](routing.md)。"
 
-#: ../developer/configuration.md:349
+#: ../developer/configuration.md:420
 msgid "Environment variables"
 msgstr "环境变量"
 
-#: ../developer/configuration.md:351
+#: ../developer/configuration.md:422
 #, python-brace-format
 msgid ""
 "`Settings` (`apps/backend/serving/config/settings.py`) reads a `.env` "
@@ -787,15 +874,15 @@ msgstr ""
 "文件和进程环境变量，大小写不敏感；进程环境变量胜出。仓库根目录的 `.env.example` 是带注释的清单——把它复制成 `.env` "
 "再改。密钥只属于这里：不放在模型注册表里（那里用 `${VAR}` 引用），也不放在 manifest 里。"
 
-#: ../developer/configuration.md:357
+#: ../developer/configuration.md:428
 msgid "Running with your configuration"
 msgstr "用你自己的配置运行"
 
-#: ../developer/configuration.md:363
+#: ../developer/configuration.md:434
 msgid "Then check what actually loaded:"
 msgstr "然后检查实际加载了什么："
 
-#: ../developer/configuration.md:370
+#: ../developer/configuration.md:441
 msgid ""
 "The startup log is the authority on resolution. `Registered N routes from"
 " <path>` names the file that won; `[distribution dark mode] ...` lines "
@@ -806,34 +893,20 @@ msgstr ""
 "点明最终胜出的是哪个文件；`[distribution dark mode] ...` 那几行显示 manifest "
 "本来会改动什么；`Skipping model '<id>' ... after env expansion` 逐个点名凭据未设置的模型。"
 
-#: ../developer/configuration.md:376
+#: ../developer/configuration.md:447
 msgid ""
 "`GET /routing` requires no credentials and returns, for every published "
 "route, the upstream `base_url`, its provider label and its weight — that "
 "is, your complete upstream topology including any host and port embedded "
-"in a base URL. Block `/routing` at your reverse proxy on any gateway reachable "
-"from the internet unless you intend to publish this topology. `GET /admin/routing` "
-"additionally reports unpublished routes and requires an administrator's JWT "
-"or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header. Treat both endpoints' "
-"output as sensitive."
+"in a base URL. Block `/routing` at your reverse proxy on any gateway "
+"reachable from the internet unless you intend to publish this topology. "
+"`GET /admin/routing` additionally reports unpublished routes and requires"
+" an administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer "
+"...` header. Treat both endpoints' output as sensitive."
 msgstr ""
 "`GET /routing` 不需要任何凭据，就会为每一条已发布的路由返回上游的 `base_url`、它的 provider "
-"标签和它的权重——也就是你完整的上游拓扑，包括 base URL 里写着的主机和端口。"
-"任何能从公网访问到的网关，除非你有意公开这个拓扑，否则请在反向代理上挡住 `/routing`。"
-"`GET /admin/routing` 还会额外返回未发布的路由，需要在 `Authorization: Bearer ...` "
-"请求头中提供管理员的 JWT 或 `ADMIN_TOKEN`。请把两个接口的输出都当作敏感信息对待。"
+"标签和它的权重——也就是你完整的上游拓扑，包括 base URL "
+"里写着的主机和端口。任何能从公网访问到的网关，除非你有意公开这个拓扑，否则请在反向代理上挡住 `/routing`。`GET "
+"/admin/routing` 还会额外返回未发布的路由，需要在 `Authorization: Bearer ...` 请求头中提供管理员的 "
+"JWT 或 `ADMIN_TOKEN`。请把两个接口的输出都当作敏感信息对待。"
 
-msgid "With an active manifest, `features.public_signup: false` disables both the signup UI and `POST /auth/signup` (HTTP 403, without creating an account). Neither `SIGNUP_ENABLED=true` nor a runtime `signup_enabled=true` override can reopen it. To enable public signup, change the manifest to `true` or leave the field unset/null and restart the backend, then ensure the effective `signup_enabled` setting is enabled."
-msgstr "在 active 模式下，manifest 中的 `features.public_signup: false` 会同时关闭注册界面和 `POST /auth/signup`（返回 HTTP 403，不创建账号）。`SIGNUP_ENABLED=true` 和运行时的 `signup_enabled=true` 覆盖值都不能重新开启注册。要开放公开注册，请将 manifest 中该字段改为 `true` 或留空/null，重启后端，并确保最终生效的 `signup_enabled` 设置已开启。"
-
-msgid "When the manifest allows signup, the runtime `signup_enabled` setting takes precedence over `SIGNUP_ENABLED` (default `true`). The same rule applies with no manifest or in dark mode; dark-mode feature values have no effect. `GET /site-config` reports the resulting boolean in `features.public_signup`, so the console follows the backend policy. Email verification, domain-based approval, and quotas remain separate checks; allowing registration does not bypass them."
-msgstr "当 manifest 允许注册时，运行时 `signup_enabled` 设置优先于 `SIGNUP_ENABLED`（默认 `true`）。未配置 manifest 或使用 dark 模式时也遵循同一规则；dark 模式下的功能字段不影响实际行为。`GET /site-config` 在 `features.public_signup` 中返回最终布尔值，使控制台与后端策略一致。邮箱验证、按域名审批和配额仍是独立检查，允许注册不会绕过它们。"
-
-msgid "The admin API rejects attempts to set `signup_enabled=true` while the active manifest disables signup (HTTP 400, without saving the setting). Manifest root and `features` fields reject unknown keys, including `public-signup`, `publicSignup`, or a `public_signup` field at the manifest root."
-msgstr "active manifest 关闭注册时，管理员 API 会拒绝设置 `signup_enabled=true`（返回 HTTP 400，不保存设置）。manifest 根节点和 `features` 会拒绝未知字段，包括 `public-signup`、`publicSignup`，以及写在 manifest 根节点的 `public_signup`。"
-
-msgid "If a runtime signup-setting read fails or exceeds one second, the gateway temporarily disables public signup. A valid `/site-config` response still returns HTTP 200 with its identity and branding intact and `public_signup: false`; registration returns HTTP 403 without creating an account. It does not fall back to an environment value that could reopen registration. The next request retries the runtime read, so recovery does not require a restart."
-msgstr "如果运行时注册设置读取失败或超过一秒，网关会暂时关闭公开注册。有效的 `/site-config` 响应仍返回 HTTP 200，保留站点身份和品牌，并返回 `public_signup: false`；注册返回 HTTP 403，不创建账号。系统不会回退到可能重新开放注册的环境变量值。下一次请求会重试读取运行时设置，恢复无需重启。"
-
-msgid "If an invalid active manifest reaches the HTTP handlers, signup remains closed and `/site-config` returns HTTP 503 without exposing file paths or parser errors. It cannot return a valid identity until the manifest is repaired."
-msgstr "如果 HTTP 处理函数遇到无效的 active manifest，注册保持关闭，`/site-config` 返回 HTTP 503，不暴露文件路径或解析错误。在 manifest 修复前，接口无法返回有效的站点身份。"

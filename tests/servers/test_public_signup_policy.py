@@ -7,7 +7,10 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from serving.auth.signup_policy import invalidate_allowlist_cache
+from serving.auth.signup_policy import (
+    invalidate_allowlist_cache,
+    invalidate_signup_policy_cache,
+)
 from serving.config.distribution import get_distribution_config
 from serving.config.runtime_settings import init_runtime_settings
 from serving.config.settings import get_settings
@@ -24,6 +27,7 @@ async def signup_client(monkeypatch):
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
     invalidate_allowlist_cache()
+    invalidate_signup_policy_cache()
     store = AsyncMock()
     store.get_setting.return_value = None
     store.get_user_by_email.return_value = None
@@ -42,6 +46,7 @@ async def signup_client(monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client, store
     invalidate_allowlist_cache()
+    invalidate_signup_policy_cache()
 
 
 @pytest.mark.asyncio
@@ -238,6 +243,10 @@ async def test_runtime_read_failure_preserves_identity_and_closes_signup(
     assert "private-database" not in caplog.text
 
     store.get_setting.side_effect = None
+    # The fail-closed window stands until it expires or an administrator
+    # writes the setting; a recovered store does not reopen signup mid-window.
+    assert (await client.get("/site-config")).json()["features"]["public_signup"] is False
+    invalidate_signup_policy_cache()
     assert (await client.get("/site-config")).json()["features"]["public_signup"] is True
 
 
@@ -259,3 +268,62 @@ async def test_hung_runtime_read_cannot_exhaust_console_configuration_deadline(s
     assert response.status_code == 200
     assert response.json()["features"]["public_signup"] is False
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_configuration_reads_share_one_policy_lookup(signup_client):
+    """An expired policy TTL costs one store round-trip, not one per request."""
+    client, store = signup_client
+    reads = 0
+
+    async def slow_read(key):
+        nonlocal reads
+        reads += 1
+        await asyncio.sleep(0.05)
+        return None
+
+    store.get_setting.side_effect = slow_read
+    init_runtime_settings(store)
+
+    responses = await asyncio.gather(*(client.get("/site-config") for _ in range(8)))
+
+    assert [r.json()["features"]["public_signup"] for r in responses] == [True] * 8
+    assert reads == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_policy_read_is_not_repeated_for_every_request(signup_client):
+    """A store that is down costs one timeout per window, not one per request."""
+    client, store = signup_client
+    store.get_setting.side_effect = ConnectionError("store is down")
+    init_runtime_settings(store)
+
+    for _ in range(5):
+        response = await client.get("/site-config")
+        assert response.status_code == 200
+        assert response.json()["features"]["public_signup"] is False
+
+    assert (await client.post("/auth/signup", json=create_signup_request())).status_code == 403
+    assert store.get_setting.await_count == 1
+    store.create_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hung_policy_read_stalls_only_the_first_window(signup_client):
+    """Requests behind a hung store return promptly instead of queueing timeouts."""
+    client, store = signup_client
+
+    async def stuck_read(key):
+        await asyncio.Event().wait()
+
+    store.get_setting.side_effect = stuck_read
+    init_runtime_settings(store)
+
+    await asyncio.wait_for(client.get("/site-config"), timeout=2)
+    started = asyncio.get_running_loop().time()
+    for _ in range(3):
+        response = await asyncio.wait_for(client.get("/site-config"), timeout=2)
+        assert response.json()["features"]["public_signup"] is False
+    # Three more requests must not cost three more one-second timeouts.
+    assert asyncio.get_running_loop().time() - started < 1.0
+    assert store.get_setting.await_count == 1

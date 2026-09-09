@@ -6,7 +6,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from serving.auth.signup_policy import distribution_allows_public_signup
+from serving.auth.signup_policy import (
+    distribution_allows_public_signup,
+    invalidate_signup_policy_cache,
+)
 from serving.config.distribution import DistributionConfigError
 from serving.config.runtime_settings import (
     RUNTIME_SETTINGS_REGISTRY,
@@ -163,6 +166,10 @@ async def update_runtime_setting_endpoint(
 
     # Invalidate the singleton's TTL cache so the new value is visible immediately.
     rt.invalidate_key(key)
+    if key == "signup_enabled":
+        # This write proves the store answers, so any fail-closed window the
+        # policy resolver is holding is stale and must not mask the new value.
+        invalidate_signup_policy_cache()
 
     ip = get_client_ip(request)
     await log_admin_action(

@@ -4,6 +4,12 @@ An active manifest can disable public signup. Otherwise the runtime
 ``signup_enabled`` setting (falling back to the environment) decides whether
 registration is available. The API and console share this decision.
 
+``/site-config`` is unauthenticated and read while rendering every console
+page, so that runtime read is coalesced: concurrent callers that miss the
+settings TTL share one store round-trip, and a read that fails or hangs is
+remembered for ``_SIGNUP_POLICY_FAILURE_TTL_SECONDS`` so a database incident
+costs one timeout per window instead of one per request.
+
 The allowlist is stored in ``signup_allowed_domains``. Match rules:
 
 - Exact rows match the email's domain case-insensitively after trim.
@@ -25,7 +31,7 @@ import time
 from typing import TYPE_CHECKING
 
 from serving.config.distribution import DistributionConfigError, get_active_distribution_config
-from serving.config.runtime_settings import get_runtime_settings_instance
+from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings_instance
 from serving.config.settings import get_settings
 from serving.utils.logging import get_logger
 
@@ -39,6 +45,13 @@ _ALLOWLIST_EMPTY_TTL_SECONDS: float = 30.0
 _ALLOWLIST_EMPTY_CACHE: dict[str, tuple[float, bool]] = {}
 _ALLOWLIST_EMPTY_LOCK = asyncio.Lock()
 _SIGNUP_POLICY_TIMEOUT_SECONDS = 1.0
+# A failed or timed-out policy read is remembered this long. Coalescing alone
+# would only serialize the waits: during a database incident each queued
+# ``/site-config`` request would pay its own timeout in turn. Keep the window
+# short so a recovered store reopens signup without operator action.
+_SIGNUP_POLICY_FAILURE_TTL_SECONDS: float = 5.0
+_SIGNUP_POLICY_FAILURE_CACHE: dict[str, float] = {}
+_SIGNUP_POLICY_LOCK: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
 logger = get_logger(__name__)
 
 
@@ -72,18 +85,76 @@ async def is_public_signup_enabled() -> bool:
     except RuntimeError:
         # Database-free deployments do not initialize the runtime store.
         return get_settings().signup_enabled
-    try:
-        # Stay within the console's three-second configuration deadline even
-        # when the database accepts a connection but never answers the query.
-        return await asyncio.wait_for(
-            runtime_settings.get_bool("signup_enabled"), timeout=_SIGNUP_POLICY_TIMEOUT_SECONDS
-        )
-    except Exception:
-        # An unknown runtime override may be false even if the environment is
-        # true. Close registration, preserve the rest of /site-config, and do
-        # not leak raw driver exceptions or connection details into logs.
-        logger.warning("Runtime signup policy could not be read; public signup is disabled.")
+    return await _runtime_signup_enabled(runtime_settings)
+
+
+def _signup_policy_lock() -> asyncio.Lock:
+    """Return a lock owned by the running loop, replacing one from a dead loop.
+
+    A module-level lock would raise once a second event loop contends it,
+    which is what a test suite does between cases.
+    """
+    global _SIGNUP_POLICY_LOCK
+    loop = asyncio.get_running_loop()
+    if _SIGNUP_POLICY_LOCK is None or _SIGNUP_POLICY_LOCK[0] is not loop:
+        _SIGNUP_POLICY_LOCK = (loop, asyncio.Lock())
+    return _SIGNUP_POLICY_LOCK[1]
+
+
+def _policy_read_failed_recently() -> bool:
+    """True while a recent failed read still stands in for the store."""
+    failed_at = _SIGNUP_POLICY_FAILURE_CACHE.get("v")
+    if failed_at is None:
         return False
+    return (time.monotonic() - failed_at) < _SIGNUP_POLICY_FAILURE_TTL_SECONDS
+
+
+def invalidate_signup_policy_cache() -> None:
+    """Drop the fail-closed window so the next caller reads the store again.
+
+    Called after an administrator writes ``signup_enabled``: that write
+    proves the store answers, so a remembered failure is already stale.
+    """
+    _SIGNUP_POLICY_FAILURE_CACHE.clear()
+
+
+async def _runtime_signup_enabled(runtime_settings: RuntimeSettings) -> bool:
+    """Resolve ``signup_enabled``, reading the store at most once per window.
+
+    ``/site-config`` is unauthenticated and rendered on every console page,
+    so an expired TTL must not turn one read into one read per in-flight
+    request, and a store that is down or hung must not charge every request
+    the full timeout.
+    """
+    if _policy_read_failed_recently():
+        return False
+    cached, value = runtime_settings.get_cached("signup_enabled")
+    if cached:
+        return bool(value)
+
+    async with _signup_policy_lock():
+        # Whoever held the lock has since filled the cache or recorded a
+        # failure; either way this caller must not repeat the read.
+        if _policy_read_failed_recently():
+            return False
+        cached, value = runtime_settings.get_cached("signup_enabled")
+        if cached:
+            return bool(value)
+        try:
+            # Stay within the console's three-second configuration deadline
+            # even when the database accepts a connection but never answers
+            # the query.
+            return await asyncio.wait_for(
+                runtime_settings.get_bool("signup_enabled"), timeout=_SIGNUP_POLICY_TIMEOUT_SECONDS
+            )
+        except Exception:
+            # An unknown runtime override may be false even if the environment
+            # is true. Close registration, preserve the rest of /site-config,
+            # and do not leak raw driver exceptions or connection details into
+            # logs.
+            _SIGNUP_POLICY_FAILURE_CACHE["v"] = time.monotonic()
+            logger.warning("Runtime signup policy could not be read; public signup is disabled.")
+            return False
 
 
 def invalidate_allowlist_cache() -> None:
