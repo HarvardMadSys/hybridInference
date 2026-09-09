@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 import { buildCurlExample, pickExampleModel } from '@/components/landing/curlExample';
 import { useAuth } from '@/components/providers';
@@ -33,6 +33,7 @@ interface HomeLink {
 }
 
 export const GATEWAY_REQUEST_TIMEOUT_MS = 8_000;
+const MODEL_PREVIEW_LIMIT = 6;
 
 const statusDetails: Record<GatewayStatus, { label: string; dotClassName: string }> = {
   checking: { label: 'Checking…', dotClassName: 'bg-gray-400' },
@@ -115,9 +116,13 @@ function isAbsoluteUrl(value: string): boolean {
 // header carries no sign-in link, so this is the page that has to offer one.
 function homeLinks(auth: ReturnType<typeof useAuth>['state'], publicSignup: boolean): HomeLink[] {
   if (!auth.isAuthenticated) {
-    const links: HomeLink[] = [{ href: '/login', label: 'Sign in', primary: true }];
-    if (publicSignup) links.push({ href: '/signup', label: 'Sign up' });
-    return links;
+    if (publicSignup) {
+      return [
+        { href: '/signup', label: 'Sign up', primary: true },
+        { href: '/login', label: 'Sign in' },
+      ];
+    }
+    return [{ href: '/login', label: 'Sign in', primary: true }];
   }
   const links: HomeLink[] = [{ href: '/dashboard', label: 'Dashboard', primary: true }];
   if (hasRole(auth.user?.role, 'internal')) {
@@ -139,6 +144,8 @@ export function DeveloperHome({
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>('checking');
   const [catalog, setCatalog] = useState<CatalogModel[] | null>(null);
   const [catalogUnavailable, setCatalogUnavailable] = useState(false);
+  const [showAllModels, setShowAllModels] = useState(false);
+  const catalogId = useId();
   const [pageOrigin, setPageOrigin] = useState('');
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<number | undefined>(undefined);
@@ -171,6 +178,7 @@ export function DeveloperHome({
     const { signal } = controller;
     setCatalog(null);
     setCatalogUnavailable(false);
+    setShowAllModels(false);
 
     withDeadline(signal, requestTimeoutMs, (inner) =>
       catalogScope === 'account'
@@ -193,6 +201,8 @@ export function DeveloperHome({
   const needsAttention = gatewayStatus === 'unhealthy' || gatewayStatus === 'unreachable';
   const status = statusDetails[gatewayStatus];
   const links = homeLinks(auth, features.publicSignup);
+  const catalogLabel = catalogScope === 'account' ? 'Your models' : 'Public models';
+  const visibleModels = showAllModels ? catalog : catalog?.slice(0, MODEL_PREVIEW_LIMIT);
 
   // The command needs an absolute base. A distribution that publishes one
   // wins; one that hides its example on purpose gets no command; otherwise
@@ -260,7 +270,7 @@ export function DeveloperHome({
           </nav>
         </div>
 
-        <dl className="grid border-t border-gray-200 bg-gray-50 sm:grid-cols-3">
+        <dl className="grid border-t border-gray-200 bg-gray-50 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
           <div className="border-b border-gray-200 px-6 py-5 sm:border-b-0 sm:border-r sm:px-8">
             <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">
               Gateway health
@@ -273,27 +283,69 @@ export function DeveloperHome({
               {status.label}
             </dd>
           </div>
-          <div className="border-b border-gray-200 px-6 py-5 sm:border-b-0 sm:border-r sm:px-8">
+          <div className="min-w-0 px-6 py-5 sm:px-8">
             <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">API base</dt>
             <dd className="mt-2 break-all font-mono text-sm font-medium text-gray-900">
               {quickstartHidden ? 'Not published' : curlBase || 'Same origin'}
             </dd>
           </div>
-          <div className="px-6 py-5 sm:px-8">
-            <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">
-              {catalogScope === 'account' ? 'Your models' : 'Public models'}
-            </dt>
-            <dd className="mt-2 text-sm font-medium text-gray-900" aria-live="polite">
-              {catalogUnavailable
-                ? 'Unavailable'
-                : catalog === null
-                  ? 'Loading…'
-                  : catalog.length > 0
-                    ? catalog.map((model) => model.id).join(', ')
-                    : 'None configured'}
-            </dd>
-          </div>
         </dl>
+        <section
+          aria-labelledby={`${catalogId}-heading`}
+          className="border-t border-gray-200 px-6 py-5 sm:px-8"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <h2
+                id={`${catalogId}-heading`}
+                className="text-xs font-medium uppercase tracking-wide text-gray-500"
+              >
+                {catalogLabel}
+              </h2>
+              {catalog !== null && !catalogUnavailable && (
+                <span className="rounded-md bg-gray-100 px-1.5 py-0.5 text-xs font-medium tabular-nums text-gray-600">
+                  {catalog.length}
+                </span>
+              )}
+            </div>
+            {catalog !== null && catalog.length > MODEL_PREVIEW_LIMIT && (
+              <button
+                type="button"
+                aria-expanded={showAllModels}
+                aria-controls={catalogId}
+                onClick={() => setShowAllModels((expanded) => !expanded)}
+                className="rounded-md px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-950 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"
+              >
+                {showAllModels ? 'Show fewer' : `Show all ${catalog.length}`}
+              </button>
+            )}
+          </div>
+          <div className="mt-3 text-sm text-gray-600" aria-live="polite">
+            {catalogUnavailable ? (
+              'Unavailable'
+            ) : catalog === null ? (
+              'Loading…'
+            ) : catalog.length > 0 ? (
+              <ul
+                id={catalogId}
+                aria-label={catalogLabel}
+                tabIndex={showAllModels ? 0 : undefined}
+                className={`flex flex-wrap gap-2 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-inset ${showAllModels ? 'max-h-60 overflow-y-auto' : ''}`}
+              >
+                {visibleModels?.map((model) => (
+                  <li
+                    key={model.id}
+                    className="min-w-0 max-w-full rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5"
+                  >
+                    <code className="break-all text-xs leading-5 text-gray-700">{model.id}</code>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              'None configured'
+            )}
+          </div>
+        </section>
       </section>
 
       {noChatModels ? (
