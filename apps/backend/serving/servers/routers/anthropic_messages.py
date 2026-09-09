@@ -41,6 +41,7 @@ from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.config.settings import has_role
 from serving.exceptions import operator_safe_error, scrub_error_for_user
+from serving.grant_auth import ledger_attribution
 from serving.model_access import is_model_disabled_for_user, is_model_outside_grant_scope
 from serving.observability.rejection_log import log_rejection
 from serving.observability.tracked_tasks import tracked_task
@@ -1436,6 +1437,9 @@ async def anthropic_messages(
     # spend unattributed — and the per-job budget reads this same ledger.
     if user_ctx.get("agent_job_id"):
         metadata["agent_job_id"] = user_ctx["agent_job_id"]
+    # The usage window query needs the grant itself and the real start time;
+    # ``ledger_attribution`` says why the insert timestamp is not enough.
+    metadata.update(ledger_attribution(user_ctx, started_at=start))
 
     params_for_log: dict[str, Any] = {"surface": "anthropic_messages"}
     for k in ("temperature", "top_p", "max_tokens", "stop_sequences", "stream"):

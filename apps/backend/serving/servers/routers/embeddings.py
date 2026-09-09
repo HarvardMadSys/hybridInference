@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from routing.endpoints import endpoint_id_for_config
 from serving.config.runtime_settings import get_runtime_settings
+from serving.grant_auth import ledger_attribution
 from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing
 from serving.schemas import EmbeddingRequest, EmbeddingResponse, ErrorResponse
@@ -205,6 +206,7 @@ async def create_embeddings(
         # Agent-sandbox attribution (issue #1041); None for ordinary traffic.
         "agent_job_id": user_ctx.get("agent_job_id"),
     }
+    metadata.update(ledger_attribution(user_ctx, started_at=start_time))
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
     if declared_session is not None:

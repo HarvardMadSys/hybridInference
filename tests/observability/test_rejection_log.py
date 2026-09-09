@@ -743,3 +743,49 @@ async def test_untrusted_probe_marker_does_not_suppress_rejection(fake_log_store
     fake_log_store.log_request.assert_awaited_once()
     md = fake_log_store.log_request.await_args.kwargs["metadata"]
     assert "synthetic_probe" not in md
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_grant_call_keeps_its_ledger_attribution(fake_log_store, runtime_on):
+    """A refused call is still a call the grant made.
+
+    The usage window counts recorded failures, and the cost report keys on the
+    job column: a rejection row without either would vanish from both.
+    """
+    from datetime import datetime
+
+    await log_rejection(
+        log_store=fake_log_store,
+        runtime_settings=runtime_on,
+        request=_fake_request(),
+        status_code=429,
+        error_code="concurrency_limit_exceeded",
+        reason="too many concurrent requests",
+        user={
+            "user_id": "u1",
+            "role": "pro",
+            "agent_job_id": "thread:athr_1",
+            "agent_grant_id": "agr_1",
+        },
+    )
+    metadata = fake_log_store.log_request.call_args.kwargs["metadata"]
+    assert metadata["rejection"] is True
+    assert metadata["agent_job_id"] == "thread:athr_1"
+    assert metadata["agent_grant_id"] == "agr_1"
+    assert metadata["attribution_version"] == 1
+    assert datetime.fromisoformat(metadata["request_started_at"]).tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_rejection_carries_no_grant_attribution(fake_log_store, runtime_on):
+    await log_rejection(
+        log_store=fake_log_store,
+        runtime_settings=runtime_on,
+        request=_fake_request(),
+        status_code=429,
+        error_code="concurrency_limit_exceeded",
+        reason="too many concurrent requests",
+        user={"user_id": "u1", "role": "free"},
+    )
+    metadata = fake_log_store.log_request.call_args.kwargs["metadata"]
+    assert not {"agent_grant_id", "request_started_at", "attribution_version"} & set(metadata)

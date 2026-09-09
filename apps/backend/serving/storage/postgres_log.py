@@ -68,6 +68,32 @@ def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+# The window predicate shared by the two grant queries. ``agent_job_id`` is
+# the indexed access path (``idx_api_logs_agent_job``); the grant recorded
+# in metadata is the exact predicate, so two grants minted for one external
+# job (a retained thread re-minting across generations) stay apart. The
+# insert timestamp is a safe lower pre-filter because it is never earlier
+# than the request's start, and deliberately not an upper bound: a request
+# that started inside the window but was logged after it closed belongs to
+# the window.
+_GRANT_WINDOW_WHERE = """
+    agent_job_id = $1
+    AND metadata->>'agent_grant_id' = $2
+    AND timestamp >= $3
+    AND (metadata->>'request_started_at')::timestamptz >= $3
+    AND (metadata->>'request_started_at')::timestamptz < $4
+"""
+
+_GRANT_METRIC_COLUMNS = {
+    "tokens_in": "prompt_tokens",
+    "tokens_out": "completion_tokens",
+    "cache_read": "cache_read_tokens",
+    "cache_write": "cache_write_tokens",
+    "reasoning": "reasoning_tokens",
+    "spent_usd": "cost_usd",
+}
+
+
 class PostgresLogStore(LogStore):
     """LogStore backed by an asyncpg connection pool."""
 
@@ -360,6 +386,109 @@ class PostgresLogStore(LogStore):
             "tokens_out": float(row["tokens_out"] or 0),
             "calls": float(row["calls"] or 0),
         }
+
+    async def get_agent_grant_usage(
+        self,
+        *,
+        agent_job_id: str,
+        grant_id: str,
+        since: dt.datetime,
+        until: dt.datetime,
+    ) -> dict[str, Any]:
+        """Sum one grant's rows whose request started in ``[since, until)``.
+
+        Read from what the gateway billed, like :meth:`get_agent_job_usage`;
+        a run cannot change these numbers by reporting different ones about
+        itself. A metric is summed over the rows that carry it and the rows
+        that do not are counted, never coalesced into a zero that would read
+        as "this call was free".
+        """
+        sums = ",\n".join(
+            f"SUM({column}) AS {name}, COUNT({column}) AS {name}_known"
+            for name, column in _GRANT_METRIC_COLUMNS.items()
+        )
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                SELECT COUNT(DISTINCT request_id) AS calls,
+                       COUNT(*) AS rows,
+                       COUNT(*) FILTER (WHERE metadata->>'usage_estimated' = 'true')
+                           AS estimated_calls,
+                       {sums}
+                FROM api_logs
+                WHERE {_GRANT_WINDOW_WHERE}
+                """,
+                agent_job_id,
+                grant_id,
+                since,
+                until,
+            )
+        rows = int(row["rows"] or 0) if row is not None else 0
+        metrics: dict[str, dict[str, Any]] = {}
+        for name in _GRANT_METRIC_COLUMNS:
+            known = int(row[f"{name}_known"] or 0) if row is not None else 0
+            metrics[name] = {
+                "value": row[name] if row is not None and known else None,
+                "known_rows": known,
+                "unknown_rows": rows - known,
+            }
+        return {
+            "calls": int(row["calls"] or 0) if row is not None else 0,
+            "rows": rows,
+            "estimated_calls": int(row["estimated_calls"] or 0) if row is not None else 0,
+            "metrics": metrics,
+        }
+
+    async def list_agent_grant_requests(
+        self,
+        *,
+        agent_job_id: str,
+        grant_id: str,
+        since: dt.datetime,
+        until: dt.datetime,
+        limit: int,
+        after: tuple[dt.datetime, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Page through one grant's window, ordered by start time then id."""
+        after_started_at = after[0] if after is not None else None
+        after_request_id = after[1] if after is not None else None
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT request_id,
+                       (metadata->>'request_started_at')::timestamptz AS request_started_at,
+                       timestamp AS logged_at,
+                       model_id,
+                       served_model_id,
+                       prompt_tokens,
+                       completion_tokens,
+                       cache_read_tokens,
+                       cache_write_tokens,
+                       reasoning_tokens,
+                       cost_usd,
+                       ttft_ms,
+                       latency_ms,
+                       status_code,
+                       COALESCE(metadata->>'usage_estimated' = 'true', FALSE) AS usage_estimated
+                FROM api_logs
+                WHERE {_GRANT_WINDOW_WHERE}
+                  AND (
+                      $5::timestamptz IS NULL
+                      OR ((metadata->>'request_started_at')::timestamptz, request_id)
+                         > ($5::timestamptz, $6::text)
+                  )
+                ORDER BY (metadata->>'request_started_at')::timestamptz, request_id
+                LIMIT $7
+                """,
+                agent_job_id,
+                grant_id,
+                since,
+                until,
+                after_started_at,
+                after_request_id,
+                limit,
+            )
+        return [dict(r) for r in rows]
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Return total cost_usd since UTC midnight."""

@@ -20,6 +20,7 @@ from routing.routers import AllCircuitsOpenError
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
+from serving.grant_auth import ledger_attribution
 from serving.model_access import is_model_disabled_for_user, is_model_outside_grant_scope
 from serving.openai_chat_serializer import resolve_mode, sanitize_response
 from serving.schemas import (
@@ -611,6 +612,7 @@ async def chat_completions(
     # owner's cost report and the ledger the job's budget is measured from.
     if user_ctx.get("agent_job_id"):
         metadata["agent_job_id"] = user_ctx["agent_job_id"]
+    metadata.update(ledger_attribution(user_ctx, started_at=start_time))
 
     early_params: dict[str, Any] = {"stream": effective_stream}
     if session_id:
