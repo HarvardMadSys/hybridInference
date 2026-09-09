@@ -1,0 +1,43 @@
+name: RFC
+description: Propose a design that changes routing semantics, storage, or a public surface
+title: "RFC: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An RFC is for a change worth agreeing on before it is built. Keep it to
+        the decision: what problem, what design, what it costs to live with.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: The problem, and why the current design cannot absorb it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: design
+    attributes:
+      label: Proposed design
+      description: >-
+        What changes — configuration, routing behaviour, schema, HTTP surface.
+        Name the modules you expect to touch.
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and migration
+      description: >-
+        What breaks for an existing deployment, and what it has to do to
+        upgrade. Say "nothing" if that is the answer.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

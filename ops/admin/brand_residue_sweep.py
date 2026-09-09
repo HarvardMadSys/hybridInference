@@ -70,6 +70,16 @@ ATTRIBUTION: dict[str, str] = {
         "names the repository's advisory URL, and names FreeInference to scope "
         "it out — one deployment of this software is not the software"
     ),
+    ".github/ISSUE_TEMPLATE/config.yml": (
+        "the Discussions and advisory URLs, and a contact link routing "
+        "FreeInference service questions to their operator — the same scoping "
+        "SECURITY.md does, at the point where a reporter picks a form"
+    ),
+    ".github/ISSUE_TEMPLATE/bug_report.yml": (
+        "the advisory URL, and the deployment dropdown that separates a "
+        "self-hosted instance from the public one — the distinction the "
+        "triager needs, so naming it is the feature"
+    ),
     "docs/developer/index.rst": (
         "the repository and issue-tracker URLs — a published doc site that "
         "cannot name its own source is the defect, not the naming"

@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a capability the gateway does not have yet
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a change large enough to affect routing semantics, the storage
+        schema, or a public API surface, open an **RFC** instead — it gets the
+        design discussed before anyone writes the code.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that the gateway makes hard or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried or considered instead
+      description: Existing configuration, a different adapter, doing it outside the gateway.

@@ -1,0 +1,79 @@
+name: Bug report
+description: Something in the gateway or console behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please redact credentials, API keys and cookies from anything you paste.
+        For a security vulnerability, use
+        [private reporting](https://github.com/HarvardMadSys/hybridInference/security/advisories/new)
+        instead of this form.
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Which deployment is this?
+      description: >-
+        This repository is the software. FreeInference is one deployment of it,
+        run by its operator — account, quota and model-availability questions
+        for that service are not tracked here.
+      options:
+        - Self-hosted (my own instance)
+        - FreeInference (the public service)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Commit SHA, image tag, or the SHA on the console home page.
+      placeholder: e.g. 6437fd41, or ghcr.io/... :dev
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >-
+        The request you sent and the response you got, ideally as a `curl`.
+        Say whether it was streaming, and which model and route were involved.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: >-
+        The `models.yaml` / `routing.yaml` entry for the affected model, with
+        keys and hostnames removed.
+      render: yaml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Gateway log lines around the failure, redacted.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues.
+          required: true
+        - label: I removed credentials, keys and cookies from everything above.
+          required: true
