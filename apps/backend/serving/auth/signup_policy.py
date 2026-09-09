@@ -42,9 +42,13 @@ if TYPE_CHECKING:
 # avoids a DB round-trip when the feature is unused. ~30s TTL keeps
 # stale-window short while still cushioning bursty signup traffic.
 _ALLOWLIST_EMPTY_TTL_SECONDS: float = 30.0
+_ALLOWLIST_EMPTY_MAX_READS = 3
+_ALLOWLIST_EMPTY_GENERATION = 0
 _ALLOWLIST_EMPTY_CACHE: dict[str, tuple[float, bool]] = {}
 _ALLOWLIST_EMPTY_LOCK = asyncio.Lock()
 _SIGNUP_POLICY_TIMEOUT_SECONDS = 1.0
+_SIGNUP_POLICY_MAX_READS = 3
+_SIGNUP_POLICY_GENERATION = 0
 # A failed or timed-out policy read is remembered this long. Coalescing alone
 # would only serialize the waits: during a database incident each queued
 # ``/site-config`` request would pay its own timeout in turn. Keep the window
@@ -110,11 +114,15 @@ def _policy_read_failed_recently() -> bool:
 
 
 def invalidate_signup_policy_cache() -> None:
-    """Drop the fail-closed window so the next caller reads the store again.
+    """Invalidate policy reads and drop the fail-closed window.
 
     Called after an administrator writes ``signup_enabled``: that write
-    proves the store answers, so a remembered failure is already stale.
+    proves the store answers, so a remembered failure is already stale. A
+    generation change also prevents a read started before the write from
+    publishing its stale result afterward.
     """
+    global _SIGNUP_POLICY_GENERATION
+    _SIGNUP_POLICY_GENERATION += 1
     _SIGNUP_POLICY_FAILURE_CACHE.clear()
 
 
@@ -140,29 +148,52 @@ async def _runtime_signup_enabled(runtime_settings: RuntimeSettings) -> bool:
         cached, value = runtime_settings.get_cached("signup_enabled")
         if cached:
             return bool(value)
-        try:
-            # Stay within the console's three-second configuration deadline
-            # even when the database accepts a connection but never answers
-            # the query.
-            return await asyncio.wait_for(
-                runtime_settings.get_bool("signup_enabled"), timeout=_SIGNUP_POLICY_TIMEOUT_SECONDS
-            )
-        except Exception:
-            # An unknown runtime override may be false even if the environment
-            # is true. Close registration, preserve the rest of /site-config,
-            # and do not leak raw driver exceptions or connection details into
-            # logs.
-            _SIGNUP_POLICY_FAILURE_CACHE["v"] = time.monotonic()
-            logger.warning("Runtime signup policy could not be read; public signup is disabled.")
-            return False
+        for _ in range(_SIGNUP_POLICY_MAX_READS):
+            generation = _SIGNUP_POLICY_GENERATION
+            try:
+                # Stay within the console's three-second configuration deadline
+                # even when the database accepts a connection but never answers
+                # the query.
+                value = await asyncio.wait_for(
+                    runtime_settings.get_bool("signup_enabled"),
+                    timeout=_SIGNUP_POLICY_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                if generation != _SIGNUP_POLICY_GENERATION:
+                    runtime_settings.invalidate_key("signup_enabled")
+                    continue
+                # An unknown runtime override may be false even if the environment
+                # is true. Close registration, preserve the rest of /site-config,
+                # and do not leak raw driver exceptions or connection details into
+                # logs.
+                _SIGNUP_POLICY_FAILURE_CACHE["v"] = time.monotonic()
+                logger.warning(
+                    "Runtime signup policy could not be read; public signup is disabled."
+                )
+                return False
+            if generation == _SIGNUP_POLICY_GENERATION:
+                return value
+            # An administrator completed a write while this read was pending.
+            # RuntimeSettings may have cached the pre-write value after its
+            # cache was cleared, so discard it before retrying.
+            runtime_settings.invalidate_key("signup_enabled")
+
+        # Bound lock occupancy during rapid administrator updates. Do not leave
+        # a value from an invalidated read in RuntimeSettings' longer-lived cache.
+        runtime_settings.invalidate_key("signup_enabled")
+        return False
 
 
 def invalidate_allowlist_cache() -> None:
     """Drop the cached emptiness flag.
 
     Called by admin endpoints after a successful add/remove so the next
-    signup observes the new state immediately.
+    signup observes the new state immediately in this process. In-flight
+    reads must retry rather than publish a snapshot taken before the edit.
+    Other worker processes still rely on the TTL to refresh their caches.
     """
+    global _ALLOWLIST_EMPTY_GENERATION
+    _ALLOWLIST_EMPTY_GENERATION += 1
     _ALLOWLIST_EMPTY_CACHE.clear()
 
 
@@ -170,7 +201,9 @@ async def allowlist_is_empty(op_store: OperationalStore) -> bool:
     """Return True when no rows exist in ``signup_allowed_domains``.
 
     Cached in-process for ``_ALLOWLIST_EMPTY_TTL_SECONDS`` to keep the
-    signup hot path off the DB when the allowlist is unused.
+    signup hot path off the DB when the allowlist is unused. After repeated
+    concurrent edits, return an uncached False so the caller checks the
+    email's current domain eligibility instead of assuming auto-approval.
     """
     now = time.monotonic()
     cached = _ALLOWLIST_EMPTY_CACHE.get("v")
@@ -179,12 +212,22 @@ async def allowlist_is_empty(op_store: OperationalStore) -> bool:
 
     async with _ALLOWLIST_EMPTY_LOCK:
         # Re-check after acquiring the lock to coalesce concurrent callers.
+        now = time.monotonic()
         cached = _ALLOWLIST_EMPTY_CACHE.get("v")
         if cached is not None and (now - cached[0]) < _ALLOWLIST_EMPTY_TTL_SECONDS:
             return cached[1]
-        is_empty = await op_store.signup_allowlist_is_empty()
-        _ALLOWLIST_EMPTY_CACHE["v"] = (time.monotonic(), is_empty)
-        return is_empty
+        for _ in range(_ALLOWLIST_EMPTY_MAX_READS):
+            generation = _ALLOWLIST_EMPTY_GENERATION
+            is_empty = await op_store.signup_allowlist_is_empty()
+            if generation != _ALLOWLIST_EMPTY_GENERATION:
+                # An admin mutation completed while the DB read was pending.
+                # Neither the caller nor the cache may use that old snapshot.
+                continue
+            _ALLOWLIST_EMPTY_CACHE["v"] = (time.monotonic(), is_empty)
+            return is_empty
+        # Bound lock occupancy during bulk edits. An invalidated True is not
+        # evidence that the list is empty, even if we avoid caching it.
+        return False
 
 
 async def is_domain_allowed(email: str, op_store: OperationalStore) -> bool:

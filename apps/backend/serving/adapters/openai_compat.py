@@ -1201,6 +1201,9 @@ class OpenAICompatAdapter(BaseAdapter):
     def _build_embeddings_url(self) -> str:
         """Build full endpoint URL for embeddings."""
         base = (self.config.base_url or "").rstrip("/")
+        override = self.config.embeddings_path
+        if override:
+            return f"{base}/{override.lstrip('/')}"
         if base.endswith("/v1"):
             return f"{base}/embeddings"
         return f"{base}/v1/embeddings"

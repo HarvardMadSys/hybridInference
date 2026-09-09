@@ -3,7 +3,7 @@ import * as React from 'react';
 import {
   buildTimeSiteConfig,
   resolveRuntimeSiteConfig,
-  withAgentsFeature,
+  withAgentsUrl,
   type RuntimeSiteConfig,
 } from './site-config';
 
@@ -18,11 +18,30 @@ type CacheFunction = <T extends (...args: never[]) => unknown>(fn: T) => T;
 const cachePerRender: CacheFunction =
   (React as typeof React & { cache?: CacheFunction }).cache ?? ((fn) => fn);
 
-function hasRuntimeAgentProxy(): boolean {
-  return Boolean(
-    process.env.AGENT_WEB_INTERNAL_URL?.trim() &&
-    process.env.AGENT_CONTROL_PLANE_INTERNAL_URL?.trim(),
-  );
+function runtimeAgentsUrl(): string {
+  const publicUrl = process.env.AGENT_PUBLIC_URL?.trim();
+  if (publicUrl) {
+    try {
+      const parsed = new URL(publicUrl);
+      if (
+        publicUrl.startsWith('https://') &&
+        !/[\\\s]/.test(publicUrl) &&
+        parsed.hostname &&
+        !parsed.username &&
+        !parsed.password
+      ) {
+        return publicUrl;
+      }
+    } catch {
+      // Fall back to the local proxy, if configured, without exposing input.
+    }
+    console.warn('Ignoring AGENT_PUBLIC_URL: expected an HTTPS URL without credentials.');
+  }
+
+  return process.env.AGENT_WEB_INTERNAL_URL?.trim() &&
+    process.env.AGENT_CONTROL_PLANE_INTERNAL_URL?.trim()
+    ? '/agents'
+    : '';
 }
 
 async function loadRuntimeSiteConfigUncached(): Promise<RuntimeSiteConfig> {
@@ -54,7 +73,7 @@ async function loadRuntimeSiteConfigUncached(): Promise<RuntimeSiteConfig> {
     console.warn('Unable to load runtime site config; using build-time defaults.', error);
   }
 
-  return withAgentsFeature(siteConfig, hasRuntimeAgentProxy());
+  return withAgentsUrl(siteConfig, runtimeAgentsUrl());
 }
 
 // React cache is scoped to one server render. That lets metadata, layouts, and

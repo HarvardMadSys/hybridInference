@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from typing import TYPE_CHECKING, Any
 
+from serving.grant_auth import ledger_attribution
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -440,6 +442,10 @@ async def log_rejection(
         "user_id": user.get("user_id") if user else None,
         "ip": get_client_ip(request),
     }
+    # A rejected grant call is still a call the grant made. Without this the
+    # usage window undercounts exactly the refusals an owner most wants to see,
+    # and the row would not even carry the job column the cost report keys on.
+    metadata.update(ledger_attribution(user, started_at=time.time()))
     # Tag persisted probe rejections so consumers that exclude probes via this
     # field (e.g. PostgresLogStore.get_model_activity) don't miscount them as
     # real-user traffic. Only reached when log_synthetic_probes opted them in,

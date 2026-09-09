@@ -361,3 +361,34 @@ async def test_the_grant_path_offers_no_tool_authorization(store, token) -> None
 async def test_the_grant_context_carries_no_budget(store, token) -> None:
     context = await authenticate_grant_model_call(token, op_store=store)
     assert not [key for key in context if "budget" in key.lower()]
+
+
+# ---------------------------------------------------------------------------
+# Ledger attribution
+# ---------------------------------------------------------------------------
+
+
+def test_attribution_names_the_grant_and_the_real_start_time() -> None:
+    """The usage window reads these back, so their meaning is fixed here.
+
+    ``api_logs.timestamp`` is the insert time of a write scheduled after the
+    response completed; the start time is the handler's own clock, so a call
+    that was still running when a window closed lands in the right window.
+    """
+    started = 1_800_000_000.25
+    keys = model_auth.ledger_attribution(
+        {"agent_grant_id": "agr_1", "agent_job_id": "thread:athr_1"}, started_at=started
+    )
+    assert keys == {
+        "agent_grant_id": "agr_1",
+        "agent_job_id": "thread:athr_1",
+        "request_started_at": datetime.fromtimestamp(started, tz=UTC).isoformat(),
+        "attribution_version": model_auth.LEDGER_ATTRIBUTION_VERSION,
+    }
+    assert datetime.fromisoformat(keys["request_started_at"]).tzinfo is not None
+
+
+def test_ordinary_traffic_gains_no_attribution_keys() -> None:
+    plain = {"user_id": "u", "role": "free", "authenticated": True}
+    assert model_auth.ledger_attribution(plain, started_at=1.0) == {}
+    assert model_auth.ledger_attribution(None, started_at=1.0) == {}

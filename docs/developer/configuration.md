@@ -25,6 +25,13 @@ file the built-in thresholds apply.
 A fourth kind, `mcp`, is accepted by the resolver and by the distribution
 manifest schema, but nothing at this revision reads it.
 
+The files are not the whole story once a database is configured. The admin
+console writes providers, keys, routes, weights and per-model overrides to the
+operational store, and the gateway re-applies that state on top of the loaded
+registry at every start.
+[Runtime configuration from the admin console](#runtime-configuration-from-the-admin-console)
+covers that layer.
+
 ## Where configuration lives
 
 There is no `config/models.yaml` or `config/routing.yaml` in this repository.
@@ -59,6 +66,11 @@ deployment, not of the project; keeping them in an overlay means the image can b
 built once and a deployment's overlay mounted into it (`deploy/docker/docker-compose.yml`
 mounts the overlay read-only rather than baking it into the image). It also means
 a clone of this repository ships nobody's hosts.
+
+Not every change needs a file. A provider, a key, a route or a whole model can
+also be added from the admin console while the gateway runs; that state lives
+in Postgres rather than in the overlay, and is described
+[below](#runtime-configuration-from-the-admin-console).
 
 ## How a gateway finds its config
 
@@ -158,8 +170,9 @@ bypass them.
 If a runtime signup-setting read fails or exceeds one second, the gateway
 temporarily disables public signup. A valid `/site-config` response still
 returns HTTP 200 with its identity and branding intact and
-`public_signup: false`; registration returns HTTP 403 without creating an account. It does not
-fall back to an environment value that could reopen registration.
+`public_signup: false`; registration returns HTTP 403 without creating an
+account. It does not fall back to an environment value that could reopen
+registration.
 
 Because `/site-config` is unauthenticated and read while rendering every
 console page, the gateway does not repeat a failing read for every request.
@@ -183,17 +196,50 @@ resolution stays effective:
 
 Setting only `DISTRIBUTION_CONFIG_PATH` therefore cannot change behaviour; you
 get a warning telling you the mode defaulted to `dark`. Config-path resolution
-treats an unrecognised mode as `dark` with a warning. Signup and `/site-config`
-are stricter: an explicitly empty or unknown mode, or `active` without a
-manifest path, closes signup (HTTP 403) and makes `/site-config` report an
-unavailable configuration (HTTP 503). Compose uses `dark` when the mode is
-unset. Enable a manifest by running dark first, reading the comparison lines,
-and only then setting `active`.
+treats an unrecognised mode as `dark` with a warning. Signup, `/site-config`, and
+the RAG feature policy are stricter: an explicitly empty or unknown mode, or
+`active` without a manifest path, closes signup (HTTP 403), makes `/site-config`
+report an unavailable configuration (HTTP 503), and makes authenticated
+`/v1/rag/status` and `/v1/rag/chat` requests return HTTP 503. Only an unset mode
+defaults to `dark`, including in Compose. Enable a manifest by running dark
+first, reading the comparison lines, and only then setting `active`.
+
+Mode warnings are logged once per distinct value per process. When diagnosing
+RAG configuration errors, check the startup logs and the backend's effective
+`DISTRIBUTION_CONFIG_MODE` and `DISTRIBUTION_CONFIG_PATH`, rather than expecting
+the warning to repeat on every request. Correct the values and restart the
+backend. See [Docs RAG Assistant](rag-chat.md) for the feature restriction.
 
 Failure behaviour differs by mode, on purpose. In dark mode a manifest that will
 not load is logged and skipped. In active mode the manifest *is* where the paths
 come from, so a manifest that will not load — a lost overlay mount, a YAML error
 — refuses to start rather than quietly serving a different registry.
+
+The manifest root and `features` are closed schemas: unknown keys are rejected,
+including misspelled feature names or feature flags placed at the root. This
+changes the earlier behavior that silently ignored these keys. Before upgrading
+an active deployment, validate its actual overlay with the new backend code;
+the repository's example manifests do not validate privately maintained
+overlays. Correct misspellings and keep operator-specific metadata in a separate
+file. With `DISTRIBUTION_CONFIG_PATH` set to the deployed manifest, run:
+
+```bash
+uv run python - <<'PY'
+import os
+from pathlib import Path
+from serving.config.distribution import load_distribution_config
+
+load_distribution_config(Path(os.environ["DISTRIBUTION_CONFIG_PATH"]))
+print("Manifest valid.")
+PY
+```
+
+This is not exhaustive typo detection: `paths`, `site`, `distribution`, and
+`deployment` still ignore unknown section keys for compatibility. In particular,
+check `paths.models` and the resolved model-registry log before activating an
+overlay; an unknown path key is treated as an omitted path and can select a
+legacy default. Strict validation of those sections is a separate compatibility
+change.
 
 If an invalid active manifest reaches the HTTP handlers, signup remains closed
 and `/site-config` returns HTTP 503 without exposing file paths or parser
@@ -416,6 +462,103 @@ Unlike the model registry, this file's expander handles `${VAR}`,
 deprecation warning. Per-model router selection (`router:` / `router_params:` in
 the model registry) overrides `default_router` and is documented in
 [Routing](routing.md).
+
+## Runtime configuration from the admin console
+
+The files above are read once, at startup. Everything else an operator changes
+about routing goes through the admin console — or the `/admin/*` endpoints
+behind it — and is written to the operational store, so it takes effect without
+a restart and survives one. This is the layer to use when a model, a provider or
+a key has to exist *now*, on a running gateway, without editing the overlay and
+redeploying.
+
+It needs a database. `DB_ENABLED` defaults to `true` ([Database](database.md)
+covers the connection); with `DB_ENABLED=false` there is no operational store,
+every endpoint below answers `500 Database not configured`, and the console
+tabs that call them have nothing to write to. Every endpoint requires an
+administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header.
+
+### Providers tab
+
+| What | Console | Endpoint | Stored in |
+|---|---|---|---|
+| Add a custom OpenAI-compatible provider, with its first key | **Overview → Add provider** | `POST /admin/provider-definitions`; `POST /admin/provider-definitions/verify` probes the upstream first, without saving | `provider_definitions` |
+| Edit or remove a custom provider | **Overview → Edit provider** | `PATCH` / `DELETE /admin/provider-definitions/{provider}` | `provider_definitions` |
+| Add a provider API key | **Keys → Add a new key** | `POST /admin/provider-keys`; `POST /admin/provider-keys/verify` checks it first | `provider_api_keys` |
+| Disable, re-enable or delete a key | **Keys** | `POST /admin/provider-keys/{key_id}/disable`, `.../enable`, `DELETE /admin/provider-keys/{key_id}`; for a key that came from the environment, `POST /admin/provider-keys/disable-env` and `.../enable-env` | `provider_api_keys`, `disabled_provider_env_keys` |
+| Reserve a key for a tier | **Keys → Reserved for** | `POST /admin/provider-keys/{key_id}/min-role`, `.../min-role-env` — see [Reserving upstream keys for a tier](routing.md#reserving-upstream-keys-for-a-tier) | `provider_api_keys.min_role`, `provider_env_key_min_roles` |
+| Take a provider out of rotation | **Availability → Enabled** | `PATCH /admin/providers/{provider}/disabled`; `GET /admin/providers/routable` lists what is in the routing table | `disabled_providers` |
+
+The registry on the Overview tab lists every provider the gateway can route to,
+but only *custom* providers are editable there. A provider that code or the
+model registry already owns — the built-in adapter kinds, and any `provider:`
+label a route declares — is read-only in this table, and a stored definition
+that reuses one of those slugs is skipped at boot rather than allowed to shadow
+it. Custom providers are `openai_compat` only; a protocol the generic adapter
+cannot speak needs an adapter, which is a code change
+([Adding a New Provider](adding-models.md#adding-a-new-provider)).
+
+A key added here joins the same pool as the keys the registry names through
+`${VAR}` and rotates with them. An environment key has no row of its own, so
+the console can disable it or reserve it for a tier but cannot delete it; unset
+the variable and restart for that.
+
+### Routing tab
+
+| What | Console | Endpoint | Stored in |
+|---|---|---|---|
+| Create a model that is not in the registry | **Create model** | `POST /admin/routing/provider-route-models`; `POST /admin/routing/provider-route-model-verifications` tries the route without registering it | `provider_route_candidates`, plus a strategy and required-role marker in `site_settings` |
+| Add a route to an existing model | **Add provider route** | `POST /admin/routing/provider-route-candidates/{model_id}`; `.../provider-route-candidate-verifications/{model_id}` to check first; `PATCH` / `DELETE /admin/routing/provider-route-candidates/{model_id}/{route_id}` | `provider_route_candidates` |
+| Point a registry route somewhere else | edit the route's **Target** | `PUT /admin/routing/provider-routes/{model_id}/{route_id}`; `.../provider-route-verifications/{model_id}/{route_id}` to check first; `DELETE` removes the override and restores the YAML route | `provider_route_configs` |
+| Change a route's weight | the weight field on each route | `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}`; `GET` shows the YAML, override and effective values | `provider_weight_overrides` |
+| Switch a model between `fixed` and `routewise` | the strategy selector | `PATCH /admin/routing/provider-route-strategies/{model_id}` | `site_settings` |
+| Tune RouteWise for one model | RouteWise settings | `/admin/routewise/model-settings` — see [RouteWise](routing.md#routewise) | `site_settings` |
+
+`GET /admin/routing/provider-routes` (or `.../{model_id}`) returns every route
+the gateway is serving, each tagged `source: yaml`, `override` or `runtime`,
+and is the quickest way to see what the two layers add up to.
+
+A model created here is a **runtime model**: it exists only in the database,
+carries an id, a first route, a pricing table, a router strategy and a
+`required_role` (default `admin`, so a new model stays invisible to ordinary
+users until you lower it), and is restored at every start. It does not carry
+the catalog metadata a registry entry declares — context length, modalities,
+supported parameters, aliases — and takes `ModelConfig`'s defaults for those:
+`context_length` 8192, `max_output_length` 4096, text in and out, no tool
+support. When a model needs any of that, put it in the registry.
+
+### Settings tab
+
+| What | Console | Endpoint | Stored in |
+|---|---|---|---|
+| Change who can see a model | **Model Visibility** | `PATCH /admin/models/{model_id}/visibility` sets or clears a `required_role` override; `GET /admin/models/visibility` lists baseline, override and effective values | `model_visibility_overrides` |
+| Exempt a model from the per-user concurrency limit | **Model Concurrency Limit** | `PATCH /admin/models/{model_id}/concurrency` | `model_concurrency_exemptions` |
+
+### How the two layers combine
+
+The registry is loaded first and the stored state is applied on top of it, in
+this order at boot; each admin change is also applied to the running router the
+moment it is saved.
+
+1. Custom provider definitions, skipping any slug the code or registry owns.
+2. Stored provider keys, seeded into each provider's pool beside the
+   environment keys.
+3. Per-model router strategy overrides.
+4. Runtime route candidates. A runtime *model* is resurrected only when its
+   commit marker is present; a candidate whose model is no longer in the
+   registry is quarantined with a warning rather than registered, so removing
+   a model from YAML does not bring it back through a leftover row.
+5. Route overrides, retargeting the registry routes they name.
+6. Key tier reservations, re-read now that every provider is known; then
+   weight overrides, disabled providers and model visibility, loaded into
+   resolvers the router consults at request time.
+
+Two rules follow from that order. A stored change never edits the file it
+overrides: delete the override and the registry route, weight or `router:`
+value is back, and a runtime candidate sits beside the registry's routes rather
+than replacing them. And the file still wins for anything the store has no row
+for, so a registry edit plus restart is how catalog metadata, aliases and new
+adapter kinds change.
 
 ## Environment variables
 

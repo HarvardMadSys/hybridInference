@@ -153,6 +153,72 @@ async def test_runtime_toggle_updates_both_endpoints_without_restarting(signup_c
 
 
 @pytest.mark.asyncio
+async def test_policy_invalidation_discards_an_inflight_stale_value(signup_client):
+    client, store = signup_client
+    runtime_settings = init_runtime_settings(store)
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+    read_count = 0
+
+    async def read_setting(_key):
+        nonlocal read_count
+        read_count += 1
+        if read_count == 1:
+            read_started.set()
+            await release_read.wait()
+            return {"value": "true", "value_type": "bool"}
+        return {"value": "false", "value_type": "bool"}
+
+    store.get_setting.side_effect = read_setting
+    pending = asyncio.create_task(client.get("/site-config"))
+    await read_started.wait()
+
+    # This is the synchronous invalidation sequence the admin handler runs
+    # after persisting a new value.
+    runtime_settings.invalidate_key("signup_enabled")
+    invalidate_signup_policy_cache()
+    release_read.set()
+
+    configuration = await pending
+    assert configuration.json()["features"]["public_signup"] is False
+    assert read_count == 2
+    assert (await client.post("/auth/signup", json=create_signup_request())).status_code == 403
+    store.create_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_policy_invalidation_discards_an_inflight_failure(signup_client):
+    client, store = signup_client
+    runtime_settings = init_runtime_settings(store)
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+    read_count = 0
+
+    async def read_setting(_key):
+        nonlocal read_count
+        read_count += 1
+        if read_count == 1:
+            read_started.set()
+            await release_read.wait()
+            raise ConnectionError("stale failure")
+        return {"value": "true", "value_type": "bool"}
+
+    store.get_setting.side_effect = read_setting
+    pending = asyncio.create_task(client.get("/site-config"))
+    await read_started.wait()
+
+    runtime_settings.invalidate_key("signup_enabled")
+    invalidate_signup_policy_cache()
+    release_read.set()
+
+    configuration = await pending
+    assert configuration.json()["features"]["public_signup"] is True
+    assert read_count == 2
+    # The stale failure must not recreate the five-second fail-closed window.
+    assert (await client.get("/site-config")).json()["features"]["public_signup"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["", "activ", "active"])
 async def test_invalid_distribution_selection_cannot_enable_signup(
     signup_client, monkeypatch, tmp_path, mode

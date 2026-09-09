@@ -1,6 +1,6 @@
 # Per-Key Provider Quota Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> This is a partial historical reference, with deployment-specific instructions omitted. Original task numbering is retained.
 
 **Goal:** Display per-key quota in the admin dashboard when a provider has multiple API keys configured.
 
@@ -328,16 +328,11 @@ Expected: All pass (single-key backward compat preserved)
 **Files:**
 - Modify: `apps/backend/serving/admin/provider_quotas.py`
 
-Apply the same pattern from Task 3 to `fetch_chutes`, `fetch_minimax`, `fetch_ollama`:
+Apply the same wrapper pattern from Task 3 to the remaining fetchers. For the Chutes API-key example:
 
 - Extract `_fetch_chutes_for_key(key: str) -> ProviderQuotaResult`
-- Extract `_fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult`
-- Extract `_fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult`
-- Each public fetcher becomes `async def fetch_X() -> list[ProviderQuotaResult]`
-- Env var discovery:
-  - Chutes: `_discover_env_keys("CHUTES_API_KEY", "CHUTES_API_KEY")`
-  - MiniMax: `_discover_env_keys("MINIMAX_SESSION_COOKIE", "MINIMAX_SESSION_COOKIE")`
-  - Ollama: `_discover_env_keys("OLLAMA_SESSION_COOKIE", "OLLAMA_SESSION_COOKIE")`
+- The public fetcher becomes `async def fetch_chutes() -> list[ProviderQuotaResult]`
+- Discover keys with `_discover_env_keys("CHUTES_API_KEY", "CHUTES_API_KEY")`
 
 Run: `uv run pytest tests/servers/test_admin_provider_quotas.py -v`
 

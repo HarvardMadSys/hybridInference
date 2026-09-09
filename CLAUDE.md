@@ -184,7 +184,7 @@ Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
 ### 6.6 The cloud agent moved out
 
 The cloud agent lives in
-[freeinference-cloud-agent](https://github.com/HarvardMadSys/freeinference-cloud-agent).
+[hybridInference-cloud-agent](https://github.com/HarvardMadSys/hybridInference-cloud-agent).
 Production cut over on 2026-08-07 and the H4 removal PR deleted the agent code
 from this repository. **All agent work — features, fixes, deploy — happens in
 that repository now**; the plan and manifest are in
@@ -218,4 +218,4 @@ not duplicate their content.
 | Address PR review / fix CI | [.kilo/skills/check-pr/SKILL.md](.kilo/skills/check-pr/SKILL.md) |
 | Add a new model | [docs/developer/adding-models.md](docs/developer/adding-models.md) |
 | Add a local model (vLLM/SGLang/Ollama) | [docs/developer/add-local-model.md](docs/developer/add-local-model.md) |
-| Run / operate the cloud agent | `docs/operations.md` in [freeinference-cloud-agent](https://github.com/HarvardMadSys/freeinference-cloud-agent) |
+| Run / operate the cloud agent | `docs/operations.md` in [hybridInference-cloud-agent](https://github.com/HarvardMadSys/hybridInference-cloud-agent) |

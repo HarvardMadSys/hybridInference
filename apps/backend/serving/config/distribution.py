@@ -67,7 +67,7 @@ _LEGACY_DEFAULTS: dict[str, str] = {
 
 
 class _ManifestModel(BaseModel):
-    """Base for manifest sections: unknown keys ignored for forward compat."""
+    """Ignore unknown section keys unless a policy-bearing model opts out."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -278,7 +278,7 @@ def _effective_mode() -> str:
     """Normalize the configured mode; unknown values degrade to ``dark``.
 
     This fallback applies to config-path resolution, where it prevents an
-    accidental activation. Security policy and public identity use
+    accidental activation. Feature policies and public identity use
     ``get_active_distribution_config`` to reject unknown modes instead of
     silently discarding a restriction.
     """

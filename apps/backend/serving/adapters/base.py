@@ -139,6 +139,9 @@ class ModelConfig:
     # Optional upstream chat endpoint path override for OpenAI-like providers
     # that do not expose the default /v1/chat/completions route.
     chat_path: str | None = None
+    # Optional embeddings path appended to base_url instead of inferring /v1.
+    # Route-specific because endpoints can use different API version prefixes.
+    embeddings_path: str | None = None
     # Whether this endpoint runs an sglang server started with
     # --enable-priority-scheduling. When set, the OpenAI-compatible adapter
     # stamps the router's per-request priority onto the upstream body so a
