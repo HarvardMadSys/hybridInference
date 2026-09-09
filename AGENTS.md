@@ -177,7 +177,7 @@ Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
 ### 6.6 The cloud agent moved out
 
 The cloud agent lives in
-[freeinference-cloud-agent](https://github.com/HarvardMadSys/freeinference-cloud-agent).
+[hybridInference-cloud-agent](https://github.com/HarvardMadSys/hybridInference-cloud-agent).
 Production cut over on 2026-08-07 and the H4 removal PR deleted the agent code
 from this repository. **All agent work — features, fixes, deploy — happens in
 that repository now**; the plan and manifest are in

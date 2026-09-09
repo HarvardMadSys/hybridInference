@@ -187,7 +187,7 @@ Cloud Agent 可以缓存展示所需的 email、role 和 opaque external user ID
 
 ## 6. 与 Ray PR #90 的关系
 
-[freeinference-cloud-agent #90](https://github.com/HarvardMadSys/freeinference-cloud-agent/pull/90) 实现的是 shared live Agent CLI sessions、native forks 和相关 runner/sandbox lifecycle。
+[freeinference-cloud-agent #90](https://github.com/HarvardMadSys/hybridInference-cloud-agent/pull/90) 实现的是 shared live Agent CLI sessions、native forks 和相关 runner/sandbox lifecycle。
 
 该 PR 不改变：
 
@@ -319,6 +319,6 @@ compose 里是 `:?` 必填——先合并会让 staging 部署直接失败。
 - [HybridInference 中立上游与多 distribution 设计](./2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)
 - [HybridInference 开源解耦设计](./2026-06-18-opensource-decoupling.zh.md)
 - [Cloud Agent 拆仓计划](../plans/2026-08-03-cloud-agent-repo-split.md)
-- [Ray PR #90](https://github.com/HarvardMadSys/freeinference-cloud-agent/pull/90)
+- [Ray PR #90](https://github.com/HarvardMadSys/hybridInference-cloud-agent/pull/90)
 
 本文是登录与开源边界的跨仓 proposal。具体代码变更仍在其所属仓库完成。

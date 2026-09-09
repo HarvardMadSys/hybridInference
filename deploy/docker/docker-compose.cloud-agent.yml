@@ -8,7 +8,7 @@
 # unreachable, and nothing in the console's own health said so.
 #
 # **Why an overlay and not two lines in the base file.** The network belongs to
-# the other repository's stack (`freeinference-cloud-agent`, which names it
+# the other repository's stack (`hybridInference-cloud-agent`, which names it
 # `${AGENT_NETWORK_NAME:-cloud-agent}`), so it is `external: true` here — and
 # an external network that does not exist is a hard failure for *every*
 # compose command, not a degraded feature. A deployment that runs no cloud
