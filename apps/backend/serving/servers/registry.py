@@ -63,6 +63,10 @@ class MissingEnvBackedKeyError(ValueError):
     """Raised when an env-backed route value (api_key/api_keys/base_url) resolves blank."""
 
 
+class EmbeddingsPathConfigError(ValueError):
+    """Reject an invalid embeddings path without serving a partial model registry."""
+
+
 _LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"))
 
 
@@ -431,6 +435,12 @@ def register_from_models_yaml(
     alias_owner: dict[str, str] = {}
     for m in models:
         try:
+            if "embeddings_path" in m:
+                raise EmbeddingsPathConfigError(
+                    f"embeddings_path for model {m.get('id')!r} must be declared on a route, "
+                    "not on the model (including shorthand models without a route list)"
+                )
+
             # Environment expansion for base_url/api_key in both top-level and route entries
             def expand_env(val: str | None) -> str | None:
                 if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
@@ -499,7 +509,7 @@ def register_from_models_yaml(
             adapters_with_weights = []
             dynamic_key_registrations: list[tuple[str, object]] = []
             dynamic_key_providers: set[str] = set()
-            for r in routes:
+            for route_index, r in enumerate(routes, start=1):
                 kind = r.get("kind") or top_cfg.get("provider")
                 raw_base_url = r.get("base_url") or top_cfg.get("base_url")
                 base_url = expand_env(raw_base_url)
@@ -509,6 +519,42 @@ def register_from_models_yaml(
                 # route, keeping the rest of the model, instead of dropping the
                 # whole model via the model-level MissingEnvBackedKeyError catch.
                 route_optional = bool(r.get("optional", False))
+
+                # Validate this opt-in field before missing credentials can
+                # skip an optional route and hide a malformed declaration.
+                if "embeddings_path" in r:
+                    path_context = f"model {top_cfg.get('id')!r}, route {route_index}"
+                    embeddings_path = r["embeddings_path"]
+                    if embeddings_path is not None and not isinstance(embeddings_path, str):
+                        raise EmbeddingsPathConfigError(
+                            f"embeddings_path must be a string or null ({path_context})"
+                        )
+                    if embeddings_path is not None:
+                        template = embeddings_path.strip()
+                        if embeddings_path and not template:
+                            raise EmbeddingsPathConfigError(
+                                f"embeddings_path must not be whitespace-only ({path_context})"
+                            )
+                        embeddings_path = expand_env(template)
+                        if (
+                            template.startswith("${")
+                            and template.endswith("}")
+                            and (embeddings_path is None or not embeddings_path.strip())
+                        ):
+                            message = (
+                                f"embeddings_path resolved to unset or empty ({path_context}, "
+                                f"template: {template!r})"
+                            )
+                            if route_optional:
+                                logger.warning("Skipping optional route: %s", message)
+                                continue
+                            raise EmbeddingsPathConfigError(message)
+                        embeddings_path = embeddings_path.strip()
+                        if ".." in embeddings_path.split("/"):
+                            raise EmbeddingsPathConfigError(
+                                f"embeddings_path must not contain '..' path segments "
+                                f"({path_context})"
+                            )
 
                 # An env-backed base_url that resolves to unset/empty/host-less
                 # cannot produce a working endpoint: _make_provider_id collapses
@@ -669,6 +715,11 @@ def register_from_models_yaml(
                 # Route-level processor override (bypasses model-ID auto-detection)
                 if "processor" in r:
                     adapter_cfg["processor"] = r["processor"]
+
+                # The embeddings path belongs to this endpoint, not the model:
+                # a custom-version gateway may have a standard /v1 fallback.
+                if "embeddings_path" in r:
+                    adapter_cfg["embeddings_path"] = embeddings_path
 
                 # Whether this endpoint's server runs sglang priority scheduling.
                 # Route-level, because it is a fact about one server rather than

@@ -499,7 +499,8 @@ Beyond the model fields above, a route entry accepts:
 | `kind` | string | Adapter kind (see below). Defaults to the model's `provider` |
 | `weight` | float | Relative share of traffic (default 1.0). `0` keeps the route configured but unselected |
 | `api_keys` | list[string] | Key pool for this endpoint, instead of `api_key`. Setting both is an error. The whole pool is one endpoint for latency and quota accounting; split genuinely separate resources into separate routes |
-| `optional` | bool | When a `${VAR}`-backed key or `base_url` resolves empty, skip just this route instead of dropping the model |
+| `embeddings_path` | string | OpenAI-compatible embeddings path appended to this route's `base_url`; a leading slash is optional. Omitted, null, or empty keeps the default URL inference |
+| `optional` | bool | Skip this route with a warning when a `${VAR}`-backed key, `base_url`, or `embeddings_path` resolves unset or blank |
 | `provider` / `provider_display_name` | string | Analytics label override only — it renames the row in the dashboard and does **not** select an adapter; that is `kind`. See [Naming a route in the dashboard](add-local-model.md#naming-a-route-in-the-dashboard) |
 | `provider_type` | string | RouteWise cost category: `on_demand`, `quota`, or `concurrency` |
 | `routewise_pool`, `quota_pool`, `concurrency_pool`, `quota_source`, `quota`, `concurrency` | — | RouteWise pool and budget metadata |
@@ -508,6 +509,45 @@ A route reports its `kind` as the provider label — the value recorded in
 `api_logs.provider` and grouped on by every provider-scoped admin view. Two
 routes of the same kind therefore share one dashboard row; `provider:` splits
 them.
+
+#### Custom embeddings paths
+
+An OpenAI-compatible gateway may use an API prefix other than `/v1`. Set
+`embeddings_path` on that route to avoid appending an unwanted `/v1` segment:
+
+```yaml
+models:
+  - id: text-embedding-example
+    name: Example embeddings
+    provider: openai_compat
+    model_type: embedding
+    route:
+      - kind: openai_compat
+        base_url: https://gateway.example/api/v2
+        api_key: ${EMBEDDING_API_KEY}
+        embeddings_path: /embeddings
+```
+
+This sends requests to `https://gateway.example/api/v2/embeddings`. The override
+belongs to one route and does not affect its fallbacks. Without it, a base URL
+ending in `/v1` gets `/embeddings`; any other base gets `/v1/embeddings`, as
+before. Trailing slashes on the base URL are removed before joining the path.
+
+Declare `embeddings_path` only inside `route:`. A model-level declaration,
+including on a shorthand model without a route list, is rejected. Surrounding
+whitespace is trimmed, but whitespace-only strings, non-string values other
+than `null`, and parent (`..`) path segments are rejected. Explicit `null` and
+`""` still select the default URL inference.
+
+A whole-value `${VAR}` reference must resolve to a non-blank path; it is not an
+instruction to use the default if the variable is missing. A missing or blank
+variable aborts startup for a required route. With `optional: true`, only that
+route is skipped, with a warning naming the model, route, and variable.
+
+Other invalid `embeddings_path` declarations abort startup even on optional
+routes, so the gateway cannot start serving a partially loaded registry after
+one of these errors. This does not change how other model configuration errors
+are handled.
 
 ### Supported adapter kinds
 
@@ -723,12 +763,14 @@ through `apps/backend/serving/servers/deps.py`.
 
 - A 401 from the gateway means your **gateway** API key was missing or invalid,
   or auth is enabled and you sent no `Authorization` header.
-- A 401 surfaced from the route means the **upstream** key is wrong. The backend
-  logs it as `upstream_auth_misconfig` with the endpoint id and the upstream's
-  own error body.
+- A 401 surfaced from the route can mean the **upstream** key is wrong. Some
+  gateways also return 401 for an unmatched path, so check the request URL and
+  `embeddings_path` before replacing a valid key. Chat routing logs these failures
+  as `upstream_auth_misconfig`; embeddings instead logs
+  `Embedding request failed for model=...` with the upstream status and message.
 - Check that `${ENV_VAR}` expansion resolved: only a value of exactly the form
   `${NAME}` is expanded, and only for `base_url`, `api_key`, `api_keys`, and
-  `provider_model_id`.
+  `provider_model_id`, plus route-level `embeddings_path`.
 
 ### Response format errors
 
