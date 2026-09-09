@@ -746,7 +746,7 @@
         "issuer": "https://inference.example.org",
         "endpoints": {
           "authorize_url": "https://inference.example.org/authorize",
-          "token_url": "http://gateway.internal.example.org:8080/v1/identity/token",
+          "token_url": "http://gateway-api.example.org:8080/v1/identity/token",
           "jwks_url": "https://inference.example.org/v1/identity/jwks",
           "integration_api_url": "https://inference.example.org/v1/integrations/cloud-agent",
           "access_url": "https://inference.example.org/internal/cloud-agent/v1/access",
