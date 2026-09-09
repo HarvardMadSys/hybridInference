@@ -769,3 +769,5 @@ msgstr "改动代码后重新构建"
 #~ "On-Call](codex-oncall.md)."
 #~ msgstr "要让 Codex 以异步、只读的方式排查告警，见 [Codex On-Call](codex-oncall.md)。"
 
+msgid "The console requires a valid `/site-config` response before rendering normal pages. A failed HTTP request, a three-second timeout, or invalid JSON/schema shows a retryable configuration error instead of silently enabling build-time feature defaults. Check the frontend logs and backend connectivity, then retry the page after recovery. Valid neutral defaults and legacy documents remain supported; operators do not need to add custom settings just to start the example deployment."
+msgstr "控制台只有收到有效的 `/site-config` 响应才会渲染正常页面。HTTP 请求失败、超过三秒的超时或无效的 JSON/配置格式会显示可重试的配置错误，而不会悄悄启用构建时的默认功能。请检查前端日志和后端连通性，恢复后重试页面。有效的中性默认配置和旧版配置仍受支持；部署者不必为了启动示例部署而添加自定义设置。"
