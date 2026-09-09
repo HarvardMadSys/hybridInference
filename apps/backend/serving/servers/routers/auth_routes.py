@@ -6,7 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
-from serving.auth.signup_policy import allowlist_is_empty, is_domain_allowed
+from serving.auth.signup_policy import (
+    allowlist_is_empty,
+    is_domain_allowed,
+    is_public_signup_enabled,
+)
 from serving.config.settings import get_signup_notify_emails, is_admin_email, settings
 from serving.exceptions import AccountSuspendedError
 from serving.schemas_auth import (
@@ -121,16 +125,7 @@ async def signup(
     Per-IP signup rate limits are configurable via
     settings.signup_rate_limit_per_hour and signup_rate_limit_per_day.
     """
-    # Check if signup is enabled
-    _signup_enabled = settings.signup_enabled
-    try:
-        from serving.config.runtime_settings import get_runtime_settings_instance
-
-        rs = get_runtime_settings_instance()
-        _signup_enabled = await rs.get_bool("signup_enabled")
-    except (RuntimeError, KeyError):
-        pass
-    if not _signup_enabled:
+    if not await is_public_signup_enabled():
         raise HTTPException(
             status_code=403,
             detail="Public signup is currently disabled. Please contact administrator.",

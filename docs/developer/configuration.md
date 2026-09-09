@@ -111,7 +111,9 @@ continues with no models registered.
 
 A manifest is one versioned YAML document that names a deployment and tells the
 gateway where its config files are. `config/examples/distribution.example.yaml`
-is the annotated reference; the shape is:
+is the annotated reference. Both examples below and in that file close public
+signup when activated; change `public_signup` to `true` or null if this
+deployment should accept new accounts through the public signup API:
 
 ```yaml
 schema_version: 1
@@ -145,6 +147,41 @@ export DISTRIBUTION_CONFIG_PATH=distributions/<name>/distribution.yaml
 export DISTRIBUTION_CONFIG_MODE=active
 ```
 
+With an active manifest, `features.public_signup: false` disables both the
+signup UI and `POST /auth/signup` (HTTP 403, without creating an account).
+Neither `SIGNUP_ENABLED=true` nor a runtime `signup_enabled=true` override can
+reopen it. To enable public signup, change the manifest to `true` or leave the
+field unset/null and restart the backend, then ensure the effective
+`signup_enabled` setting is enabled.
+
+The admin API rejects attempts to set `signup_enabled=true` while the active
+manifest disables signup (HTTP 400, without saving the setting). Manifest root
+and `features` fields reject unknown keys, including `public-signup`,
+`publicSignup`, or a `public_signup` field at the manifest root.
+
+When the manifest allows signup, the runtime `signup_enabled` setting takes
+precedence over `SIGNUP_ENABLED` (default `true`). The same rule applies with
+no manifest or in dark mode; dark-mode feature values have no effect.
+`GET /site-config` reports the resulting boolean in `features.public_signup`,
+so the console follows the backend policy. Email verification, domain-based
+approval, and quotas remain separate checks; allowing registration does not
+bypass them.
+
+If a runtime signup-setting read fails or exceeds one second, the gateway
+temporarily disables public signup. A valid `/site-config` response still
+returns HTTP 200 with its identity and branding intact and
+`public_signup: false`; registration returns HTTP 403 without creating an
+account. It does not fall back to an environment value that could reopen
+registration.
+
+Because `/site-config` is unauthenticated and read while rendering every
+console page, the gateway does not repeat a failing read for every request.
+Callers that arrive together while the setting's cache is cold share one
+store round-trip, and a failed read is reused for five seconds, so an outage
+costs one timeout per window rather than one per request. Recovery needs no
+restart: the window expires on its own, and writing `signup_enabled` through
+the administrator API clears it at once.
+
 ### Dark mode is the default, and that is deliberate
 
 `DISTRIBUTION_CONFIG_MODE` defaults to `dark`. In dark mode the manifest is
@@ -158,13 +195,14 @@ resolution stays effective:
 ```
 
 Setting only `DISTRIBUTION_CONFIG_PATH` therefore cannot change behaviour; you
-get a warning telling you the mode defaulted to `dark`. For config-path
-resolution, an empty or unrecognised mode also degrades to `dark` with a warning.
-The RAG feature policy rejects these invalid modes: authenticated requests to
-both `/v1/rag/status` and `/v1/rag/chat` return `503`. Only an unset mode defaults
-to `dark`; an explicitly empty mode is invalid, including in Compose. Enable a
-manifest by running dark first, reading the comparison lines, and only then
-setting `active`.
+get a warning telling you the mode defaulted to `dark`. Config-path resolution
+treats an unrecognised mode as `dark` with a warning. Signup, `/site-config`, and
+the RAG feature policy are stricter: an explicitly empty or unknown mode, or
+`active` without a manifest path, closes signup (HTTP 403), makes `/site-config`
+report an unavailable configuration (HTTP 503), and makes authenticated
+`/v1/rag/status` and `/v1/rag/chat` requests return HTTP 503. Only an unset mode
+defaults to `dark`, including in Compose. Enable a manifest by running dark
+first, reading the comparison lines, and only then setting `active`.
 
 Mode warnings are logged once per distinct value per process. When diagnosing
 RAG configuration errors, check the startup logs and the backend's effective
@@ -203,13 +241,17 @@ overlay; an unknown path key is treated as an omitted path and can select a
 legacy default. Strict validation of those sections is a separate compatibility
 change.
 
+If an invalid active manifest reaches the HTTP handlers, signup remains closed
+and `/site-config` returns HTTP 503 without exposing file paths or parser
+errors. It cannot return a valid identity until the manifest is repaired.
+
 ### Identity, and what the manifest must not contain
 
 `site:` and `features:` are served as a public subset by `GET /site-config`, and
 `distribution.display_name` / `site:` feed backend-rendered content (transactional
 emails, attribution headers) through `get_site_identity()` in
 `apps/backend/serving/config/site_identity.py`. Both are gated on
-`DISTRIBUTION_CONFIG_MODE=active`; in any other mode `/site-config` returns a
+`DISTRIBUTION_CONFIG_MODE=active`; in dark mode `/site-config` returns a
 neutral document and identity falls back to `SITE_NAME` / `SITE_PUBLIC_BASE_URL`
 / `SITE_DOCS_URL` / `SITE_SUPPORT_EMAIL` or to neutral defaults.
 

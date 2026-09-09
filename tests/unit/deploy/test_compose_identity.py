@@ -91,6 +91,7 @@ def test_no_compose_default_names_a_deployment() -> None:
         ("SMTP_FROM_NAME", "HybridInference"),
         ("BASE_URL", ""),
         ("FRONTEND_URL", "http://localhost:3001"),
+        ("DISTRIBUTION_CONFIG_MODE", "dark"),
     ],
 )
 def test_compose_neutral_default_matches_the_code_default(
@@ -118,6 +119,7 @@ def test_compose_neutral_default_matches_the_code_default(
         "SMTP_FROM_NAME": settings.smtp_from_name,
         "BASE_URL": settings.base_url,
         "FRONTEND_URL": settings.frontend_url,
+        "DISTRIBUTION_CONFIG_MODE": settings.distribution_config_mode,
     }[var]
 
     assert _compose_defaults()[var] == expected

@@ -97,6 +97,8 @@ class DistributionFeatures(_ManifestModel):
     model_config = ConfigDict(extra="forbid")
 
     routers: list[str] = Field(default_factory=list)
+    # In active mode, false disables the signup API as well as its UI.
+    # True/None defer to the effective runtime/environment signup setting.
     public_signup: bool | None = None
     rag: bool | None = None
 
@@ -276,9 +278,9 @@ def _effective_mode() -> str:
     """Normalize the configured mode; unknown values degrade to ``dark``.
 
     This fallback applies to config-path resolution, where it prevents an
-    accidental activation. The RAG feature policy uses
+    accidental activation. Feature policies and public identity use
     ``get_active_distribution_config`` to reject unknown modes instead of
-    silently discarding its restriction.
+    silently discarding a restriction.
     """
     raw = get_settings().distribution_config_mode.strip().lower()
     if raw in _VALID_MODES:

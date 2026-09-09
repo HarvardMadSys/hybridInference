@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
-from serving.config.distribution import get_distribution_config
-from serving.config.settings import get_settings
+from serving.auth.signup_policy import is_public_signup_enabled
+from serving.config.distribution import DistributionConfigError, get_active_distribution_config
 from serving.config.site_identity import get_site_identity
 
 router = APIRouter()
@@ -35,13 +35,22 @@ async def get_site_config() -> dict[str, Any]:
     Read-only and unauthenticated: this is the same information the public
     site renders. Falls back to a neutral document of identical shape when
     no distribution manifest is configured, so clients never need to
-    special-case its absence.
+    special-case its absence. Public signup always reports the effective
+    backend policy, including environment and runtime settings.
     """
-    if get_settings().distribution_config_mode.strip().lower() != "active":
-        return _NEUTRAL
-    config = get_distribution_config()
+    try:
+        config = get_active_distribution_config()
+    except DistributionConfigError:
+        raise HTTPException(
+            status_code=503,
+            detail="Site configuration is unavailable. Check the distribution manifest and mode.",
+        ) from None
+    public_signup = await is_public_signup_enabled()
     if config is None:
-        return _NEUTRAL
+        return {
+            **_NEUTRAL,
+            "features": {**_NEUTRAL["features"], "public_signup": public_signup},
+        }
     site_identity = get_site_identity()
     branding = config.branding_config
     return {
@@ -51,7 +60,7 @@ async def get_site_config() -> dict[str, Any]:
             "public_base_url": site_identity.public_base_url,
             "support_email": site_identity.support_email,
         },
-        "features": config.features.model_dump(),
+        "features": {**config.features.model_dump(), "public_signup": public_signup},
         "branding": (
             branding.public_payload(docs_url=site_identity.docs_url)
             if branding is not None
