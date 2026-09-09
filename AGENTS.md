@@ -20,32 +20,14 @@ everyone who clones the repository.
 
 ## 2. Repo map
 
-```text
-apps/
-  backend/
-    serving/      # FastAPI gateway: HTTP, SSE, adapters, auth, storage, observability
-    routing/      # Routing engine: strategies, routers, health, circuit breaker
-  frontend/       # Next.js web UI
-config/           # YAML config: models, routing, alerts
-tests/
-  unit/           # Fast, mocked. Default in CI.
-  api/            # Per-provider API surface tests.
-  integration/    # Hits a real DB or external service. Marker: dbtest.
-  external/       # Hits live servers. Marker: external.
-ops/              # Operational tooling (ci, admin, release, deploy, setup, backend-coupled db analysis)
-deploy/           # Systemd units, Docker, observability manifests
-distributions/      # Overlays, one directory each. Deployment overlays move
-                    # out before publication; example/ remains, see 6.5.
-  <name>/           # manifest + site config, branding, content, docs
-    content/docs/   # that deployment's public doc-site source (Sphinx)
-  example/          # public runnable router example; EXAMPLE_OVERLAY marks it
-                    # as a teaching artifact, so `make up` never selects it
-docs/
-  developer/      # Developer guide (built into the internal doc site)
-  agents/         # Agent-facing artifacts: specs/ and plans/
-  superpowers/    # Additional design specs/ and plans/
-  reviews/        # Code review records
-```
+The layout is in [docs/developer/contributing.md](docs/developer/contributing.md),
+under "Repository layout". Two things it does not tell you:
+
+- Deployment overlays under `distributions/` move out of this repository before
+  publication. `example/` is the one that remains.
+- `distributions/example/` is marked `EXAMPLE_OVERLAY`, and that marker is what
+  stops `make up` from ever selecting it. It is a teaching artifact, not a
+  deployable overlay.
 
 ## 3. Getting set up
 
@@ -55,24 +37,12 @@ Prerequisites: Python 3.10–3.13 (3.12 recommended) and [uv](https://github.com
 make setup-dev
 ```
 
-Or manually:
-
-```bash
-uv venv -p 3.12
-source .venv/bin/activate
-uv sync
-```
-
 The Makefile honors a `UV_RUN` override: `make lint UV_RUN="uv run --active"`.
 
 ## 4. Quality gates
 
-| Command | What it does |
-|---|---|
-| `make format` | `ruff format .` then `ruff check --fix --unsafe-fixes .` |
-| `make lint`   | `ruff format --check .`, `ruff check --no-fix .`, and `pydocstyle` |
-| `make test`   | `pytest -q -m "not external and not dbtest" -n auto --dist loadfile` |
-| `make all`    | format + lint + test |
+`make format`, `make lint`, `make test`, `make all`. Run `make help` for the
+full target list.
 
 [docs/developer/contributing.md](docs/developer/contributing.md) is the
 canonical reference for the gates and the test tiers.
@@ -171,6 +141,13 @@ Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
 - Storage layer supports both Postgres and Cloudflare D1 — check
   `apps/backend/serving/storage/` for the active backend before assuming
   SQL dialect.
+- Alerting has two permanent, independent paths (decision: issue #1103).
+  Backend gateway alerts go through `alert_slack()`
+  (`apps/backend/serving/observability/alerts.py`) to a Slack webhook;
+  status-monitor alerts go through the status monitor and alert control plane
+  workers owned and deployed by the external
+  [freeInference repository](https://github.com/HarvardMadSys/freeInference).
+  Do not wire backend producers to that control plane.
 - Frontend is Next.js in `apps/frontend/` — its quality gates are separate
   from the Python `make` targets.
 
@@ -212,3 +189,4 @@ not duplicate their content.
 | Address PR review / fix CI | [.kilo/skills/check-pr/SKILL.md](.kilo/skills/check-pr/SKILL.md) |
 | Add a new model | [docs/developer/adding-models.md](docs/developer/adding-models.md) |
 | Add a local model (vLLM/SGLang/Ollama) | [docs/developer/add-local-model.md](docs/developer/add-local-model.md) |
+| Run / operate the cloud agent | `docs/operations.md` in [hybridInference-cloud-agent](https://github.com/HarvardMadSys/hybridInference-cloud-agent) |
