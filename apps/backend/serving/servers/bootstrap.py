@@ -29,6 +29,7 @@ from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
+from serving.extensions import load_backend_extensions
 from serving.http import AsyncHTTPClient
 from serving.servers.routewise_compat import (
     EnvelopeNotCalibratedError,
@@ -627,6 +628,7 @@ async def initialize() -> AppServices:
     # Load environment first so logging picks up LOG_FORMAT/LOG_LEVEL.
     load_dotenv()
     setup_logging()
+    load_backend_extensions()
 
     if os.environ.get("EXPERIMENT_MODE"):
         logger.warning(

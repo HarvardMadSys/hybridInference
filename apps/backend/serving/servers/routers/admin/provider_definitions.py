@@ -48,13 +48,13 @@ PROVIDER_DEFAULT_BASE_URLS = {
     "chutes": "https://llm.chutes.ai",
     "deepseek": "https://api.deepseek.com",
     "featherless": "https://api.featherless.ai",
-    "kimi": "https://api.kimi.com/coding/v1",
+    "kimi": "https://api.moonshot.ai/v1",
     "minimax": "https://api.minimax.io/v1",
     "ollama": "https://ollama.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
     "sglang": "http://host.docker.internal:8001/v1",
     "vllm": "http://host.docker.internal:8002/v1",
-    "zai": "https://api.z.ai/api/coding/paas/v4/",
+    "zai": "https://api.z.ai/api/paas/v4/",
 }
 
 
@@ -139,7 +139,7 @@ def _config_managed_provider_names(
 ) -> set[str]:
     """Return provider slugs managed by code or config/models.yaml.
 
-    Key-provider aliases (``kimi_coding`` → ``kimi``) count as code-managed:
+    Key-provider aliases registered by extensions count as code-managed:
     keys and routes under such a name are grouped under the alias target
     everywhere else, so a custom provider by that name would list no models
     and could be deleted while its routes still ran.

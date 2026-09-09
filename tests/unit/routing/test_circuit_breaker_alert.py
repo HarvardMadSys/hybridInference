@@ -276,7 +276,7 @@ async def test_circuit_open_alert_lists_offending_users(monkeypatch):
 
     reset_dedupe_state()
 
-    cb = _CircuitBreaker(provider="kimi_coding-api")
+    cb = _CircuitBreaker(provider="extension_alias-api")
 
     with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="stream_exception", offender="bob (02)")
@@ -352,8 +352,8 @@ async def test_registry_attributes_offender_from_request_context(monkeypatch):
 
     with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
         with req_ctx.push(user_id="01ABC", user_name="alice"):
-            registry.record_failure("kimi_coding-api", reason="stream_exception")
-            registry.record_failure("kimi_coding-api", reason="stream_exception")
+            registry.record_failure("extension_alias-api", reason="stream_exception")
+            registry.record_failure("extension_alias-api", reason="stream_exception")
         await asyncio.sleep(0)
         mock_alert.assert_awaited_once()
         context = mock_alert.await_args.args[2]

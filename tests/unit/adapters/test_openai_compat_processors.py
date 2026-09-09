@@ -732,7 +732,7 @@ async def test_zai_profile_uses_chat_path_and_forwards_supported_extra_params():
         id="glm-5",
         name="GLM-5",
         provider="zai",
-        base_url="https://api.z.ai/api/coding/paas/v4",
+        base_url="https://api.z.ai/api/paas/v4",
         provider_model_id="glm-5",
         provider_profile="zai",
         chat_path="/chat/completions",
@@ -756,7 +756,7 @@ async def test_zai_profile_uses_chat_path_and_forwards_supported_extra_params():
     )
 
     call_kwargs = mock_post.call_args.kwargs
-    assert call_kwargs["url"] == "https://api.z.ai/api/coding/paas/v4/chat/completions"
+    assert call_kwargs["url"] == "https://api.z.ai/api/paas/v4/chat/completions"
     assert call_kwargs["json"]["thinking"] == {"type": "enabled"}
     assert call_kwargs["json"]["tool_stream"] is True
 

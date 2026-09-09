@@ -1217,7 +1217,7 @@ class TestFetchMinimax:
 class TestFetchKimi:
     @pytest.mark.asyncio
     async def test_not_configured_when_key_missing(self, monkeypatch):
-        monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+        monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
         results = await fetch_kimi()
         assert len(results) == 1
         result = results[0]
@@ -1227,7 +1227,7 @@ class TestFetchKimi:
 
     @pytest.mark.asyncio
     async def test_success_parses_summary_and_limits(self, monkeypatch):
-        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "kimi_abc1234567890xyz9")
         reset_iso = "2026-06-21T05:24:18Z"
         payload = {
             "usage": {"limit": 10000, "remaining": 4000, "reset_at": reset_iso},
@@ -1272,7 +1272,7 @@ class TestFetchKimi:
 
     @pytest.mark.asyncio
     async def test_window_time_unit_is_case_insensitive(self, monkeypatch):
-        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "kimi_abc1234567890xyz9")
         payload = {
             "limits": [
                 {
@@ -1290,7 +1290,7 @@ class TestFetchKimi:
 
     @pytest.mark.asyncio
     async def test_auth_failed_on_401(self, monkeypatch):
-        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "kimi_abc1234567890xyz9")
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_get(status=401),
@@ -1301,7 +1301,7 @@ class TestFetchKimi:
 
     @pytest.mark.asyncio
     async def test_no_quota_api_on_404(self, monkeypatch):
-        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "kimi_abc1234567890xyz9")
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_get(status=404),
@@ -1312,7 +1312,7 @@ class TestFetchKimi:
 
     @pytest.mark.asyncio
     async def test_parse_error_on_empty_payload(self, monkeypatch):
-        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "kimi_abc1234567890xyz9")
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_get(status=200, json_data={"unrelated": "junk"}),
@@ -1326,7 +1326,7 @@ class TestFetchKimi:
         # Kimi's gateway can serve the body with a non-application/json content
         # type; aiohttp rejects that unless content_type=None is passed. curl
         # ignores the header, so "curl works but the dashboard doesn't".
-        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "kimi_abc1234567890xyz9")
         payload = {
             "limits": [
                 {
@@ -1364,7 +1364,7 @@ class TestFetchKimi:
 
     @pytest.mark.asyncio
     async def test_parses_data_envelope(self, monkeypatch):
-        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "kimi_abc1234567890xyz9")
         payload = {"data": {"limits": [{"detail": {"limit": 1000, "remaining": 250}}]}}
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
@@ -1380,7 +1380,7 @@ class TestFetchKimi:
         # The plural ``/usages`` endpoint can return a bare array of limit
         # objects rather than an object — a clean 200 that previously parsed
         # as empty and surfaced as "parse_error" on the dashboard.
-        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "kimi_abc1234567890xyz9")
         payload = [
             {
                 "name": "Weekly limit",
@@ -1407,7 +1407,7 @@ class TestFetchKimi:
     async def test_parses_string_valued_numbers_in_array(self, monkeypatch):
         # Kimi's /usages commonly returns quota figures as numeric strings;
         # they must coerce to floats rather than parsing as empty.
-        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "kimi_abc1234567890xyz9")
         payload = [
             {
                 "name": "Weekly limit",
@@ -1432,7 +1432,7 @@ class TestFetchKimi:
 
     @pytest.mark.asyncio
     async def test_parses_data_envelope_wrapping_list(self, monkeypatch):
-        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "kimi_abc1234567890xyz9")
         payload = {"data": [{"detail": {"limit": 1000, "remaining": 250}}]}
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
@@ -1447,7 +1447,7 @@ class TestFetchKimi:
     async def test_parses_data_envelope_wrapping_usages_key(self, monkeypatch):
         # An envelope whose inner object uses the plural ``usages`` array
         # (the alias accepted alongside ``limits``) must still be unwrapped.
-        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        monkeypatch.setenv("MOONSHOT_API_KEY", "kimi_abc1234567890xyz9")
         payload = {"data": {"usages": [{"detail": {"limit": 1000, "remaining": 250}}]}}
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
@@ -1977,7 +1977,7 @@ class TestGatherAll:
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-        monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+        monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
@@ -1998,7 +1998,7 @@ class TestGatherAll:
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-        monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+        monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
@@ -2015,7 +2015,7 @@ class TestGatherAll:
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
-        monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+        monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
         keys = [
@@ -2091,7 +2091,7 @@ class TestProviderQuotasRoute:
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-        monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+        monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
@@ -2185,7 +2185,7 @@ def _clear_provider_env(monkeypatch):
         "ZAI_API_KEY",
         "MINIMAX_API_KEY",
         "MINIMAX_SESSION_COOKIE",
-        "KIMI_CODING_API_KEY",
+        "MOONSHOT_API_KEY",
         "OLLAMA_API_KEY",
         "OLLAMA_SESSION_COOKIE",
         "FEATHERLESS_API_KEY",

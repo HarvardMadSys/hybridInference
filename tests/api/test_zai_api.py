@@ -14,7 +14,7 @@ def _get_zai_client():
     api_key = os.environ.get("ZAI_API_KEY")
     if not api_key:
         pytest.skip("ZAI_API_KEY not configured", allow_module_level=False)
-    return OpenAI(api_key=api_key, base_url="https://api.z.ai/api/coding/paas/v4/")
+    return OpenAI(api_key=api_key, base_url="https://api.z.ai/api/paas/v4/")
 
 
 @pytest.mark.parametrize("model", ["glm-4.7", "glm-4.7-flash", "glm-5"])

@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 from serving.adapters import (
     AnthropicAdapter,
     ClaudeAdapter,
-    CodingIdentityAdapter,
     GeminiAdapter,
     ModelConfig,
     OpenAICompatAdapter,
@@ -30,6 +29,7 @@ from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from routing.executor import RouteExecutor
@@ -129,30 +129,61 @@ _PROVIDER_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 #
 # test_registry_provider_label.py asserts this set stays in sync with
 # `_make_adapter`'s dispatch.
-RESERVED_PROVIDER_LABELS = frozenset(
-    {
-        "",
-        "anthropic",
-        "chutes",
-        "claude",
-        "cliproxy",
-        "deepseek",
-        "featherless",
-        "gemini",
-        "kimi",
-        "kimi_coding",
-        "minimax",
-        "ollama",
-        "openai",
-        "openai_compat",
-        "openrouter",
-        "router",
-        "sglang",
-        "staging",
-        "vllm",
-        "zai",
-    }
-)
+RESERVED_PROVIDER_LABELS = {
+    "",
+    "anthropic",
+    "chutes",
+    "claude",
+    "cliproxy",
+    "deepseek",
+    "featherless",
+    "gemini",
+    "kimi",
+    "minimax",
+    "ollama",
+    "openai",
+    "openai_compat",
+    "openrouter",
+    "router",
+    "sglang",
+    "staging",
+    "vllm",
+    "zai",
+}
+_BUILT_IN_ADAPTER_KINDS = frozenset(RESERVED_PROVIDER_LABELS - {"", "openai", "router"})
+ADAPTER_FACTORIES: dict[str, Callable[[dict[str, Any]], Any]] = {}
+
+
+def register_adapter_factory(
+    kind: str,
+    factory: Callable[[dict[str, Any]], Any],
+    *,
+    override: bool = False,
+) -> None:
+    """Register a trusted startup extension's adapter factory.
+
+    Factories receive ModelConfig keyword arguments before built-in defaults.
+    A built-in kind requires an explicit override; an extension kind can only
+    be registered once. The kind also becomes a reserved provider label.
+    """
+    if not isinstance(kind, str) or not _PROVIDER_LABEL_RE.fullmatch(kind):
+        raise ValueError("Adapter kind must be a lowercase slug (max 64 characters)")
+    if not callable(factory):
+        raise TypeError("Adapter factory must be callable")
+    if kind in ADAPTER_FACTORIES:
+        raise ValueError(f"Adapter factory already registered: {kind}")
+    if kind in RESERVED_PROVIDER_LABELS and kind not in _BUILT_IN_ADAPTER_KINDS:
+        raise ValueError(f"Adapter kind is reserved: {kind}")
+    if kind in _BUILT_IN_ADAPTER_KINDS and not override:
+        raise ValueError(f"Overriding built-in adapter kind {kind!r} requires override=True")
+    ADAPTER_FACTORIES[kind] = factory
+    RESERVED_PROVIDER_LABELS.add(kind)
+    logger.info(
+        "Registered backend extension adapter kind %s (built-in override: %s)",
+        kind,
+        kind in _BUILT_IN_ADAPTER_KINDS,
+    )
+
 
 _OPENROUTER_KIND_RE = re.compile(r"^openrouter\[([A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*)\]$")
 
@@ -188,7 +219,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"zai"``,
-              ``"kimi"``, ``"kimi_coding"``, ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``,
+              ``"kimi"``, ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``,
               ``"cliproxy"``, ``"openai_compat"``, ``"staging"``, ``"openrouter"``, ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
 
@@ -206,18 +237,23 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     if base_kind == "openrouter":
         cfg = {
             **cfg,
-            "provider_profile": "openrouter",
             "openrouter_pinned_provider": pinned_provider,
         }
         kind = base_kind  # subsequent dispatch checks compare against the bare kind
+
+    factory = ADAPTER_FACTORIES.get(kind)
+    if factory is not None:
+        return factory(dict(cfg))
+
+    if kind == "openrouter":
+        cfg = {**cfg, "provider_profile": "openrouter"}
 
     # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile.
     # Request upstream usage in the stream so tool-call-only responses report
     # non-zero completion tokens instead of falling back to a text estimate.
     if kind == "deepseek":
         cfg = {**cfg, "provider_profile": "deepseek", "include_usage_in_stream": True}
-    # ZAI is the Z.AI GLM coding plan: a non-/v1 chat path, and (like the Kimi
-    # coding plan) gated on a coding-tool identity, so it uses CodingIdentityAdapter.
+    # ZAI uses an OpenAI-compatible API with a non-/v1 chat path.
     elif kind == "zai":
         cfg = {
             **cfg,
@@ -225,11 +261,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
             "chat_path": "/chat/completions",
             "include_usage_in_stream": True,
         }
-    # Kimi (Moonshot) routes through OpenAICompatAdapter; both the Kimi Code
-    # coding-plan endpoint and the pay-per-token Moonshot API are OpenAI-compatible.
-    # ``kimi_coding`` shares the usage profile but uses the dedicated
-    # CodingIdentityAdapter (coding-tool User-Agent + leading OpenCode system message).
-    elif kind in ("kimi", "kimi_coding"):
+    elif kind == "kimi":
         cfg = {**cfg, "provider_profile": "kimi", "include_usage_in_stream": True}
     elif kind == "minimax":
         cfg = {**cfg, "provider_profile": "minimax", "include_usage_in_stream": True}
@@ -237,12 +269,6 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         cfg = {**cfg, "include_usage_in_stream": True}
 
     model_cfg = ModelConfig(**cfg)
-
-    # Coding-plan providers (Kimi coding plan, Z.AI GLM coding plan) gate access
-    # on a coding-tool identity; CodingIdentityAdapter injects the User-Agent and
-    # leading OpenCode system message (subject to the runtime toggle).
-    if kind in ("kimi_coding", "zai"):
-        return CodingIdentityAdapter(model_cfg)
 
     # All OpenAI-compatible services use the same adapter
     if kind in (
@@ -258,6 +284,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         # tracked independently in metrics/analytics.
         "staging",
         "deepseek",
+        "zai",
         "kimi",
         "minimax",
     ):

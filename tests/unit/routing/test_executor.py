@@ -166,7 +166,7 @@ async def test_failed_request_attaches_routing_provider_to_exception():
     provider instead of the "router" sentinel (which the provider-performance
     aggregations drop)."""
     exe = RouteExecutor()
-    primary = _FailAdapter(_cfg("m", provider="kimi_coding"))
+    primary = _FailAdapter(_cfg("m", provider="extension_alias"))
     exe.register_route("m", [(primary, 1.0)])
 
     with pytest.raises(RuntimeError) as exc_info:
@@ -174,8 +174,8 @@ async def test_failed_request_attaches_routing_provider_to_exception():
 
     routing = getattr(exc_info.value, "_routing", None)
     assert routing is not None
-    assert routing["provider"] == "kimi_coding"
-    assert [a["provider"] for a in routing["failed_attempts"]] == ["kimi_coding"]
+    assert routing["provider"] == "extension_alias"
+    assert [a["provider"] for a in routing["failed_attempts"]] == ["extension_alias"]
 
 
 @pytest.mark.unit
@@ -208,7 +208,7 @@ async def test_pin_failure_attaches_routing_provider_to_exception():
     """A pinned request that fails must not fall back, and must attribute the
     failure to the pinned provider rather than the "router" sentinel."""
     exe = RouteExecutor()
-    pinned = _FailAdapter(_cfg("m", provider="kimi_coding"))
+    pinned = _FailAdapter(_cfg("m", provider="extension_alias"))
     other = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(pinned, 0.5), (other, 0.5)])
 
@@ -216,12 +216,12 @@ async def test_pin_failure_attaches_routing_provider_to_exception():
         await exe.chat_completion(
             "m",
             messages=[{"role": "user", "content": "hi"}],
-            routing_options=RoutingRequestOptions(pin_provider="kimi_coding"),
+            routing_options=RoutingRequestOptions(pin_provider="extension_alias"),
         )
 
     routing = getattr(exc_info.value, "_routing", None)
     assert routing is not None
-    assert routing["provider"] == "kimi_coding"
+    assert routing["provider"] == "extension_alias"
 
 
 @pytest.mark.unit
@@ -853,7 +853,7 @@ async def test_stream_failed_request_attaches_routing_provider_to_exception():
     provider instead of guessing from the last in-band ``_routing`` SSE
     chunk the consumer saw."""
     exe = RouteExecutor()
-    primary = _FailAdapter(_cfg("m", provider="kimi_coding"))
+    primary = _FailAdapter(_cfg("m", provider="extension_alias"))
     exe.register_route("m", [(primary, 1.0)])
 
     with pytest.raises(RuntimeError) as exc_info:
@@ -864,8 +864,8 @@ async def test_stream_failed_request_attaches_routing_provider_to_exception():
 
     routing = getattr(exc_info.value, "_routing", None)
     assert routing is not None
-    assert routing["provider"] == "kimi_coding"
-    assert [a["provider"] for a in routing["failed_attempts"]] == ["kimi_coding"]
+    assert routing["provider"] == "extension_alias"
+    assert [a["provider"] for a in routing["failed_attempts"]] == ["extension_alias"]
 
 
 @pytest.mark.unit

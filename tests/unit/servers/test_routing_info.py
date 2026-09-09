@@ -359,7 +359,7 @@ def test_provider_for_error_prefers_exc_routing_provider():
     ``provider="router"`` and hidden from the provider-performance aggregations,
     which exclude ``provider IN ('', 'router')``.
     """
-    assert _provider_for_error({"provider": "kimi_coding"}) == "kimi_coding"
+    assert _provider_for_error({"provider": "extension_alias"}) == "extension_alias"
 
 
 def test_provider_for_error_defaults_to_router_when_routing_absent():

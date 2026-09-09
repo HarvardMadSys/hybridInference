@@ -94,7 +94,7 @@ async def test_update_builtin_provider_is_rejected(monkeypatch):
     config_spec = provider_definitions.ConfigProviderSpec(
         provider="kimi",
         adapter_kind="kimi",
-        default_base_url="https://api.kimi.com/coding/v1",
+        default_base_url="https://api.moonshot.ai/v1",
         model_ids=frozenset(["kimi-test"]),
     )
 
@@ -125,7 +125,7 @@ async def test_delete_builtin_provider_is_rejected(monkeypatch):
     config_spec = provider_definitions.ConfigProviderSpec(
         provider="kimi",
         adapter_kind="kimi",
-        default_base_url="https://api.kimi.com/coding/v1",
+        default_base_url="https://api.moonshot.ai/v1",
         model_ids=frozenset(),
     )
 
@@ -386,7 +386,7 @@ models:
   - id: kimi-test
     provider: kimi
     route:
-      - kind: kimi_coding
+      - kind: kimi
         base_url: ${MISSING_KIMI_BASE_URL}
   - id: local-test
     provider: sglang
@@ -412,7 +412,7 @@ models:
     specs = _configured_provider_specs()
 
     assert set(specs) == {"kimi", "openai", "openrouter", "sglang"}
-    assert specs["kimi"].default_base_url == "https://api.kimi.com/coding/v1"
+    assert specs["kimi"].default_base_url == "https://api.moonshot.ai/v1"
     assert specs["kimi"].model_ids == frozenset(["kimi-test"])
     assert specs["sglang"].default_base_url == "http://host.docker.internal:8001/v1"
     assert specs["sglang"].model_ids == frozenset(["local-test"])
@@ -449,7 +449,7 @@ def test_merge_config_models_by_provider_preserves_runtime_models():
         "kimi": provider_definitions.ConfigProviderSpec(
             provider="kimi",
             adapter_kind="kimi",
-            default_base_url="https://api.kimi.com/coding/v1",
+            default_base_url="https://api.moonshot.ai/v1",
             model_ids=frozenset(["kimi-test"]),
         )
     }
@@ -761,11 +761,13 @@ async def test_list_provider_definitions_credits_pinned_runtime_routes_to_openro
 async def test_create_provider_definition_rejects_key_provider_aliases(monkeypatch):
     """A slug the key registry folds into another provider cannot be custom.
 
-    ``kimi_coding`` normalizes to ``kimi`` everywhere keys and routes are
-    grouped, so a custom provider by that name would show 0 models and could
-    be deleted while its routes still ran.
+    Extension aliases normalize to the same provider everywhere keys and
+    routes are grouped, so a custom provider with that slug is unsafe.
     """
     store = FakeProviderDefinitionStore()
+    monkeypatch.setitem(
+        provider_definitions.dynamic_keys._KEY_PROVIDER_ALIASES, "extension_alias", "example"
+    )
 
     monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
     monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
@@ -773,12 +775,12 @@ async def test_create_provider_definition_rejects_key_provider_aliases(monkeypat
     with pytest.raises(HTTPException) as excinfo:
         await provider_definitions.create_provider_definition(
             CreateProviderDefinitionRequest(
-                provider="kimi_coding",
-                display_name="Kimi coding plan",
+                provider="extension_alias",
+                display_name="Extension Alias",
                 adapter_kind="openai_compat",
-                default_base_url="https://kimi.example.test/v1",
+                default_base_url="https://api.example.test/v1",
                 api_key="secret-key-1234567890",
-                probe_model_id="kimi-k2",
+                probe_model_id="example-chat",
             ),
             admin_id="admin",
             op_store=store,
@@ -791,13 +793,16 @@ async def test_create_provider_definition_rejects_key_provider_aliases(monkeypat
 
 @pytest.mark.asyncio
 async def test_list_provider_definitions_ignores_alias_named_definition_row(monkeypatch):
+    monkeypatch.setitem(
+        provider_definitions.dynamic_keys._KEY_PROVIDER_ALIASES, "extension_alias", "example"
+    )
     store = FakeProviderDefinitionStore(
         {
-            "kimi_coding": ProviderDefinitionRow(
-                provider="kimi_coding",
-                display_name="Legacy Kimi coding",
+            "extension_alias": ProviderDefinitionRow(
+                provider="extension_alias",
+                display_name="Legacy Extension",
                 adapter_kind="openai_compat",
-                default_base_url="https://kimi.example.test/v1",
+                default_base_url="https://api.example.test/v1",
                 status="active",
                 created_at=None,  # type: ignore[arg-type]
                 updated_at=None,  # type: ignore[arg-type]

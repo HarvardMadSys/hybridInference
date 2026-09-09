@@ -247,26 +247,21 @@ def test_make_adapter_deepseek_uses_openai_compat_with_profile():
 
 
 @pytest.mark.unit
-def test_make_adapter_zai_uses_coding_identity_with_chat_path():
-    """kind: zai routes through CodingIdentityAdapter with ZAI chat path override.
-
-    The Z.AI GLM coding plan gates on the same coding-tool identity as the Kimi
-    coding plan, so it uses CodingIdentityAdapter (a subclass of
-    OpenAICompatAdapter) while preserving the zai profile and chat-path override.
-    """
+def test_make_adapter_zai_uses_openai_compat_with_chat_path():
+    """The ordinary ZAI API keeps its profile and non-/v1 chat path."""
     adapter = registry._make_adapter(
         "zai",
         {
             "id": "glm-5",
             "name": "GLM-5",
             "provider": "zai",
-            "base_url": "https://api.z.ai/api/coding/paas/v4/",
+            "base_url": "https://api.z.ai/api/paas/v4/",
             "api_key": "test-key",
         },
     )
-    from serving.adapters.coding_identity import CodingIdentityAdapter
+    from serving.adapters.openai_compat import OpenAICompatAdapter
 
-    assert isinstance(adapter, CodingIdentityAdapter)
+    assert type(adapter) is OpenAICompatAdapter
     assert adapter.config.provider_profile == "zai"
     assert adapter.config.chat_path == "/chat/completions"
 
@@ -292,27 +287,23 @@ def test_make_adapter_minimax_uses_openai_compat_with_profile():
 
 @pytest.mark.unit
 def test_make_adapter_kimi_uses_openai_compat_with_profile():
-    """kind: kimi routes through OpenAICompatAdapter with the Kimi profile.
-
-    The Kimi Code coding-plan base_url ends in /v1, so the adapter posts to
-    .../coding/v1/chat/completions (no chat_path override needed).
-    """
+    """kind: kimi uses the ordinary Moonshot API and Kimi usage profile."""
     adapter = registry._make_adapter(
         "kimi",
         {
-            "id": "kimi-k2.7-code",
-            "name": "Kimi K2.7 Code",
+            "id": "kimi-k2.7",
+            "name": "Kimi K2.7",
             "provider": "kimi",
-            "base_url": "https://api.kimi.com/coding/v1",
+            "base_url": "https://api.moonshot.ai/v1",
             "api_key": "test-key",
-            "provider_model_id": "kimi-for-coding",
+            "provider_model_id": "kimi-k2.7",
         },
     )
     from serving.adapters.openai_compat import OpenAICompatAdapter
 
-    assert isinstance(adapter, OpenAICompatAdapter)
+    assert type(adapter) is OpenAICompatAdapter
     assert adapter.config.provider_profile == "kimi"
-    assert adapter.config.provider_model_id == "kimi-for-coding"
+    assert adapter.config.provider_model_id == "kimi-k2.7"
 
 
 @pytest.mark.unit
@@ -324,20 +315,20 @@ def test_kimi_profile_does_not_support_guided_json():
 
 
 @pytest.mark.unit
-def test_register_kimi_coding_and_metered_routes_get_distinct_endpoint_ids(tmp_path, monkeypatch):
-    """The two Kimi upstreams must get distinct endpoint IDs for independent tracking."""
+def test_register_compatible_routes_get_distinct_endpoint_ids(tmp_path, monkeypatch):
+    """Compatible upstreams get independent endpoint health tracking."""
     yaml_text = (
         "models:\n"
-        "  - id: kimi-k2.7-code\n"
-        "    name: Kimi K2.7 Code\n"
+        "  - id: kimi-k2.7\n"
+        "    name: Kimi K2.7\n"
         "    provider: kimi\n"
         "    route:\n"
         "      - kind: kimi\n"
         "        weight: 1.0\n"
-        "        base_url: ${KIMI_CODING_BASE_URL}\n"
+        "        base_url: ${COMPAT_BASE_URL}\n"
         "        api_keys:\n"
-        "          - ${KIMI_CODING_API_KEY}\n"
-        '        provider_model_id: "kimi-for-coding"\n'
+        "          - ${COMPAT_API_KEY}\n"
+        '        provider_model_id: "kimi-k2.7"\n'
         "      - kind: kimi\n"
         "        weight: 0.1\n"
         "        base_url: ${MOONSHOT_BASE_URL}\n"
@@ -347,57 +338,65 @@ def test_register_kimi_coding_and_metered_routes_get_distinct_endpoint_ids(tmp_p
     )
     p = tmp_path / "models.yaml"
     p.write_text(yaml_text)
-    monkeypatch.setenv("KIMI_CODING_BASE_URL", "https://api.kimi.com/coding/v1")
-    monkeypatch.setenv("KIMI_CODING_API_KEY", "sk-coding")
+    monkeypatch.setenv("COMPAT_BASE_URL", "https://api.compat.example/v1")
+    monkeypatch.setenv("COMPAT_API_KEY", "sk-compat")
     monkeypatch.setenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1")
     monkeypatch.setenv("MOONSHOT_API_KEY", "sk-moonshot")
 
     exe = RouteExecutor()
     registry.register_from_models_yaml(exe, Path(p))
 
-    adapters = exe.routes["kimi-k2.7-code"].adapters
+    adapters = exe.routes["kimi-k2.7"].adapters
     assert len(adapters) == 2
-    coding, metered = adapters[0][0], adapters[1][0]
-    assert coding.config.base_url == "https://api.kimi.com/coding/v1"
-    assert coding.config.provider_model_id == "kimi-for-coding"
+    compatible, moonshot = adapters[0][0], adapters[1][0]
+    assert compatible.config.base_url == "https://api.compat.example/v1"
+    assert compatible.config.provider_model_id == "kimi-k2.7"
     # Distinct endpoint IDs keep circuit-breaker / availability tracking separate.
-    assert coding.config.endpoint_id == "kimi-k2.7-code:kimi-api"
-    assert metered.config.endpoint_id == "kimi-k2.7-code:moonshot-api"
-    assert coding.config.endpoint_id != metered.config.endpoint_id
+    assert compatible.config.endpoint_id == "kimi-k2.7:compat-api"
+    assert moonshot.config.endpoint_id == "kimi-k2.7:moonshot-api"
+    assert compatible.config.endpoint_id != moonshot.config.endpoint_id
 
 
 @pytest.mark.unit
-def test_register_kimi_coding_dynamic_keys_use_kimi_provider(tmp_path, monkeypatch):
-    from serving.adapters import dynamic_keys
+def test_register_extension_dynamic_keys_use_alias_provider(tmp_path, monkeypatch):
+    from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys
 
     dynamic_keys.reset()
+    monkeypatch.setattr(registry, "ADAPTER_FACTORIES", {})
+    monkeypatch.setattr(
+        registry, "RESERVED_PROVIDER_LABELS", set(registry.RESERVED_PROVIDER_LABELS)
+    )
+    registry.register_adapter_factory(
+        "extension_alias", lambda cfg: OpenAICompatAdapter(ModelConfig(**cfg))
+    )
+    monkeypatch.setitem(dynamic_keys._KEY_PROVIDER_ALIASES, "extension_alias", "example")
     yaml_text = (
         "models:\n"
-        "  - id: kimi-k2.7-code\n"
-        "    name: Kimi K2.7 Code\n"
-        "    provider: kimi\n"
+        "  - id: example-chat\n"
+        "    name: Example Chat\n"
+        "    provider: example\n"
         "    route:\n"
-        "      - kind: kimi_coding\n"
+        "      - kind: extension_alias\n"
         "        weight: 1.0\n"
-        "        base_url: ${KIMI_CODING_BASE_URL}\n"
+        "        base_url: ${EXAMPLE_BASE_URL}\n"
         "        api_keys:\n"
-        "          - ${KIMI_CODING_API_KEY}\n"
-        '        provider_model_id: "kimi-for-coding"\n'
+        "          - ${EXAMPLE_API_KEY}\n"
+        '        provider_model_id: "example-chat"\n'
     )
     p = tmp_path / "models.yaml"
     p.write_text(yaml_text)
-    monkeypatch.setenv("KIMI_CODING_BASE_URL", "https://api.kimi.com/coding/v1")
-    monkeypatch.setenv("KIMI_CODING_API_KEY", "sk-coding")
+    monkeypatch.setenv("EXAMPLE_BASE_URL", "https://api.example.test/v1")
+    monkeypatch.setenv("EXAMPLE_API_KEY", "sk-example")
 
     try:
         exe = RouteExecutor()
         registry.register_from_models_yaml(exe, Path(p))
 
-        assert "kimi" in dynamic_keys.get_known_providers()
-        assert "kimi_coding" not in dynamic_keys.get_known_providers()
-        pools = dynamic_keys.get_pools_for_provider("kimi")
+        assert "example" in dynamic_keys.get_known_providers()
+        assert "extension_alias" not in dynamic_keys.get_known_providers()
+        pools = dynamic_keys.get_pools_for_provider("example")
         assert len(pools) == 1
-        assert pools[0].snapshot_keys() == ["sk-coding"]
+        assert pools[0].snapshot_keys() == ["sk-example"]
     finally:
         dynamic_keys.reset()
 

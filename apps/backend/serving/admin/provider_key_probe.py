@@ -12,7 +12,6 @@ import aiohttp
 from serving.adapters import (
     AnthropicAdapter,
     ClaudeAdapter,
-    CodingIdentityAdapter,
     GeminiAdapter,
     ModelConfig,
     OpenAICompatAdapter,
@@ -139,8 +138,6 @@ def _adapter_kind(adapter: object) -> str:
         return "gemini"
     if isinstance(adapter, AnthropicAdapter):
         return "anthropic"
-    if isinstance(adapter, CodingIdentityAdapter):
-        return provider
     if isinstance(adapter, OpenAICompatAdapter):
         return "openai_compat" if provider == "openai" else provider
     return provider
