@@ -771,8 +771,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         const candidates =
           resp.window_providers.length > 0 ? resp.window_providers : resp.providers;
         if (candidates.length > 0) {
-          const preferred = candidates.includes('minimax') ? 'minimax' : candidates[0];
-          setProvider(preferred);
+          setProvider(candidates[0]);
         }
       } catch (exc) {
         if (!cancelled) setError(getErrorMessage(exc));

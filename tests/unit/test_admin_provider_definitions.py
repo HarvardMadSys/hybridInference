@@ -270,7 +270,7 @@ async def test_list_provider_definitions_omits_unconfigured_selectable_providers
     )
 
     providers = {row.provider for row in response.providers}
-    assert providers.isdisjoint(provider_definitions.SELECTABLE_PROVIDER_TARGETS)
+    assert providers.isdisjoint(provider_definitions.PROVIDER_TARGETS)
     assert providers == set()
 
 

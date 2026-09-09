@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from serving.config.settings import ROUTE_TYPE_ORDER
+
 
 class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     """Request payload for creating a new API key."""
@@ -1373,6 +1375,9 @@ class ProviderRouteOption(BaseModel):
     kind: str
     key_provider: str
     default_base_url: str
+    # Route types this deployment allows the target to be added as, in display
+    # order; the deployment's PROVIDER_ROUTE_TYPES policy narrows the default.
+    route_types: list[str] = Field(default_factory=lambda: list(ROUTE_TYPE_ORDER))
 
 
 class OpenRouterProviderOption(BaseModel):

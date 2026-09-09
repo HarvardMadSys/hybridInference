@@ -311,12 +311,15 @@ function primaryProviderOptions(providerOptions: ProviderRouteOption[]) {
 
   for (const option of providerOptions) {
     if (isOpenRouterOption(option)) {
+      // Pins share OpenRouter's key and its route-type policy, so the first
+      // OpenRouter-kind option describes the collapsed target.
       openRouterOption ??= {
         provider: 'openrouter',
         label: 'OpenRouter',
         kind: 'openrouter',
         key_provider: option.key_provider,
         default_base_url: option.default_base_url,
+        route_types: option.route_types,
       };
       continue;
     }
@@ -352,12 +355,9 @@ function openRouterProviderOptionsFor(
 }
 
 function optionSupportsRouteType(option: ProviderRouteOption, routeType: ProviderRouteType) {
-  if (option.provider === 'chutes') return routeType === 'quota';
-  if (option.provider === 'featherless') return routeType === 'concurrency';
-  if (option.provider === 'openrouter') {
-    return routeType === 'on_demand' || routeType === 'concurrency';
-  }
-  return routeType === 'on_demand';
+  // The gateway reports which route types the deployment allows per provider;
+  // an option without the field is unrestricted.
+  return option.route_types ? option.route_types.includes(routeType) : true;
 }
 
 function routePrimaryProvider(route: ProviderRoute) {

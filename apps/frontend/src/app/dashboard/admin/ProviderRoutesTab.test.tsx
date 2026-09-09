@@ -82,6 +82,8 @@ import {
 } from '@/lib/api/admin';
 import type { ListProviderApiKeysResponse } from '@/lib/api/admin';
 
+// A deployment whose Featherless plan is concurrency-based and whose OpenRouter
+// account is used on demand or with a concurrency cap (PROVIDER_ROUTE_TYPES).
 const providerOptions = [
   {
     provider: 'featherless',
@@ -89,6 +91,7 @@ const providerOptions = [
     kind: 'featherless',
     key_provider: 'featherless',
     default_base_url: 'https://api.featherless.ai/v1',
+    route_types: ['concurrency' as const],
   },
   {
     provider: 'openrouter',
@@ -96,6 +99,7 @@ const providerOptions = [
     kind: 'openrouter',
     key_provider: 'openrouter',
     default_base_url: 'https://openrouter.ai/api/v1',
+    route_types: ['on_demand' as const, 'concurrency' as const],
   },
 ];
 
@@ -1751,6 +1755,7 @@ describe('ProviderRoutesTab', () => {
           kind: 'chutes',
           key_provider: 'chutes',
           default_base_url: 'https://llm.chutes.ai/v1',
+          route_types: ['quota' as const],
         },
         {
           provider: 'deepinfra',
@@ -1758,6 +1763,7 @@ describe('ProviderRoutesTab', () => {
           kind: 'openrouter[deepinfra]',
           key_provider: 'openrouter',
           default_base_url: 'https://openrouter.ai/api/v1',
+          route_types: ['on_demand' as const, 'concurrency' as const],
         },
         ...providerOptions,
       ],
@@ -1828,6 +1834,7 @@ describe('ProviderRoutesTab', () => {
           kind: 'chutes',
           key_provider: 'chutes',
           default_base_url: 'https://llm.chutes.ai/v1',
+          route_types: ['quota' as const],
         },
         ...providerOptions,
       ],

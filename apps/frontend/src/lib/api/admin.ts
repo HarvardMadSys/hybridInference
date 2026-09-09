@@ -2041,6 +2041,11 @@ export interface ProviderRouteOption {
   kind: string;
   key_provider: string;
   default_base_url: string;
+  /**
+   * Route types this deployment allows the target to be added as, in display
+   * order (the gateway's PROVIDER_ROUTE_TYPES policy). Absent means unrestricted.
+   */
+  route_types?: ProviderRouteType[];
 }
 
 export interface OpenRouterProviderOption {

@@ -20,6 +20,7 @@ from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
 from serving.adapters.provider_registry import RuntimeProviderDefinition
 from serving.config.routewise_model_settings import model_routewise_setting_keys
+from serving.config.settings import get_settings
 from serving.pricing import PricingSchedule, effective_pricing
 from serving.servers.deps import AppServices
 from serving.servers.registry import _make_adapter
@@ -412,8 +413,10 @@ async def admin_client(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_provider_routes_lists_routewise_candidates(admin_client):
+async def test_get_provider_routes_lists_routewise_candidates(admin_client, monkeypatch):
     client, _op_store, _router, fake_routewise, _verify_mock = admin_client
+    for var in ("CHUTES_API_KEY", "FEATHERLESS_API_KEY", "MINIMAX_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
     quota_reset_at = datetime(2026, 6, 17, tzinfo=timezone.utc)
     fake_routewise.quota_pools = {
         "chutes-minimax-fast-daily": MagicMock(
@@ -430,20 +433,20 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["strategy"] == "routewise"
-    assert {option["provider"] for option in payload["provider_options"]} >= {
-        "chutes",
-        "featherless",
-        "minimax",
-        "openrouter",
-    }
-    minimax_option = next(
-        option for option in payload["provider_options"] if option["provider"] == "minimax"
+    offered = {option["provider"] for option in payload["provider_options"]}
+    # The selector holds the vendors this deployment routes through, not a
+    # fixed list: minimax is a built-in kind with no route or key here.
+    assert {"chutes", "featherless", "openrouter"} <= offered
+    assert "minimax" not in offered
+    chutes_option = next(
+        option for option in payload["provider_options"] if option["provider"] == "chutes"
     )
-    assert minimax_option["default_base_url"] == "https://api.minimax.io/v1"
-    assert {option["provider"] for option in payload["openrouter_provider_options"]} >= {
-        "deepinfra",
-        "parasail",
-    }
+    assert chutes_option["default_base_url"] == "https://llm.chutes.ai/v1"
+    assert chutes_option["route_types"] == ["on_demand", "quota", "concurrency"]
+    # Pin choices come from the deployment's own OpenRouter routes.
+    assert payload["openrouter_provider_options"] == [
+        {"provider": "deepinfra", "label": "DeepInfra"}
+    ]
     routes = payload["routes"]
     assert [row["route_id"] for row in routes] == [
         "minimax-fast:chutes-api",
@@ -466,6 +469,44 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client):
     assert routes[2]["openrouter_provider"] == "deepinfra"
     assert routes[2]["concurrency_limit"] is None
     assert all(row["strategy"] == "routewise" for row in routes)
+
+
+@pytest.mark.asyncio
+async def test_provider_options_offer_a_vendor_with_a_configured_env_key(
+    admin_client,
+    monkeypatch,
+):
+    client, _op_store, _router, _fake_routewise, _verify_mock = admin_client
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-env-key-1234567890")
+
+    response = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+
+    assert response.status_code == 200
+    minimax_option = next(
+        option for option in response.json()["provider_options"] if option["provider"] == "minimax"
+    )
+    assert minimax_option["default_base_url"] == "https://api.minimax.io/v1"
+    assert minimax_option["route_types"] == ["on_demand", "quota", "concurrency"]
+
+
+@pytest.mark.asyncio
+async def test_provider_options_carry_the_deployment_route_type_policy(
+    admin_client,
+    monkeypatch,
+):
+    client, _op_store, _router, _fake_routewise, _verify_mock = admin_client
+    monkeypatch.setenv("PROVIDER_ROUTE_TYPES", "chutes=quota,openrouter=concurrency|on_demand")
+    get_settings.cache_clear()
+
+    response = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+
+    assert response.status_code == 200
+    by_provider = {
+        option["provider"]: option["route_types"] for option in response.json()["provider_options"]
+    }
+    assert by_provider["chutes"] == ["quota"]
+    assert by_provider["openrouter"] == ["on_demand", "concurrency"]
+    assert by_provider["featherless"] == ["on_demand", "quota", "concurrency"]
 
 
 def test_parse_openrouter_provider_options_from_endpoints():
@@ -3677,8 +3718,14 @@ async def test_post_provider_route_candidate_prices_pinned_openrouter_with_sort(
 
 
 @pytest.mark.asyncio
-async def test_post_provider_route_candidate_rejects_route_type_provider_mismatch(admin_client):
+async def test_post_provider_route_candidate_rejects_route_type_provider_mismatch(
+    admin_client,
+    monkeypatch,
+):
     client, op_store, _route_executor, fake_routewise, verify_mock = admin_client
+    # This deployment's Chutes plan is request-quota based.
+    monkeypatch.setenv("PROVIDER_ROUTE_TYPES", "chutes=quota")
+    get_settings.cache_clear()
 
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",

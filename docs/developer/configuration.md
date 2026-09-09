@@ -518,6 +518,15 @@ the variable and restart for that.
 the gateway is serving, each tagged `source: yaml`, `override` or `runtime`,
 and is the quickest way to see what the two layers add up to.
 
+The provider selector on this tab is derived from the deployment, not from a
+list in the code: a built-in vendor kind is offered once the registry, the live
+route table or a configured credential names it, alongside every custom
+provider. Which route types a provider may be added as — `on_demand`,
+`quota` or `concurrency` — is the deployment's contract with that vendor and
+is declared with `PROVIDER_ROUTE_TYPES` (see
+[Environment variables](#environment-variables)); an unlisted provider may
+use any of the three.
+
 A model created here is a **runtime model**: it exists only in the database,
 carries an id, a first route, a pricing table, a router strategy and a
 `required_role` (default `admin`, so a new model stays invisible to ordinary
