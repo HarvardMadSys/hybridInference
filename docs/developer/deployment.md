@@ -14,11 +14,11 @@ stack already comes up.
 | Service | Image / build | Published on |
 |---|---|---|
 | `backend` | built from `deploy/docker/Dockerfile.backend` | `${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8080}` |
-| `frontend` | built from `deploy/docker/Dockerfile.frontend` | `${FRONTEND_HOST:-0.0.0.0}:${FRONTEND_PORT:-3001}` |
+| `frontend` | built from `deploy/docker/Dockerfile.frontend` | `${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-3001}` |
 | `postgres` | `postgres:16` | `127.0.0.1:${DB_PORT:-5432}` |
 
-The frontend defaults to `0.0.0.0` so a reverse proxy on the host can reach it;
-the backend and the database default to loopback. All three join one bridge
+All three published ports default to loopback. A reverse proxy on the same
+host can reach the console at `127.0.0.1:3001`. The containers also join one bridge
 network defined in the same Compose file, on which the backend reaches the
 database as `postgres:5432`. Only `DB_PORT` from `.env` reaches this file, and
 only as the host half of the mapping (`127.0.0.1:${DB_PORT:-5432}:5432`); the
@@ -38,8 +38,20 @@ console from starting.
 
 Nothing in the stack terminates TLS, and this repository ships no reverse-proxy
 config to copy: certificates and the proxy in front of the two published ports
-are yours to supply. Point it at `${BACKEND_HOST}:${BACKEND_PORT}` and
-`${FRONTEND_HOST}:${FRONTEND_PORT}`.
+are yours to supply. A proxy running on the host can use `127.0.0.1:3001` for
+the console or `127.0.0.1:8080` for direct gateway access. A proxy container on
+the same Docker network can use `frontend:3001` or `backend:8080`.
+
+If your proxy runs on another machine, set `FRONTEND_HOST` to a reachable host
+interface in `.env`; `0.0.0.0` binds all IPv4 interfaces. Restrict access to the
+intended proxy and run `make up` to recreate the port mapping. The console
+forwards API routes as well as serving pages, so exposing its port also exposes
+those routes. Set `BACKEND_HOST` separately only if direct gateway access is
+needed.
+
+Earlier releases defaulted the frontend host to `0.0.0.0`. Deployments that
+relied on that default must set `FRONTEND_HOST` explicitly before upgrading.
+See [Releases and upgrades](releases.md) for the upgrade checklist.
 
 Which public paths the console serves itself and which it forwards to the
 backend is a separate question, and the answer is in the console's own

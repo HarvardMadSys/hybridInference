@@ -251,3 +251,10 @@ msgstr ""
 #~ "contributing to it."
 #~ msgstr "本文档讲的是网关软件本身：如何运行它、理解它、扩展它，以及如何为它贡献代码。"
 
+#: ../developer/index.rst:72
+msgid "Identify a version or plan an upgrade"
+msgstr "确认版本或规划升级"
+
+#: ../developer/index.rst:73
+msgid ":doc:`releases`"
+msgstr ""

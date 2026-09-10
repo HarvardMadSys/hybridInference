@@ -16,8 +16,11 @@ body:
     id: version
     attributes:
       label: Version
-      description: Commit SHA, image tag, or the SHA on the console home page.
-      placeholder: e.g. 6437fd41, or ghcr.io/... :dev
+      description: >-
+        Release tag or full source commit SHA. For containers, include the image
+        digest and report backend/console versions separately if they differ.
+        See [how to identify your build](https://doc.hybridinference.org/releases.html#include-the-version-in-a-bug-report).
+      placeholder: e.g. YYYYMMDD, a full commit SHA, or image@sha256:...
     validations:
       required: true
 

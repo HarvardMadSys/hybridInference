@@ -69,6 +69,8 @@ Where to start
      - :doc:`routing`
    * - Send a patch
      - :doc:`contributing`
+   * - Identify a version or plan an upgrade
+     - :doc:`releases`
 
 Scope of this site
 ------------------
@@ -115,6 +117,7 @@ how those overlays resolve.
    :caption: Operations
 
    deployment
+   releases
    database
    staging
    trusted-proxies-and-client-ips

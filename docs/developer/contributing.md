@@ -9,8 +9,18 @@ and how a change gets proposed.
 ```bash
 git clone <your-fork-url> hybridinference
 cd hybridinference
+git remote add upstream https://github.com/HarvardMadSys/hybridInference.git
+git fetch upstream dev
+git worktree add -b yourname/tests/routing-config-defaults \
+  /tmp/claude/worktree/routing-config-defaults upstream/dev
+cd /tmp/claude/worktree/routing-config-defaults
 make setup-dev
 ```
+
+Replace `yourname` in the branch name with your GitHub username. Development
+happens in the worktree; keep the original checkout available for other work.
+If you already cloned the upstream repository instead of a fork, use
+`origin/dev` as the worktree's starting point and push to your fork remote.
 
 `make setup-dev` creates `.venv` on Python 3.12, installs the project editable,
 syncs the `dev` dependency group and installs the pre-commit hooks. Full
@@ -23,6 +33,72 @@ your environment needs it:
 ```bash
 make lint UV_RUN="uv run --active"
 ```
+
+## Your first contribution
+
+Start by running the [Quickstart](router-tutorial.md) in your worktree, or use
+the [source development setup](installation.md#development-checkout-no-docker).
+Seeing the gateway answer one request makes it easier to tell whether a later
+failure comes from your change or from setup. A local example deployment is
+enough; contributing does not require access to a maintainer's server.
+
+Choose a small reproducible bug, an uncovered configuration case, or a confusing
+instruction you can verify yourself. Search the issue tracker and existing
+tests first. For a larger feature, open a feature request to agree on the
+behavior before writing it; the repository provides bug and feature forms.
+
+For a concrete first exercise, cover a routing YAML endpoint that uses an
+environment-variable default. Read `_expand_env_value` and
+`load_routing_config` in `apps/backend/routing/config.py`, then the neighboring
+tests in `tests/unit/routing/test_config.py`. An unset variable should use the
+default URL; a set variable should override it. The test below exercises both
+through the public loader and restores the environment after each case:
+
+```python
+@pytest.mark.parametrize("endpoint", [None, "https://override.example"])
+def test_endpoint_env_default(tmp_path, monkeypatch, endpoint):
+    monkeypatch.delenv("TEST_ROUTING_ENDPOINT", raising=False)
+    if endpoint is not None:
+        monkeypatch.setenv("TEST_ROUTING_ENDPOINT", endpoint)
+    path = tmp_path / "routing.yaml"
+    path.write_text(
+        "remote_deployment:\n"
+        "  - endpoint: ${TEST_ROUTING_ENDPOINT:-https://default.example}\n"
+        "    models: [example-chat]\n"
+    )
+
+    config = load_routing_config(path)
+
+    assert config.remote_deployment[0].endpoint == (endpoint or "https://default.example")
+    assert config.remote_deployment[0].models == ["example-chat"]
+```
+
+Add it to that test file only if the case is still uncovered. This is a
+test-only contribution when the loader already behaves correctly. For a bug
+fix, first make your regression test fail on the original code, then change
+the smallest responsible function until it passes.
+
+Run the focused tests while editing:
+
+```bash
+uv run pytest -q tests/unit/routing/test_config.py
+```
+
+For a runtime change, repeat the affected request against your local gateway.
+With the Stage 1 example, `make build s=backend DISTRIBUTION=example` rebuilds
+changed backend code; `make smoke DISTRIBUTION=example` checks health, the
+model list and a routed completion. Exercise the changed behavior as well:
+a generic smoke passing does not establish that a particular bug is fixed.
+The [Quickstart](router-tutorial.md) explains the separate full-console check
+when your change involves accounts or the frontend.
+
+Before opening the PR, run `make format`, `make lint` and `make test`, plus the
+[frontend](#frontend) or [documentation](#documentation) checks when relevant.
+Review `git diff` so the patch contains only your intended files. Push your
+branch to your fork and open a PR targeting upstream `dev`, using a title such
+as `test(routing): cover endpoint environment defaults`. Fill in the existing
+PR template with the behavior covered and the exact checks you ran; include
+the reproduction and before/after result for a bug fix.
 
 ## Repository layout
 
@@ -323,6 +399,9 @@ checks —
   match.
 - Keep a pull request to one feature or fix, update the docs in the same change,
   and add tests for new behaviour.
+- Call out changes to API behavior, configuration, defaults or database schema
+  in the PR, with migration steps and rollback limits. See
+  [Releases and upgrades](releases.md#compatibility-and-breaking-changes).
 - Do not commit to `main` or `dev` directly.
 
 ### What CI will run

@@ -5,6 +5,12 @@ The contribution guide lives with the rest of the developer documentation:
 sources in [`docs/developer/contributing.md`](docs/developer/contributing.md).
 Edit the source, not a copy.
 
+New here? Start with the guide's
+[first contribution walkthrough](docs/developer/contributing.md#your-first-contribution):
+create a worktree, add a small routing-config test, verify a running gateway,
+and open a pull request. For release identity, support expectations and upgrade
+planning, see [Releases and upgrades](docs/developer/releases.md).
+
 It covers getting set up, what the repository contains, the quality gates a
 change has to pass, the four test tiers, and how a change gets proposed. Three
 things are worth knowing before you open anything:

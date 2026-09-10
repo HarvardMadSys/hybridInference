@@ -13,7 +13,7 @@ zero-dependency tour of the routing engine see the
 
 ## What the compose file starts
 
-`deploy/docker/docker-compose.yml` defines five services:
+`deploy/docker/docker-compose.yml` defines four services:
 
 | Service | Started by default | Notes |
 |---|---|---|
@@ -39,7 +39,7 @@ container-side port is fixed and is not what these variables change.
 | Service | Default publish address | Override |
 |---|---|---|
 | `backend` | `127.0.0.1:8080` | `BACKEND_HOST`, `BACKEND_PORT` |
-| `frontend` | `0.0.0.0:3001` | `FRONTEND_HOST`, `FRONTEND_PORT` |
+| `frontend` | `127.0.0.1:3001` | `FRONTEND_HOST`, `FRONTEND_PORT` |
 | `postgres` | `127.0.0.1:5432` | `DB_PORT` |
 | `pgadmin` (profile `admin`) | `127.0.0.1:5050` | `PGADMIN_PORT` |
 
@@ -47,17 +47,16 @@ Only `backend` and `frontend` take a host override. The other two have
 `127.0.0.1` hard-coded in the Compose file, so their `*_PORT` variable moves the
 port but never the bind address.
 
-### The console default is not loopback — change it
+### Keep the console and its API proxy on loopback
 
-The frontend is the one service whose default host is `0.0.0.0`, so out of the
-box it answers on every interface of the machine. That is not only a console
-exposure: `apps/frontend/next.config.js` rewrites `/v1/*`, `/anthropic/*`,
-`/auth/*`, `/user/*`, `/admin/*`, `/health` and several `/internal/*` paths to
-`BACKEND_INTERNAL_URL`. Anyone who can reach port 3001 can therefore reach the
-API that the `127.0.0.1:8080` publish was meant to keep private.
+The frontend defaults to loopback, just like the backend. It also forwards
+`/v1/*`, `/anthropic/*`, `/auth/*`, `/user/*`, `/admin/*`, `/health` and several
+`/internal/*` paths to `BACKEND_INTERNAL_URL`. Publishing the console on a
+network therefore exposes those API routes even when the backend's own port
+is bound to loopback.
 
-If you intend to reach the instance over an SSH tunnel (the next section), pin
-the console to loopback as well:
+For an instance reached through an SSH tunnel, keep the default. If a copied
+deployment environment overrides it, explicitly restore:
 
 ```bash
 FRONTEND_HOST=127.0.0.1
