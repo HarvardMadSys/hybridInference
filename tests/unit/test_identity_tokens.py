@@ -175,7 +175,7 @@ def test_pkce_rejects_a_different_verifier() -> None:
 
 
 def test_minted_token_verifies_against_the_published_key(configured) -> None:
-    token = identity_tokens.mint_identity_token(user_id="user_1", email="a@b.test", role="pro")
+    token = identity_tokens.mint_identity_token(user_id="user_1")
     (published,) = identity_keys.public_jwks()["keys"]
     assert jwt.get_unverified_header(token)["kid"] == published["kid"]
 
@@ -187,13 +187,12 @@ def test_minted_token_verifies_against_the_published_key(configured) -> None:
         issuer=ISSUER,
     )
     assert claims["sub"] == "user_1"
-    assert claims["email"] == "a@b.test"
-    assert claims["role"] == "pro"
+    assert set(claims) == {"iss", "aud", "sub", "iat", "exp"}
     assert claims["exp"] - claims["iat"] == identity_tokens.TOKEN_TTL_SECONDS
 
 
-def test_minted_token_omits_email_when_unknown(configured) -> None:
-    token = identity_tokens.mint_identity_token(user_id="user_1", email=None, role="free")
+def test_minted_token_contains_no_profile(configured) -> None:
+    token = identity_tokens.mint_identity_token(user_id="user_1")
     assert "email" not in jwt.decode(token, options={"verify_signature": False})
 
 
@@ -390,7 +389,7 @@ def test_exchange_returns_a_verifiable_identity_token(client: TestClient, config
         issuer=ISSUER,
     )
     assert claims["sub"] == "user_1"
-    assert claims["role"] == "pro"
+    assert set(claims) == {"iss", "aud", "sub", "iat", "exp"}
 
 
 def test_a_code_cannot_be_exchanged_twice(client: TestClient, configured) -> None:

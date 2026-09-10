@@ -262,11 +262,7 @@ async def exchange_authorization_code(
         )
 
     try:
-        token = mint_identity_token(
-            user_id=user["id"],
-            email=user.get("email"),
-            role=user.get("role") or "free",
-        )
+        token = mint_identity_token(user_id=user["id"])
     except (IdentityNotConfigured, IdentityKeyUnavailable) as exc:
         raise _error(status.HTTP_404_NOT_FOUND, "identity_not_configured", str(exc)) from exc
     except IdentityKeyMisconfigured as exc:
