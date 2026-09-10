@@ -526,6 +526,7 @@ function AvailabilitySection() {
 
 export function ProvidersTab() {
   const [active, setActive] = useState<SubTab>('overview');
+  const [selectedProvider, setSelectedProvider] = useState('');
 
   return (
     <div className="mt-6">
@@ -556,13 +557,21 @@ export function ProvidersTab() {
       </div>
 
       {active === 'overview' ? (
-        <ProviderOverviewTab />
+        <ProviderOverviewTab
+          onManageKeys={(provider) => {
+            setSelectedProvider(provider);
+            setActive('keys');
+          }}
+        />
       ) : active === 'availability' ? (
         <AvailabilitySection />
       ) : active === 'quotas' ? (
         <QuotasSection />
       ) : active === 'keys' ? (
-        <ProviderKeysTab />
+        <ProviderKeysTab
+          initialProvider={selectedProvider}
+          onProviderChange={setSelectedProvider}
+        />
       ) : (
         <PerformanceTab />
       )}

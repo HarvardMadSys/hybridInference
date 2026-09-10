@@ -20,6 +20,8 @@ import { getErrorMessage } from '@/lib/utils/errors';
 
 interface Props {
   refreshKey?: number;
+  initialProvider?: string;
+  onProviderChange?: (provider: string) => void;
 }
 
 const MIN_ROLES: ProviderKeyMinRole[] = ['free', 'pro', 'internal', 'admin'];
@@ -42,13 +44,14 @@ function formatRelative(s: string | null): string {
   return `${d}d ago`;
 }
 
-export function ProviderKeysTab({ refreshKey = 0 }: Props) {
+export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProviderChange }: Props) {
   const [providers, setProviders] = useState<string[]>([]);
-  const [selectedProvider, setSelectedProvider] = useState<string>('');
+  const [providersLoaded, setProvidersLoaded] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<string>(initialProvider);
   const [keys, setKeys] = useState<ProviderApiKeyItem[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const [formProvider, setFormProvider] = useState<string>('');
+  const [formProvider, setFormProvider] = useState<string>(initialProvider);
   const [formApiKey, setFormApiKey] = useState('');
   const [formLabel, setFormLabel] = useState('');
   const [formMinRole, setFormMinRole] = useState<ProviderKeyMinRole>('free');
@@ -65,6 +68,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
       const resp = await listProviderKeyProviders();
       const names = resp.providers;
       setProviders(names);
+      setProvidersLoaded(true);
       if (names.length > 0) {
         setSelectedProvider((current) => current || names[0]);
         setFormProvider((current) => current || names[0]);
@@ -95,12 +99,16 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
   }, [loadProviders, refreshKey]);
 
   useEffect(() => {
-    void loadKeys(selectedProvider);
-  }, [loadKeys, selectedProvider, refreshKey]);
+    if (providers.includes(selectedProvider)) void loadKeys(selectedProvider);
+  }, [loadKeys, providers, selectedProvider, refreshKey]);
+
+  useEffect(() => {
+    onProviderChange?.(selectedProvider);
+  }, [onProviderChange, selectedProvider]);
 
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!formProvider || !formApiKey.trim()) return;
+    if (!providers.includes(formProvider) || !formApiKey.trim()) return;
     setSubmittingKey(true);
     try {
       const resp = await addProviderKey(
@@ -138,7 +146,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
   const keyVerified = verifiedKeySignature != null && verifiedKeySignature === formKeySignature;
 
   const onVerifyKey = async () => {
-    if (!formProvider || !formApiKey.trim() || !formKeySignature) return;
+    if (!providers.includes(formProvider) || !formApiKey.trim() || !formKeySignature) return;
     setVerifyingKey(true);
     try {
       await verifyProviderKey(formProvider, formApiKey.trim());
@@ -260,10 +268,18 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
         <select
           id="provider-keys-select"
           value={selectedProvider}
-          onChange={(e) => setSelectedProvider(e.target.value)}
+          onChange={(e) => {
+            setSelectedProvider(e.target.value);
+            setFormProvider(e.target.value);
+          }}
           className="mt-1 w-full max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
         >
-          {providers.length === 0 && <option value="">(no providers loaded)</option>}
+          {selectedProvider && !providers.includes(selectedProvider) && (
+            <option value={selectedProvider}>{selectedProvider}</option>
+          )}
+          {providers.length === 0 && !selectedProvider && (
+            <option value="">(no providers loaded)</option>
+          )}
           {providers.map((p) => (
             <option key={p} value={p}>
               {p}
@@ -272,7 +288,13 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
         </select>
       </div>
 
-      <div>
+      {providersLoaded && selectedProvider && !providers.includes(selectedProvider) && (
+        <p className="text-[13px] text-gray-500">
+          Key management is unavailable for {selectedProvider}. Choose another provider above.
+        </p>
+      )}
+
+      <div hidden={!providers.includes(selectedProvider)}>
         <h3 className="text-[14px] font-semibold text-gray-900">Configured keys</h3>
         {loading ? (
           <div className="flex justify-center py-12">
@@ -449,7 +471,10 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
         )}
       </div>
 
-      <div className="space-y-3 rounded-lg border border-gray-200 bg-white p-4">
+      <div
+        hidden={!providers.includes(selectedProvider)}
+        className="space-y-3 rounded-lg border border-gray-200 bg-white p-4"
+      >
         <h3 className="text-[14px] font-semibold text-gray-900">Add a new key</h3>
         <form aria-label="Add a new key" onSubmit={onSubmit} className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
