@@ -172,7 +172,7 @@ class _HangingManagedTestRouter(_ManagedTestRouter):
 
 def _compat_adapter(
     *,
-    model_id: str = "minimax-fast",
+    model_id: str = "demo-chat",
     provider: str,
     endpoint_id: str,
     base_url: str,
@@ -208,14 +208,14 @@ def _openrouter_deepinfra_adapter():
     return _make_adapter(
         "openrouter[deepinfra]",
         {
-            "id": "minimax-fast",
-            "name": "minimax-fast",
+            "id": "demo-chat",
+            "name": "demo-chat",
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key": None,
             "api_keys": ["openrouter-env-key-1234567890"],
-            "provider_model_id": "minimax/minimax-m2.5",
-            "endpoint_id": "minimax-fast:openrouter[deepinfra]-api",
+            "provider_model_id": "exampleorg/example-model",
+            "endpoint_id": "demo-chat:openrouter[deepinfra]-api",
             "provider_type": "on_demand",
         },
     )
@@ -270,11 +270,11 @@ async def admin_client(monkeypatch):
     route_executor = RouteExecutor()
     chutes = _compat_adapter(
         provider="chutes",
-        endpoint_id="minimax-fast:chutes-api",
+        endpoint_id="demo-chat:chutes-api",
         base_url="https://llm.chutes.ai/v1",
-        provider_model_id="MiniMaxAI/MiniMax-M2.5-TEE",
+        provider_model_id="ExampleOrg/Example-Model-Turbo",
         provider_type="quota",
-        quota_pool="chutes-minimax-fast-daily",
+        quota_pool="chutes-demo-chat-daily",
         quota_source={
             "provider": "chutes",
             "usage_label": "Daily requests",
@@ -284,18 +284,18 @@ async def admin_client(monkeypatch):
     )
     featherless = _compat_adapter(
         provider="featherless",
-        endpoint_id="minimax-fast:featherless-api",
+        endpoint_id="demo-chat:featherless-api",
         base_url="https://api.featherless.ai/v1",
-        provider_model_id="MiniMaxAI/MiniMax-M2.5",
+        provider_model_id="ExampleOrg/Example-Model",
         provider_type="concurrency",
-        concurrency_pool="featherless-minimax-fast",
+        concurrency_pool="featherless-demo-chat",
         concurrency={"limit": 1},
     )
     deepinfra = _openrouter_deepinfra_adapter()
     route_executor.register_route(
-        "minimax-fast",
+        "demo-chat",
         [(chutes, 1.0), (featherless, 1.0), (deepinfra, 1.0)],
-        aliases=["MiniMax-Fast"],
+        aliases=["Demo-Chat"],
     )
 
     for provider, adapter in (
@@ -312,7 +312,7 @@ async def admin_client(monkeypatch):
     fake_routewise.stop = AsyncMock()
     fake_routewise.quota_pools = {}
     registry = MagicMock()
-    strategy_state = {"minimax-fast": "routewise"}
+    strategy_state = {"demo-chat": "routewise"}
     router_cache = {}
     registry.get_router_name.side_effect = lambda model_id: strategy_state.get(
         model_id,
@@ -419,7 +419,7 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client, monk
         monkeypatch.delenv(var, raising=False)
     quota_reset_at = datetime(2026, 6, 17, tzinfo=timezone.utc)
     fake_routewise.quota_pools = {
-        "chutes-minimax-fast-daily": MagicMock(
+        "chutes-demo-chat-daily": MagicMock(
             ready=True,
             limit=5000,
             effective_used=123.0,
@@ -428,7 +428,7 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client, monk
         )
     }
 
-    response = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+    response = await client.get("/admin/routing/provider-routes/demo-chat", headers=AUTH)
 
     assert response.status_code == 200
     payload = response.json()
@@ -449,9 +449,9 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client, monk
     ]
     routes = payload["routes"]
     assert [row["route_id"] for row in routes] == [
-        "minimax-fast:chutes-api",
-        "minimax-fast:featherless-api",
-        "minimax-fast:openrouter[deepinfra]-api",
+        "demo-chat:chutes-api",
+        "demo-chat:featherless-api",
+        "demo-chat:openrouter[deepinfra]-api",
     ]
     assert routes[0]["provider"] == "chutes"
     assert routes[0]["upstream_provider"] == "chutes"
@@ -479,7 +479,7 @@ async def test_provider_options_offer_a_vendor_with_a_configured_env_key(
     client, _op_store, _router, _fake_routewise, _verify_mock = admin_client
     monkeypatch.setenv("MINIMAX_API_KEY", "minimax-env-key-1234567890")
 
-    response = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+    response = await client.get("/admin/routing/provider-routes/demo-chat", headers=AUTH)
 
     assert response.status_code == 200
     minimax_option = next(
@@ -498,7 +498,7 @@ async def test_provider_options_carry_the_deployment_route_type_policy(
     monkeypatch.setenv("PROVIDER_ROUTE_TYPES", "chutes=quota,openrouter=concurrency|on_demand")
     get_settings.cache_clear()
 
-    response = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+    response = await client.get("/admin/routing/provider-routes/demo-chat", headers=AUTH)
 
     assert response.status_code == 200
     by_provider = {
@@ -643,8 +643,8 @@ async def test_openrouter_pricing_failure_drops_inherited_schedule(monkeypatch):
 
 
 def test_openrouter_endpoints_url_preserves_model_slug_separator():
-    assert provider_routes._openrouter_endpoints_url("minimax/minimax-m2.5") == (
-        "https://openrouter.ai/api/v1/models/minimax/minimax-m2.5/endpoints"
+    assert provider_routes._openrouter_endpoints_url("exampleorg/example-model") == (
+        "https://openrouter.ai/api/v1/models/exampleorg/example-model/endpoints"
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -661,7 +661,7 @@ async def test_get_openrouter_provider_options_discovers_model_endpoints(
     client, _op_store, _router, _fake_routewise, _verify_mock = admin_client
 
     async def fake_fetch(model_id: str):
-        assert model_id == "minimax/minimax-m2.5"
+        assert model_id == "exampleorg/example-model"
         return [
             provider_routes.OpenRouterProviderOption(
                 provider="inceptron",
@@ -677,13 +677,13 @@ async def test_get_openrouter_provider_options_discovers_model_endpoints(
 
     response = await client.get(
         "/admin/routing/openrouter-providers",
-        params={"provider_model_id": " minimax/minimax-m2.5 "},
+        params={"provider_model_id": " exampleorg/example-model "},
         headers=AUTH,
     )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["provider_model_id"] == "minimax/minimax-m2.5"
+    assert payload["provider_model_id"] == "exampleorg/example-model"
     assert [option["provider"] for option in payload["providers"]] == ["inceptron", "chutes"]
 
 
@@ -718,7 +718,7 @@ async def test_patch_provider_route_strategy_rejects_fixed_with_resource_routes(
     client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
 
     response = await client.patch(
-        "/admin/routing/provider-route-strategies/minimax-fast",
+        "/admin/routing/provider-route-strategies/demo-chat",
         json={"strategy": "fixed"},
         headers=AUTH,
     )
@@ -743,7 +743,7 @@ async def test_patch_provider_route_strategy_does_not_persist_when_apply_fails(
     monkeypatch.setattr(provider_routes, "_apply_model_router_strategy", fail_apply)
 
     response = await client.patch(
-        "/admin/routing/provider-route-strategies/minimax-fast",
+        "/admin/routing/provider-route-strategies/demo-chat",
         json={"strategy": "routewise"},
         headers=AUTH,
     )
@@ -948,7 +948,7 @@ async def test_apply_model_router_strategy_starts_new_managed_router(admin_clien
 
     await provider_routes._apply_model_router_strategy(
         services,
-        "minimax-fast",
+        "demo-chat",
         "routewise",
     )
 
@@ -956,7 +956,7 @@ async def test_apply_model_router_strategy_starts_new_managed_router(admin_clien
     assert old_router.stopped == 1
     assert services.managed_routers == [new_router]
     assert events == ["candidate.start", "commit", "old.stop"]
-    registry.prepare_router_strategy_change.assert_called_once_with("minimax-fast", "routewise")
+    registry.prepare_router_strategy_change.assert_called_once_with("demo-chat", "routewise")
     registry.commit_router_strategy_change.assert_called_once_with(change)
 
 
@@ -981,7 +981,7 @@ async def test_apply_model_router_strategy_boot_swaps_without_starting(admin_cli
 
     await provider_routes._apply_model_router_strategy(
         services,
-        "minimax-fast",
+        "demo-chat",
         "routewise",
         start_managed=False,
     )
@@ -1026,7 +1026,7 @@ async def test_apply_model_router_strategy_applies_settings_before_routewise_sta
 
     await provider_routes._apply_model_router_strategy(
         services,
-        "minimax-fast",
+        "demo-chat",
         "routewise",
     )
 
@@ -1035,7 +1035,7 @@ async def test_apply_model_router_strategy_applies_settings_before_routewise_sta
     apply_settings.assert_awaited_once_with(
         settings_resolver,
         registry,
-        "minimax-fast",
+        "demo-chat",
         routewise_router,
         refresh_probe_task=False,
     )
@@ -1065,7 +1065,7 @@ async def test_apply_model_router_strategy_rolls_back_when_new_router_cannot_sta
     with pytest.raises(HTTPException) as exc_info:
         await provider_routes._apply_model_router_strategy(
             services,
-            "minimax-fast",
+            "demo-chat",
             "routewise",
         )
 
@@ -1106,7 +1106,7 @@ async def test_apply_model_router_strategy_cleans_candidate_when_commit_is_stale
     with pytest.raises(RuntimeError, match="stale change"):
         await provider_routes._apply_model_router_strategy(
             services,
-            "minimax-fast",
+            "demo-chat",
             "routewise",
         )
 
@@ -1133,7 +1133,7 @@ async def test_apply_model_router_strategy_tracks_candidate_when_cleanup_fails(a
     with pytest.raises(HTTPException) as exc_info:
         await provider_routes._apply_model_router_strategy(
             services,
-            "minimax-fast",
+            "demo-chat",
             "routewise",
         )
 
@@ -1340,12 +1340,12 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     ]
     op_store.list_provider_route_configs_for_model.return_value = [
         {
-            "model_id": "minimax-fast",
-            "route_id": "minimax-fast:chutes-api",
+            "model_id": "demo-chat",
+            "route_id": "demo-chat:chutes-api",
             "provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": 8000,
             "updated_at": NOW,
             "updated_by": "127.0.0.1",
@@ -1353,13 +1353,13 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     ]
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:chutes-api",
         json={
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": 8000,
         },
         headers=AUTH,
@@ -1370,24 +1370,24 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     assert response.json()["upstream_provider"] == "openrouter"
     assert response.json()["openrouter_provider"] == "parasail"
     assert response.json()["route_type"] == "quota"
-    assert response.json()["provider_model_id"] == "minimax/minimax-m2.5"
+    assert response.json()["provider_model_id"] == "exampleorg/example-model"
     assert response.json()["quota_limit"] == 8000
     assert response.json()["api_key"]["source"] == "db"
     verify_mock.assert_awaited_once()
     op_store.upsert_provider_route_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:chutes-api",
+        "demo-chat",
+        "demo-chat:chutes-api",
         "openrouter[parasail]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         8000,
         None,
         "127.0.0.1",
     )
 
-    updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    updated_adapter = route_executor.routes["demo-chat"].raw_adapters[0][0]
     assert updated_adapter.config.provider == "openrouter"
     assert updated_adapter.config.openrouter_pinned_provider == "parasail"
     assert updated_adapter.config.base_url == "https://openrouter.ai/api/v1"
@@ -1395,7 +1395,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     assert updated_adapter.config.route_metadata["provider_type"] == "quota"
     assert updated_adapter.config.route_metadata["route_provider"] == "chutes"
     assert updated_adapter.config.route_metadata["upstream_provider"] == "openrouter[parasail]"
-    assert updated_adapter.config.quota_pool == "chutes-minimax-fast-daily"
+    assert updated_adapter.config.quota_pool == "chutes-demo-chat-daily"
     assert updated_adapter.config.quota_source == {
         "provider": "chutes",
         "usage_label": "Daily requests",
@@ -1420,12 +1420,12 @@ async def test_put_provider_route_clears_openrouter_endpoint_pricing_on_retarget
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     op_store.list_provider_route_configs_for_model.return_value = [
         {
-            "model_id": "minimax-fast",
-            "route_id": "minimax-fast:chutes-api",
+            "model_id": "demo-chat",
+            "route_id": "demo-chat:chutes-api",
             "provider": "openrouter[parasail]",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": 8000,
             "concurrency_limit": None,
             "updated_at": NOW,
@@ -1434,19 +1434,19 @@ async def test_put_provider_route_clears_openrouter_endpoint_pricing_on_retarget
     ]
 
     openrouter_response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:chutes-api",
         json={
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": 8000,
         },
         headers=AUTH,
     )
     assert openrouter_response.status_code == 200, openrouter_response.text
-    openrouter_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    openrouter_adapter = route_executor.routes["demo-chat"].raw_adapters[0][0]
     assert openrouter_adapter.config.pricing == OPENROUTER_PARASAIL_PRICING
     assert openrouter_adapter.config.route_metadata["pricing_source"] == "openrouter_endpoint"
     assert openrouter_adapter.config.route_metadata["pricing_provider"] == "parasail/fp8"
@@ -1458,12 +1458,12 @@ async def test_put_provider_route_clears_openrouter_endpoint_pricing_on_retarget
     fake_routewise.refresh_route_table.reset_mock()
     op_store.list_provider_route_configs_for_model.return_value = [
         {
-            "model_id": "minimax-fast",
-            "route_id": "minimax-fast:chutes-api",
+            "model_id": "demo-chat",
+            "route_id": "demo-chat:chutes-api",
             "provider": "chutes",
             "base_url": "https://llm.chutes.ai/v1",
             "api_key_id": None,
-            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+            "provider_model_id": "ExampleOrg/Example-Model-Turbo",
             "quota_limit": 8000,
             "concurrency_limit": None,
             "updated_at": NOW,
@@ -1472,29 +1472,29 @@ async def test_put_provider_route_clears_openrouter_endpoint_pricing_on_retarget
     ]
 
     chutes_response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:chutes-api",
         json={
             "upstream_provider": "chutes",
             "base_url": "https://llm.chutes.ai/v1",
-            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+            "provider_model_id": "ExampleOrg/Example-Model-Turbo",
         },
         headers=AUTH,
     )
 
     assert chutes_response.status_code == 200, chutes_response.text
     op_store.upsert_provider_route_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:chutes-api",
+        "demo-chat",
+        "demo-chat:chutes-api",
         "chutes",
         None,
         "https://llm.chutes.ai/v1",
         None,
-        "MiniMaxAI/MiniMax-M2.5-TEE",
+        "ExampleOrg/Example-Model-Turbo",
         8000,
         None,
         "127.0.0.1",
     )
-    retargeted_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    retargeted_adapter = route_executor.routes["demo-chat"].raw_adapters[0][0]
     assert retargeted_adapter.config.provider == "chutes"
     assert retargeted_adapter.config.pricing == {
         "prompt": "0",
@@ -1518,12 +1518,12 @@ async def test_put_provider_route_persists_effective_quota_when_payload_omits_li
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     op_store.list_provider_route_configs_for_model.return_value = [
         {
-            "model_id": "minimax-fast",
-            "route_id": "minimax-fast:chutes-api",
+            "model_id": "demo-chat",
+            "route_id": "demo-chat:chutes-api",
             "provider": "openrouter[parasail]",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": 5000,
             "concurrency_limit": None,
             "updated_at": NOW,
@@ -1532,13 +1532,13 @@ async def test_put_provider_route_persists_effective_quota_when_payload_omits_li
     ]
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:chutes-api",
         json={
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
         },
         headers=AUTH,
     )
@@ -1546,19 +1546,19 @@ async def test_put_provider_route_persists_effective_quota_when_payload_omits_li
     assert response.status_code == 200
     assert response.json()["quota_limit"] == 5000
     op_store.upsert_provider_route_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:chutes-api",
+        "demo-chat",
+        "demo-chat:chutes-api",
         "openrouter[parasail]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         5000,
         None,
         "127.0.0.1",
     )
 
-    updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    updated_adapter = route_executor.routes["demo-chat"].raw_adapters[0][0]
     assert updated_adapter.config.quota == {"limit": 5000}
     verify_mock.assert_awaited_once()
     fake_routewise.refresh_route_table.assert_called_once_with()
@@ -1582,12 +1582,12 @@ async def test_put_provider_route_updates_concurrency_limit_for_concurrency_over
     ]
     op_store.list_provider_route_configs_for_model.return_value = [
         {
-            "model_id": "minimax-fast",
-            "route_id": "minimax-fast:featherless-api",
+            "model_id": "demo-chat",
+            "route_id": "demo-chat:featherless-api",
             "provider": "openrouter[parasail]",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": None,
             "concurrency_limit": 3,
             "updated_at": NOW,
@@ -1596,13 +1596,13 @@ async def test_put_provider_route_updates_concurrency_limit_for_concurrency_over
     ]
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:featherless-api",
         json={
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "concurrency_limit": 3,
         },
         headers=AUTH,
@@ -1617,25 +1617,25 @@ async def test_put_provider_route_updates_concurrency_limit_for_concurrency_over
     assert payload["quota_limit"] is None
     assert payload["concurrency_limit"] == 3
     op_store.upsert_provider_route_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:featherless-api",
+        "demo-chat",
+        "demo-chat:featherless-api",
         "openrouter[parasail]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         None,
         3,
         "127.0.0.1",
     )
 
-    updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
+    updated_adapter = route_executor.routes["demo-chat"].raw_adapters[1][0]
     assert updated_adapter.config.provider == "openrouter"
     assert updated_adapter.config.openrouter_pinned_provider == "parasail"
     assert updated_adapter.config.provider_type == "concurrency"
     assert updated_adapter.config.route_metadata["route_provider"] == "featherless"
     assert updated_adapter.config.route_metadata["upstream_provider"] == "openrouter[parasail]"
-    assert updated_adapter.config.concurrency_pool == "featherless-minimax-fast"
+    assert updated_adapter.config.concurrency_pool == "featherless-demo-chat"
     assert updated_adapter.config.concurrency == {"limit": 3}
     verify_mock.assert_awaited_once()
     fake_routewise.refresh_route_table.assert_called_once_with()
@@ -1650,12 +1650,12 @@ async def test_put_provider_route_allows_openrouter_pin_matching_route_provider(
     )
     op_store.list_provider_route_configs_for_model.return_value = [
         {
-            "model_id": "minimax-fast",
-            "route_id": "minimax-fast:chutes-api",
+            "model_id": "demo-chat",
+            "route_id": "demo-chat:chutes-api",
             "provider": "openrouter[chutes]",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": 5000,
             "updated_at": NOW,
             "updated_by": "127.0.0.1",
@@ -1663,13 +1663,13 @@ async def test_put_provider_route_allows_openrouter_pin_matching_route_provider(
     ]
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:chutes-api",
         json={
             "upstream_provider": "openrouter",
             "openrouter_provider": "Chutes",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": 5000,
         },
         headers=AUTH,
@@ -1682,19 +1682,19 @@ async def test_put_provider_route_allows_openrouter_pin_matching_route_provider(
     assert payload["openrouter_provider"] == "chutes"
     assert payload["quota_limit"] == 5000
     op_store.upsert_provider_route_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:chutes-api",
+        "demo-chat",
+        "demo-chat:chutes-api",
         "openrouter[chutes]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         5000,
         None,
         "127.0.0.1",
     )
 
-    updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    updated_adapter = route_executor.routes["demo-chat"].raw_adapters[0][0]
     assert updated_adapter.config.provider == "openrouter"
     assert updated_adapter.config.openrouter_pinned_provider == "chutes"
     assert updated_adapter.config.route_metadata["route_provider"] == "chutes"
@@ -1710,13 +1710,13 @@ async def test_verify_provider_route_update_does_not_apply(admin_client):
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
 
     response = await client.post(
-        "/admin/routing/provider-route-verifications/minimax-fast/minimax-fast:chutes-api",
+        "/admin/routing/provider-route-verifications/demo-chat/demo-chat:chutes-api",
         json={
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": 8000,
         },
         headers=AUTH,
@@ -1726,7 +1726,7 @@ async def test_verify_provider_route_update_does_not_apply(admin_client):
     assert response.json() == {"ok": True}
     verify_mock.assert_awaited_once()
     op_store.upsert_provider_route_config.assert_not_awaited()
-    current_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    current_adapter = route_executor.routes["demo-chat"].raw_adapters[0][0]
     assert current_adapter.config.provider == "chutes"
     assert current_adapter.config.quota == {"limit": 5000}
     fake_routewise.refresh_route_table.assert_not_called()
@@ -1739,12 +1739,12 @@ async def test_put_provider_route_verify_failure_does_not_apply(admin_client):
     verify_mock.side_effect = HTTPException(status_code=400, detail="Provider verification failed")
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:featherless-api",
         json={
             "upstream_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
         },
         headers=AUTH,
     )
@@ -1752,7 +1752,7 @@ async def test_put_provider_route_verify_failure_does_not_apply(admin_client):
     assert response.status_code == 400
     assert response.json()["detail"] == "Provider verification failed"
     op_store.upsert_provider_route_config.assert_not_awaited()
-    current_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
+    current_adapter = route_executor.routes["demo-chat"].raw_adapters[1][0]
     assert current_adapter.config.provider == "featherless"
     fake_routewise.refresh_route_table.assert_not_called()
 
@@ -1763,12 +1763,12 @@ async def test_put_provider_route_rejects_unsafe_base_url(admin_client):
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:featherless-api",
         json={
             "upstream_provider": "parasail",
             "base_url": "http://localhost:8000/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
         },
         headers=AUTH,
     )
@@ -1777,7 +1777,7 @@ async def test_put_provider_route_rejects_unsafe_base_url(admin_client):
     assert response.json()["detail"] == "base_url must use https"
     verify_mock.assert_not_awaited()
     op_store.upsert_provider_route_config.assert_not_awaited()
-    current_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
+    current_adapter = route_executor.routes["demo-chat"].raw_adapters[1][0]
     assert current_adapter.config.provider == "featherless"
     fake_routewise.refresh_route_table.assert_not_called()
 
@@ -1801,12 +1801,12 @@ async def test_put_provider_route_rejects_private_dns_base_url(admin_client, mon
     )
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:featherless-api",
         json={
             "upstream_provider": "parasail",
             "base_url": "https://evil.example/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
         },
         headers=AUTH,
     )
@@ -1815,7 +1815,7 @@ async def test_put_provider_route_rejects_private_dns_base_url(admin_client, mon
     assert response.json()["detail"] == "base_url host is not allowed"
     verify_mock.assert_not_awaited()
     op_store.upsert_provider_route_config.assert_not_awaited()
-    current_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
+    current_adapter = route_executor.routes["demo-chat"].raw_adapters[1][0]
     assert current_adapter.config.provider == "featherless"
     fake_routewise.refresh_route_table.assert_not_called()
 
@@ -1826,11 +1826,11 @@ async def test_put_provider_route_rejects_duplicate_route_id(admin_client):
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     duplicate = _compat_adapter(
         provider="chutes",
-        endpoint_id="minimax-fast:chutes-api",
+        endpoint_id="demo-chat:chutes-api",
         base_url="https://llm2.chutes.ai/v1",
-        provider_model_id="MiniMaxAI/MiniMax-M2.5-TEE",
+        provider_model_id="ExampleOrg/Example-Model-Turbo",
         provider_type="quota",
-        quota_pool="chutes-minimax-fast-daily-duplicate",
+        quota_pool="chutes-demo-chat-daily-duplicate",
         quota_source={
             "provider": "chutes",
             "usage_label": "Daily requests duplicate",
@@ -1838,16 +1838,16 @@ async def test_put_provider_route_rejects_duplicate_route_id(admin_client):
         },
         quota={"limit": 5000},
     )
-    route = route_executor.routes["minimax-fast"]
-    route.raw_adapters.append((duplicate, 1.0, "minimax-fast:chutes-api"))
+    route = route_executor.routes["demo-chat"]
+    route.raw_adapters.append((duplicate, 1.0, "demo-chat:chutes-api"))
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:chutes-api",
         json={
             "upstream_provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
         },
         headers=AUTH,
     )
@@ -1865,12 +1865,12 @@ async def test_delete_provider_route_restores_yaml_baseline(admin_client):
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     op_store.list_provider_route_configs_for_model.return_value = [
         {
-            "model_id": "minimax-fast",
-            "route_id": "minimax-fast:featherless-api",
+            "model_id": "demo-chat",
+            "route_id": "demo-chat:featherless-api",
             "provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": None,
             "updated_at": NOW,
             "updated_by": "127.0.0.1",
@@ -1878,35 +1878,35 @@ async def test_delete_provider_route_restores_yaml_baseline(admin_client):
     ]
 
     put_response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:featherless-api",
         json={
             "upstream_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
         },
         headers=AUTH,
     )
     assert put_response.status_code == 200
-    assert route_executor.routes["minimax-fast"].raw_adapters[1][0].config.provider == "openrouter"
+    assert route_executor.routes["demo-chat"].raw_adapters[1][0].config.provider == "openrouter"
 
     op_store.list_provider_route_configs_for_model.return_value = []
     delete_response = await client.delete(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:featherless-api",
         headers=AUTH,
     )
 
     assert delete_response.status_code == 200
     payload = delete_response.json()
-    assert payload["route_id"] == "minimax-fast:featherless-api"
+    assert payload["route_id"] == "demo-chat:featherless-api"
     assert payload["source"] == "yaml"
     assert payload["upstream_provider"] == "featherless"
-    restored_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
+    restored_adapter = route_executor.routes["demo-chat"].raw_adapters[1][0]
     assert restored_adapter.config.provider == "featherless"
     assert restored_adapter.config.base_url == "https://api.featherless.ai/v1"
     op_store.delete_provider_route_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:featherless-api",
+        "demo-chat",
+        "demo-chat:featherless-api",
     )
     verify_mock.assert_awaited_once()
     assert fake_routewise.refresh_route_table.call_count == 2
@@ -1928,14 +1928,14 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     ]
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "weight": 2.5,
         },
         headers=AUTH,
@@ -1944,20 +1944,20 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["source"] == "runtime"
-    assert payload["route_id"] == "minimax-fast:openrouter[parasail]-api"
+    assert payload["route_id"] == "demo-chat:openrouter[parasail]-api"
     assert payload["route_type"] == "on_demand"
     assert payload["upstream_provider"] == "openrouter"
     assert payload["openrouter_provider"] == "parasail"
     assert payload["effective_weight"] == 2.5
     op_store.upsert_provider_route_candidate.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter[parasail]-api",
+        "demo-chat",
+        "demo-chat:openrouter[parasail]-api",
         "on_demand",
         "openrouter[parasail]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         None,
         None,
         2.5,
@@ -1966,7 +1966,7 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     )
     verify_mock.assert_awaited_once()
 
-    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    runtime_adapter = route_executor.routes["demo-chat"].raw_adapters[-1][0]
     assert runtime_adapter.config.provider == "openrouter"
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.pricing == OPENROUTER_PARASAIL_PRICING
@@ -1983,12 +1983,12 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
     op_store.list_provider_keys_full.return_value = ["minimax-db-key-1234567890"]
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "minimax",
             "base_url": "https://api.minimax.io/v1",
-            "provider_model_id": "MiniMax-M2.5",
+            "provider_model_id": "Example-Model",
             "weight": 2.0,
         },
         headers=AUTH,
@@ -1997,22 +1997,22 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["source"] == "runtime"
-    assert payload["route_id"] == "minimax-fast:minimax-api"
+    assert payload["route_id"] == "demo-chat:minimax-api"
     assert payload["provider"] == "minimax"
     assert payload["upstream_provider"] == "minimax"
     assert payload["key_provider"] == "minimax"
     assert payload["base_url"] == "https://api.minimax.io/v1"
-    assert payload["provider_model_id"] == "MiniMax-M2.5"
+    assert payload["provider_model_id"] == "Example-Model"
     assert payload["effective_weight"] == 2.0
     op_store.upsert_provider_route_candidate.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:minimax-api",
+        "demo-chat",
+        "demo-chat:minimax-api",
         "on_demand",
         "minimax",
         None,
         "https://api.minimax.io/v1",
         None,
-        "MiniMax-M2.5",
+        "Example-Model",
         None,
         None,
         2.0,
@@ -2021,7 +2021,7 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
     )
     verify_mock.assert_awaited_once()
 
-    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    runtime_adapter = route_executor.routes["demo-chat"].raw_adapters[-1][0]
     assert runtime_adapter.config.provider == "minimax"
     assert runtime_adapter.config.provider_profile == "minimax"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
@@ -2051,29 +2051,29 @@ async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client,
             "windows": [{"start": "01:00", "end": "04:00", "pricing": {"prompt": "0.44"}}],
         }
     )
-    for entry in route_executor.routes["minimax-fast"].raw_adapters:
+    for entry in route_executor.routes["demo-chat"].raw_adapters:
         entry[0].config.pricing_schedule = schedule
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "minimax",
             "base_url": "https://api.minimax.io/v1",
-            "provider_model_id": "MiniMax-M2.5",
+            "provider_model_id": "Example-Model",
             "weight": 2.0,
         },
         headers=AUTH,
     )
     assert response.status_code == 200, response.text
-    created_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    created_adapter = route_executor.routes["demo-chat"].raw_adapters[-1][0]
     assert created_adapter.config.route_metadata["runtime_candidate"] is True
 
     persisted = op_store.upsert_provider_route_candidate.await_args.args
     route_id = persisted[1]
     op_store.list_all_provider_route_candidates.return_value = [
         {
-            "model_id": "minimax-fast",
+            "model_id": "demo-chat",
             "route_id": route_id,
             "route_type": persisted[2],
             "provider": persisted[3],
@@ -2102,10 +2102,10 @@ async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client,
     # leaving the assertions below comparing the created adapter with itself.
     provider_routes._install_route_candidate_delete(
         services,
-        route_executor.routes["minimax-fast"],
+        route_executor.routes["demo-chat"],
         route_id,
     )
-    assert all(entry[2] != route_id for entry in route_executor.routes["minimax-fast"].raw_adapters)
+    assert all(entry[2] != route_id for entry in route_executor.routes["demo-chat"].raw_adapters)
 
     with caplog.at_level(logging.WARNING, logger=provider_routes.logger.name):
         await apply_persisted_provider_route_candidates(services, op_store)
@@ -2113,7 +2113,7 @@ async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client,
     assert "Failed to apply provider route candidate" not in caplog.text
     restored_adapter = next(
         entry[0]
-        for entry in route_executor.routes["minimax-fast"].raw_adapters
+        for entry in route_executor.routes["demo-chat"].raw_adapters
         if entry[2] == route_id
     )
     assert restored_adapter is not created_adapter
@@ -2141,14 +2141,14 @@ async def test_post_provider_route_candidate_adds_openrouter_concurrency_route(a
     ]
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "concurrency",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "concurrency_limit": 2,
             "weight": 1.0,
         },
@@ -2158,21 +2158,21 @@ async def test_post_provider_route_candidate_adds_openrouter_concurrency_route(a
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["source"] == "runtime"
-    assert payload["route_id"] == "minimax-fast:openrouter[parasail]-api"
+    assert payload["route_id"] == "demo-chat:openrouter[parasail]-api"
     assert payload["route_type"] == "concurrency"
     assert payload["upstream_provider"] == "openrouter"
     assert payload["openrouter_provider"] == "parasail"
     assert payload["quota_limit"] is None
     assert payload["concurrency_limit"] == 2
     op_store.upsert_provider_route_candidate.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter[parasail]-api",
+        "demo-chat",
+        "demo-chat:openrouter[parasail]-api",
         "concurrency",
         "openrouter[parasail]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         None,
         2,
         1.0,
@@ -2181,12 +2181,12 @@ async def test_post_provider_route_candidate_adds_openrouter_concurrency_route(a
     )
     verify_mock.assert_awaited_once()
 
-    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    runtime_adapter = route_executor.routes["demo-chat"].raw_adapters[-1][0]
     assert runtime_adapter.config.provider == "openrouter"
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.provider_type == "concurrency"
     assert runtime_adapter.config.concurrency_pool == (
-        "minimax-fast:openrouter[parasail]-api:runtime-concurrency"
+        "demo-chat:openrouter[parasail]-api:runtime-concurrency"
     )
     assert runtime_adapter.config.concurrency == {"limit": 2}
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
@@ -2201,13 +2201,13 @@ async def test_post_provider_route_candidate_rejects_unpinned_openrouter_concurr
     client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "concurrency",
             "upstream_provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "concurrency_limit": 2,
             "weight": 1.0,
         },
@@ -2229,14 +2229,14 @@ async def test_patch_provider_route_candidate_updates_openrouter_concurrency_lim
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     create_response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "concurrency",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "concurrency_limit": 2,
             "weight": 1.0,
         },
@@ -2248,8 +2248,7 @@ async def test_patch_provider_route_candidate_updates_openrouter_concurrency_lim
     verify_mock.reset_mock()
 
     response = await client.patch(
-        "/admin/routing/provider-route-candidates/minimax-fast/"
-        "minimax-fast:openrouter[parasail]-api",
+        "/admin/routing/provider-route-candidates/demo-chat/demo-chat:openrouter[parasail]-api",
         json={"concurrency_limit": 4},
         headers=AUTH,
     )
@@ -2260,14 +2259,14 @@ async def test_patch_provider_route_candidate_updates_openrouter_concurrency_lim
     assert payload["openrouter_provider"] == "parasail"
     assert payload["concurrency_limit"] == 4
     op_store.upsert_provider_route_candidate.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter[parasail]-api",
+        "demo-chat",
+        "demo-chat:openrouter[parasail]-api",
         "concurrency",
         "openrouter[parasail]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         None,
         4,
         1.0,
@@ -2275,7 +2274,7 @@ async def test_patch_provider_route_candidate_updates_openrouter_concurrency_lim
         "127.0.0.1",
     )
     verify_mock.assert_not_awaited()
-    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    runtime_adapter = route_executor.routes["demo-chat"].raw_adapters[-1][0]
     assert runtime_adapter.config.concurrency == {"limit": 4}
     fake_routewise.refresh_route_table.assert_called_once_with()
 
@@ -2287,7 +2286,7 @@ async def test_patch_provider_route_candidate_rejects_config_concurrency_limit(
     client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
 
     response = await client.patch(
-        "/admin/routing/provider-route-candidates/minimax-fast/minimax-fast:featherless-api",
+        "/admin/routing/provider-route-candidates/demo-chat/demo-chat:featherless-api",
         json={"concurrency_limit": 4},
         headers=AUTH,
     )
@@ -2297,7 +2296,7 @@ async def test_patch_provider_route_candidate_rejects_config_concurrency_limit(
         "Only runtime OpenRouter concurrency routes can update concurrency_limit"
     )
     op_store.upsert_provider_route_candidate.assert_not_awaited()
-    featherless_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
+    featherless_adapter = route_executor.routes["demo-chat"].raw_adapters[1][0]
     assert featherless_adapter.config.concurrency == {"limit": 1}
 
 
@@ -2309,7 +2308,7 @@ async def test_post_provider_route_candidate_rejects_resource_route_for_fixed_mo
         provider="openrouter",
         endpoint_id="fixed-only:openrouter-api",
         base_url="https://openrouter.ai/api/v1",
-        provider_model_id="minimax/minimax-m2.5",
+        provider_model_id="exampleorg/example-model",
     )
     route_executor.register_route("fixed-only", [(adapter, 1.0)])
 
@@ -2330,7 +2329,7 @@ async def test_post_provider_route_candidate_rejects_resource_route_for_fixed_mo
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "concurrency_limit": 2,
             "weight": 1.0,
         },
@@ -2425,14 +2424,14 @@ async def test_provider_route_candidate_accepts_numbered_env_key(admin_client, m
     env_key_id = provider_routes._env_key_id(numbered_key)
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": env_key_id,
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "weight": 1.5,
         },
         headers=AUTH,
@@ -2446,7 +2445,7 @@ async def test_provider_route_candidate_accepts_numbered_env_key(admin_client, m
     assert payload["api_key"]["id"] == env_key_id
     assert payload["api_key"]["source"] == "env"
     assert payload["api_key"]["key_prefix"] == provider_routes._mask(numbered_key)
-    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    runtime_adapter = route_executor.routes["demo-chat"].raw_adapters[-1][0]
     assert runtime_adapter.config.api_keys == [numbered_key]
     op_store.upsert_provider_route_candidate.assert_awaited_once()
     verify_mock.assert_awaited_once()
@@ -3019,12 +3018,12 @@ async def test_post_provider_route_model_rejects_existing_model(admin_client):
     response = await client.post(
         "/admin/routing/provider-route-models",
         json={
-            "model_id": "minimax-fast",
+            "model_id": "demo-chat",
             "strategy": "fixed",
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "weight": 1,
             "pricing": RUNTIME_PRICING,
         },
@@ -3267,7 +3266,7 @@ async def test_real_routewise_quota_only_runtime_model_rolls_back_without_leaks(
             "route_type": "quota",
             "upstream_provider": "chutes",
             "base_url": "https://llm.chutes.ai/v1",
-            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+            "provider_model_id": "ExampleOrg/Example-Model-Turbo",
             "quota_limit": 5000,
             "weight": 1,
             "pricing": RUNTIME_PRICING,
@@ -3334,24 +3333,24 @@ async def test_provider_route_list_resolves_numbered_env_key_ref(admin_client, m
     env_key_id = provider_routes._env_key_id(numbered_key)
     op_store.list_provider_route_configs_for_model.return_value = [
         {
-            "model_id": "minimax-fast",
-            "route_id": "minimax-fast:chutes-api",
+            "model_id": "demo-chat",
+            "route_id": "demo-chat:chutes-api",
             "provider": "featherless",
             "openrouter_sort": None,
             "base_url": "https://api.featherless.ai/v1",
             "api_key_id": env_key_id,
-            "provider_model_id": "MiniMaxAI/MiniMax-M2.5",
+            "provider_model_id": "ExampleOrg/Example-Model",
             "quota_limit": None,
             "updated_at": NOW,
             "updated_by": "127.0.0.1",
         }
     ]
 
-    response = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+    response = await client.get("/admin/routing/provider-routes/demo-chat", headers=AUTH)
 
     assert response.status_code == 200, response.text
     route = next(
-        row for row in response.json()["routes"] if row["route_id"] == "minimax-fast:chutes-api"
+        row for row in response.json()["routes"] if row["route_id"] == "demo-chat:chutes-api"
     )
     assert route["upstream_provider"] == "featherless"
     assert route["api_key"]["id"] == env_key_id
@@ -3375,36 +3374,36 @@ async def test_runtime_candidate_list_ignores_stale_override_row(admin_client):
     ]
 
     create = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "weight": 1.0,
         },
         headers=AUTH,
     )
     assert create.status_code == 200, create.text
-    route_id = "minimax-fast:openrouter[parasail]-api"
+    route_id = "demo-chat:openrouter[parasail]-api"
     op_store.list_provider_route_configs_for_model.return_value = [
         {
-            "model_id": "minimax-fast",
+            "model_id": "demo-chat",
             "route_id": route_id,
             "provider": "chutes",
             "openrouter_sort": None,
             "base_url": "https://llm.chutes.ai/v1",
             "api_key_id": None,
-            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+            "provider_model_id": "ExampleOrg/Example-Model-Turbo",
             "quota_limit": 5000,
             "updated_at": NOW,
             "updated_by": "127.0.0.1",
         }
     ]
 
-    response = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+    response = await client.get("/admin/routing/provider-routes/demo-chat", headers=AUTH)
 
     assert response.status_code == 200, response.text
     runtime_row = next(row for row in response.json()["routes"] if row["route_id"] == route_id)
@@ -3412,8 +3411,8 @@ async def test_runtime_candidate_list_ignores_stale_override_row(admin_client):
     assert runtime_row["upstream_provider"] == "openrouter"
     assert runtime_row["openrouter_provider"] == "parasail"
     assert runtime_row["base_url"] == "https://openrouter.ai/api/v1"
-    assert runtime_row["provider_model_id"] == "minimax/minimax-m2.5"
-    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert runtime_row["provider_model_id"] == "exampleorg/example-model"
+    runtime_adapter = route_executor.routes["demo-chat"].raw_adapters[-1][0]
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
 
 
@@ -3442,7 +3441,7 @@ async def test_custom_provider_route_candidate_preserves_provider_identity(admin
 
     try:
         response = await client.post(
-            "/admin/routing/provider-route-candidates/minimax-fast",
+            "/admin/routing/provider-route-candidates/demo-chat",
             json={
                 "route_type": "on_demand",
                 "upstream_provider": "acme",
@@ -3460,7 +3459,7 @@ async def test_custom_provider_route_candidate_preserves_provider_identity(admin
         assert payload["upstream_provider"] == "acme"
         assert payload["key_provider"] == "acme"
         assert payload["api_key"]["provider"] == "acme"
-        runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+        runtime_adapter = route_executor.routes["demo-chat"].raw_adapters[-1][0]
         assert runtime_adapter.config.provider == "acme"
         assert runtime_adapter.config.chat_path == "/chat/completions"
         assert runtime_adapter._build_url() == "https://api.acme.test/plan/v3/chat/completions"
@@ -3486,12 +3485,12 @@ async def test_custom_provider_route_update_uses_definition_chat_path(admin_clie
 
     try:
         response = await client.post(
-            "/admin/routing/provider-route-verifications/minimax-fast/minimax-fast:chutes-api",
+            "/admin/routing/provider-route-verifications/demo-chat/demo-chat:chutes-api",
             json={
                 "upstream_provider": "tencent_token_plan",
                 "base_url": "https://api.lkeap.cloud.tencent.com/plan/v3",
                 "api_key_id": "db-tencent",
-                "provider_model_id": "minimax-m2.5",
+                "provider_model_id": "demo-chat-pro",
                 "quota_limit": 5000,
             },
             headers=AUTH,
@@ -3509,7 +3508,7 @@ async def test_custom_provider_route_update_uses_definition_chat_path(admin_clie
         )
         op_store.upsert_provider_route_config.assert_not_awaited()
 
-        current_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+        current_adapter = route_executor.routes["demo-chat"].raw_adapters[0][0]
         assert current_adapter.config.provider == "chutes"
         fake_routewise.refresh_route_table.assert_not_called()
     finally:
@@ -3522,14 +3521,14 @@ async def test_verify_provider_route_candidate_does_not_add_runtime_route(admin_
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
 
     response = await client.post(
-        "/admin/routing/provider-route-candidate-verifications/minimax-fast",
+        "/admin/routing/provider-route-candidate-verifications/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "weight": 2.5,
         },
         headers=AUTH,
@@ -3539,7 +3538,7 @@ async def test_verify_provider_route_candidate_does_not_add_runtime_route(admin_
     assert response.json() == {"ok": True}
     verify_mock.assert_awaited_once()
     op_store.upsert_provider_route_candidate.assert_not_awaited()
-    assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
+    assert len(route_executor.routes["demo-chat"].raw_adapters) == 3
     fake_routewise.refresh_route_table.assert_not_called()
 
 
@@ -3549,38 +3548,38 @@ async def test_runtime_provider_route_candidate_cannot_be_overridden(admin_clien
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
 
     create_response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "weight": 1,
         },
         headers=AUTH,
     )
     assert create_response.status_code == 200
-    runtime_route_id = "minimax-fast:openrouter[parasail]-api"
+    runtime_route_id = "demo-chat:openrouter[parasail]-api"
     assert (
-        route_executor.routes["minimax-fast"]
+        route_executor.routes["demo-chat"]
         .raw_adapters[-1][0]
         .config.route_metadata["runtime_candidate"]
     )
 
     update_response = await client.put(
-        f"/admin/routing/provider-routes/minimax-fast/{runtime_route_id}",
+        f"/admin/routing/provider-routes/demo-chat/{runtime_route_id}",
         json={
             "upstream_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
         },
         headers=AUTH,
     )
     restore_response = await client.delete(
-        f"/admin/routing/provider-routes/minimax-fast/{runtime_route_id}",
+        f"/admin/routing/provider-routes/demo-chat/{runtime_route_id}",
         headers=AUTH,
     )
 
@@ -3612,14 +3611,14 @@ async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_c
     ]
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_sort": "throughput",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "weight": 1,
         },
         headers=AUTH,
@@ -3627,19 +3626,19 @@ async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_c
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["route_id"] == "minimax-fast:openrouter-api"
+    assert payload["route_id"] == "demo-chat:openrouter-api"
     assert payload["upstream_provider"] == "openrouter"
     assert payload["openrouter_provider"] is None
     assert payload["openrouter_sort"] == "throughput"
     op_store.upsert_provider_route_candidate.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter-api",
+        "demo-chat",
+        "demo-chat:openrouter-api",
         "on_demand",
         "openrouter",
         "throughput",
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         None,
         None,
         1.0,
@@ -3648,7 +3647,7 @@ async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_c
     )
     verify_mock.assert_awaited_once()
 
-    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    runtime_adapter = route_executor.routes["demo-chat"].raw_adapters[-1][0]
     assert runtime_adapter.config.provider == "openrouter"
     assert runtime_adapter.config.openrouter_sort == "throughput"
     assert runtime_adapter.config.openrouter_pinned_provider is None
@@ -3674,7 +3673,7 @@ async def test_post_provider_route_candidate_prices_pinned_openrouter_with_sort(
     ]
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
@@ -3682,7 +3681,7 @@ async def test_post_provider_route_candidate_prices_pinned_openrouter_with_sort(
             "openrouter_sort": "throughput",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "weight": 1,
         },
         headers=AUTH,
@@ -3690,18 +3689,18 @@ async def test_post_provider_route_candidate_prices_pinned_openrouter_with_sort(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["route_id"] == "minimax-fast:openrouter[parasail]-api"
+    assert payload["route_id"] == "demo-chat:openrouter[parasail]-api"
     assert payload["openrouter_provider"] == "parasail"
     assert payload["openrouter_sort"] == "throughput"
     op_store.upsert_provider_route_candidate.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter[parasail]-api",
+        "demo-chat",
+        "demo-chat:openrouter[parasail]-api",
         "on_demand",
         "openrouter[parasail]",
         "throughput",
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         None,
         None,
         1.0,
@@ -3710,7 +3709,7 @@ async def test_post_provider_route_candidate_prices_pinned_openrouter_with_sort(
     )
     verify_mock.assert_awaited_once()
 
-    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    runtime_adapter = route_executor.routes["demo-chat"].raw_adapters[-1][0]
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.openrouter_sort == "throughput"
     assert runtime_adapter.config.pricing == OPENROUTER_PARASAIL_PRICING
@@ -3728,12 +3727,12 @@ async def test_post_provider_route_candidate_rejects_route_type_provider_mismatc
     get_settings.cache_clear()
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "chutes",
             "base_url": "https://llm.chutes.ai/v1",
-            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+            "provider_model_id": "ExampleOrg/Example-Model-Turbo",
             "weight": 1,
         },
         headers=AUTH,
@@ -3751,12 +3750,12 @@ async def test_post_provider_route_candidate_rejects_provider_base_url_mismatch(
     client, op_store, _route_executor, fake_routewise, verify_mock = admin_client
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "quota",
             "upstream_provider": "chutes",
             "base_url": "https://api.minimax.io/v1",
-            "provider_model_id": "MiniMax-M2.5",
+            "provider_model_id": "Example-Model",
             "quota_limit": 5000,
             "weight": 1,
         },
@@ -3778,45 +3777,44 @@ async def test_delete_provider_route_candidate_removes_runtime_route(admin_clien
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
 
     create_response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "weight": 1,
         },
         headers=AUTH,
     )
     assert create_response.status_code == 200
-    assert len(route_executor.routes["minimax-fast"].raw_adapters) == 4
+    assert len(route_executor.routes["demo-chat"].raw_adapters) == 4
 
     response = await client.delete(
-        "/admin/routing/provider-route-candidates/minimax-fast/"
-        "minimax-fast:openrouter[parasail]-api",
+        "/admin/routing/provider-route-candidates/demo-chat/demo-chat:openrouter[parasail]-api",
         headers=AUTH,
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert [row["route_id"] for row in payload["routes"]] == [
-        "minimax-fast:chutes-api",
-        "minimax-fast:featherless-api",
-        "minimax-fast:openrouter[deepinfra]-api",
+        "demo-chat:chutes-api",
+        "demo-chat:featherless-api",
+        "demo-chat:openrouter[deepinfra]-api",
     ]
     op_store.delete_provider_route_candidate_with_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter[parasail]-api",
+        "demo-chat",
+        "demo-chat:openrouter[parasail]-api",
     )
     op_store.delete_provider_route_candidate.assert_not_awaited()
     op_store.delete_provider_route_config.assert_not_awaited()
     op_store.delete_weight_override.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter[parasail]-api",
+        "demo-chat",
+        "demo-chat:openrouter[parasail]-api",
     )
-    assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
+    assert len(route_executor.routes["demo-chat"].raw_adapters) == 3
     assert fake_routewise.refresh_route_table.call_count == 2
 
 
@@ -4111,7 +4109,7 @@ async def test_delete_provider_route_candidate_rejects_config_route(admin_client
     client, op_store, _route_executor, fake_routewise, _verify_mock = admin_client
 
     response = await client.delete(
-        "/admin/routing/provider-route-candidates/minimax-fast/minimax-fast:featherless-api",
+        "/admin/routing/provider-route-candidates/demo-chat/demo-chat:featherless-api",
         headers=AUTH,
     )
 
@@ -4128,13 +4126,13 @@ async def test_apply_persisted_provider_route_candidates(admin_client):
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     op_store.list_all_provider_route_candidates.return_value = [
         {
-            "model_id": "minimax-fast",
-            "route_id": "minimax-fast:openrouter[parasail]-api",
+            "model_id": "demo-chat",
+            "route_id": "demo-chat:openrouter[parasail]-api",
             "route_type": "on_demand",
             "provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": None,
             "concurrency_limit": None,
             "weight": 1.5,
@@ -4153,10 +4151,8 @@ async def test_apply_persisted_provider_route_candidates(admin_client):
 
     await apply_persisted_provider_route_candidates(services, op_store)
 
-    runtime_adapter, raw_weight, endpoint_id = route_executor.routes["minimax-fast"].raw_adapters[
-        -1
-    ]
-    assert endpoint_id == "minimax-fast:openrouter[parasail]-api"
+    runtime_adapter, raw_weight, endpoint_id = route_executor.routes["demo-chat"].raw_adapters[-1]
+    assert endpoint_id == "demo-chat:openrouter[parasail]-api"
     assert raw_weight == 1.5
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
@@ -4170,14 +4166,14 @@ async def test_apply_persisted_provider_route_candidates_skips_mismatched_route_
     _client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
     op_store.list_all_provider_route_candidates.return_value = [
         {
-            "model_id": "minimax-fast",
-            "route_id": "minimax-fast:minimax-api",
+            "model_id": "demo-chat",
+            "route_id": "demo-chat:minimax-api",
             "route_type": "on_demand",
             "provider": "chutes",
             "openrouter_sort": None,
             "base_url": "https://api.minimax.io/v1",
             "api_key_id": None,
-            "provider_model_id": "MiniMax-M2.5",
+            "provider_model_id": "Example-Model",
             "quota_limit": None,
             "concurrency_limit": None,
             "weight": 1.0,
@@ -4198,9 +4194,9 @@ async def test_apply_persisted_provider_route_candidates_skips_mismatched_route_
 
     route_ids = [
         provider_routes._route_id_for_entry(adapter, endpoint_id)
-        for adapter, _weight, endpoint_id in route_executor.routes["minimax-fast"].raw_adapters
+        for adapter, _weight, endpoint_id in route_executor.routes["demo-chat"].raw_adapters
     ]
-    assert "minimax-fast:minimax-api" not in route_ids
+    assert "demo-chat:minimax-api" not in route_ids
     assert len(route_ids) == 3
     op_store.list_provider_keys_full.assert_not_awaited()
     registry.refresh_route_tables.assert_not_called()
@@ -4409,12 +4405,12 @@ async def test_apply_persisted_provider_route_config_skips_stale_positional_rout
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     op_store.list_all_provider_route_configs.return_value = [
         {
-            "model_id": "minimax-fast",
+            "model_id": "demo-chat",
             "route_id": "route-0",
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": 8000,
             "updated_at": NOW,
             "updated_by": "127.0.0.1",
@@ -4431,10 +4427,10 @@ async def test_apply_persisted_provider_route_config_skips_stale_positional_rout
 
     await apply_persisted_provider_route_configs(services, op_store)
 
-    current_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    current_adapter = route_executor.routes["demo-chat"].raw_adapters[0][0]
     assert current_adapter.config.provider == "chutes"
     fake_routewise.refresh_route_table.assert_not_called()
-    op_store.delete_provider_route_config.assert_awaited_once_with("minimax-fast", "route-0")
+    op_store.delete_provider_route_config.assert_awaited_once_with("demo-chat", "route-0")
 
 
 @pytest.mark.asyncio
@@ -4446,7 +4442,7 @@ async def test_provider_route_update_refresh_failure_restores_live_route_without
         "openrouter",
         "openrouter-db-key-1234567890",
     )
-    route = route_executor.routes["minimax-fast"]
+    route = route_executor.routes["demo-chat"]
     old_entries = list(route.raw_adapters)
     old_adapter = old_entries[0][0]
     openrouter_pool_count = len(dynamic_keys.get_pools_for_provider("openrouter"))
@@ -4457,13 +4453,13 @@ async def test_provider_route_update_refresh_failure_restores_live_route_without
 
     with pytest.raises(RuntimeError, match="rebuild failed"):
         await client.put(
-            "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+            "/admin/routing/provider-routes/demo-chat/demo-chat:chutes-api",
             json={
                 "upstream_provider": "openrouter",
                 "openrouter_provider": "parasail",
                 "base_url": "https://openrouter.ai/api/v1",
                 "api_key_id": "db-openrouter",
-                "provider_model_id": "minimax/minimax-m2.5",
+                "provider_model_id": "exampleorg/example-model",
                 "quota_limit": 8000,
             },
             headers=AUTH,
@@ -4475,8 +4471,8 @@ async def test_provider_route_update_refresh_failure_restores_live_route_without
     assert fake_routewise.refresh_route_table.call_count == 2
     op_store.upsert_provider_route_config.assert_awaited_once()
     op_store.delete_provider_route_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:chutes-api",
+        "demo-chat",
+        "demo-chat:chutes-api",
     )
 
 
@@ -4490,31 +4486,31 @@ async def test_provider_route_restore_refresh_failure_keeps_override_without_key
         "openrouter-db-key-1234567890",
     )
     update_response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:featherless-api",
         json={
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "concurrency_limit": 2,
         },
         headers=AUTH,
     )
     assert update_response.status_code == 200, update_response.text
-    route = route_executor.routes["minimax-fast"]
+    route = route_executor.routes["demo-chat"]
     override_entries = list(route.raw_adapters)
     override_adapter = override_entries[1][0]
     openrouter_pool_count = len(dynamic_keys.get_pools_for_provider("openrouter"))
     op_store.list_provider_route_configs_for_model.return_value = [
         {
-            "model_id": "minimax-fast",
-            "route_id": "minimax-fast:featherless-api",
+            "model_id": "demo-chat",
+            "route_id": "demo-chat:featherless-api",
             "provider": "openrouter[parasail]",
             "openrouter_sort": None,
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": None,
             "concurrency_limit": 2,
             "updated_at": NOW,
@@ -4530,7 +4526,7 @@ async def test_provider_route_restore_refresh_failure_keeps_override_without_key
 
     with pytest.raises(RuntimeError, match="rebuild failed"):
         await client.delete(
-            "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+            "/admin/routing/provider-routes/demo-chat/demo-chat:featherless-api",
             headers=AUTH,
         )
 
@@ -4539,17 +4535,17 @@ async def test_provider_route_restore_refresh_failure_keeps_override_without_key
     assert len(dynamic_keys.get_pools_for_provider("openrouter")) == openrouter_pool_count
     assert fake_routewise.refresh_route_table.call_count == 2
     op_store.delete_provider_route_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:featherless-api",
+        "demo-chat",
+        "demo-chat:featherless-api",
     )
     op_store.upsert_provider_route_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:featherless-api",
+        "demo-chat",
+        "demo-chat:featherless-api",
         "openrouter[parasail]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         None,
         2,
         "127.0.0.1",
@@ -4563,7 +4559,7 @@ async def test_candidate_add_refresh_failure_restores_live_route_without_key_lea
         "openrouter",
         "openrouter-db-key-1234567890",
     )
-    route = route_executor.routes["minimax-fast"]
+    route = route_executor.routes["demo-chat"]
     old_entries = list(route.raw_adapters)
     openrouter_pool_count = len(dynamic_keys.get_pools_for_provider("openrouter"))
     fake_routewise.refresh_route_table.side_effect = [
@@ -4573,14 +4569,14 @@ async def test_candidate_add_refresh_failure_restores_live_route_without_key_lea
 
     with pytest.raises(RuntimeError, match="rebuild failed"):
         await client.post(
-            "/admin/routing/provider-route-candidates/minimax-fast",
+            "/admin/routing/provider-route-candidates/demo-chat",
             json={
                 "route_type": "on_demand",
                 "upstream_provider": "openrouter",
                 "openrouter_provider": "parasail",
                 "base_url": "https://openrouter.ai/api/v1",
                 "api_key_id": "db-openrouter",
-                "provider_model_id": "minimax/minimax-m2.5",
+                "provider_model_id": "exampleorg/example-model",
                 "weight": 1,
             },
             headers=AUTH,
@@ -4591,8 +4587,8 @@ async def test_candidate_add_refresh_failure_restores_live_route_without_key_lea
     assert fake_routewise.refresh_route_table.call_count == 2
     op_store.upsert_provider_route_candidate.assert_awaited_once()
     op_store.delete_provider_route_candidate.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter[parasail]-api",
+        "demo-chat",
+        "demo-chat:openrouter[parasail]-api",
     )
 
 
@@ -4606,32 +4602,32 @@ async def test_candidate_delete_refresh_failure_keeps_live_route_without_key_lea
         "openrouter-db-key-1234567890",
     )
     create_response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "weight": 1,
         },
         headers=AUTH,
     )
     assert create_response.status_code == 200, create_response.text
-    route = route_executor.routes["minimax-fast"]
+    route = route_executor.routes["demo-chat"]
     candidate_entries = list(route.raw_adapters)
     candidate_adapter = candidate_entries[-1][0]
     openrouter_pool_count = len(dynamic_keys.get_pools_for_provider("openrouter"))
     candidate_snapshot = {
-        "model_id": "minimax-fast",
-        "route_id": "minimax-fast:openrouter[parasail]-api",
+        "model_id": "demo-chat",
+        "route_id": "demo-chat:openrouter[parasail]-api",
         "route_type": "on_demand",
         "provider": "openrouter[parasail]",
         "openrouter_sort": None,
         "base_url": "https://openrouter.ai/api/v1",
         "api_key_id": "db-openrouter",
-        "provider_model_id": "minimax/minimax-m2.5",
+        "provider_model_id": "exampleorg/example-model",
         "quota_limit": None,
         "concurrency_limit": None,
         "weight": 1.0,
@@ -4640,13 +4636,13 @@ async def test_candidate_delete_refresh_failure_keeps_live_route_without_key_lea
         "updated_by": "seed-admin",
     }
     override_snapshot = {
-        "model_id": "minimax-fast",
-        "route_id": "minimax-fast:openrouter[parasail]-api",
+        "model_id": "demo-chat",
+        "route_id": "demo-chat:openrouter[parasail]-api",
         "provider": "openrouter[parasail]",
         "openrouter_sort": None,
         "base_url": "https://openrouter.ai/api/v1",
         "api_key_id": "db-openrouter",
-        "provider_model_id": "minimax/minimax-m2.5",
+        "provider_model_id": "exampleorg/example-model",
         "quota_limit": None,
         "concurrency_limit": None,
         "updated_at": NOW,
@@ -4664,8 +4660,7 @@ async def test_candidate_delete_refresh_failure_keeps_live_route_without_key_lea
 
     with pytest.raises(RuntimeError, match="rebuild failed"):
         await client.delete(
-            "/admin/routing/provider-route-candidates/minimax-fast/"
-            "minimax-fast:openrouter[parasail]-api",
+            "/admin/routing/provider-route-candidates/demo-chat/demo-chat:openrouter[parasail]-api",
             headers=AUTH,
         )
 
@@ -4674,14 +4669,14 @@ async def test_candidate_delete_refresh_failure_keeps_live_route_without_key_lea
     assert len(dynamic_keys.get_pools_for_provider("openrouter")) == openrouter_pool_count
     assert fake_routewise.refresh_route_table.call_count == 2
     op_store.upsert_provider_route_candidate.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter[parasail]-api",
+        "demo-chat",
+        "demo-chat:openrouter[parasail]-api",
         "on_demand",
         "openrouter[parasail]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         None,
         None,
         1.0,
@@ -4689,13 +4684,13 @@ async def test_candidate_delete_refresh_failure_keeps_live_route_without_key_lea
         "seed-admin",
     )
     op_store.upsert_provider_route_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter[parasail]-api",
+        "demo-chat",
+        "demo-chat:openrouter[parasail]-api",
         "openrouter[parasail]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
-        "minimax/minimax-m2.5",
+        "exampleorg/example-model",
         None,
         None,
         "seed-admin",
@@ -4720,14 +4715,14 @@ async def test_candidate_create_cancellation_commits_and_audits_exactly_once(adm
     op_store.upsert_provider_route_candidate.side_effect = block_candidate_persist
     request = asyncio.create_task(
         client.post(
-            "/admin/routing/provider-route-candidates/minimax-fast",
+            "/admin/routing/provider-route-candidates/demo-chat",
             json={
                 "route_type": "on_demand",
                 "upstream_provider": "openrouter",
                 "openrouter_provider": "parasail",
                 "base_url": "https://openrouter.ai/api/v1",
                 "api_key_id": "db-openrouter",
-                "provider_model_id": "minimax/minimax-m2.5",
+                "provider_model_id": "exampleorg/example-model",
                 "weight": 1,
             },
             headers=AUTH,
@@ -4738,14 +4733,14 @@ async def test_candidate_create_cancellation_commits_and_audits_exactly_once(adm
     await asyncio.sleep(0)
 
     assert not request.done()
-    assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
+    assert len(route_executor.routes["demo-chat"].raw_adapters) == 3
     audit.assert_not_awaited()
 
     release_persist.set()
     with pytest.raises(asyncio.CancelledError):
         await request
 
-    assert len(route_executor.routes["minimax-fast"].raw_adapters) == 4
+    assert len(route_executor.routes["demo-chat"].raw_adapters) == 4
     op_store.upsert_provider_route_candidate.assert_awaited_once()
     audit.assert_awaited_once()
     assert audit.await_args.args[2] == "routing.provider_routes.candidate.create"
@@ -4903,9 +4898,9 @@ def test_preserve_route_semantics_repins_keys_when_a_labelled_route_is_retargete
 def test_preserve_route_semantics_leaves_an_ordinary_retarget_alone():
     adapter = _compat_adapter(
         provider="chutes",
-        endpoint_id="minimax-fast:chutes-api",
+        endpoint_id="demo-chat:chutes-api",
         base_url="https://llm.chutes.ai/v1",
-        provider_model_id="MiniMaxAI/MiniMax-M2.5-TEE",
+        provider_model_id="ExampleOrg/Example-Model-Turbo",
     )
     cfg = {"provider": "openrouter", "route_metadata": dict(adapter.config.route_metadata)}
 
@@ -4913,7 +4908,7 @@ def test_preserve_route_semantics_leaves_an_ordinary_retarget_alone():
         cfg,
         current_adapter=adapter,
         upstream_provider="openrouter",
-        route_id="minimax-fast:chutes-api",
+        route_id="demo-chat:chutes-api",
     )
 
     assert cfg["provider"] == "openrouter"
@@ -4935,7 +4930,7 @@ def test_openrouter_pin_is_not_mistaken_for_an_analytics_label():
         cfg,
         current_adapter=adapter,
         upstream_provider="chutes",
-        route_id="minimax-fast:deepinfra-api",
+        route_id="demo-chat:deepinfra-api",
     )
     assert cfg["provider"] == "chutes"
 
@@ -4954,7 +4949,7 @@ def test_openrouter_pin_is_not_mistaken_for_an_analytics_label():
 # the clone template for every fallback an admin adds.
 
 
-def _license_first_route(route_executor, model_id: str = "minimax-fast"):
+def _license_first_route(route_executor, model_id: str = "demo-chat"):
     """Stand in for a model whose first route is a licensed sglang node."""
     adapter = route_executor.routes[model_id].raw_adapters[0][0]
     adapter.config.null_cache_details_means_miss = True
@@ -4978,22 +4973,22 @@ async def test_route_candidate_does_not_inherit_the_cache_report_licence(admin_c
     ]
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/demo-chat",
         json={
             "route_type": "on_demand",
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "weight": 1.0,
         },
         headers=AUTH,
     )
 
     assert response.status_code == 200, response.text
-    added = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
-    assert added.config.endpoint_id == "minimax-fast:openrouter[parasail]-api"
+    added = route_executor.routes["demo-chat"].raw_adapters[-1][0]
+    assert added.config.endpoint_id == "demo-chat:openrouter[parasail]-api"
     assert added.config.null_cache_details_means_miss is False
 
 
@@ -5014,20 +5009,20 @@ async def test_route_update_drops_the_licence_when_the_endpoint_changes(admin_cl
     ]
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:chutes-api",
         json={
             "upstream_provider": "openrouter",
             "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
+            "provider_model_id": "exampleorg/example-model",
             "quota_limit": 5000,
         },
         headers=AUTH,
     )
 
     assert response.status_code == 200, response.text
-    updated = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    updated = route_executor.routes["demo-chat"].raw_adapters[0][0]
     assert updated.config.null_cache_details_means_miss is False
 
 
@@ -5049,18 +5044,18 @@ async def test_route_update_keeps_the_licence_for_a_same_endpoint_key_rotation(a
     ]
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:chutes-api",
         json={
             "upstream_provider": "chutes",
             "base_url": "https://llm.chutes.ai/v1",
             "api_key_id": "db-chutes",
-            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+            "provider_model_id": "ExampleOrg/Example-Model-Turbo",
         },
         headers=AUTH,
     )
 
     assert response.status_code == 200, response.text
-    updated = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    updated = route_executor.routes["demo-chat"].raw_adapters[0][0]
     assert updated.config.null_cache_details_means_miss is True
 
 
@@ -5087,18 +5082,18 @@ async def test_route_update_keeps_the_licence_across_an_equivalent_url_spelling(
     ]
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        "/admin/routing/provider-routes/demo-chat/demo-chat:chutes-api",
         json={
             "upstream_provider": "chutes",
             "base_url": "https://llm.chutes.ai/v1/",
             "api_key_id": "db-chutes",
-            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+            "provider_model_id": "ExampleOrg/Example-Model-Turbo",
         },
         headers=AUTH,
     )
 
     assert response.status_code == 200, response.text
-    updated = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    updated = route_executor.routes["demo-chat"].raw_adapters[0][0]
     assert updated.config.null_cache_details_means_miss is True
 
 

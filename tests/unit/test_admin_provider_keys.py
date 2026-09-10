@@ -356,13 +356,13 @@ async def client(monkeypatch, store):
 def _registered_provider_adapter(provider: str, *, api_key: str = "env-key-original-1234567890"):
     return OpenAICompatAdapter(
         ModelConfig(
-            id="minimax-fast",
-            name="minimax-fast",
+            id="demo-chat",
+            name="demo-chat",
             provider=provider,
             base_url=f"https://{provider}.example/v1",
             api_keys=[api_key],
             provider_model_id="Provider/Test-Model",
-            endpoint_id=f"minimax-fast:{provider}",
+            endpoint_id=f"demo-chat:{provider}",
         )
     )
 
@@ -391,7 +391,7 @@ def _install_provider_route(store, provider: str):
     adapter = _registered_provider_adapter(provider)
     dynamic_keys.register_adapter_for_provider(provider, adapter)
     store.services.router.routes = {
-        "minimax-fast": SimpleNamespace(adapters=[(adapter, 1.0)]),
+        "demo-chat": SimpleNamespace(adapters=[(adapter, 1.0)]),
     }
     return adapter
 
@@ -462,9 +462,9 @@ async def test_verify_provider_key_can_probe_raw_route_entries(client):
     openrouter_adapter = _registered_provider_adapter("openrouter")
     dynamic_keys.register_adapter_for_provider("featherless", featherless_adapter)
     store.services.router.routes = {
-        "minimax-fast": SimpleNamespace(
+        "demo-chat": SimpleNamespace(
             adapters=[(openrouter_adapter, 1.0)],
-            raw_adapters=[(featherless_adapter, 1.0, "minimax-fast:featherless-api")],
+            raw_adapters=[(featherless_adapter, 1.0, "demo-chat:featherless-api")],
         ),
     }
     api_key = "rc-featherless-raw-route-aaaaaaaa"

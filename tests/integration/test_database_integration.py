@@ -268,8 +268,8 @@ async def test_log_request_normalizes_nested_cached_tokens(db_logger: DatabaseLo
     }
 
     await db_logger.log_request(
-        request_id="req-integration-minimax-cache",
-        model_id="minimax-m2.1",
+        request_id="req-integration-demo-chat-cache",
+        model_id="demo-chat",
         provider="minimax",
         prompt=[{"role": "user", "content": "hi"}],
         response={"message": "ok"},
@@ -288,7 +288,7 @@ async def test_log_request_normalizes_nested_cached_tokens(db_logger: DatabaseLo
             SELECT prompt_tokens, completion_tokens, reasoning_tokens, cache_read_tokens
             FROM api_logs WHERE request_id=$1
             """,
-            "req-integration-minimax-cache",
+            "req-integration-demo-chat-cache",
         )
 
     assert row is not None
@@ -311,8 +311,8 @@ async def test_postgres_log_store_normalizes_nested_cached_tokens(db_logger: Dat
     log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False)
 
     await log_store.log_request(
-        request_id="req-postgres-log-store-minimax-cache",
-        model_id="minimax-m2.1",
+        request_id="req-postgres-log-store-demo-chat-cache",
+        model_id="demo-chat",
         provider="minimax",
         prompt=[{"role": "user", "content": "hi"}],
         response={"message": "ok"},
@@ -331,7 +331,7 @@ async def test_postgres_log_store_normalizes_nested_cached_tokens(db_logger: Dat
             SELECT prompt_tokens, completion_tokens, reasoning_tokens, cache_read_tokens
             FROM api_logs WHERE request_id=$1
             """,
-            "req-postgres-log-store-minimax-cache",
+            "req-postgres-log-store-demo-chat-cache",
         )
 
     assert row is not None
@@ -430,7 +430,7 @@ async def test_postgres_log_store_accepts_routewise_metadata_with_nonfinite_valu
 
     await log_store.log_request(
         request_id="req-postgres-log-store-routewise-inf",
-        model_id="minimax-fast",
+        model_id="demo-chat",
         provider="minimax",
         prompt=[{"role": "user", "content": "hi"}],
         response={"message": "ok"},
@@ -475,7 +475,7 @@ async def test_db_logger_accepts_routewise_metadata_with_nonfinite_values(
 ):
     await db_logger.log_request(
         request_id="req-db-logger-routewise-inf",
-        model_id="minimax-fast",
+        model_id="demo-chat",
         provider="minimax",
         prompt=[{"role": "user", "content": "hi"}],
         response={"message": "ok", "score": float("inf")},

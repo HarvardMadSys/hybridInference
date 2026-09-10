@@ -387,7 +387,7 @@ describe('provider route client', () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          model_id: 'minimax-fast',
+          model_id: 'demo-chat',
           strategy: 'routewise',
           provider_options: [
             {
@@ -401,9 +401,9 @@ describe('provider route client', () => {
           openrouter_provider_options: [{ provider: 'parasail', label: 'Parasail' }],
           routes: [
             {
-              model_id: 'minimax-fast',
+              model_id: 'demo-chat',
               strategy: 'routewise',
-              route_id: 'minimax-fast:featherless-api',
+              route_id: 'demo-chat:featherless-api',
               route_type: 'concurrency',
               provider: 'featherless',
               upstream_provider: 'featherless',
@@ -417,9 +417,9 @@ describe('provider route client', () => {
                 key_prefix: null,
                 source: 'default',
               },
-              provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
+              provider_model_id: 'ExampleOrg/Example-Model',
               quota_limit: null,
-              endpoint_id: 'minimax-fast:featherless-api',
+              endpoint_id: 'demo-chat:featherless-api',
               quota_current_limit: null,
               quota_used: null,
               quota_remaining: null,
@@ -436,21 +436,21 @@ describe('provider route client', () => {
       ),
     );
 
-    const out = await listProviderRoutes('minimax-fast');
+    const out = await listProviderRoutes('demo-chat');
 
-    expect(out.routes[0].route_id).toBe('minimax-fast:featherless-api');
+    expect(out.routes[0].route_id).toBe('demo-chat:featherless-api');
     expect(out.routes[0].quota_remaining).toBeNull();
     expect(out.provider_options[0].provider).toBe('openrouter');
     expect(out.openrouter_provider_options?.[0].provider).toBe('parasail');
     const [url] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain('/admin/routing/provider-routes/minimax-fast');
+    expect(String(url)).toContain('/admin/routing/provider-routes/demo-chat');
   });
 
   it('listOpenRouterProviderOptions hits model endpoint discovery', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          provider_model_id: 'minimax/minimax-m2.5',
+          provider_model_id: 'exampleorg/example-model',
           providers: [
             { provider: 'inceptron', label: 'Inceptron' },
             { provider: 'chutes', label: 'Chutes' },
@@ -460,12 +460,12 @@ describe('provider route client', () => {
       ),
     );
 
-    const out = await listOpenRouterProviderOptions('minimax/minimax-m2.5');
+    const out = await listOpenRouterProviderOptions('exampleorg/example-model');
 
     expect(out.providers.map((provider) => provider.provider)).toEqual(['inceptron', 'chutes']);
     const [url] = fetchMock.mock.calls[0];
     expect(String(url)).toContain(
-      '/admin/routing/openrouter-providers?provider_model_id=minimax%2Fminimax-m2.5',
+      '/admin/routing/openrouter-providers?provider_model_id=exampleorg%2Fexample-model',
     );
   });
 
@@ -473,9 +473,9 @@ describe('provider route client', () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          model_id: 'minimax-fast',
+          model_id: 'demo-chat',
           strategy: 'routewise',
-          route_id: 'minimax-fast:featherless-api',
+          route_id: 'demo-chat:featherless-api',
           route_type: 'concurrency',
           provider: 'featherless',
           upstream_provider: 'openrouter',
@@ -491,10 +491,10 @@ describe('provider route client', () => {
             key_prefix: 'sk-or...1234',
             source: 'db',
           },
-          provider_model_id: 'minimax/minimax-m2.5',
+          provider_model_id: 'exampleorg/example-model',
           quota_limit: null,
           concurrency_limit: 3,
-          endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+          endpoint_id: 'demo-chat:openrouter[parasail]-api',
           yaml_weight: 1,
           effective_weight: 1,
           source: 'override',
@@ -505,12 +505,12 @@ describe('provider route client', () => {
       ),
     );
 
-    const out = await updateProviderRoute('minimax-fast', 'minimax-fast:featherless-api', {
+    const out = await updateProviderRoute('demo-chat', 'demo-chat:featherless-api', {
       upstream_provider: 'openrouter',
       openrouter_provider: 'parasail',
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
-      provider_model_id: 'minimax/minimax-m2.5',
+      provider_model_id: 'exampleorg/example-model',
       quota_limit: 8000,
       concurrency_limit: 3,
     });
@@ -520,7 +520,7 @@ describe('provider route client', () => {
     expect(out.openrouter_provider).toBe('parasail');
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain(
-      '/admin/routing/provider-routes/minimax-fast/minimax-fast%3Afeatherless-api',
+      '/admin/routing/provider-routes/demo-chat/demo-chat%3Afeatherless-api',
     );
     expect(init.method).toBe('PUT');
     expect(JSON.parse(init.body as string)).toEqual({
@@ -529,7 +529,7 @@ describe('provider route client', () => {
       openrouter_sort: null,
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
-      provider_model_id: 'minimax/minimax-m2.5',
+      provider_model_id: 'exampleorg/example-model',
       quota_limit: 8000,
       concurrency_limit: 3,
     });
@@ -543,12 +543,12 @@ describe('provider route client', () => {
       }),
     );
 
-    const out = await verifyProviderRoute('minimax-fast', 'minimax-fast:featherless-api', {
+    const out = await verifyProviderRoute('demo-chat', 'demo-chat:featherless-api', {
       upstream_provider: 'openrouter',
       openrouter_provider: 'parasail',
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
-      provider_model_id: 'minimax/minimax-m2.5',
+      provider_model_id: 'exampleorg/example-model',
       quota_limit: 8000,
       concurrency_limit: 3,
     });
@@ -556,7 +556,7 @@ describe('provider route client', () => {
     expect(out.ok).toBe(true);
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain(
-      '/admin/routing/provider-route-verifications/minimax-fast/minimax-fast%3Afeatherless-api',
+      '/admin/routing/provider-route-verifications/demo-chat/demo-chat%3Afeatherless-api',
     );
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({
@@ -565,7 +565,7 @@ describe('provider route client', () => {
       openrouter_sort: null,
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
-      provider_model_id: 'minimax/minimax-m2.5',
+      provider_model_id: 'exampleorg/example-model',
       quota_limit: 8000,
       concurrency_limit: 3,
     });
@@ -575,9 +575,9 @@ describe('provider route client', () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          model_id: 'minimax-fast',
+          model_id: 'demo-chat',
           strategy: 'routewise',
-          route_id: 'minimax-fast:featherless-api',
+          route_id: 'demo-chat:featherless-api',
           route_type: 'concurrency',
           provider: 'featherless',
           upstream_provider: 'featherless',
@@ -591,9 +591,9 @@ describe('provider route client', () => {
             key_prefix: null,
             source: 'default',
           },
-          provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
+          provider_model_id: 'ExampleOrg/Example-Model',
           quota_limit: null,
-          endpoint_id: 'minimax-fast:featherless-api',
+          endpoint_id: 'demo-chat:featherless-api',
           yaml_weight: 1,
           effective_weight: 1,
           source: 'yaml',
@@ -604,12 +604,12 @@ describe('provider route client', () => {
       ),
     );
 
-    const out = await deleteProviderRoute('minimax-fast', 'minimax-fast:featherless-api');
+    const out = await deleteProviderRoute('demo-chat', 'demo-chat:featherless-api');
 
     expect(out.source).toBe('yaml');
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain(
-      '/admin/routing/provider-routes/minimax-fast/minimax-fast%3Afeatherless-api',
+      '/admin/routing/provider-routes/demo-chat/demo-chat%3Afeatherless-api',
     );
     expect(init.method).toBe('DELETE');
   });
@@ -618,9 +618,9 @@ describe('provider route client', () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          model_id: 'minimax-fast',
+          model_id: 'demo-chat',
           strategy: 'routewise',
-          route_id: 'minimax-fast:openrouter[parasail]-api',
+          route_id: 'demo-chat:openrouter[parasail]-api',
           route_type: 'on_demand',
           provider: 'openrouter',
           upstream_provider: 'openrouter',
@@ -636,9 +636,9 @@ describe('provider route client', () => {
             key_prefix: 'sk-or...1234',
             source: 'db',
           },
-          provider_model_id: 'minimax/minimax-m2.5',
+          provider_model_id: 'exampleorg/example-model',
           quota_limit: null,
-          endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+          endpoint_id: 'demo-chat:openrouter[parasail]-api',
           yaml_weight: 1,
           effective_weight: 1,
           source: 'runtime',
@@ -649,14 +649,14 @@ describe('provider route client', () => {
       ),
     );
 
-    const out = await createProviderRouteCandidate('minimax-fast', {
+    const out = await createProviderRouteCandidate('demo-chat', {
       route_type: 'on_demand',
       upstream_provider: 'openrouter',
       openrouter_provider: 'parasail',
       openrouter_sort: null,
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
-      provider_model_id: 'minimax/minimax-m2.5',
+      provider_model_id: 'exampleorg/example-model',
       quota_limit: null,
       concurrency_limit: null,
       weight: 1,
@@ -664,7 +664,7 @@ describe('provider route client', () => {
 
     expect(out.source).toBe('runtime');
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain('/admin/routing/provider-route-candidates/minimax-fast');
+    expect(String(url)).toContain('/admin/routing/provider-route-candidates/demo-chat');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({
       route_type: 'on_demand',
@@ -673,7 +673,7 @@ describe('provider route client', () => {
       openrouter_sort: null,
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
-      provider_model_id: 'minimax/minimax-m2.5',
+      provider_model_id: 'exampleorg/example-model',
       quota_limit: null,
       concurrency_limit: null,
       weight: 1,
@@ -822,14 +822,14 @@ describe('provider route client', () => {
       }),
     );
 
-    const out = await verifyProviderRouteCandidate('minimax-fast', {
+    const out = await verifyProviderRouteCandidate('demo-chat', {
       route_type: 'on_demand',
       upstream_provider: 'openrouter',
       openrouter_provider: 'parasail',
       openrouter_sort: null,
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
-      provider_model_id: 'minimax/minimax-m2.5',
+      provider_model_id: 'exampleorg/example-model',
       quota_limit: null,
       concurrency_limit: null,
       weight: 1,
@@ -838,7 +838,7 @@ describe('provider route client', () => {
     expect(out.ok).toBe(true);
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain(
-      '/admin/routing/provider-route-candidate-verifications/minimax-fast',
+      '/admin/routing/provider-route-candidate-verifications/demo-chat',
     );
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({
@@ -848,7 +848,7 @@ describe('provider route client', () => {
       openrouter_sort: null,
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
-      provider_model_id: 'minimax/minimax-m2.5',
+      provider_model_id: 'exampleorg/example-model',
       quota_limit: null,
       concurrency_limit: null,
       weight: 1,
@@ -859,7 +859,7 @@ describe('provider route client', () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          model_id: 'minimax-fast',
+          model_id: 'demo-chat',
           strategy: 'routewise',
           provider_options: [],
           routes: [],
@@ -869,14 +869,14 @@ describe('provider route client', () => {
     );
 
     const out = await deleteProviderRouteCandidate(
-      'minimax-fast',
-      'minimax-fast:openrouter[parasail]-api',
+      'demo-chat',
+      'demo-chat:openrouter[parasail]-api',
     );
 
     expect(out.routes).toEqual([]);
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain(
-      '/admin/routing/provider-route-candidates/minimax-fast/minimax-fast%3Aopenrouter%5Bparasail%5D-api',
+      '/admin/routing/provider-route-candidates/demo-chat/demo-chat%3Aopenrouter%5Bparasail%5D-api',
     );
     expect(init.method).toBe('DELETE');
   });
@@ -885,14 +885,14 @@ describe('provider route client', () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          model_id: 'minimax-fast',
+          model_id: 'demo-chat',
           strategy: 'fixed',
           provider_options: [],
           routes: [
             {
-              model_id: 'minimax-fast',
+              model_id: 'demo-chat',
               strategy: 'fixed',
-              route_id: 'minimax-fast:featherless-api',
+              route_id: 'demo-chat:featherless-api',
               route_type: 'concurrency',
               provider: 'featherless',
               upstream_provider: 'featherless',
@@ -906,9 +906,9 @@ describe('provider route client', () => {
                 key_prefix: null,
                 source: 'default',
               },
-              provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
+              provider_model_id: 'ExampleOrg/Example-Model',
               quota_limit: null,
-              endpoint_id: 'minimax-fast:featherless-api',
+              endpoint_id: 'demo-chat:featherless-api',
               yaml_weight: 1,
               effective_weight: 1,
               source: 'yaml',
@@ -921,11 +921,11 @@ describe('provider route client', () => {
       ),
     );
 
-    const out = await updateProviderRouteStrategy('minimax-fast', 'fixed');
+    const out = await updateProviderRouteStrategy('demo-chat', 'fixed');
 
     expect(out.strategy).toBe('fixed');
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain('/admin/routing/provider-route-strategies/minimax-fast');
+    expect(String(url)).toContain('/admin/routing/provider-route-strategies/demo-chat');
     expect(init.method).toBe('PATCH');
     expect(JSON.parse(init.body as string)).toEqual({ strategy: 'fixed' });
   });
@@ -1052,8 +1052,8 @@ describe('routewise settings client', () => {
         JSON.stringify({
           samples: [
             {
-              model_id: 'minimax-fast',
-              endpoint_id: 'minimax-fast:featherless-api',
+              model_id: 'demo-chat',
+              endpoint_id: 'demo-chat:featherless-api',
               ttft_ms: 120,
               ok: true,
               error: null,
@@ -1066,21 +1066,21 @@ describe('routewise settings client', () => {
     );
 
     const out = await listRoutewiseProbeSamples({
-      modelId: 'minimax-fast',
-      endpointId: 'minimax-fast:featherless-api',
+      modelId: 'demo-chat',
+      endpointId: 'demo-chat:featherless-api',
       sinceSeconds: 3600,
       limit: 20,
     });
 
     expect(out.samples[0]).toMatchObject({
-      model_id: 'minimax-fast',
-      endpoint_id: 'minimax-fast:featherless-api',
+      model_id: 'demo-chat',
+      endpoint_id: 'demo-chat:featherless-api',
       ok: true,
     });
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/admin/routewise/probes?');
-    expect(String(url)).toContain('model_id=minimax-fast');
-    expect(String(url)).toContain('endpoint_id=minimax-fast%3Afeatherless-api');
+    expect(String(url)).toContain('model_id=demo-chat');
+    expect(String(url)).toContain('endpoint_id=demo-chat%3Afeatherless-api');
     expect(String(url)).toContain('since_seconds=3600');
     expect(String(url)).toContain('limit=20');
     expect(init.headers).toBeInstanceOf(Headers);
@@ -1093,8 +1093,8 @@ describe('routewise settings client', () => {
         JSON.stringify({
           results: [
             {
-              model_id: 'minimax-fast',
-              endpoint_id: 'minimax-fast:featherless-api',
+              model_id: 'demo-chat',
+              endpoint_id: 'demo-chat:featherless-api',
               ok: true,
               ttft_ms: 120,
               error: null,
@@ -1106,13 +1106,13 @@ describe('routewise settings client', () => {
     );
 
     const out = await runRoutewiseProbe({
-      model_id: 'minimax-fast',
-      endpoint_id: 'minimax-fast:featherless-api',
+      model_id: 'demo-chat',
+      endpoint_id: 'demo-chat:featherless-api',
       idle_only: false,
     });
 
     expect(out.results[0]).toMatchObject({
-      model_id: 'minimax-fast',
+      model_id: 'demo-chat',
       ok: true,
     });
     const [url, init] = fetchMock.mock.calls[0];
@@ -1122,8 +1122,8 @@ describe('routewise settings client', () => {
     expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
     expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
     expect(JSON.parse(init.body as string)).toEqual({
-      model_id: 'minimax-fast',
-      endpoint_id: 'minimax-fast:featherless-api',
+      model_id: 'demo-chat',
+      endpoint_id: 'demo-chat:featherless-api',
       idle_only: false,
     });
   });
@@ -1134,7 +1134,7 @@ describe('routewise decisions client', () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          model_id: 'minimax-fast',
+          model_id: 'demo-chat',
           range: '7d',
           bucket_seconds: 21600,
           total_requests: 512,
@@ -1142,7 +1142,7 @@ describe('routewise decisions client', () => {
           lp_status_counts: { optimal: 498, cheapest_fallback: 14 },
           selection_share: [
             {
-              endpoint: 'minimax-fast:openrouter[wandb]-api',
+              endpoint: 'demo-chat:openrouter[wandb]-api',
               provider_type: 'on_demand',
               count: 258,
             },
@@ -1157,7 +1157,7 @@ describe('routewise decisions client', () => {
           buckets: [
             {
               bucket_start: '2026-07-01T13:00:00+00:00',
-              counts: { 'minimax-fast:openrouter[wandb]-api': 10 },
+              counts: { 'demo-chat:openrouter[wandb]-api': 10 },
               hedge: { not_hedged: 10, hedged_primary_won: 2, hedged_backup_won: 1 },
             },
           ],
@@ -1166,18 +1166,18 @@ describe('routewise decisions client', () => {
       ),
     );
 
-    const out = await getRoutewiseDecisions('minimax-fast', '7d');
+    const out = await getRoutewiseDecisions('demo-chat', '7d');
 
     expect(out.bucket_seconds).toBe(21600);
     expect(out.total_requests).toBe(512);
     expect(out.unattributed_requests).toBe(3);
     expect(out.lp_status_counts).toEqual({ optimal: 498, cheapest_fallback: 14 });
-    expect(out.selection_share[0].endpoint).toBe('minimax-fast:openrouter[wandb]-api');
+    expect(out.selection_share[0].endpoint).toBe('demo-chat:openrouter[wandb]-api');
     expect(out.hedge_summary.hedged).toBe(96);
     expect(out.hedge_summary.hedge_rate).toBeCloseTo(0.1875);
     expect(out.hedge_summary.backup_win_rate).toBeCloseTo(0.6354);
     expect(out.hedge_summary.median_hedge_delay_ms).toBe(975.0);
-    expect(out.buckets[0].counts['minimax-fast:openrouter[wandb]-api']).toBe(10);
+    expect(out.buckets[0].counts['demo-chat:openrouter[wandb]-api']).toBe(10);
     expect(out.buckets[0].hedge).toEqual({
       not_hedged: 10,
       hedged_primary_won: 2,
@@ -1186,7 +1186,7 @@ describe('routewise decisions client', () => {
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/admin/routewise/decisions?');
-    expect(String(url)).toContain('model_id=minimax-fast');
+    expect(String(url)).toContain('model_id=demo-chat');
     expect(String(url)).toContain('range=7d');
     expect(init.headers).toBeInstanceOf(Headers);
     expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);

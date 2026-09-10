@@ -46,7 +46,7 @@ import { getRoutewiseDecisions } from '@/lib/api/admin';
 import type { RoutewiseDecisionsResponse } from '@/lib/api/admin';
 
 const emptyDecisions: RoutewiseDecisionsResponse = {
-  model_id: 'minimax-fast',
+  model_id: 'demo-chat',
   range: '24h',
   bucket_seconds: 3600,
   total_requests: 0,
@@ -64,16 +64,16 @@ const emptyDecisions: RoutewiseDecisionsResponse = {
 };
 
 const decisions: RoutewiseDecisionsResponse = {
-  model_id: 'minimax-fast',
+  model_id: 'demo-chat',
   range: '24h',
   bucket_seconds: 3600,
   total_requests: 20,
   unattributed_requests: 2,
   lp_status_counts: { optimal: 20 },
   selection_share: [
-    { endpoint: 'minimax-fast:openrouter[wandb]-api', provider_type: 'on_demand', count: 10 },
+    { endpoint: 'demo-chat:openrouter[wandb]-api', provider_type: 'on_demand', count: 10 },
     {
-      endpoint: 'minimax-fast:openrouter[minimax/highspeed]-api',
+      endpoint: 'demo-chat:openrouter[minimax/highspeed]-api',
       provider_type: 'concurrency',
       count: 10,
     },
@@ -90,16 +90,16 @@ const decisions: RoutewiseDecisionsResponse = {
     {
       bucket_start: '2026-07-01T13:00:00+00:00',
       counts: {
-        'minimax-fast:openrouter[wandb]-api': 6,
-        'minimax-fast:openrouter[minimax/highspeed]-api': 4,
+        'demo-chat:openrouter[wandb]-api': 6,
+        'demo-chat:openrouter[minimax/highspeed]-api': 4,
       },
       hedge: { not_hedged: 8, hedged_primary_won: 1, hedged_backup_won: 1 },
     },
     {
       bucket_start: '2026-07-01T14:00:00+00:00',
       counts: {
-        'minimax-fast:openrouter[wandb]-api': 4,
-        'minimax-fast:openrouter[minimax/highspeed]-api': 6,
+        'demo-chat:openrouter[wandb]-api': 4,
+        'demo-chat:openrouter[minimax/highspeed]-api': 6,
       },
       hedge: { not_hedged: 8, hedged_primary_won: 1, hedged_backup_won: 1 },
     },
@@ -117,14 +117,14 @@ describe('RoutewiseDecisionsPanel', () => {
   });
 
   it('renders the panel header', async () => {
-    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    render(<RoutewiseDecisionsPanel modelId="demo-chat" />);
     expect(
       await screen.findByRole('heading', { level: 2, name: 'RouteWise decisions' }),
     ).toBeInTheDocument();
   });
 
   it('renders the distribution short endpoint labels and share summary', async () => {
-    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    render(<RoutewiseDecisionsPanel modelId="demo-chat" />);
 
     // Bar legend names use short labels (prefix + trailing -api stripped).
     expect((await screen.findAllByText('openrouter[wandb]')).length).toBeGreaterThan(0);
@@ -138,7 +138,7 @@ describe('RoutewiseDecisionsPanel', () => {
   });
 
   it('renders only non-zero distribution tooltip rows', async () => {
-    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    render(<RoutewiseDecisionsPanel modelId="demo-chat" />);
 
     const tooltip = await screen.findByTestId('routewise-distribution-tooltip');
     expect(within(tooltip).queryByText('openrouter[wandb]')).not.toBeInTheDocument();
@@ -147,7 +147,7 @@ describe('RoutewiseDecisionsPanel', () => {
   });
 
   it('uses distinct stable colors for selection distribution endpoints', async () => {
-    const first = render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    const first = render(<RoutewiseDecisionsPanel modelId="demo-chat" />);
 
     const wandb = (await screen.findByTestId('bar-openrouter[wandb]')).getAttribute('data-fill');
     const highspeed = screen
@@ -160,7 +160,7 @@ describe('RoutewiseDecisionsPanel', () => {
     // Colors derive from the endpoint id, not from a vendor table, so a fresh
     // render assigns the same ones.
     first.unmount();
-    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    render(<RoutewiseDecisionsPanel modelId="demo-chat" />);
     expect(await screen.findByTestId('bar-openrouter[wandb]')).toHaveAttribute('data-fill', wandb);
     expect(screen.getByTestId('bar-openrouter[minimax/highspeed]')).toHaveAttribute(
       'data-fill',
@@ -169,7 +169,7 @@ describe('RoutewiseDecisionsPanel', () => {
   });
 
   it('renders hedging KPIs and stacked legend labels from the response', async () => {
-    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    render(<RoutewiseDecisionsPanel modelId="demo-chat" />);
 
     // KPI chips carry the percentages computed from hedge_summary.
     const kpis = await screen.findByTestId('hedge-kpis');
@@ -186,7 +186,7 @@ describe('RoutewiseDecisionsPanel', () => {
   it('renders hedge KPIs gracefully when nothing hedged', async () => {
     vi.mocked(getRoutewiseDecisions).mockResolvedValue(emptyDecisions);
 
-    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    render(<RoutewiseDecisionsPanel modelId="demo-chat" />);
 
     const kpis = await screen.findByTestId('hedge-kpis');
     // hedged == 0 -> win rate dash.
@@ -198,13 +198,13 @@ describe('RoutewiseDecisionsPanel', () => {
   it('shows empty states when the API returns no rows', async () => {
     vi.mocked(getRoutewiseDecisions).mockResolvedValue(emptyDecisions);
 
-    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    render(<RoutewiseDecisionsPanel modelId="demo-chat" />);
 
     expect(await screen.findByText('No RouteWise decisions in this window.')).toBeInTheDocument();
   });
 
   it('zero-fills bar data across the whole window so one busy bucket cannot span the chart', async () => {
-    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    render(<RoutewiseDecisionsPanel modelId="demo-chat" />);
 
     // The two server buckets still render (legend names come from the Bars),
     // and the empty-state message stays absent even though most generated
@@ -215,17 +215,17 @@ describe('RoutewiseDecisionsPanel', () => {
   });
 
   it('refetches with the new range when the range selector changes', async () => {
-    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+    render(<RoutewiseDecisionsPanel modelId="demo-chat" />);
 
     await screen.findByRole('heading', { level: 2, name: 'RouteWise decisions' });
     await waitFor(() => {
-      expect(getRoutewiseDecisions).toHaveBeenCalledWith('minimax-fast', '24h');
+      expect(getRoutewiseDecisions).toHaveBeenCalledWith('demo-chat', '24h');
     });
 
     fireEvent.click(screen.getByRole('button', { name: '7d' }));
 
     await waitFor(() => {
-      expect(getRoutewiseDecisions).toHaveBeenCalledWith('minimax-fast', '7d');
+      expect(getRoutewiseDecisions).toHaveBeenCalledWith('demo-chat', '7d');
     });
   });
 });
@@ -237,7 +237,7 @@ describe('fillBucketGaps', () => {
     const nowMs = Date.parse('2026-07-01T15:30:00Z');
     const serverBucket = {
       bucket_start: '2026-07-01T13:00:00+00:00',
-      counts: { 'minimax-fast:openrouter[wandb]-api': 6 },
+      counts: { 'demo-chat:openrouter[wandb]-api': 6 },
       hedge: { not_hedged: 4, hedged_primary_won: 1, hedged_backup_won: 1 },
     };
 

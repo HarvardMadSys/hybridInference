@@ -33,13 +33,13 @@ import type {
   RunRoutewiseProbeResponse,
 } from '@/lib/api/admin';
 
-const LIVE_ENDPOINT = 'minimax-fast:openrouter[minimax/highspeed]-api';
-const REMOVED_ENDPOINT = 'minimax-fast:featherless-api';
-const FRESH_NON_ROUTE_ENDPOINT = 'minimax-fast:openrouter[akashml]-api';
+const LIVE_ENDPOINT = 'demo-chat:openrouter[minimax/highspeed]-api';
+const REMOVED_ENDPOINT = 'demo-chat:featherless-api';
+const FRESH_NON_ROUTE_ENDPOINT = 'demo-chat:openrouter[akashml]-api';
 
 function sample(overrides: Partial<RoutewiseProbeSampleItem>): RoutewiseProbeSampleItem {
   return {
-    model_id: 'minimax/minimax-m2.5',
+    model_id: 'exampleorg/example-model',
     endpoint_id: LIVE_ENDPOINT,
     ttft_ms: 1189,
     ok: true,
@@ -66,7 +66,7 @@ function setting(overrides: Partial<RoutewiseSettingItem> = {}): RoutewiseSettin
 
 beforeEach(() => {
   vi.mocked(listRoutewiseSettings).mockResolvedValue({
-    model_id: 'minimax-fast',
+    model_id: 'demo-chat',
     settings: [],
   });
   vi.mocked(listRoutewiseProbeSamples).mockResolvedValue({ samples: [] });
@@ -96,7 +96,7 @@ describe('RoutewiseSettingsPanel probe table', () => {
 
     render(
       <RoutewiseSettingsPanel
-        modelId="minimax-fast"
+        modelId="demo-chat"
         endpoints={[{ endpointId: LIVE_ENDPOINT, label: `concurrency · ${LIVE_ENDPOINT}` }]}
       />,
     );
@@ -125,7 +125,7 @@ describe('RoutewiseSettingsPanel probe table', () => {
 
     render(
       <RoutewiseSettingsPanel
-        modelId="minimax-fast"
+        modelId="demo-chat"
         endpoints={[{ endpointId: LIVE_ENDPOINT, label: `concurrency · ${LIVE_ENDPOINT}` }]}
       />,
     );
@@ -153,7 +153,7 @@ describe('RoutewiseSettingsPanel probe table', () => {
 
     render(
       <RoutewiseSettingsPanel
-        modelId="minimax-fast"
+        modelId="demo-chat"
         endpoints={[{ endpointId: LIVE_ENDPOINT, label: `concurrency · ${LIVE_ENDPOINT}` }]}
       />,
     );
@@ -164,11 +164,11 @@ describe('RoutewiseSettingsPanel probe table', () => {
   });
 
   it('reloads probe samples with the newly selected endpoint', async () => {
-    const secondEndpoint = 'minimax-fast:second-provider-api';
+    const secondEndpoint = 'demo-chat:second-provider-api';
 
     render(
       <RoutewiseSettingsPanel
-        modelId="minimax-fast"
+        modelId="demo-chat"
         endpoints={[
           { endpointId: LIVE_ENDPOINT, label: 'live provider' },
           { endpointId: secondEndpoint, label: 'second provider' },
@@ -178,7 +178,7 @@ describe('RoutewiseSettingsPanel probe table', () => {
 
     await waitFor(() => {
       expect(listRoutewiseProbeSamples).toHaveBeenCalledWith({
-        modelId: 'minimax-fast',
+        modelId: 'demo-chat',
         endpointId: undefined,
         sinceSeconds: 86_400,
         limit: 100,
@@ -192,7 +192,7 @@ describe('RoutewiseSettingsPanel probe table', () => {
 
     await waitFor(() => {
       expect(listRoutewiseProbeSamples).toHaveBeenCalledWith({
-        modelId: 'minimax-fast',
+        modelId: 'demo-chat',
         endpointId: secondEndpoint,
         sinceSeconds: 86_400,
         limit: 100,
