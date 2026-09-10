@@ -1,12 +1,76 @@
 # HybridInference
 
-HybridInference is an open-source multi-provider LLM gateway, and the production reference integration of [RouteWise](#routewise), the cost--latency routing system from our EuroSys '27 paper. It routes requests across local inference servers and remote OpenAI-compatible providers, and turns RouteWise's per-request decision into a deployable system: provider adapters, an OpenAI-compatible API, health-aware fallback, observability, configuration, and a control plane. It powers FreeInference, and can be self-hosted as a standalone gateway. HybridInference is developed by the [Harvard MadSys Lab](https://juncheng.seas.harvard.edu/) at Harvard SEAS.
+HybridInference is an open-source, self-hosted LLM gateway for serving local
+models and external model APIs to a team. It is developed by the
+[Harvard MadSys Lab](https://juncheng.seas.harvard.edu/) at Harvard SEAS and powers
+[FreeInference](https://freeinference.org/).
+
+## Who It's For
+
+Labs and teams serving LLMs to their members from their own GPUs, external
+APIs, or both.
+
+- [RouteWise](#routewise): provider selection for the same model by price and
+  measured time-to-first-token, under a routing cost budget you set.
+- One OpenAI-compatible endpoint for vLLM, SGLang, Ollama, and remote providers,
+  with multiple routes per model, weighted traffic splits, and health-aware
+  fallback.
+- User dashboards for API keys and usage, and an [admin console](#admin-console)
+  for operating the gateway.
+
+## Admin Console
+
+Admins can approve or suspend accounts, set daily quotas and per-user
+concurrency limits, and restrict model access. Provider credentials, model
+routes, routing weights, and RouteWise settings are editable in the console.
+
+Provider pages show availability, latency, and generation speed, with endpoint
+probes for troubleshooting. Request logs include the user, provider, errors,
+token usage, cost, first-token latency, and cached tokens. RouteWise requests
+also show whether a backup request was sent and whether it won.
 
 ## Quickstart
 
-Run the gateway against real models with one credential. This uses the bundled
-reference registry (`config/examples/models.openrouter.yaml`): two
-OpenRouter-served models plus a local-first hybrid entry.
+### Gateway with the Web and Admin Consoles
+
+Requires Git, Make, Python 3.10–3.13, and a running Docker daemon with Compose.
+The local example runs the gateway, Postgres, and both consoles with a
+simulated model provider. No GPU or provider API key is needed.
+
+```bash
+git clone https://github.com/HarvardMadSys/hybridInference.git hybridinference
+cd hybridinference
+
+make up DISTRIBUTION=example
+make smoke DISTRIBUTION=example
+make demo DISTRIBUTION=example
+```
+
+Open [localhost:13001/signup](http://localhost:13001/signup). Sign up as
+`admin@local.dev` with a demo-only password (at least eight characters,
+including uppercase, lowercase, and a number), then sign in. From the
+dashboard, create an API key, open the API Playground, or enter the Admin
+Console. The example model returns the fixed reply `RUNNABLE_EXAMPLE_OK`.
+
+When you are done, stop the stack. Its database volume is kept for the next
+run:
+
+```bash
+make demo-down DISTRIBUTION=example
+```
+
+To connect real models, add a provider, credentials, and model routes through
+the [admin console](docs/developer/configuration.md#runtime-configuration-from-the-admin-console),
+or follow the [local server setup](docs/developer/router-tutorial.md#stage-3-replace-the-fake-provider-with-local-inference).
+The [Router Tutorial](docs/developer/router-tutorial.md) covers prerequisites,
+API calls, request-history checks, and how to resume or reset the example.
+
+### Backend with an OpenRouter Key
+
+For a backend-only setup against real models, install
+[Python and uv](docs/developer/installation.md#development-checkout-no-docker)
+and run the following from the repository root. The reference registry includes
+two OpenRouter-served models and an optional local route.
 
 ```bash
 uv sync
@@ -27,34 +91,6 @@ curl localhost:8080/v1/chat/completions \
   -d '{"model": "llama-3.1-8b", "messages": [{"role": "user", "content": "hi"}]}'
 ```
 
-For a deterministic Docker path that needs no provider key, run the public
-[router distribution example](distributions/example/README.md). The
-[Router Tutorial](docs/developer/router-tutorial.md) follows one deployment
-from its first routed request into the Web/Admin Console, accounts, API keys,
-request history, and finally a local vLLM/SGLang/Ollama server. CI executes the
-same Stage 1 → Stage 2 transition and verifies the Stage 3 override against a
-local deterministic fixture. The user journey begins:
-
-```bash
-make up DISTRIBUTION=example
-make smoke DISTRIBUTION=example
-make demo DISTRIBUTION=example
-
-# Sign up as admin@local.dev with a demo-only password, then reuse it here:
-EXAMPLE_DEMO_ADMIN_PASSWORD='<the same password>' \
-make demo-smoke DISTRIBUTION=example
-
-make demo-down DISTRIBUTION=example
-```
-
-Stage 1 uses `DB_ENABLED=false USER_AUTH_ENABLED=false` so the first request
-has only two moving parts. Stage 2 continues the same Compose project with
-Postgres and authentication enabled; it is not a separate deployment mode.
-
-The example pins its own model registry and minimal routing config. In Stage 3,
-the public model remains `example-chat` while three documented environment
-variables point its route at your local OpenAI-compatible server.
-
 ## Start Here
 
 The developer documentation is published at
@@ -65,7 +101,7 @@ row describes you:
 
 | If you want to | Start here |
 |---|---|
-| Watch a gateway serve a request, with no account, key or GPU | [Quickstart](docs/developer/router-tutorial.md) |
+| Follow the tutorial through to a local vLLM, SGLang, or Ollama server | [Router Tutorial](docs/developer/router-tutorial.md) |
 | Run your own gateway against real providers | [Installation](docs/developer/installation.md) |
 | Understand how a request becomes a routing decision | [Architecture](docs/developer/architecture.md) |
 | Add a model, a local server, or a new provider | [Adding a New Model](docs/developer/adding-models.md) |
@@ -80,16 +116,6 @@ Security reports have their own channel — see [SECURITY.md](SECURITY.md).
 public HybridInference gateway run at Harvard SEAS; its
 [user documentation](https://doc.freeinference.org/) is a worked example of
 what a deployment publishes.
-
-## What It Does
-
-- Exposes an OpenAI-compatible API for chat/completions workflows.
-- Routes traffic across local backends such as vLLM, SGLang, and Ollama.
-- Connects to remote providers through provider-specific and OpenAI-compatible adapters.
-- Runs [RouteWise](#routewise), a cost- and latency-aware router that picks
-  between providers serving the same model under an explicit cost budget.
-- Supports weighted routing, health-aware fallback, circuit breaking, and per-model routing configuration.
-- Includes a FastAPI backend, a Next.js dashboard, storage integrations, operational tooling, and documentation sites.
 
 ## RouteWise
 
