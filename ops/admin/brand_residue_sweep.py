@@ -65,6 +65,9 @@ ATTRIBUTION: dict[str, str] = {
     "docs/developer/locale/zh_CN/LC_MESSAGES/trusted-proxies-and-client-ips.po": (
         "the same citation, carried into the translation catalog"
     ),
+    "docs/developer/contributing.md": "canonical source repository clone URL",
+    "docs/developer/releases.md": "canonical release and security-reporting links",
+    "docs/developer/locale/zh_CN/LC_MESSAGES/releases.po": "the same links in translation",
     "docs/developer/installation.md": "the clone URL, same as router-tutorial.md",
     "SECURITY.md": (
         "names the repository's advisory URL, and names FreeInference to scope "

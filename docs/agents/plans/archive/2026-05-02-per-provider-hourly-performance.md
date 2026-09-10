@@ -2033,7 +2033,7 @@ make dev-frontend  # or the project's standard frontend dev command (check Makef
 make dev-backend   # or equivalent
 ```
 
-Then open the admin dashboard, log in as `admin@example.com / <password>`, click the new "Provider Performance" tab, choose a provider+model, and confirm the two charts render with data (or "Loading…" then a chart). If `provider_hourly_stats` is empty in your local dev DB, run a manual rollup once:
+Then open the admin dashboard, log in as a deployment-managed admin test account, click the new "Provider Performance" tab, choose a provider+model, and confirm the two charts render with data (or "Loading…" then a chart). If `provider_hourly_stats` is empty in your local dev DB, run a manual rollup once:
 
 ```bash
 TEST_PG_DSN="$DB_DSN" uv run python -c "

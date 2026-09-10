@@ -1443,7 +1443,7 @@ Capture the PR URL from the output and report it back.
 Per CLAUDE.md and the spec's mandatory frontend gate:
 
 1. Open `https://staging.freeinference.org` in a browser (the dev branch is auto-deployed; **wait for the merge** before this step in production reality, but the equivalent local-build check from Task 6 Step 13 already passed).
-2. Log in as `admin@example.com` / `<password>`.
+2. Log in as a deployment-managed admin test account.
 3. Open the Models section: confirm `gpt-5.4` is gone; the visible model list is otherwise unchanged.
 4. Open Playground: pick `claude-opus-4.7`; confirm no reasoning-effort UI block appears; send a short message; confirm a response.
 5. Browser DevTools console: confirm no errors.
