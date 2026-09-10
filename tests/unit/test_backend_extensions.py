@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -13,6 +14,7 @@ from serving import extensions
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys
 from serving.admin import provider_quotas
 from serving.admin.provider_key_probe import probe_provider_key_with_existing_route
+from serving.schemas_admin import ProviderQuotaResult
 from serving.servers import bootstrap, registry
 from serving.servers.routers.admin import provider_routes
 
@@ -315,26 +317,34 @@ async def test_admin_model_candidate_and_update_paths_use_registered_factory(mon
         assert prepared.adapter.config.api_key == "candidate-key"
 
 
-def test_usage_endpoint_metadata_is_overrideable(monkeypatch):
-    monkeypatch.delenv("MOONSHOT_BASE_URL", raising=False)
-    assert provider_quotas._kimi_usages_url() == "https://api.moonshot.ai/v1/usages"
-    monkeypatch.setitem(
-        provider_quotas.PROVIDER_USAGE_BASE_URLS,
-        "kimi",
-        ("EXAMPLE_USAGE_BASE", "https://quota.example.test/v2"),
-    )
-    monkeypatch.delenv("EXAMPLE_USAGE_BASE", raising=False)
-    assert provider_quotas._kimi_usages_url() == "https://quota.example.test/v2/usages"
-    monkeypatch.setenv("EXAMPLE_USAGE_BASE", "https://configured.example.test/v2/")
-    assert provider_quotas._kimi_usages_url() == "https://configured.example.test/v2/usages"
-
-
 @pytest.mark.asyncio
-async def test_quota_key_discovery_uses_registered_env_metadata(monkeypatch):
-    discover = AsyncMock(return_value=[])
-    monkeypatch.setattr(provider_quotas, "_discover_provider_keys", discover)
-    monkeypatch.setitem(dynamic_keys._PROVIDER_ENV_KEY_VARS, "kimi", ("EXAMPLE_KEY", "EXAMPLE_KEY"))
+async def test_extension_registers_the_quota_fetchers_the_tab_reports_on():
+    """The gateway ships no quota fetchers; an extension supplies them."""
+    provider_quotas.reset_quota_fetchers()
+    try:
+        assert await provider_quotas.gather_all() == []
 
-    await provider_quotas.fetch_kimi()
+        async def fetch(operational_store=None, services=None):
+            return [
+                ProviderQuotaResult(
+                    name="example",
+                    display_name="Example",
+                    key_configured=True,
+                    key_masked="exampl...1234",
+                    fetched_at=datetime.now(timezone.utc),
+                    ok=True,
+                    error=None,
+                    usages=[],
+                )
+            ]
 
-    discover.assert_awaited_once_with("kimi", "EXAMPLE_KEY", "EXAMPLE_KEY", None)
+        provider_quotas.register_quota_fetcher("example", "Example", fetch)
+
+        results = await provider_quotas.gather_all()
+        assert [(r.name, r.display_name) for r in results] == [("example", "Example")]
+        # RouteWise quota sources resolve through the same registry.
+        assert provider_quotas.quota_fetcher("example").fetch is fetch
+        with pytest.raises(ValueError, match="already registered"):
+            provider_quotas.register_quota_fetcher("example", "Example", fetch)
+    finally:
+        provider_quotas.reset_quota_fetchers()

@@ -181,54 +181,54 @@ models:
           prompt: "0.10"
           completion: "0.40"
 
-      # The other two provider kinds RouteWise prices. Both are route-level
-      # because they describe a contract with a provider, not an algorithm
-      # setting. The blocks below mirror the shape a real deployment uses.
+      # The other two resource types RouteWise prices. Both are route-level
+      # because they describe a resource contract, not an algorithm setting.
+      # For a runnable quota example (no account needed), follow
+      # docs/developer/configuration.md#quota-reporting and use
+      # config/examples/models.routewise.quota.yaml.
       #
       # A prepaid subscription, drawn down until the window resets.
       # `quota_source` is a selector, not a fetcher: RouteWise matches all
       # three of `provider` / `usage_label` / `unit` exactly against the usage
-      # records a built-in provider fetcher returns, and only two fetchers are
-      # registered (`ProviderQuotaSnapshotStore` in
-      # routing/routewise/quota.py): `chutes` and `minimax`.
+      # records a quota fetcher returns. The gateway enables no fetchers by
+      # default; a backend extension registers one per provider through
+      # `register_quota_fetcher` (Configuration -> Backend extensions), and a
+      # `quota_source` naming a provider with no fetcher never becomes ready.
       #
-      # The `kind:` and the credential are part of that contract. Each quota
-      # fetcher discovers its own keys by provider -- `fetch_chutes` looks for
-      # `CHUTES_API_KEY` and for keys bound to `chutes` routes -- so a route
-      # served through the generic `openai_compat` adapter under an unrelated
-      # key never joins that pool. Inference would still authenticate, and the
-      # quota snapshot would sit at `not_configured` forever. Match the kind to
-      # the provider, and use the provider's own key variable.
+      # `kind` chooses the inference protocol; `provider` is the deployment's
+      # label. They need not match. The fetcher is responsible for querying
+      # the account used by these routes; its quota snapshot must describe
+      # that same account/pool, even if it uses a separate billing credential.
       #
       # `usage_label` is the fetcher's own label string, not a name you pick:
-      # the Chutes fetcher emits exactly "Daily requests". A source that never
+      # this local example emits exactly "Daily requests". A source that never
       # resolves leaves the route unready and skipped, with nothing logged --
       # there is no mismatch warning -- so copy these rather than invent them.
-      # - kind: chutes
+      # - kind: openai_compat
+      #   provider: example_quota
       #   weight: 1.0
-      #   base_url: ${CHUTES_BASE_URL}
-      #   api_keys:
-      #     - ${CHUTES_API_KEY}
-      #   provider_model_id: "SomeOrg/Some-Model"
+      #   base_url: http://127.0.0.1:18353/v1
+      #   api_key: example-local-key
+      #   provider_model_id: example-upstream
       #   provider_type: quota
-      #   quota_pool: chutes-demo-daily    # share one plan across routes
+      #   quota_pool: example-daily       # share one account across routes
       #   quota:
-      #     limit: 5000                    # cross-checks the reported limit
+      #     limit: 100                     # cross-checks the reported limit
       #   quota_source:
-      #     provider: chutes
+      #     provider: example_quota
       #     usage_label: "Daily requests"
       #     unit: requests
       #
       # A fixed number of in-flight requests; ineligible while its slots are
       # full rather than billed per token. No usage API is involved, so any
       # adapter kind works and the credential is only used for inference.
-      # - kind: featherless
+      # - kind: openai_compat
+      #   provider: example_concurrency
       #   weight: 1.0
-      #   base_url: ${FEATHERLESS_BASE_URL}
-      #   api_keys:
-      #     - ${FEATHERLESS_API_KEY}
-      #   provider_model_id: "SomeOrg/Some-Model"
+      #   base_url: http://127.0.0.1:18354/v1
+      #   api_key: example-local-key
+      #   provider_model_id: example-upstream
       #   provider_type: concurrency
-      #   concurrency_pool: featherless-demo
+      #   concurrency_pool: example-concurrency
       #   concurrency:
       #     limit: 1

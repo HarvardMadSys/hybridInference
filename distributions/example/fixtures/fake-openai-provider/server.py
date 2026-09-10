@@ -5,11 +5,60 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import threading
 import time
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 RESPONSE_TEXT = "RUNNABLE_EXAMPLE_OK"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class QuotaState:
+    """A server's opt-in, thread-safe daily request allowance."""
+
+    def __init__(self, limit: int, used: int = 0) -> None:
+        if type(limit) is not int or not 0 < limit <= 2**53 - 1:
+            raise ValueError("quota-limit must be a positive integer at most 2**53 - 1")
+        if type(used) is not int or not 0 <= used <= limit:
+            raise ValueError("quota-used must be a nonnegative integer no greater than quota-limit")
+        self._limit = limit
+        self._used = used
+        self._reset_at = self._next_reset(_utc_now())
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _next_reset(now: datetime) -> datetime:
+        return now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+
+    def _reset_if_expired(self) -> None:
+        now = _utc_now()
+        if now >= self._reset_at:
+            self._used = 0
+            self._reset_at = self._next_reset(now)
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return the current counts and the next midnight as an aware UTC ISO timestamp."""
+        with self._lock:
+            self._reset_if_expired()
+            return {
+                "used": self._used,
+                "limit": self._limit,
+                "reset_at": self._reset_at.isoformat(),
+            }
+
+    def try_consume(self) -> bool:
+        """Atomically admit and count one request, or reject an exhausted allowance."""
+        with self._lock:
+            self._reset_if_expired()
+            if self._used >= self._limit:
+                return False
+            self._used += 1
+            return True
 
 
 def build_completion(payload: dict[str, Any], response_text: str = RESPONSE_TEXT) -> dict[str, Any]:
@@ -77,7 +126,11 @@ class FakeHandler(BaseHTTPRequestHandler):
         """Keep example output quiet; the gateway logs the routed request."""
 
     def do_GET(self) -> None:
-        """Serve health and model discovery."""
+        """Serve health, model discovery, and opt-in simulated usage."""
+        quota_state = getattr(getattr(self, "server", None), "quota_state", None)
+        if self.path == "/usage" and quota_state is not None:
+            self._send_json(200, quota_state.snapshot())
+            return
         if self.path == "/health":
             self._send_json(200, {"status": "ok"})
             return
@@ -113,6 +166,11 @@ class FakeHandler(BaseHTTPRequestHandler):
                 return
         if self.expected_model is not None and payload.get("model") != self.expected_model:
             self._send_json(400, {"error": {"message": "Unexpected provider model"}})
+            return
+
+        quota_state = getattr(getattr(self, "server", None), "quota_state", None)
+        if quota_state is not None and not quota_state.try_consume():
+            self._send_json(429, {"error": {"message": "Local simulation daily quota exhausted"}})
             return
 
         # A deterministic stand-in for provider TTFT. Applied before either
@@ -172,17 +230,36 @@ def main() -> None:
     parser.add_argument("--expected-model")
     parser.add_argument("--expected-api-key")
     parser.add_argument(
+        "--quota-limit",
+        type=int,
+        help="Enable a local daily request quota with this positive limit.",
+    )
+    parser.add_argument(
+        "--quota-used",
+        type=int,
+        help="Initial simulated requests used (default: 0); requires --quota-limit.",
+    )
+    parser.add_argument(
         "--ttft-delay-ms",
         type=float,
         default=0.0,
         help="Deterministic delay before the first response byte, in milliseconds.",
     )
     args = parser.parse_args()
+    if args.quota_used is not None and args.quota_limit is None:
+        parser.error("--quota-used requires --quota-limit")
+    quota_state = None
+    if args.quota_limit is not None:
+        try:
+            quota_state = QuotaState(args.quota_limit, args.quota_used or 0)
+        except ValueError as exc:
+            parser.error(str(exc))
     FakeHandler.response_text = args.response_text
     FakeHandler.expected_model = args.expected_model
     FakeHandler.expected_api_key = args.expected_api_key
     FakeHandler.ttft_delay_ms = args.ttft_delay_ms
     server = ThreadingHTTPServer((args.host, args.port), FakeHandler)
+    server.quota_state = quota_state
     server.daemon_threads = True
     # Report the bound port, not the requested one: `--port 0` lets the OS pick,
     # and echoing the 0 back would leave the caller with no way to reach us.

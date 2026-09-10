@@ -21,6 +21,7 @@ from routing.routewise.config import RouteWiseConfig
 from routing.routewise.quota import ProviderQuotaSnapshotStore
 from routing.routewise.router import RouteWiseRouter
 from routing.strategies.routewise import RouteWiseParams
+from serving.admin import provider_quotas
 from serving.servers.registry import register_from_models_yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -234,20 +235,34 @@ class TestRouteWiseExampleBehaviour:
 
 @pytest.mark.unit
 class TestRouteWiseExampleQuotaContract:
-    """The cheap half of the quota contract: is the provider even wired up?
+    """The cheap half of the quota contract: can the provider even be wired up?
 
-    Whether the documented source actually resolves to a ready pool is decided
-    by driving the real fetcher, in
+    The gateway ships no quota fetchers, so the store must resolve the
+    example's `quota_source` provider through the registry an extension
+    populates. Whether the documented source then resolves to a ready pool is
+    decided by driving a registered fetcher, in
     `tests/servers/test_routewise_example_runtime.py`.
     """
 
-    def test_quota_provider_has_a_registered_fetcher(self):
+    def test_quota_provider_resolves_through_the_fetcher_registry(self):
         quota = next(
             route for route in _commented_reference_routes() if route["provider_type"] == "quota"
         )
-        registered = set(ProviderQuotaSnapshotStore()._fetchers)
         provider = quota["quota_source"]["provider"]
-        assert provider in registered, (
-            f"quota_source names {provider!r}, but RouteWise only registers "
-            f"{sorted(registered)}; the route would never become ready"
-        )
+        provider_quotas.reset_quota_fetchers()
+        try:
+            store = ProviderQuotaSnapshotStore()
+            assert store._fetcher_for(provider) is None, (
+                "the gateway ships no fetchers; only a backend extension supplies one"
+            )
+
+            async def fetch(operational_store=None, services=None):
+                return []
+
+            provider_quotas.register_quota_fetcher(provider, provider.title(), fetch)
+            assert store._fetcher_for(provider) is not None, (
+                f"quota_source names {provider!r}, but the store cannot resolve it "
+                "through the registry; the route would never become ready"
+            )
+        finally:
+            provider_quotas.reset_quota_fetchers()

@@ -170,15 +170,6 @@ PROVIDER_TARGETS: dict[str, ProviderTarget] = {
     ),
 }
 
-# Display names for OpenRouter sub-provider pins. Pins are discovered per model
-# from OpenRouter's endpoint listing; this table only prettifies the slugs.
-OPENROUTER_PROVIDER_LABELS = {
-    "deepinfra": "DeepInfra",
-    "minimax": "MiniMax",
-    "minimax/highspeed": "MiniMax Highspeed",
-    "parasail": "Parasail",
-}
-
 RESOURCE_ROUTE_TYPES = {"quota", "concurrency"}
 
 
@@ -703,7 +694,7 @@ def _target_for_provider(provider: str) -> ProviderTarget:
             )
         return ProviderTarget(
             provider=provider,
-            label=OPENROUTER_PROVIDER_LABELS.get(pinned, pinned),
+            label=_openrouter_provider_label(pinned, None),
             kind=f"openrouter[{pinned}]",
             key_provider="openrouter",
             default_base_url=OPENROUTER_API_BASE_URL,
@@ -733,7 +724,7 @@ def _target_for_provider(provider: str) -> ProviderTarget:
     if OPENROUTER_PROVIDER_RE.fullmatch(provider):
         return ProviderTarget(
             provider=provider,
-            label=OPENROUTER_PROVIDER_LABELS.get(provider, provider),
+            label=_openrouter_provider_label(provider, None),
             kind=f"openrouter[{provider}]",
             key_provider="openrouter",
             default_base_url=OPENROUTER_API_BASE_URL,
@@ -961,14 +952,17 @@ def _openrouter_endpoint_provider_slug(endpoint: dict[str, Any]) -> str | None:
 
 
 def _openrouter_provider_label(slug: str, provider_name: Any) -> str:
-    label = OPENROUTER_PROVIDER_LABELS.get(slug)
-    if not label:
-        base_label = OPENROUTER_PROVIDER_LABELS.get(slug.split("/", 1)[0])
-        label = base_label or (str(provider_name).strip() if provider_name else None)
-    if not label:
-        label = OPENROUTER_PROVIDER_LABELS.get(slug.split("/", 1)[0], slug)
+    """Display name for an OpenRouter sub-provider pin.
 
-    _base_slug, separator, suffix = slug.partition("/")
+    OpenRouter's endpoint listing supplies the vendor's own name; a pin known
+    only by its slug is title-cased, with a variant suffix
+    (``minimax/highspeed``) appended in words.
+    """
+    base_slug, separator, suffix = slug.partition("/")
+    label = str(provider_name).strip() if provider_name else ""
+    if not label:
+        label = re.sub(r"[-_.]+", " ", base_slug).title()
+
     if separator and label and suffix:
         suffix_label = re.sub(r"[-_.]+", " ", suffix).title()
         if suffix_label.lower() not in label.lower():
@@ -984,16 +978,21 @@ def _parse_openrouter_provider_options(payload: dict[str, Any]) -> list[OpenRout
 
     providers: list[OpenRouterProviderOption] = []
     seen: set[str] = set()
+    # One vendor name per base slug: the first endpoint's name labels every
+    # variant, so "deepinfra/fp8" and "deepinfra/bf16" read as one vendor.
+    base_names: dict[str, Any] = {}
     for endpoint in endpoints:
         if not isinstance(endpoint, dict):
             continue
         slug = _openrouter_endpoint_provider_slug(endpoint)
         if not slug or slug in seen:
             continue
+        base_slug = slug.split("/", 1)[0]
+        provider_name = base_names.setdefault(base_slug, endpoint.get("provider_name"))
         providers.append(
             OpenRouterProviderOption(
                 provider=slug,
-                label=_openrouter_provider_label(slug, endpoint.get("provider_name")),
+                label=_openrouter_provider_label(slug, provider_name),
             )
         )
         seen.add(slug)

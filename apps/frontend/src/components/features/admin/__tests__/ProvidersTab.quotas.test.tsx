@@ -68,10 +68,10 @@ const COOKIE_ONLY = {
   key_disabled: false,
 };
 
-async function openQuotas() {
+async function openQuotas(expectedText = 'ZAI #1') {
   render(<ProvidersTab />);
   fireEvent.click(screen.getByRole('tab', { name: 'Quotas' }));
-  await screen.findByText('ZAI #1');
+  await screen.findByText(expectedText);
 }
 
 async function clickSwitch(name: string) {
@@ -80,7 +80,7 @@ async function clickSwitch(name: string) {
   });
 }
 
-describe('ProvidersTab quotas per-key disable', () => {
+describe('ProvidersTab quotas', () => {
   beforeEach(() => {
     vi.mocked(getProviderQuotas).mockResolvedValue({
       generated_at: '2026-08-04T00:00:00Z',
@@ -99,6 +99,56 @@ describe('ProvidersTab quotas per-key disable', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it('explains an empty quota response and links to framework setup documentation', async () => {
+    vi.mocked(getProviderQuotas).mockResolvedValueOnce({
+      generated_at: '2026-08-04T00:00:00Z',
+      providers: [],
+    });
+
+    await openQuotas('No quota data to display.');
+
+    expect(screen.getByRole('tab', { name: 'Quotas' })).toHaveAttribute('aria-selected', 'true');
+    expect(
+      screen.getByText('Quota reporting requires a configured backend extension and data source.'),
+    ).toBeInTheDocument();
+    const docsLink = screen.getByRole('link', { name: 'Quota reporting documentation' });
+    expect(docsLink).toHaveAttribute(
+      'href',
+      'https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/developer/configuration.md#quota-reporting',
+    );
+    expect(docsLink).toHaveAttribute('target', '_blank');
+    expect(docsLink).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.queryByText('No provider data.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+  });
+
+  it('renders returned quota usage without the empty guidance', async () => {
+    vi.mocked(getProviderQuotas).mockResolvedValueOnce({
+      generated_at: '2026-08-04T00:00:00Z',
+      providers: [
+        {
+          ...ACTIVE_KEY,
+          name: 'example',
+          display_name: 'Example Provider',
+          key_masked: '...1234',
+          key_ref: null,
+          usages: [{ label: 'Requests', used: 25, limit: 100, unit: 'requests', reset_at: null }],
+        },
+      ],
+    });
+
+    await openQuotas('Example Provider');
+
+    expect(screen.getByText('Requests')).toBeInTheDocument();
+    expect(screen.getByText(/25 \/ 100 requests/)).toBeInTheDocument();
+    expect(screen.getByText('(25%)')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Disable Example Provider' })).toBeInTheDocument();
+    expect(screen.queryByText('No quota data to display.')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: 'Quota reporting documentation' }),
+    ).not.toBeInTheDocument();
   });
 
   it('disables a single key after confirmation and reloads the quotas', async () => {

@@ -445,7 +445,7 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client, monk
     assert chutes_option["route_types"] == ["on_demand", "quota", "concurrency"]
     # Pin choices come from the deployment's own OpenRouter routes.
     assert payload["openrouter_provider_options"] == [
-        {"provider": "deepinfra", "label": "DeepInfra"}
+        {"provider": "deepinfra", "label": "Deepinfra"}
     ]
     routes = payload["routes"]
     assert [row["route_id"] for row in routes] == [
@@ -532,8 +532,8 @@ def test_parse_openrouter_provider_options_from_endpoints():
         ("deepinfra/fp8", "DeepInfra Fp8"),
         ("deepinfra/bf16", "DeepInfra Bf16"),
         ("chutes/fp8", "Chutes Fp8"),
-        ("minimax/fp8", "MiniMax Fp8"),
-        ("minimax/highspeed", "MiniMax Highspeed"),
+        ("minimax/fp8", "Minimax Fp8"),
+        ("minimax/highspeed", "Minimax Highspeed"),
     ]
 
 

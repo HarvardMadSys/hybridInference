@@ -124,10 +124,10 @@ class RoutingManager:
                 # produces a >1.0 total. FixedRouter's weighted-random walk
                 # then short-circuits on whichever adapter's cumulative weight
                 # first reaches the [0,1) random draw's upper bound, starving
-                # every later adapter (e.g. glm-5 only listing z.ai in
-                # routing.yaml gave zai weight 1.0 — its cumulative hit 1.0
-                # on iteration one, so ollama/chutes/featherless kept their
-                # carried-over weights but were never reached).
+                # every later adapter (e.g. a model whose routing.yaml listed
+                # only one of its four providers gave that one weight 1.0 —
+                # its cumulative hit 1.0 on iteration one, so the other three
+                # kept their carried-over weights but were never reached).
                 total = sum(w for _, w in new_adapters)
                 if total > 0:
                     new_adapters = [(a, w / total) for a, w in new_adapters]

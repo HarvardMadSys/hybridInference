@@ -45,7 +45,7 @@ function unavailableMessage(provider: ProviderQuotaResult): string {
   return `Quota unavailable — ${provider.error ?? 'unknown error'}`;
 }
 
-function featherlessConcurrencyMessage(provider: ProviderQuotaResult): string | null {
+function concurrencyMessage(provider: ProviderQuotaResult): string | null {
   const usage = provider.usages.find((u) => u.label.toLowerCase() === 'concurrency');
   if (!usage) return null;
   if (usage.limit == null) {
@@ -54,9 +54,19 @@ function featherlessConcurrencyMessage(provider: ProviderQuotaResult): string | 
   return `Concurrency ${formatNum(usage.limit)} units`;
 }
 
-function featherlessMessage(provider: ProviderQuotaResult): string {
+// A provider whose fetcher reports availability — a probe, a concurrency
+// allowance — rather than a drawn-down quota gets a one-line status.
+function reportsAvailability(provider: ProviderQuotaResult): boolean {
+  return (
+    provider.usages.some((u) => u.label.toLowerCase() === 'concurrency') ||
+    provider.error === 'plan_api_disabled' ||
+    provider.error === 'probe_unavailable'
+  );
+}
+
+function availabilityMessage(provider: ProviderQuotaResult): string {
   if (provider.ok) {
-    return featherlessConcurrencyMessage(provider) ?? 'Available';
+    return concurrencyMessage(provider) ?? 'Available';
   }
   if (provider.error === 'not_configured') {
     return 'Not configured.';
@@ -65,7 +75,7 @@ function featherlessMessage(provider: ProviderQuotaResult): string {
     return 'The current subscription plan does not have API access enabled.';
   }
   if (provider.error === 'probe_unavailable') {
-    return 'Status unavailable — no configured Featherless route to probe.';
+    return 'Status unavailable — no configured route to probe.';
   }
   if (provider.error === 'timeout') {
     return 'Unavailable — probe timed out.';
@@ -124,7 +134,6 @@ function ProviderCard({
   onToggleDisabled: () => void;
   onToggleKeyDisabled: () => void;
 }) {
-  const isFeatherless = provider.name === 'featherless';
   const dimmed = provider.disabled || provider.key_disabled;
   const stripeColor = dimmed
     ? 'bg-gray-400'
@@ -190,7 +199,7 @@ function ProviderCard({
           <p className="mt-3 text-[12px] text-amber-700">
             Key disabled — removed from the rotation pool and not used for inference.
           </p>
-        ) : isFeatherless ? (
+        ) : reportsAvailability(provider) ? (
           <p
             className={`mt-3 text-[12px] ${
               provider.ok
@@ -200,7 +209,7 @@ function ProviderCard({
                   : 'text-red-600'
             }`}
           >
-            {featherlessMessage(provider)}
+            {availabilityMessage(provider)}
           </p>
         ) : provider.ok ? (
           provider.usages.length === 0 ? (
@@ -256,6 +265,9 @@ function ProviderCard({
 }
 
 function QuotasSection() {
+  // Deployment docs may describe an operator's service, not backend extensions.
+  const quotaDocsUrl =
+    'https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/developer/configuration.md#quota-reporting';
   const [providerQuotas, setProviderQuotas] = useState<ProviderQuotaResult[]>([]);
   const [providerQuotasLoading, setProviderQuotasLoading] = useState(false);
   const [togglingProvider, setTogglingProvider] = useState<string | null>(null);
@@ -350,7 +362,18 @@ function QuotasSection() {
         </div>
       ) : providerQuotas.length === 0 ? (
         <div className="py-24 text-center">
-          <p className="text-[13px] text-gray-400">No provider data.</p>
+          <p className="text-[13px] text-gray-500">No quota data to display.</p>
+          <p className="mt-2 text-[12px] text-gray-500">
+            Quota reporting requires a configured backend extension and data source.
+          </p>
+          <a
+            href={quotaDocsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 inline-block text-[12px] text-gray-600 underline hover:text-gray-900"
+          >
+            Quota reporting documentation
+          </a>
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">

@@ -56,16 +56,6 @@ const DISTRIBUTION_COLORS = [
   '#a855f7',
 ] as const;
 
-const ENDPOINT_COLOR_HINTS: Record<string, string> = {
-  chutes: '#f59e0b',
-  deepinfra: '#2563eb',
-  'minimax/highspeed': '#10b981',
-  wandb: '#8b5cf6',
-  siliconflow: '#14b8a6',
-  'atlas-cloud': '#64748b',
-  novita: '#ec4899',
-};
-
 const AXIS_TICK = { fontSize: 11, fill: '#6b7280' } as const;
 const LEGEND_STYLE = { fontSize: 11, color: '#6b7280' } as const;
 const GRID_STROKE = '#e5e7eb';
@@ -142,13 +132,6 @@ function shortEndpoint(modelId: string, endpoint: string): string {
   return label.replace(/-api$/, '');
 }
 
-function endpointColorKey(endpoint: string): string {
-  const routePart = endpoint.includes(':') ? endpoint.slice(endpoint.indexOf(':') + 1) : endpoint;
-  const short = routePart.replace(/-api$/, '');
-  const openRouterMatch = short.match(/^openrouter\[(.+)\]$/);
-  return openRouterMatch?.[1] ?? short;
-}
-
 function hashString(value: string): number {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) {
@@ -158,13 +141,6 @@ function hashString(value: string): number {
 }
 
 function distributionColorForEndpoint(endpoint: string, usedColors: Set<string>): string {
-  const key = endpointColorKey(endpoint);
-  const hintedColor = ENDPOINT_COLOR_HINTS[key];
-  if (hintedColor && !usedColors.has(hintedColor)) {
-    usedColors.add(hintedColor);
-    return hintedColor;
-  }
-
   const start = hashString(endpoint) % DISTRIBUTION_COLORS.length;
   for (let offset = 0; offset < DISTRIBUTION_COLORS.length; offset += 1) {
     const color = DISTRIBUTION_COLORS[(start + offset) % DISTRIBUTION_COLORS.length];

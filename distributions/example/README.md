@@ -94,6 +94,23 @@ from the HybridInference user API key you create in the Web Console.
 The dashboard may show cards for optional Agents or pgAdmin services. This
 example does not start either service, so those routes remain unavailable.
 
+## Optional: learn quota reporting and quota-aware routing
+
+The example also includes `quota_extension.py`, an explicitly enabled backend
+extension that reads a simulated account's daily request usage. The fixture's
+`--quota-limit` option enables its `/usage` endpoint and an in-memory counter;
+without it the original example provider behaves as before. No real provider
+account, cookie, paid key or GPU is involved.
+
+Follow [Quota reporting](../../docs/developer/configuration.md#quota-reporting)
+for the complete three-terminal walkthrough using
+`config/examples/models.routewise.quota.yaml`. It demonstrates the same source
+feeding the admin quota API and RouteWise, a priced fallback on cold start or
+exhaustion, and how to replace the simulation with an authorized data source.
+The simulation is not production accounting and resets when its process
+restarts or at UTC midnight. It is not enabled by `make up` or `make demo`;
+the existing three-stage tutorial and its smoke checks are unchanged.
+
 ## Stop, restart, and reset
 
 Stop the full example while keeping its account, key, and history:
@@ -158,6 +175,7 @@ distributions/example/
 │   ├── docker-compose.yml
 │   └── docker-compose.demo.yml
 ├── fixtures/fake-openai-provider/
+├── quota_extension.py
 ├── smoke.py
 └── full_smoke.py
 ```

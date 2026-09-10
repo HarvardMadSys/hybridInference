@@ -29,13 +29,12 @@ from routing.routewise.candidates import QuotaSource
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
 from serving.admin import provider_quotas
+from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 from serving.servers.registry import register_from_models_yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLE = _REPO_ROOT / "config" / "examples" / "models.routewise.yaml"
-
-
-_PROVIDER_QUOTAS = _REPO_ROOT / "apps" / "backend" / "serving" / "admin" / "provider_quotas.py"
+_QUOTA_EXAMPLE = _REPO_ROOT / "config" / "examples" / "models.routewise.quota.yaml"
 
 
 def _example_model() -> dict:
@@ -122,7 +121,9 @@ def _rebind_example_to(text: str, ports: list[int]) -> str:
     return "\n".join(rewritten) + "\n"
 
 
-def _start_fixture_cli(script: Path, response_text: str, delay_ms: float | None):
+def _start_fixture_cli(
+    script: Path, response_text: str, delay_ms: float | None, *, extra_args: tuple[str, ...] = ()
+):
     """Launch the fixture the way the README does, and wait for it to answer.
 
     Port 0 makes the OS choose; the fixture prints the address it bound, which
@@ -140,6 +141,7 @@ def _start_fixture_cli(script: Path, response_text: str, delay_ms: float | None)
     ]
     if delay_ms is not None:
         argv += ["--ttft-delay-ms", str(delay_ms)]
+    argv.extend(extra_args)
     process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
     banner = process.stdout.readline()
@@ -176,79 +178,11 @@ def _example_providers(tmp_path: Path):
             server.server_close()
 
 
-class _FakeResponse:
-    def __init__(self, status: int, payload: object) -> None:
-        self.status = status
-        self._payload = payload
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def json(self):
-        return self._payload
-
-
-class _FakeSession:
-    """Serves the three Chutes endpoints the real fetcher calls, nothing else.
-
-    Only the wire is fake. `_parse_chutes_usage`, `_fetch_chutes_daily_cap`
-    and `_fetch_chutes_request_counts` all run for real against these
-    payloads, so a change in how any of them parses breaks the test.
-    """
-
-    def __init__(self, routes: dict[str, object], *, expected_key: str) -> None:
-        self._routes = routes
-        self._expected_key = expected_key
-        self.requested: list[str] = []
-        self.seen_keys: set[str] = set()
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    def get(self, url: str, **kwargs):
-        self.requested.append(url)
-        # The fetcher must arrive holding the route's own key. Accepting any
-        # Authorization header would let the quota chain pass while wired to a
-        # credential the route never declared.
-        supplied = (kwargs.get("headers") or {}).get("Authorization", "")
-        self.seen_keys.add(supplied)
-        if supplied != f"Bearer {self._expected_key}":
-            return _FakeResponse(401, {"error": "unauthorized"})
-        if url not in self._routes:
-            return _FakeResponse(404, {})
-        return _FakeResponse(200, self._routes[url])
-
-
-def _chutes_wire_payloads(daily_cap: int, requests_today: int) -> dict[str, object]:
-    """Responses shaped like the endpoints in serving/admin/provider_quotas.py."""
-    now = datetime.now(timezone.utc)
-    bucket = now.replace(minute=0, second=0, microsecond=0)
-    return {
-        "https://api.chutes.ai/users/me/subscription_usage": {
-            "four_hour": {"usage": 0.5, "cap": 10.0},
-            "monthly": {"usage": 3.0, "cap": 100.0},
-        },
-        "https://api.chutes.ai/users/me/quotas": [
-            {"chute_id": "*", "quota": daily_cap},
-        ],
-        "https://api.chutes.ai/users/me/usage?limit=2000": {
-            "items": [{"bucket": bucket.isoformat(), "count": requests_today}],
-        },
-    }
-
-
 def _example_with_reference_routes_enabled(tmp_path: Path) -> Path:
     """The shipped example with its commented reference routes turned on.
 
-    The quota route ships commented because it needs a real subscription. Its
-    contract is still testable: uncomment it exactly as a reader would, and the
-    registry, key discovery and fetcher all see what the example told them to.
+    The extra routes are opt-in local fixtures. Uncomment them exactly as a
+    reader would, so the registry and fetcher see the documented bindings.
     """
     text = _EXAMPLE.read_text()
     lines = text.splitlines()
@@ -269,53 +203,34 @@ def _example_with_reference_routes_enabled(tmp_path: Path) -> Path:
 
 
 @pytest.mark.unit
-class TestRouteWiseExampleQuotaCredentialChain:
-    """The quota reference route, driven through everything but the wire.
+class TestRouteWiseExampleQuotaSourceChain:
+    """The quota reference route, driven through everything but the vendor.
 
-    An earlier version of this guard asserted on strings and then injected a
-    whole fake fetcher, so it stayed green when the example named a variable
-    nothing reads. Here the only stub is `aiohttp.ClientSession`: registry
-    registration, `_discover_provider_keys`, `fetch_chutes`, its three parsers,
+    The gateway ships no quota fetchers, so the chain this guards is: the
+    example's route registers, RouteWise builds a quota pool for it, the pool's
+    snapshot store resolves the route's `quota_source` through the fetcher
+    registry, and a fetcher registered for that provider makes the pool ready.
+    Only the fetcher is a stand-in: registry registration, `QuotaSource`,
     `_find_usage` and `QuotaPool` all run for real.
     """
 
-    async def test_example_quota_route_reaches_a_ready_pool(self, tmp_path, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _isolated_registry(self):
+        provider_quotas.reset_quota_fetchers()
+        yield
+        provider_quotas.reset_quota_fetchers()
+
+    def _example_quota_pool(self, tmp_path, monkeypatch):
         route = next(r for r in _commented_reference_routes() if r["provider_type"] == "quota")
         source = QuotaSource.from_raw(route["quota_source"])
         daily_cap = int(route["quota"]["limit"])
-
-        route_key = "sk-chutes-from-the-route"
-
-        # Only the variables the example itself names. A route that asks for a
-        # variable nothing sets resolves to nothing and never registers.
-        monkeypatch.setenv("CHUTES_BASE_URL", "https://llm.chutes.ai/v1")
-        monkeypatch.setenv("CHUTES_API_KEY", route_key)
-        monkeypatch.setenv("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1")
-        monkeypatch.setenv("FEATHERLESS_API_KEY", "sk-featherless-test")
-
         fixed = FixedRouter()
         register_from_models_yaml(fixed, _example_with_reference_routes_enabled(tmp_path))
         adapters = fixed.routes["routewise-demo"].adapters
-        kinds = {getattr(a.config, "kind", None) or a.config.provider for a, _w in adapters}
-        assert source.provider in kinds, (
-            f"no {source.provider!r} route registered from the example: {sorted(kinds)}. "
-            "Either the kind or the credential variable names something that does "
-            "not resolve, and the quota fetcher would never see this route."
-        )
-
-        # Take the variable away now that registration is done. Whatever the
-        # fetcher finds from here has to come from the pool the route itself
-        # registered -- which is the only thing that ties the credential the
-        # gateway infers with to the credential it accounts quota against.
-        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
-
-        session = _FakeSession(
-            _chutes_wire_payloads(daily_cap, requests_today=7), expected_key=route_key
-        )
-        monkeypatch.setattr(
-            provider_quotas.aiohttp,
-            "ClientSession",
-            lambda *a, **k: session,
+        providers = {a.config.provider for a, _w in adapters}
+        assert source.provider in providers, (
+            f"no {source.provider!r} route registered from the example: {sorted(providers)}. "
+            "The quota source must identify the same provider as its route."
         )
 
         # The router's own pools, not a hand-built stand-in: this is the object
@@ -328,33 +243,182 @@ class TestRouteWiseExampleQuotaCredentialChain:
         pool = router.quota_pools[pool_id]
         assert pool.source == source, f"pool bound to {pool.source}, example documents {source}"
         assert pool.ready is False, "a pool cannot be ready before its first snapshot lands"
+        return source, daily_cap, router, pool
 
+    async def test_example_quota_route_reaches_a_ready_pool(self, tmp_path, monkeypatch):
+        source, daily_cap, router, pool = self._example_quota_pool(tmp_path, monkeypatch)
+        calls: list[tuple[object, object]] = []
+
+        async def fetch(operational_store=None, services=None):
+            calls.append((operational_store, services))
+            return [
+                ProviderQuotaResult(
+                    name=source.provider,
+                    display_name=source.provider.title(),
+                    key_configured=True,
+                    key_masked="Local simulation (no credentials)",
+                    fetched_at=datetime.now(timezone.utc),
+                    ok=True,
+                    error=None,
+                    usages=[
+                        ProviderQuotaUsage(
+                            label=source.usage_label,
+                            used=7,
+                            limit=daily_cap,
+                            unit=source.unit,
+                            reset_at=None,
+                        )
+                    ],
+                )
+            ]
+
+        provider_quotas.register_quota_fetcher(source.provider, source.provider.title(), fetch)
         store = router.quota_snapshots
-        assert source.provider in store._fetchers, (
-            f"{source.provider!r} has no registered fetcher; RouteWise registers "
-            f"{sorted(store._fetchers)}"
-        )
+
         await store.refresh_once([source])
 
-        assert session.requested, "the real fetcher never reached the wire"
-        assert session.seen_keys == {f"Bearer {route_key}"}, (
-            f"the fetcher authenticated with {session.seen_keys}, not the key the "
-            f"example's route declares. Inference and quota accounting would then "
-            "be running on different credentials."
+        assert calls == [(None, None)], (
+            "the store must resolve the example's quota_source through the registry"
         )
         snapshot = store.get(source)
         assert snapshot is not None, (
             f"the example documents quota_source {(source.provider, source.usage_label, source.unit)}, "
-            f"but nothing in the fetcher's output matched it. Requested: {session.requested}"
+            "but nothing in the fetcher's output matched it"
         )
         assert snapshot.limit == float(daily_cap)
         assert snapshot.used == 7.0
-
         assert pool.ready is True, (
             "the router's quota pool never became ready, so RouteWise would keep "
             "skipping this provider as unpriceable"
         )
         assert pool.remaining == daily_cap - 7
+
+    async def test_example_quota_route_stays_unready_without_a_fetcher(self, tmp_path, monkeypatch):
+        source, _daily_cap, router, pool = self._example_quota_pool(tmp_path, monkeypatch)
+        store = router.quota_snapshots
+
+        await store.refresh_once([source])
+
+        assert store.get(source) is None
+        assert pool.ready is False
+
+
+_BOOT_QUOTA_EXAMPLE = """
+import json, os, time
+
+from fastapi.testclient import TestClient
+from serving.servers.app import app
+
+headers = {"Authorization": "Bearer local-quota-demo-only"}
+expected = os.environ["QUOTA_EXAMPLE_EXPECT"]
+answers = []
+with TestClient(app) as client:
+    quota_response = client.get("/admin/provider-quotas", headers=headers)
+    assert quota_response.status_code == 200, quota_response.text
+    cards = quota_response.json()["providers"]
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        response = client.post("/v1/chat/completions", json={
+            "model": "quota-demo", "max_tokens": 8,
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert response.status_code == 200, response.text
+        answers.append(response.json()["choices"][0]["message"]["content"])
+        if expected == "ROUTED_TO_QUOTA" and expected in answers:
+            break
+        if expected == "ROUTED_TO_FALLBACK" and len(answers) >= 5:
+            break
+        time.sleep(0.1)
+    router = app.state.services.model_router_registry.get_router("quota-demo")
+    pool = router.quota_pools["example-daily"]
+    result = {"cards": cards, "ready": pool.ready,
+              "remaining": pool.remaining, "answers": answers}
+print(json.dumps(result))
+"""
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["available", "exhausted", "unregistered", "unavailable"])
+def test_neutral_quota_example_boots_and_routes(mode, tmp_path):
+    """Load the actual extension, query real HTTP usage, and serve a completion."""
+    fixture = _REPO_ROOT / "distributions/example/fixtures/fake-openai-provider/server.py"
+    extra_args = ()
+    if mode != "unavailable":
+        extra_args = ("--quota-limit", "100", "--quota-used", "100" if mode == "exhausted" else "0")
+    processes = []
+    try:
+        fallback, fallback_port = _start_fixture_cli(fixture, "ROUTED_TO_FALLBACK", 100.0)
+        processes.append(fallback)
+        quota, quota_port = _start_fixture_cli(
+            fixture, "ROUTED_TO_QUOTA", None, extra_args=extra_args
+        )
+        processes.append(quota)
+        document = yaml.safe_load(
+            _rebind_example_to(_QUOTA_EXAMPLE.read_text(), [fallback_port, quota_port])
+        )
+        params = document["models"][0]["router_params"]
+        params["quota_snapshot_refresh_interval_sec"] = 0.1
+        params["routewise_probe_interval_sec"] = 0.1
+        config = tmp_path / "quota-example.yaml"
+        config.write_text(yaml.safe_dump(document, sort_keys=False))
+        expected = "ROUTED_TO_QUOTA" if mode == "available" else "ROUTED_TO_FALLBACK"
+        env = {
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join((str(_REPO_ROOT / "apps/backend"), str(_REPO_ROOT))),
+            "MODELS_CONFIG_PATH": str(config),
+            "ROUTING_CONFIG_PATH": str(_REPO_ROOT / "config/examples/routing.minimal.yaml"),
+            "BACKEND_EXTENSIONS": (
+                "" if mode == "unregistered" else "distributions.example.quota_extension"
+            ),
+            "EXAMPLE_QUOTA_BASE_URL": f"http://127.0.0.1:{quota_port}",
+            "DB_ENABLED": "false",
+            "USER_AUTH_ENABLED": "false",
+            "ADMIN_TOKEN": "local-quota-demo-only",
+            "JWT_SECRET_KEY": "local-quota-demo-signing-secret-not-for-production",
+            "PYTHON_DOTENV_DISABLED": "1",
+            "QUOTA_EXAMPLE_EXPECT": expected,
+            "NO_PROXY": "*",
+            "no_proxy": "*",
+        }
+        proc = subprocess.run(
+            [sys.executable, "-c", _BOOT_QUOTA_EXAMPLE],
+            cwd=_REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        assert proc.returncode == 0, proc.stdout[-2500:] + proc.stderr[-3500:]
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
+    finally:
+        for process in processes:
+            process.terminate()
+            process.wait(timeout=10)
+
+    if mode == "available":
+        assert expected in result["answers"], result
+        assert result["ready"] is True
+        assert result["remaining"] > 0
+    else:
+        assert result["answers"] == [expected] * 5, result
+        assert result["ready"] is (mode == "exhausted")
+    if mode == "unregistered":
+        assert result["cards"] == []
+    else:
+        card = result["cards"][0]
+        assert card["name"] == "example_quota"
+        assert card["ok"] is (mode != "unavailable")
+        if mode == "unavailable":
+            assert card["usages"] == []
+        else:
+            usage = card["usages"][0]
+            assert usage["label"] == "Daily requests"
+            assert usage["unit"] == "requests"
+            assert usage["limit"] == 100
+            assert usage["reset_at"] is not None
+            if mode == "exhausted":
+                assert usage["used"] == 100
+                assert result["remaining"] == 0
 
 
 # Booted in a subprocess so each budget_alpha gets a genuinely fresh process:
