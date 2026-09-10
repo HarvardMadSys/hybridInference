@@ -150,6 +150,23 @@ def test_example_compose_resolves_public_paths_and_forwards_upstream_env() -> No
     assert environment["USER_AUTH_ENABLED"] == "false"
 
 
+def test_stage_one_volume_requires_no_production_database() -> None:
+    """Check the fresh-host contract even when the runner has no Docker CLI."""
+    base = yaml.safe_load(BASE_COMPOSE.read_text())
+    override = yaml.safe_load(EXAMPLE_COMPOSE.read_text())
+    merged = dict(base["volumes"]["postgres_data"])
+    merged.update(override["volumes"]["postgres_data"])
+
+    assert merged["external"] is False
+    assert merged["name"] == (
+        "${COMPOSE_PROJECT_NAME:-hybridinference-example}_unused_postgres_data"
+    )
+    assert base["volumes"]["postgres_data"] == {
+        "external": True,
+        "name": "hybridinference_postgres_data",
+    }
+
+
 def test_demo_compose_is_an_explicit_full_local_third_layer() -> None:
     demo = yaml.safe_load(DEMO_COMPOSE.read_text())
     backend = demo["services"]["backend"]["environment"]

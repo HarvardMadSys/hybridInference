@@ -1,5 +1,10 @@
 # Per-Role Daily Quota Implementation Plan
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add per-role default daily USD quota as runtime settings, plus an admin "apply to existing users" bulk operation that overwrites `quota_daily_cost_usd` on every active API key of users with the chosen role.
@@ -8,7 +13,7 @@
 
 **Tech Stack:** Python 3.12, FastAPI, asyncpg/Postgres, Cloudflare D1, Pydantic v2, Next.js 14, React 18, TypeScript, pytest, vitest.
 
-**Spec:** [docs/agents/specs/2026-05-05-per-role-daily-quota-design.md](../specs/2026-05-05-per-role-daily-quota-design.md)
+**Spec:** [docs/agents/specs/2026-05-05-per-role-daily-quota-design.md](../../specs/archive/2026-05-05-per-role-daily-quota-design.md)
 
 ---
 
@@ -1445,7 +1450,7 @@ git commit -m "docs(config): mark signup_default_daily_quota_usd deprecated"
 
 - [ ] **Step 4: Open PR**
 
-Push branch, open PR targeting `dev`. Body should reference [docs/agents/specs/2026-05-05-per-role-daily-quota-design.md](../specs/2026-05-05-per-role-daily-quota-design.md).
+Push branch, open PR targeting `dev`. Body should reference [docs/agents/specs/2026-05-05-per-role-daily-quota-design.md](../../specs/archive/2026-05-05-per-role-daily-quota-design.md).
 
 - [ ] **Step 5: Verify on staging**
 

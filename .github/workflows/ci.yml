@@ -294,7 +294,7 @@ jobs:
       - name: Build developer docs and verify translations
         # `make docs-verify` is `make docs` (which builds every published
         # language, English at the tree root and each translation beneath it)
-        # plus the translation checker. Going through the Makefile rather than
+        # plus local-link and translation checks. Going through the Makefile rather than
         # repeating the sphinx-build command here is what keeps this job and a
         # contributor's local run from drifting apart.
         #
@@ -587,6 +587,9 @@ jobs:
 
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Verify secret scanner coverage
+        run: uv run --no-project --python "${PYTHON_VERSION}" python ops/ci/check_gitleaks_config.py
 
       - name: Security audit
         env:

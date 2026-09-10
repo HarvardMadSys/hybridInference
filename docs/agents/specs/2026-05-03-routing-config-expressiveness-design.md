@@ -1,5 +1,10 @@
 # Routing Config Expressiveness — Design
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 **Date:** 2026-05-03
 **Status:** Draft → ready for plan
 **Author:** Architecture review follow-up (issue #6 of 6)
@@ -8,9 +13,9 @@
 
 The routing layer's strategy assignment is not expressible via config alone:
 
-- [config/routing.yaml](../../../config/routing.yaml) supports `routing_strategy: "fixed"` and one parameter (`local_fraction`); no other strategy is selectable.
+- `config/routing.yaml` supports `routing_strategy: "fixed"` and one parameter (`local_fraction`); no other strategy is selectable.
 - RouteWise enablement requires editing the hardcoded canary list in [apps/backend/routing/model_router_registry.py](../../../apps/backend/routing/model_router_registry.py) — a code change + redeploy.
-- [config/models.yaml](../../../config/models.yaml) carries some per-adapter routing hints (`subscription_type`) but the routing strategy itself isn't expressible per-model.
+- `config/models.yaml` carries some per-adapter routing hints (`subscription_type`) but the routing strategy itself isn't expressible per-model.
 
 Operators wanting to A/B-test routing strategies, or add a model that should use RouteWise without a code deploy, can't.
 

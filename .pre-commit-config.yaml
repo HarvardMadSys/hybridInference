@@ -43,7 +43,8 @@ repos:
         exclude: "^tests/"
 
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.18.4
+    # Match CI; older releases do not understand the scoped allowlists.
+    rev: v8.30.1
     hooks:
       - id: gitleaks
 

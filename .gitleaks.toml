@@ -1,35 +1,135 @@
 [extend]
 useDefault = true
 
+# Each exception pairs reviewed literal values with one rule and one exact file.
+# Never exempt a directory, a commit, or an entire line containing a sample:
+# another credential beside that sample must still be detected.
+
 [[allowlists]]
-description = "Documented placeholder API keys and intentionally blank example secrets."
-regexTarget = "line"
+description = "Quota tests and their archived test snippets use deterministic dummy keys."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^tests/servers/test_admin_provider_quotas\.py$''']
 regexes = [
-  '''(?i)(authorization|x-api-key):\s*(bearer\s*)?(hyi-your-api-key|your-api-key|<your-api-key>|YOUR_API_KEY|example_api_key)''',
-  '''(?i)api_url:\s*https://hooks\.slack\.com/services/T000/B000/XXXX''',
-  '''(?i)^(DB_PASSWORD|PGADMIN_PASSWORD)=\s*$''',
-  '''(?i)DB_PASSWORD=\s*\nDB_ENABLED=true''',
+  '''^key1_long_enough_1234$''',
+  '''^key2_long_enough_5678$''',
+  '''^key3_long_enough_9012$''',
+  '''^db_key_long_enough_5678$''',
+  '''^db_key_long_enough_9012$''',
+  '''^db_key_long_enough_3456$''',
+  '''^db_key_global_123456$''',
+  '''^db_key_route_bound_123456$''',
 ]
 
-# Reviewed 2026-07-28 per the pre-publication checklist in
-# docs/agents/specs/2026-06-18-opensource-decoupling.zh.md.
-#
-# The path allowlist below is transitional and too broad for direct publication:
-# it assumes every credential in a test or design document is a sample. That held
-# for every file except one — a live gateway API key sat in an archived plan
-# document, exempted by this rule, until a separate review found it.
-#
-# Narrowing it precisely needs the rule ids that actually fire here, which means
-# running gitleaks against the tree; a blind edit risks turning the Security Scan
-# red for everyone. The current-tree gap is backstopped in the repository's own
-# language by tests/unit/test_no_committed_credentials.py, including the `hyi-`,
-# `agr.` and `ajt.` formats that gitleaks' defaults do not know. Before changing
-# this repository's visibility, replace the directory allowlist with narrow,
-# documented exceptions and scan every retained remote ref in Git mode; the
-# current `--no-git` CI job does not inspect history.
 [[allowlists]]
-description = "Test fixtures and design plan/spec markdown — fake credentials in code samples."
-paths = [
-  '''^tests/.*\.py$''',
-  '''^docs/agents/(plans|specs)/.*\.md$''',
+description = "Quota tests and their archived test snippets use deterministic dummy keys."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^docs/agents/plans/archive/2026-04-30-admin-provider-quotas\.md$''']
+regexes = [
+  '''^cpk_abcdef1234567890xyz$''',
+  '''^zai_abc1234567890xyz9$''',
 ]
+
+[[allowlists]]
+description = "Quota tests and their archived test snippets use deterministic dummy keys."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^docs/agents/plans/archive/2026-05-05-per-key-provider-quota\.md$''']
+regexes = [
+  '''^key1_long_enough_1234$''',
+  '''^key2_long_enough_5678$''',
+  '''^key3_long_enough_9012$''',
+]
+
+[[allowlists]]
+description = "Provider CRUD tests use labelled, sequential dummy credentials."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^tests/integration/storage/test_postgres_provider_keys\.py$''']
+regexes = [
+  '''^sk-zai-integration-1234567890abcdef$''',
+]
+
+[[allowlists]]
+description = "Provider CRUD tests use labelled, sequential dummy credentials."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^tests/unit/test_admin_provider_keys\.py$''']
+regexes = [
+  '''^sk-zai-toggle-abcdefghij12$''',
+  '''^sk-noop-abcdefghij1234$''',
+]
+
+[[allowlists]]
+description = "Provider CRUD tests use labelled, sequential dummy credentials."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^tests/unit/test_admin_provider_definitions\.py$''']
+regexes = [
+  '''^secret-key-1234567890$''',
+]
+
+[[allowlists]]
+description = "Signup-role test supplies a fixed key prefix, not a credential."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^tests/api/test_signup_role_quota\.py$''']
+regexes = [
+  '''^abc123456789$''',
+]
+
+[[allowlists]]
+description = "Error-scrubbing tests need recognisable but fake provider key strings."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^tests/test_error_scrubbing\.py$''']
+regexes = [
+  '''^AIzaSecretKey123$''',
+  '''^sk-proj-ABC123DEF456GHI789$''',
+  '''^sk-proj-ABC123DEF456GHI789\.$''',
+  '''^sk-1234567890$''',
+]
+
+[[allowlists]]
+description = "AWS's documented example and an alphabetic fixture in the credential guard."
+targetRules = ["aws-access-token"]
+condition = "AND"
+paths = ['''^tests/unit/test_no_committed_credentials\.py$''']
+regexes = [
+  '''^AKIAIOSFODNN7EXAMPLE$''',
+  '''^AKIAABCDEFGHIJKLMNOP$''',
+]
+
+[[allowlists]]
+description = "With an empty DB_PASSWORD, the generic rule can consume the following boolean setting."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^\.env\.example$''']
+regexes = ['''^DB_ENABLED=true$''']
+
+# These formats are issued by this project and are not in the default rules.
+# They also apply to Git-history scans; a clean checkout does not clear history.
+[[rules]]
+id = "hybridinference-api-key"
+description = "HybridInference gateway API key"
+regex = '''hyi-[A-Za-z0-9_-]{32,}'''
+keywords = ["hyi-"]
+
+[[rules.allowlists]]
+description = "Alphabet-and-digits fixture used to test credential detection."
+condition = "AND"
+paths = ['''^tests/unit/test_no_committed_credentials\.py$''']
+regexes = ['''^hyi-[a]bcdefghijklmnopqrstuvwxyz0123456789$''']
+
+[[rules]]
+id = "hybridinference-grant"
+description = "HybridInference inference grant token"
+regex = '''agr\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'''
+keywords = ["agr."]
+
+[[rules]]
+id = "hybridinference-worker-token"
+description = "HybridInference agent worker token"
+regex = '''ajt\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'''
+keywords = ["ajt."]

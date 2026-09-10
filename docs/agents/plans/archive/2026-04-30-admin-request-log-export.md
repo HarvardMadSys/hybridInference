@@ -1,5 +1,10 @@
 # Admin Request Log Export Implementation Plan
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a JSONL streaming export endpoint to the admin API and a corresponding Export panel in the admin dashboard's Recent Requests tab.
@@ -510,7 +515,7 @@ git commit -m "feat: add exportRequests API function to admin client"
 
 ### Step 3.1 — Add `exportRequests` to the import in `admin/page.tsx`
 
-Find the line near the top of [frontend/src/app/dashboard/admin/page.tsx](frontend/src/app/dashboard/admin/page.tsx) that imports from `@/lib/api/admin`. It looks like:
+Find the line near the top of [frontend/src/app/dashboard/admin/page.tsx](../../../../apps/frontend/src/app/dashboard/admin/page.tsx) that imports from `@/lib/api/admin`. It looks like:
 
 ```typescript
 import { listRecentRequests, ... } from '@/lib/api/admin';

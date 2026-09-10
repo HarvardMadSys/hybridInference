@@ -1,5 +1,10 @@
 # Per-User Concurrency Limit — Design
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 **Issue:** [#242](https://github.com/HarvardMadSys/hybridInference/issues/242) — Limit per-user concurrency
 **Date:** 2026-04-30
 **Status:** Draft for review
@@ -32,11 +37,11 @@ A user attempting an additional concurrent request beyond their cap receives HTT
 
 Investigation of the current code (file references below) established:
 
-- **Auth on inference routes** uses the `verify_api_key` FastAPI dependency in [serving/servers/auth.py:78–259](serving/servers/auth.py#L78-L259). It returns `{user_id, user_name, tier, role, authenticated, is_admin}`.
-- **`users.role`** values today: `free`, `internal`, `admin`. Defined in [serving/config/settings.py:161](serving/config/settings.py#L161) (`ROLE_RANK = {"free": 0, "internal": 1, "admin": 2}`).
+- **Auth on inference routes** uses the `verify_api_key` FastAPI dependency in [serving/servers/auth.py:78–259](../../../../apps/backend/serving/servers/auth.py). It returns `{user_id, user_name, tier, role, authenticated, is_admin}`.
+- **`users.role`** values today: `free`, `internal`, `admin`. Defined in [serving/config/settings.py:161](../../../../apps/backend/serving/config/settings.py) (`ROLE_RANK = {"free": 0, "internal": 1, "admin": 2}`).
 - **`api_keys.tier`** is a separate column, defaults to `'free'`, with values like `free`/`pro`/`enterprise`. **Out of scope here** — see role/tier merge note below.
-- **No existing per-user concurrency control.** The `PersistentRateLimiter` ([serving/servers/rate_limiter.py](serving/servers/rate_limiter.py)) is per-model token-bucket; the daily cost quota in `verify_api_key` is per-key cost, not in-flight count.
-- **Single uvicorn process** — [deploy/docker/Dockerfile.backend:37–38](deploy/docker/Dockerfile.backend#L37-L38) runs `uvicorn ... --host 0.0.0.0 --port 8080` with no `--workers` flag. In-process state is sufficient.
+- **No existing per-user concurrency control.** The `PersistentRateLimiter` (`serving/servers/rate_limiter.py`) is per-model token-bucket; the daily cost quota in `verify_api_key` is per-key cost, not in-flight count.
+- **Single uvicorn process** — [deploy/docker/Dockerfile.backend:37–38](../../../../deploy/docker/Dockerfile.backend) runs `uvicorn ... --host 0.0.0.0 --port 8080` with no `--workers` flag. In-process state is sufficient.
 - **No Redis** in the stack; only Postgres + a SQLite file for the rate limiter.
 
 ## Architecture
@@ -143,14 +148,14 @@ Add `Depends(enforce_user_concurrency)` to each of the four inference handlers. 
 
 | Route                      | Handler file & line                                                      |
 | -------------------------- | ------------------------------------------------------------------------ |
-| `/v1/chat/completions`     | [serving/servers/routers/completions.py:107](serving/servers/routers/completions.py#L107) |
-| `/v1/completions`          | [serving/servers/routers/compat.py:52](serving/servers/routers/compat.py#L52)             |
-| `/v1/embeddings`           | [serving/servers/routers/embeddings.py:19](serving/servers/routers/embeddings.py#L19)     |
-| `/anthropic/v1/messages`   | [serving/servers/routers/anthropic_proxy.py:309](serving/servers/routers/anthropic_proxy.py#L309) |
+| `/v1/chat/completions`     | [serving/servers/routers/completions.py:107](../../../../apps/backend/serving/servers/routers/completions.py) |
+| `/v1/completions`          | [serving/servers/routers/compat.py:52](../../../../apps/backend/serving/servers/routers/compat.py)             |
+| `/v1/embeddings`           | [serving/servers/routers/embeddings.py:19](../../../../apps/backend/serving/servers/routers/embeddings.py)     |
+| `/anthropic/v1/messages`   | `serving/servers/routers/anthropic_proxy.py:309` |
 
 ## Configuration
 
-In [serving/config/settings.py](serving/config/settings.py):
+In [serving/config/settings.py](../../../../apps/backend/serving/config/settings.py):
 
 ```python
 # Existing — extended to include "pro"
@@ -230,7 +235,7 @@ No Grafana dashboard updates in this PR.
 
 ## Test plan
 
-Following the existing pytest-asyncio + `AsyncClient` pattern from [test/servers/conftest.py](test/servers/conftest.py).
+Following the existing pytest-asyncio + `AsyncClient` pattern from [test/servers/conftest.py](../../../../tests/servers/conftest.py).
 
 ### Unit tests (`test/servers/test_user_concurrency_limiter.py`)
 
@@ -286,7 +291,7 @@ Cases 5, 6, 7 are the highest-value because they validate the `yield`/`finally` 
 ## References
 
 - Issue: https://github.com/HarvardMadSys/hybridInference/issues/242
-- Auth dependency: [serving/servers/auth.py:78–259](serving/servers/auth.py#L78-L259)
-- Existing role definitions: [serving/config/settings.py:161](serving/config/settings.py#L161)
-- Existing rate limiter (per-model, for reference only): [serving/servers/rate_limiter.py](serving/servers/rate_limiter.py)
-- Test fixtures: [test/servers/conftest.py](test/servers/conftest.py)
+- Auth dependency: [serving/servers/auth.py:78–259](../../../../apps/backend/serving/servers/auth.py)
+- Existing role definitions: [serving/config/settings.py:161](../../../../apps/backend/serving/config/settings.py)
+- Existing rate limiter (per-model, for reference only): `serving/servers/rate_limiter.py`
+- Test fixtures: [test/servers/conftest.py](../../../../tests/servers/conftest.py)

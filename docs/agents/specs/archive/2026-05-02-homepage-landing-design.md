@@ -1,5 +1,10 @@
 # Public Homepage Landing Page — Design
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 **Date:** 2026-05-02
 **Status:** Draft
 **Owner:** jason
@@ -24,20 +29,20 @@ Replace the current redirect-only homepage at `/` with a public landing page tha
 
 ## Current State
 
-[frontend/src/app/page.tsx](../../../frontend/src/app/page.tsx) currently redirects:
+[frontend/src/app/page.tsx](../../../../apps/frontend/src/app/page.tsx) currently redirects:
 
 - Authenticated → `/dashboard`
 - Unauthenticated → `/login`
 
 The page renders a spinner while redirecting and never shows landing content.
 
-The shared layout in [frontend/src/app/layout.tsx](../../../frontend/src/app/layout.tsx) provides a centered `max-w-5xl` container with a header (app name) and a footer (build info). All pages share this shell.
+The shared layout in [frontend/src/app/layout.tsx](../../../../apps/frontend/src/app/layout.tsx) provides a centered `max-w-5xl` container with a header (app name) and a footer (build info). All pages share this shell.
 
 ## Design
 
 ### Routing & Auth Behavior
 
-In [frontend/src/app/page.tsx](../../../frontend/src/app/page.tsx):
+In [frontend/src/app/page.tsx](../../../../apps/frontend/src/app/page.tsx):
 
 - Keep the page as a client component (`'use client'`) because it consumes `useAuth`.
 - If `state.loading` → render a small loading placeholder (or just the page; loading is brief).
@@ -50,7 +55,7 @@ The `/login` and `/signup` pages remain unchanged. Header/footer remain shared v
 
 - **Primary color:** Harvard Crimson `#A51C30`.
 - **Hover/dark:** `#8B1729`.
-- **Headings font:** Crimson Text (loaded via `next/font/google` in [frontend/src/app/layout.tsx](../../../frontend/src/app/layout.tsx)), exposed via a CSS variable (e.g. `--font-serif`) and applied with a Tailwind utility class on h1/h2.
+- **Headings font:** Crimson Text (loaded via `next/font/google` in [frontend/src/app/layout.tsx](../../../../apps/frontend/src/app/layout.tsx)), exposed via a CSS variable (e.g. `--font-serif`) and applied with a Tailwind utility class on h1/h2.
 - **Body font:** existing default sans (no change).
 - **Hero background:** subtle gradient `bg-gradient-to-br from-white via-gray-50 to-red-50/30`. Other sections use the existing `bg-gray-50`.
 - The shared header gains a small "Harvard SEAS" subtitle next to the app name (serif, gray-500). The shared footer adds links to docs and GitHub plus an SEAS attribution line.
@@ -59,7 +64,7 @@ Tailwind tokens for crimson can be added to `tailwind.config.*` (or used as arbi
 
 ### New Components
 
-Create [frontend/src/components/landing/](../../../frontend/src/components/landing/) with four files. Each is a small, focused presentational component with no internal state.
+Create [frontend/src/components/landing/](../../../../apps/frontend/src/components/landing) with four files. Each is a small, focused presentational component with no internal state.
 
 #### `Hero.tsx`
 
@@ -112,7 +117,7 @@ YAGNI: ship curl-only. No language tabs in v1. The component is structured so a 
 
 ### Layout Changes
 
-In [frontend/src/app/layout.tsx](../../../frontend/src/app/layout.tsx):
+In [frontend/src/app/layout.tsx](../../../../apps/frontend/src/app/layout.tsx):
 
 - Load Crimson Text via `next/font/google`, expose as a CSS variable.
 - Apply the variable on `<html>` so children can opt in via Tailwind utility (e.g. `font-serif`).
@@ -124,7 +129,7 @@ In [frontend/src/app/layout.tsx](../../../frontend/src/app/layout.tsx):
 The `<main>` wrapper currently has `items-center` and `py-12`. The landing page wants top-aligned, full-width sections. Two options for handling this:
 
 - **Option A (preferred):** widen the `<main>` to allow full-width content via `w-full` and let each landing section manage its own internal `max-w-5xl mx-auto`. Existing centered pages (login, signup) keep the same visual result because their card contents are already constrained.
-- **Option B:** add a per-route layout file at [frontend/src/app/(landing)/layout.tsx](../../../frontend/src/app/(landing)/layout.tsx) that overrides only the landing route group.
+- **Option B:** add a per-route layout file at `frontend/src/app/(landing)/layout.tsx` that overrides only the landing route group.
 
 Pick A unless it visually breaks login/signup. The implementation plan should verify this with a quick before/after check on those pages.
 
@@ -151,8 +156,8 @@ No error paths beyond what `useAuth` already handles. If auth state fails to loa
 
 ## Files Touched
 
-- Modify: [frontend/src/app/page.tsx](../../../frontend/src/app/page.tsx) — replace redirect-only logic with landing render.
-- Modify: [frontend/src/app/layout.tsx](../../../frontend/src/app/layout.tsx) — load serif font, extend footer, add SEAS subtitle.
+- Modify: [frontend/src/app/page.tsx](../../../../apps/frontend/src/app/page.tsx) — replace redirect-only logic with landing render.
+- Modify: [frontend/src/app/layout.tsx](../../../../apps/frontend/src/app/layout.tsx) — load serif font, extend footer, add SEAS subtitle.
 - Modify: `frontend/tailwind.config.*` — add `crimson` color token (if config exists; otherwise use arbitrary values).
 - New: `frontend/src/components/landing/Hero.tsx`
 - New: `frontend/src/components/landing/Features.tsx`

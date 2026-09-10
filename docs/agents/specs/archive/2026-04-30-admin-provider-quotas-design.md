@@ -1,5 +1,10 @@
 # Admin Dashboard — Provider Quotas Tab
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 **Status:** Design
 **Date:** 2026-04-30
 **Author:** brainstorming session
@@ -27,9 +32,9 @@ Target providers: **Chutes**, **ZAI**, **MiniMax**, **Ollama Cloud**.
 
 ## Context
 
-The codebase already exposes an admin dashboard at [frontend/src/app/dashboard/admin/page.tsx](frontend/src/app/dashboard/admin/page.tsx) with three tabs: Users, Recent Requests, Audit Log. Backend admin routes live under `/admin/*` in [serving/servers/routers/admin.py](serving/servers/routers/admin.py); schemas in [serving/schemas_admin.py](serving/schemas_admin.py); frontend API client in [frontend/src/lib/api/admin.ts](frontend/src/lib/api/admin.ts).
+The codebase already exposes an admin dashboard at [frontend/src/app/dashboard/admin/page.tsx](../../../../apps/frontend/src/app/dashboard/admin/page.tsx) with three tabs: Users, Recent Requests, Audit Log. Backend admin routes live under `/admin/*` in `serving/servers/routers/admin.py`; schemas in [serving/schemas_admin.py](../../../../apps/backend/serving/schemas_admin.py); frontend API client in [frontend/src/lib/api/admin.ts](../../../../apps/frontend/src/lib/api/admin.ts).
 
-Provider keys today are read from environment variables in [serving/config.py](serving/config.py) and [serving/config/settings.py](serving/config/settings.py).
+Provider keys today are read from environment variables in `serving/config.py` and [serving/config/settings.py](../../../../apps/backend/serving/config/settings.py).
 
 ## Architecture
 
@@ -63,7 +68,7 @@ API-key examples:
 | **Chutes** | `CHUTES_API_KEY` | `GET https://api.chutes.ai/users/me/subscription_usage` with `Authorization: Bearer <key>` | Returns monthly + 4-hour window usage vs limits. Officially documented. |
 | **ZAI** | `ZAI_API_KEY` | `GET https://api.z.ai/api/monitor/usage/quota/limit` with `Authorization: Bearer <key>` | Endpoint discovered from ZAI's official `glm-plan-usage` plugin. The plugin uses the user's Anthropic auth token; we attempt with `ZAI_API_KEY` directly. If the API key auth fails, fetcher reports `auth_failed`. |
 
-The existing `CHUTES_API_KEY` and `ZAI_API_KEY` (already in `.env`) are read directly via `os.getenv` to match how other provider keys are loaded in [serving/config.py](serving/config.py).
+The existing `CHUTES_API_KEY` and `ZAI_API_KEY` (already in `.env`) are read directly via `os.getenv` to match how other provider keys are loaded in `serving/config.py`.
 
 ### Common result shape
 
@@ -99,7 +104,7 @@ class AdminProviderQuotasResponse(BaseModel):
 
 ## Backend endpoint
 
-New route in [serving/servers/routers/admin.py](serving/servers/routers/admin.py):
+New route in `serving/servers/routers/admin.py`:
 
 ```
 GET /admin/provider-quotas
@@ -126,7 +131,7 @@ async def get_provider_quotas(_: AdminUser = Depends(require_admin)) -> AdminPro
 
 ### API client
 
-New code in [frontend/src/lib/api/admin.ts](frontend/src/lib/api/admin.ts):
+New code in [frontend/src/lib/api/admin.ts](../../../../apps/frontend/src/lib/api/admin.ts):
 
 ```typescript
 export interface ProviderQuotaUsage {
@@ -158,7 +163,7 @@ export async function getProviderQuotas(): Promise<AdminProviderQuotasResponse>;
 
 ### UI
 
-Adds a fourth tab to [frontend/src/app/dashboard/admin/page.tsx](frontend/src/app/dashboard/admin/page.tsx). Tab order: `Users → Recent Requests → Providers → Audit Log`.
+Adds a fourth tab to [frontend/src/app/dashboard/admin/page.tsx](../../../../apps/frontend/src/app/dashboard/admin/page.tsx). Tab order: `Users → Recent Requests → Providers → Audit Log`.
 
 Layout: a responsive 2-column grid of provider cards (matches the existing `RequestMetricsCard` style — `rounded-xl border-gray-200 bg-white p-4 shadow-sm`).
 
@@ -202,7 +207,7 @@ The admin endpoint never returns HTTP 500 from a provider failure; one bad provi
 
 ## Testing
 
-New test file: [test/servers/test_admin_provider_quotas.py](test/servers/test_admin_provider_quotas.py).
+New test file: [test/servers/test_admin_provider_quotas.py](../../../../tests/servers/test_admin_provider_quotas.py).
 
 - **Route auth:** request without admin credentials returns 401; with admin role returns the response shape.
 - **Per-fetcher unit tests** using `unittest.mock.AsyncMock` to patch `aiohttp.ClientSession`:

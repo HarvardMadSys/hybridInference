@@ -1,5 +1,10 @@
 # Router Session Affinity Implementation Plan
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Per-user provider stickiness in `FixedRouter`: same `(auth_key_hash or client IP, model_id)` → same endpoint for 5 min, sliding TTL, dropped on any error or when pinned endpoint leaves the allowed pool.
@@ -8,7 +13,7 @@
 
 **Tech Stack:** Python 3.12, FastAPI, `threading.RLock`, `time.monotonic()`, `pytest`. No new dependencies.
 
-**Spec:** [docs/agents/specs/2026-05-04-router-session-affinity-design.md](../specs/2026-05-04-router-session-affinity-design.md)
+**Spec:** [docs/agents/specs/2026-05-04-router-session-affinity-design.md](../../specs/archive/2026-05-04-router-session-affinity-design.md)
 
 ---
 
@@ -451,7 +456,7 @@ Expected: the 10 new tests fail (entries never created or pin endpoint logic wro
 
 - [ ] **Step 3.3: Modify `FixedRouter._select_adapter`**
 
-Replace the body of `FixedRouter._select_adapter` (currently at [routers.py:619-691](../../apps/backend/routing/routers.py#L619)) with:
+Replace the body of `FixedRouter._select_adapter` (currently at [routers.py:619-691](../../../../apps/backend/routing/routers.py)) with:
 
 ```python
     def _select_adapter(  # type: ignore[override]
@@ -658,7 +663,7 @@ def _get_endpoint_id_for(adapter):
     return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
 ```
 
-Note on fallback semantics: `FixedRouter.chat_completion` iterates `route.adapters` directly and skips `weight <= 0` entries ([routers.py:751-755](../../apps/backend/routing/routers.py#L751)), so a weight-0 backup is never tried. Tests above use a small non-zero weight on the good adapter, or omit the backup entirely.
+Note on fallback semantics: `FixedRouter.chat_completion` iterates `route.adapters` directly and skips `weight <= 0` entries ([routers.py:751-755](../../../../apps/backend/routing/routers.py)), so a weight-0 backup is never tried. Tests above use a small non-zero weight on the good adapter, or omit the backup entirely.
 
 - [ ] **Step 4.2: Run tests to verify they fail**
 
@@ -799,7 +804,7 @@ req_ctx.update(
 )
 ```
 
-`get_client_ip` is already imported at [completions.py:40](../../apps/backend/serving/servers/routers/completions.py#L40).
+`get_client_ip` is already imported at [completions.py:40](../../../../apps/backend/serving/servers/routers/completions.py).
 
 - [ ] **Step 5.6: Run tests**
 

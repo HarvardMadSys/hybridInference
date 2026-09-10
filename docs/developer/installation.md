@@ -136,7 +136,7 @@ Run the gateway from the repository root — the backend packages live under
 
 ```bash
 cp .env.example .env    # edit as above; a process started here reads it
-PYTHONPATH=apps/backend uv run uvicorn serving.servers.app:app \
+PYTHONPATH=apps/backend uv run uvicorn serving.servers.app:app --no-proxy-headers \
   --host 127.0.0.1 --port 8080
 ```
 

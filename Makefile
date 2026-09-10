@@ -78,6 +78,7 @@ docs:  ## Build the publishable docs site (every language) into docs/build/html
 DOCS_LANG ?= zh_CN
 
 docs-verify: docs docs-gettext  ## Build the site and check every translation still applies
+	$(UV_RUN) python ops/ci/check_docs_links.py
 	@echo "$(YELLOW)Checking translations against the English build...$(RESET)"
 	@# A translation never fails loudly: Sphinx falls back to English for any
 	@# string it cannot translate, so a stale catalog builds clean under -W and
