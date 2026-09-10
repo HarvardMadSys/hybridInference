@@ -236,6 +236,15 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def list_user_activity_providers(self, *, days: int = 30) -> list[str]:
+        """Return the distinct ``api_logs.provider`` values seen in the last *days*.
+
+        The same table and window ``list_users(provider=...)`` matches on, so
+        the Users tab can offer every provider that filter can select —
+        including one the routing table has since dropped or renamed.
+        """
+
+    @abstractmethod
     async def list_users(
         self,
         *,

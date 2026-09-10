@@ -254,7 +254,7 @@ function AddProviderModal({ open, onClose, onCreated }: AddProviderModalProps) {
                     setProbeModelId(event.target.value);
                     resetProbe();
                   }}
-                  placeholder="minimax-m2.5"
+                  placeholder="model id the upstream expects"
                   className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
                   required
                 />
@@ -275,7 +275,7 @@ function AddProviderModal({ open, onClose, onCreated }: AddProviderModalProps) {
                   setBaseUrl(event.target.value);
                   resetProbe();
                 }}
-                placeholder="https://api.lkeap.cloud.tencent.com/plan/v3"
+                placeholder="https://api.example.com/v1"
                 className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
                 required
               />

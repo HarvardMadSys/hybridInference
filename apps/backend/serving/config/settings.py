@@ -10,6 +10,43 @@ from typing import Annotated
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
 
+# Resource models a provider route can be added under. ``quota`` and
+# ``concurrency`` are the stateful kinds RouteWise accounts for; ``on_demand``
+# is plain pay-as-you-go.
+ROUTE_TYPE_ORDER: tuple[str, ...] = ("on_demand", "quota", "concurrency")
+ROUTE_TYPES: frozenset[str] = frozenset(ROUTE_TYPE_ORDER)
+
+
+def parse_provider_route_types(raw: str) -> dict[str, frozenset[str]]:
+    """Parse ``PROVIDER_ROUTE_TYPES`` into ``{provider: allowed route types}``.
+
+    The value is a comma-separated list of ``provider=type[|type]`` entries. A
+    malformed entry or an unknown route type raises ``ValueError`` naming it,
+    so a typo fails startup instead of silently leaving that provider
+    unrestricted.
+    """
+    policy: dict[str, frozenset[str]] = {}
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        provider, sep, types = entry.partition("=")
+        provider = provider.strip()
+        allowed = frozenset(kind.strip() for kind in types.split("|") if kind.strip())
+        if not sep or not provider or not allowed:
+            raise ValueError(
+                f"PROVIDER_ROUTE_TYPES entry {entry!r} must look like "
+                "provider=type or provider=type|type"
+            )
+        unknown = sorted(allowed - ROUTE_TYPES)
+        if unknown:
+            raise ValueError(
+                f"PROVIDER_ROUTE_TYPES entry {entry!r}: unknown route type "
+                f"{', '.join(unknown)}; expected one of {', '.join(ROUTE_TYPE_ORDER)}"
+            )
+        policy[provider] = allowed
+    return policy
+
 
 class Settings(BaseSettings):
     """Application settings with validation and type safety."""
@@ -140,6 +177,15 @@ class Settings(BaseSettings):
     # Trusted proxies (for real IP detection)
     trusted_proxies: list[str] = []
 
+    # Route types the admin console may add per provider, as comma-separated
+    # "provider=type[|type]" entries, e.g.
+    # "chutes=quota,featherless=concurrency,openrouter=concurrency|on_demand".
+    # This is a deployment's contract with its vendors — a request-quota plan
+    # here, a concurrency plan there — so it lives here rather than in the
+    # code. A provider that is not listed, or an empty value (the default),
+    # may be added as any route type.
+    provider_route_types: str = ""
+
     # Enable RouteWise online routing subsystem (per-model opt-in via models.yaml)
     enable_routewise: bool = False
 
@@ -226,6 +272,13 @@ class Settings(BaseSettings):
         """Accept either a list or a comma-separated env var for CORS origins."""
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator("provider_route_types")
+    @classmethod
+    def validate_provider_route_types(cls, value: str) -> str:
+        """Reject a route-type policy the admin console could not enforce."""
+        parse_provider_route_types(value)
         return value
 
     def validate_auth_secrets(

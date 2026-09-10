@@ -139,6 +139,25 @@ export async function getBulkCostHistory(
   return jsonOrThrow<BulkCostHistoryResponse>(resp);
 }
 
+export interface UserFilterProvider {
+  provider: string;
+  display_name: string;
+  /** Seen in api_logs within the provider filter's 30-day window. */
+  in_logs: boolean;
+  /** Present in the live routing table. */
+  routable: boolean;
+}
+
+export interface ListUserFilterProvidersResponse {
+  providers: UserFilterProvider[];
+}
+
+/** Providers the Users tab's filter can select: the 30-day log window plus the routing table. */
+export async function getUserFilterProviders(): Promise<ListUserFilterProvidersResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/users/providers');
+  return jsonOrThrow<ListUserFilterProvidersResponse>(resp);
+}
+
 export async function getUsersSummary(): Promise<UsersSummary> {
   const resp = await fetchWithAuth(API_BASE, '/admin/users/summary');
   return jsonOrThrow<UsersSummary>(resp);
@@ -2041,6 +2060,11 @@ export interface ProviderRouteOption {
   kind: string;
   key_provider: string;
   default_base_url: string;
+  /**
+   * Route types this deployment allows the target to be added as, in display
+   * order (the gateway's PROVIDER_ROUTE_TYPES policy). Absent means unrestricted.
+   */
+  route_types?: ProviderRouteType[];
 }
 
 export interface OpenRouterProviderOption {

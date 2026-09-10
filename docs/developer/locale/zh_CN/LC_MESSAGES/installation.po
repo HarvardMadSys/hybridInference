@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-09 17:53+0800\n"
+"POT-Creation-Date: 2026-09-09 18:30+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -366,6 +366,18 @@ msgid ""
 msgstr "`/admin/*` 端点使用的可选旧式 bearer token；留空只会禁用这一访问方式"
 
 #: ../developer/installation.md
+msgid "`PROVIDER_ROUTE_TYPES`"
+msgstr ""
+
+#: ../developer/installation.md
+msgid ""
+"route types the admin console may add per provider, as "
+"`provider=type[|type]` entries separated by commas (e.g. "
+"`chutes=quota,openrouter=concurrency|on_demand`); blank leaves every "
+"provider unrestricted"
+msgstr "管理控制台可以按 provider 添加的路由类型，写成逗号分隔的 `provider=type[|type]` 条目（例如 `chutes=quota,openrouter=concurrency|on_demand`）；留空则每个 provider 都不受限"
+
+#: ../developer/installation.md
 msgid "`DB_ENABLED`"
 msgstr ""
 
@@ -429,11 +441,11 @@ msgstr ""
 msgid "whether `X-Forwarded-For` / `X-Real-IP` are believed"
 msgstr "是否信任 `X-Forwarded-For` / `X-Real-IP`"
 
-#: ../developer/installation.md:187
+#: ../developer/installation.md:188
 msgid "Provider credentials"
 msgstr "Provider 凭据"
 
-#: ../developer/installation.md:189
+#: ../developer/installation.md:190
 #, python-brace-format
 msgid ""
 "There is no fixed list of provider variables in the code. A model "
@@ -449,7 +461,7 @@ msgstr ""
 "provider 凭据，完全取决于它自己的注册表写了哪些变量。注意注册表用的是那个更窄的展开器：只认整值，不支持 "
 "`${VAR:-default}`，也不支持嵌在更长字符串里替换。它和路由文件的差别见[配置](configuration.md)。"
 
-#: ../developer/installation.md:204
+#: ../developer/installation.md:205
 msgid ""
 "`.env.example` ships blank placeholders for the providers this project "
 "has adapters or examples for; add your own names freely. The bundled "
@@ -458,19 +470,22 @@ msgstr ""
 "`.env.example` 为本项目有 adapter 或示例的那些 provider "
 "提供了空白占位；你也可以随意添加自己的变量名。内置的默认注册表只需要 `OPENROUTER_API_KEY`。"
 
-#: ../developer/installation.md:208
+#: ../developer/installation.md:209
 msgid ""
 "Once a database is configured, keys can also be added from the admin "
 "console (**Providers → Keys**) with no restart; they join the same pool "
 "as the keys the registry names. See [Runtime configuration from the admin"
 " console](configuration.md#runtime-configuration-from-the-admin-console)."
-msgstr "配置了数据库之后，key 也可以不重启就从管理控制台（**Providers → Keys**）添加；它们会进入注册表指名的那些 key 所在的同一个池子。见[从管理控制台做运行时配置](configuration.md#runtime-configuration-from-the-admin-console)。"
+msgstr ""
+"配置了数据库之后，key 也可以不重启就从管理控制台（**Providers → Keys**）添加；它们会进入注册表指名的那些 key "
+"所在的同一个池子。见[从管理控制台做运行时配置](configuration.md#runtime-configuration-from-the-"
+"admin-console)。"
 
-#: ../developer/installation.md:213
+#: ../developer/installation.md:214
 msgid "Where the config files live"
 msgstr "配置文件在哪里"
 
-#: ../developer/installation.md:215
+#: ../developer/installation.md:216
 msgid ""
 "There is no `config/models.yaml` or `config/routing.yaml` in this "
 "repository. `resolve_config_path` in "
@@ -481,7 +496,7 @@ msgstr ""
 "`config/routing.yaml`。`apps/backend/serving/config/distribution.py` 里的 "
 "`resolve_config_path` 按以下顺序解析每个配置文件："
 
-#: ../developer/installation.md:219
+#: ../developer/installation.md:220
 msgid ""
 "**an explicit environment variable** — `MODELS_CONFIG_PATH`, "
 "`ROUTING_CONFIG_PATH`, `ALERTS_CONFIG_PATH` (the older `MODELS_CONFIG` "
@@ -491,7 +506,7 @@ msgstr ""
 "**显式的环境变量**——`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`（旧的"
 " `MODELS_CONFIG` 和 `ROUTING_CONFIG` 写法仍然接受；两者都设置时以 `*_CONFIG_PATH` 为准）；"
 
-#: ../developer/installation.md:223
+#: ../developer/installation.md:224
 msgid ""
 "**a distribution manifest** — `DISTRIBUTION_CONFIG_PATH` pointing at a "
 "`distributions/<name>/distribution.yaml`, whose `paths:` section names "
@@ -504,7 +519,7 @@ msgstr ""
 "manifest 只在 `DISTRIBUTION_CONFIG_MODE=active` 时才生效；默认的 `dark` "
 "只加载并校验它、记录它*本来会*改动什么，而解析结果保持原样；"
 
-#: ../developer/installation.md:228
+#: ../developer/installation.md:229
 msgid ""
 "**the built-in defaults** — `config/examples/models.openrouter.yaml` and "
 "`config/examples/routing.minimal.yaml`. There is no default alerts file, "
@@ -513,7 +528,7 @@ msgstr ""
 "**内置默认值**——`config/examples/models.openrouter.yaml` 和 "
 "`config/examples/routing.minimal.yaml`。没有默认的告警文件，它的缺席意味着内置阈值生效。"
 
-#: ../developer/installation.md:232
+#: ../developer/installation.md:233
 msgid ""
 "Paths are relative to the working directory (`/app` in the container). "
 "The Compose file mounts both `config/` and `distributions/` read-only "
@@ -523,7 +538,7 @@ msgstr ""
 "路径相对于工作目录（容器里是 `/app`）。Compose 文件把 `config/` 和 `distributions/` 都以只读方式挂进 "
 "backend，所以在宿主机上改动其中任意一个再重启 backend 就够了——不必重新构建镜像。"
 
-#: ../developer/installation.md:237
+#: ../developer/installation.md:238
 msgid ""
 "See [Configuration](configuration.md) for what goes *inside* those files,"
 " and [Quickstart](router-tutorial.md) for a worked overlay."
@@ -531,7 +546,7 @@ msgstr ""
 "这些文件*里面*该写什么，见[配置](configuration.md)；一个完整走通的 overlay 示例见[快速开始](router-"
 "tutorial.md)。"
 
-#: ../developer/installation.md:241
+#: ../developer/installation.md:242
 msgid ""
 "A backend running directly on the host can reach a host inference server "
 "through `localhost`. A backend in Docker must use a Docker-reachable "
@@ -542,15 +557,15 @@ msgstr ""
 "Docker 能访问到的地址，例如 `host.docker.internal`，并在模型注册表里显式写出来；HybridInference "
 "不会改写 provider 的 URL。"
 
-#: ../developer/installation.md:247
+#: ../developer/installation.md:248
 msgid "Verifying the install"
 msgstr "验证安装"
 
-#: ../developer/installation.md:256
+#: ../developer/installation.md:257
 msgid "End to end, against a running gateway:"
 msgstr "对着运行中的网关做一次端到端验证："
 
-#: ../developer/installation.md:267
+#: ../developer/installation.md:268
 msgid ""
 "Drop the `Authorization` header if you set `USER_AUTH_ENABLED=0`. Use a "
 "model id that `/v1/models` actually listed."
@@ -558,17 +573,17 @@ msgstr ""
 "如果设了 `USER_AUTH_ENABLED=0`，就去掉 `Authorization` 头。模型 id 要用 `/v1/models` "
 "真的列出来的那些。"
 
-#: ../developer/installation.md:270
+#: ../developer/installation.md:271
 msgid ""
 "The same call from the OpenAI Python SDK — the gateway is the `base_url`,"
 " and nothing else about an existing client changes:"
 msgstr "同一个调用，用 OpenAI 的 Python SDK 来发——网关就是那个 `base_url`，现有客户端别的什么都不用改："
 
-#: ../developer/installation.md:285
+#: ../developer/installation.md:286
 msgid "Documentation"
 msgstr "文档"
 
-#: ../developer/installation.md:287
+#: ../developer/installation.md:288
 msgid ""
 "These developer docs are MyST Markdown built with Sphinx from "
 "`docs/developer/`. Building them locally and the checks that gate them "
@@ -577,11 +592,11 @@ msgstr ""
 "这份开发者文档是 MyST Markdown，由 Sphinx 从 `docs/developer/` "
 "构建。本地构建方式以及为其把关的检查，见[贡献指南](contributing.md#documentation)。"
 
-#: ../developer/installation.md:291
+#: ../developer/installation.md:292
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/installation.md:293
+#: ../developer/installation.md:294
 msgid ""
 "**`required variable DB_USER is missing a value: DB_USER must be set in "
 ".env file`** — Compose stopped at interpolation. Fill in `DB_USER` and "
@@ -591,7 +606,7 @@ msgstr ""
 ".env file`**——Compose 在变量插值阶段就停了。在 `.env` 里填上 `DB_USER` 和 "
 "`DB_PASSWORD`，见上面的表格。"
 
-#: ../developer/installation.md:297
+#: ../developer/installation.md:298
 msgid ""
 "**`env file ... .env not found`** — the backend service reads "
 "`../../.env` relative to `deploy/docker/`, i.e. `.env` at the repository "
@@ -600,7 +615,7 @@ msgstr ""
 "**`env file ... .env not found`**——backend 服务读的是相对 `deploy/docker/` 的 "
 "`../../.env`，也就是仓库根目录的 `.env`。在 `make up` 之前先 `cp .env.example .env`。"
 
-#: ../developer/installation.md:301
+#: ../developer/installation.md:302
 msgid ""
 "**Import errors when running from source** — run from the repository root"
 " with `PYTHONPATH=apps/backend`, and make sure the virtualenv is active "
@@ -609,7 +624,7 @@ msgstr ""
 "**从源码运行时报导入错误**——请在仓库根目录、带上 `PYTHONPATH=apps/backend` 运行，并确认虚拟环境已激活（或改用 "
 "`uv run`）。"
 
-#: ../developer/installation.md:305
+#: ../developer/installation.md:306
 msgid ""
 "**Every request 404s with an empty `/v1/models`** — the registry loaded "
 "nothing. On startup the backend logs either `Registered N routes from "
@@ -620,7 +635,7 @@ msgstr ""
 "`Registered N routes from "
 "<path>`，要么打印一条指出它找不到的注册表路径的错误；把那个路径和上面的优先级列表对一下。"
 
-#: ../developer/installation.md:310
+#: ../developer/installation.md:311
 msgid ""
 "**Port already in use** — override `BACKEND_PORT`, `FRONTEND_PORT` or "
 "`DB_PORT` in `.env`."

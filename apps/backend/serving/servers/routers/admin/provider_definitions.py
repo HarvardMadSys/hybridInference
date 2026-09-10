@@ -33,7 +33,6 @@ from serving.servers.deps import get_operational_store, get_services, verify_adm
 from serving.servers.registry import parse_openrouter_kind
 from serving.servers.routers.admin.provider_routes import (
     PROVIDER_TARGETS,
-    SELECTABLE_PROVIDER_TARGETS,
     _validate_base_url,
 )
 
@@ -145,12 +144,7 @@ def _config_managed_provider_names(
     and could be deleted while its routes still ran.
     """
     specs = config_specs if config_specs is not None else _configured_provider_specs()
-    return (
-        set(PROVIDER_TARGETS)
-        | set(SELECTABLE_PROVIDER_TARGETS)
-        | set(dynamic_keys.aliased_key_providers())
-        | set(specs)
-    )
+    return set(PROVIDER_TARGETS) | set(dynamic_keys.aliased_key_providers()) | set(specs)
 
 
 def config_route_provider_labels(

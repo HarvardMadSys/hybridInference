@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from serving.config.settings import ROUTE_TYPE_ORDER
+
 
 class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     """Request payload for creating a new API key."""
@@ -1077,6 +1079,21 @@ class RoutableProvider(BaseModel):
     disabled: bool = Field(..., description="True if an admin has disabled this provider")
 
 
+class UserFilterProvider(BaseModel):
+    """A provider the Users tab's provider filter can select."""
+
+    provider: str = Field(..., description="Provider label as recorded in api_logs")
+    display_name: str = Field(..., description="Human-readable name; the label when none is known")
+    in_logs: bool = Field(..., description="Seen in api_logs within the filter's 30-day window")
+    routable: bool = Field(..., description="Present in the live routing table")
+
+
+class ListUserFilterProvidersResponse(BaseModel):
+    """Union of providers seen in the filter window and providers routed today."""
+
+    providers: list[UserFilterProvider]
+
+
 class ListRoutableProvidersResponse(BaseModel):
     """All distinct providers in the routing table with their disabled state."""
 
@@ -1373,6 +1390,9 @@ class ProviderRouteOption(BaseModel):
     kind: str
     key_provider: str
     default_base_url: str
+    # Route types this deployment allows the target to be added as, in display
+    # order; the deployment's PROVIDER_ROUTE_TYPES policy narrows the default.
+    route_types: list[str] = Field(default_factory=lambda: list(ROUTE_TYPE_ORDER))
 
 
 class OpenRouterProviderOption(BaseModel):

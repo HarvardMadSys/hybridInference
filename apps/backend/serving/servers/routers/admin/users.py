@@ -8,6 +8,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from serving.config.provider_labels import resolve_display_names
 from serving.model_access import (
     DISABLED_MODELS_PREFERENCE_KEY,
     get_disabled_models_from_preferences,
@@ -27,6 +28,7 @@ from serving.schemas_admin import (
     HardDeleteUserRequest,
     HardDeleteUserResponse,
     ListAuditLogResponse,
+    ListUserFilterProvidersResponse,
     ListUsersResponse,
     RejectUserRequest,
     RejectUserResponse,
@@ -42,19 +44,23 @@ from serving.schemas_admin import (
     UserCostHistoryPoint,
     UserCostHistoryResponse,
     UserDetailResponse,
+    UserFilterProvider,
     UserListItem,
     UsersSummaryResponse,
     UserTurnAverages,
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
+    AppServices,
     get_log_store,
     get_operational_store,
     get_response_store,
     get_router,
+    get_services,
     verify_admin_access,
 )
 from serving.servers.routers.admin._common import _serialize_for_audit
+from serving.servers.routers.admin.providers import _enumerate_routable_providers
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
@@ -179,6 +185,38 @@ async def list_users(
 # parameterized route is registered first, /users/summary matches it and
 # Starlette returns 405 because the method doesn't match.
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/users/providers", response_model=ListUserFilterProvidersResponse)
+async def list_user_filter_providers(
+    _admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+    services: AppServices = Depends(get_services),
+) -> ListUserFilterProvidersResponse:
+    """List the providers the Users tab's provider filter can select.
+
+    ``GET /admin/users?provider=`` matches ``api_logs.provider`` over the last
+    30 days, so the choices are every provider seen there in that window — one
+    the routing table has since dropped or renamed stays selectable for as long
+    as its traffic is in the log — unioned with the live routing table, whose
+    providers may not have served a request yet.
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    logged = set(await op_store.list_user_activity_providers(days=30))
+    routable = set(_enumerate_routable_providers(services.router))
+    display_names = resolve_display_names(services.router)
+    return ListUserFilterProvidersResponse(
+        providers=[
+            UserFilterProvider(
+                provider=provider,
+                display_name=display_names.get(provider, provider),
+                in_logs=provider in logged,
+                routable=provider in routable,
+            )
+            for provider in sorted(logged | routable)
+        ]
+    )
 
 
 @router.get("/users/cost-history", response_model=BulkUserCostHistoryResponse)

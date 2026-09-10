@@ -24,7 +24,12 @@ from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
-from serving.config.settings import VALID_ROLES
+from serving.config.settings import (
+    ROUTE_TYPE_ORDER,
+    VALID_ROLES,
+    get_settings,
+    parse_provider_route_types,
+)
 from serving.schemas_admin import (
     CreateProviderRouteModelRequest,
     CreateProviderRouteRequest,
@@ -165,7 +170,8 @@ PROVIDER_TARGETS: dict[str, ProviderTarget] = {
     ),
 }
 
-SELECTABLE_PROVIDER_TARGETS = {"chutes", "featherless", "minimax", "openrouter"}
+# Display names for OpenRouter sub-provider pins. Pins are discovered per model
+# from OpenRouter's endpoint listing; this table only prettifies the slugs.
 OPENROUTER_PROVIDER_LABELS = {
     "deepinfra": "DeepInfra",
     "minimax": "MiniMax",
@@ -173,34 +179,22 @@ OPENROUTER_PROVIDER_LABELS = {
     "parasail": "Parasail",
 }
 
-PROVIDER_MODEL_IDS: dict[str, dict[str, str]] = {
-    "minimax-fast": {
-        "chutes": "MiniMaxAI/MiniMax-M2.5-TEE",
-        "featherless": "MiniMaxAI/MiniMax-M2.5",
-        "minimax": "MiniMax-M2.5",
-        "deepinfra": "minimax/minimax-m2.5",
-        "openrouter": "minimax/minimax-m2.5",
-        "parasail": "minimax/minimax-m2.5",
-    },
-    "minimax-m2.5": {
-        "chutes": "MiniMaxAI/MiniMax-M2.5-TEE",
-        "featherless": "MiniMaxAI/MiniMax-M2.5",
-        "minimax": "MiniMax-M2.5",
-        "openrouter": "minimax/minimax-m2.5",
-        "deepinfra": "minimax/minimax-m2.5",
-        "parasail": "minimax/minimax-m2.5",
-    },
-}
-
 RESOURCE_ROUTE_TYPES = {"quota", "concurrency"}
 
-# OpenRouter sub-provider pins validate through the primary "openrouter" key.
-PROVIDER_CREATE_ROUTE_TYPES: dict[str, set[str]] = {
-    "chutes": {"quota"},
-    "featherless": {"concurrency"},
-    "minimax": {"on_demand"},
-    "openrouter": {"concurrency", "on_demand"},
-}
+
+def _route_type_policy() -> dict[str, frozenset[str]]:
+    """Return the deployment's per-provider route-type policy.
+
+    Read from ``PROVIDER_ROUTE_TYPES`` on every call so a settings reload is
+    seen at once; parsing a short string is cheap and every caller is an
+    admin-only endpoint.
+    """
+    return parse_provider_route_types(get_settings().provider_route_types)
+
+
+def _allowed_route_types(provider: str, policy: dict[str, frozenset[str]]) -> list[str]:
+    allowed = policy.get(provider)
+    return [kind for kind in ROUTE_TYPE_ORDER if allowed is None or kind in allowed]
 
 
 @dataclass
@@ -746,7 +740,10 @@ def _target_for_provider(provider: str) -> ProviderTarget:
         )
     raise HTTPException(
         status_code=400,
-        detail=f"Unknown provider {provider!r}. Valid providers: {sorted(PROVIDER_TARGETS)}",
+        detail=(
+            f"Unknown provider {provider!r}: not a built-in kind, a custom provider, "
+            "or a provider with a configured route or key"
+        ),
     )
 
 
@@ -818,48 +815,88 @@ def _openrouter_sort_from_request(
     return sort
 
 
-def _provider_option_for_target(target: ProviderTarget) -> ProviderRouteOption:
+def _provider_option_for_target(
+    target: ProviderTarget,
+    policy: dict[str, frozenset[str]],
+) -> ProviderRouteOption:
     return ProviderRouteOption(
         provider=target.provider,
         label=target.label,
         kind=target.kind,
         key_provider=target.key_provider,
         default_base_url=target.default_base_url,
+        route_types=_allowed_route_types(_primary_provider_for_target(target), policy),
     )
 
 
+def _provider_option_for_custom(
+    custom: provider_registry.RuntimeProviderDefinition,
+    policy: dict[str, frozenset[str]],
+) -> ProviderRouteOption:
+    return ProviderRouteOption(
+        provider=custom.provider,
+        label=custom.display_name,
+        kind=custom.adapter_kind,
+        key_provider=custom.provider,
+        default_base_url=custom.default_base_url,
+        route_types=_allowed_route_types(custom.provider, policy),
+    )
+
+
+def _registry_providers() -> set[str]:
+    """Return the provider slugs the model registry file declares."""
+    # Lazy: provider_definitions imports this module for the target table.
+    from serving.servers.routers.admin.provider_definitions import _configured_provider_specs
+
+    return set(_configured_provider_specs())
+
+
+def _built_in_target_in_use(
+    target: ProviderTarget,
+    *,
+    registry_providers: set[str],
+    known_providers: set[str],
+) -> bool:
+    """Return True when this deployment has shown it uses a built-in target.
+
+    A built-in vendor kind is offered as a route target only where the
+    deployment already has a route for it — in the registry file or the live
+    route table — or a credential configured for it. A fresh checkout
+    therefore advertises no vendor at all: the selector holds whatever the
+    operator has wired up, plus their custom providers. A pinned OpenRouter
+    entry is a routing preference on the OpenRouter target, never a target of
+    its own.
+    """
+    provider = _primary_provider_for_target(target)
+    if provider != target.provider:
+        return False
+    if provider in registry_providers or provider in known_providers:
+        return True
+    return bool(dynamic_keys.configured_env_keys_for_provider(provider))
+
+
 def _provider_options() -> list[ProviderRouteOption]:
+    policy = _route_type_policy()
     custom_by_provider = {
         custom.provider: custom for custom in provider_registry.list_provider_definitions()
     }
-    options = [
-        ProviderRouteOption(
-            provider=custom_by_provider[target.provider].provider,
-            label=custom_by_provider[target.provider].display_name,
-            kind=custom_by_provider[target.provider].adapter_kind,
-            key_provider=custom_by_provider[target.provider].provider,
-            default_base_url=custom_by_provider[target.provider].default_base_url,
-        )
-        if target.provider in custom_by_provider
-        else _provider_option_for_target(target)
-        for target in PROVIDER_TARGETS.values()
-        if target.provider in SELECTABLE_PROVIDER_TARGETS
-    ]
-    for custom in provider_registry.list_provider_definitions():
-        if custom.provider in SELECTABLE_PROVIDER_TARGETS:
+    registry_providers = _registry_providers()
+    known_providers = set(dynamic_keys.get_known_providers())
+    options: list[ProviderRouteOption] = []
+    for target in PROVIDER_TARGETS.values():
+        if target.provider in custom_by_provider:
+            options.append(_provider_option_for_custom(custom_by_provider[target.provider], policy))
+        elif _built_in_target_in_use(
+            target,
+            registry_providers=registry_providers,
+            known_providers=known_providers,
+        ):
+            options.append(_provider_option_for_target(target, policy))
+    for custom in custom_by_provider.values():
+        if custom.provider in PROVIDER_TARGETS:
             continue
-        options.append(
-            ProviderRouteOption(
-                provider=custom.provider,
-                label=custom.display_name,
-                kind=custom.adapter_kind,
-                key_provider=custom.provider,
-                default_base_url=custom.default_base_url,
-            )
-        )
-    for provider in sorted(
-        set(dynamic_keys.get_known_providers()) - set(PROVIDER_TARGETS) - set(custom_by_provider)
-    ):
+        options.append(_provider_option_for_custom(custom, policy))
+    for provider in sorted(known_providers - set(PROVIDER_TARGETS) - set(custom_by_provider)):
         options.append(
             ProviderRouteOption(
                 provider=provider,
@@ -867,16 +904,44 @@ def _provider_options() -> list[ProviderRouteOption]:
                 kind=provider,
                 key_provider=provider,
                 default_base_url="",
+                route_types=_allowed_route_types(provider, policy),
             )
         )
     options.sort(key=lambda option: option.label.lower())
     return options
 
 
-def _openrouter_provider_options() -> list[OpenRouterProviderOption]:
+def _pinned_openrouter_provider(adapter) -> str | None:
+    pinned = getattr(adapter.config, "openrouter_pinned_provider", None)
+    if pinned:
+        return str(pinned).strip().lower() or None
+    try:
+        _base_kind, pin = parse_openrouter_kind(_upstream_provider(adapter))
+    except ValueError:
+        return None
+    return pin
+
+
+def _openrouter_provider_options(services) -> list[OpenRouterProviderOption]:
+    """Return the OpenRouter pins this deployment already routes through.
+
+    These are the pin choices offered before per-model discovery
+    (``GET /admin/routing/openrouter-providers``) has run, so the list is the
+    deployment's own routing history rather than a fixed set of vendors.
+    """
+    # Lazy: provider_definitions imports this module for the target table.
+    from serving.servers.routers.admin.provider_definitions import _route_adapters
+
+    pins: dict[str, str] = {}
+    routes = getattr(getattr(services, "router", None), "routes", None) or {}
+    for route in routes.values():
+        for adapter in _route_adapters(route):
+            pin = _pinned_openrouter_provider(adapter)
+            if pin and pin not in pins:
+                pins[pin] = _openrouter_provider_label(pin, None)
     return [
         OpenRouterProviderOption(provider=provider, label=label)
-        for provider, label in OPENROUTER_PROVIDER_LABELS.items()
+        for provider, label in sorted(pins.items())
     ]
 
 
@@ -1554,10 +1619,6 @@ def _resolve_provider_model_id(
     route_entries: list[tuple[object, float, str]],
     current_adapter,
 ) -> str:
-    mapped = PROVIDER_MODEL_IDS.get(model_id, {}).get(upstream_provider)
-    if mapped:
-        return mapped
-
     current_provider = _upstream_provider(current_adapter)
     current_provider_model_id = getattr(current_adapter.config, "provider_model_id", None)
     if upstream_provider == current_provider and current_provider_model_id:
@@ -1735,7 +1796,7 @@ def _candidate_restore_sort_key(row: dict[str, Any]) -> tuple[str, bool, str]:
 def _validate_create_route_type_for_provider(route_type: str, upstream_provider: str) -> None:
     target = _target_for_provider(upstream_provider)
     provider = _primary_provider_for_target(target)
-    allowed = PROVIDER_CREATE_ROUTE_TYPES.get(provider)
+    allowed = _route_type_policy().get(provider)
     if allowed is None or route_type in allowed:
         return
     allowed_text = ", ".join(sorted(allowed))
@@ -3062,7 +3123,7 @@ async def list_provider_routes(
         model_id=model_id,
         strategy=strategy,
         provider_options=_provider_options(),
-        openrouter_provider_options=_openrouter_provider_options(),
+        openrouter_provider_options=_openrouter_provider_options(services),
         routes=await _build_routes_for_model(
             services,
             op_store,
@@ -3105,7 +3166,7 @@ async def list_all_provider_routes(
         )
     return ListAllProviderRoutesResponse(
         provider_options=_provider_options(),
-        openrouter_provider_options=_openrouter_provider_options(),
+        openrouter_provider_options=_openrouter_provider_options(services),
         routes=all_rows,
     )
 
@@ -3204,7 +3265,7 @@ async def update_provider_route_strategy(
         model_id=canonical_model_id,
         strategy=_strategy_for_model(services, canonical_model_id),
         provider_options=_provider_options(),
-        openrouter_provider_options=_openrouter_provider_options(),
+        openrouter_provider_options=_openrouter_provider_options(services),
         routes=await _build_routes_for_model(
             services,
             op_store,
@@ -4080,7 +4141,7 @@ async def delete_provider_route_candidate(
             model_id=model_id,
             strategy="fixed",
             provider_options=_provider_options(),
-            openrouter_provider_options=_openrouter_provider_options(),
+            openrouter_provider_options=_openrouter_provider_options(services),
             routes=[],
         )
 
@@ -4089,7 +4150,7 @@ async def delete_provider_route_candidate(
         model_id=model_id,
         strategy=_strategy_for_model(services, model_id),
         provider_options=_provider_options(),
-        openrouter_provider_options=_openrouter_provider_options(),
+        openrouter_provider_options=_openrouter_provider_options(services),
         routes=await _build_routes_for_model(
             services,
             op_store,

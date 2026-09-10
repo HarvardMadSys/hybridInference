@@ -188,6 +188,7 @@ the default registry needs, everything in `.env.example` is optional. The ones y
 |---|---|
 | `USER_AUTH_ENABLED` | `1` (default) requires user API keys for inference requests; `0` allows anonymous inference but does not disable account login or admin authentication |
 | `ADMIN_TOKEN` | optional legacy bearer token for the `/admin/*` endpoints; blank disables only this access path |
+| `PROVIDER_ROUTE_TYPES` | route types the admin console may add per provider, as `provider=type[\|type]` entries separated by commas (e.g. `chutes=quota,openrouter=concurrency\|on_demand`); blank leaves every provider unrestricted |
 | `DB_ENABLED` | `false` runs the gateway with no database |
 | `DB_STORE_FULL_CONTENT` | `false` (default) hashes prompts and responses instead of storing them |
 | `FRONTEND_URL` | absolute URL your users click in verification and reset emails |

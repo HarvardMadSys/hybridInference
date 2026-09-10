@@ -26,6 +26,7 @@ def mock_stores():
     """Create mock operational and log stores."""
     op_store = MagicMock()
     op_store.list_users = AsyncMock(return_value=(0, [], {}))
+    op_store.list_user_activity_providers = AsyncMock(return_value=[])
     op_store.get_user_by_id = AsyncMock()
     op_store.approve_user = AsyncMock()
     op_store.reject_user = AsyncMock()
@@ -149,6 +150,39 @@ def _user_row(
 # ========================================================================
 # Feature 1: User Search
 # ========================================================================
+
+
+@pytest.mark.asyncio
+async def test_user_filter_providers_union_logged_and_routable(admin_client):
+    """GET /admin/users/providers offers what the provider filter can match.
+
+    A provider that only survives in api_logs — removed or renamed since —
+    stays selectable, and a routed provider with no traffic yet is offered too.
+    """
+    client, op_store, _log_store, _log = admin_client
+    op_store.list_user_activity_providers.return_value = ["retired-vendor", "test"]
+
+    response = await client.get("/admin/users/providers", headers=AUTH)
+
+    assert response.status_code == 200
+    providers = {row["provider"]: row for row in response.json()["providers"]}
+    assert providers["retired-vendor"] == {
+        "provider": "retired-vendor",
+        "display_name": "retired-vendor",
+        "in_logs": True,
+        "routable": False,
+    }
+    assert providers["test"]["in_logs"] is True
+    assert providers["test"]["routable"] is True
+    assert [row["provider"] for row in response.json()["providers"]] == sorted(providers)
+    op_store.list_user_activity_providers.assert_awaited_once_with(days=30)
+
+
+@pytest.mark.asyncio
+async def test_user_filter_providers_requires_admin(admin_client):
+    client, _op_store, _log_store, _log = admin_client
+    response = await client.get("/admin/users/providers")
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -1503,6 +1537,7 @@ async def test_list_users_passes_new_filters_through(admin_client):
     """GET /admin/users?<new filters> forwards them to op_store.list_users."""
     client, op_store, _log_store, _log = admin_client
     op_store.list_users = AsyncMock(return_value=(0, [], {}))
+    op_store.list_user_activity_providers = AsyncMock(return_value=[])
 
     resp = await client.get(
         "/admin/users?min_cost_today=5&quota_state=near&provider=anthropic&active_within_hours=24",
@@ -1523,6 +1558,7 @@ async def test_list_users_min_cost_month_passes_through(admin_client):
     """min_cost_month forwarded as Decimal."""
     client, op_store, _log_store, _log = admin_client
     op_store.list_users = AsyncMock(return_value=(0, [], {}))
+    op_store.list_user_activity_providers = AsyncMock(return_value=[])
     resp = await client.get("/admin/users?min_cost_month=10.5", headers=AUTH)
     assert resp.status_code == 200
     kwargs = op_store.list_users.await_args.kwargs
@@ -1534,6 +1570,7 @@ async def test_list_users_quota_state_invalid_returns_422(admin_client):
     """Unknown quota_state returns 422."""
     client, op_store, _log_store, _log = admin_client
     op_store.list_users = AsyncMock(return_value=(0, [], {}))
+    op_store.list_user_activity_providers = AsyncMock(return_value=[])
     resp = await client.get("/admin/users?quota_state=bogus", headers=AUTH)
     assert resp.status_code == 422
 
@@ -1543,6 +1580,7 @@ async def test_list_users_anomaly_param_passes_through(admin_client):
     """GET /admin/users?anomaly=true forwards anomaly=True to op_store.list_users."""
     client, op_store, _log_store, _log = admin_client
     op_store.list_users = AsyncMock(return_value=(0, [], {}))
+    op_store.list_user_activity_providers = AsyncMock(return_value=[])
 
     resp = await client.get("/admin/users?anomaly=true", headers=AUTH)
     assert resp.status_code == 200
