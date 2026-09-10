@@ -347,16 +347,19 @@ uv run python distributions/example/fixtures/fake-openai-provider/server.py \
 ```
 
 Finally start the gateway with the opt-in
-[quota registry](../../config/examples/models.routewise.quota.yaml):
+[quota registry](../../config/examples/models.routewise.quota.yaml). Name the
+demo token once so the admin call below can reuse it:
 
 ```bash
+export DEMO_ADMIN_TOKEN=local-quota-demo-only
+
 PYTHONPATH=.:apps/backend \
   PYTHON_DOTENV_DISABLED=1 \
   BACKEND_EXTENSIONS=distributions.example.quota_extension \
   EXAMPLE_QUOTA_BASE_URL=http://127.0.0.1:18353 \
   MODELS_CONFIG_PATH=config/examples/models.routewise.quota.yaml \
   ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
-  DB_ENABLED=false USER_AUTH_ENABLED=false ADMIN_TOKEN=local-quota-demo-only \
+  DB_ENABLED=false USER_AUTH_ENABLED=false ADMIN_TOKEN="${DEMO_ADMIN_TOKEN}" \
   JWT_SECRET_KEY=local-quota-demo-signing-secret-not-for-production \
   uv run uvicorn serving.servers.app:app --host 127.0.0.1 --port 18080
 ```
@@ -369,7 +372,7 @@ console uses:
 
 ```bash
 curl http://127.0.0.1:18080/admin/provider-quotas \
-  -H 'Authorization: Bearer local-quota-demo-only'
+  -H "Authorization: Bearer ${DEMO_ADMIN_TOKEN}"
 ```
 
 Send several requests to calibrate the cost envelope and allow the first
