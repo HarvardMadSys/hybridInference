@@ -122,7 +122,7 @@ async def populated_client() -> AsyncGenerator[tuple[AsyncClient, dict[str, list
     that actually served it (``backup_provider``), not the primary
     ``final_endpoint``. The canned selection/bucket rows below are what the
     served-endpoint ``CASE`` yields. Underlying (conceptual) rows for
-    ``demo-chat``:
+    ``minimax-fast``:
       * 13:00 -> 2 rows served by ``...[wandb]-api`` (on_demand), lp optimal:
         one not hedged, one hedged with the primary leg winning
       * 13:00 -> 1 row hedged with the backup leg winning: primary was
@@ -148,17 +148,17 @@ async def populated_client() -> AsyncGenerator[tuple[AsyncClient, dict[str, list
         # The backup-won row lands under its backup endpoint (deepinfra).
         selection=[
             {
-                "endpoint": "demo-chat:openrouter[minimax/highspeed]-api",
+                "endpoint": "minimax-fast:openrouter[minimax/highspeed]-api",
                 "provider_type": "concurrency",
                 "cnt": 2,
             },
             {
-                "endpoint": "demo-chat:openrouter[wandb]-api",
+                "endpoint": "minimax-fast:openrouter[wandb]-api",
                 "provider_type": "on_demand",
                 "cnt": 2,
             },
             {
-                "endpoint": "demo-chat:openrouter[deepinfra]-api",
+                "endpoint": "minimax-fast:openrouter[deepinfra]-api",
                 "provider_type": "quota",
                 "cnt": 1,
             },
@@ -166,17 +166,17 @@ async def populated_client() -> AsyncGenerator[tuple[AsyncClient, dict[str, list
         buckets=[
             {
                 "bucket_start": datetime(2026, 7, 1, 13, 0, tzinfo=timezone.utc),
-                "endpoint": "demo-chat:openrouter[wandb]-api",
+                "endpoint": "minimax-fast:openrouter[wandb]-api",
                 "cnt": 2,
             },
             {
                 "bucket_start": datetime(2026, 7, 1, 13, 0, tzinfo=timezone.utc),
-                "endpoint": "demo-chat:openrouter[deepinfra]-api",
+                "endpoint": "minimax-fast:openrouter[deepinfra]-api",
                 "cnt": 1,
             },
             {
                 "bucket_start": datetime(2026, 7, 1, 14, 0, tzinfo=timezone.utc),
-                "endpoint": "demo-chat:openrouter[minimax/highspeed]-api",
+                "endpoint": "minimax-fast:openrouter[minimax/highspeed]-api",
                 "cnt": 2,
             },
         ],
@@ -205,11 +205,11 @@ async def populated_client() -> AsyncGenerator[tuple[AsyncClient, dict[str, list
 @pytest.mark.asyncio
 async def test_decisions_aggregates_from_rows(populated_client):
     client, _calls = populated_client
-    resp = await client.get("/admin/routewise/decisions?model_id=demo-chat")
+    resp = await client.get("/admin/routewise/decisions?model_id=minimax-fast")
     assert resp.status_code == 200, resp.text
     body = resp.json()
 
-    assert body["model_id"] == "demo-chat"
+    assert body["model_id"] == "minimax-fast"
     assert body["range"] == "24h"
     assert body["bucket_seconds"] == 3600
     assert body["total_requests"] == 6
@@ -219,17 +219,17 @@ async def test_decisions_aggregates_from_rows(populated_client):
     # the primary (wandb); wandb therefore holds 2, deepinfra 1.
     assert body["selection_share"] == [
         {
-            "endpoint": "demo-chat:openrouter[minimax/highspeed]-api",
+            "endpoint": "minimax-fast:openrouter[minimax/highspeed]-api",
             "provider_type": "concurrency",
             "count": 2,
         },
         {
-            "endpoint": "demo-chat:openrouter[wandb]-api",
+            "endpoint": "minimax-fast:openrouter[wandb]-api",
             "provider_type": "on_demand",
             "count": 2,
         },
         {
-            "endpoint": "demo-chat:openrouter[deepinfra]-api",
+            "endpoint": "minimax-fast:openrouter[deepinfra]-api",
             "provider_type": "quota",
             "count": 1,
         },
@@ -246,14 +246,14 @@ async def test_decisions_aggregates_from_rows(populated_client):
         {
             "bucket_start": "2026-07-01T13:00:00+00:00",
             "counts": {
-                "demo-chat:openrouter[wandb]-api": 2,
-                "demo-chat:openrouter[deepinfra]-api": 1,
+                "minimax-fast:openrouter[wandb]-api": 2,
+                "minimax-fast:openrouter[deepinfra]-api": 1,
             },
             "hedge": {"not_hedged": 2, "hedged_primary_won": 1, "hedged_backup_won": 1},
         },
         {
             "bucket_start": "2026-07-01T14:00:00+00:00",
-            "counts": {"demo-chat:openrouter[minimax/highspeed]-api": 2},
+            "counts": {"minimax-fast:openrouter[minimax/highspeed]-api": 2},
             "hedge": {"not_hedged": 2, "hedged_primary_won": 0, "hedged_backup_won": 0},
         },
     ]
@@ -262,7 +262,7 @@ async def test_decisions_aggregates_from_rows(populated_client):
 @pytest.mark.asyncio
 async def test_decisions_issues_expected_sql(populated_client):
     client, calls = populated_client
-    resp = await client.get("/admin/routewise/decisions?model_id=demo-chat")
+    resp = await client.get("/admin/routewise/decisions?model_id=minimax-fast")
     assert resp.status_code == 200, resp.text
 
     # Counts query: exact model match, routewise-key presence, 24h window, and
@@ -274,7 +274,7 @@ async def test_decisions_issues_expected_sql(populated_client):
     assert "(metadata->'routewise'->>'hedged') = 'true'" in count_query
     assert "(metadata->'routewise'->>'hedge_winner') = 'backup'" in count_query
     assert "percentile_cont(0.5)" in count_query
-    assert count_args == ("demo-chat", 86_400)
+    assert count_args == ("minimax-fast", 86_400)
     # unattributed = no SERVED endpoint (not merely no final_endpoint), so a
     # backup win with a backup_provider stays attributed. The CASE falls back to
     # final_endpoint via COALESCE when backup_provider is NULL.
@@ -291,7 +291,7 @@ async def test_decisions_issues_expected_sql(populated_client):
     ]
     assert bucket_calls, "expected the buckets query to run"
     bucket_query, bucket_args = bucket_calls[0]
-    assert bucket_args == ("demo-chat", 86_400, 3_600)
+    assert bucket_args == ("minimax-fast", 86_400, 3_600)
     assert f"{SERVED_ENDPOINT_SQL} AS endpoint" in bucket_query
     assert f"({SERVED_ENDPOINT_SQL}) IS NOT NULL" in bucket_query
 
@@ -310,7 +310,7 @@ async def test_decisions_issues_expected_sql(populated_client):
     hedge_query, hedge_args = hedge_calls[0]
     assert "final_endpoint" not in hedge_query
     assert SERVED_ENDPOINT_SQL not in hedge_query
-    assert hedge_args == ("demo-chat", 86_400, 3_600)
+    assert hedge_args == ("minimax-fast", 86_400, 3_600)
 
 
 @pytest.mark.asyncio

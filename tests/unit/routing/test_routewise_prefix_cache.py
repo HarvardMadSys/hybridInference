@@ -235,7 +235,7 @@ class TestCacheAwareCostEstimator:
         assert result.adjusted_cost == pytest.approx(0.01)
 
     def test_no_discount_when_price_delta_zero(self):
-        # The demo-chat-pro OpenRouter leg (cache_reads=0) must be a no-op.
+        # The minimax-m2.5 OpenRouter leg (cache_reads=0) must be a no-op.
         est = CacheAwareCostEstimator()
         result = est.adjust(0.01, self._signal(), price_delta=0.0)
         assert result.applied is False

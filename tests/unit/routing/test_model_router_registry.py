@@ -508,13 +508,13 @@ class TestModelRouterRegistry:
 
         reg = ModelRouterRegistry(
             models_config={
-                "demo-chat-pro": {
+                "minimax-m2.5": {
                     "router": "routewise",
                     "router_params": {
                         "budget_alpha": 0.5,
                     },
                 },
-                "Example-Model": {
+                "MiniMax-M2.5": {
                     "router": "routewise",
                     "router_params": {
                         "budget_alpha": 0.5,
@@ -522,12 +522,12 @@ class TestModelRouterRegistry:
                 },
             },
             default_router_name="fixed",
-            alias_to_model={"Example-Model": "demo-chat-pro"},
+            alias_to_model={"MiniMax-M2.5": "minimax-m2.5"},
             shared_fixed_router=FixedRouter(),
         )
 
-        canonical = reg.get_router("demo-chat-pro")
-        alias = reg.get_router("Example-Model")
+        canonical = reg.get_router("minimax-m2.5")
+        alias = reg.get_router("MiniMax-M2.5")
 
         assert isinstance(canonical, RouteWiseRouter)
         assert alias is canonical
