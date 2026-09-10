@@ -1,7 +1,7 @@
 # HybridInference
 
-HybridInference is an open-source gateway for sharing local models and external
-model APIs with a team. It is developed by the
+HybridInference is an open-source, self-hosted LLM gateway for serving local
+models and external model APIs to a team. It is developed by the
 [Harvard MadSys Lab](https://juncheng.seas.harvard.edu/) at Harvard SEAS and powers
 [FreeInference](https://freeinference.org/).
 
@@ -52,18 +52,25 @@ including uppercase, lowercase, and a number), then sign in. From the
 dashboard, create an API key, open the API Playground, or enter the Admin
 Console. The example model returns the fixed reply `RUNNABLE_EXAMPLE_OK`.
 
+When you are done, stop the stack. Its database volume is kept for the next
+run:
+
+```bash
+make demo-down DISTRIBUTION=example
+```
+
 To connect real models, add a provider, credentials, and model routes through
 the [admin console](docs/developer/configuration.md#runtime-configuration-from-the-admin-console),
 or follow the [local server setup](docs/developer/router-tutorial.md#stage-3-replace-the-fake-provider-with-local-inference).
-The [Router Tutorial](docs/developer/router-tutorial.md) includes prerequisites,
-API calls, request-history checks, and instructions for stopping the example.
+The [Router Tutorial](docs/developer/router-tutorial.md) covers prerequisites,
+API calls, request-history checks, and how to resume or reset the example.
 
 ### Backend with an OpenRouter Key
 
 For a backend-only setup against real models, install
-[Python and uv](docs/developer/installation.md) and run the following from the
-repository root. The reference registry includes two OpenRouter-served models
-and an optional local route.
+[Python and uv](docs/developer/installation.md#development-checkout-no-docker)
+and run the following from the repository root. The reference registry includes
+two OpenRouter-served models and an optional local route.
 
 ```bash
 uv sync
@@ -94,7 +101,7 @@ row describes you:
 
 | If you want to | Start here |
 |---|---|
-| Watch a gateway serve a request, with no account, key or GPU | [Quickstart](docs/developer/router-tutorial.md) |
+| Follow the tutorial through to a local vLLM, SGLang, or Ollama server | [Router Tutorial](docs/developer/router-tutorial.md) |
 | Run your own gateway against real providers | [Installation](docs/developer/installation.md) |
 | Understand how a request becomes a routing decision | [Architecture](docs/developer/architecture.md) |
 | Add a model, a local server, or a new provider | [Adding a New Model](docs/developer/adding-models.md) |
