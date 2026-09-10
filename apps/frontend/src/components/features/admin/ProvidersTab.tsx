@@ -51,14 +51,13 @@ function concurrencyMessage(provider: ProviderQuotaResult): string | null {
   if (usage.limit == null) {
     return 'Concurrency available';
   }
-  return `Concurrency ${formatNum(usage.limit)} units`;
+  return `Concurrency ${formatNum(usage.limit)}${usage.unit ? ` ${usage.unit}` : ''}`;
 }
 
-// A provider whose fetcher reports availability — a probe, a concurrency
-// allowance — rather than a drawn-down quota gets a one-line status.
+// A single concurrency allowance or a probe error gets a one-line status.
 function reportsAvailability(provider: ProviderQuotaResult): boolean {
   return (
-    provider.usages.some((u) => u.label.toLowerCase() === 'concurrency') ||
+    (provider.usages.length === 1 && provider.usages[0].label.toLowerCase() === 'concurrency') ||
     provider.error === 'plan_api_disabled' ||
     provider.error === 'probe_unavailable'
   );
