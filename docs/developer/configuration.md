@@ -287,17 +287,121 @@ live code reloads, and restart the backend when changing the mounted extension.
 See [Deployment-local adapters](adding-models.md#deployment-local-adapters) for
 a minimal factory example.
 
-Quota reporting is an extension point of the same shape. The gateway ships the
-Providers tab's framework — key discovery, per-key result rows, the
-disabled-key cards, `gather_all` — but no fetcher for any vendor's account or
-usage endpoint: which vendors' pages get read is a property of a deployment. An
-extension's `register()` calls
+### Quota reporting
+
+The gateway keeps quota reporting and quota-aware routing independent of the
+service that measures usage. The public framework supplies the Providers
+tab's result rows, disabled-key cards, key discovery and `gather_all`, plus
+RouteWise's quota snapshots. No quota source is enabled by default. A trusted
+backend extension connects an authorized usage API or the operator's own
+metering service; the framework does not require a particular supplier,
+website login or cookie.
+
+An extension's `register()` calls
 `serving.admin.provider_quotas.register_quota_fetcher(provider, display_name, fetch)`;
 `fetch` is awaited as `fetch(operational_store, services)` and returns one
 `ProviderQuotaResult` per configured key, converting its own failures into
-results rather than raising. RouteWise `quota_source:` routes resolve through
-the same registry, so a deployment that meters a provider registers exactly
-one fetcher for it.
+results rather than raising. The admin endpoint supplies the store and services;
+RouteWise currently calls it with `(None, None)`, so the fetcher must also work
+without those objects. Registration runs at startup, not when the module is
+merely imported. A fetcher queries usage; it does not send user inference
+requests or change the route's inference protocol.
+
+Each result contains `ProviderQuotaUsage` rows with `label`, `used`, `limit`,
+`unit` and an optional timezone-aware `reset_at`. The deployment's provider
+identifier links the source to its routes; it is not a hard-coded vendor
+enum. `quota_source.provider`, `usage_label` and `unit` must exactly match a
+returned result and usage row. Report the account/window shared by that quota
+pool, and keep independent accounts in distinct sources. Do not sum unrelated
+keys or present a failed query as zero usage.
+
+The UI can display percentages, currencies and other units, but RouteWise's
+quota admission consumes one **request** at a time and requires a compatible
+count-based source. A percentage alone is not a request allowance. The source
+owns window boundaries and reset times; `quota.limit` is a cross-check against
+its reported limit, not a replacement measurement. A source with no successful
+snapshot stays unready. A failed refresh does not manufacture a fresh balance;
+an existing pool retains its last successful snapshot and local increments.
+
+#### Run a local quota source
+
+The complete [example extension](../../distributions/example/quota_extension.py)
+reads `/usage` from the bundled fake provider. Its in-memory daily counter is
+only a teaching fixture, resets on process restart or at UTC midnight, and is
+not production accounting. It uses no real account or credential and is loaded
+only when explicitly selected through `BACKEND_EXTENSIONS`.
+
+After the developer setup, run these commands from the repository root in
+three terminals. First, start a simulated quota provider:
+
+```bash
+uv run python distributions/example/fixtures/fake-openai-provider/server.py \
+  --port 18353 --response-text ROUTED_TO_QUOTA --quota-limit 100
+```
+
+Then start a slower, priced fallback (its prices in the example are fictional):
+
+```bash
+uv run python distributions/example/fixtures/fake-openai-provider/server.py \
+  --port 18352 --response-text ROUTED_TO_FALLBACK --ttft-delay-ms 400
+```
+
+Finally start the gateway with the opt-in
+[quota registry](../../config/examples/models.routewise.quota.yaml):
+
+```bash
+PYTHONPATH=.:apps/backend \
+  PYTHON_DOTENV_DISABLED=1 \
+  BACKEND_EXTENSIONS=distributions.example.quota_extension \
+  EXAMPLE_QUOTA_BASE_URL=http://127.0.0.1:18353 \
+  MODELS_CONFIG_PATH=config/examples/models.routewise.quota.yaml \
+  ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
+  DB_ENABLED=false USER_AUTH_ENABLED=false ADMIN_TOKEN=local-quota-demo-only \
+  JWT_SECRET_KEY=local-quota-demo-signing-secret-not-for-production \
+  uv run uvicorn serving.servers.app:app --host 127.0.0.1 --port 18080
+```
+
+These settings disable dotenv loading and user authentication and use a public
+demo-only admin token and JWT signing secret: keep the listener on loopback and
+never use them for a real deployment. The admin endpoint needs the signing
+secret even when authenticating with the demo token. Read the same result the
+console uses:
+
+```bash
+curl http://127.0.0.1:18080/admin/provider-quotas \
+  -H 'Authorization: Bearer local-quota-demo-only'
+```
+
+Send several requests to calibrate the cost envelope and allow the first
+five-second probe/snapshot cycle to finish:
+
+```bash
+curl http://127.0.0.1:18080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"quota-demo","messages":[{"role":"user","content":"hi"}]}'
+```
+
+The response identifies the selected fixture. Initial requests use the fallback
+until the quota route has both a usage snapshot and cost-envelope evidence.
+Accepted chat requests, including active probes, consume the mock quota;
+health, model discovery and `/usage` reads do not. To simulate exhaustion,
+restart only the quota fixture with `--quota-limit 100 --quota-used 100`; after
+the next snapshot refresh, requests continue through the fallback. Stop each
+local process with Ctrl+C when finished.
+
+To see the card in the authenticated Web/Admin Console, configure this same
+extension and registry on a local full-stack demo backend, then open
+**Providers → Quotas**. Use a quota endpoint reachable from that backend:
+inside Compose, `127.0.0.1` denotes the backend container, not the host. The
+[Router Tutorial](router-tutorial.md) covers the full-stack demo and its
+authentication. With no returned results the Quotas tab stays visible and
+links back here; Overview, Keys, Availability and Performance are independent.
+
+For your own integration, copy the extension and replace its local HTTP query
+and mapping with your authorized data source. Preserve the result contract, bound network
+requests with a timeout, handle failures explicitly and keep credentials out
+of responses and logs. Supplier-specific authorization and service terms still
+apply; using an extension is a software boundary, not an exemption from them.
 
 ## The example distribution
 

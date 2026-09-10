@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-09 21:13+0800\n"
+"POT-Creation-Date: 2026-09-10 11:02+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -1196,34 +1196,45 @@ msgid ""
 "RouteWise calls those fetchers itself through "
 "`ProviderQuotaSnapshotStore` (`apps/backend/routing/routewise/quota.py`) "
 "rather than reading the admin poller's cache, and resolves them through "
-"the registry the Providers tab uses: the gateway ships no fetchers, and a"
-" backend extension registers one per provider with "
-"`register_quota_fetcher` (see [Backend extensions](configuration.md"
-"#backend-extensions)). `usage_label` is the fetcher's own label string, "
-"not an operator-chosen name."
-msgstr "**配额来源**。`quota_source:` 是一个选择器，不是抓取器。它指定 `provider` / `usage_label` / `unit` 三项，`_find_usage` 会拿这三项和 provider 的配额抓取器返回的用量记录做精确匹配。RouteWise 是通过 `ProviderQuotaSnapshotStore`（`apps/backend/routing/routewise/quota.py`）自己去调这些抓取器的，并不读 admin 轮询器的缓存；抓取器则通过 Providers 标签页用的同一个注册表解析：网关本身不带任何抓取器，由后端扩展用 `register_quota_fetcher` 为每个 provider 注册一个（见[后端扩展](configuration.md#backend-extensions)）。`usage_label` 是抓取器自己的标签字符串，不是运维可以随便起的名字。"
+"the registry the Providers tab uses: the gateway enables no fetchers by "
+"default, and a backend extension registers one per provider with "
+"`register_quota_fetcher` (see [Quota reporting](configuration.md#quota-"
+"reporting)). `usage_label` is the fetcher's own label string, not an "
+"operator-chosen name."
+msgstr ""
+"**配额来源**。`quota_source:` 是一个选择器，不是抓取器。它指定 `provider` / `usage_label` / "
+"`unit` 三项，`_find_usage` 会拿这三项和 provider 的配额抓取器返回的用量记录做精确匹配。RouteWise 是通过 "
+"`ProviderQuotaSnapshotStore`（`apps/backend/routing/routewise/quota.py`）自己去调这些抓取器的，并不读"
+" admin 轮询器的缓存；抓取器则通过 Providers 标签页用的同一个注册表解析：网关默认不启用任何抓取器，由后端扩展用 "
+"`register_quota_fetcher` 为每个 provider 注册一个（见[配额报告](configuration.md"
+"#quota-reporting)）。`usage_label` 是抓取器自己的标签字符串，不是运维可以随便起的名字。"
 
 #: ../developer/routing.md:647
 msgid ""
-"The route's `kind:` and credential belong to the same contract. A fetcher"
-" discovers its own keys by provider — one registered for `chutes` looks "
-"for `CHUTES_API_KEY` and for keys bound to `chutes` routes — so a quota "
-"route served through the generic `openai_compat` adapter under an "
-"unrelated key never joins that pool: inference authenticates, and the "
-"quota snapshot stays `not_configured`. Match `kind:` to the provider and "
-"use the provider's own key variable."
-msgstr "路由的 `kind:` 和它的凭据属于同一份契约。抓取器是按 provider 去发现自己的 key 的——为 `chutes` 注册的那个找的是 `CHUTES_API_KEY`，以及绑定在 `chutes` 路由上的 key——所以一条走通用 `openai_compat` adapter、用着不相干 key 的配额路由，永远不会加入那个池子：推理请求能通过鉴权，而配额快照会一直停在 `not_configured`。请让 `kind:` 与 provider 对应，并使用该 provider 自己的 key 变量。"
+"The route's `kind:` chooses its inference protocol; its `provider:` "
+"identifies the deployment's service/account and can differ from the kind."
+" The fetcher must measure the account used by the corresponding routes, "
+"whether it uses their inference key or a separate billing credential. The"
+" [local quota example](../../config/examples/models.routewise.quota.yaml)"
+" uses `kind: openai_compat` with `provider: example_quota` and a matching"
+" registered source. It runs without a real supplier account; the default "
+"two-provider example remains unchanged until this separate registry is "
+"selected."
+msgstr "路由的 `kind:` 选择推理协议；`provider:` 标识部署的服务或账户，可以与 kind 不同。无论抓取器使用推理密钥还是独立的计费凭据，都必须计量对应路由使用的账户。[本地配额示例](../../config/examples/models.routewise.quota.yaml)使用 `kind: openai_compat`、`provider: example_quota` 和与之匹配的已注册来源。它无需真实供应商账户即可运行；不选择这份独立注册表时，原有双供应商示例保持不变。"
 
-#: ../developer/routing.md:655
+#: ../developer/routing.md:656
 msgid ""
 "A `provider` with no registered fetcher, or a mistyped label, simply "
 "never resolves. Nothing warns about it — the only quota log lines are a "
 "refresh failure and a provider/route limit mismatch — so the route stays "
 "unready and is skipped in silence. Verify a new quota source against the "
 "fetcher before shipping it."
-msgstr "写了一个没有注册抓取器的 `provider`，或者标签拼错，结果就是它永远解析不出来。而且没有任何警告——配额相关的日志只有「刷新失败」和「provider/路由 limit 不一致」两条——所以这条路由会一直处于未就绪状态，被静默跳过。上线一个新的配额来源之前，请先对着抓取器验证一遍。"
+msgstr ""
+"写了一个没有注册抓取器的 "
+"`provider`，或者标签拼错，结果就是它永远解析不出来。而且没有任何警告——配额相关的日志只有「刷新失败」和「provider/路由 "
+"limit 不一致」两条——所以这条路由会一直处于未就绪状态，被静默跳过。上线一个新的配额来源之前，请先对着抓取器验证一遍。"
 
-#: ../developer/routing.md:661
+#: ../developer/routing.md:662
 msgid ""
 "The `local` provider seen in admin-created routes is not a third fetcher:"
 " it is a gateway-side per-request counter installed through "
@@ -1248,7 +1259,7 @@ msgstr ""
 "或花费；并且它在下一个**服务器本地午夜**重置，所以它只能建模「每日上限」，别的都不行。四小时窗口、按月窗口、或者由 provider "
 "决定何时重置的套餐，都需要一个真正的 `quota_source`。"
 
-#: ../developer/routing.md:674
+#: ../developer/routing.md:675
 #, python-brace-format
 msgid ""
 "**Endpoint identity.** Latency profiles, availability tracking and "
@@ -1270,7 +1281,7 @@ msgstr ""
 "`{kind}-api`。所以一次改动只要动到了被推导的那一部分——本地换端口、远端换厂商主机名——就会给端点改名并让它的延迟画像重新开始；没动到的（比如在同一端口上的本地主机之间迁移）则会保留。静态"
 " `models.yaml` 里的 `route_id:` 永远不会覆盖它；那个字段属于 admin 的 provider-routes API。"
 
-#: ../developer/routing.md:685
+#: ../developer/routing.md:686
 msgid ""
 "**Cold start.** A quota-bearing route needs a calibrated cost envelope, "
 "built from recent request history. A model whose quota route sits "
@@ -1284,7 +1295,7 @@ msgstr ""
 " `EnvelopeNotCalibratedError`，bootstrap "
 "会把它向上传播，于是整个部署快速失败，而不是对外提供一个根本路由不了的模型。"
 
-#: ../developer/routing.md:692
+#: ../developer/routing.md:693
 msgid ""
 "**Worker scope.** RouteWise decision state, latency profiles, quota and "
 "concurrency reservations, and per-model transition locks are process-"
@@ -1301,13 +1312,13 @@ msgstr ""
 "`stateful_providers_single_worker_only`，默认为 true）。只用 on-demand 路由的 "
 "RouteWise 模型可以跑多个 worker，但每个 worker 仍然各学各的。"
 
-#: ../developer/routing.md:700
+#: ../developer/routing.md:701
 msgid ""
 "**Runtime tuning.** Admin endpoints resolve a model id passed as a query "
 "parameter, because model ids may contain `/`:"
 msgstr "**运行期调参**。管理端点从查询参数里取模型 id，因为模型 id 可能包含 `/`："
 
-#: ../developer/routing.md:709
+#: ../developer/routing.md:710
 msgid ""
 "Settings are model-scoped, and aliases resolve to the canonical model, so"
 " an alias and its canonical model always read and write the same values. "
@@ -1320,11 +1331,11 @@ msgstr ""
 "`GET`/`PATCH /admin/routewise/settings` 端点仍然保留，如今它设定的是一个兜底值，供既没有模型级覆盖、也没有"
 " `router_params:` 取值的模型使用。"
 
-#: ../developer/routing.md:716
+#: ../developer/routing.md:717
 msgid "Reserving upstream keys for a tier"
 msgstr "为某个层级预留上游 key"
 
-#: ../developer/routing.md:718
+#: ../developer/routing.md:719
 msgid ""
 "A provider credential can be reserved for a user role and above, so "
 "premium upstream capacity is not spent by the lowest tier. Reservation "
@@ -1336,7 +1347,7 @@ msgstr ""
 "上而不是模型上：模型目录里的 `required_role` 决定一个用户*能调用什么*，而 key 的 `min_role` "
 "决定*谁的*请求可以花掉这份凭据。"
 
-#: ../developer/routing.md:724
+#: ../developer/routing.md:725
 msgid ""
 "Each key in a `KeyPool` (`apps/backend/serving/adapters/key_pool.py`) "
 "carries a `min_role`, defaulting to `free` — no reservation. Anything "
@@ -1347,7 +1358,7 @@ msgstr ""
 "`min_role`，默认是 `free`——即不预留。任何更高的取值（`pro`、`internal`、`admin`）都会让这把 key "
 "对层级低于它的调用方不可见："
 
-#: ../developer/routing.md:728
+#: ../developer/routing.md:729
 msgid ""
 "**Selection.** Reserved keys are filtered out for callers that do not "
 "meet `min_role`. Among the keys a caller *may* use, the most-reserved go "
@@ -1357,7 +1368,7 @@ msgstr ""
 "**选取**。对达不到 `min_role` 的调用方，被预留的 key 会被过滤掉。在一个调用方*可以*使用的 key "
 "之中，预留层级最高的排在最前，因此有资格的调用方会先耗尽为它留出的容量，再退回到所有层级共享的那些 key。"
 
-#: ../developer/routing.md:732
+#: ../developer/routing.md:733
 msgid ""
 "**Affinity.** The pool's own five-minute key binding is honoured only for"
 " the role that created it, and any change to what the pool holds — a tier"
@@ -1376,7 +1387,7 @@ msgstr ""
 "key 时，绑定仍然保留，因为那是暂态，`acquire` 会绕开它重新挑选；绑定到已被移除的 key "
 "则一律作废。只有声明发生变化才会触发这件事，所以普通流量不会因此丢掉 prompt 缓存的预热。"
 
-#: ../developer/routing.md:742
+#: ../developer/routing.md:743
 msgid ""
 "**Exhaustion.** A caller whose usable keys are all muted (or who has "
 "none) gets `KeyPoolExhausted`, which the router treats as an upstream "
@@ -1385,7 +1396,7 @@ msgstr ""
 "**耗尽**。如果一个调用方可用的 key 全部被静默（或者它一把也没有），就会得到 `KeyPoolExhausted`；router "
 "把它当作一次上游失败，转而回退到下一条路由。"
 
-#: ../developer/routing.md:745
+#: ../developer/routing.md:746
 msgid ""
 "**Health accounting.** When the pool could still serve an unrestricted "
 "caller, the refusal is a `KeyPoolRoleRestricted` (a `KeyPoolExhausted` "
@@ -1403,7 +1414,7 @@ msgstr ""
 "的层级提供服务；把它计入的话，一波低层级流量的突发就能打开熔断器，把预留容量从它本该服务的调用方手里剥走。一个*谁都*用不了的池仍然是普通的 "
 "`KeyPoolExhausted`，照常计入。"
 
-#: ../developer/routing.md:752
+#: ../developer/routing.md:753
 msgid ""
 "**Single-adapter surfaces.** `/v1/messages` commits to one adapter up "
 "front instead of walking the fallback chain, so it picks the first "
@@ -1414,7 +1425,7 @@ msgstr ""
 "adapter，而不是沿着回退链走下去，因此它会挑第一个持有该调用方可以花掉的 key 的 adapter。否则，一个被预留的首个 adapter"
 " 会让本可由另一条路由服务的请求直接硬失败。"
 
-#: ../developer/routing.md:757
+#: ../developer/routing.md:758
 msgid ""
 "The caller's role reaches the pool through the request context, published"
 " by the API-key auth dependency. Requests with no user identity — health "
@@ -1425,7 +1436,7 @@ msgstr ""
 "调用方的角色经由请求上下文抵达 key 池，由 API key 鉴权依赖项发布。没有用户身份的请求——健康探测、预热、管理员 "
 "playground——不带角色，一律按不受限处理：预留是对更低的*层级*扣住容量，而不是对网关自己的机件。"
 
-#: ../developer/routing.md:763
+#: ../developer/routing.md:764
 msgid ""
 "**Managing it.** Reservation is declared through the admin API rather "
 "than an env var, because pool membership comes from each route's "
@@ -1471,7 +1482,7 @@ msgstr ""
 msgid "`provider_env_key_min_roles`, keyed by the key's hash"
 msgstr "`provider_env_key_min_roles`，以该 key 的哈希为键"
 
-#: ../developer/routing.md:774
+#: ../developer/routing.md:775
 msgid ""
 "An environment credential has no row of its own, so its reservation is "
 "keyed by hash. Two consequences: the reservation outlives the key leaving"
@@ -1483,7 +1494,7 @@ msgstr ""
 "环境变量里的凭据没有属于自己的数据库行，所以它的预留以哈希为键。这带来两个后果：这把 key "
 "退出轮换之后预留依然存在（把变量恢复回去，它就会以当初预留的层级回来），以及管理列表里可能出现一条凭据在任何地方都没有配置的预留——这样它可以被主动解除，而不是潜伏在那里等着。"
 
-#: ../developer/routing.md:780
+#: ../developer/routing.md:781
 msgid ""
 "`apps/backend/serving/adapters/dynamic_keys.py` owns the enforced tier, "
 "because pools are built from adapter config (which carries no tier) and "
@@ -1499,7 +1510,7 @@ msgstr ""
 "缓存，并在启动时以及每次管理端改动之后从数据库刷新。同一份凭据被配置了两次时，**最严格的那条声明胜出**：`free` "
 "表示*没有*声明，而不是断言人人都可以花这把 key，因此加一条更宽松的重复声明并不能放宽访问，结果也不依赖配置顺序。"
 
-#: ../developer/routing.md:789
+#: ../developer/routing.md:790
 msgid ""
 "**Limit: a provider with no key pool cannot carry a reservation.** "
 "`min_role` is enforced by `KeyPool`, so it reaches `openai_compat` routes"
@@ -1537,3 +1548,25 @@ msgstr ""
 #~ "require admin authentication."
 #~ msgstr "运行期的路由与权重管理在 `/admin/routing/...` 下，那些接口确实需要管理员鉴权。"
 
+#~ msgid ""
+#~ "The route's `kind:` and credential "
+#~ "belong to the same contract. A "
+#~ "fetcher discovers its own keys by "
+#~ "provider — one registered for `chutes`"
+#~ " looks for `CHUTES_API_KEY` and for "
+#~ "keys bound to `chutes` routes — so"
+#~ " a quota route served through the "
+#~ "generic `openai_compat` adapter under an "
+#~ "unrelated key never joins that pool: "
+#~ "inference authenticates, and the quota "
+#~ "snapshot stays `not_configured`. Match `kind:`"
+#~ " to the provider and use the "
+#~ "provider's own key variable."
+#~ msgstr ""
+#~ "路由的 `kind:` 和它的凭据属于同一份契约。抓取器是按 provider 去发现自己的"
+#~ " key 的——为 `chutes` 注册的那个找的是 "
+#~ "`CHUTES_API_KEY`，以及绑定在 `chutes` 路由上的 key——所以一条走通用"
+#~ " `openai_compat` adapter、用着不相干 key "
+#~ "的配额路由，永远不会加入那个池子：推理请求能通过鉴权，而配额快照会一直停在 `not_configured`。请让 "
+#~ "`kind:` 与 provider 对应，并使用该 provider 自己的"
+#~ " key 变量。"

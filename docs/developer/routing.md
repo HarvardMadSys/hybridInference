@@ -639,18 +639,19 @@ exactly against the usage records a provider's quota fetcher returns. RouteWise
 calls those fetchers itself through `ProviderQuotaSnapshotStore`
 (`apps/backend/routing/routewise/quota.py`) rather than reading the admin
 poller's cache, and resolves them through the registry the Providers tab uses:
-the gateway ships no fetchers, and a backend extension registers one per
+the gateway enables no fetchers by default, and a backend extension registers one per
 provider with `register_quota_fetcher` (see
-[Backend extensions](configuration.md#backend-extensions)). `usage_label` is
+[Quota reporting](configuration.md#quota-reporting)). `usage_label` is
 the fetcher's own label string, not an operator-chosen name.
 
-The route's `kind:` and credential belong to the same contract. A fetcher
-discovers its own keys by provider — one registered for `chutes` looks for
-`CHUTES_API_KEY` and for keys bound to `chutes` routes — so a quota route
-served through the generic `openai_compat` adapter under an unrelated key
-never joins that pool: inference authenticates, and the quota snapshot stays
-`not_configured`. Match `kind:` to the provider and use the provider's own key
-variable.
+The route's `kind:` chooses its inference protocol; its `provider:` identifies
+the deployment's service/account and can differ from the kind. The fetcher
+must measure the account used by the corresponding routes, whether it uses
+their inference key or a separate billing credential. The
+[local quota example](../../config/examples/models.routewise.quota.yaml) uses
+`kind: openai_compat` with `provider: example_quota` and a matching registered
+source. It runs without a real supplier account; the default two-provider
+example remains unchanged until this separate registry is selected.
 
 A `provider` with no registered fetcher, or a mistyped label, simply never
 resolves. Nothing warns about it — the only quota log lines are a refresh
