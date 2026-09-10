@@ -673,7 +673,11 @@ function DeleteProviderModal({ provider, onClose, onDeleted }: DeleteProviderMod
   );
 }
 
-export function ProviderOverviewTab() {
+interface ProviderOverviewTabProps {
+  onManageKeys: (provider: string) => void;
+}
+
+export function ProviderOverviewTab({ onManageKeys }: ProviderOverviewTabProps) {
   const [providers, setProviders] = useState<ProviderDefinitionItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -755,14 +759,15 @@ export function ProviderOverviewTab() {
                 <tr>
                   <th className="px-4 py-2.5">Provider</th>
                   <th className="px-4 py-2.5">Endpoint</th>
-                  <th className="px-4 py-2.5 text-right">Usage</th>
+                  <th className="px-4 py-2.5 text-right">Resources</th>
                   <th className="px-4 py-2.5 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {providers.map((provider) => {
                   const custom = provider.source === 'custom';
-                  const inUse = provider.models_count > 0;
+                  const hasLinkedModels = provider.models_count > 0;
+                  const deleteReasonId = `provider-delete-reason-${provider.provider}`;
                   return (
                     <tr key={provider.provider} className="transition-colors hover:bg-gray-50/70">
                       <td className="px-4 py-3.5">
@@ -791,39 +796,39 @@ export function ProviderOverviewTab() {
                         />
                       </td>
                       <td className="px-4 py-3.5 text-right">
-                        {custom ? (
-                          <div className="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setEditTarget(provider)}
-                              className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-gray-700 hover:bg-gray-100"
-                            >
-                              Edit
-                            </button>
-                            {inUse ? (
-                              <span
-                                className="px-2.5 py-1.5 text-[12px] text-gray-400"
-                                title={`Used by ${provider.models_count} model(s). Remove those routes in Routing before deleting.`}
-                              >
-                                In use
-                              </span>
-                            ) : (
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => onManageKeys(provider.provider)}
+                            className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-gray-700 hover:bg-gray-100"
+                          >
+                            Manage keys
+                          </button>
+                          {custom && (
+                            <>
                               <button
                                 type="button"
+                                onClick={() => setEditTarget(provider)}
+                                className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-gray-700 hover:bg-gray-100"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                disabled={hasLinkedModels}
+                                aria-describedby={hasLinkedModels ? deleteReasonId : undefined}
                                 onClick={() => setDeleteTarget(provider)}
-                                className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50"
+                                className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-gray-400 disabled:hover:bg-transparent"
                               >
                                 Delete
                               </button>
-                            )}
-                          </div>
-                        ) : (
-                          <span
-                            className="text-[12px] text-gray-300"
-                            title="Defined in config/models.yaml. Manage in the Routing and Keys tabs."
-                          >
-                            —
-                          </span>
+                            </>
+                          )}
+                        </div>
+                        {custom && hasLinkedModels && (
+                          <p id={deleteReasonId} className="mt-1 text-[11px] text-gray-500">
+                            Remove linked model routes before deleting.
+                          </p>
                         )}
                       </td>
                     </tr>

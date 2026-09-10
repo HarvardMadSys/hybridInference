@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProviderOverviewTab } from './ProviderOverviewTab';
@@ -61,7 +61,7 @@ describe('ProviderOverviewTab', () => {
   });
 
   it('renders the registry table with usage summary and no source labels', async () => {
-    render(<ProviderOverviewTab />);
+    render(<ProviderOverviewTab onManageKeys={vi.fn()} />);
 
     expect(await screen.findByText('OpenRouter')).toBeInTheDocument();
     expect(screen.getByText('Acme')).toBeInTheDocument();
@@ -71,12 +71,49 @@ describe('ProviderOverviewTab', () => {
     expect(screen.queryByText('1 custom provider')).not.toBeInTheDocument();
 
     expect(screen.getByRole('columnheader', { name: 'Endpoint' })).toBeInTheDocument();
-    expect(screen.getByRole('columnheader', { name: 'Usage' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Resources' })).toBeInTheDocument();
     expect(screen.queryByRole('columnheader', { name: 'Source' })).not.toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'Actions' })).toBeInTheDocument();
     expect(screen.queryByText('Config')).not.toBeInTheDocument();
     expect(screen.queryByText('Custom')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
-    expect(screen.getByText('In use')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled();
+    expect(screen.getByText('Remove linked model routes before deleting.')).toBeInTheDocument();
+  });
+
+  it('opens key management for the selected provider regardless of source', async () => {
+    const onManageKeys = vi.fn();
+    render(<ProviderOverviewTab onManageKeys={onManageKeys} />);
+
+    for (const [name, provider] of [
+      ['OpenRouter', 'openrouter'],
+      ['Acme', 'acme'],
+    ]) {
+      const row = (await screen.findByText(name)).closest('tr')!;
+      fireEvent.click(within(row).getByRole('button', { name: 'Manage keys' }));
+      expect(onManageKeys).toHaveBeenLastCalledWith(provider);
+    }
+  });
+
+  it('does not open deletion confirmation for a provider with linked models', async () => {
+    render(<ProviderOverviewTab onManageKeys={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+
+    expect(screen.queryByLabelText('Type acme to confirm')).not.toBeInTheDocument();
+  });
+
+  it('opens deletion confirmation for an unused custom provider', async () => {
+    const response = await vi.mocked(listProviderDefinitions)();
+    vi.mocked(listProviderDefinitions).mockResolvedValue({
+      ...response,
+      providers: response.providers.map((provider) => ({ ...provider, models_count: 0 })),
+    });
+    render(<ProviderOverviewTab onManageKeys={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+
+    expect(screen.getByLabelText('Type acme to confirm')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete provider' })).toBeDisabled();
   });
 });

@@ -20,10 +20,18 @@ vi.mock('@/components/features/admin/PerformanceTab', () => ({
   PerformanceTab: () => null,
 }));
 vi.mock('@/app/dashboard/admin/ProviderKeysTab', () => ({
-  ProviderKeysTab: () => null,
+  ProviderKeysTab: ({
+    initialProvider,
+    onProviderChange,
+  }: {
+    initialProvider: string;
+    onProviderChange: (provider: string) => void;
+  }) => <button onClick={() => onProviderChange('openrouter')}>Keys for {initialProvider}</button>,
 }));
 vi.mock('@/app/dashboard/admin/ProviderOverviewTab', () => ({
-  ProviderOverviewTab: () => null,
+  ProviderOverviewTab: ({ onManageKeys }: { onManageKeys: (provider: string) => void }) => (
+    <button onClick={() => onManageKeys('zai')}>Manage keys for zai</button>
+  ),
 }));
 
 import {
@@ -99,6 +107,16 @@ describe('ProvidersTab quotas', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it('opens the requested provider keys and retains selection across tabs', () => {
+    render(<ProvidersTab />);
+    fireEvent.click(screen.getByRole('button', { name: 'Manage keys for zai' }));
+    expect(screen.getByRole('tab', { name: 'Keys' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Keys for zai' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Keys' }));
+    expect(screen.getByRole('button', { name: 'Keys for openrouter' })).toBeInTheDocument();
   });
 
   it('explains an empty quota response and links to framework setup documentation', async () => {

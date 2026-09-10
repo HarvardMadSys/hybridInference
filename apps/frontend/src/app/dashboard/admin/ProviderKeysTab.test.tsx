@@ -92,6 +92,40 @@ describe('ProviderKeysTab tier reservation', () => {
     vi.clearAllMocks();
   });
 
+  it('initializes the key list and add form with the requested provider', async () => {
+    vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['openrouter', 'zai'] });
+    const onProviderChange = vi.fn();
+    render(<ProviderKeysTab initialProvider="zai" onProviderChange={onProviderChange} />);
+
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('zai'));
+    expect(listProviderKeys).not.toHaveBeenCalledWith('openrouter');
+    expect(screen.getByLabelText('Selected provider')).toHaveValue('zai');
+    expect(screen.getByLabelText('Provider')).toHaveValue('zai');
+
+    fireEvent.change(screen.getByLabelText('Selected provider'), {
+      target: { value: 'openrouter' },
+    });
+    await waitFor(() => expect(onProviderChange).toHaveBeenLastCalledWith('openrouter'));
+  });
+
+  it('preserves an unavailable requested provider without fetching its keys', async () => {
+    render(<ProviderKeysTab initialProvider="config-only" />);
+
+    expect(
+      await screen.findByText(
+        'Key management is unavailable for config-only. Choose another provider above.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Selected provider')).toHaveValue('config-only');
+    expect(listProviderKeys).not.toHaveBeenCalled();
+    expect(screen.queryByRole('form', { name: 'Add a new key' })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Selected provider'), { target: { value: 'zai' } });
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('zai'));
+    expect(screen.getByLabelText('Provider')).toHaveValue('zai');
+    expect(screen.getByRole('form', { name: 'Add a new key' })).toBeInTheDocument();
+  });
+
   it('shows a DB key reservation as an editable selector', async () => {
     render(<ProviderKeysTab />);
 
