@@ -226,14 +226,11 @@ def expires_at(*, seconds: int) -> datetime:
     return datetime.now(UTC) + timedelta(seconds=seconds)
 
 
-def mint_identity_token(*, user_id: str, email: str | None, role: str) -> str:
+def mint_identity_token(*, user_id: str) -> str:
     """Mint the identity token handed to the consuming service.
 
     Args:
         user_id: The gateway's user identifier, carried as ``sub``.
-        email: The user's email, if known.
-        role: The user's role — this deployment has no separate plan concept,
-            so entitlement decisions downstream key off this.
 
     Returns:
         A signed RS256 JWT.
@@ -247,12 +244,9 @@ def mint_identity_token(*, user_id: str, email: str | None, role: str) -> str:
         "iss": issuer(),
         "aud": CLOUD_AGENT_CLIENT_ID,
         "sub": user_id,
-        "role": role,
         "iat": now,
         "exp": now + timedelta(seconds=TOKEN_TTL_SECONDS),
     }
-    if email:
-        claims["email"] = email
     return jwt.encode(
         claims,
         signing_key(),
