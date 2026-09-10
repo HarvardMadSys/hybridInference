@@ -287,6 +287,43 @@ live code reloads, and restart the backend when changing the mounted extension.
 See [Deployment-local adapters](adding-models.md#deployment-local-adapters) for
 a minimal factory example.
 
+### Cloud Agent access
+
+The gateway keeps its fixed role hierarchy and resolves current account state.
+The deployment owns the rule for who can use or administer its Cloud Agent.
+A trusted extension registers one synchronous callback during `register()` with
+`serving.agent_access.register_agent_access_policy(policy)`. The callback receives
+a read-only mapping containing exactly `user_id` and `role`, after the gateway
+has verified that the user exists and has status `active`. It receives no
+profile, credentials, or database connection.
+
+The callback returns a `list[str]` or `tuple[str, ...]` of explicit permissions:
+`agent.use` permits Agent use, and `agent.admin` permits Agent administration.
+Administration requires both permissions. Unknown, repeated, or non-string
+permissions are invalid; values are not coerced. Registering a second policy is
+an error. With no registered policy, Agent access is denied for every role.
+The gateway imposes no deployment-specific role-to-permission rule.
+
+The standalone Agent reads `GET /internal/users/{user_id}/agent-access` using
+the existing `GATEWAY_GRANT_DISPATCH_TOKEN` bearer token. A successful response
+contains exactly `user_id`, `allowed`, and `permissions`; `allowed` is true
+exactly when `agent.use` is present. Permissions are returned in the order
+`agent.use`, `agent.admin`. An intentional denial is HTTP 200 with
+`allowed: false` and `permissions: []`. The endpoint reads the gateway's
+operational store and evaluates the policy on each request; it does not cache
+permission decisions. Account reads retain the existing user-cache semantics:
+`CachedOperationalStore` caches user rows for 60 seconds, and account changes
+through that wrapper invalidate the affected entry. Direct database edits or
+writes in another process may remain unseen until that cache entry expires.
+
+Unknown or inactive accounts receive HTTP 403 with error type
+`subject_unavailable`, before the callback runs. A callback exception or invalid
+result receives HTTP 503 with error type `agent_access_unavailable`, without
+policy details. Both use the gateway's standard `{"error": {"type": ...,
+"message": ...}}` envelope. Dispatch authentication and unavailable internal
+API configuration retain their existing 401 and 404 responses. The legacy
+user-status and model-catalog endpoints retain their existing contracts.
+
 ### Quota reporting
 
 The gateway keeps quota reporting and quota-aware routing independent of the

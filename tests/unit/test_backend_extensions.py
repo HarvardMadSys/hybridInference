@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from routing.executor import RouteExecutor
-from serving import extensions
+from serving import agent_access, extensions
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys
 from serving.admin import provider_quotas
 from serving.admin.provider_key_probe import probe_provider_key_with_existing_route
@@ -29,8 +29,10 @@ def isolated_registries(monkeypatch):
         registry, "RESERVED_PROVIDER_LABELS", set(registry.RESERVED_PROVIDER_LABELS)
     )
     dynamic_keys.reset()
+    agent_access.reset_agent_access_policy()
     yield
     dynamic_keys.reset()
+    agent_access.reset_agent_access_policy()
 
 
 def _config(provider="example_extension", **extra):
@@ -114,10 +116,14 @@ async def test_bootstrap_loads_extensions_after_env_and_before_consumers(monkeyp
     def register():
         events.append("extension")
         registry.register_adapter_factory("example_extension", _factory)
+        agent_access.register_agent_access_policy(lambda _: ["agent.use"])
 
     def first_consumer():
         events.append("consumer")
         assert "example_extension" in registry.ADAPTER_FACTORIES
+        assert agent_access.resolve_agent_access_permissions(user_id="user_1", role="pro") == [
+            "agent.use"
+        ]
         raise RuntimeError("stop before services start")
 
     monkeypatch.setattr(bootstrap, "load_dotenv", load_env)
@@ -131,6 +137,23 @@ async def test_bootstrap_loads_extensions_after_env_and_before_consumers(monkeyp
         await bootstrap.initialize()
 
     assert events == ["env", "extension", "consumer"]
+
+
+def test_extension_registers_agent_access_only_once(monkeypatch):
+    def register():
+        agent_access.register_agent_access_policy(lambda _: ["agent.use"])
+
+    monkeypatch.setenv("BACKEND_EXTENSIONS", "deployment.extension")
+    monkeypatch.setattr(
+        extensions.importlib, "import_module", Mock(return_value=SimpleNamespace(register=register))
+    )
+
+    extensions.load_backend_extensions()
+    extensions.load_backend_extensions()
+
+    assert agent_access.resolve_agent_access_permissions(user_id="user_1", role="pro") == [
+        "agent.use"
+    ]
 
 
 @pytest.mark.asyncio

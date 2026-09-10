@@ -103,7 +103,11 @@ const nextConfig = {
           source: '/internal/users/:userId/status',
           destination: `${BACKEND_INTERNAL_URL}/internal/users/:userId/status`,
         },
-        // Whole prefix, unlike the two above: every route on that router carries
+        {
+          source: '/internal/users/:userId/agent-access',
+          destination: `${BACKEND_INTERNAL_URL}/internal/users/:userId/agent-access`,
+        },
+        // Whole prefix, unlike the lookups above: every route on that router carries
         // the dispatch token as a router-level dependency, so a route added
         // later is authorized by construction. Enumerating them here instead
         // would mean the next one 404s at this layer with nothing to say why.
