@@ -45,25 +45,6 @@ function formatCount(value: number, singular: string): string {
   return `${value.toLocaleString()} ${value === 1 ? singular : `${singular}s`}`;
 }
 
-function sourceBadgeClass(source: ProviderDefinitionItem['source']): string {
-  if (source === 'custom') {
-    return 'border-blue-100 bg-blue-50 text-blue-700';
-  }
-  return 'border-gray-200 bg-gray-50 text-gray-600';
-}
-
-function ProviderSourceBadge({ provider }: { provider: ProviderDefinitionItem }) {
-  return (
-    <span
-      className={`inline-flex min-w-[72px] items-center justify-center rounded-full border px-2 py-1 text-[11px] font-medium ${sourceBadgeClass(
-        provider.source,
-      )}`}
-    >
-      {provider.source === 'custom' ? 'Custom' : 'Config'}
-    </span>
-  );
-}
-
 function ProviderUsageCell({ keys, models }: { keys: number; models: number }) {
   return (
     <div className="flex justify-end gap-2">
@@ -705,9 +686,8 @@ export function ProviderOverviewTab() {
         (summary, provider) => ({
           keys: summary.keys + provider.keys_count,
           models: summary.models + provider.models_count,
-          custom: summary.custom + (provider.source === 'custom' ? 1 : 0),
         }),
-        { keys: 0, models: 0, custom: 0 },
+        { keys: 0, models: 0 },
       ),
     [providers],
   );
@@ -734,7 +714,7 @@ export function ProviderOverviewTab() {
         <div>
           <h3 className="text-[14px] font-semibold text-gray-900">Provider registry</h3>
           <p className="mt-1 text-[12px] text-gray-500">
-            Built-in and custom upstream providers available to keys and routing.
+            Upstream providers available to keys and routing.
           </p>
           {providers.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">
@@ -747,11 +727,6 @@ export function ProviderOverviewTab() {
               <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[12px] font-medium tabular-nums text-gray-600">
                 {formatCount(providerSummary.models, 'model')}
               </span>
-              {providerSummary.custom > 0 && (
-                <span className="rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-[12px] font-medium tabular-nums text-blue-700">
-                  {formatCount(providerSummary.custom, 'custom provider')}
-                </span>
-              )}
             </div>
           )}
         </div>
@@ -781,7 +756,6 @@ export function ProviderOverviewTab() {
                   <th className="px-4 py-2.5">Provider</th>
                   <th className="px-4 py-2.5">Endpoint</th>
                   <th className="px-4 py-2.5 text-right">Usage</th>
-                  <th className="px-4 py-2.5 text-center">Source</th>
                   <th className="px-4 py-2.5 text-right">Actions</th>
                 </tr>
               </thead>
@@ -815,9 +789,6 @@ export function ProviderOverviewTab() {
                           keys={provider.keys_count}
                           models={provider.models_count}
                         />
-                      </td>
-                      <td className="px-4 py-3.5 text-center">
-                        <ProviderSourceBadge provider={provider} />
                       </td>
                       <td className="px-4 py-3.5 text-right">
                         {custom ? (

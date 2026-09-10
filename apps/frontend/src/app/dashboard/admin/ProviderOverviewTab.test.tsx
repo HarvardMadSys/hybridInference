@@ -60,7 +60,7 @@ describe('ProviderOverviewTab', () => {
     vi.clearAllMocks();
   });
 
-  it('renders the optimized registry table with summary and source badges', async () => {
+  it('renders the registry table with usage summary and no source labels', async () => {
     render(<ProviderOverviewTab />);
 
     expect(await screen.findByText('OpenRouter')).toBeInTheDocument();
@@ -68,14 +68,15 @@ describe('ProviderOverviewTab', () => {
     expect(screen.getByText('2 providers')).toBeInTheDocument();
     expect(screen.getByText('3 keys')).toBeInTheDocument();
     expect(screen.getByText('5 models')).toBeInTheDocument();
-    expect(screen.getByText('1 custom provider')).toBeInTheDocument();
+    expect(screen.queryByText('1 custom provider')).not.toBeInTheDocument();
 
     expect(screen.getByRole('columnheader', { name: 'Endpoint' })).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'Usage' })).toBeInTheDocument();
-    expect(screen.getByRole('columnheader', { name: 'Source' })).toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Source' })).not.toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'Actions' })).toBeInTheDocument();
-    expect(screen.getByText('Config')).toBeInTheDocument();
-    expect(screen.getByText('Custom')).toBeInTheDocument();
-    expect(screen.queryByText('Config managed')).not.toBeInTheDocument();
+    expect(screen.queryByText('Config')).not.toBeInTheDocument();
+    expect(screen.queryByText('Custom')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
+    expect(screen.getByText('In use')).toBeInTheDocument();
   });
 });
