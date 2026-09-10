@@ -311,27 +311,27 @@ class TestRouteWiseRouterScaffold:
     def test_alias_routes_use_canonical_routewise_state(self):
         """Alias requests must share RouteWise per-model state with canonical requests."""
         adapter = _make_adapter(
-            model_id="demo-chat-pro",
-            endpoint_id="demo-chat-pro:api-a",
+            model_id="minimax-m2.5",
+            endpoint_id="minimax-m2.5:api-a",
         )
         fr = FixedRouter()
-        fr.register_route("demo-chat-pro", [(adapter, 1.0)], aliases=["Example-Model"])
+        fr.register_route("minimax-m2.5", [(adapter, 1.0)], aliases=["MiniMax-M2.5"])
         router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
-        assert sorted(router.classified) == ["demo-chat-pro"]
-        assert "Example-Model" not in router.route_candidates
-        assert router.canonical_model_id("Example-Model") == "demo-chat-pro"
-        assert router._routewise_pool("Example-Model") == "demo-chat-pro"
+        assert sorted(router.classified) == ["minimax-m2.5"]
+        assert "MiniMax-M2.5" not in router.route_candidates
+        assert router.canonical_model_id("MiniMax-M2.5") == "minimax-m2.5"
+        assert router._routewise_pool("MiniMax-M2.5") == "minimax-m2.5"
 
-        selected = router._select_decision("Example-Model", {"prompt_tokens": 1000}).adapter
+        selected = router._select_decision("MiniMax-M2.5", {"prompt_tokens": 1000}).adapter
         assert selected is adapter
-        assert "demo-chat-pro" in router._last_lp_statuses
-        assert "Example-Model" not in router._last_lp_statuses
+        assert "minimax-m2.5" in router._last_lp_statuses
+        assert "MiniMax-M2.5" not in router._last_lp_statuses
 
         router.record_observation(
             RoutingObservation(
-                model_id="Example-Model",
-                endpoint_id="demo-chat-pro:api-a",
+                model_id="MiniMax-M2.5",
+                endpoint_id="minimax-m2.5:api-a",
                 ttft_ms=None,
                 total_latency_ms=500.0,
                 token_count=600,
@@ -342,10 +342,10 @@ class TestRouteWiseRouterScaffold:
             )
         )
 
-        assert "demo-chat-pro" in router.predictor._model_states
-        assert "Example-Model" not in router.predictor._model_states
-        assert "demo-chat-pro" in router.envelope._samples
-        assert "Example-Model" not in router.envelope._samples
+        assert "minimax-m2.5" in router.predictor._model_states
+        assert "MiniMax-M2.5" not in router.predictor._model_states
+        assert "minimax-m2.5" in router.envelope._samples
+        assert "MiniMax-M2.5" not in router.envelope._samples
 
     def test_unregistered_model_raises(self):
         """Requesting an unknown model raises ValueError."""

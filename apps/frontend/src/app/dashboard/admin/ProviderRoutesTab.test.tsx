@@ -13,7 +13,7 @@ vi.mock('@/lib/api/admin', () => ({
   deleteProviderRouteCandidate: vi.fn(),
   getRoutewiseDecisions: vi.fn(() =>
     Promise.resolve({
-      model_id: 'demo-chat',
+      model_id: 'minimax-fast',
       range: '24h',
       bucket_seconds: 3600,
       total_requests: 0,
@@ -38,7 +38,7 @@ vi.mock('@/lib/api/admin', () => ({
   ),
   listRouteWeights: vi.fn(),
   listRoutewiseProbeSamples: vi.fn(),
-  listRoutewiseSettings: vi.fn(() => Promise.resolve({ model_id: 'demo-chat', settings: [] })),
+  listRoutewiseSettings: vi.fn(() => Promise.resolve({ model_id: 'minimax-fast', settings: [] })),
   resetRoutewiseSetting: vi.fn(),
   runRoutewiseProbe: vi.fn(),
   setRouteWeight: vi.fn(),
@@ -139,9 +139,9 @@ function fillRuntimeModelPricing() {
 }
 
 const route = {
-  model_id: 'demo-chat',
+  model_id: 'minimax-fast',
   strategy: 'routewise',
-  route_id: 'demo-chat:featherless-api',
+  route_id: 'minimax-fast:featherless-api',
   route_type: 'concurrency',
   provider: 'featherless',
   upstream_provider: 'featherless',
@@ -155,10 +155,10 @@ const route = {
     key_prefix: null,
     source: 'default' as const,
   },
-  provider_model_id: 'ExampleOrg/Example-Model',
+  provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
   quota_limit: null,
   concurrency_limit: 1,
-  endpoint_id: 'demo-chat:featherless-api',
+  endpoint_id: 'minimax-fast:featherless-api',
   yaml_weight: 1,
   effective_weight: 1,
   source: 'yaml' as const,
@@ -168,20 +168,20 @@ const route = {
 
 const quotaRoute = {
   ...route,
-  route_id: 'demo-chat:chutes-api',
+  route_id: 'minimax-fast:chutes-api',
   route_type: 'quota',
   provider: 'chutes',
   upstream_provider: 'chutes',
   key_provider: 'chutes',
   base_url: 'https://llm.chutes.ai/v1',
-  provider_model_id: 'ExampleOrg/Example-Model-Turbo',
+  provider_model_id: 'MiniMaxAI/MiniMax-M2.5-TEE',
   quota_limit: 5000,
   concurrency_limit: null,
   quota_current_limit: 5000,
   quota_used: 123,
   quota_remaining: 4877,
   quota_reset_at: '2026-07-04T16:00:00Z',
-  endpoint_id: 'demo-chat:chutes-api',
+  endpoint_id: 'minimax-fast:chutes-api',
 };
 
 describe('ProviderRoutesTab', () => {
@@ -204,7 +204,7 @@ describe('ProviderRoutesTab', () => {
       },
     ]);
     vi.mocked(listOpenRouterProviderOptions).mockResolvedValue({
-      provider_model_id: 'exampleorg/example-model',
+      provider_model_id: 'minimax/minimax-m2.5',
       providers: discoveredOpenRouterProviderOptions,
     });
     vi.mocked(listRoutewiseProbeSamples).mockResolvedValue({ samples: [] });
@@ -224,7 +224,7 @@ describe('ProviderRoutesTab', () => {
 
     render(<ProviderRoutesTab />);
 
-    expect(await screen.findByText('demo-chat')).toBeInTheDocument();
+    expect(await screen.findByText('minimax-fast')).toBeInTheDocument();
     expect(screen.getByText('Featherless')).toBeInTheDocument();
     expect(screen.getByText('Configured default featherless key')).toBeInTheDocument();
     expect(screen.queryByText('Effective')).not.toBeInTheDocument();
@@ -266,14 +266,14 @@ describe('ProviderRoutesTab', () => {
   it('renders settings and runs RouteWise probes when requested', async () => {
     const tencentRoute = {
       ...route,
-      route_id: 'demo-chat:lkeap-api',
+      route_id: 'minimax-fast:lkeap-api',
       route_type: 'on_demand',
       provider: 'lkeap',
       upstream_provider: 'lkeap',
       key_provider: 'lkeap',
       base_url: 'https://api.lkeap.cloud.tencent.com/v1',
-      provider_model_id: 'Example-Model',
-      endpoint_id: 'demo-chat:lkeap-api',
+      provider_model_id: 'MiniMax-M2.5',
+      endpoint_id: 'minimax-fast:lkeap-api',
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: [
@@ -291,7 +291,7 @@ describe('ProviderRoutesTab', () => {
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
-      model_id: 'demo-chat',
+      model_id: 'minimax-fast',
       settings: [
         {
           key: 'routewise_budget_alpha',
@@ -331,24 +331,24 @@ describe('ProviderRoutesTab', () => {
     vi.mocked(listRoutewiseProbeSamples).mockResolvedValue({
       samples: [
         {
-          model_id: 'demo-chat',
-          endpoint_id: 'demo-chat:featherless-api',
+          model_id: 'minimax-fast',
+          endpoint_id: 'minimax-fast:featherless-api',
           ok: true,
           ttft_ms: 123.4,
           error: null,
           checked_at: '2026-06-22T00:00:00Z',
         },
         {
-          model_id: 'demo-chat',
-          endpoint_id: 'demo-chat:featherless-api',
+          model_id: 'minimax-fast',
+          endpoint_id: 'minimax-fast:featherless-api',
           ok: false,
           ttft_ms: null,
           error: 'RuntimeError',
           checked_at: '2026-06-21T23:59:00Z',
         },
         {
-          model_id: 'demo-chat',
-          endpoint_id: 'demo-chat:openrouter[akashml]-api',
+          model_id: 'minimax-fast',
+          endpoint_id: 'minimax-fast:openrouter[akashml]-api',
           ok: false,
           ttft_ms: null,
           error:
@@ -356,8 +356,8 @@ describe('ProviderRoutesTab', () => {
           checked_at: '2026-06-22T00:00:01Z',
         },
         {
-          model_id: 'demo-chat',
-          endpoint_id: 'demo-chat:lkeap-api',
+          model_id: 'minimax-fast',
+          endpoint_id: 'minimax-fast:lkeap-api',
           ok: true,
           ttft_ms: 456.7,
           error: null,
@@ -368,8 +368,8 @@ describe('ProviderRoutesTab', () => {
     vi.mocked(runRoutewiseProbe).mockResolvedValue({
       results: [
         {
-          model_id: 'demo-chat',
-          endpoint_id: 'demo-chat:featherless-api',
+          model_id: 'minimax-fast',
+          endpoint_id: 'minimax-fast:featherless-api',
           ok: true,
           ttft_ms: 120,
           error: null,
@@ -402,7 +402,7 @@ describe('ProviderRoutesTab', () => {
 
     await waitFor(() => {
       expect(updateRoutewiseSetting).toHaveBeenCalledWith(
-        'demo-chat',
+        'minimax-fast',
         'routewise_budget_alpha',
         0.4,
       );
@@ -416,15 +416,15 @@ describe('ProviderRoutesTab', () => {
 
     await waitFor(() => {
       expect(updateRoutewiseSetting).toHaveBeenCalledWith(
-        'demo-chat',
+        'minimax-fast',
         'routewise_probe_enabled',
         true,
       );
     });
 
-    expect((await screen.findAllByText('demo-chat:featherless-api')).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText('minimax-fast:featherless-api')).length).toBeGreaterThan(0);
     expect(screen.getAllByText('on_demand · Tencent Token Plan').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('demo-chat:lkeap-api').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('minimax-fast:lkeap-api').length).toBeGreaterThan(0);
     expect(screen.getByText('123 ms')).toBeInTheDocument();
     expect(screen.queryByText('RuntimeError')).not.toBeInTheDocument();
     expect(screen.getByText(/temporarily rate-limited upstream/)).toBeInTheDocument();
@@ -435,7 +435,7 @@ describe('ProviderRoutesTab', () => {
 
     await waitFor(() => {
       expect(runRoutewiseProbe).toHaveBeenCalledWith({
-        model_id: 'demo-chat',
+        model_id: 'minimax-fast',
         endpoint_id: null,
         idle_only: false,
       });
@@ -476,9 +476,9 @@ describe('ProviderRoutesTab', () => {
     });
     vi.mocked(listRouteWeights).mockResolvedValue([
       {
-        model_id: 'demo-chat',
+        model_id: 'minimax-fast',
         strategy: 'fixed',
-        endpoint_id: 'demo-chat:featherless-api',
+        endpoint_id: 'minimax-fast:featherless-api',
         provider: 'featherless',
         base_url: 'https://api.featherless.ai/v1',
         yaml_weight: 1,
@@ -487,9 +487,9 @@ describe('ProviderRoutesTab', () => {
       },
     ]);
     vi.mocked(setRouteWeight).mockResolvedValue({
-      model_id: 'demo-chat',
+      model_id: 'minimax-fast',
       strategy: 'fixed',
-      endpoint_id: 'demo-chat:featherless-api',
+      endpoint_id: 'minimax-fast:featherless-api',
       provider: 'featherless',
       base_url: 'https://api.featherless.ai/v1',
       yaml_weight: 1,
@@ -497,9 +497,9 @@ describe('ProviderRoutesTab', () => {
       effective_weight: 3,
     });
     vi.mocked(clearRouteWeight).mockResolvedValue({
-      model_id: 'demo-chat',
+      model_id: 'minimax-fast',
       strategy: 'fixed',
-      endpoint_id: 'demo-chat:featherless-api',
+      endpoint_id: 'minimax-fast:featherless-api',
       provider: 'featherless',
       base_url: 'https://api.featherless.ai/v1',
       yaml_weight: 1,
@@ -509,26 +509,32 @@ describe('ProviderRoutesTab', () => {
 
     render(<ProviderRoutesTab />);
 
-    const input = await screen.findByLabelText('Runtime weight for demo-chat:featherless-api');
+    const input = await screen.findByLabelText('Runtime weight for minimax-fast:featherless-api');
     expect(input).toHaveValue(1);
     fireEvent.change(input, { target: { value: '3' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save demo-chat:featherless-api weight' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Save minimax-fast:featherless-api weight' }),
+    );
 
     await waitFor(() => {
-      expect(setRouteWeight).toHaveBeenCalledWith('demo-chat', 'demo-chat:featherless-api', 3);
+      expect(setRouteWeight).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:featherless-api',
+        3,
+      );
     });
     expect(
-      await screen.findByLabelText('Runtime weight for demo-chat:featherless-api'),
+      await screen.findByLabelText('Runtime weight for minimax-fast:featherless-api'),
     ).toHaveValue(3);
 
     fireEvent.click(
       await screen.findByRole('button', {
-        name: 'Clear demo-chat:featherless-api weight override',
+        name: 'Clear minimax-fast:featherless-api weight override',
       }),
     );
 
     await waitFor(() => {
-      expect(clearRouteWeight).toHaveBeenCalledWith('demo-chat', 'demo-chat:featherless-api');
+      expect(clearRouteWeight).toHaveBeenCalledWith('minimax-fast', 'minimax-fast:featherless-api');
     });
   });
 
@@ -539,9 +545,9 @@ describe('ProviderRoutesTab', () => {
       routes: [route],
     });
     vi.mocked(setRouteWeight).mockResolvedValue({
-      model_id: 'demo-chat',
+      model_id: 'minimax-fast',
       strategy: 'routewise',
-      endpoint_id: 'demo-chat:featherless-api',
+      endpoint_id: 'minimax-fast:featherless-api',
       provider: 'featherless',
       base_url: 'https://api.featherless.ai/v1',
       yaml_weight: 1,
@@ -549,9 +555,9 @@ describe('ProviderRoutesTab', () => {
       effective_weight: 0,
     });
     vi.mocked(clearRouteWeight).mockResolvedValue({
-      model_id: 'demo-chat',
+      model_id: 'minimax-fast',
       strategy: 'routewise',
-      endpoint_id: 'demo-chat:featherless-api',
+      endpoint_id: 'minimax-fast:featherless-api',
       provider: 'featherless',
       base_url: 'https://api.featherless.ai/v1',
       yaml_weight: 1,
@@ -564,14 +570,18 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Disable' }));
 
     await waitFor(() => {
-      expect(setRouteWeight).toHaveBeenCalledWith('demo-chat', 'demo-chat:featherless-api', 0);
+      expect(setRouteWeight).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:featherless-api',
+        0,
+      );
     });
     expect(await screen.findByText('Disabled')).toBeInTheDocument();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Enable' }));
 
     await waitFor(() => {
-      expect(clearRouteWeight).toHaveBeenCalledWith('demo-chat', 'demo-chat:featherless-api');
+      expect(clearRouteWeight).toHaveBeenCalledWith('minimax-fast', 'minimax-fast:featherless-api');
     });
   });
 
@@ -591,7 +601,7 @@ describe('ProviderRoutesTab', () => {
     expect(dialog).toBeInTheDocument();
     expect(within(dialog).getByLabelText('Override provider')).toHaveValue('featherless');
     expect(within(dialog).getByLabelText('Provider model ID')).toHaveValue(
-      'ExampleOrg/Example-Model',
+      'MiniMaxAI/MiniMax-M2.5',
     );
     expect(within(dialog).getByLabelText('Local concurrency limit')).toHaveValue(1);
   });
@@ -654,10 +664,10 @@ describe('ProviderRoutesTab', () => {
         key_prefix: 'sk-or...1234',
         source: 'db',
       },
-      provider_model_id: 'exampleorg/example-model',
+      provider_model_id: 'minimax/minimax-m2.5',
       quota_limit: null,
       concurrency_limit: 3,
-      endpoint_id: 'demo-chat:openrouter[parasail]-api',
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
       source: 'override',
       updated_by: '127.0.0.1',
     });
@@ -672,7 +682,7 @@ describe('ProviderRoutesTab', () => {
       target: { value: 'provider:parasail' },
     });
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
-      target: { value: 'exampleorg/example-model' },
+      target: { value: 'minimax/minimax-m2.5' },
     });
     fireEvent.change(screen.getByLabelText('Local concurrency limit'), {
       target: { value: '3' },
@@ -687,16 +697,20 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
 
     await waitFor(() => {
-      expect(updateProviderRoute).toHaveBeenCalledWith('demo-chat', 'demo-chat:featherless-api', {
-        upstream_provider: 'openrouter',
-        openrouter_provider: 'parasail',
-        openrouter_sort: null,
-        base_url: 'https://openrouter.ai/api/v1',
-        api_key_id: 'key-1',
-        provider_model_id: 'exampleorg/example-model',
-        quota_limit: null,
-        concurrency_limit: 3,
-      });
+      expect(updateProviderRoute).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:featherless-api',
+        {
+          upstream_provider: 'openrouter',
+          openrouter_provider: 'parasail',
+          openrouter_sort: null,
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_id: 'key-1',
+          provider_model_id: 'minimax/minimax-m2.5',
+          quota_limit: null,
+          concurrency_limit: 3,
+        },
+      );
     });
     expect(screen.getByLabelText('OpenRouter routing')).toHaveValue('provider:parasail');
   });
@@ -733,7 +747,7 @@ describe('ProviderRoutesTab', () => {
       target: { value: 'provider:parasail' },
     });
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
-      target: { value: 'exampleorg/example-model' },
+      target: { value: 'minimax/minimax-m2.5' },
     });
     await waitFor(() => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
@@ -742,16 +756,20 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
 
     await waitFor(() => {
-      expect(verifyProviderRoute).toHaveBeenCalledWith('demo-chat', 'demo-chat:featherless-api', {
-        upstream_provider: 'openrouter',
-        openrouter_provider: 'parasail',
-        openrouter_sort: null,
-        base_url: 'https://openrouter.ai/api/v1',
-        api_key_id: 'key-1',
-        provider_model_id: 'exampleorg/example-model',
-        quota_limit: null,
-        concurrency_limit: 1,
-      });
+      expect(verifyProviderRoute).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:featherless-api',
+        {
+          upstream_provider: 'openrouter',
+          openrouter_provider: 'parasail',
+          openrouter_sort: null,
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_id: 'key-1',
+          provider_model_id: 'minimax/minimax-m2.5',
+          quota_limit: null,
+          concurrency_limit: 1,
+        },
+      );
     });
     expect(updateProviderRoute).not.toHaveBeenCalled();
     expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass('bg-emerald-600');
@@ -760,15 +778,15 @@ describe('ProviderRoutesTab', () => {
   it('clears stale provider model ID when switching to a provider without a mapping', async () => {
     const openRouterRoute = {
       ...route,
-      route_id: 'demo-chat:openrouter[parasail]-api',
+      route_id: 'minimax-fast:openrouter[parasail]-api',
       route_type: 'on_demand',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
       openrouter_provider: 'parasail',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
-      provider_model_id: 'exampleorg/example-model',
-      endpoint_id: 'demo-chat:openrouter[parasail]-api',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
     };
     const tencentOption = {
       provider: 'tencent_token_plan',
@@ -801,7 +819,7 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
-    expect(screen.getByLabelText('Provider model ID')).toHaveValue('exampleorg/example-model');
+    expect(screen.getByLabelText('Provider model ID')).toHaveValue('minimax/minimax-m2.5');
 
     fireEvent.change(screen.getByLabelText('Override provider'), {
       target: { value: 'tencent_token_plan' },
@@ -819,13 +837,13 @@ describe('ProviderRoutesTab', () => {
   it('submits local daily quota for quota provider overrides', async () => {
     const quotaRoute = {
       ...route,
-      route_id: 'demo-chat:chutes-api',
+      route_id: 'minimax-fast:chutes-api',
       route_type: 'quota',
       provider: 'chutes',
       upstream_provider: 'chutes',
       key_provider: 'chutes',
       base_url: 'https://llm.chutes.ai/v1',
-      provider_model_id: 'ExampleOrg/Example-Model-Turbo',
+      provider_model_id: 'MiniMaxAI/MiniMax-M2.5-TEE',
       quota_limit: 5000,
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
@@ -849,7 +867,7 @@ describe('ProviderRoutesTab', () => {
       openrouter_provider: 'parasail',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
-      provider_model_id: 'exampleorg/example-model',
+      provider_model_id: 'minimax/minimax-m2.5',
       quota_limit: 8000,
       source: 'override',
     });
@@ -864,7 +882,7 @@ describe('ProviderRoutesTab', () => {
       target: { value: 'provider:parasail' },
     });
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
-      target: { value: 'exampleorg/example-model' },
+      target: { value: 'minimax/minimax-m2.5' },
     });
     fireEvent.change(screen.getByLabelText('Local daily quota'), {
       target: { value: '8000' },
@@ -872,13 +890,13 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
 
     await waitFor(() => {
-      expect(updateProviderRoute).toHaveBeenCalledWith('demo-chat', 'demo-chat:chutes-api', {
+      expect(updateProviderRoute).toHaveBeenCalledWith('minimax-fast', 'minimax-fast:chutes-api', {
         upstream_provider: 'openrouter',
         openrouter_provider: 'parasail',
         openrouter_sort: null,
         base_url: 'https://openrouter.ai/api/v1',
         api_key_id: null,
-        provider_model_id: 'exampleorg/example-model',
+        provider_model_id: 'minimax/minimax-m2.5',
         quota_limit: 8000,
         concurrency_limit: null,
       });
@@ -900,7 +918,7 @@ describe('ProviderRoutesTab', () => {
         key_prefix: 'sk-or...1234',
         source: 'db' as const,
       },
-      provider_model_id: 'exampleorg/example-model',
+      provider_model_id: 'minimax/minimax-m2.5',
       source: 'override' as const,
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
@@ -916,7 +934,10 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Reset config' }));
 
     await waitFor(() => {
-      expect(deleteProviderRoute).toHaveBeenCalledWith('demo-chat', 'demo-chat:featherless-api');
+      expect(deleteProviderRoute).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:featherless-api',
+      );
     });
     await waitFor(() => {
       expect(screen.getAllByText('Configured default featherless key').length).toBeGreaterThan(0);
@@ -927,15 +948,15 @@ describe('ProviderRoutesTab', () => {
   it('adds a runtime provider route', async () => {
     const deepinfraRoute = {
       ...route,
-      route_id: 'demo-chat:openrouter[deepinfra]-api',
+      route_id: 'minimax-fast:openrouter[deepinfra]-api',
       route_type: 'on_demand',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
       openrouter_provider: 'deepinfra',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
-      provider_model_id: 'exampleorg/example-model',
-      endpoint_id: 'demo-chat:openrouter[deepinfra]-api',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[deepinfra]-api',
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
@@ -947,7 +968,7 @@ describe('ProviderRoutesTab', () => {
     );
     vi.mocked(createProviderRouteCandidate).mockResolvedValue({
       ...route,
-      route_id: 'demo-chat:openrouter[inceptron]-api',
+      route_id: 'minimax-fast:openrouter[inceptron]-api',
       route_type: 'on_demand',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
@@ -962,8 +983,8 @@ describe('ProviderRoutesTab', () => {
         key_prefix: 'sk-or...1234',
         source: 'db',
       },
-      provider_model_id: 'exampleorg/example-model',
-      endpoint_id: 'demo-chat:openrouter[inceptron]-api',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[inceptron]-api',
       source: 'runtime',
     });
 
@@ -972,7 +993,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
 
     await waitFor(() => {
-      expect(listOpenRouterProviderOptions).toHaveBeenCalledWith('exampleorg/example-model');
+      expect(listOpenRouterProviderOptions).toHaveBeenCalledWith('minimax/minimax-m2.5');
     });
     const openRouterSelect = screen.getByLabelText('OpenRouter routing');
     await waitFor(() => {
@@ -994,14 +1015,14 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => {
-      expect(createProviderRouteCandidate).toHaveBeenCalledWith('demo-chat', {
+      expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
         route_type: 'on_demand',
         upstream_provider: 'openrouter',
         openrouter_provider: 'inceptron',
         openrouter_sort: null,
         base_url: 'https://openrouter.ai/api/v1',
         api_key_id: 'key-1',
-        provider_model_id: 'exampleorg/example-model',
+        provider_model_id: 'minimax/minimax-m2.5',
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
@@ -1060,7 +1081,7 @@ describe('ProviderRoutesTab', () => {
     );
     vi.mocked(createProviderRouteCandidate).mockResolvedValue({
       ...route,
-      route_id: 'demo-chat:openrouter[parasail]-api',
+      route_id: 'minimax-fast:openrouter[parasail]-api',
       route_type: 'concurrency',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
@@ -1075,10 +1096,10 @@ describe('ProviderRoutesTab', () => {
         key_prefix: 'sk-or...1234',
         source: 'db',
       },
-      provider_model_id: 'exampleorg/example-model',
+      provider_model_id: 'minimax/minimax-m2.5',
       quota_limit: null,
       concurrency_limit: 2,
-      endpoint_id: 'demo-chat:openrouter[parasail]-api',
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
       source: 'runtime',
     });
 
@@ -1098,7 +1119,7 @@ describe('ProviderRoutesTab', () => {
     ).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
-      target: { value: 'exampleorg/example-model' },
+      target: { value: 'minimax/minimax-m2.5' },
     });
     fireEvent.change(routingSelect, {
       target: { value: 'provider:parasail' },
@@ -1115,14 +1136,14 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => {
-      expect(createProviderRouteCandidate).toHaveBeenCalledWith('demo-chat', {
+      expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
         route_type: 'concurrency',
         upstream_provider: 'openrouter',
         openrouter_provider: 'parasail',
         openrouter_sort: null,
         base_url: 'https://openrouter.ai/api/v1',
         api_key_id: 'key-1',
-        provider_model_id: 'exampleorg/example-model',
+        provider_model_id: 'minimax/minimax-m2.5',
         quota_limit: null,
         concurrency_limit: 2,
         weight: 1,
@@ -1134,15 +1155,15 @@ describe('ProviderRoutesTab', () => {
   it('keeps OpenRouter endpoint variant pins from discovery', async () => {
     const deepinfraRoute = {
       ...route,
-      route_id: 'demo-chat:openrouter[deepinfra]-api',
+      route_id: 'minimax-fast:openrouter[deepinfra]-api',
       route_type: 'on_demand',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
       openrouter_provider: 'deepinfra',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
-      provider_model_id: 'exampleorg/example-model',
-      endpoint_id: 'demo-chat:openrouter[deepinfra]-api',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[deepinfra]-api',
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
@@ -1150,7 +1171,7 @@ describe('ProviderRoutesTab', () => {
       routes: [route, deepinfraRoute],
     });
     vi.mocked(listOpenRouterProviderOptions).mockResolvedValue({
-      provider_model_id: 'exampleorg/example-model',
+      provider_model_id: 'minimax/minimax-m2.5',
       providers: [
         { provider: 'minimax/fp8', label: 'MiniMax Fp8' },
         { provider: 'minimax/highspeed', label: 'MiniMax Highspeed' },
@@ -1161,7 +1182,7 @@ describe('ProviderRoutesTab', () => {
     );
     vi.mocked(createProviderRouteCandidate).mockResolvedValue({
       ...route,
-      route_id: 'demo-chat:openrouter[minimax/highspeed]-api',
+      route_id: 'minimax-fast:openrouter[minimax/highspeed]-api',
       route_type: 'on_demand',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
@@ -1176,8 +1197,8 @@ describe('ProviderRoutesTab', () => {
         key_prefix: 'sk-or...1234',
         source: 'db',
       },
-      provider_model_id: 'exampleorg/example-model',
-      endpoint_id: 'demo-chat:openrouter[minimax/highspeed]-api',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[minimax/highspeed]-api',
       source: 'runtime',
     });
 
@@ -1201,14 +1222,14 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => {
-      expect(createProviderRouteCandidate).toHaveBeenCalledWith('demo-chat', {
+      expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
         route_type: 'on_demand',
         upstream_provider: 'openrouter',
         openrouter_provider: 'minimax/highspeed',
         openrouter_sort: null,
         base_url: 'https://openrouter.ai/api/v1',
         api_key_id: 'key-1',
-        provider_model_id: 'exampleorg/example-model',
+        provider_model_id: 'minimax/minimax-m2.5',
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
@@ -1219,7 +1240,7 @@ describe('ProviderRoutesTab', () => {
   it('updates runtime OpenRouter concurrency limit inline', async () => {
     const runtimeRoute = {
       ...route,
-      route_id: 'demo-chat:openrouter[parasail]-api',
+      route_id: 'minimax-fast:openrouter[parasail]-api',
       route_type: 'concurrency',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
@@ -1234,10 +1255,10 @@ describe('ProviderRoutesTab', () => {
         key_prefix: 'sk-or...1234',
         source: 'db' as const,
       },
-      provider_model_id: 'exampleorg/example-model',
+      provider_model_id: 'minimax/minimax-m2.5',
       quota_limit: null,
       concurrency_limit: 2,
-      endpoint_id: 'demo-chat:openrouter[parasail]-api',
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
       source: 'runtime' as const,
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
@@ -1253,24 +1274,24 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     const limitInput = await screen.findByLabelText(
-      'Concurrency limit for demo-chat:openrouter[parasail]-api',
+      'Concurrency limit for minimax-fast:openrouter[parasail]-api',
     );
     expect(limitInput).toHaveValue(2);
     expect(
-      screen.queryByLabelText('Concurrency limit for demo-chat:featherless-api'),
+      screen.queryByLabelText('Concurrency limit for minimax-fast:featherless-api'),
     ).not.toBeInTheDocument();
 
     fireEvent.change(limitInput, { target: { value: '4' } });
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Save demo-chat:openrouter[parasail]-api concurrency limit',
+        name: 'Save minimax-fast:openrouter[parasail]-api concurrency limit',
       }),
     );
 
     await waitFor(() => {
       expect(updateProviderRouteCandidate).toHaveBeenCalledWith(
-        'demo-chat',
-        'demo-chat:openrouter[parasail]-api',
+        'minimax-fast',
+        'minimax-fast:openrouter[parasail]-api',
         { concurrency_limit: 4 },
       );
     });
@@ -1550,15 +1571,15 @@ describe('ProviderRoutesTab', () => {
     };
     const quotaRoute = {
       ...route,
-      route_id: 'demo-chat:chutes-api',
+      route_id: 'minimax-fast:chutes-api',
       route_type: 'quota',
       provider: 'chutes',
       upstream_provider: 'chutes',
       key_provider: 'chutes',
       base_url: 'https://llm.chutes.ai/v1',
-      provider_model_id: 'ExampleOrg/Example-Model-Turbo',
+      provider_model_id: 'MiniMaxAI/MiniMax-M2.5-TEE',
       quota_limit: 5000,
-      endpoint_id: 'demo-chat:chutes-api',
+      endpoint_id: 'minimax-fast:chutes-api',
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: [chutesOption, ...providerOptions],
@@ -1593,7 +1614,7 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
-      target: { value: 'exampleorg/example-model' },
+      target: { value: 'minimax/minimax-m2.5' },
     });
     fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
       target: { value: 'sort:throughput' },
@@ -1601,14 +1622,14 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
 
     await waitFor(() => {
-      expect(verifyProviderRouteCandidate).toHaveBeenCalledWith('demo-chat', {
+      expect(verifyProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
         route_type: 'on_demand',
         upstream_provider: 'openrouter',
         openrouter_provider: null,
         openrouter_sort: 'throughput',
         base_url: 'https://openrouter.ai/api/v1',
         api_key_id: null,
-        provider_model_id: 'exampleorg/example-model',
+        provider_model_id: 'minimax/minimax-m2.5',
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
@@ -1621,15 +1642,15 @@ describe('ProviderRoutesTab', () => {
   it('adds a runtime OpenRouter route with a custom provider slug', async () => {
     const autoRoute = {
       ...route,
-      route_id: 'demo-chat:openrouter-api',
+      route_id: 'minimax-fast:openrouter-api',
       route_type: 'on_demand',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
       openrouter_provider: null,
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
-      provider_model_id: 'exampleorg/example-model',
-      endpoint_id: 'demo-chat:openrouter-api',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter-api',
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
@@ -1653,7 +1674,7 @@ describe('ProviderRoutesTab', () => {
     });
     vi.mocked(createProviderRouteCandidate).mockResolvedValue({
       ...autoRoute,
-      route_id: 'demo-chat:openrouter[novita]-api',
+      route_id: 'minimax-fast:openrouter[novita]-api',
       openrouter_provider: 'novita',
       api_key_id: 'key-1',
       api_key: {
@@ -1663,7 +1684,7 @@ describe('ProviderRoutesTab', () => {
         key_prefix: 'sk-or...1234',
         source: 'db',
       },
-      endpoint_id: 'demo-chat:openrouter[novita]-api',
+      endpoint_id: 'minimax-fast:openrouter[novita]-api',
       source: 'runtime',
     });
 
@@ -1686,14 +1707,14 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => {
-      expect(createProviderRouteCandidate).toHaveBeenCalledWith('demo-chat', {
+      expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
         route_type: 'on_demand',
         upstream_provider: 'openrouter',
         openrouter_provider: 'novita',
         openrouter_sort: null,
         base_url: 'https://openrouter.ai/api/v1',
         api_key_id: 'key-1',
-        provider_model_id: 'exampleorg/example-model',
+        provider_model_id: 'minimax/minimax-m2.5',
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
@@ -1710,7 +1731,7 @@ describe('ProviderRoutesTab', () => {
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
     vi.mocked(createProviderRouteCandidate).mockResolvedValue({
       ...route,
-      route_id: 'demo-chat:openrouter-api',
+      route_id: 'minimax-fast:openrouter-api',
       route_type: 'on_demand',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
@@ -1718,8 +1739,8 @@ describe('ProviderRoutesTab', () => {
       openrouter_sort: 'throughput',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
-      provider_model_id: 'exampleorg/example-model',
-      endpoint_id: 'demo-chat:openrouter-api',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter-api',
       source: 'runtime',
     });
 
@@ -1727,7 +1748,7 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
-      target: { value: 'exampleorg/example-model' },
+      target: { value: 'minimax/minimax-m2.5' },
     });
     fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
       target: { value: 'sort:throughput' },
@@ -1737,14 +1758,14 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => {
-      expect(createProviderRouteCandidate).toHaveBeenCalledWith('demo-chat', {
+      expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
         route_type: 'on_demand',
         upstream_provider: 'openrouter',
         openrouter_provider: null,
         openrouter_sort: 'throughput',
         base_url: 'https://openrouter.ai/api/v1',
         api_key_id: null,
-        provider_model_id: 'exampleorg/example-model',
+        provider_model_id: 'minimax/minimax-m2.5',
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
@@ -1755,15 +1776,15 @@ describe('ProviderRoutesTab', () => {
   it('filters add-provider choices by route type', async () => {
     const deepinfraRoute = {
       ...route,
-      route_id: 'demo-chat:openrouter[deepinfra]-api',
+      route_id: 'minimax-fast:openrouter[deepinfra]-api',
       route_type: 'on_demand',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
       openrouter_provider: 'deepinfra',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
-      provider_model_id: 'exampleorg/example-model',
-      endpoint_id: 'demo-chat:openrouter[deepinfra]-api',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[deepinfra]-api',
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: [
@@ -1795,7 +1816,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
 
     await waitFor(() => {
-      expect(listOpenRouterProviderOptions).toHaveBeenCalledWith('exampleorg/example-model');
+      expect(listOpenRouterProviderOptions).toHaveBeenCalledWith('minimax/minimax-m2.5');
     });
 
     const providerSelect = screen.getByLabelText('Provider');
@@ -1834,15 +1855,15 @@ describe('ProviderRoutesTab', () => {
   it('explains when no quota provider can be added', async () => {
     const quotaRoute = {
       ...route,
-      route_id: 'demo-chat:chutes-api',
+      route_id: 'minimax-fast:chutes-api',
       route_type: 'quota',
       provider: 'chutes',
       upstream_provider: 'chutes',
       key_provider: 'chutes',
       base_url: 'https://llm.chutes.ai/v1',
-      provider_model_id: 'ExampleOrg/Example-Model-Turbo',
+      provider_model_id: 'MiniMaxAI/MiniMax-M2.5-TEE',
       quota_limit: 5000,
-      endpoint_id: 'demo-chat:chutes-api',
+      endpoint_id: 'minimax-fast:chutes-api',
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: [
@@ -1885,15 +1906,15 @@ describe('ProviderRoutesTab', () => {
   it('deletes a runtime provider route', async () => {
     const runtimeRoute = {
       ...route,
-      route_id: 'demo-chat:openrouter[parasail]-api',
+      route_id: 'minimax-fast:openrouter[parasail]-api',
       route_type: 'on_demand',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
       openrouter_provider: 'parasail',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
-      provider_model_id: 'exampleorg/example-model',
-      endpoint_id: 'demo-chat:openrouter[parasail]-api',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
       source: 'runtime' as const,
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
@@ -1903,7 +1924,7 @@ describe('ProviderRoutesTab', () => {
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
     vi.mocked(deleteProviderRouteCandidate).mockResolvedValue({
-      model_id: 'demo-chat',
+      model_id: 'minimax-fast',
       strategy: 'routewise',
       provider_options: providerOptions,
       openrouter_provider_options: openRouterProviderOptions,
@@ -1916,8 +1937,8 @@ describe('ProviderRoutesTab', () => {
 
     await waitFor(() => {
       expect(deleteProviderRouteCandidate).toHaveBeenCalledWith(
-        'demo-chat',
-        'demo-chat:openrouter[parasail]-api',
+        'minimax-fast',
+        'minimax-fast:openrouter[parasail]-api',
       );
     });
     await waitFor(() => {
@@ -1960,7 +1981,7 @@ describe('ProviderRoutesTab', () => {
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
     vi.mocked(updateProviderRouteStrategy).mockResolvedValue({
-      model_id: 'demo-chat',
+      model_id: 'minimax-fast',
       strategy: 'fixed',
       provider_options: providerOptions,
       openrouter_provider_options: openRouterProviderOptions,
@@ -1975,7 +1996,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(select, { target: { value: 'fixed' } });
 
     await waitFor(() => {
-      expect(updateProviderRouteStrategy).toHaveBeenCalledWith('demo-chat', 'fixed');
+      expect(updateProviderRouteStrategy).toHaveBeenCalledWith('minimax-fast', 'fixed');
     });
     expect(screen.getByLabelText('Routing policy')).toHaveValue('fixed');
   });
