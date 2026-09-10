@@ -1,5 +1,10 @@
 # Build Info in Footer
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 **Date:** 2026-04-30
 **Status:** Approved
 
@@ -9,7 +14,7 @@ Show the deployed commit SHA and deployment timestamp in the frontend so we can 
 
 ## What & Where
 
-- Render in the global footer in [`frontend/src/app/layout.tsx`](../../../frontend/src/app/layout.tsx). The footer already appears on every page (login, dashboard, etc.); the root `/` page just redirects, so the footer is the right surface.
+- Render in the global footer in [`frontend/src/app/layout.tsx`](../../../../apps/frontend/src/app/layout.tsx). The footer already appears on every page (login, dashboard, etc.); the root `/` page just redirects, so the footer is the right surface.
 - Display short SHA (7 chars) as a clickable link to `https://github.com/HarvardMadSys/hybridInference/commit/<full-sha>` and the deployment timestamp formatted in the user's local timezone.
 - Example footer line:
   `© FreeInference · build a1b2c3d · deployed 2026-04-30 14:23 UTC`
@@ -17,26 +22,26 @@ Show the deployed commit SHA and deployment timestamp in the frontend so we can 
 
 ## How It's Wired
 
-1. **Build args** — add to [`deploy/docker/Dockerfile.frontend`](../../../deploy/docker/Dockerfile.frontend):
+1. **Build args** — add to [`deploy/docker/Dockerfile.frontend`](../../../../deploy/docker/Dockerfile.frontend):
    ```dockerfile
    ARG NEXT_PUBLIC_BUILD_SHA=
    ARG NEXT_PUBLIC_BUILD_TIMESTAMP=
    ENV NEXT_PUBLIC_BUILD_SHA=$NEXT_PUBLIC_BUILD_SHA
    ENV NEXT_PUBLIC_BUILD_TIMESTAMP=$NEXT_PUBLIC_BUILD_TIMESTAMP
    ```
-2. **Compose plumbing** — forward env to build args in [`deploy/docker/docker-compose.yml`](../../../deploy/docker/docker-compose.yml) frontend service:
+2. **Compose plumbing** — forward env to build args in [`deploy/docker/docker-compose.yml`](../../../../deploy/docker/docker-compose.yml) frontend service:
    ```yaml
    args:
      NEXT_PUBLIC_BUILD_SHA: ${BUILD_SHA:-}
      NEXT_PUBLIC_BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-}
    ```
-   Apply the same change to [`docker-compose.staging.yml`](../../../deploy/docker/docker-compose.staging.yml) if it has its own frontend build block.
-3. **Deploy scripts** — in both [`ops/deploy/deploy_production.sh`](../../../scripts/deploy_production.sh) and [`ops/deploy/deploy_staging.sh`](../../../scripts/deploy_staging.sh), export before `make build`:
+   Apply the same change to `docker-compose.staging.yml` if it has its own frontend build block.
+3. **Deploy scripts** — in both `ops/deploy/deploy_production.sh` and `ops/deploy/deploy_staging.sh`, export before `make build`:
    ```bash
    export BUILD_SHA="$target_sha"
    export BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
    ```
-4. **Config exposure** — add to [`frontend/src/config/env.ts`](../../../frontend/src/config/env.ts):
+4. **Config exposure** — add to [`frontend/src/config/env.ts`](../../../../apps/frontend/src/config/env.ts):
    ```ts
    buildSha: process.env.NEXT_PUBLIC_BUILD_SHA || '',
    buildTimestamp: process.env.NEXT_PUBLIC_BUILD_TIMESTAMP || '',

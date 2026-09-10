@@ -1,14 +1,19 @@
 # Router session affinity (per-user provider stickiness)
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 ## Problem
 
-`FixedRouter._select_adapter` ([apps/backend/routing/routers.py:619](../../../apps/backend/routing/routers.py#L619)) picks a provider via weighted random selection on every request. Two consecutive requests from the same user can hit different providers, which:
+`FixedRouter._select_adapter` ([apps/backend/routing/routers.py:619](../../../../apps/backend/routing/routers.py)) picks a provider via weighted random selection on every request. Two consecutive requests from the same user can hit different providers, which:
 
 - Produces inconsistent latency and behavior across turns of one conversation.
 - Defeats provider-side prompt caches (each provider sees a cold prefix).
 - Splits prompt history across providers in ways users don't expect.
 
-Per-API-key affinity already exists at the *key* level inside one provider ([apps/backend/serving/adapters/key_pool.py:47](../../../apps/backend/serving/adapters/key_pool.py#L47), 5-minute TTL). No equivalent at the *provider* level.
+Per-API-key affinity already exists at the *key* level inside one provider ([apps/backend/serving/adapters/key_pool.py:47](../../../../apps/backend/serving/adapters/key_pool.py), 5-minute TTL). No equivalent at the *provider* level.
 
 ## Goal
 
@@ -62,7 +67,7 @@ AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
 
 ### Affinity key plumbing
 
-`auth_key_hash` is already pushed into `req_ctx` at [completions.py:338](../../../apps/backend/serving/servers/routers/completions.py#L338). Extend that block:
+`auth_key_hash` is already pushed into `req_ctx` at [completions.py:338](../../../../apps/backend/serving/servers/routers/completions.py). Extend that block:
 
 ```python
 auth_key_hash = user_ctx.get("auth_key_hash")
@@ -128,7 +133,7 @@ Two lock acquisitions are tolerable: the random pick happens outside the lock, m
 
 ### Error → drop affinity
 
-`chat_completion` and `stream_chat_completion` already record `_on_failure(endpoint_id)` on primary error at [routers.py:459](../../../apps/backend/routing/routers.py#L459) and [routers.py:523](../../../apps/backend/routing/routers.py#L523). Add one call right after each:
+`chat_completion` and `stream_chat_completion` already record `_on_failure(endpoint_id)` on primary error at [routers.py:459](../../../../apps/backend/routing/routers.py) and [routers.py:523](../../../../apps/backend/routing/routers.py). Add one call right after each:
 
 ```python
 except Exception as primary_error:

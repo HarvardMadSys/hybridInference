@@ -1,11 +1,16 @@
 # Per-Role Daily Quota with Bulk Apply
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 **Date:** 2026-05-05
 **Status:** Approved (awaiting user spec review)
 
 ## Problem
 
-Today, the daily USD spend quota for any new user's API key is seeded from a single env var `SIGNUP_DEFAULT_DAILY_QUOTA_USD` (originally read in a sync `get_default_daily_quota()` helper, now replaced by [`get_default_daily_quota_for_role()`](../../apps/backend/serving/servers/routers/user_routes.py) — see Implementation §1). Every role (`free`, `pro`, `internal`, `admin`) gets the same starting quota. There is no admin UI to change it. To raise the quota for `internal` users, an operator must edit env vars and restart the gateway.
+Today, the daily USD spend quota for any new user's API key is seeded from a single env var `SIGNUP_DEFAULT_DAILY_QUOTA_USD` (originally read in a sync `get_default_daily_quota()` helper, now replaced by [`get_default_daily_quota_for_role()`](../../../../apps/backend/serving/servers/routers/user_routes.py) — see Implementation §1). Every role (`free`, `pro`, `internal`, `admin`) gets the same starting quota. There is no admin UI to change it. To raise the quota for `internal` users, an operator must edit env vars and restart the gateway.
 
 We want admins to set a different default daily quota per role and to bulk-apply that quota to existing users' active API keys.
 
@@ -67,7 +72,7 @@ auth.verify_api_key → reads api_keys.quota_daily_cost_usd directly
 
 ### 1. Runtime settings registry
 
-File: [`apps/backend/serving/config/runtime_settings.py`](../../apps/backend/serving/config/runtime_settings.py)
+File: [`apps/backend/serving/config/runtime_settings.py`](../../../../apps/backend/serving/config/runtime_settings.py)
 
 Add 4 entries to `RUNTIME_SETTINGS_REGISTRY`:
 
@@ -102,7 +107,7 @@ These auto-render in the Settings tab via the existing `numericSettings` filter 
 
 ### 2. Signup default by role
 
-File: [`apps/backend/serving/servers/routers/user_routes.py`](../../apps/backend/serving/servers/routers/user_routes.py)
+File: [`apps/backend/serving/servers/routers/user_routes.py`](../../../../apps/backend/serving/servers/routers/user_routes.py)
 
 Replace `get_default_daily_quota()` with an async role-aware helper:
 
@@ -159,11 +164,11 @@ async def preview(role: Literal["free","pro","internal","admin"], ...): ...
 async def apply(req: RoleQuotaApplyRequest, ...): ...
 ```
 
-Register router in [`apps/backend/serving/servers/routers/admin/__init__.py`](../../apps/backend/serving/servers/routers/admin/__init__.py).
+Register router in [`apps/backend/serving/servers/routers/admin/__init__.py`](../../../../apps/backend/serving/servers/routers/admin/__init__.py).
 
 ### 4. Storage methods
 
-File: [`apps/backend/serving/storage/base.py`](../../apps/backend/serving/storage/base.py) (`OperationalStore` ABC)
+File: [`apps/backend/serving/storage/base.py`](../../../../apps/backend/serving/storage/base.py) (`OperationalStore` ABC)
 
 ```python
 @abstractmethod
@@ -178,10 +183,10 @@ async def apply_role_quota(self, role: str, quota: Decimal) -> int:
 ```
 
 Implement in:
-- [`postgres_operational.py`](../../apps/backend/serving/storage/postgres_operational.py) — single `UPDATE ... RETURNING` style or `cursor.rowcount`
-- [`d1_operational.py`](../../apps/backend/serving/storage/d1_operational.py) — execute UPDATE; D1 returns meta.changes
-- [`dual_write.py`](../../apps/backend/serving/storage/dual_write.py) — fan out to both backends; return primary's count
-- [`cache.py`](../../apps/backend/serving/storage/cache.py) — passthrough; invalidate any cached api_key rows touched (read existing pattern for invalidation hooks)
+- [`postgres_operational.py`](../../../../apps/backend/serving/storage/postgres_operational.py) — single `UPDATE ... RETURNING` style or `cursor.rowcount`
+- `d1_operational.py` — execute UPDATE; D1 returns meta.changes
+- `dual_write.py` — fan out to both backends; return primary's count
+- [`cache.py`](../../../../apps/backend/serving/storage/cache.py) — passthrough; invalidate any cached api_key rows touched (read existing pattern for invalidation hooks)
 
 SQL pattern:
 
@@ -203,7 +208,7 @@ WHERE status = 'active'
 
 ### 5. Frontend client
 
-File: [`apps/frontend/src/lib/api/admin.ts`](../../apps/frontend/src/lib/api/admin.ts)
+File: [`apps/frontend/src/lib/api/admin.ts`](../../../../apps/frontend/src/lib/api/admin.ts)
 
 ```typescript
 export type Role = 'free' | 'pro' | 'internal' | 'admin';
@@ -227,7 +232,7 @@ export async function applyRoleQuota(role: Role): Promise<RoleQuotaApplyResult>;
 
 ### 6. Frontend UI
 
-File: [`apps/frontend/src/app/dashboard/admin/SettingsTab.tsx`](../../apps/frontend/src/app/dashboard/admin/SettingsTab.tsx)
+File: [`apps/frontend/src/app/dashboard/admin/SettingsTab.tsx`](../../../../apps/frontend/src/app/dashboard/admin/SettingsTab.tsx)
 
 Inside the existing numeric settings render loop (around line 280), detect quota keys via prefix:
 
@@ -270,7 +275,7 @@ Keep numeric Save button intact: setting the value and applying it to existing u
 
 ### Quota check at request time
 
-Unchanged. [`auth.py:235-239`](../../apps/backend/serving/servers/auth.py#L235-L239) reads `user["quota_daily_cost_usd"]` from the joined api_keys row.
+Unchanged. [`auth.py:235-239`](../../../../apps/backend/serving/servers/auth.py) reads `user["quota_daily_cost_usd"]` from the joined api_keys row.
 
 ## Error handling
 
@@ -307,7 +312,7 @@ Unchanged. [`auth.py:235-239`](../../apps/backend/serving/servers/auth.py#L235-L
 
 - No DB schema migration. New runtime settings registry entries pick up defaults the first time they're read.
 - No backfill required: existing api_keys keep their current `quota_daily_cost_usd` values until an admin clicks Apply.
-- `signup_default_daily_quota_usd` env var is kept as bootstrap fallback. Mark `# Deprecated: use admin Settings → user_daily_quota_<role>` comment in [settings.py](../../apps/backend/serving/config/settings.py); remove in a follow-up after staging soak.
+- `signup_default_daily_quota_usd` env var is kept as bootstrap fallback. Mark `# Deprecated: use admin Settings → user_daily_quota_<role>` comment in [settings.py](../../../../apps/backend/serving/config/settings.py); remove in a follow-up after staging soak.
 
 ## Open questions
 

@@ -1,14 +1,19 @@
 # Public Homepage Landing Page — Implementation Plan
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the redirect-only `/` route with a public landing page that introduces freeinference.org as a Harvard SEAS project, while preserving the auth-based redirect to `/dashboard` for logged-in users.
 
-**Architecture:** Frontend-only change in the Next.js app. Add Harvard Crimson colors and Crimson Text serif headings to the existing Tailwind theme, extend the shared layout with SEAS attribution and a serif font variable, and create four small presentational components in `frontend/src/components/landing/` (Hero, Features, HowItWorks, CodeExample). The homepage at [frontend/src/app/page.tsx](../../../frontend/src/app/page.tsx) renders these for unauthenticated visitors and redirects authenticated visitors to `/dashboard`.
+**Architecture:** Frontend-only change in the Next.js app. Add Harvard Crimson colors and Crimson Text serif headings to the existing Tailwind theme, extend the shared layout with SEAS attribution and a serif font variable, and create four small presentational components in `frontend/src/components/landing/` (Hero, Features, HowItWorks, CodeExample). The homepage at [frontend/src/app/page.tsx](../../../../apps/frontend/src/app/page.tsx) renders these for unauthenticated visitors and redirects authenticated visitors to `/dashboard`.
 
 **Tech Stack:** Next.js 15 (App Router, client components), React 18, Tailwind CSS 3, TypeScript, `next/font/google`, existing `Button` and `Card` UI primitives, Vitest for unit tests where applicable.
 
-**Spec:** [docs/agents/specs/2026-05-02-homepage-landing-design.md](../specs/2026-05-02-homepage-landing-design.md)
+**Spec:** [docs/agents/specs/2026-05-02-homepage-landing-design.md](../../specs/archive/2026-05-02-homepage-landing-design.md)
 
 ---
 

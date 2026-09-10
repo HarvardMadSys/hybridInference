@@ -265,7 +265,7 @@ For local development without Docker, start it directly:
 ```bash
 PYTHONPATH=apps/backend \
   MODELS_CONFIG_PATH=/path/to/your/models.yaml \
-  uv run uvicorn serving.servers.app:app --port 8080
+  uv run uvicorn serving.servers.app:app --no-proxy-headers --port 8080
 ```
 
 At startup the backend logs `Registered N routes from <path>`. That line is the

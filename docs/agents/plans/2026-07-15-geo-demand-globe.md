@@ -1,5 +1,10 @@
 # Geo-Temporal Demand Globe — Productization Plan (PR A + PR B)
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Bring the standalone geo-temporal demand globe (research instrument, implemented as ops tooling on this branch) into the freeinference product as an admin page at `/dashboard/admin/analytics/geo`, backed by a live admin API — **without touching the `api_logs` schema or the request/logging write path**. The product surface is a demand observatory: it shows where FreeInference requests originate and how that demand moves over time, not where inference is served.
@@ -21,7 +26,7 @@ Everything below already exists on branch `claude/cross-region-inference-survey-
 |---|---|---|
 | Hourly geo exporter (offline research path) | [ops/db/analysis/geo_hourly_export.py](../../../ops/db/analysis/geo_hourly_export.py) | `0664fbae` |
 | Standalone globe viewer (research instrument — **keep, do not delete**) | [ops/db/analysis/geo_globe.html](../../../ops/db/analysis/geo_globe.html) | `0664fbae` + restyle `8f6a3dbd` |
-| Usage docs (workflow §5) | [ops/db/analysis/README.md](../../../ops/db/analysis/README.md) | `0664fbae` |
+| Usage docs (workflow §5) | `ops/db/analysis/README.md` | `0664fbae` |
 | Original single-file prototype (historical reference, synthetic data) | `~/.codex/visualizations/2026/07/15/019f645a-c69c-7fc1-913d-9072a2e508cb/global-traffic-globe.html` | not in repo |
 
 Facts verified against the real system (2026-07-15):
@@ -36,7 +41,7 @@ Facts verified against the real system (2026-07-15):
   `metadata JSONB` ([log_schema.py](../../../apps/backend/serving/storage/log_schema.py)).
 - Exporter SQL runs clean against the real schema (validated on a schema-true dev DB).
 - DB access conventions for scripts: `.env` / `DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME`
-  (same as [ops/db/export_logs.py](../../../ops/db/export_logs.py)).
+  (same as `ops/db/export_logs.py`).
 - [DB-IP Country Lite](https://db-ip.com/db/download/ip-to-country-lite) requires no account or
   secret. It is a reduced-accuracy/coverage monthly database under CC BY 4.0, so product surfaces
   using it must retain DB-IP's clickable attribution. PR A includes an atomic monthly updater and

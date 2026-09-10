@@ -1,5 +1,10 @@
 # Tracked Fire-and-Forget Tasks — Design
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 **Date:** 2026-05-03
 **Status:** Draft → ready for plan
 **Author:** Architecture review follow-up (issue #4 of 6)
@@ -10,7 +15,7 @@ Multiple fire-and-forget side effects across the gateway are scheduled with `asy
 
 - **Cost increment** — [apps/backend/serving/servers/routers/completions.py:75-100](../../../apps/backend/serving/servers/routers/completions.py#L75) (will live in `CompletionsCost.CostTracker._increment` after issue #2 lands).
 - **Request log** — [apps/backend/serving/servers/routers/completions.py:47-73](../../../apps/backend/serving/servers/routers/completions.py#L47) (will live in `CompletionsLogger._write`).
-- **D1 dual-write shadow** — [apps/backend/serving/storage/dual_write.py:61-76](../../../apps/backend/serving/storage/dual_write.py#L61).
+- **D1 dual-write shadow** — `apps/backend/serving/storage/dual_write.py:61-76`.
 
 If a task fails or never runs to completion (DB slow, user disconnects mid-stream), the failure is logged but no metric, no alert, no rate visibility. Operators learn about billing gaps and audit-log gaps from user complaints, not from monitoring.
 

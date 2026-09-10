@@ -1,5 +1,10 @@
 # Prometheus Removal & Slack-Based Alerting — Design
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 **Date:** 2026-05-03
 **Status:** Draft → ready for plan
 **Author:** Architecture review follow-up (issue #1 of 6)
@@ -8,8 +13,8 @@
 
 The hybridInference codebase has near-zero working observability:
 
-- All metrics in [serving/observability/metrics.py](../../../serving/observability/metrics.py) are no-op shims (~40 symbols left over after `prometheus-client` was removed). Callsites still emit labels but they are discarded.
-- Prometheus scrape is disabled at [deploy/prometheus/prometheus.yml:33-40](../../../deploy/prometheus/prometheus.yml#L33-L40); rule files were dropped in commit `3d1721a`.
+- All metrics in `serving/observability/metrics.py` are no-op shims (~40 symbols left over after `prometheus-client` was removed). Callsites still emit labels but they are discarded.
+- Prometheus scrape is disabled at `deploy/prometheus/prometheus.yml:33-40`; rule files were dropped in commit `3d1721a`.
 - Alertmanager 0.31.1 still runs in `docker-compose`, but only routes 3 hard-coded alerts (`ServiceDown|ServiceUnreachable|DatabaseDisconnected`); everything else blackholes.
 - Recent direction (commit `c568fc1` "Slack alert when failed requests exceed threshold") shows the team is moving toward direct in-process Slack alerting.
 - Production incidents are invisible until a human notices.
@@ -63,8 +68,8 @@ Three new modules under `serving/observability/`:
 
 ### Lifecycle
 
-- `AlertEngine` started in [serving/servers/bootstrap.py](../../../serving/servers/bootstrap.py) on app startup; cancelled on shutdown.
-- `AlertingLogHandler` attached to root logger in [serving/servers/app.py](../../../serving/servers/app.py) after the structured-log JSON formatter is installed (so handler sees the same records that hit JSON output).
+- `AlertEngine` started in [serving/servers/bootstrap.py](../../../apps/backend/serving/servers/bootstrap.py) on app startup; cancelled on shutdown.
+- `AlertingLogHandler` attached to root logger in [serving/servers/app.py](../../../apps/backend/serving/servers/app.py) after the structured-log JSON formatter is installed (so handler sees the same records that hit JSON output).
 - If `SLACK_ALERTS_WEBHOOK_URL` is unset → log once at startup; `alert_slack(...)` becomes a no-op. Tests and dev environments work without configuring Slack.
 
 ### Data flow
@@ -110,8 +115,8 @@ AlertEngine ticker (every 5 min)
 
 | # | Alert | Where wired in | Trigger | Cooldown / dedupe key | Severity |
 |---|---|---|---|---|---|
-| 6 | Provider circuit-open | [routing/routers.py](../../../routing/routers.py) inside `_CircuitBreaker` state transition | CLOSED→OPEN or HALF_OPEN→OPEN | 5 min per `circuit_open:{endpoint_id}` | error |
-| 7 | DB disconnect (port existing) | [serving/storage/database.py](../../../serving/storage/database.py) on conn failure | Health check fails / pool exhausted | 5 min per `db_disconnect:{db_kind}` | critical |
+| 6 | Provider circuit-open | [routing/routers.py](../../../apps/backend/routing/routers.py) inside `_CircuitBreaker` state transition | CLOSED→OPEN or HALF_OPEN→OPEN | 5 min per `circuit_open:{endpoint_id}` | error |
+| 7 | DB disconnect (port existing) | [serving/storage/database.py](../../../apps/backend/serving/storage/database.py) on conn failure | Health check fails / pool exhausted | 5 min per `db_disconnect:{db_kind}` | critical |
 
 ### Periodic SQL (AlertEngine tickers)
 
@@ -210,9 +215,9 @@ cost:
 
 ### Files / directories deleted
 
-- [serving/observability/metrics.py](../../../serving/observability/metrics.py) — ~40 no-op shims
-- [deploy/prometheus/](../../../deploy/prometheus/) — entire directory
-- [deploy/alertmanager/](../../../deploy/alertmanager/) — entire directory (includes `alert_logger.py`)
+- `serving/observability/metrics.py` — ~40 no-op shims
+- `deploy/prometheus/` — entire directory
+- `deploy/alertmanager/` — entire directory (includes `alert_logger.py`)
 - Any `alertmanager.service` / `alert-logger.service` units in [deploy/systemd/](../../../deploy/systemd/)
 
 ### Files modified
@@ -227,7 +232,7 @@ cost:
 
 | Category | Action | Examples |
 |---|---|---|
-| Pure no-op call (data already in request logs) | Delete the call | `PROVIDER_AVAILABILITY`, `PROVIDER_LATENCY` in [routing/routers.py:24-34](../../../routing/routers.py#L24) |
+| Pure no-op call (data already in request logs) | Delete the call | `PROVIDER_AVAILABILITY`, `PROVIDER_LATENCY` in [routing/routers.py:24-34](../../../apps/backend/routing/routers.py) |
 | Carries unique signal | Convert to structured log event with the same labels | `API_FALLBACKS` → `log.info("fallback_used", from=..., to=..., reason=...)`; `ROUTEWISE_CANARY_DECISIONS` → log event |
 | State-change | Replace with `alert_slack(...)` call | `CIRCUIT_STATE` → on transition, call `alert_slack(severity="error", title="Provider circuit opened", context=...)` |
 
@@ -245,8 +250,8 @@ This sequence will be turned into a detailed implementation plan by the writing-
 
 1. **PR 1 — Build framework, dark.** Add `alerts.py`, `log_handler.py`, `alert_rules.py`, `config/alerts.yaml`, all 9 alerts wired up, full unit + integration tests. Default `ALERTS_ENABLED=false`. Nothing fires.
 2. **PR 2 — Enable in staging.** Set `SLACK_ALERTS_WEBHOOK_URL` + flip flag in staging only. Watch for 1–2 days; tune thresholds in `config/alerts.yaml`. No production change.
-3. **PR 3 — Strip dead metric code.** Delete [serving/observability/metrics.py](../../../serving/observability/metrics.py) + all imports/callsites. Convert signal-carrying ones to structured log events / `alert_slack`. CI green (metrics were already no-ops).
-4. **PR 4 — Strip Prometheus + Alertmanager infra.** Delete [deploy/prometheus/](../../../deploy/prometheus/) + [deploy/alertmanager/](../../../deploy/alertmanager/); remove `docker-compose` services; update env, nginx, systemd, docs.
+3. **PR 3 — Strip dead metric code.** Delete `serving/observability/metrics.py` + all imports/callsites. Convert signal-carrying ones to structured log events / `alert_slack`. CI green (metrics were already no-ops).
+4. **PR 4 — Strip Prometheus + Alertmanager infra.** Delete `deploy/prometheus/` + `deploy/alertmanager/`; remove `docker-compose` services; update env, nginx, systemd, docs.
 5. **PR 5 — Enable in production.** Set webhook + flip flag in prod. Done.
 
 **Stop / rollback:** any PR can be reverted independently. PR 4 (strip) is gated on PR 2 (staging proof) so we never remove Prometheus before alerts are validated.
@@ -270,7 +275,7 @@ None at present. All forks resolved during brainstorming on 2026-05-03.
 
 These came up during the architecture review and have their own slots:
 
-1. Decompose [serving/servers/routers/completions.py](../../../serving/servers/routers/completions.py) (1030 lines).
+1. Decompose [serving/servers/routers/completions.py](../../../apps/backend/serving/servers/routers/completions.py) (1030 lines).
 2. Adopt a schema migration framework (Alembic).
 3. Make fire-and-forget side effects observable (cost increment + logging + dual-write shadow).
 4. Decompose `frontend/src/app/dashboard/admin/page.tsx` (3343 lines).

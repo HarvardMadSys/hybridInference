@@ -396,7 +396,7 @@ Start the backend. From a checkout, the quickstart form is:
 ```bash
 PYTHONPATH=apps/backend \
   MODELS_CONFIG_PATH=/path/to/your/models.yaml \
-  uv run uvicorn serving.servers.app:app --port 8080
+  uv run uvicorn serving.servers.app:app --no-proxy-headers --port 8080
 ```
 
 With the bundled Docker Compose setup, `make build s=backend` rebuilds and

@@ -328,6 +328,12 @@ def test_shell_can_override_the_example_upstream_in_compose() -> None:
     assert backend_env["EXAMPLE_UPSTREAM_BASE_URL"] == "https://api.example.test/v1"
     assert backend_env["EXAMPLE_UPSTREAM_API_KEY"] == "explicit-shell-key"
     assert backend_env["EXAMPLE_UPSTREAM_MODEL"] == "real-upstream-model"
+    # Stage 1 must start on an empty Docker host. Compose validates external
+    # volumes even with --no-deps and without selecting the Postgres service.
+    assert all(not volume.get("external") for volume in rendered["volumes"].values())
+    assert rendered["volumes"]["postgres_data"]["name"] == (
+        f"{rendered['name']}_unused_postgres_data"
+    )
 
 
 def test_example_checked_in_port_defaults_match_the_smoke_url(

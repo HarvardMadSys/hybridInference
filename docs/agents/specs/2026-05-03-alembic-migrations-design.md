@@ -1,5 +1,10 @@
 # Postgres Schema Migrations with Alembic — Design
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 **Date:** 2026-05-03
 **Status:** Draft → ready for plan
 **Author:** Architecture review follow-up (issue #3 of 6)
@@ -9,7 +14,7 @@
 There is no schema migration framework for the Postgres backend. Schema definitions live in two places:
 
 - Embedded in Python: `CREATE TABLE IF NOT EXISTS` blocks scattered across [apps/backend/serving/storage/postgres_log.py:49-100](../../../apps/backend/serving/storage/postgres_log.py#L49) and `apps/backend/serving/storage/postgres_operational.py`.
-- A static SQL file for the D1 backend: [apps/backend/serving/storage/d1_schema.sql](../../../apps/backend/serving/storage/d1_schema.sql).
+- A static SQL file for the D1 backend: `apps/backend/serving/storage/d1_schema.sql`.
 
 Schema is applied at app startup via the idempotent `IF NOT EXISTS` pattern. Schema changes are added by appending new `ALTER TABLE` lines, also idempotent.
 

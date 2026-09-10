@@ -54,3 +54,11 @@ services:
       retries: 15
     networks:
       - hybridinference
+
+volumes:
+  # Compose checks declared external volumes even when their service is not
+  # selected. A fresh Docker host must not need the production database volume
+  # just to run Stage 1. Stage 2 keeps its existing example_postgres_data volume.
+  postgres_data:
+    external: false
+    name: ${COMPOSE_PROJECT_NAME:-hybridinference-example}_unused_postgres_data

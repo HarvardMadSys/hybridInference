@@ -19,7 +19,8 @@ stayed 0 (HarvardMadSys/freeInference#72).
 Deleting the flags is not enough — the default is ON — so every launch site
 must carry ``--no-proxy-headers`` explicitly. These tests parse the deploy
 files directly; no Docker or systemd is required. A new uvicorn launch site
-added under ``deploy/`` is picked up by the scan automatically.
+added under ``deploy/`` or the current deployment documentation is picked up
+by the scan automatically. Historical design records are not launch guides.
 """
 
 from __future__ import annotations
@@ -57,7 +58,10 @@ def _uvicorn_launch_lines(path: Path) -> list[str]:
 
 def _scan_deploy_tree() -> dict[Path, list[str]]:
     launches: dict[Path, list[str]] = {}
-    for path in sorted(DEPLOY.rglob("*")):
+    paths = [*DEPLOY.rglob("*"), REPO / "README.md"]
+    paths.extend((REPO / "docs" / "developer").glob("*.md"))
+    paths.extend((REPO / "distributions" / "example").glob("*.md"))
+    for path in sorted(paths):
         if not path.is_file():
             continue
         lines = _uvicorn_launch_lines(path)

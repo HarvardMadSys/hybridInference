@@ -1,8 +1,10 @@
 # 同仓拆分执行计划(Step 1 of 3)
 
+> 设计与迁移记录：文中的步骤和路径属于编写时的版本。当前部署请从[开发者指南](../../developer/index.rst)开始。仍存在的代码链接已更新为当前路径；已删除的文件保留为文字引用，行号仍指历史版本。
+
 > 状态:执行计划(executable plan)。设计依据见
 > [2026-07-16 主设计文档](../specs/2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)、
-> [#953 归属分类](../specs/2026-07-17-repo-ownership-classification.zh.md)、
+> `#953 归属分类`、
 > issue #738(生产安全不变量)。与 issue #1031(终态 RFC)冲突之处见 §7-1,
 > 以本文 + 主设计文档为准,#1031 待修订。
 >

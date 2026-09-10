@@ -1,5 +1,10 @@
 # Per-Provider Hourly Performance Tracking — Implementation Plan
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Aggregate `api_logs` into a new `provider_hourly_stats` rollup table once per hour grouped by `(provider, model_id, hour_bucket)`, and surface the resulting TTFT and throughput time series in a new "Provider Performance" tab on the admin dashboard.
@@ -8,7 +13,7 @@
 
 **Tech Stack:** Python 3.12 (asyncio/asyncpg/APScheduler/FastAPI/Pydantic), Postgres 14+ (`PERCENTILE_CONT`, advisory locks), pytest + pytest-asyncio integration tests against a real test DB, Prometheus client, Next.js + Recharts + Tailwind.
 
-**Spec:** [docs/agents/specs/2026-05-02-per-provider-hourly-performance-design.md](../specs/2026-05-02-per-provider-hourly-performance-design.md)
+**Spec:** [docs/agents/specs/2026-05-02-per-provider-hourly-performance-design.md](../../specs/archive/2026-05-02-per-provider-hourly-performance-design.md)
 
 ---
 

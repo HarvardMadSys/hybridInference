@@ -1,5 +1,10 @@
 # Per-Provider Hourly Performance Tracking
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 **Status:** Design
 **Date:** 2026-05-02
 **Author:** brainstorming session
@@ -26,11 +31,11 @@ Track upstream provider performance â€” TTFT, throughput, latency, error rate â€
 
 ## Context
 
-`api_logs` (defined in [serving/storage/database.py](serving/storage/database.py)) already records per-request `provider`, `model_id`, `ttft_ms`, `latency_ms`, `prompt_tokens`, `completion_tokens`, `status_code`, `stream`, `timestamp`, and is indexed on `(provider, timestamp DESC)` and `(model_id, timestamp DESC)`. Hourly aggregation by `(provider, model_id)` is well-served by these indexes.
+`api_logs` (defined in [serving/storage/database.py](../../../../apps/backend/serving/storage/database.py)) already records per-request `provider`, `model_id`, `ttft_ms`, `latency_ms`, `prompt_tokens`, `completion_tokens`, `status_code`, `stream`, `timestamp`, and is indexed on `(provider, timestamp DESC)` and `(model_id, timestamp DESC)`. Hourly aggregation by `(provider, model_id)` is well-served by these indexes.
 
-APScheduler is already wired in via [serving/utils/email_scheduler.py](serving/utils/email_scheduler.py) (`AsyncIOScheduler`, UTC). Same scheduler instance hosts the hourly rollup job.
+APScheduler is already wired in via [serving/utils/email_scheduler.py](../../../../apps/backend/serving/utils/email_scheduler.py) (`AsyncIOScheduler`, UTC). Same scheduler instance hosts the hourly rollup job.
 
-The admin dashboard at [frontend/src/app/dashboard/admin/page.tsx](frontend/src/app/dashboard/admin/page.tsx) already has an analytics tab using Recharts, and admin API routes live under [serving/servers/routers/admin.py](serving/servers/routers/admin.py).
+The admin dashboard at [frontend/src/app/dashboard/admin/page.tsx](../../../../apps/frontend/src/app/dashboard/admin/page.tsx) already has an analytics tab using Recharts, and admin API routes live under `serving/servers/routers/admin.py`.
 
 ## Architecture
 
@@ -253,7 +258,7 @@ scheduler.add_job(
 
 ## Admin API
 
-`GET /admin/api/provider-stats` (registered in [serving/servers/routers/admin.py](serving/servers/routers/admin.py)):
+`GET /admin/api/provider-stats` (registered in `serving/servers/routers/admin.py`):
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -343,12 +348,12 @@ Logging: per run, INFO line with `hours=[start..end] rows_written=N duration_ms=
 
 | File | Change |
 |---|---|
-| [serving/storage/database.py](serving/storage/database.py) | Add `provider_hourly_stats` DDL + indexes in init. |
+| [serving/storage/database.py](../../../../apps/backend/serving/storage/database.py) | Add `provider_hourly_stats` DDL + indexes in init. |
 | `serving/admin/provider_stats_rollup.py` | New: SQL constants, `run_rollup`, `hourly_job`, `backfill_if_empty`, `purge_old`. |
-| [serving/utils/email_scheduler.py](serving/utils/email_scheduler.py) **or** new `serving/utils/scheduler.py` | Register hourly job on the same `AsyncIOScheduler`; consider hoisting the scheduler module if multi-job ownership grows awkward. |
-| [serving/servers/routers/admin.py](serving/servers/routers/admin.py) | Add `GET /admin/api/provider-stats`. |
-| [serving/schemas_admin.py](serving/schemas_admin.py) | Add `ProviderStatsRow`, `ProviderStatsResponse`. |
-| [serving/observability/metrics.py](serving/observability/metrics.py) | Add counter, histogram, gauge for the rollup job. |
+| [serving/utils/email_scheduler.py](../../../../apps/backend/serving/utils/email_scheduler.py) **or** new `serving/utils/scheduler.py` | Register hourly job on the same `AsyncIOScheduler`; consider hoisting the scheduler module if multi-job ownership grows awkward. |
+| `serving/servers/routers/admin.py` | Add `GET /admin/api/provider-stats`. |
+| [serving/schemas_admin.py](../../../../apps/backend/serving/schemas_admin.py) | Add `ProviderStatsRow`, `ProviderStatsResponse`. |
+| `serving/observability/metrics.py` | Add counter, histogram, gauge for the rollup job. |
 | `frontend/src/app/dashboard/admin/...` | New "Provider Performance" tab with two Recharts line charts and a KPI strip. |
 | `frontend/src/lib/api/admin.ts` (or equivalent) | Add `getProviderStats(...)` client. |
 | `test/admin/test_provider_stats.py` | New tests (see Testing). |

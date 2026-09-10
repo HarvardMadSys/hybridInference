@@ -398,7 +398,7 @@ PYTHONPATH=.:apps/backend \
   ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
   DB_ENABLED=false USER_AUTH_ENABLED=false ADMIN_TOKEN="${DEMO_ADMIN_TOKEN}" \
   JWT_SECRET_KEY=local-quota-demo-signing-secret-not-for-production \
-  uv run uvicorn serving.servers.app:app --host 127.0.0.1 --port 18080
+  uv run uvicorn serving.servers.app:app --no-proxy-headers --host 127.0.0.1 --port 18080
 ```
 
 These settings disable dotenv loading and user authentication and use a public
@@ -480,7 +480,7 @@ same single credential.
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
-uv run uvicorn serving.servers.app:app --port 8080
+uv run uvicorn serving.servers.app:app --no-proxy-headers --port 8080
 ```
 
 Without that variable every model in the file is skipped — its route's only API
@@ -736,7 +736,7 @@ model registry (reference them as `${VAR}`), not in the manifest.
 ## Running with your configuration
 
 ```bash
-uv run uvicorn serving.servers.app:app --port 8080
+uv run uvicorn serving.servers.app:app --no-proxy-headers --port 8080
 ```
 
 Then check what actually loaded:

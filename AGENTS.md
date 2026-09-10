@@ -26,8 +26,8 @@ under "Repository layout". Two things it does not tell you:
 - Deployment overlays under `distributions/` move out of this repository before
   publication. `example/` is the one that remains.
 - `distributions/example/` is marked `EXAMPLE_OVERLAY`, and that marker is what
-  stops `make up` from ever selecting it. It is a teaching artifact, not a
-  deployable overlay.
+  excludes it from automatic distribution discovery. Select it explicitly
+  with `make up DISTRIBUTION=example` to run the local tutorial.
 
 ## 3. Getting set up
 

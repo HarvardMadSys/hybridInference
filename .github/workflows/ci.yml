@@ -294,7 +294,7 @@ jobs:
       - name: Build developer docs and verify translations
         # `make docs-verify` is `make docs` (which builds every published
         # language, English at the tree root and each translation beneath it)
-        # plus the translation checker. Going through the Makefile rather than
+        # plus local-link and translation checks. Going through the Makefile rather than
         # repeating the sphinx-build command here is what keeps this job and a
         # contributor's local run from drifting apart.
         #
@@ -571,6 +571,9 @@ jobs:
 
       - name: Run gitleaks
         run: gitleaks detect --source . --no-git --redact --verbose --no-banner
+
+      - name: Verify secret scanner coverage
+        run: python3 ops/ci/check_gitleaks_config.py
 
       - name: Isolate uv cache dir
         # Job-level env cannot use the runner context; set via GITHUB_ENV.

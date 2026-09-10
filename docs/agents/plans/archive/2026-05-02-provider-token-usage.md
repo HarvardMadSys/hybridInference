@@ -1,5 +1,10 @@
 # Provider Token Usage Implementation Plan
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a new admin "Token Usage" tab that shows per-provider, per-model totals of input / output / cached / reasoning tokens and cost over a selectable hourly window (1h | 24h | 7d | 30d).
@@ -8,7 +13,7 @@
 
 **Tech Stack:** Python 3.11 + asyncpg + APScheduler (backend), FastAPI + Pydantic (admin API), Next.js 14 + React 18 + TypeScript (frontend), pytest + pytest-asyncio (tests).
 
-**Spec:** [docs/agents/specs/2026-05-02-provider-token-usage-design.md](2026-05-02-provider-token-usage-design.md)
+**Spec:** [docs/agents/specs/2026-05-02-provider-token-usage-design.md](../../specs/archive/2026-05-02-provider-token-usage-design.md)
 
 ---
 
@@ -16,28 +21,28 @@
 
 | Path | Responsibility |
 |------|---------------|
-| [serving/storage/database.py](serving/storage/database.py) | Schema: `ALTER TABLE provider_hourly_stats ADD COLUMN ...` for the 4 new totals (additive, idempotent). |
-| [serving/admin/provider_stats_rollup.py](serving/admin/provider_stats_rollup.py) | Extend `ROLLUP_SQL` with the 4 new totals; add `backfill_token_columns(pool, days=30)`. |
-| [serving/servers/bootstrap.py](serving/servers/bootstrap.py) | Extend the existing `_run_backfill` helper to also call `backfill_token_columns` after `backfill_if_empty`. |
-| [serving/schemas_admin.py](serving/schemas_admin.py) | New Pydantic models: `ProviderTokenUsageRow`, `ProviderTokenUsageTotals`, `ProviderTokenUsageResponse`. |
-| [serving/servers/routers/admin.py](serving/servers/routers/admin.py) | New route `GET /admin/api/provider-token-usage?range=…` (uses existing `verify_admin_access`, `get_db_logger`). |
-| [test/integration/test_provider_stats_rollup.py](test/integration/test_provider_stats_rollup.py) | Extend existing integration suite: schema check for new columns, rollup populates totals, backfill helper. |
+| [serving/storage/database.py](../../../../apps/backend/serving/storage/database.py) | Schema: `ALTER TABLE provider_hourly_stats ADD COLUMN ...` for the 4 new totals (additive, idempotent). |
+| [serving/admin/provider_stats_rollup.py](../../../../apps/backend/serving/admin/provider_stats_rollup.py) | Extend `ROLLUP_SQL` with the 4 new totals; add `backfill_token_columns(pool, days=30)`. |
+| [serving/servers/bootstrap.py](../../../../apps/backend/serving/servers/bootstrap.py) | Extend the existing `_run_backfill` helper to also call `backfill_token_columns` after `backfill_if_empty`. |
+| [serving/schemas_admin.py](../../../../apps/backend/serving/schemas_admin.py) | New Pydantic models: `ProviderTokenUsageRow`, `ProviderTokenUsageTotals`, `ProviderTokenUsageResponse`. |
+| `serving/servers/routers/admin.py` | New route `GET /admin/api/provider-token-usage?range=…` (uses existing `verify_admin_access`, `get_db_logger`). |
+| [test/integration/test_provider_stats_rollup.py](../../../../tests/integration/test_provider_stats_rollup.py) | Extend existing integration suite: schema check for new columns, rollup populates totals, backfill helper. |
 | `test/servers/test_admin_token_usage.py` | New: route tests (auth, range validation, happy path). Mirrors `test_admin_provider_stats.py`. |
-| [frontend/src/lib/api/admin.ts](frontend/src/lib/api/admin.ts) | New TypeScript types + `getProviderTokenUsage(range)` client. |
+| [frontend/src/lib/api/admin.ts](../../../../apps/frontend/src/lib/api/admin.ts) | New TypeScript types + `getProviderTokenUsage(range)` client. |
 | `frontend/src/app/dashboard/admin/TokenUsageTab.tsx` | New React component (range selector + KPI strip + grouped per-provider tables). |
-| [frontend/src/app/dashboard/admin/page.tsx](frontend/src/app/dashboard/admin/page.tsx) | Add `'token-usage'` tab key, button, and render line. |
+| [frontend/src/app/dashboard/admin/page.tsx](../../../../apps/frontend/src/app/dashboard/admin/page.tsx) | Add `'token-usage'` tab key, button, and render line. |
 
 ---
 
 ## Task 1: Add 4 nullable columns to `provider_hourly_stats`
 
 **Files:**
-- Modify: [serving/storage/database.py](serving/storage/database.py)
-- Test: [test/integration/test_provider_stats_rollup.py](test/integration/test_provider_stats_rollup.py)
+- Modify: [serving/storage/database.py](../../../../apps/backend/serving/storage/database.py)
+- Test: [test/integration/test_provider_stats_rollup.py](../../../../tests/integration/test_provider_stats_rollup.py)
 
 - [ ] **Step 1: Write the failing test**
 
-Append to [test/integration/test_provider_stats_rollup.py](test/integration/test_provider_stats_rollup.py):
+Append to [test/integration/test_provider_stats_rollup.py](../../../../tests/integration/test_provider_stats_rollup.py):
 
 ```python
 @pytest.mark.asyncio
@@ -85,7 +90,7 @@ Expected: FAIL with `assert set(by_name) == {...}` — columns do not exist yet.
 
 - [ ] **Step 3: Add the ALTER TABLE statements in database initialization**
 
-In [serving/storage/database.py](serving/storage/database.py), find the `provider_hourly_stats` `CREATE TABLE IF NOT EXISTS` block (around line 735). Immediately AFTER its `CREATE INDEX IF NOT EXISTS idx_phs_provider_hour` block (around line 772), insert:
+In [serving/storage/database.py](../../../../apps/backend/serving/storage/database.py), find the `provider_hourly_stats` `CREATE TABLE IF NOT EXISTS` block (around line 735). Immediately AFTER its `CREATE INDEX IF NOT EXISTS idx_phs_provider_hour` block (around line 772), insert:
 
 ```python
             # Migration: token totals + cost on provider_hourly_stats.
@@ -146,14 +151,14 @@ ALTER TABLE is metadata-only (nullable, no default rewrite)."
 ## Task 2: Extend `ROLLUP_SQL` to compute the 4 new totals
 
 **Files:**
-- Modify: [serving/admin/provider_stats_rollup.py](serving/admin/provider_stats_rollup.py)
-- Test: [test/integration/test_provider_stats_rollup.py](test/integration/test_provider_stats_rollup.py)
+- Modify: [serving/admin/provider_stats_rollup.py](../../../../apps/backend/serving/admin/provider_stats_rollup.py)
+- Test: [test/integration/test_provider_stats_rollup.py](../../../../tests/integration/test_provider_stats_rollup.py)
 
 The change to `ROLLUP_SQL` is purely additive — new columns in the INSERT list, new SUM expressions in the outer SELECT, three new columns added to the inner-subquery SELECT (`cache_read_tokens`, `reasoning_tokens`, `cost_usd`), and matching `EXCLUDED.col = …` lines in the `ON CONFLICT DO UPDATE`. Token totals **include errored requests** because we still attempted to send those tokens upstream.
 
 - [ ] **Step 1: Update `_insert_api_log` helper to accept the new columns**
 
-In [test/integration/test_provider_stats_rollup.py](test/integration/test_provider_stats_rollup.py), find `_insert_api_log` (around line 107). Replace the entire function with:
+In [test/integration/test_provider_stats_rollup.py](../../../../tests/integration/test_provider_stats_rollup.py), find `_insert_api_log` (around line 107). Replace the entire function with:
 
 ```python
 async def _insert_api_log(
@@ -205,7 +210,7 @@ async def _insert_api_log(
 
 - [ ] **Step 2: Write the failing test**
 
-Append to [test/integration/test_provider_stats_rollup.py](test/integration/test_provider_stats_rollup.py):
+Append to [test/integration/test_provider_stats_rollup.py](../../../../tests/integration/test_provider_stats_rollup.py):
 
 ```python
 @pytest.mark.asyncio
@@ -301,7 +306,7 @@ Expected: FAIL with `KeyError: 'total_prompt_tokens'` or `assert None == 2300` �
 
 - [ ] **Step 4: Update `ROLLUP_SQL` in `provider_stats_rollup.py`**
 
-In [serving/admin/provider_stats_rollup.py](serving/admin/provider_stats_rollup.py), replace the `ROLLUP_SQL` constant (lines 22–104) with:
+In [serving/admin/provider_stats_rollup.py](../../../../apps/backend/serving/admin/provider_stats_rollup.py), replace the `ROLLUP_SQL` constant (lines 22–104) with:
 
 ```python
 ROLLUP_SQL = """
@@ -436,14 +441,14 @@ in many cases paid for) those tokens. UPSERT updates the new columns."
 ## Task 3: Add `backfill_token_columns` helper
 
 **Files:**
-- Modify: [serving/admin/provider_stats_rollup.py](serving/admin/provider_stats_rollup.py)
-- Test: [test/integration/test_provider_stats_rollup.py](test/integration/test_provider_stats_rollup.py)
+- Modify: [serving/admin/provider_stats_rollup.py](../../../../apps/backend/serving/admin/provider_stats_rollup.py)
+- Test: [test/integration/test_provider_stats_rollup.py](../../../../tests/integration/test_provider_stats_rollup.py)
 
 The helper detects rows pre-dating the new columns (where `total_prompt_tokens IS NULL`) and re-runs the existing rollup hour-by-hour for the last `days` days. Idempotent — the `ON CONFLICT DO UPDATE` from Task 2 fills the new columns on every existing row.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to [test/integration/test_provider_stats_rollup.py](test/integration/test_provider_stats_rollup.py):
+Append to [test/integration/test_provider_stats_rollup.py](../../../../tests/integration/test_provider_stats_rollup.py):
 
 ```python
 @pytest.mark.asyncio
@@ -596,7 +601,7 @@ Expected: FAIL with `ImportError: cannot import name 'backfill_token_columns'`.
 
 - [ ] **Step 3: Add the helper to `provider_stats_rollup.py`**
 
-In [serving/admin/provider_stats_rollup.py](serving/admin/provider_stats_rollup.py), append AFTER the existing `backfill_if_empty` function (after line 263):
+In [serving/admin/provider_stats_rollup.py](../../../../apps/backend/serving/admin/provider_stats_rollup.py), append AFTER the existing `backfill_if_empty` function (after line 263):
 
 ```python
 async def backfill_token_columns(
@@ -691,13 +696,13 @@ Idempotent. Used by app startup; manual invocation safe too."
 ## Task 4: Wire `backfill_token_columns` into bootstrap
 
 **Files:**
-- Modify: [serving/servers/bootstrap.py](serving/servers/bootstrap.py)
+- Modify: [serving/servers/bootstrap.py](../../../../apps/backend/serving/servers/bootstrap.py)
 
 The existing `_run_backfill` async helper already runs `backfill_if_empty` on startup as a fire-and-forget task. Extend it to also call `backfill_token_columns(pool, days=30)` afterwards.
 
 - [ ] **Step 1: Find the existing `_run_backfill` block**
 
-Open [serving/servers/bootstrap.py](serving/servers/bootstrap.py) and locate the `_run_backfill` async function nested inside the database initialization block (around line 305). The current shape is:
+Open [serving/servers/bootstrap.py](../../../../apps/backend/serving/servers/bootstrap.py) and locate the `_run_backfill` async function nested inside the database initialization block (around line 305). The current shape is:
 
 ```python
                                 from serving.admin.provider_stats_rollup import (
@@ -722,7 +727,7 @@ Open [serving/servers/bootstrap.py](serving/servers/bootstrap.py) and locate the
 
 - [ ] **Step 2: Update the import and the helper body**
 
-Edit [serving/servers/bootstrap.py](serving/servers/bootstrap.py): change the import to also pull `backfill_token_columns`, and extend `_run_backfill` to call it after `backfill_if_empty`.
+Edit [serving/servers/bootstrap.py](../../../../apps/backend/serving/servers/bootstrap.py): change the import to also pull `backfill_token_columns`, and extend `_run_backfill` to call it after `backfill_if_empty`.
 
 Replace the import line:
 
@@ -797,11 +802,11 @@ so a slow backfill cannot trip readiness checks."
 ## Task 5: Add Pydantic schemas for the new endpoint
 
 **Files:**
-- Modify: [serving/schemas_admin.py](serving/schemas_admin.py)
+- Modify: [serving/schemas_admin.py](../../../../apps/backend/serving/schemas_admin.py)
 
 - [ ] **Step 1: Append the new models**
 
-Open [serving/schemas_admin.py](serving/schemas_admin.py). After the `ProviderStatsResponse` class (which currently ends around line 682), append:
+Open [serving/schemas_admin.py](../../../../apps/backend/serving/schemas_admin.py). After the `ProviderStatsResponse` class (which currently ends around line 682), append:
 
 ```python
 # ============================================================
@@ -845,7 +850,7 @@ class ProviderTokenUsageResponse(BaseModel):  # type: ignore[no-any-unimported]
     totals: ProviderTokenUsageTotals
 ```
 
-If `Literal` and `Field` are not yet imported in this file, add them. Check the existing imports at the top of [serving/schemas_admin.py](serving/schemas_admin.py); typical Pydantic imports look like:
+If `Literal` and `Field` are not yet imported in this file, add them. Check the existing imports at the top of [serving/schemas_admin.py](../../../../apps/backend/serving/schemas_admin.py); typical Pydantic imports look like:
 
 ```python
 from typing import Literal
@@ -876,11 +881,11 @@ git commit -m "feat(schemas): add ProviderTokenUsageResponse models"
 ## Task 6: Add the admin endpoint `GET /admin/api/provider-token-usage`
 
 **Files:**
-- Modify: [serving/servers/routers/admin.py](serving/servers/routers/admin.py)
+- Modify: `serving/servers/routers/admin.py`
 
 - [ ] **Step 1: Update the imports**
 
-In [serving/servers/routers/admin.py](serving/servers/routers/admin.py), find the `from serving.schemas_admin import (` block at line 17 and add the three new symbols. The new entries are:
+In `serving/servers/routers/admin.py`, find the `from serving.schemas_admin import (` block at line 17 and add the three new symbols. The new entries are:
 
 ```python
     ProviderTokenUsageResponse,
@@ -1018,7 +1023,7 @@ provider_hourly_stats; sums totals in Python."
 **Files:**
 - Create: `test/servers/test_admin_token_usage.py`
 
-Mirror the structure of [test/servers/test_admin_provider_stats.py](test/servers/test_admin_provider_stats.py) — auth tests with mocked DB, then a real-Postgres happy-path test gated on `TEST_PG_DSN`.
+Mirror the structure of [test/servers/test_admin_provider_stats.py](../../../../tests/servers/test_admin_provider_stats.py) — auth tests with mocked DB, then a real-Postgres happy-path test gated on `TEST_PG_DSN`.
 
 - [ ] **Step 1: Create the test file**
 
@@ -1403,11 +1408,11 @@ happy path (rows sorted DESC + totals match), empty window
 ## Task 8: Add the frontend API client
 
 **Files:**
-- Modify: [frontend/src/lib/api/admin.ts](frontend/src/lib/api/admin.ts)
+- Modify: [frontend/src/lib/api/admin.ts](../../../../apps/frontend/src/lib/api/admin.ts)
 
 - [ ] **Step 1: Append the types and client function**
 
-Open [frontend/src/lib/api/admin.ts](frontend/src/lib/api/admin.ts) and append AFTER the `getProviderStats` function (after line 684):
+Open [frontend/src/lib/api/admin.ts](../../../../apps/frontend/src/lib/api/admin.ts) and append AFTER the `getProviderStats` function (after line 684):
 
 ```typescript
 // ========================================
@@ -1486,7 +1491,7 @@ git commit -m "feat(frontend): admin client for provider-token-usage"
 **Files:**
 - Create: `frontend/src/app/dashboard/admin/TokenUsageTab.tsx`
 
-Component owns: range selector, data fetch, KPI strip, grouped per-provider tables. Uses the same Tailwind class conventions and `getErrorMessage` helper as the existing [ProviderPerformanceTab.tsx](frontend/src/app/dashboard/admin/ProviderPerformanceTab.tsx). No charts — tables only.
+Component owns: range selector, data fetch, KPI strip, grouped per-provider tables. Uses the same Tailwind class conventions and `getErrorMessage` helper as the existing [ProviderPerformanceTab.tsx](../../../../apps/frontend/src/app/dashboard/admin/ProviderPerformanceTab.tsx). No charts — tables only.
 
 - [ ] **Step 1: Create the component**
 
@@ -1725,13 +1730,13 @@ token-usage."
 ## Task 10: Wire the new tab into `page.tsx`
 
 **Files:**
-- Modify: [frontend/src/app/dashboard/admin/page.tsx](frontend/src/app/dashboard/admin/page.tsx)
+- Modify: [frontend/src/app/dashboard/admin/page.tsx](../../../../apps/frontend/src/app/dashboard/admin/page.tsx)
 
 Add `'token-usage'` to the `activeTab` union (3 places: state init, query-string parser, `onTabChange` parameter), to the tab-button array + label switch, and to the tab-render section.
 
 - [ ] **Step 1: Add the import**
 
-Near the top of [page.tsx](frontend/src/app/dashboard/admin/page.tsx) where `ProviderPerformanceTab` is imported (line 41), add:
+Near the top of [page.tsx](../../../../apps/frontend/src/app/dashboard/admin/page.tsx) where `ProviderPerformanceTab` is imported (line 41), add:
 
 ```tsx
 import { TokenUsageTab } from './TokenUsageTab';

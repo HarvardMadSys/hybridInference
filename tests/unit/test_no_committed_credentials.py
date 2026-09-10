@@ -1,15 +1,10 @@
 """No tracked file may carry a real credential.
 
-CI runs gitleaks, but with two blind spots that let one through. It scans
-``--no-git``, so only the working tree — nothing has ever scanned this
-repository's history. And ``.gitleaks.toml`` allowlists
-``docs/agents/(plans|specs)/*.md`` wholesale, on the assumption that credentials
-in design documents are samples. A live gateway API key sat in an archived plan
-document for months because both of those held at once.
-
-This test closes the second gap in the repository's own language, and covers
-the credential formats this project issues, which the scanner's default rules
-do not know about.
+CI runs gitleaks against the working tree, with exact fixture exceptions and
+custom rules for the credential formats this project issues. This independent
+guard also reads every tracked text file, including tests and design records.
+It previously caught a live gateway key hidden by a directory-wide exception;
+those broad exceptions must not return.
 
 It guards the current tracked tree. The existing HybridInference repository is
 the repository that will become public, so its complete retained Git history

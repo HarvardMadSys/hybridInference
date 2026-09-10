@@ -17,7 +17,7 @@ enough to get a working gateway:
 ```bash
 source .venv/bin/activate            # the env `make setup-dev` creates
 export OPENROUTER_API_KEY=sk-or-...
-uvicorn serving.servers.app:app --host 127.0.0.1 --port 8080
+uvicorn serving.servers.app:app --no-proxy-headers --host 127.0.0.1 --port 8080
 ```
 
 Run it from the repository root: the default paths are relative, and the boot

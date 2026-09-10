@@ -1,5 +1,10 @@
 # Provider Token Usage Tracking
 
+> Historical design/review record. Instructions, findings and line numbers
+> describe the version reviewed at the time. For current setup, use the
+> [developer guide](../../../developer/index.rst). Surviving code links point to current paths
+> for navigation; references to removed files are retained as text.
+
 **Status:** Design
 **Date:** 2026-05-02
 **Author:** brainstorming session
@@ -27,7 +32,7 @@ Track input, output, cached-read, and reasoning tokens, plus cost, that we send 
 
 ## Context
 
-`api_logs` (in [serving/storage/database.py](serving/storage/database.py)) records per-request `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `cost_usd`, plus the `(provider, model_id, timestamp)` we group on.
+`api_logs` (in [serving/storage/database.py](../../../../apps/backend/serving/storage/database.py)) records per-request `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `cost_usd`, plus the `(provider, model_id, timestamp)` we group on.
 
 `provider_hourly_stats` (added in #268) already aggregates `api_logs` hourly via `serving/admin/provider_stats_rollup.py` (`AsyncIOScheduler`, `CronTrigger(minute=5)` UTC). The job uses `pg_try_advisory_lock` for multi-replica safety and an idempotent `INSERT ... ON CONFLICT (provider, model_id, hour_bucket) DO UPDATE`. Existing columns include `prompt_tokens_avg`, `completion_tokens_avg`, `total_completion_tokens` — but no input/cache/reasoning **totals** and no cost total. That is the gap this spec closes.
 
@@ -117,11 +122,11 @@ Logic:
 2. Otherwise iterate `start = floor(now - days, hour)` to `end = floor(now, hour)` in 1-hour increments and call existing `run_rollup(pool, start=h, end=h+1h)` for each. UPSERT updates all columns including the new ones.
 3. Log INFO `backfilled hours=N`.
 
-Called once from app startup after the existing scheduler bootstrap. The hook lives in [serving/servers/bootstrap.py](serving/servers/bootstrap.py) — extend the existing `_run_backfill` async helper (currently calls `backfill_if_empty`) to also `await backfill_token_columns(pool, days=30)` after it. Same fire-and-forget pattern (`asyncio.create_task(_run_backfill())`) so a slow backfill cannot block readiness; failure logged as warning, non-fatal.
+Called once from app startup after the existing scheduler bootstrap. The hook lives in [serving/servers/bootstrap.py](../../../../apps/backend/serving/servers/bootstrap.py) — extend the existing `_run_backfill` async helper (currently calls `backfill_if_empty`) to also `await backfill_token_columns(pool, days=30)` after it. Same fire-and-forget pattern (`asyncio.create_task(_run_backfill())`) so a slow backfill cannot block readiness; failure logged as warning, non-fatal.
 
 ## Admin API
 
-`GET /admin/api/provider-token-usage` (registered in [serving/servers/routers/admin.py](serving/servers/routers/admin.py)):
+`GET /admin/api/provider-token-usage` (registered in `serving/servers/routers/admin.py`):
 
 | Param   | Type | Default | Notes |
 |---------|------|---------|-------|
@@ -226,7 +231,7 @@ class ProviderTokenUsageResponse(BaseModel):
 
 ## Frontend
 
-New tab "Token Usage" in the admin dashboard. Tab key `'token-usage'` added to the `activeTab` union in [frontend/src/app/dashboard/admin/page.tsx](frontend/src/app/dashboard/admin/page.tsx); button placed next to the existing tabs; rendering delegated to a new component.
+New tab "Token Usage" in the admin dashboard. Tab key `'token-usage'` added to the `activeTab` union in [frontend/src/app/dashboard/admin/page.tsx](../../../../apps/frontend/src/app/dashboard/admin/page.tsx); button placed next to the existing tabs; rendering delegated to a new component.
 
 New file `frontend/src/app/dashboard/admin/TokenUsageTab.tsx`:
 
@@ -257,7 +262,7 @@ New file `frontend/src/app/dashboard/admin/TokenUsageTab.tsx`:
 
 - On mount and on range change: `GET /admin/api/provider-token-usage?range=<range>`. No auto-refresh (data only changes hourly).
 - Provider sections are sorted by sum of (input + output + cached + reasoning) DESC. Inside each provider, model rows are pre-sorted by the API.
-- Number formatting reuses the existing `formatNum` helper at [page.tsx:244](frontend/src/app/dashboard/admin/page.tsx#L244); for large counts use `Intl.NumberFormat` `notation: "compact"` (e.g. `1.2M`, `234K`). Cost formatted as `$12.35` (2 decimals; for sub-dollar use 4 decimals).
+- Number formatting reuses the existing `formatNum` helper at [page.tsx:244](../../../../apps/frontend/src/app/dashboard/admin/page.tsx); for large counts use `Intl.NumberFormat` `notation: "compact"` (e.g. `1.2M`, `234K`). Cost formatted as `$12.35` (2 decimals; for sub-dollar use 4 decimals).
 - "Updated at HH:00 UTC" label shown next to the range selector (always visible) — explicitly conveys hourly cadence. For `range=1h` additionally show "showing hour [12:00–13:00 UTC]" so the user understands they are looking at one specific hour bucket.
 - Loading: spinner mirroring existing tabs.
 - Empty per-provider section: skip the section entirely (do not render an empty table).
@@ -266,7 +271,7 @@ New file `frontend/src/app/dashboard/admin/TokenUsageTab.tsx`:
 
 **API client**
 
-Add `getProviderTokenUsage(range)` to [frontend/src/lib/api/admin.ts](frontend/src/lib/api/admin.ts) (alongside the existing `/admin/api/provider-stats` client). Returns the typed response above.
+Add `getProviderTokenUsage(range)` to [frontend/src/lib/api/admin.ts](../../../../apps/frontend/src/lib/api/admin.ts) (alongside the existing `/admin/api/provider-stats` client). Returns the typed response above.
 
 ## Error handling
 
@@ -297,14 +302,14 @@ New file `frontend/src/app/dashboard/admin/__tests__/TokenUsageTab.test.tsx`:
 
 | File | Change |
 |------|--------|
-| [serving/storage/database.py](serving/storage/database.py) | ALTER TABLE: add 4 nullable columns to `provider_hourly_stats` |
-| [serving/admin/provider_stats_rollup.py](serving/admin/provider_stats_rollup.py) | Extend `ROLLUP_SQL` SELECT/INSERT/ON CONFLICT with 4 new totals; add `backfill_token_columns(pool, days=30)` |
-| [serving/servers/bootstrap.py](serving/servers/bootstrap.py) | Extend the existing `_run_backfill` helper to also call `backfill_token_columns(pool, days=30)` |
-| [serving/servers/routers/admin.py](serving/servers/routers/admin.py) | Add `GET /admin/api/provider-token-usage` route |
-| [serving/schemas_admin.py](serving/schemas_admin.py) | Add `ProviderTokenUsageRow`, `ProviderTokenUsageTotals`, `ProviderTokenUsageResponse` |
-| [frontend/src/app/dashboard/admin/page.tsx](frontend/src/app/dashboard/admin/page.tsx) | Add `'token-usage'` to `activeTab` union, add tab button, lazy-render `<TokenUsageTab/>` |
+| [serving/storage/database.py](../../../../apps/backend/serving/storage/database.py) | ALTER TABLE: add 4 nullable columns to `provider_hourly_stats` |
+| [serving/admin/provider_stats_rollup.py](../../../../apps/backend/serving/admin/provider_stats_rollup.py) | Extend `ROLLUP_SQL` SELECT/INSERT/ON CONFLICT with 4 new totals; add `backfill_token_columns(pool, days=30)` |
+| [serving/servers/bootstrap.py](../../../../apps/backend/serving/servers/bootstrap.py) | Extend the existing `_run_backfill` helper to also call `backfill_token_columns(pool, days=30)` |
+| `serving/servers/routers/admin.py` | Add `GET /admin/api/provider-token-usage` route |
+| [serving/schemas_admin.py](../../../../apps/backend/serving/schemas_admin.py) | Add `ProviderTokenUsageRow`, `ProviderTokenUsageTotals`, `ProviderTokenUsageResponse` |
+| [frontend/src/app/dashboard/admin/page.tsx](../../../../apps/frontend/src/app/dashboard/admin/page.tsx) | Add `'token-usage'` to `activeTab` union, add tab button, lazy-render `<TokenUsageTab/>` |
 | frontend/src/app/dashboard/admin/TokenUsageTab.tsx | New component (range selector + KPI strip + grouped provider tables) |
-| [frontend/src/lib/api/admin.ts](frontend/src/lib/api/admin.ts) | Add `getProviderTokenUsage(range)` client + types |
+| [frontend/src/lib/api/admin.ts](../../../../apps/frontend/src/lib/api/admin.ts) | Add `getProviderTokenUsage(range)` client + types |
 | test/integration/test_provider_stats_rollup.py | Extend with token-totals + backfill tests |
 | test/servers/test_admin_token_usage.py | New: API tests |
 | frontend/src/app/dashboard/admin/__tests__/TokenUsageTab.test.tsx | New: frontend smoke test |

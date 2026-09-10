@@ -80,7 +80,7 @@ PYTHONPATH=apps/backend \
   MODELS_CONFIG_PATH=config/examples/models.openrouter.yaml \
   ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
   DB_ENABLED=false USER_AUTH_ENABLED=false \
-  uv run uvicorn serving.servers.app:app --port 8080
+  uv run uvicorn serving.servers.app:app --no-proxy-headers --port 8080
 ```
 
 ```bash
@@ -156,7 +156,7 @@ PYTHONPATH=apps/backend \
   MODELS_CONFIG_PATH=config/examples/models.routewise.yaml \
   ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
   DB_ENABLED=false USER_AUTH_ENABLED=false \
-  uv run uvicorn serving.servers.app:app --port 8080
+  uv run uvicorn serving.servers.app:app --no-proxy-headers --port 8080
 ```
 
 Give it about ten seconds to measure both endpoints, then ask for a completion.
