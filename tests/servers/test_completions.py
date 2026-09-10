@@ -1852,8 +1852,8 @@ async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_log_store):
 async def test_ttft_recorded_for_openrouter_reasoning(monkeypatch, mock_log_store):
     """Streaming request where first delta has only reasoning should record ttft_ms."""
     app = _build_ttft_app(
-        "minimax-m2.5",
-        OpenRouterReasoningOnlyAdapter(_mk_cfg("minimax-m2.5")),
+        "demo-chat-pro",
+        OpenRouterReasoningOnlyAdapter(_mk_cfg("demo-chat-pro")),
         mock_log_store,
         monkeypatch,
     )
@@ -1865,7 +1865,7 @@ async def test_ttft_recorded_for_openrouter_reasoning(monkeypatch, mock_log_stor
             "POST",
             "/v1/chat/completions",
             json={
-                "model": "minimax-m2.5",
+                "model": "demo-chat-pro",
                 "messages": [{"role": "user", "content": "Hi"}],
                 "stream": True,
             },
