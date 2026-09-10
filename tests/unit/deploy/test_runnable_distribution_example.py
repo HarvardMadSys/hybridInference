@@ -150,6 +150,23 @@ def test_example_compose_resolves_public_paths_and_forwards_upstream_env() -> No
     assert environment["USER_AUTH_ENABLED"] == "false"
 
 
+def test_stage_one_volume_requires_no_production_database() -> None:
+    """Check the fresh-host contract even when the runner has no Docker CLI."""
+    base = yaml.safe_load(BASE_COMPOSE.read_text())
+    override = yaml.safe_load(EXAMPLE_COMPOSE.read_text())
+    merged = dict(base["volumes"]["postgres_data"])
+    merged.update(override["volumes"]["postgres_data"])
+
+    assert merged["external"] is False
+    assert merged["name"] == (
+        "${COMPOSE_PROJECT_NAME:-hybridinference-example}_unused_postgres_data"
+    )
+    assert base["volumes"]["postgres_data"] == {
+        "external": True,
+        "name": "hybridinference_postgres_data",
+    }
+
+
 def test_demo_compose_is_an_explicit_full_local_third_layer() -> None:
     demo = yaml.safe_load(DEMO_COMPOSE.read_text())
     backend = demo["services"]["backend"]["environment"]
@@ -328,12 +345,6 @@ def test_shell_can_override_the_example_upstream_in_compose() -> None:
     assert backend_env["EXAMPLE_UPSTREAM_BASE_URL"] == "https://api.example.test/v1"
     assert backend_env["EXAMPLE_UPSTREAM_API_KEY"] == "explicit-shell-key"
     assert backend_env["EXAMPLE_UPSTREAM_MODEL"] == "real-upstream-model"
-    # Stage 1 must start on an empty Docker host. Compose validates external
-    # volumes even with --no-deps and without selecting the Postgres service.
-    assert all(not volume.get("external") for volume in rendered["volumes"].values())
-    assert rendered["volumes"]["postgres_data"]["name"] == (
-        f"{rendered['name']}_unused_postgres_data"
-    )
 
 
 def test_example_checked_in_port_defaults_match_the_smoke_url(

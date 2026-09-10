@@ -20,7 +20,8 @@ Deleting the flags is not enough — the default is ON — so every launch site
 must carry ``--no-proxy-headers`` explicitly. These tests parse the deploy
 files directly; no Docker or systemd is required. A new uvicorn launch site
 added under ``deploy/`` or the current deployment documentation is picked up
-by the scan automatically. Historical design records are not launch guides.
+by the scan automatically, including commands in YAML comments under
+``config/examples/``. Historical design records are not launch guides.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ _KNOWN_LAUNCH_FILES = {
     DEPLOY / "docker" / "Dockerfile.backend",
     DEPLOY / "systemd" / "hybrid_inference.service",
     DEPLOY / "systemd" / "hybrid_inference.staging.service",
+    REPO / "config" / "examples" / "models.routewise.yaml",
 }
 
 
@@ -48,6 +50,11 @@ def _uvicorn_launch_lines(path: Path) -> list[str]:
     a flag is found no matter which physical line it sits on.
     """
     text = path.read_text(encoding="utf-8", errors="ignore")
+    if path.suffix in {".yaml", ".yml"}:
+        # Example YAML documents shell commands in comments. Strip each
+        # comment marker before folding continuations so flags on following
+        # comment lines remain part of the same command.
+        text = "\n".join(line.lstrip().removeprefix("#") for line in text.splitlines())
     folded = text.replace("\\\n", " ")
     return [
         line
@@ -61,6 +68,7 @@ def _scan_deploy_tree() -> dict[Path, list[str]]:
     paths = [*DEPLOY.rglob("*"), REPO / "README.md"]
     paths.extend((REPO / "docs" / "developer").glob("*.md"))
     paths.extend((REPO / "distributions" / "example").glob("*.md"))
+    paths.extend((REPO / "config" / "examples").rglob("*"))
     for path in sorted(paths):
         if not path.is_file():
             continue
@@ -68,6 +76,18 @@ def _scan_deploy_tree() -> dict[Path, list[str]]:
         if lines:
             launches[path] = lines
     return launches
+
+
+def test_launch_in_yaml_comments_is_detected_with_continuations(tmp_path: Path) -> None:
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "# uv run uvicorn serving.servers.app:app \\\n#   --no-proxy-headers --port 8080\n"
+    )
+    lines = _uvicorn_launch_lines(path)
+    assert len(lines) == 1
+    assert "--no-proxy-headers" in lines[0]
+    path.write_text("# uv run uvicorn serving.servers.app:app --port 8080\n")
+    assert len(_uvicorn_launch_lines(path)) == 1
 
 
 def test_scan_still_sees_the_known_launch_sites() -> None:

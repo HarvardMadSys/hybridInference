@@ -572,9 +572,6 @@ jobs:
       - name: Run gitleaks
         run: gitleaks detect --source . --no-git --redact --verbose --no-banner
 
-      - name: Verify secret scanner coverage
-        run: python3 ops/ci/check_gitleaks_config.py
-
       - name: Isolate uv cache dir
         # Job-level env cannot use the runner context; set via GITHUB_ENV.
         # This job does not enable the remote cache, so the run id here cost
@@ -590,6 +587,9 @@ jobs:
 
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Verify secret scanner coverage
+        run: uv run --no-project --python "${PYTHON_VERSION}" python ops/ci/check_gitleaks_config.py
 
       - name: Security audit
         env:
