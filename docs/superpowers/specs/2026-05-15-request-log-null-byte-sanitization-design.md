@@ -7,7 +7,7 @@
 ## Context
 
 Production emitted `tracked_task_failure_rate` alerts for the `request_log`
-background task. Investigation on `jason@internal.freeinference.org` showed the
+background task. Investigation on the affected deployment showed the
 request-log insert into `api_logs` was failing with PostgreSQL
 `UntranslatableCharacterError`:
 

@@ -26,21 +26,20 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "personal home path": re.compile(r"(?<![A-Za-z0-9_.-])/(?:Users|home)/[A-Za-z0-9._-]+"),
     "internal hostname": re.compile(
-        r"\b(?:internal|staging-internal)\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
-        r"|\b(?:spark2|h200|holygpu\d*[a-z0-9]*|rtx6000[a-z0-9-]*|gpu\d+|cxl)\b"
+        r"\b(?:internal|internaldoc|staging-internal)\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+        r"|\b(?:spark[12]|freeinference-direct|h200|holygpu\d*[a-z0-9]*|rtx6000[a-z0-9-]*|gpu\d+|cxl)\b"
     ),
     "cluster path": re.compile(r"(?:/n)?/(?:net)?scratch/[A-Za-z0-9_./-]+"),
+    "documented admin password": re.compile(
+        r"`?admin@admin\.com`?\s*(?:/|:)\s*`?admin\b", re.IGNORECASE
+    ),
     "cloudflare identifier": re.compile(r'(?:account_id|database_id)\s*=\s*"[0-9a-f-]{32,}"'),
 }
 
 # These are migration work streams, not publication exemptions. Remove each
 # entry when its findings have moved out or been neutralized. A strict run is
 # clean only when this mapping is empty and no unclassified finding remains.
-PENDING: dict[str, str] = {
-    "docs/agents/": "historical plans and specs",
-    "docs/superpowers/": "historical plans and specs",
-    "tests/": "production-shaped fixtures awaiting neutralization or migration",
-}
+PENDING: dict[str, str] = {}
 
 GUARDS = {
     "ops/admin/private_surface_sweep.py",
@@ -52,7 +51,7 @@ IGNORED_VALUES = {
     "/home/somebody",
     # Placeholder in docs/developer/staging.md ("/home/to/dir"), not a person.
     "/home/to",
-    # Synthetic user in test_rag_config.py's parents[4] arithmetic test.
+    # Synthetic user in tests and sanitized historical worktree examples.
     "/home/dev",
 }
 

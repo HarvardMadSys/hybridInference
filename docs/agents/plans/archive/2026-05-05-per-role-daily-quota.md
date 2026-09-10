@@ -1451,7 +1451,7 @@ Push branch, open PR targeting `dev`. Body should reference [docs/agents/specs/2
 
 After staging deploys from `dev`:
 
-1. Sign in to https://staging.freeinference.org as `admin@admin.com` / `admin`.
+1. Sign in to https://staging.freeinference.org as a deployment-managed admin test account.
 2. Open admin dashboard → Settings.
 3. Confirm 4 new numeric inputs appear: `User Daily Quota Free|Pro|Internal|Admin`.
 4. Change `User Daily Quota Free` to `42`. Save. Reload — value persists.

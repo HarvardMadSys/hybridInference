@@ -78,7 +78,7 @@ Each task below produces an isolated, committable change.
 - [ ] **Step 1: Pull latest dev**
 
 ```bash
-cd /home/juncheng/hybridInference
+cd /home/dev/hybridInference
 git fetch origin
 git checkout dev
 git pull origin dev

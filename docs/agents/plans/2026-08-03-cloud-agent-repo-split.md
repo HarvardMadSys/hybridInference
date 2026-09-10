@@ -109,7 +109,7 @@
 
 ### B4. ENVIRONMENT.md — secrets & infra checklist (M) — **mostly human**
 - Repo: new. Deps: DR2, DR3, DR4.
-- Enumerate every env var the new stack needs, who provisions it, and where it lives: `AGENT_DATABASE_URL`, `AGENT_CONTROL_TOKEN_SECRET` (new random), `AGENT_SESSION_SECRET` (new), `GATEWAY_BASE_URL`, `GATEWAY_JWKS_URL`, `GATEWAY_GRANT_DISPATCH_TOKEN`, GitHub App id/key/webhook secret, GitLab OAuth id/secret, staging domain + bore tunnel port on spark2, sandbox image registry. Explicitly note: gateway's `API_KEY_SECRET` and `JWT_SECRET_KEY` must NEVER appear in this repo's config.
+- Enumerate every env var the new stack needs, who provisions it, and where it lives: `AGENT_DATABASE_URL`, `AGENT_CONTROL_TOKEN_SECRET` (new random), `AGENT_SESSION_SECRET` (new), `GATEWAY_BASE_URL`, `GATEWAY_JWKS_URL`, `GATEWAY_GRANT_DISPATCH_TOKEN`, GitHub App id/key/webhook secret, GitLab OAuth id/secret, staging domain + bore tunnel port on the staging host, sandbox image registry. Explicitly note: gateway's `API_KEY_SECRET` and `JWT_SECRET_KEY` must NEVER appear in this repo's config.
 - **Acceptance:** staging values provisioned (secrets in the deploy host env, not in git); doc merged.
 
 ---

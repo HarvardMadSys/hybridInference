@@ -15,6 +15,7 @@ _SAMPLES = {
     "personal home path": "/Us" + "ers/alice/work/repo",
     "internal hostname": "spar" + "k2",
     "cluster path": "/n/net" + "scratch/alice/models/x",
+    "documented admin password": "`admin@" + "admin.com` / `admin`",
     "cloudflare identifier": 'account_id = "' + "a" * 32 + '"',
 }
 
@@ -27,7 +28,14 @@ def test_each_private_surface_shape_is_detected(label: str) -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["rtx" + "6000b-docker-1", "gp" + "u1", "cx" + "l"],
+    [
+        "rtx" + "6000b-docker-1",
+        "gp" + "u1",
+        "cx" + "l",
+        "internaldoc.example.org",
+        "spar" + "k1",
+        "freeinference-" + "direct",
+    ],
 )
 def test_gpu_fleet_hostnames_are_detected(value: str) -> None:
     """The fleet's GPU node names count as internal hostnames too."""

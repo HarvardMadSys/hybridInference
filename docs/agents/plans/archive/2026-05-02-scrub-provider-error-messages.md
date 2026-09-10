@@ -126,7 +126,7 @@ def test_none_exception_still_scrubs():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/juncheng/hybridInference-scrub-errors && uv run pytest test/test_error_scrubbing.py -v`
+Run: `cd /home/dev/hybridInference-scrub-errors && uv run pytest test/test_error_scrubbing.py -v`
 Expected: ImportError on `UserFacingError` and `scrub_error_for_user`.
 
 - [ ] **Step 3: Implement `UserFacingError` and `scrub_error_for_user`**
@@ -197,18 +197,18 @@ def scrub_error_for_user(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd /home/juncheng/hybridInference-scrub-errors && uv run pytest test/test_error_scrubbing.py -v`
+Run: `cd /home/dev/hybridInference-scrub-errors && uv run pytest test/test_error_scrubbing.py -v`
 Expected: all 50+ parametrized cases PASS.
 
 - [ ] **Step 5: Run formatter and full lint**
 
-Run: `cd /home/juncheng/hybridInference-scrub-errors && uv run ruff format . && uv run ruff check serving/exceptions.py test/test_error_scrubbing.py`
+Run: `cd /home/dev/hybridInference-scrub-errors && uv run ruff format . && uv run ruff check serving/exceptions.py test/test_error_scrubbing.py`
 Expected: no errors.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-scrub-errors
+cd /home/dev/hybridInference-scrub-errors
 git add serving/exceptions.py test/test_error_scrubbing.py
 git commit -m "feat(errors): add UserFacingError marker and scrub_error_for_user helper
 
@@ -261,13 +261,13 @@ The DB log call above (the `_schedule_db_log_task(...)` block at line 1001) stay
 
 - [ ] **Step 3: Run the relevant test suite**
 
-Run: `cd /home/juncheng/hybridInference-scrub-errors && uv run pytest test/test_error_scrubbing.py test/ -k "completion or error" -v`
+Run: `cd /home/dev/hybridInference-scrub-errors && uv run pytest test/test_error_scrubbing.py test/ -k "completion or error" -v`
 Expected: no regressions.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-scrub-errors
+cd /home/dev/hybridInference-scrub-errors
 git add serving/servers/routers/completions.py
 git commit -m "fix(completions): scrub provider info from HTTPException detail
 
@@ -474,13 +474,13 @@ In a comment **on the PR description (not in code)**, note the path you traced. 
 
 - [ ] **Step 5: Run lint and existing tests**
 
-Run: `cd /home/juncheng/hybridInference-scrub-errors && uv run ruff format . && uv run ruff check serving/servers/routers/anthropic_proxy.py && uv run pytest test/ -k "anthropic or proxy or error" -v`
+Run: `cd /home/dev/hybridInference-scrub-errors && uv run ruff format . && uv run ruff check serving/servers/routers/anthropic_proxy.py && uv run pytest test/ -k "anthropic or proxy or error" -v`
 Expected: no errors, no regressions.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-scrub-errors
+cd /home/dev/hybridInference-scrub-errors
 git add serving/servers/routers/anthropic_proxy.py serving/storage/database.py
 git commit -m "fix(anthropic_proxy): scrub upstream error bodies before forwarding to user
 
@@ -496,22 +496,22 @@ to the same pattern."
 
 - [ ] **Step 1: Format check**
 
-Run: `cd /home/juncheng/hybridInference-scrub-errors && uv run ruff format --check .`
+Run: `cd /home/dev/hybridInference-scrub-errors && uv run ruff format --check .`
 Expected: no diffs.
 
 - [ ] **Step 2: Lint check**
 
-Run: `cd /home/juncheng/hybridInference-scrub-errors && uv run ruff check .`
+Run: `cd /home/dev/hybridInference-scrub-errors && uv run ruff check .`
 Expected: no errors.
 
 - [ ] **Step 3: Full test suite**
 
-Run: `cd /home/juncheng/hybridInference-scrub-errors && uv run pytest test/ -x`
+Run: `cd /home/dev/hybridInference-scrub-errors && uv run pytest test/ -x`
 Expected: PASS.
 
 - [ ] **Step 4: Push branch**
 
-Run: `cd /home/juncheng/hybridInference-scrub-errors && git push -u origin jason/claude/scrub-provider-error-messages`
+Run: `cd /home/dev/hybridInference-scrub-errors && git push -u origin jason/claude/scrub-provider-error-messages`
 Expected: branch published.
 
 (PR creation is handled outside this plan, by the parent agent.)

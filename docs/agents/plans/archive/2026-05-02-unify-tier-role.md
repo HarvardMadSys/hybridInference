@@ -16,7 +16,7 @@
 
 ## Task 0: Sync, worktree, branch — DONE
 
-Worktree already exists at `/home/juncheng/hybridInference-worktrees/jason-claude-unify-tier-role` on branch `jason/claude/unify-tier-role`, based on `origin/dev`, with the spec + plan commits cherry-picked on top. All subsequent tasks run in this worktree.
+Worktree already exists at `/home/dev/hybridInference-worktrees/jason-claude-unify-tier-role` on branch `jason/claude/unify-tier-role`, based on `origin/dev`, with the spec + plan commits cherry-picked on top. All subsequent tasks run in this worktree.
 
 ---
 

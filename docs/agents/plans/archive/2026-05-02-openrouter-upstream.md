@@ -6,7 +6,7 @@
 
 **Architecture:** Subclass `OpenAICompatAdapter` to inject OpenRouter-specific request shape (attribution headers, `usage.include`, `provider.order`); add a new `ProviderProfile.OPENROUTER` whose usage normalizer extracts `cost`; thread `upstream_cost_usd` from response → adapter `_routing` block → completions handler → new `log_request()` keyword arg → new `api_logs.upstream_cost_usd` column.
 
-**Tech Stack:** Python 3.12, FastAPI, asyncpg/PostgreSQL, aiohttp, pytest, ruff. Worktree at `/home/juncheng/hybridInference-or` on branch `jason/claude/openrouter-upstream`.
+**Tech Stack:** Python 3.12, FastAPI, asyncpg/PostgreSQL, aiohttp, pytest, ruff. Worktree at `/home/dev/hybridInference-or` on branch `jason/claude/openrouter-upstream`.
 
 ---
 
@@ -38,14 +38,14 @@
 - [ ] **Step 0.1: Confirm worktree state**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git status && git branch --show-current
+cd /home/dev/hybridInference-or && git status && git branch --show-current
 ```
 Expected output: `On branch jason/claude/openrouter-upstream`, working tree clean (the only files present should be the cherry-picked spec at `docs/agents/specs/2026-05-02-openrouter-upstream-design.md` and this plan).
 
 - [ ] **Step 0.2: Activate uv venv from project root**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv sync 2>&1 | tail -3
+cd /home/dev/hybridInference-or && uv sync 2>&1 | tail -3
 ```
 Expected: `Resolved … packages in …` (no errors).
 
@@ -89,7 +89,7 @@ def test_usage_info_to_dict_omits_upstream_cost() -> None:
 - [ ] **Step 1.2: Run test to verify it fails**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py::test_usage_info_default_upstream_cost_is_none -v 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py::test_usage_info_default_upstream_cost_is_none -v 2>&1 | tail -10
 ```
 Expected: FAIL with `TypeError: __init__() got an unexpected keyword argument 'upstream_cost_usd'` or `AttributeError: ... has no attribute 'upstream_cost_usd'`.
 
@@ -135,14 +135,14 @@ class UsageInfo:
 - [ ] **Step 1.4: Run test to verify both tests pass**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v 2>&1 | tail -10
 ```
 Expected: 2 passed.
 
 - [ ] **Step 1.5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add serving/adapters/base.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add serving/adapters/base.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
 feat(adapters): add upstream_cost_usd field to UsageInfo
 
 Internal-only field, not serialized via to_dict(); used to thread
@@ -189,7 +189,7 @@ def test_model_config_accepts_openrouter_pinned_provider() -> None:
 - [ ] **Step 2.2: Run to verify failure**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py::test_model_config_accepts_openrouter_pinned_provider -v 2>&1 | tail -8
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py::test_model_config_accepts_openrouter_pinned_provider -v 2>&1 | tail -8
 ```
 Expected: FAIL with `TypeError: __init__() got an unexpected keyword argument 'openrouter_pinned_provider'`.
 
@@ -211,14 +211,14 @@ Modify `serving/adapters/base.py`. In the `ModelConfig` dataclass, add the field
 - [ ] **Step 2.4: Run test to verify pass**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v 2>&1 | tail -10
 ```
 Expected: 4 passed.
 
 - [ ] **Step 2.5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add serving/adapters/base.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add serving/adapters/base.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
 feat(adapters): add openrouter_pinned_provider to ModelConfig
 
 Set by parse_openrouter_kind() when models.yaml uses
@@ -302,7 +302,7 @@ def test_get_usage_normalizer_returns_openrouter_normalizer() -> None:
 - [ ] **Step 3.2: Run to verify failure**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py::test_provider_profile_has_openrouter -v 2>&1 | tail -8
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py::test_provider_profile_has_openrouter -v 2>&1 | tail -8
 ```
 Expected: FAIL with `ValueError: 'openrouter' is not a valid ProviderProfile`.
 
@@ -363,14 +363,14 @@ def normalize_usage_openrouter(usage_data: dict[str, Any]) -> UsageInfo:
 - [ ] **Step 3.4: Run test to verify pass**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v 2>&1 | tail -15
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v 2>&1 | tail -15
 ```
 Expected: 9 passed.
 
 - [ ] **Step 3.5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add serving/adapters/profiles.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add serving/adapters/profiles.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
 feat(adapters): add OpenRouter provider profile and usage normalizer
 
 normalize_usage_openrouter extracts the upstream-reported `cost` field
@@ -440,7 +440,7 @@ def test_parse_rejects_invalid(kind: str) -> None:
 - [ ] **Step 4.2: Run to verify failure**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/test_registry_openrouter.py -v 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run pytest test/unit/test_registry_openrouter.py -v 2>&1 | tail -10
 ```
 Expected: FAIL with `ImportError: cannot import name 'parse_openrouter_kind'`.
 
@@ -482,14 +482,14 @@ def parse_openrouter_kind(kind: str) -> tuple[str, str | None]:
 - [ ] **Step 4.4: Run test to verify pass**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/test_registry_openrouter.py -v 2>&1 | tail -15
+cd /home/dev/hybridInference-or && uv run pytest test/unit/test_registry_openrouter.py -v 2>&1 | tail -15
 ```
 Expected: 12 passed (6 valid + 6 invalid).
 
 - [ ] **Step 4.5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add serving/servers/registry.py test/unit/test_registry_openrouter.py && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add serving/servers/registry.py test/unit/test_registry_openrouter.py && git commit -m "$(cat <<'EOF'
 feat(registry): add parse_openrouter_kind helper
 
 Recognizes the bracket form `openrouter[<slug>]` and returns
@@ -559,7 +559,7 @@ def test_augment_payload_default_is_noop() -> None:
 - [ ] **Step 5a.2: Run to verify failure**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py::test_augment_payload_default_is_noop -v 2>&1 | tail -8
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py::test_augment_payload_default_is_noop -v 2>&1 | tail -8
 ```
 Expected: FAIL — `AttributeError: 'OpenAICompatAdapter' object has no attribute '_augment_payload'`.
 
@@ -683,19 +683,19 @@ Behavior is unchanged for every non-OpenRouter adapter — their normalizers lea
 - [ ] **Step 5a.4: Run the new test plus the full adapter suite**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py::test_augment_payload_default_is_noop -v 2>&1 | tail -8
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py::test_augment_payload_default_is_noop -v 2>&1 | tail -8
 ```
 Expected: 1 passed.
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/ test/integration/test_openai_compat_multi_key.py -q 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/ test/integration/test_openai_compat_multi_key.py -q 2>&1 | tail -10
 ```
 Expected: All previously-passing adapter tests still pass — no regression for zai / chutes / featherless / etc.
 
 - [ ] **Step 5a.5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add serving/adapters/openai_compat.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add serving/adapters/openai_compat.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
 feat(adapters): add _augment_payload hook to OpenAICompatAdapter
 
 No-op hook called inside chat_completion and stream_chat_completion
@@ -856,7 +856,7 @@ def test_openrouter_adapter_endpoint_id_distinct_per_pin() -> None:
 - [ ] **Step 5b.2: Run to verify failure**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v -k openrouter_adapter 2>&1 | tail -15
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v -k openrouter_adapter 2>&1 | tail -15
 ```
 Expected: All new tests fail with `ModuleNotFoundError: No module named 'serving.adapters.openrouter'`.
 
@@ -935,14 +935,14 @@ class OpenRouterAdapter(OpenAICompatAdapter):
 - [ ] **Step 5b.4: Run tests to verify pass**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v 2>&1 | tail -25
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v 2>&1 | tail -25
 ```
 Expected: 17 passed.
 
 - [ ] **Step 5b.5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add serving/adapters/openrouter.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add serving/adapters/openrouter.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
 feat(adapters): add OpenRouterAdapter
 
 OpenAICompatAdapter subclass that injects:
@@ -1012,7 +1012,7 @@ def test_make_adapter_invalid_openrouter_kind_raises() -> None:
 - [ ] **Step 6.2: Run to verify failure**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/test_registry_openrouter.py -v 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run pytest test/unit/test_registry_openrouter.py -v 2>&1 | tail -10
 ```
 Expected: First two new tests fail (`ImportError: cannot import name 'OpenRouterAdapter'` or `Unknown adapter kind`); third may pass coincidentally — fix it after the import.
 
@@ -1142,19 +1142,19 @@ from serving.adapters import (
 - [ ] **Step 6.5: Run tests to verify pass**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/test_registry_openrouter.py -v 2>&1 | tail -15
+cd /home/dev/hybridInference-or && uv run pytest test/unit/test_registry_openrouter.py -v 2>&1 | tail -15
 ```
 Expected: 15 passed (12 parser + 3 dispatch).
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/test_registry_multi_key.py -v 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run pytest test/unit/test_registry_multi_key.py -v 2>&1 | tail -10
 ```
 Expected: All previously-passing tests still pass (verifies no regression in `_make_adapter` for other kinds).
 
 - [ ] **Step 6.6: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add serving/servers/registry.py serving/adapters/__init__.py test/unit/test_registry_openrouter.py && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add serving/servers/registry.py serving/adapters/__init__.py test/unit/test_registry_openrouter.py && git commit -m "$(cat <<'EOF'
 feat(registry): dispatch openrouter[<slug>] kind to OpenRouterAdapter
 
 _make_adapter now resolves the OpenRouter bracket syntax up front via
@@ -1178,7 +1178,7 @@ EOF
 - [ ] **Step 7.1: Look at existing schema-migration test conventions**
 
 ```bash
-cd /home/juncheng/hybridInference-or && grep -n "ADD COLUMN IF NOT EXISTS\|cost_usd" serving/storage/database.py | head
+cd /home/dev/hybridInference-or && grep -n "ADD COLUMN IF NOT EXISTS\|cost_usd" serving/storage/database.py | head
 ```
 Expected output includes lines around 309-322 (existing `cost_usd` migration). Use the same idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` pattern.
 
@@ -1259,14 +1259,14 @@ Append `upstream_cost_usd` as the new positional argument at the end of the valu
 - [ ] **Step 7.4: Smoke-test by running the existing storage test suite**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/storage/ -q 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run pytest test/unit/storage/ -q 2>&1 | tail -10
 ```
 Expected: existing tests pass (no DB connection required for unit tests).
 
 If integration tests rely on a postgres test DB and you can run them locally:
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/integration/test_database_integration.py -q 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run pytest test/integration/test_database_integration.py -q 2>&1 | tail -10
 ```
 Expected: pass (migration is idempotent; new column accepts NULL).
 
@@ -1275,7 +1275,7 @@ If the test DB is unreachable in your environment, document that the migration w
 - [ ] **Step 7.5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add serving/storage/database.py && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add serving/storage/database.py && git commit -m "$(cat <<'EOF'
 feat(storage): add api_logs.upstream_cost_usd column and log_request arg
 
 Idempotent ALTER TABLE migration (DECIMAL(12, 8), NULL) sits next to
@@ -1330,7 +1330,7 @@ async def test_non_or_adapter_response_has_no_routing_block() -> None:
 - [ ] **Step 8.2: Run to verify pass**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run pytest test/unit/adapters/test_openrouter_adapter.py -v 2>&1 | tail -10
 ```
 Expected: new test passes — guards against accidentally regressing the parent's response shape.
 
@@ -1357,14 +1357,14 @@ In the same file, find the non-streaming `_schedule_db_log_task` call (around li
 - [ ] **Step 8.5: Run unit + servers tests to confirm no regression**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/servers/ test/unit/adapters/ -q 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run pytest test/unit/servers/ test/unit/adapters/ -q 2>&1 | tail -10
 ```
 Expected: all tests pass; no behavior change for non-OpenRouter routes (their `routing_info` lacks `upstream_cost_usd`, so the dict lookup yields `None`).
 
 - [ ] **Step 8.6: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add serving/servers/routers/completions.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add serving/servers/routers/completions.py test/unit/adapters/test_openrouter_adapter.py && git commit -m "$(cat <<'EOF'
 feat(completions): forward upstream_cost_usd from _routing to log_request
 
 Both streaming and non-streaming paths read upstream_cost_usd off the
@@ -1387,7 +1387,7 @@ EOF
 - [ ] **Step 9.1: Add OPENROUTER_API_KEY to .env.example**
 
 ```bash
-cd /home/juncheng/hybridInference-or && grep -n "API_KEY" .env.example | head -5
+cd /home/dev/hybridInference-or && grep -n "API_KEY" .env.example | head -5
 ```
 
 Open `.env.example` and add (in the API-keys section, mirroring the format of the other keys):
@@ -1446,14 +1446,14 @@ Append to `config/models.yaml` (inside the `models:` list, at the bottom, mirror
 - [ ] **Step 9.3: Validate YAML parses**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run python -c "import yaml; yaml.safe_load(open('config/models.yaml'))" && echo OK
+cd /home/dev/hybridInference-or && uv run python -c "import yaml; yaml.safe_load(open('config/models.yaml'))" && echo OK
 ```
 Expected: `OK`.
 
 - [ ] **Step 9.4: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add .env.example config/models.yaml && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add .env.example config/models.yaml && git commit -m "$(cat <<'EOF'
 config(openrouter): add OPENROUTER_API_KEY and commented models.yaml example
 
 Documents both the bare `kind: openrouter` form (let OpenRouter pick)
@@ -1563,7 +1563,7 @@ There is no special multi-key rotation for OpenRouter — a single account-level
 - [ ] **Step 10.2: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add docs/openrouter.md && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add docs/openrouter.md && git commit -m "$(cat <<'EOF'
 docs: add docs/openrouter.md covering kind syntax and cost contract
 
 The README already references this path; previously the file did not
@@ -1684,14 +1684,14 @@ async def test_pinned_provider_routes_through() -> None:
 - [ ] **Step 11.2: Smoke-run with no key (must be skipped, not failed)**
 
 ```bash
-cd /home/juncheng/hybridInference-or && OPENROUTER_API_KEY="" uv run pytest test/integration/test_openrouter_integration.py -v 2>&1 | tail -10
+cd /home/dev/hybridInference-or && OPENROUTER_API_KEY="" uv run pytest test/integration/test_openrouter_integration.py -v 2>&1 | tail -10
 ```
 Expected: 2 skipped (with the skip reason mentioning the env var).
 
 - [ ] **Step 11.3: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git add test/integration/test_openrouter_integration.py && git commit -m "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && git add test/integration/test_openrouter_integration.py && git commit -m "$(cat <<'EOF'
 test(openrouter): add live integration tests gated on OPENROUTER_API_KEY
 
 Two small chat completions (one non-stream, one stream) against
@@ -1710,7 +1710,7 @@ EOF
 - [ ] **Step 12.1: Run ruff format check (mandatory pre-PR per CLAUDE.md)**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run ruff format --check . 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run ruff format --check . 2>&1 | tail -10
 ```
 Expected: `would be left unchanged` (or `0 files would be reformatted`).
 
@@ -1719,25 +1719,25 @@ If files would be reformatted, run `uv run ruff format .`, review the diff, and 
 - [ ] **Step 12.2: Run ruff lint**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run ruff check . 2>&1 | tail -10
+cd /home/dev/hybridInference-or && uv run ruff check . 2>&1 | tail -10
 ```
 Expected: `All checks passed`. Fix any reported violations.
 
 - [ ] **Step 12.3: Run the full unit test suite**
 
 ```bash
-cd /home/juncheng/hybridInference-or && uv run pytest test/unit/ -q 2>&1 | tail -15
+cd /home/dev/hybridInference-or && uv run pytest test/unit/ -q 2>&1 | tail -15
 ```
 Expected: all green. Investigate any failures before opening the PR.
 
 - [ ] **Step 12.4: Push and open the PR to dev**
 
 ```bash
-cd /home/juncheng/hybridInference-or && git push -u origin jason/claude/openrouter-upstream 2>&1 | tail -5
+cd /home/dev/hybridInference-or && git push -u origin jason/claude/openrouter-upstream 2>&1 | tail -5
 ```
 
 ```bash
-cd /home/juncheng/hybridInference-or && gh pr create --base dev --title "feat: OpenRouter as upstream backend" --body "$(cat <<'EOF'
+cd /home/dev/hybridInference-or && gh pr create --base dev --title "feat: OpenRouter as upstream backend" --body "$(cat <<'EOF'
 ## Summary
 
 - Adds `OpenRouterAdapter` (subclass of `OpenAICompatAdapter`) that injects OpenRouter-specific request shape: attribution headers, `usage.include`, `provider.order`, `stream_options.include_usage`.

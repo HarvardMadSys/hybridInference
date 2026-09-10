@@ -180,7 +180,7 @@ async def test_initialize_is_idempotent(store: PostgresOperationalStore):
 - [ ] **Step 2: Run the tests to verify they fail (table or methods missing)**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/login-events
+cd /home/dev/hybridInference-worktrees/login-events
 PG_TEST_DSN=postgres://postgres:postgres@localhost:5432/test uv run pytest tests/unit/storage/test_login_events.py -v
 ```
 
@@ -480,7 +480,7 @@ D1 lacks `INTERVAL` so we precompute the cutoff timestamp client-side. The `resu
 - [ ] **Step 8: Run the storage tests + suite-wide instantiation tests**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/login-events
+cd /home/dev/hybridInference-worktrees/login-events
 PG_TEST_DSN=postgres://postgres:postgres@localhost:5432/test uv run pytest tests/unit/storage/ tests/servers/test_admin_settings.py -q 2>&1 | tail -10
 ```
 
@@ -726,7 +726,7 @@ async def test_login_succeeds_when_audit_write_fails(app, fake_op_store, monkeyp
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/login-events
+cd /home/dev/hybridInference-worktrees/login-events
 uv run pytest tests/servers/test_auth_routes_login_events.py -v 2>&1 | tail -10
 ```
 
@@ -1184,7 +1184,7 @@ git commit -m "feat(storage): sweep login_events in hard_delete_user"
 - [ ] **Step 1: Run all touched test suites**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/login-events
+cd /home/dev/hybridInference-worktrees/login-events
 uv run pytest tests/unit/storage/ tests/servers/test_auth_routes.py tests/servers/test_auth_routes_login_events.py tests/servers/test_admin_login_events.py tests/servers/test_admin_settings.py -q 2>&1 | tail -10
 ```
 

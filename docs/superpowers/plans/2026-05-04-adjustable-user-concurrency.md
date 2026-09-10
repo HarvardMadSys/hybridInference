@@ -89,7 +89,7 @@ async def test_update_int_setting_at_min_succeeds(monkeypatch, admin_client):
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/adjustable-user-concurrency
+cd /home/dev/hybridInference-worktrees/adjustable-user-concurrency
 uv run pytest tests/servers/test_admin_settings.py::test_update_int_setting_below_min_returns_400 -v
 ```
 
@@ -802,7 +802,7 @@ The `UserConcurrencyLimiter` import on line 29 is unchanged.
 - [ ] **Step 4: Run the full backend test suite**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/adjustable-user-concurrency
+cd /home/dev/hybridInference-worktrees/adjustable-user-concurrency
 uv run pytest tests/servers tests/unit tests/integration -x
 ```
 
@@ -827,7 +827,7 @@ git commit -m "feat(bootstrap): wire RuntimeSettings into UserConcurrencyLimiter
 - [ ] **Step 1: Run the full test suite once more**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/adjustable-user-concurrency
+cd /home/dev/hybridInference-worktrees/adjustable-user-concurrency
 uv run pytest -x
 ```
 

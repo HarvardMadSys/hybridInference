@@ -1756,7 +1756,7 @@ EOF
 - [ ] **Step 7: After merge — clean up worktree**
 
 ```bash
-cd /home/juncheng/hybridInference
+cd /home/dev/hybridInference
 git worktree remove ../hybridInference-obs
 git branch -D jason/claude/observability-framework
 ```

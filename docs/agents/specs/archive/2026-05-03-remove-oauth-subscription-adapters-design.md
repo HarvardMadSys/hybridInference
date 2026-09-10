@@ -207,7 +207,7 @@ Expected: 200 with assistant message — proves the cli-proxy path the active mo
 
 Per CLAUDE.md ("test against staging") and the system prompt's UI-testing rule (we removed user-visible code paths — `isCodexModel` UI branch and the `claude_sub` / `codex_sub` filter rule):
 
-- Log in to `https://staging.freeinference.org` as `admin@admin.com`.
+- Log in to `https://staging.freeinference.org` as a deployment-managed admin test account.
 - Open Models section: confirm `gpt-5.4` is gone; the visible model list is otherwise unchanged.
 - Open Playground: pick `claude-opus-4.7`; confirm no reasoning-effort UI block appears (it was the only consumer); send a message; confirm a response.
 - Browser console: no errors.

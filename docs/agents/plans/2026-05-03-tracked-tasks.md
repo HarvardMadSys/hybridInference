@@ -14,7 +14,7 @@
 - Pull origin/dev before starting each PR.
 - 2 PRs on feature branches `jason/claude/tracked-tasks-helper` (PR 1) and `jason/claude/pending-decisions-ttl` (PR 2).
 - PR 2 depends on PR 1 merging first.
-- Worktrees in `/home/juncheng/hybridInference-worktrees/`.
+- Worktrees in `/home/dev/hybridInference-worktrees/`.
 - Per CLAUDE.md: create issue → branch → implement → `make format` → PR → monitor CI every 2 min → cleanup after merge.
 
 ---
@@ -60,11 +60,11 @@ No deletions in either PR (the `_background_tasks` set in `completions.py` is re
 - [ ] **Step 1: Pull latest dev and create worktree**
 
 ```bash
-cd /home/juncheng/hybridInference
+cd /home/dev/hybridInference
 git fetch origin
 git checkout dev
 git pull origin dev
-git worktree add /home/juncheng/hybridInference-worktrees/tracked-tasks-helper -b jason/claude/tracked-tasks-helper origin/dev
+git worktree add /home/dev/hybridInference-worktrees/tracked-tasks-helper -b jason/claude/tracked-tasks-helper origin/dev
 ```
 
 - [ ] **Step 2: Create the GitHub issue**
@@ -95,7 +95,7 @@ Capture the issue number for the PR description in the final task. Expected outp
 
 - [ ] **Step 3: Verify the worktree**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && git status && git rev-parse --abbrev-ref HEAD`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && git status && git rev-parse --abbrev-ref HEAD`
 Expected: clean working tree on `jason/claude/tracked-tasks-helper`.
 
 ---
@@ -103,9 +103,9 @@ Expected: clean working tree on `jason/claude/tracked-tasks-helper`.
 ### Task 1.1: Create `tracked_task` helper module
 
 **Files:**
-- Create: `/home/juncheng/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/observability/tracked_tasks.py`
-- Create: `/home/juncheng/hybridInference-worktrees/tracked-tasks-helper/test/unit/observability/__init__.py`
-- Create: `/home/juncheng/hybridInference-worktrees/tracked-tasks-helper/test/unit/observability/test_tracked_tasks.py`
+- Create: `/home/dev/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/observability/tracked_tasks.py`
+- Create: `/home/dev/hybridInference-worktrees/tracked-tasks-helper/test/unit/observability/__init__.py`
+- Create: `/home/dev/hybridInference-worktrees/tracked-tasks-helper/test/unit/observability/test_tracked_tasks.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -230,7 +230,7 @@ async def test_tracked_task_double_wrap_is_noop(caplog: pytest.LogCaptureFixture
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_tracked_tasks.py -v`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_tracked_tasks.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'serving.observability.tracked_tasks'`.
 
 - [ ] **Step 3: Implement the helper**
@@ -311,13 +311,13 @@ def tracked_task(coro: Awaitable[None], *, name: str) -> asyncio.Task[None]:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_tracked_tasks.py -v`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_tracked_tasks.py -v`
 Expected: 5 tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper
+cd /home/dev/hybridInference-worktrees/tracked-tasks-helper
 git add apps/backend/serving/observability/tracked_tasks.py tests/unit/observability/__init__.py tests/unit/observability/test_tracked_tasks.py
 git commit -m "$(cat <<'EOF'
 feat(observability): add tracked_task helper for fire-and-forget tasks
@@ -338,11 +338,11 @@ EOF
 ### Task 1.2: Add `TrackedTaskFailureRateConfig` Pydantic model
 
 **Files:**
-- Modify: `/home/juncheng/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/observability/alert_config.py`
+- Modify: `/home/dev/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/observability/alert_config.py`
 
 - [ ] **Step 1: Read the existing `alert_config.py` to find the `Rules` model**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && grep -n "class .*Config\|class Rules" apps/backend/serving/observability/alert_config.py`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && grep -n "class .*Config\|class Rules" apps/backend/serving/observability/alert_config.py`
 Expected: a list of existing Pydantic config classes plus a `class Rules` aggregate. Note the line where the existing rules are listed inside `Rules`.
 
 - [ ] **Step 2: Write the failing test for the config**
@@ -369,7 +369,7 @@ def test_tracked_task_failure_rate_config_parses_yaml_defaults() -> None:
 
 - [ ] **Step 3: Run the test to verify it fails**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py::test_tracked_task_failure_rate_config_parses_yaml_defaults -v`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py::test_tracked_task_failure_rate_config_parses_yaml_defaults -v`
 Expected: FAIL with `ImportError: cannot import name 'TrackedTaskFailureRateConfig'`.
 
 - [ ] **Step 4: Add the Pydantic model and slot it into `Rules`**
@@ -401,13 +401,13 @@ class Rules(BaseModel):
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py::test_tracked_task_failure_rate_config_parses_yaml_defaults -v`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py::test_tracked_task_failure_rate_config_parses_yaml_defaults -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper
+cd /home/dev/hybridInference-worktrees/tracked-tasks-helper
 git add apps/backend/serving/observability/alert_config.py tests/unit/observability/test_alert_rules.py
 git commit -m "$(cat <<'EOF'
 feat(observability): add TrackedTaskFailureRateConfig model
@@ -425,12 +425,12 @@ EOF
 ### Task 1.3: Add `TrackedTaskFailureRateRule` and register it
 
 **Files:**
-- Modify: `/home/juncheng/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/observability/alert_rules.py`
-- Modify: `/home/juncheng/hybridInference-worktrees/tracked-tasks-helper/test/unit/observability/test_alert_rules.py`
+- Modify: `/home/dev/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/observability/alert_rules.py`
+- Modify: `/home/dev/hybridInference-worktrees/tracked-tasks-helper/test/unit/observability/test_alert_rules.py`
 
 - [ ] **Step 1: Inspect the existing rule patterns**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && grep -n "class .*Rule\|_SlidingWindow\|_build_rules\|alert_slack\|AlertSeverity" apps/backend/serving/observability/alert_rules.py | head -40`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && grep -n "class .*Rule\|_SlidingWindow\|_build_rules\|alert_slack\|AlertSeverity" apps/backend/serving/observability/alert_rules.py | head -40`
 Expected: a list of existing rules (e.g., `AuthFailureSpikeRule`), the helper class `_SlidingWindow`, the `AlertEngine._build_rules` method, and imports of `alert_slack` + `AlertSeverity`. Note: `_build_rules` is where the new rule must register.
 
 - [ ] **Step 2: Write the failing test for the per-task-name rule**
@@ -536,7 +536,7 @@ async def test_failure_rate_rule_skips_below_min_samples() -> None:
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py -v -k "failure_rate"`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py -v -k "failure_rate"`
 Expected: FAIL with `ImportError: cannot import name 'TrackedTaskFailureRateRule'`.
 
 - [ ] **Step 4: Implement the rule and register it in `AlertEngine._build_rules`**
@@ -599,18 +599,18 @@ def _build_rules(self) -> list[Any]:
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py -v -k "failure_rate"`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py -v -k "failure_rate"`
 Expected: 3 tests pass (`test_failure_rate_rule_fires_per_task_name`, `test_failure_rate_rule_skips_when_disabled`, `test_failure_rate_rule_skips_below_min_samples`).
 
 - [ ] **Step 6: Run the full alert-rules test file to ensure no regression**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py -v`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py -v`
 Expected: all tests pass.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper
+cd /home/dev/hybridInference-worktrees/tracked-tasks-helper
 git add apps/backend/serving/observability/alert_rules.py tests/unit/observability/test_alert_rules.py
 git commit -m "$(cat <<'EOF'
 feat(observability): add TrackedTaskFailureRateRule
@@ -629,11 +629,11 @@ EOF
 ### Task 1.4: Add `tracked_task_failure_rate` block to `config/alerts.yaml`
 
 **Files:**
-- Modify: `/home/juncheng/hybridInference-worktrees/tracked-tasks-helper/config/alerts.yaml`
+- Modify: `/home/dev/hybridInference-worktrees/tracked-tasks-helper/config/alerts.yaml`
 
 - [ ] **Step 1: Inspect the current YAML layout**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && cat config/alerts.yaml`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && cat config/alerts.yaml`
 Expected: a top-level `rules:` block containing rules from PR #372. Confirm that key names map to the field names in `Rules` (snake_case).
 
 - [ ] **Step 2: Add the new block under `rules:`**
@@ -677,18 +677,18 @@ def test_alerts_yaml_loads_with_tracked_task_failure_rate() -> None:
 
 If the top-level config object is named differently than `AlertingConfig` (e.g., `AlertConfig`), substitute the correct name — discover by:
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && grep -n "^class " apps/backend/serving/observability/alert_config.py`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && grep -n "^class " apps/backend/serving/observability/alert_config.py`
 Expected: shows the top-level config class name; update the import in the test accordingly.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py::test_alerts_yaml_loads_with_tracked_task_failure_rate -v`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/observability/test_alert_rules.py::test_alerts_yaml_loads_with_tracked_task_failure_rate -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper
+cd /home/dev/hybridInference-worktrees/tracked-tasks-helper
 git add config/alerts.yaml tests/unit/observability/test_alert_rules.py
 git commit -m "$(cat <<'EOF'
 chore(config): add tracked_task_failure_rate defaults to alerts.yaml
@@ -705,7 +705,7 @@ EOF
 ### Task 1.5: Migrate `completions.py` request-log call-site
 
 **Files:**
-- Modify: `/home/juncheng/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/servers/routers/completions.py`
+- Modify: `/home/dev/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/servers/routers/completions.py`
 
 - [ ] **Step 1: Read the file and confirm the current scheduling code**
 
@@ -778,7 +778,7 @@ async def test_schedule_db_log_failure_emits_failure_event(
 
 - [ ] **Step 3: Run the test to verify it fails**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/apps/backend/serving/test_completions_tracked_tasks.py::test_schedule_db_log_emits_tracked_task_completed -v`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/apps/backend/serving/test_completions_tracked_tasks.py::test_schedule_db_log_emits_tracked_task_completed -v`
 Expected: FAIL — the existing implementation uses `asyncio.create_task` and emits no `tracked_task_completed` event.
 
 - [ ] **Step 4: Replace `_schedule_db_log_task` body with `tracked_task`**
@@ -819,18 +819,18 @@ def _schedule_db_log_task(log_store, request_id: str, log_data: dict[str, Any]) 
 
 - [ ] **Step 5: Run the new test to verify it passes**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/apps/backend/serving/test_completions_tracked_tasks.py -v`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/apps/backend/serving/test_completions_tracked_tasks.py -v`
 Expected: 2 tests pass.
 
 - [ ] **Step 6: Run the full completions test suite for regressions**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/apps/backend/serving/ -v -k "completions"`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/apps/backend/serving/ -v -k "completions"`
 Expected: all existing completions tests still pass.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper
+cd /home/dev/hybridInference-worktrees/tracked-tasks-helper
 git add apps/backend/serving/servers/routers/completions.py tests/unit/apps/backend/serving/test_completions_tracked_tasks.py
 git commit -m "$(cat <<'EOF'
 refactor(completions): use tracked_task for DB request log
@@ -849,7 +849,7 @@ EOF
 ### Task 1.6: Migrate `completions.py` cost-increment call-site
 
 **Files:**
-- Modify: `/home/juncheng/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/servers/routers/completions.py`
+- Modify: `/home/dev/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/servers/routers/completions.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -899,7 +899,7 @@ async def test_schedule_cost_increment_skipped_when_zero_cost() -> None:
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/apps/backend/serving/test_completions_tracked_tasks.py::test_schedule_cost_increment_emits_tracked_task_completed -v`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/apps/backend/serving/test_completions_tracked_tasks.py::test_schedule_cost_increment_emits_tracked_task_completed -v`
 Expected: FAIL — current code uses `asyncio.create_task`, no event emitted.
 
 - [ ] **Step 3: Replace `_schedule_cost_increment` body to use `tracked_task`**
@@ -944,18 +944,18 @@ _background_tasks: set = set()
 
 (line 44 in the pre-modification file). Verify no remaining references:
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && grep -n "_background_tasks" apps/backend/serving/servers/routers/completions.py`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && grep -n "_background_tasks" apps/backend/serving/servers/routers/completions.py`
 Expected: no matches.
 
 - [ ] **Step 5: Run the new tests + completions suite**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/apps/backend/serving/test_completions_tracked_tasks.py tests/unit/apps/backend/serving/ -v -k "completions or tracked"`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/apps/backend/serving/test_completions_tracked_tasks.py tests/unit/apps/backend/serving/ -v -k "completions or tracked"`
 Expected: all pass.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper
+cd /home/dev/hybridInference-worktrees/tracked-tasks-helper
 git add apps/backend/serving/servers/routers/completions.py tests/unit/apps/backend/serving/test_completions_tracked_tasks.py
 git commit -m "$(cat <<'EOF'
 refactor(completions): use tracked_task for cost increment
@@ -973,7 +973,7 @@ EOF
 ### Task 1.7: Migrate `dual_write.py` shadow-write call-site
 
 **Files:**
-- Modify: `/home/juncheng/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/storage/dual_write.py`
+- Modify: `/home/dev/hybridInference-worktrees/tracked-tasks-helper/apps/backend/serving/storage/dual_write.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1057,7 +1057,7 @@ async def test_dual_write_shadow_failure_does_not_propagate(
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/storage/test_dual_write_tracked.py -v`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/storage/test_dual_write_tracked.py -v`
 Expected: FAIL — `dual_write_shadow` event not emitted.
 
 - [ ] **Step 3: Wrap the shadow write in `tracked_task`**
@@ -1107,13 +1107,13 @@ Note: the surface signature of `_do_shadow` stays `async def` so existing call s
 
 - [ ] **Step 4: Run the new test + the existing dual-write tests**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/storage/ -v -k "dual_write"`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && uv run pytest tests/unit/storage/ -v -k "dual_write"`
 Expected: all pass (the existing dual-write tests should still pass because shadow failures still don't propagate, and `_shadow_healthy` is still toggled).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper
+cd /home/dev/hybridInference-worktrees/tracked-tasks-helper
 git add apps/backend/serving/storage/dual_write.py tests/unit/storage/test_dual_write_tracked.py
 git commit -m "$(cat <<'EOF'
 refactor(dual_write): schedule shadow writes via tracked_task
@@ -1136,11 +1136,11 @@ EOF
 
 - [ ] **Step 1: Run formatter and linter**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && make format && make lint`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && make format && make lint`
 Expected: both succeed; commit any formatter changes:
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper
+cd /home/dev/hybridInference-worktrees/tracked-tasks-helper
 git add -u
 git diff --cached --quiet || git commit -m "$(cat <<'EOF'
 chore: ruff format
@@ -1152,13 +1152,13 @@ EOF
 
 - [ ] **Step 2: Run the full test suite**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper && make test`
+Run: `cd /home/dev/hybridInference-worktrees/tracked-tasks-helper && make test`
 Expected: green.
 
 - [ ] **Step 3: Push and open the PR**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/tracked-tasks-helper
+cd /home/dev/hybridInference-worktrees/tracked-tasks-helper
 git push -u origin jason/claude/tracked-tasks-helper
 
 gh pr create --base dev --title "feat(observability): tracked_task helper + 3 call-sites + failure-rate rule" --body "$(cat <<'EOF'
@@ -1207,8 +1207,8 @@ For every unresolved review comment: implement the requested change, commit, pus
 - [ ] **Step 6: After merge, delete branch and worktree**
 
 ```bash
-cd /home/juncheng/hybridInference
-git worktree remove /home/juncheng/hybridInference-worktrees/tracked-tasks-helper
+cd /home/dev/hybridInference
+git worktree remove /home/dev/hybridInference-worktrees/tracked-tasks-helper
 git push origin --delete jason/claude/tracked-tasks-helper
 git branch -D jason/claude/tracked-tasks-helper 2>/dev/null || true
 ```
@@ -1226,7 +1226,7 @@ git branch -D jason/claude/tracked-tasks-helper 2>/dev/null || true
 - [ ] **Step 1: Verify PR 1 is merged**
 
 ```bash
-cd /home/juncheng/hybridInference
+cd /home/dev/hybridInference
 git fetch origin
 git checkout dev
 git pull origin dev
@@ -1237,7 +1237,7 @@ Expected: prints `PR 1 merged`. If not, abort and wait for PR 1.
 - [ ] **Step 2: Create worktree and branch**
 
 ```bash
-git worktree add /home/juncheng/hybridInference-worktrees/pending-decisions-ttl -b jason/claude/pending-decisions-ttl origin/dev
+git worktree add /home/dev/hybridInference-worktrees/pending-decisions-ttl -b jason/claude/pending-decisions-ttl origin/dev
 ```
 
 - [ ] **Step 3: Create the GitHub issue**
@@ -1258,7 +1258,7 @@ EOF
 
 - [ ] **Step 4: Verify worktree**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && git status && git rev-parse --abbrev-ref HEAD`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && git status && git rev-parse --abbrev-ref HEAD`
 Expected: clean tree on `jason/claude/pending-decisions-ttl`.
 
 ---
@@ -1266,8 +1266,8 @@ Expected: clean tree on `jason/claude/pending-decisions-ttl`.
 ### Task 2.1: Add TTL sweep to `RouteWiseRouter`
 
 **Files:**
-- Modify: `/home/juncheng/hybridInference-worktrees/pending-decisions-ttl/apps/backend/routing/routewise/router.py`
-- Create: `/home/juncheng/hybridInference-worktrees/pending-decisions-ttl/test/unit/apps/backend/routing/test_pending_decisions_ttl.py`
+- Modify: `/home/dev/hybridInference-worktrees/pending-decisions-ttl/apps/backend/routing/routewise/router.py`
+- Create: `/home/dev/hybridInference-worktrees/pending-decisions-ttl/test/unit/apps/backend/routing/test_pending_decisions_ttl.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1375,7 +1375,7 @@ async def test_pending_decisions_skips_entries_without_timestamp(
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/routing/test_pending_decisions_ttl.py -v`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/routing/test_pending_decisions_ttl.py -v`
 Expected: FAIL — `_sweep_pending_decisions_once`, `start`, `stop`, and `_sweep_task` don't exist on `RouteWiseRouter`.
 
 - [ ] **Step 3: Add TTL sweep + start/stop to `RouteWiseRouter`**
@@ -1469,7 +1469,7 @@ PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS: float = 60.0
 
 4. Audit existing dict mutation sites (`_select_adapter`, `record_observation`, `chat_completion`, `stream_chat_completion`) — they use synchronous dict access. Wrap them in the lock only if the dict access is from an async context. Read each call-site:
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && grep -n "_pending_decisions\[" apps/backend/routing/routewise/router.py`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && grep -n "_pending_decisions\[" apps/backend/routing/routewise/router.py`
 Expected: line numbers around 890, 915, 942, 960, 1080, 1081, 1113, 1114.
 
 For each line, check whether the enclosing function is `async def`. The four assignment sites (~890, 915, 942, 960) are inside `_select_adapter` which is **synchronous** — leave them. The four pop / mutation sites in `_execute_*` and `chat_completion` are inside async methods. **Don't** wrap these in the lock — `asyncio.Lock` cannot be acquired from a sync function and acquiring it from the async path on every observation would serialize the hot routing path.
@@ -1494,25 +1494,25 @@ Update the docstring comment on `self._pending_decisions_lock` accordingly:
 
 5. Verify all four `_pending_decisions[request_id] = {...}` assignment sites populate a `timestamp` field. Run:
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && grep -n -A 6 "_pending_decisions\[request_id\] = {" apps/backend/routing/routewise/router.py`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && grep -n -A 6 "_pending_decisions\[request_id\] = {" apps/backend/routing/routewise/router.py`
 Expected output: each block contains a `"timestamp": time.time()` (or equivalent) entry.
 
 If any block is missing a `timestamp` key, add one. The test `test_pending_decisions_skips_entries_without_timestamp` covers the defensive `not isinstance(ts, ...)` branch but production code should always populate it.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/routing/test_pending_decisions_ttl.py -v`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/routing/test_pending_decisions_ttl.py -v`
 Expected: 4 tests pass.
 
 - [ ] **Step 5: Run the full RouteWise test suite for regressions**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/routing/ -v`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/routing/ -v`
 Expected: green.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl
+cd /home/dev/hybridInference-worktrees/pending-decisions-ttl
 git add apps/backend/routing/routewise/router.py tests/unit/apps/backend/routing/test_pending_decisions_ttl.py
 git commit -m "$(cat <<'EOF'
 feat(routewise): TTL sweep for _pending_decisions
@@ -1531,11 +1531,11 @@ EOF
 ### Task 2.2: Wire `start()` / `stop()` from bootstrap
 
 **Files:**
-- Modify: `/home/juncheng/hybridInference-worktrees/pending-decisions-ttl/apps/backend/serving/servers/bootstrap.py`
+- Modify: `/home/dev/hybridInference-worktrees/pending-decisions-ttl/apps/backend/serving/servers/bootstrap.py`
 
 - [ ] **Step 1: Read the bootstrap section that constructs `RouteWiseRouter`**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && grep -n "RouteWiseRouter\|routewise_router\|shutdown\|cleanup" apps/backend/serving/servers/bootstrap.py | head -30`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && grep -n "RouteWiseRouter\|routewise_router\|shutdown\|cleanup" apps/backend/serving/servers/bootstrap.py | head -30`
 Expected: shows the construction site (~line 281) and likely a startup helper plus a shutdown / cleanup helper.
 
 - [ ] **Step 2: Write the failing test**
@@ -1561,7 +1561,7 @@ async def test_routewise_router_started_and_stopped_in_bootstrap(
 
 - [ ] **Step 3: Run to verify it fails**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/routing/test_pending_decisions_ttl.py::test_routewise_router_started_and_stopped_in_bootstrap -v`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/routing/test_pending_decisions_ttl.py::test_routewise_router_started_and_stopped_in_bootstrap -v`
 Expected: FAIL.
 
 - [ ] **Step 4: Wire start/stop in bootstrap**
@@ -1575,11 +1575,11 @@ In `apps/backend/serving/servers/bootstrap.py`, in the block where `routewise_ro
 
 (Use the existing pattern in the file. If the surrounding code is **not** in an async function, locate the bootstrap entry point that *is* async — typically `bootstrap_app()` or `init_services()`. Discover by:
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && grep -n "async def" apps/backend/serving/servers/bootstrap.py | head -10`)
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && grep -n "async def" apps/backend/serving/servers/bootstrap.py | head -10`)
 
 Locate the corresponding shutdown helper. Discover by:
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && grep -n "shutdown\|cleanup\|teardown" apps/backend/serving/servers/bootstrap.py | head -10`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && grep -n "shutdown\|cleanup\|teardown" apps/backend/serving/servers/bootstrap.py | head -10`
 
 In that shutdown helper, add (using the routewise router that the bootstrap function already returns/exposes — typically via `AppServices`):
 
@@ -1590,24 +1590,24 @@ In that shutdown helper, add (using the routewise router that the bootstrap func
 
 If `AppServices` does not currently expose `routewise_router`, add a field for it. Discover the dataclass:
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && grep -n "class AppServices\|routewise" apps/backend/serving/servers/deps.py`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && grep -n "class AppServices\|routewise" apps/backend/serving/servers/deps.py`
 
 If `routewise_router` is missing from `AppServices`, add it as `routewise_router: RouteWiseRouter | None = None` and pipe it through bootstrap's return path.
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/routing/test_pending_decisions_ttl.py::test_routewise_router_started_and_stopped_in_bootstrap -v`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/routing/test_pending_decisions_ttl.py::test_routewise_router_started_and_stopped_in_bootstrap -v`
 Expected: PASS.
 
 - [ ] **Step 6: Run the bootstrap and routing test suites**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/serving/ tests/unit/apps/backend/routing/ -v`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/apps/backend/serving/ tests/unit/apps/backend/routing/ -v`
 Expected: green.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl
+cd /home/dev/hybridInference-worktrees/pending-decisions-ttl
 git add apps/backend/serving/servers/bootstrap.py apps/backend/serving/servers/deps.py tests/unit/apps/backend/routing/test_pending_decisions_ttl.py
 git commit -m "$(cat <<'EOF'
 feat(bootstrap): wire RouteWiseRouter start/stop lifecycle
@@ -1626,7 +1626,7 @@ EOF
 ### Task 2.3: Add `PendingDecisionsLeakConfig` Pydantic model
 
 **Files:**
-- Modify: `/home/juncheng/hybridInference-worktrees/pending-decisions-ttl/apps/backend/serving/observability/alert_config.py`
+- Modify: `/home/dev/hybridInference-worktrees/pending-decisions-ttl/apps/backend/serving/observability/alert_config.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1650,7 +1650,7 @@ def test_pending_decisions_leak_config_parses() -> None:
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/observability/test_alert_rules.py::test_pending_decisions_leak_config_parses -v`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/observability/test_alert_rules.py::test_pending_decisions_leak_config_parses -v`
 Expected: FAIL with `ImportError: cannot import name 'PendingDecisionsLeakConfig'`.
 
 - [ ] **Step 3: Add the Pydantic model and slot it into `Rules`**
@@ -1681,13 +1681,13 @@ class Rules(BaseModel):
 
 - [ ] **Step 4: Run to verify the test passes**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/observability/test_alert_rules.py::test_pending_decisions_leak_config_parses -v`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/observability/test_alert_rules.py::test_pending_decisions_leak_config_parses -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl
+cd /home/dev/hybridInference-worktrees/pending-decisions-ttl
 git add apps/backend/serving/observability/alert_config.py tests/unit/observability/test_alert_rules.py
 git commit -m "$(cat <<'EOF'
 feat(observability): add PendingDecisionsLeakConfig model
@@ -1702,8 +1702,8 @@ EOF
 ### Task 2.4: Add `PendingDecisionsLeakRule` and register it
 
 **Files:**
-- Modify: `/home/juncheng/hybridInference-worktrees/pending-decisions-ttl/apps/backend/serving/observability/alert_rules.py`
-- Modify: `/home/juncheng/hybridInference-worktrees/pending-decisions-ttl/test/unit/observability/test_alert_rules.py`
+- Modify: `/home/dev/hybridInference-worktrees/pending-decisions-ttl/apps/backend/serving/observability/alert_rules.py`
+- Modify: `/home/dev/hybridInference-worktrees/pending-decisions-ttl/test/unit/observability/test_alert_rules.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1796,7 +1796,7 @@ async def test_leak_rule_ignores_other_events() -> None:
 
 - [ ] **Step 2: Run to verify the tests fail**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/observability/test_alert_rules.py -v -k "leak_rule"`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/observability/test_alert_rules.py -v -k "leak_rule"`
 Expected: FAIL with `ImportError: cannot import name 'PendingDecisionsLeakRule'`.
 
 - [ ] **Step 3: Implement the rule and register it**
@@ -1857,13 +1857,13 @@ In `AlertEngine._build_rules`, append:
 
 - [ ] **Step 4: Run to verify all tests pass**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/observability/test_alert_rules.py -v`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/observability/test_alert_rules.py -v`
 Expected: green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl
+cd /home/dev/hybridInference-worktrees/pending-decisions-ttl
 git add apps/backend/serving/observability/alert_rules.py tests/unit/observability/test_alert_rules.py
 git commit -m "$(cat <<'EOF'
 feat(observability): add PendingDecisionsLeakRule
@@ -1882,7 +1882,7 @@ EOF
 ### Task 2.5: Add `pending_decisions_leak` defaults to `config/alerts.yaml`
 
 **Files:**
-- Modify: `/home/juncheng/hybridInference-worktrees/pending-decisions-ttl/config/alerts.yaml`
+- Modify: `/home/dev/hybridInference-worktrees/pending-decisions-ttl/config/alerts.yaml`
 
 - [ ] **Step 1: Append to the `rules:` block in `config/alerts.yaml`**
 
@@ -1921,13 +1921,13 @@ def test_alerts_yaml_loads_with_pending_decisions_leak() -> None:
 
 - [ ] **Step 3: Run the test to verify it passes**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/observability/test_alert_rules.py::test_alerts_yaml_loads_with_pending_decisions_leak -v`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && uv run pytest tests/unit/observability/test_alert_rules.py::test_alerts_yaml_loads_with_pending_decisions_leak -v`
 Expected: PASS.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl
+cd /home/dev/hybridInference-worktrees/pending-decisions-ttl
 git add config/alerts.yaml tests/unit/observability/test_alert_rules.py
 git commit -m "$(cat <<'EOF'
 chore(config): add pending_decisions_leak defaults to alerts.yaml
@@ -1947,11 +1947,11 @@ EOF
 
 - [ ] **Step 1: Format and lint**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && make format && make lint`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && make format && make lint`
 Expected: succeed; commit any formatter-induced changes:
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl
+cd /home/dev/hybridInference-worktrees/pending-decisions-ttl
 git add -u
 git diff --cached --quiet || git commit -m "$(cat <<'EOF'
 chore: ruff format
@@ -1963,13 +1963,13 @@ EOF
 
 - [ ] **Step 2: Run the full suite**
 
-Run: `cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl && make test`
+Run: `cd /home/dev/hybridInference-worktrees/pending-decisions-ttl && make test`
 Expected: green.
 
 - [ ] **Step 3: Push and open the PR**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/pending-decisions-ttl
+cd /home/dev/hybridInference-worktrees/pending-decisions-ttl
 git push -u origin jason/claude/pending-decisions-ttl
 
 gh pr create --base dev --title "feat(routewise): pending-decisions TTL sweep + leak alert" --body "$(cat <<'EOF'
@@ -2014,8 +2014,8 @@ Implement, commit, push for each unresolved comment until approved.
 - [ ] **Step 6: After merge, delete branch and worktree**
 
 ```bash
-cd /home/juncheng/hybridInference
-git worktree remove /home/juncheng/hybridInference-worktrees/pending-decisions-ttl
+cd /home/dev/hybridInference
+git worktree remove /home/dev/hybridInference-worktrees/pending-decisions-ttl
 git push origin --delete jason/claude/pending-decisions-ttl
 git branch -D jason/claude/pending-decisions-ttl 2>/dev/null || true
 ```

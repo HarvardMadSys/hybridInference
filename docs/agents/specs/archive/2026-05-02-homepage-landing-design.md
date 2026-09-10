@@ -147,7 +147,7 @@ No error paths beyond what `useAuth` already handles. If auth state fails to loa
   - Mobile viewport (≤640px) → sections stack, no horizontal scroll.
 - **Code example copy button** — clicking copies the curl block to clipboard and shows a brief "Copied!" affordance.
 - **Lint/format gate (per CLAUDE.md):** `uv run ruff format --check .` before opening PR. Frontend lint via existing project scripts (e.g., `npm run lint`) if defined.
-- **Visual verification on staging:** deploy to https://staging.freeinference.org and verify the landing page renders correctly for both authenticated and anonymous sessions (anonymous: incognito window; authenticated: log in with `admin@admin.com` / `admin`).
+- **Visual verification on staging:** deploy to https://staging.freeinference.org and verify the landing page renders correctly for both authenticated and anonymous sessions (anonymous: incognito window; authenticated: log in with a deployment-managed admin test account).
 
 ## Files Touched
 

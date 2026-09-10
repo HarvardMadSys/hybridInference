@@ -13,7 +13,7 @@
 **Process notes (from CLAUDE.md):**
 - Pull `origin/dev` before starting.
 - Single PR on feature branch `jason/claude/alembic-migrations`.
-- Worktree: `/home/juncheng/hybridInference-worktrees/alembic-migrations`.
+- Worktree: `/home/dev/hybridInference-worktrees/alembic-migrations`.
 - Per CLAUDE.md: create issue → branch → implement → `make format` → PR → monitor CI every 2 min → cleanup after merge.
 
 ---
@@ -53,8 +53,8 @@
 
 - [ ] **Step 1:** `git fetch origin && git checkout dev && git pull origin dev`
 - [ ] **Step 2:** Create issue: `gh issue create --title "Adopt Alembic migrations for Postgres schema" --body "Spec: docs/agents/specs/2026-05-03-alembic-migrations-design.md\nPlan: docs/agents/plans/2026-05-03-alembic-migrations.md"`
-- [ ] **Step 3:** `git worktree add /home/juncheng/hybridInference-worktrees/alembic-migrations -b jason/claude/alembic-migrations origin/dev`
-- [ ] **Step 4:** `cd /home/juncheng/hybridInference-worktrees/alembic-migrations && make test 2>&1 | tail -3` to confirm clean baseline.
+- [ ] **Step 3:** `git worktree add /home/dev/hybridInference-worktrees/alembic-migrations -b jason/claude/alembic-migrations origin/dev`
+- [ ] **Step 4:** `cd /home/dev/hybridInference-worktrees/alembic-migrations && make test 2>&1 | tail -3` to confirm clean baseline.
 
 ---
 
@@ -62,7 +62,7 @@
 
 **Files:** Modify `pyproject.toml`.
 
-- [ ] **Step 1:** `cd /home/juncheng/hybridInference-worktrees/alembic-migrations && uv add alembic`
+- [ ] **Step 1:** `cd /home/dev/hybridInference-worktrees/alembic-migrations && uv add alembic`
 - [ ] **Step 2:** Verify: `uv pip list | grep -E "^alembic|^SQLAlchemy"`. Expected: both present.
 - [ ] **Step 3:** Commit:
   ```bash
@@ -77,7 +77,7 @@
 **Files:**
 - Create: `alembic.ini`, `apps/backend/serving/storage/migrations/env.py`, `apps/backend/serving/storage/migrations/script.py.mako`, `apps/backend/serving/storage/migrations/versions/.gitkeep`
 
-- [ ] **Step 1:** Run `cd /home/juncheng/hybridInference-worktrees/alembic-migrations && uv run alembic init apps/backend/serving/storage/migrations` to scaffold. Move `alembic.ini` from `apps/backend/serving/storage/migrations/` (where init may place it) to repo root if needed.
+- [ ] **Step 1:** Run `cd /home/dev/hybridInference-worktrees/alembic-migrations && uv run alembic init apps/backend/serving/storage/migrations` to scaffold. Move `alembic.ini` from `apps/backend/serving/storage/migrations/` (where init may place it) to repo root if needed.
 
 - [ ] **Step 2:** Edit `alembic.ini` so:
   - `script_location = apps/backend/serving/storage/migrations`
@@ -134,7 +134,7 @@ else:
     run_migrations_online()
 ```
 
-- [ ] **Step 4:** Verify: `cd /home/juncheng/hybridInference-worktrees/alembic-migrations && uv run alembic check 2>&1 | head`. Expected: no syntax errors (the absence of revisions is fine).
+- [ ] **Step 4:** Verify: `cd /home/dev/hybridInference-worktrees/alembic-migrations && uv run alembic check 2>&1 | head`. Expected: no syntax errors (the absence of revisions is fine).
 
 - [ ] **Step 5:** Commit:
   ```bash
@@ -150,7 +150,7 @@ else:
 
 - [ ] **Step 1:** Open `apps/backend/serving/storage/postgres_log.py` and `apps/backend/serving/storage/postgres_operational.py`. Find every `CREATE TABLE IF NOT EXISTS ...` and `CREATE INDEX ...` statement. Note line ranges.
 
-- [ ] **Step 2:** Generate revision file: `cd /home/juncheng/hybridInference-worktrees/alembic-migrations && uv run alembic revision -m "baseline" --rev-id 0001_baseline`. This creates `apps/backend/serving/storage/migrations/versions/0001_baseline_baseline.py`.
+- [ ] **Step 2:** Generate revision file: `cd /home/dev/hybridInference-worktrees/alembic-migrations && uv run alembic revision -m "baseline" --rev-id 0001_baseline`. This creates `apps/backend/serving/storage/migrations/versions/0001_baseline_baseline.py`.
 
 - [ ] **Step 3:** Edit the generated file. Set `revision = "0001_baseline"`, `down_revision = None`, `branch_labels = None`, `depends_on = None`. Replace `upgrade()` body with `op.execute("...")` calls — one per `CREATE TABLE IF NOT EXISTS ...` and one per `CREATE INDEX IF NOT EXISTS ...` from the source files. Preserve `IF NOT EXISTS` for defense in depth. Replace `downgrade()` with `raise NotImplementedError("baseline migration is irreversible")`.
 
@@ -404,7 +404,7 @@ else:
 
   (Adapt the `test_db_pool` fixture to whatever's already in `tests/conftest.py` or `tests/integration/conftest.py`.)
 
-- [ ] **Step 2:** Run with the test DB: `cd /home/juncheng/hybridInference-worktrees/alembic-migrations && uv run pytest tests/integration/storage/test_migrations.py -v -m dbtest`. Expected: pass.
+- [ ] **Step 2:** Run with the test DB: `cd /home/dev/hybridInference-worktrees/alembic-migrations && uv run pytest tests/integration/storage/test_migrations.py -v -m dbtest`. Expected: pass.
 
 - [ ] **Step 3:** Commit:
   ```bash
@@ -553,7 +553,7 @@ else:
 
 - [ ] **Step 5:** After merge:
   - Operator runs `alembic stamp 0001_baseline` on staging, then prod.
-  - Cleanup: `git worktree remove /home/juncheng/hybridInference-worktrees/alembic-migrations && git branch -D jason/claude/alembic-migrations`.
+  - Cleanup: `git worktree remove /home/dev/hybridInference-worktrees/alembic-migrations && git branch -D jason/claude/alembic-migrations`.
 
 ---
 

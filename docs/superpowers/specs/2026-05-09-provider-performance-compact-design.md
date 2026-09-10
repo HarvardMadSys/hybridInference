@@ -110,7 +110,7 @@ In `TtftScatterCard` (lines 52, 71):
 - Existing test: [apps/frontend/src/app/dashboard/admin/__tests__/ProviderPerformanceTab.test.tsx](../../../apps/frontend/src/app/dashboard/admin/__tests__/ProviderPerformanceTab.test.tsx) — must continue to pass.
 - Test references `data-testid="provider-performance-chart-row"`, `provider-performance-ttft-card`, `provider-performance-throughput-card` — all retained.
 - KPI cards do not have testids — switching from cards to inline spans does not break tests.
-- Manual verification on staging (`admin@admin.com` / `admin`) at `/dashboard/admin/performance`.
+- Manual verification on staging (a deployment-managed admin test account) at `/dashboard/admin/performance`.
 
 ## Risk
 

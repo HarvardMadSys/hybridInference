@@ -58,7 +58,7 @@ async def test_list_settings_includes_log_rejected_requests(admin_client):
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/log-rejected-requests
+cd /home/dev/hybridInference-worktrees/log-rejected-requests
 uv run pytest tests/servers/test_admin_settings.py::test_list_settings_includes_log_rejected_requests -v
 ```
 
@@ -105,13 +105,13 @@ git commit -m "feat(settings): register log_rejected_requests runtime toggle"
 - [ ] **Step 1: Create the test directory**
 
 ```bash
-mkdir -p /home/juncheng/hybridInference-worktrees/log-rejected-requests/tests/observability
+mkdir -p /home/dev/hybridInference-worktrees/log-rejected-requests/tests/observability
 ```
 
 If `tests/observability/__init__.py` doesn't exist, create it as an empty file:
 
 ```bash
-touch /home/juncheng/hybridInference-worktrees/log-rejected-requests/tests/observability/__init__.py
+touch /home/dev/hybridInference-worktrees/log-rejected-requests/tests/observability/__init__.py
 ```
 
 - [ ] **Step 2: Write the failing tests**
@@ -965,7 +965,7 @@ git commit -m "feat(anthropic): emit log_rejection on model-not-found 404"
 - [ ] **Step 1: Run all tests touched by the change + adjacent suites**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/log-rejected-requests
+cd /home/dev/hybridInference-worktrees/log-rejected-requests
 uv run pytest tests/observability tests/servers/test_admin_settings.py tests/servers/test_enforce_user_concurrency.py tests/servers/test_concurrency_endpoint.py tests/servers/test_user_concurrency_limiter.py tests/servers/test_concurrency_runtime_resize.py tests/servers/test_auth_routes.py tests/servers/test_auth_rejection_log.py tests/servers/test_anthropic_messages_rejection.py -q 2>&1 | tail -10
 ```
 

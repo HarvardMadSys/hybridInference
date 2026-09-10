@@ -691,7 +691,7 @@ In an incognito window:
 
 - [ ] **Step 9.3: Authenticated flow check**
 
-In a non-incognito window with an active staging session (or by logging in locally via `admin@admin.com` / `admin` if local backend is up):
+In a non-incognito window with an active staging session (or by logging in locally via a deployment-managed admin test account if local backend is up):
 
 1. Visit `/` → spinner briefly, then redirect to `/dashboard`. Landing sections never appear.
 2. Hard-refresh `/dashboard` → still on dashboard.

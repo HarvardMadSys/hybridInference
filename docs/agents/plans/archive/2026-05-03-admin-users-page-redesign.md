@@ -1365,7 +1365,7 @@ Remove all the Users-tab-only state and effects from `page.tsx` that were lifted
 - [ ] **Step 4: Manually verify no behaviour change**
 
 Run: `npm run dev --prefix frontend`
-Open `http://localhost:3001/dashboard/admin`, log in as `admin@admin.com:admin` (per CLAUDE.md), click Users tab. Verify:
+Open `http://localhost:3001/dashboard/admin`, log in as a deployment-managed admin test account (per CLAUDE.md), click Users tab. Verify:
 - Tab renders identically to before (search, status chips, sort, table rows, expand/collapse)
 - Approve/reject/suspend/resume/delete/regenerate-key all work
 - Page does not error in browser console
@@ -3359,7 +3359,7 @@ Either deploy this branch to staging or run locally against the staging API. Per
 
 - [ ] **Step 2: Verify each top workflow**
 
-Walk through these as the admin (`admin@admin.com:admin`):
+Walk through these as the admin (a deployment-managed admin test account):
 - **Triage:** Click *Pending Approval* card → table shows pending users → approve one → list refreshes, count drops by 1
 - **Find heavy:** Click *Top Spenders Today* card → sort defaults to cost_today → top users at the top
 - **Anomaly watch:** *Anomalies* card shows users with ≥5x spike → ⚠ badge present in their row

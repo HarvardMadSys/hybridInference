@@ -13,7 +13,7 @@
 **Process notes (from CLAUDE.md):**
 - Pull `origin/dev` before starting.
 - Single PR on feature branch `jason/claude/admin-page-decomposition`.
-- Worktree: `/home/juncheng/hybridInference-worktrees/admin-page-decomposition`.
+- Worktree: `/home/dev/hybridInference-worktrees/admin-page-decomposition`.
 - Per CLAUDE.md: create issue → branch → implement → format check → PR → monitor CI every 2 min → cleanup after merge.
 
 ---
@@ -57,8 +57,8 @@
 
 - [ ] **Step 1:** `git fetch origin && git checkout dev && git pull origin dev`
 - [ ] **Step 2:** Create issue: `gh issue create --title "Decompose admin page into per-tab Next.js sub-routes" --body "Spec: docs/agents/specs/2026-05-03-admin-page-decomposition-design.md"`
-- [ ] **Step 3:** `git worktree add /home/juncheng/hybridInference-worktrees/admin-page-decomposition -b jason/claude/admin-page-decomposition origin/dev`
-- [ ] **Step 4:** `cd /home/juncheng/hybridInference-worktrees/admin-page-decomposition/frontend && npm install` (if not already cached) and confirm `npm run build` succeeds.
+- [ ] **Step 3:** `git worktree add /home/dev/hybridInference-worktrees/admin-page-decomposition -b jason/claude/admin-page-decomposition origin/dev`
+- [ ] **Step 4:** `cd /home/dev/hybridInference-worktrees/admin-page-decomposition/frontend && npm install` (if not already cached) and confirm `npm run build` succeeds.
 
 ---
 
@@ -68,7 +68,7 @@
 
 - [ ] **Step 1:** Determine the frontend test runner:
   ```bash
-  cd /home/juncheng/hybridInference-worktrees/admin-page-decomposition/frontend
+  cd /home/dev/hybridInference-worktrees/admin-page-decomposition/frontend
   cat package.json | grep -E 'vitest|jest|playwright|@testing-library'
   ls __tests__ 2>/dev/null || ls test 2>/dev/null || find . -name "*.test.tsx" -not -path "./node_modules/*" | head -5
   ```
@@ -520,8 +520,8 @@
 
 - [ ] **Step 4:** After merge, cleanup:
   ```bash
-  cd /home/juncheng/hybridInference
-  git worktree remove /home/juncheng/hybridInference-worktrees/admin-page-decomposition
+  cd /home/dev/hybridInference
+  git worktree remove /home/dev/hybridInference-worktrees/admin-page-decomposition
   git branch -D jason/claude/admin-page-decomposition
   ```
 

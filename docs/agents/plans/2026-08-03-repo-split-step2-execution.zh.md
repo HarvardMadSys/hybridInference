@@ -138,7 +138,7 @@ staging=dev / prod=main 映射、release tag 节奏、回滚入口。
 ### W1 信任链(Murphy 手工;周期最长,立即开工,与 W0 并行)
 
 - GitHub:freeInference 建 `production`/`staging` Environments,迁移
-  `PROD_*` / `STAGING_*` 五件套 secrets;org App(4436561)安装覆盖新仓
+  `PROD_*` / `STAGING_*` 五件套 secrets;org App安装覆盖新仓
   (bump bot 与 agents 签 token 用);**四**组 self-hosted runner 标签
   (`deploy-production`/`deploy-staging`/`deploy-edge`/
   `trusted-automation`——第四组 2026-08-12 评审第七轮补:sync-main.yml 与
@@ -249,7 +249,7 @@ W5 每批搬迁按矩阵做 preflight。已知至少涉及的 secrets:
   backend 镜像(带 `org.opencontainers.image.revision` label)——W2 的
   build-candidates 保留为 dispatch-only 的手动切片。digest 经
   packages API / run summary 可查。**架构注记(第七轮;2026-08-20 已执行)**:prod 主机架构已登记——
-  `freeinference-direct`,**x86_64**(staging=spark2 为 arm64,两者异构)
+  production 为 **x86_64**,staging 为 **arm64**(两者异构)
   ——自动发布已升 multi-arch(linux/arm64,linux/amd64,QEMU 在 arm
   runner 上出 amd64 半边),`upstream.lock` 自然钉 manifest list digest,
   各主机解析各自平台;部署侧架构硬门与 index-aware 的 label 读取器
@@ -309,7 +309,7 @@ Pages 项目)按 2026-08-26 拍板留上游,`docs/developer/` 相应继续留上
 
 **W5d 状态(2026-08-27):已关闭(本 PR)。** 运营接管证据:production
 `/etc/cron.d/freeinference-{backup,backup-health,export-weekly-logs}` 已从
-`/srv/freeInference/ops/db/` 执行;spark2 `spark_idle_proxy.service` 的
+`/srv/freeInference/ops/db/` 执行;staging 主机 `spark_idle_proxy.service` 的
 WorkingDirectory/ExecStart 已指向 `/srv/freeInference`;freeInference 与
 上游逐 blob 比对,工具本体一致、cron/安装器为 fi 适配版。上游删除:
 `ops/db` 运营工具链、`ops/lib`、三个 idle proxy、`deploy/systemd` 的
@@ -325,8 +325,8 @@ freeInference 副本为死代码,故判为中立后端耦合工具留上游
 `test_geoip_deployment` 断言钉住,且 freeInference 缺
 `test_setup_claude_code` 移植);(c) `benchmark/` 为 paper 产物,
 不随本批,去处(paper 仓 vs freeInference)另行拍板。主机残留记入 W7:
-spark2 单元与 production cron 仍借 `/srv/hybridInference` 的
-`.env`/`.venv`;h200/rtx6000 侧单元指向无 shell 可验,待 W7 清点。
+staging 主机 单元与 production cron 仍借 `/srv/hybridInference` 的
+`.env`/`.venv`;其他 GPU 主机 侧单元指向无 shell 可验,待 W7 清点。
 后续排期见 #1323(本批即其 Step 2,连坐项已吸收)。
 
 **上游侧删除不与搬迁同批(2026-08-12 评审修订)**:原文"每批同时在上游侧

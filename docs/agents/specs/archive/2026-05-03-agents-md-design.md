@@ -40,7 +40,7 @@ Eight sections, each scaled to its content. Total length: ~300–500 lines.
 
 ### 1. About this project
 
-3–4 sentences. HybridInference is a FastAPI gateway that routes LLM requests across local servers (vLLM/SGLang/Ollama) and remote OpenAI-compatible providers. Production: freeinference.org. Staging: staging.freeinference.org. Links to README, public docs (https://doc.freeinference.org/), and internal docs (https://internaldoc.freeinference.org/).
+3–4 sentences. HybridInference is a FastAPI gateway that routes LLM requests across local servers (vLLM/SGLang/Ollama) and remote OpenAI-compatible providers. Production: freeinference.org. Staging: staging.freeinference.org. Links to README, public docs (https://doc.freeinference.org/), and internal docs (the deployment’s private documentation (see its overlay guide)).
 
 ### 2. Repo map
 
@@ -78,7 +78,7 @@ Annotated top-level tree. Source the layout from `.kilo/skills/debug/SKILL.md` (
 - Use a git worktree, not the main checkout.
 - PRs target `dev`. Staging deploys from `dev`.
 - Verify changes against staging before claiming done.
-- Staging test account: `admin@admin.com` / `admin`.
+- Staging test account: a deployment-managed admin test account.
 
 ### 6. Project-specific knowledge
 
@@ -148,7 +148,7 @@ Pointer table. Each row links to the canonical doc/skill. No content duplication
 ### 8. Where to look next
 
 - Public docs: https://doc.freeinference.org/
-- Internal/developer docs: https://internaldoc.freeinference.org/
+- Internal/developer docs: the deployment’s private documentation (see its overlay guide)
 - Full developer guide index: `docs/developer/index.rst`
 - Code review records: `docs/reviews/`
 

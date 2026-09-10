@@ -13,7 +13,7 @@
 **Process notes (from CLAUDE.md):**
 - Pull origin/dev before starting.
 - Single PR on feature branch `jason/claude/routing-config-expressiveness`.
-- Worktree: `/home/juncheng/hybridInference-worktrees/routing-config-expressiveness`.
+- Worktree: `/home/dev/hybridInference-worktrees/routing-config-expressiveness`.
 - Per CLAUDE.md: create issue → branch → implement → `make format` (ruff) → PR → monitor CI every 2 min → cleanup after merge.
 
 ---
@@ -102,7 +102,7 @@
 - [ ] **Step 1: Pull origin/dev**
 
 ```bash
-cd /home/juncheng/hybridInference
+cd /home/dev/hybridInference
 git fetch origin
 git checkout dev
 git pull --ff-only origin dev
@@ -114,7 +114,7 @@ Expected: `Already up to date.` or fast-forward.
 
 ```bash
 git worktree add -b jason/claude/routing-config-expressiveness \
-  /home/juncheng/hybridInference-worktrees/routing-config-expressiveness origin/dev
+  /home/dev/hybridInference-worktrees/routing-config-expressiveness origin/dev
 ```
 
 Expected: `Preparing worktree (new branch 'jason/claude/routing-config-expressiveness')`.
@@ -146,8 +146,8 @@ Expected: prints issue URL. Record the issue number for the PR description in Ta
 - [ ] **Step 4: Verify worktree**
 
 ```bash
-ls /home/juncheng/hybridInference-worktrees/routing-config-expressiveness
-git -C /home/juncheng/hybridInference-worktrees/routing-config-expressiveness branch --show-current
+ls /home/dev/hybridInference-worktrees/routing-config-expressiveness
+git -C /home/dev/hybridInference-worktrees/routing-config-expressiveness branch --show-current
 ```
 
 Expected: directory listed, branch `jason/claude/routing-config-expressiveness`.
@@ -212,7 +212,7 @@ def test_build_router_unknown_raises_with_known_list():
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd /home/juncheng/hybridInference-worktrees/routing-config-expressiveness
+cd /home/dev/hybridInference-worktrees/routing-config-expressiveness
 uv run pytest tests/unit/apps/backend/routing/test_strategies.py -v
 ```
 
@@ -1855,9 +1855,9 @@ Fix any failures by committing to the same branch; do not amend.
 - [ ] **Step 5: Cleanup after merge**
 
 ```bash
-git -C /home/juncheng/hybridInference checkout dev
-git -C /home/juncheng/hybridInference pull --ff-only origin dev
-git worktree remove /home/juncheng/hybridInference-worktrees/routing-config-expressiveness
+git -C /home/dev/hybridInference checkout dev
+git -C /home/dev/hybridInference pull --ff-only origin dev
+git worktree remove /home/dev/hybridInference-worktrees/routing-config-expressiveness
 git branch -d jason/claude/routing-config-expressiveness
 git push origin --delete jason/claude/routing-config-expressiveness
 ```

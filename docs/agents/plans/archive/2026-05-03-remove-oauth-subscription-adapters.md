@@ -44,7 +44,7 @@ Final verification (Task 11) is more thorough â€” see that task.
 - [ ] **Step 1: Pull dev**
 
 ```bash
-cd /home/juncheng/hybridInference
+cd /home/dev/hybridInference
 git fetch origin
 git checkout dev
 git pull origin dev
@@ -98,12 +98,12 @@ Expected: working tree clean on `jason/claude/remove-oauth-subs`.
 Both the design spec and this implementation plan were created in the main worktree's working tree. Copy them into the new worktree:
 
 ```bash
-cp /home/juncheng/hybridInference/docs/agents/specs/2026-05-03-remove-oauth-subscription-adapters-design.md \
-   /home/juncheng/hybridInference/.worktrees/remove-oauth-subs/docs/agents/specs/
-cp /home/juncheng/hybridInference/docs/agents/plans/2026-05-03-remove-oauth-subscription-adapters.md \
-   /home/juncheng/hybridInference/.worktrees/remove-oauth-subs/docs/agents/plans/
-ls -la /home/juncheng/hybridInference/.worktrees/remove-oauth-subs/docs/agents/specs/2026-05-03-remove-oauth-subscription-adapters-design.md \
-       /home/juncheng/hybridInference/.worktrees/remove-oauth-subs/docs/agents/plans/2026-05-03-remove-oauth-subscription-adapters.md
+cp /home/dev/hybridInference/docs/agents/specs/2026-05-03-remove-oauth-subscription-adapters-design.md \
+   /home/dev/hybridInference/.worktrees/remove-oauth-subs/docs/agents/specs/
+cp /home/dev/hybridInference/docs/agents/plans/2026-05-03-remove-oauth-subscription-adapters.md \
+   /home/dev/hybridInference/.worktrees/remove-oauth-subs/docs/agents/plans/
+ls -la /home/dev/hybridInference/.worktrees/remove-oauth-subs/docs/agents/specs/2026-05-03-remove-oauth-subscription-adapters-design.md \
+       /home/dev/hybridInference/.worktrees/remove-oauth-subs/docs/agents/plans/2026-05-03-remove-oauth-subscription-adapters.md
 ```
 
 Expected: both files present in the worktree.
@@ -111,7 +111,7 @@ Expected: both files present in the worktree.
 - [ ] **Step 6: Commit the spec and plan as the first commit on the branch**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/remove-oauth-subs
+cd /home/dev/hybridInference/.worktrees/remove-oauth-subs
 git add docs/agents/specs/2026-05-03-remove-oauth-subscription-adapters-design.md \
         docs/agents/plans/2026-05-03-remove-oauth-subscription-adapters.md
 git commit -m "$(cat <<'EOF'
@@ -132,7 +132,7 @@ EOF
 Both files are now committed on the feature branch. Remove the stray copies from the main worktree:
 
 ```bash
-cd /home/juncheng/hybridInference
+cd /home/dev/hybridInference
 rm docs/agents/specs/2026-05-03-remove-oauth-subscription-adapters-design.md
 rm docs/agents/plans/2026-05-03-remove-oauth-subscription-adapters.md
 git status
@@ -161,7 +161,7 @@ This task is atomic: deleting `codex_sub.py` without simultaneously updating `__
 - [ ] **Step 1: Delete the adapter modules and their tests**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/remove-oauth-subs
+cd /home/dev/hybridInference/.worktrees/remove-oauth-subs
 git rm serving/adapters/codex_sub.py
 git rm serving/adapters/codex_translator.py
 git rm serving/adapters/codex_token.py
@@ -318,7 +318,7 @@ Expected: 7 deleted files + 3 modified files, all staged.
 - [ ] **Step 1: Delete the adapter modules and the test**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/remove-oauth-subs
+cd /home/dev/hybridInference/.worktrees/remove-oauth-subs
 git rm serving/adapters/claude_sub.py
 git rm serving/adapters/claude_pool.py
 git rm serving/adapters/claude_token.py
@@ -580,7 +580,7 @@ EOF
 - [ ] **Step 1: Delete the scripts**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/remove-oauth-subs
+cd /home/dev/hybridInference/.worktrees/remove-oauth-subs
 git rm scripts/import_codex_auth.py
 git rm scripts/import_claude_auth.py
 git rm scripts/inspect_claude_accounts.py
@@ -910,7 +910,7 @@ Expected: build succeeds, no TypeScript errors. (If the `ReasoningEffort` type i
 - [ ] **Step 14: Commit**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/remove-oauth-subs
+cd /home/dev/hybridInference/.worktrees/remove-oauth-subs
 git add frontend/src/components/features/dashboard/ModelsSection.tsx frontend/src/app/dashboard/playground/page.tsx
 git commit -m "$(cat <<'EOF'
 feat(frontend): drop codex/claude_sub references from dashboard and playground
@@ -1280,7 +1280,7 @@ EOF
 - [ ] **Step 1: Strict grep across the whole repo**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/remove-oauth-subs
+cd /home/dev/hybridInference/.worktrees/remove-oauth-subs
 git grep -nI \
   -e 'codex_sub' \
   -e 'codex_translator' \
@@ -1321,7 +1321,7 @@ If anything turns up in this task, do not commit a "miscellaneous fix" commit â€
 - [ ] **Step 1: Imports resolve**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/remove-oauth-subs
+cd /home/dev/hybridInference/.worktrees/remove-oauth-subs
 uv run python -c "from serving.servers.bootstrap import initialize" && \
 uv run python -c "from serving.servers.registry import register_from_models_yaml" && \
 uv run python -c "import serving.adapters" && \
@@ -1389,7 +1389,7 @@ Otherwise skip the commit.
 - [ ] **Step 1: Push the branch**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/remove-oauth-subs
+cd /home/dev/hybridInference/.worktrees/remove-oauth-subs
 git push -u origin jason/claude/remove-oauth-subs
 ```
 
@@ -1443,7 +1443,7 @@ Capture the PR URL from the output and report it back.
 Per CLAUDE.md and the spec's mandatory frontend gate:
 
 1. Open `https://staging.freeinference.org` in a browser (the dev branch is auto-deployed; **wait for the merge** before this step in production reality, but the equivalent local-build check from Task 6 Step 13 already passed).
-2. Log in as `admin@admin.com` / `admin`.
+2. Log in as a deployment-managed admin test account.
 3. Open the Models section: confirm `gpt-5.4` is gone; the visible model list is otherwise unchanged.
 4. Open Playground: pick `claude-opus-4.7`; confirm no reasoning-effort UI block appears; send a short message; confirm a response.
 5. Browser DevTools console: confirm no errors.
@@ -1480,7 +1480,7 @@ Run these only after the PR is merged into `dev`.
 - [ ] **Step 1: Delete the remote branch**
 
 ```bash
-cd /home/juncheng/hybridInference
+cd /home/dev/hybridInference
 git fetch origin
 git checkout dev
 git pull origin dev
@@ -1495,7 +1495,7 @@ git branch -D jason/claude/remove-oauth-subs
 git worktree list
 ```
 
-Expected: only the main `/home/juncheng/hybridInference` worktree remains.
+Expected: only the main `/home/dev/hybridInference` worktree remains.
 
 - [ ] **Step 3: Operational follow-up reminder**
 

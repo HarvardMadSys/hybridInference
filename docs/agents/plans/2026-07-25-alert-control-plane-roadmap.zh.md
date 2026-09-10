@@ -255,22 +255,24 @@ key，所以 sink 一次抖动就会永久丢掉这个 key 一生仅有的那条
 
 ## 附录 B — 现状自查
 
+以下命令中的 `ALERT_DATABASE_NAME` 和 `ALERT_WORKER_NAME` 由部署方提供。
+
 ```bash
 curl -s https://<monitor-host>/api/health | jq .pendingControlPlaneTransitions
 ```
 （closeout PR 合并后可用。）持续 >0 跨周期（~20 分钟）= Control Plane 持续拒绝，个体模型告警静默停摆。等价 D1 查询：
 
 ```bash
-npx wrangler d1 execute freeinference-monitor --remote --command "SELECT key FROM meta WHERE key LIKE 'alert_delivery_pending:v1:%'"
+npx wrangler d1 execute "$ALERT_DATABASE_NAME" --remote --command "SELECT key FROM meta WHERE key LIKE 'alert_delivery_pending:v1:%'"
 ```
 
 ```bash
-npx wrangler d1 execute freeinference-monitor --remote --command "SELECT key, value FROM meta WHERE key LIKE 'alert_delivery_owner:v1:%'"
+npx wrangler d1 execute "$ALERT_DATABASE_NAME" --remote --command "SELECT key, value FROM meta WHERE key LIKE 'alert_delivery_owner:v1:%'"
 ```
 有 `control-plane` 行 = 新路径至少接管过一次真实故障。
 
 ```bash
-npx wrangler secret list --name freeinference-monitor
+npx wrangler secret list --name "$ALERT_WORKER_NAME"
 ```
 `SLACK_WEBHOOK_URL` 必须仍在 —— storm 与 cycle 目前只走它。
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, FastAPI APIRouter, asyncpg/psycopg, pytest, ruff, pydocstyle.
 
-**Worktree:** `/home/juncheng/hybridInference/.worktrees/admin-router-split` on branch `jason/claude/admin-router-split` (tracks origin/dev).
+**Worktree:** `/home/dev/hybridInference/.worktrees/admin-router-split` on branch `jason/claude/admin-router-split` (tracks origin/dev).
 
 **Spec:** `docs/agents/specs/2026-05-03-admin-router-split-design.md`
 
@@ -25,7 +25,7 @@
 - [ ] **Step 1: Verify worktree state is clean**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/admin-router-split
+cd /home/dev/hybridInference/.worktrees/admin-router-split
 git status --short
 ```
 
@@ -68,7 +68,7 @@ Expected output: `admin route count: 32` (or whatever matches actual count — r
 
 ```bash
 grep -rn "from serving.servers.routers.admin import _" \
-    --include="*.py" /home/juncheng/hybridInference/.worktrees/admin-router-split/
+    --include="*.py" /home/dev/hybridInference/.worktrees/admin-router-split/
 ```
 
 Expected: at least one hit at `test/servers/test_admin.py:271` (`_decode_throughput_tps`). Note all hits — these tests must be updated when the helper's owning sub-file is extracted.
@@ -99,7 +99,7 @@ Expected: lint clean, all tests pass (modulo `dbtest`-marked skips on local-with
 - [ ] **Step 1: Move admin.py into a new package directory**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/admin-router-split
+cd /home/dev/hybridInference/.worktrees/admin-router-split
 mkdir -p serving/servers/routers/admin
 git mv serving/servers/routers/admin.py serving/servers/routers/admin/_admin_legacy.py
 ```
@@ -189,7 +189,7 @@ Spec: docs/agents/specs/2026-05-03-admin-router-split-design.md"
 - [ ] **Step 1: Identify which helpers are used by 2+ domains**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/admin-router-split
+cd /home/dev/hybridInference/.worktrees/admin-router-split
 for h in _to_json_safe _serialize_for_audit _build_histogram _round_or_none _truncate_hour _require_aware_utc _distribution_from_row _decode_throughput_tps _render_or_422 _normalize_signup_domain _signup_domain_to_schema; do
     count=$(grep -c "\\b${h}\\b" serving/servers/routers/admin/_admin_legacy.py)
     echo "$h: $count usages"
@@ -1015,7 +1015,7 @@ admin/signup_domains.py. No behavior change."
 - [ ] **Step 1: Verify `_admin_legacy.py` has no remaining routes**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/admin-router-split
+cd /home/dev/hybridInference/.worktrees/admin-router-split
 grep -c "^@router\." serving/servers/routers/admin/_admin_legacy.py
 ```
 

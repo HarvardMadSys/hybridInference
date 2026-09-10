@@ -111,9 +111,9 @@ EOF
 - [ ] **Step 3: Create worktree**
 
 ```bash
-git worktree add /home/juncheng/hybridInference-worktrees/completions-routing-info \
+git worktree add /home/dev/hybridInference-worktrees/completions-routing-info \
   -b jason/claude/completions-routing-info origin/dev
-cd /home/juncheng/hybridInference-worktrees/completions-routing-info
+cd /home/dev/hybridInference-worktrees/completions-routing-info
 ```
 
 - [ ] **Step 4: Verify clean baseline**
@@ -961,8 +961,8 @@ EOF
 - [ ] **Step 5: After merge — clean up worktree**
 
 ```bash
-cd /home/juncheng/hybridInference
-git worktree remove /home/juncheng/hybridInference-worktrees/completions-routing-info
+cd /home/dev/hybridInference
+git worktree remove /home/dev/hybridInference-worktrees/completions-routing-info
 git branch -D jason/claude/completions-routing-info
 ```
 
@@ -982,7 +982,7 @@ Pre-conditions: PR A merged + 24h staging soak complete.
 
 - [ ] **Step 1**: `git fetch origin && git checkout dev && git pull origin dev`
 - [ ] **Step 2**: `gh issue create --title "PR B: extract PricingLookup + CostTracker from chat_completions"` (link spec/plan)
-- [ ] **Step 3**: `git worktree add /home/juncheng/hybridInference-worktrees/completions-cost-extract -b jason/claude/completions-cost-extract origin/dev && cd /home/juncheng/hybridInference-worktrees/completions-cost-extract`
+- [ ] **Step 3**: `git worktree add /home/dev/hybridInference-worktrees/completions-cost-extract -b jason/claude/completions-cost-extract origin/dev && cd /home/dev/hybridInference-worktrees/completions-cost-extract`
 - [ ] **Step 4**: `make test 2>&1 | tail -5` — confirm baseline.
 
 ---

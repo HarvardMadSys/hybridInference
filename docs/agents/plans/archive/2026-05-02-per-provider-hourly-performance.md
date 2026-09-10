@@ -40,7 +40,7 @@
 - [ ] **Step 1: Pull origin/dev**
 
 ```bash
-cd /home/juncheng/hybridInference
+cd /home/dev/hybridInference
 git fetch origin
 git checkout dev
 git pull origin dev --no-rebase --ff-only || git pull origin dev
@@ -49,12 +49,12 @@ git pull origin dev --no-rebase --ff-only || git pull origin dev
 - [ ] **Step 2: Create worktree on a new branch**
 
 ```bash
-cd /home/juncheng/hybridInference
+cd /home/dev/hybridInference
 git worktree add .worktrees/provider-hourly-perf -b jason/claude/provider-hourly-perf origin/dev
 cd .worktrees/provider-hourly-perf
 ```
 
-All subsequent tasks run inside `/home/juncheng/hybridInference/.worktrees/provider-hourly-perf`.
+All subsequent tasks run inside `/home/dev/hybridInference/.worktrees/provider-hourly-perf`.
 
 - [ ] **Step 3: Verify the worktree**
 
@@ -192,7 +192,7 @@ async def test_provider_hourly_stats_primary_key(db_logger: DatabaseLogger):
 - [ ] **Step 2: Run the test, verify it fails**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/provider-hourly-perf
+cd /home/dev/hybridInference/.worktrees/provider-hourly-perf
 TEST_PG_DSN="postgresql://postgres:postgres@localhost:5432/freeinference_test_db" \
     uv run pytest test/integration/test_provider_stats_rollup.py -v
 ```
@@ -2033,7 +2033,7 @@ make dev-frontend  # or the project's standard frontend dev command (check Makef
 make dev-backend   # or equivalent
 ```
 
-Then open the admin dashboard, log in as `admin@admin.com / admin`, click the new "Provider Performance" tab, choose a provider+model, and confirm the two charts render with data (or "Loading…" then a chart). If `provider_hourly_stats` is empty in your local dev DB, run a manual rollup once:
+Then open the admin dashboard, log in as a deployment-managed admin test account, click the new "Provider Performance" tab, choose a provider+model, and confirm the two charts render with data (or "Loading…" then a chart). If `provider_hourly_stats` is empty in your local dev DB, run a manual rollup once:
 
 ```bash
 TEST_PG_DSN="$DB_DSN" uv run python -c "
@@ -2069,7 +2069,7 @@ EOF
 - [ ] **Step 1: Run ruff format check (per CLAUDE.md)**
 
 ```bash
-cd /home/juncheng/hybridInference/.worktrees/provider-hourly-perf
+cd /home/dev/hybridInference/.worktrees/provider-hourly-perf
 uv run ruff format --check .
 uv run ruff check .
 ```
@@ -2135,7 +2135,7 @@ Address any CI failures or review comments by adding new commits to the same bra
 - [ ] **Step 6: After merge, delete branch and worktree (per CLAUDE.md)**
 
 ```bash
-cd /home/juncheng/hybridInference
+cd /home/dev/hybridInference
 git worktree remove .worktrees/provider-hourly-perf
 git branch -D jason/claude/provider-hourly-perf
 git push origin --delete jason/claude/provider-hourly-perf
