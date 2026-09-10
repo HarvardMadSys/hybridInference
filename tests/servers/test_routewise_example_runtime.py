@@ -2,7 +2,7 @@
 
 These live outside `tests/unit/` on purpose. That tier stubs `aiohttp` with a
 placeholder session, so a probe there cannot make a request and a green run
-would prove nothing about the behaviour the README promises.
+would prove nothing about the behaviour the example registry promises.
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ def _start_example_fixture(response_text: str, delay_ms: float):
 def _rebind_example_to(text: str, ports: list[int]) -> str:
     """Point the shipped example's upstreams at ports this process owns.
 
-    The example hardcodes 18351/18352 because a reader copy-pasting the README
+    The example hardcodes 18351/18352 because a reader copy-pasting its header
     needs URLs that already work. A test cannot take those ports: four runner
     services share each CI host and `concurrency:` is keyed on the ref, so two
     unrelated pull requests can be running this file at the same moment.
@@ -124,7 +124,7 @@ def _rebind_example_to(text: str, ports: list[int]) -> str:
 def _start_fixture_cli(
     script: Path, response_text: str, delay_ms: float | None, *, extra_args: tuple[str, ...] = ()
 ):
-    """Launch the fixture the way the README does, and wait for it to answer.
+    """Launch the fixture the way the example registry's header does, and wait for it to answer.
 
     Port 0 makes the OS choose; the fixture prints the address it bound, which
     is also how a reader would confirm it came up.
@@ -424,7 +424,7 @@ def test_neutral_quota_example_boots_and_routes(mode, tmp_path):
 # Booted in a subprocess so each budget_alpha gets a genuinely fresh process:
 # latency profiles, probe tasks and router state are all process-local, so an
 # in-process second boot would inherit the first one's measurements and prove
-# nothing about the restart the README tells the reader to perform.
+# nothing about the restart the example registry tells the reader to perform.
 _BOOT_AND_ASK = """
 import json, os, sys, time
 from collections import Counter
@@ -559,7 +559,7 @@ def _assert_settled_on(result: dict, expected: str, *, alpha: float) -> None:
 
 @pytest.mark.integration
 class TestRouteWiseExampleProbeLifecycle:
-    """The README's demo, run the way the README tells a reader to run it.
+    """The example registry's demo, run the way its header tells a reader to run it.
 
     Not `run_probe_once` and a private selector: the real app boots through its
     own lifespan, the background probe loop it starts is the only thing that
@@ -568,11 +568,11 @@ class TestRouteWiseExampleProbeLifecycle:
     dispatch regression all turn this red.
     """
 
-    def test_shipped_example_matches_what_the_readme_promises(self):
+    def test_shipped_example_matches_what_its_header_promises(self):
         """The behavioural test sets alpha itself, so the default needs its own guard."""
         params = _example_model()["router_params"]
         assert params["budget_alpha"] == 0.0, (
-            "README.md tells the reader the example ships budget_alpha: 0.0 and that "
+            "models.routewise.yaml tells the reader it ships budget_alpha: 0.0 and that "
             f"every reply is ROUTED_TO_BUDGET; the example says {params['budget_alpha']}"
         )
         assert params["routewise_probe_enabled"] is True
@@ -587,7 +587,7 @@ class TestRouteWiseExampleProbeLifecycle:
             )
             _assert_settled_on(cheap, "ROUTED_TO_BUDGET", alpha=0.0)
 
-            # A separate process: the restart the README asks for, with none of
+            # A separate process: the restart the example registry asks for, with none of
             # the first run's measurements carried over.
             fast = _boot_and_ask(
                 _example_with_alpha(bound, tmp_path, 1.0, probe_interval=1.0),
@@ -607,7 +607,7 @@ class TestExampleFixtureLatencyContract:
     """
 
     def test_ttft_delay_actually_delays_the_first_byte(self):
-        """Driven through the CLI the README tells the reader to type.
+        """Driven through the CLI the example registry's header tells the reader to type.
 
         Setting the handler attribute in-process would leave `--ttft-delay-ms`
         itself — the argparse wiring and the class assignment behind it —

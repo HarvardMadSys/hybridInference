@@ -10,11 +10,11 @@ models and external model APIs to a team. It is developed by the
 Labs and teams serving LLMs to their members from their own GPUs, external
 APIs, or both.
 
-- [RouteWise](#routewise): provider selection for the same model by price and
-  measured time-to-first-token, under a routing cost budget you set.
-- One OpenAI-compatible endpoint for vLLM, SGLang, Ollama, and remote providers,
-  with multiple routes per model, weighted traffic splits, and health-aware
-  fallback.
+- One OpenAI-compatible endpoint in front of local servers such as vLLM, SGLang,
+  and Ollama, and remote providers: any OpenAI-compatible API, Anthropic,
+  Gemini, and OpenRouter.
+- Several routes per model, weighted traffic splits, and health-aware fallback;
+  [RouteWise](#routing) adds cost- and latency-aware route selection.
 - User dashboards for API keys and usage, and an [admin console](#admin-console)
   for operating the gateway.
 
@@ -22,12 +22,11 @@ APIs, or both.
 
 Admins can approve or suspend accounts, set daily quotas and per-user
 concurrency limits, and restrict model access. Provider credentials, model
-routes, routing weights, and RouteWise settings are editable in the console.
+routes, and routing settings are editable in the console.
 
 Provider pages show availability, latency, and generation speed, with endpoint
 probes for troubleshooting. Request logs include the user, provider, errors,
-token usage, cost, first-token latency, and cached tokens. RouteWise requests
-also show whether a backup request was sent and whether it won.
+token usage, cost, first-token latency, and cached tokens.
 
 ## Quickstart
 
@@ -117,89 +116,24 @@ public HybridInference gateway run at Harvard SEAS; its
 [user documentation](https://doc.freeinference.org/) is a worked example of
 what a deployment publishes.
 
-## RouteWise
+## Routing
 
-**RouteWise** is the router that decides which provider serves each request:
-given a cost budget you set, it picks a point on the cost--latency Pareto
-frontier across the providers that can serve the model.
+A model in the registry can list several routes. `router: fixed` splits traffic
+across them by the weights you set and falls back to another route when one
+fails; the [routing guide](docs/developer/routing.md) covers endpoint health,
+the circuit breaker, and fallback.
 
-`router: fixed` splits traffic by weights you choose. `router: routewise`
-instead solves a small cost-budgeted linear program per request over every
-provider that can serve the model, using their prices and the time-to-first-token
-it has measured from each one, samples that solution to pick one, and can
-dispatch a hedged backup when the primary looks unlikely to meet the latency
-target. One knob, `budget_alpha`, moves the policy from "never spend more than
-the cheapest provider" to "spend up to the dearest one if it buys latency".
-
-RouteWise is developed by the [Harvard MadSys Lab](https://juncheng.seas.harvard.edu/)
-and published separately as the MIT-licensed
-[`llm-routewise`](https://github.com/HarvardMadSys/RouteWise) library, which
-this gateway takes as a required dependency. The library is deliberately
-gateway-agnostic: it performs no network I/O and reads no credentials, so any
-application can use it to choose a provider and report the outcome back.
-Everything needed to run that decision against real providers — adapters,
-credentials, dispatch, health, hedged execution, accounting — is what this
-repository adds.
-
-### Try it
-
-Two copies of the bundled example fixture stand in for two providers serving
-one model: premium answers immediately and costs more, budget is cheap and
-400 ms slower. No account, no database.
-
-```bash
-F=distributions/example/fixtures/fake-openai-provider/server.py
-uv run python $F --port 18351 --response-text ROUTED_TO_PREMIUM &
-uv run python $F --port 18352 --response-text ROUTED_TO_BUDGET --ttft-delay-ms 400 &
-
-PYTHONPATH=apps/backend \
-  MODELS_CONFIG_PATH=config/examples/models.routewise.yaml \
-  ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
-  DB_ENABLED=false USER_AUTH_ENABLED=false \
-  uv run uvicorn serving.servers.app:app --port 8080
-```
-
-Give it about ten seconds to measure both endpoints, then ask for a completion.
-The reply text names the provider RouteWise picked:
-
-```bash
-curl localhost:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model": "routewise-demo", "messages": [{"role": "user", "content": "hi"}]}'
-```
-
-When you are done, stop the two fixtures — they hold 18351 and 18352, and a
-second run of the block above would fail to bind:
-
-```bash
-pkill -f fake-openai-provider/server.py
-```
-
-The example ships `budget_alpha: 0.0`, so every reply is `ROUTED_TO_BUDGET`:
-the LP may not spend more than the cheapest eligible provider. Set it to `1.0`
-in `config/examples/models.routewise.yaml`, restart, and — after another ten
-seconds, since the restart drops the measurements with the process — every
-reply becomes `ROUTED_TO_PREMIUM`: the wider cost budget lets the policy buy
-the 400 ms. That one edit is the cost/latency tradeoff the paper is about.
-
-That registry doubles as the annotated reference for every RouteWise option;
-the [routing guide](docs/developer/routing.md#routewise)
-explains the configuration contract.
-
-### Citation
-
-The design is described in *RouteWise: Latency--Cost Optimization for
-Multi-Provider LLM Routing*, to appear at
-[EuroSys '27](https://2027.eurosys.org/):
-
-```bibtex
-@inproceedings{tian2027routewise,
-  title     = {{RouteWise}: Latency--Cost Optimization for Multi-Provider LLM Routing},
-  author    = {Muxin Tian and Haoran Ni and Yiyan Zhai and Yangsun Park and Juncheng Yang},
-  booktitle = {Proceedings of the 22nd European Conference on Computer Systems (EuroSys '27)},
-  year      = {2027}
-}
-```
+`router: routewise` instead picks the route per request from provider prices
+and the time-to-first-token it has measured, within a cost budget you set
+(`budget_alpha`). It is the MIT-licensed
+[`llm-routewise`](https://github.com/HarvardMadSys/RouteWise) library, published
+separately and described in *RouteWise: Latency--Cost Optimization for
+Multi-Provider LLM Routing* (to appear at EuroSys '27); that repository carries
+the citation. The annotated
+[`models.routewise.yaml`](config/examples/models.routewise.yaml) runs it against
+two bundled fixtures with no provider account, and the
+[RouteWise section](docs/developer/routing.md#routewise) of the routing guide
+documents the options.
 
 ## Repository Map
 
