@@ -20,9 +20,10 @@ def main() -> int:
     # Assemble synthetic values so this source file does not itself look like
     # a leaked credential. No value here is accepted by a running service.
     payload = "".join(["Q7mKp2XvR9", "tLbN4wZcE6", "yHsA1dJfG3", "uT8oViM5rP"])
+    fixture = "key1_" + "long_enough_1234"
     cases = {
         "tests/servers/test_admin_provider_quotas.py": (
-            'api_key = "key1_long_enough_1234"; other_api_key = "' + payload + '"\n'
+            f'api_key = "{fixture}"; other_api_key = "{payload}"\n'
         ),
         "docs/agents/plans/new-plan.md": "hyi-" + payload,
         "docs/agents/specs/new-spec.md": "agr." + payload + "." + payload,
