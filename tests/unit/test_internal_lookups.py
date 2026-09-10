@@ -1,4 +1,4 @@
-"""Tests for the three lookups the control plane loses at the split.
+"""Tests for gateway-owned lookups used by the standalone control plane.
 
 The assertion that matters most is negative: the MCP registry endpoint must
 never return a server's URL or headers. The headers carry this deployment's
@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 from typing import Any, ClassVar
+from unittest.mock import Mock
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from serving import agent_access
 from serving.servers.deps import (
     get_model_visibility_resolver,
     get_operational_store,
@@ -51,6 +53,13 @@ def store() -> FakeStore:
 @pytest.fixture(autouse=True)
 def _dispatch_token(monkeypatch) -> None:
     monkeypatch.setenv(ENV_DISPATCH_TOKEN, DISPATCH)
+
+
+@pytest.fixture(autouse=True)
+def _agent_access_policy():
+    agent_access.reset_agent_access_policy()
+    yield
+    agent_access.reset_agent_access_policy()
 
 
 @pytest.fixture(autouse=True)
@@ -114,15 +123,21 @@ def client(store: FakeStore) -> TestClient:
     [
         "/internal/model-catalog?user_id=user_1",
         "/internal/users/x/status",
+        "/internal/users/user_1/agent-access",
     ],
 )
-def test_every_lookup_requires_the_dispatch_token(client: TestClient, path: str) -> None:
-    assert client.get(path).status_code == 401
+@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong-token"}])
+def test_every_lookup_requires_the_dispatch_token(client: TestClient, path: str, headers) -> None:
+    assert client.get(path, headers=headers).status_code == 401
 
 
-def test_lookups_are_absent_when_the_token_is_unconfigured(client, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "path",
+    ["/internal/model-catalog?user_id=user_1", "/internal/users/user_1/agent-access"],
+)
+def test_lookups_are_absent_when_the_token_is_unconfigured(client, monkeypatch, path) -> None:
     monkeypatch.delenv(ENV_DISPATCH_TOKEN, raising=False)
-    assert client.get("/internal/model-catalog?user_id=user_1", headers=AUTH).status_code == 404
+    assert client.get(path, headers=AUTH).status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +267,99 @@ def test_user_status_carries_no_password_or_key_material(client: TestClient, sto
     store.users["user_1"]["password_hash"] = "$argon2id$fake"
     body = client.get("/internal/users/user_1/status", headers=AUTH).json()
     assert "password_hash" not in json.dumps(body)
+
+
+# ---------------------------------------------------------------------------
+# Deployment-owned Agent access
+# ---------------------------------------------------------------------------
+
+
+def test_agent_access_defaults_to_denial_even_for_a_gateway_admin(client, store) -> None:
+    store.users["user_1"]["role"] = "admin"
+    response = client.get("/internal/users/user_1/agent-access", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json() == {"user_id": "user_1", "allowed": False, "permissions": []}
+
+
+@pytest.mark.parametrize("permissions", [[], ["agent.use"], ["agent.use", "agent.admin"]])
+def test_agent_access_returns_only_the_explicit_permission_decision(
+    client, store, permissions
+) -> None:
+    store.users["user_1"]["password_hash"] = "private-hash"
+    policy = Mock(return_value=permissions)
+    agent_access.register_agent_access_policy(policy)
+
+    response = client.get("/internal/users/user_1/agent-access", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "user_id": "user_1",
+        "allowed": "agent.use" in permissions,
+        "permissions": permissions,
+    }
+    assert dict(policy.call_args.args[0]) == {"user_id": "user_1", "role": "pro"}
+
+
+@pytest.mark.parametrize("account_status", [None, "suspended", "deleted", "ACTIVE"])
+def test_agent_access_policy_cannot_allow_an_inactive_user(client, store, account_status) -> None:
+    store.users["user_1"]["status"] = account_status
+    policy = Mock(return_value=["agent.use", "agent.admin"])
+    agent_access.register_agent_access_policy(policy)
+
+    response = client.get("/internal/users/user_1/agent-access", headers=AUTH)
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": {"type": "subject_unavailable", "message": "That user cannot be resolved."}
+    }
+    policy.assert_not_called()
+
+
+def test_agent_access_policy_cannot_allow_an_unknown_user(client) -> None:
+    policy = Mock(return_value=["agent.use", "agent.admin"])
+    agent_access.register_agent_access_policy(policy)
+    response = client.get("/internal/users/ghost/agent-access", headers=AUTH)
+    assert response.status_code == 403
+    policy.assert_not_called()
+
+
+def test_agent_access_is_absent_without_a_user_store(client, monkeypatch) -> None:
+    monkeypatch.setitem(client.app.dependency_overrides, get_operational_store, lambda: None)
+    response = client.get("/internal/users/user_1/agent-access", headers=AUTH)
+    assert response.status_code == 404
+    assert response.json()["error"]["type"] == "internal_api_not_configured"
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("private policy detail"), None])
+def test_agent_access_failure_is_unavailable_without_exposing_policy_details(
+    client, failure
+) -> None:
+    agent_access.register_agent_access_policy(Mock(side_effect=failure, return_value=True))
+    response = client.get("/internal/users/user_1/agent-access", headers=AUTH)
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "type": "agent_access_unavailable",
+            "message": "Agent access cannot be resolved.",
+        }
+    }
+
+
+def test_agent_access_reloads_account_state_and_evaluates_each_request(client, store) -> None:
+    policy = Mock(return_value=["agent.use"])
+    agent_access.register_agent_access_policy(policy)
+    assert client.get("/internal/users/user_1/agent-access", headers=AUTH).json()["allowed"] is True
+
+    store.users["user_1"]["role"] = "internal"
+    policy.return_value = []
+    assert (
+        client.get("/internal/users/user_1/agent-access", headers=AUTH).json()["allowed"] is False
+    )
+    assert dict(policy.call_args.args[0]) == {"user_id": "user_1", "role": "internal"}
+
+    store.users["user_1"]["status"] = "suspended"
+    assert client.get("/internal/users/user_1/agent-access", headers=AUTH).status_code == 403
+    assert policy.call_count == 2
 
 
 # ── The alias translation table ────────────────────────────────────────

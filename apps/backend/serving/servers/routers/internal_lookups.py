@@ -1,4 +1,4 @@
-"""The two questions the control plane can no longer answer by importing.
+"""Gateway-owned lookups used by the standalone control plane.
 
 Before the split, cloud agent code lived in this process and read the model
 registry and the users table directly. Afterwards those imports are gone, and
@@ -10,8 +10,9 @@ looks like a feature that stopped working for no reason.
 |---|---|---|
 | ``GET /internal/model-catalog`` | ``visible_models``' catalog read | E4 |
 | ``GET /internal/users/{id}/status`` | the gateway ``users`` row read | E7, E8 |
+| ``GET /internal/users/{id}/agent-access`` | deployment-owned Agent access policy | Agent admission |
 
-**There was a third, and it is deliberately absent.** An earlier draft served
+**The MCP lookup is deliberately absent.** An earlier draft served
 ``GET /internal/mcp-registry`` so the control plane could populate a picker
 from this deployment's MCP servers. The ownership amendment moved the MCP
 registry, its credentials and its proxy to the cloud agent — which already
@@ -34,6 +35,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, status
 
+from serving.agent_access import AgentAccessPolicyUnavailable, resolve_agent_access_permissions
 from serving.model_access import get_disabled_models_from_preferences
 from serving.model_catalog import agent_model_reasoning_efforts, agent_visible_models
 from serving.servers.deps import (
@@ -48,8 +50,8 @@ from serving.servers.routers.internal_auth import (
 )
 
 #: Guarded at the router, not route by route — see the note in
-#: :mod:`serving.servers.routers.agent_grants`. Both lookups need the token and
-#: any third one will too; declaring it once means the next route added is
+#: :mod:`serving.servers.routers.agent_grants`. Every lookup needs the token;
+#: declaring it once means the next route added is
 #: guarded by existing rather than by somebody remembering.
 router = APIRouter(
     prefix="/internal",
@@ -207,4 +209,44 @@ async def user_status(
         "status": user.get("status"),
         "role": user.get("role") or "free",
         "email": user.get("email"),
+    }
+
+
+@router.get("/users/{user_id}/agent-access")
+async def user_agent_access(
+    user_id: str,
+    store=Depends(get_operational_store),
+) -> dict[str, Any]:
+    """Resolve the deployment's Agent permissions for an active account.
+
+    Account availability remains gateway-owned; an extension cannot grant
+    access to an unknown or inactive user. The response contains permissions
+    rather than the user's profile or a deployment-specific role rule.
+
+    Raises:
+        HTTPException: 403 if the account is unknown or inactive, or 503 if
+            the deployment policy fails or returns an invalid decision.
+    """
+    store = _require_store(store)
+    user = await store.get_user_by_id(user_id)
+    if user is None or user.get("status") != "active":
+        raise _error(
+            status.HTTP_403_FORBIDDEN,
+            "subject_unavailable",
+            "That user cannot be resolved.",
+        )
+    try:
+        permissions = resolve_agent_access_permissions(
+            user_id=user["id"], role=user.get("role") or "free"
+        )
+    except AgentAccessPolicyUnavailable:
+        raise _error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "agent_access_unavailable",
+            "Agent access cannot be resolved.",
+        ) from None
+    return {
+        "user_id": user["id"],
+        "allowed": "agent.use" in permissions,
+        "permissions": permissions,
     }
