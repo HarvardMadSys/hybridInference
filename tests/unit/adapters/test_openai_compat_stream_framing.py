@@ -16,6 +16,7 @@ import aiohttp
 import pytest
 
 from serving.adapters.base import ModelConfig
+from serving.adapters.key_pool import KeyPool
 from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.http import AsyncHTTPClient
 
@@ -164,3 +165,75 @@ async def test_stream_with_no_terminal_signal_at_all_still_raises(monkeypatch):
     with pytest.raises(aiohttp.ClientError, match=r"ended without.*finish_reason.*\[DONE\]"):
         async for _ in _adapter().stream_chat_completion([{"role": "user", "content": "hi"}]):
             pass
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tail", [b"", b"data: [DONE]\n\n"])
+@pytest.mark.parametrize("code", [429, "429"])
+async def test_in_band_error_preserves_upstream_status_and_message(monkeypatch, tail, code):
+    """A gateway's HTTP 200 SSE body can carry the real upstream 429."""
+    error = {"message": "Weekly/Monthly Limit Exhausted", "type": "server_error", "code": code}
+    _serve(monkeypatch, [f"data: {json.dumps({'error': error})}\n\n".encode(), tail])
+
+    with pytest.raises(aiohttp.ClientResponseError, match="Weekly/Monthly Limit Exhausted") as exc:
+        await _stream(_adapter())
+
+    assert exc.value.status == 429
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_in_band_error_after_content_does_not_finish_successfully(monkeypatch):
+    _serve(
+        monkeypatch,
+        [
+            _frame({"content": "partial"}),
+            b'data: {"error":{"message":"provider failed","code":503}}\n\n',
+            b"data: [DONE]\n\n",
+        ],
+    )
+    chunks = []
+    with pytest.raises(aiohttp.ClientResponseError, match="provider failed") as exc:
+        async for chunk in _adapter().stream_chat_completion([{"role": "user", "content": "hi"}]):
+            chunks.append(chunk)
+
+    assert exc.value.status == 503
+    assert chunks
+    assert all(chunk.strip() != "data: [DONE]" for chunk in chunks)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [None, "insufficient_quota", 200, 1302, True, 429.5])
+async def test_in_band_non_http_error_code_defaults_to_bad_gateway(monkeypatch, code):
+    error = {"message": "upstream unavailable", "code": code}
+    _serve(monkeypatch, [f"data: {json.dumps({'error': error})}\n\n".encode()])
+
+    with pytest.raises(aiohttp.ClientResponseError, match="upstream unavailable") as exc:
+        await _stream(_adapter())
+
+    assert exc.value.status == 502
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 429, 503])
+async def test_in_band_error_releases_key_with_real_status_without_retry(monkeypatch, status):
+    error = {"message": "upstream refused request", "code": status}
+    _serve(monkeypatch, [f"data: {json.dumps({'error': error})}\n\n".encode()])
+    adapter = _adapter()
+    pool = KeyPool(keys=["test-key-one", "test-key-two"], provider_label="staging")
+    adapter._key_pool = pool
+    releases = []
+    original_release = pool.release
+
+    def release(lease, **kwargs):
+        releases.append(kwargs["status_code"])
+        return original_release(lease, **kwargs)
+
+    monkeypatch.setattr(pool, "release", release)
+    with pytest.raises(aiohttp.ClientResponseError):
+        await _stream(adapter)
+
+    assert releases == [status]
