@@ -31,7 +31,15 @@ env:
 jobs:
   changes:
     name: Classify Changes
-    runs-on: [self-hosted, Linux, ci-general]
+    # Fork safety on a public repository: pull_request events carry code the
+    # runner has not vetted, so they run on GitHub-hosted runners (free and
+    # unlimited-minutes for public repos). Every trusted event -- push,
+    # schedule, workflow_dispatch -- keeps its self-hosted runner byte-for-byte
+    # unchanged, so the dev -> candidate-image pipeline never depends on the
+    # hosted path. The same split (arm jobs go to ubuntu-24.04-arm) is applied
+    # to every job that a pull_request can reach; the publish jobs are
+    # push-only and stay self-hosted unconditionally.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
     outputs:
       backend: ${{ steps.validate.outputs.backend }}
       frontend: ${{ steps.validate.outputs.frontend }}
@@ -94,7 +102,8 @@ jobs:
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.backend == 'true')
-    runs-on: [self-hosted, Linux, ci-general]
+    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -180,7 +189,8 @@ jobs:
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.frontend == 'true')
-    runs-on: [self-hosted, Linux, ci-general]
+    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
     defaults:
       run:
         working-directory: ./apps/frontend
@@ -233,7 +243,8 @@ jobs:
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.docs == 'true')
-    runs-on: [self-hosted, Linux, ci-general]
+    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -322,7 +333,8 @@ jobs:
       needs.changes.outputs.python_tests == 'true')
     # Service containers need Docker socket access; keep these jobs off the
     # generic-pool hosts that lack that access.
-    runs-on: [self-hosted, Linux, ci-general]
+    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -405,16 +417,22 @@ jobs:
           CI_RUNNER_ARCH: ${{ runner.arch }}
         run: |
           set -euo pipefail
-          # Four runner services share each physical host: 20 CPUs on ARM64
-          # and 8 CPUs on X64. Keep their combined pytest budget within that.
-          case "${CI_RUNNER_ARCH}" in
-            ARM64) pytest_workers=5 ;;
-            X64) pytest_workers=2 ;;
-            *)
-              pytest_workers=2
-              echo "::warning title=Unknown runner architecture::Using conservative pytest worker budget for ${CI_RUNNER_ARCH}"
-              ;;
-          esac
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            # A hosted runner is an ephemeral single-job VM: no co-tenants to
+            # budget for, so use every core it has.
+            pytest_workers="$(nproc)"
+          else
+            # Four runner services share each physical host: 20 CPUs on ARM64
+            # and 8 CPUs on X64. Keep their combined pytest budget within that.
+            case "${CI_RUNNER_ARCH}" in
+              ARM64) pytest_workers=5 ;;
+              X64) pytest_workers=2 ;;
+              *)
+                pytest_workers=2
+                echo "::warning title=Unknown runner architecture::Using conservative pytest worker budget for ${CI_RUNNER_ARCH}"
+                ;;
+            esac
+          fi
 
           runner_hostname="$(hostname)"
           if command -v nproc >/dev/null 2>&1; then
@@ -541,7 +559,8 @@ jobs:
 
   security:
     name: Security Scan
-    runs-on: [self-hosted, Linux, ci-general]
+    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -613,7 +632,8 @@ jobs:
       needs.changes.result != 'success' ||
       needs.changes.outputs.docker_matrix != '[]')
     # Buildx needs Docker daemon access; pin image verification to ARM64.
-    runs-on: [self-hosted, Linux, ARM64, image-verify-arm64]
+    # PR events run GitHub-hosted (arm); see the fork-safety note on Classify Changes.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04-arm' || fromJSON('["self-hosted", "Linux", "ARM64", "image-verify-arm64"]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -729,7 +749,8 @@ jobs:
       (needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.tutorial_e2e == 'true')
-    runs-on: [self-hosted, Linux, ARM64, image-verify-arm64]
+    # PR events run GitHub-hosted (arm); see the fork-safety note on Classify Changes.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04-arm' || fromJSON('["self-hosted", "Linux", "ARM64", "image-verify-arm64"]') }}
     timeout-minutes: 45
     env:
       COMPOSE_PROJECT_NAME: hi-tutorial-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1114,7 +1135,8 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    runs-on: [self-hosted, Linux, ci-general]
+    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
     needs:
       - changes
       - backend-quality

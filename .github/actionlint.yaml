@@ -1,0 +1,9 @@
+# Custom labels of the self-hosted runner pools, so actionlint's runner-label
+# check can vet runs-on values instead of erroring on every custom label.
+self-hosted-runner:
+  labels:
+    - ci-general
+    - image-verify-arm64
+    - arm64-docker
+    - x64-docker
+    - trusted-automation
