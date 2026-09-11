@@ -131,12 +131,12 @@ dispatch a hedged backup when the primary looks unlikely to meet the latency
 target. One knob, `budget_alpha`, moves the policy from "never spend more than
 the cheapest provider" to "spend up to the dearest one if it buys latency".
 
-RouteWise is developed by the [Harvard MadSys Lab](https://juncheng.seas.harvard.edu/)
-and published separately as the MIT-licensed
-[`llm-routewise`](https://github.com/HarvardMadSys/RouteWise) library, which
-this gateway takes as a required dependency. The library is deliberately
-gateway-agnostic: it performs no network I/O and reads no credentials, so any
-application can use it to choose a provider and report the outcome back.
+RouteWise is published separately as the MIT-licensed
+[`llm-routewise`](https://github.com/HarvardMadSys/RouteWise) library, with its
+own [documentation](https://harvardmadsys.github.io/RouteWise/); this gateway
+takes it as a required dependency. The library is deliberately gateway-agnostic:
+it performs no network I/O and reads no credentials, so any application can use
+it to choose a provider and report the outcome back.
 Everything needed to run that decision against real providers — adapters,
 credentials, dispatch, health, hedged execution, accounting — is what this
 repository adds.
