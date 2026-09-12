@@ -27,12 +27,36 @@ logger = get_logger("routing.routers")
 # remove themselves via add_done_callback once they finish.
 _ALERT_TASKS: set[asyncio.Task[bool]] = set()
 
-# Bound on the number of distinct users tracked per circuit breaker for a
+# Bound on the number of distinct callers tracked per circuit breaker for a
 # single failure streak. Caps memory when a long outage spans many callers;
-# users already being tracked keep accumulating their failure counts.
-_MAX_TRACKED_OFFENDERS = 50
-# How many of the top offenders to name explicitly in the circuit-open alert.
-_OFFENDERS_IN_ALERT = 10
+# callers already being tracked keep accumulating their failure counts.
+_MAX_TRACKED_CALLERS = 50
+# How many of the hardest-hit callers to name explicitly in the circuit-open alert.
+_CALLERS_IN_ALERT = 10
+
+# What the tracked list *is*: whose requests were failing while the streak ran.
+# That is blast radius, and only sometimes cause. It used to be published as
+# "offending_users", which asserts cause unconditionally -- a staging endpoint
+# dropping SSE streams mid-response paged with eleven names under "Offending
+# Users" when every one of them was a casualty, and the first move it invited
+# was to go looking at those accounts.
+#
+# By construction the list leans the wrong way for blame: genuine client errors
+# never reach the breaker at all (see ``client_error_skip_breaker``), so the
+# callers who *can* appear are disproportionately ones whose requests were
+# killed by something they did not send. Rather than drop the list -- knowing
+# who was hit, and how hard, is what sizes an incident -- name it for what it is.
+#
+# Deliberately no cause verdict rides along, not even for a usage limit. The
+# counter cannot support one: ``on_success`` clears it, so for a spent plan
+# quota the callers who spent it are erased and only those who arrived after
+# exhaustion remain. A verdict computed here would name a set chosen to exclude
+# the actual cause -- the same inversion, restated as a sentence. The streak's
+# ``upstream_error`` carries the cause reading; this field carries the reach.
+#
+# The count is an upper bound on harm, not a measure of it: a failure is
+# recorded against the endpoint before fallback is attempted, so a caller named
+# here may still have been served a complete response by another endpoint.
 
 # Upstream statuses that can only mean the *gateway's* configured credential was
 # rejected, whoever the provider is. The client's own credential is validated by
@@ -219,8 +243,8 @@ def _fire_and_forget(coro: Any) -> bool:
     return True
 
 
-def _offender_str() -> str | None:
-    """Identify the user behind the current request for failure attribution."""
+def _caller_str() -> str | None:
+    """Identify the user behind the current request, for the affected-caller list."""
     ctx = req_ctx.get()
     user_id = ctx.get("user_id")
     raw_name = ctx.get("user_name")
@@ -375,7 +399,10 @@ class _CircuitBreaker:
         # endpoint recovered carries a stale generation and must not restore its
         # now-obsolete mute — see _send_circuit_alert.
         self._recovery_generation: int = 0
-        self._offenders: Counter[str] = Counter()
+        # Callers whose requests failed during the current streak, by count.
+        # This is blast radius, not blame — see the module comment on
+        # ``_MAX_TRACKED_CALLERS`` for why no cause verdict rides with it.
+        self._affected_callers: Counter[str] = Counter()
         self._lock = threading.Lock()
 
     def allow_request(self) -> bool:
@@ -394,7 +421,7 @@ class _CircuitBreaker:
     def on_success(self) -> None:
         with self._lock:
             self.consecutive_failures = 0
-            self._offenders.clear()
+            self._affected_callers.clear()
             # Recovery re-arms alerting: clear the mute and bump the generation so
             # a page still in flight for the ended outage can't restore a stale
             # deadline, and a later outage is free to page again. ``_usage_limit_
@@ -462,14 +489,18 @@ class _CircuitBreaker:
         availability: float | None = None,
         reason: str = "error",
         detail: str | None = None,
-        offender: str | None = None,
+        caller: str | None = None,
     ) -> None:
         with self._lock:
             self.consecutive_failures += 1
-            if offender and (
-                offender in self._offenders or len(self._offenders) < _MAX_TRACKED_OFFENDERS
+            # Reason-blind on purpose: the list is who this streak hit, and that
+            # is worth knowing whatever broke. Whether they also *caused* it is
+            # decided once, below, where the usage-limit classification exists.
+            if caller and (
+                caller in self._affected_callers
+                or len(self._affected_callers) < _MAX_TRACKED_CALLERS
             ):
-                self._offenders[offender] += 1
+                self._affected_callers[caller] += 1
             by_streak = self.consecutive_failures >= self.failure_threshold
             by_availability = availability is not None and availability < self.min_availability
             if not (by_streak or by_availability):
@@ -609,9 +640,9 @@ class _CircuitBreaker:
                 if usage_limit.reset_at is not None:
                     context["quota_reset_at"] = usage_limit.reset_at.isoformat()
                 context["alert_muted_until"] = usage_limit.suppress_until.isoformat()
-            offenders = self._format_offenders()
-            if offenders:
-                context["offending_users"] = offenders
+            affected = self._format_affected_callers()
+            if affected:
+                context["affected_callers"] = affected
             logger.warning(
                 "circuit_open",
                 extra={
@@ -622,7 +653,9 @@ class _CircuitBreaker:
                     "trip_cause": context["trip_cause"],
                     "reason": reason or "unknown",
                     "upstream_error": detail,
-                    "offending_users": dict(self._offenders) or None,
+                    # Structured counterpart of the alert's rendered list,
+                    # as a mapping so it can be queried per caller.
+                    "affected_callers": dict(self._affected_callers) or None,
                 },
             )
             generation = self._recovery_generation
@@ -685,15 +718,19 @@ class _CircuitBreaker:
                             self._alert_suppressed_until = suppress_epoch
         return delivered
 
-    def _format_offenders(self, *, top: int = _OFFENDERS_IN_ALERT) -> str | None:
-        """Render failure-streak offenders for an alert, busiest first."""
-        if not self._offenders:
+    def _format_affected_callers(self, *, top: int = _CALLERS_IN_ALERT) -> str | None:
+        """Render the callers this failure streak hit, hardest-hit first."""
+        if not self._affected_callers:
             return None
-        named = self._offenders.most_common(top)
+        named = self._affected_callers.most_common(top)
         parts = [f"{escape_slack_text(user)} x{count}" for user, count in named]
-        remaining = len(self._offenders) - len(named)
+        remaining = len(self._affected_callers) - len(named)
         if remaining > 0:
-            parts.append(f"+{remaining} more")
+            # "+N more" counts only callers the tracker kept. Once it is full
+            # every new caller is dropped, so N is a floor and the reader must
+            # not size the incident from it -- say so rather than imply a total.
+            capped = len(self._affected_callers) >= _MAX_TRACKED_CALLERS
+            parts.append(f"+{remaining} more (capped)" if capped else f"+{remaining} more")
         return ", ".join(parts)
 
 
@@ -802,7 +839,7 @@ class EndpointHealthRegistry:
                 availability=availability,
                 reason=_reason_str(reason),
                 detail=safe_detail,
-                offender=_offender_str(),
+                caller=_caller_str(),
             )
         # No ``else`` branch: a failure of any other kind leaves both the rejection
         # run and any open incident alone (see ``note_failure``) — whatever is

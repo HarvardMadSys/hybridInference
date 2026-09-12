@@ -77,12 +77,16 @@ _STRUCTURED_LOG_KEYS = (
     "gain_a",
     "theta_q",
     "lp_status",
-    # Circuit-breaker state-change events (routing/routers.py).
+    # Circuit-breaker state-change events (routing/endpoint_health.py, which
+    # keeps the "routing.routers" logger name it was extracted from).
     "consecutive_failures",
     "availability",
     "trip_cause",
     "upstream_error",
-    "offending_users",
+    # Who the failure streak hit. Formerly "offending_users", which named the
+    # victims of an upstream fault as its culprits — see the module comment on
+    # routing/endpoint_health._MAX_TRACKED_CALLERS.
+    "affected_callers",
     # Upstream rejection of the gateway's own credential
     # (routing/endpoint_health.py ``upstream_auth_misconfig``).
     "consecutive_auth_rejections",

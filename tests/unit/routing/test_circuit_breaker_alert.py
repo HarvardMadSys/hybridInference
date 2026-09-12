@@ -2,19 +2,21 @@
 
 import asyncio
 import gc
+import json
 import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from routing.endpoint_health import (
-    _MAX_TRACKED_OFFENDERS,
+    _MAX_TRACKED_CALLERS,
     EndpointHealthRegistry,
+    _caller_str,
     _CircuitBreaker,
     _CircuitState,
-    _offender_str,
 )
-from serving.observability.alerts import reset_transition_state
+from serving.observability.alerts import AlertSeverity, _format_message, reset_transition_state
+from serving.utils.logging import _STRUCTURED_LOG_KEYS, JsonFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -145,8 +147,8 @@ async def test_circuit_open_emits_structured_log(monkeypatch, caplog):
         patch("serving.observability.alerts.alert_slack", new=AsyncMock()),
         caplog.at_level(logging.INFO, logger="routing.routers"),
     ):
-        cb.on_failure(reason="stream_exception", detail="access_terminated_error", offender="dave")
-        cb.on_failure(reason="stream_exception", detail="access_terminated_error", offender="dave")
+        cb.on_failure(reason="stream_exception", detail="access_terminated_error", caller="dave")
+        cb.on_failure(reason="stream_exception", detail="access_terminated_error", caller="dave")
         assert cb.state == _CircuitState.OPEN
         cb.on_success()
         assert cb.state == _CircuitState.CLOSED
@@ -160,8 +162,11 @@ async def test_circuit_open_emits_structured_log(monkeypatch, caplog):
     assert rec.reason == "stream_exception"
     assert rec.consecutive_failures == 2
     assert rec.upstream_error == "access_terminated_error"
-    # Structured (queryable) offender mapping, not the pre-formatted string.
-    assert rec.offending_users == {"dave": 2}
+    # Structured (queryable) affected-user mapping, not the pre-formatted string.
+    assert rec.affected_callers == {"dave": 2}
+    # A dropped stream is the endpoint's fault, and the log says so in a token an
+    # operator can filter on, so a log reader draws the same conclusion the alert
+    # card does.
 
     closed_records = [r for r in caplog.records if r.getMessage() == "circuit_closed"]
     assert len(closed_records) == 1
@@ -228,46 +233,47 @@ async def test_circuit_open_alert_survives_breaker_gc(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Offending-user attribution
+# Affected-caller reporting
 # ---------------------------------------------------------------------------
 
 
-def test_offender_str_prefers_name_and_pins_id():
-    """``_offender_str`` reads identity from the request context."""
+def test_caller_str_prefers_name_and_pins_id():
+    """``_caller_str`` reads identity from the request context."""
     from serving.utils import context as req_ctx
 
     with req_ctx.push(user_id="01ABC", user_name="alice"):
-        assert _offender_str() == "alice (01ABC)"
+        assert _caller_str() == "alice (01ABC)"
     with req_ctx.push(user_id="01ABC"):
-        assert _offender_str() == "01ABC"
+        assert _caller_str() == "01ABC"
     with req_ctx.push(user_name="alice"):
-        assert _offender_str() == "alice"
-    # No identity in context (e.g. background task) → no attribution.
-    assert _offender_str() is None
+        assert _caller_str() == "alice"
+    # No identity in context (e.g. background task) → nobody to name.
+    assert _caller_str() is None
 
 
-def test_offender_str_collapses_whitespace_in_display_name():
+def test_caller_str_collapses_whitespace_in_display_name():
     """A newline-laden display name can't forge extra alert lines."""
     from serving.utils import context as req_ctx
 
     with req_ctx.push(user_id="01ABC", user_name="ev il\nname\t!"):
-        rendered = _offender_str()
+        rendered = _caller_str()
     assert rendered == "ev il name ! (01ABC)"
     assert "\n" not in rendered
 
 
-def test_format_offenders_escapes_slack_control_characters():
+def test_format_affected_callers_escapes_slack_control_characters():
     """A display name with Slack mrkdwn control chars is escaped, not injected."""
     cb = _CircuitBreaker(
         provider="openai", failure_threshold=999, cooldown_seconds=30, min_availability=0.0
     )
-    cb.on_failure(reason="err", offender="<!channel> (01)")
-    rendered = cb._format_offenders()
+    cb.on_failure(reason="err", caller="<!channel> (01)")
+    rendered = cb._format_affected_callers()
     assert rendered == "&lt;!channel&gt; (01) x1"
     assert "<" not in rendered and ">" not in rendered
 
 
-async def test_circuit_open_alert_lists_offending_users(monkeypatch):
+async def test_circuit_open_alert_lists_affected_callers(monkeypatch):
+    """An upstream fault names who it hit — and says they are not the cause."""
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "3")
     monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
@@ -279,18 +285,18 @@ async def test_circuit_open_alert_lists_offending_users(monkeypatch):
     cb = _CircuitBreaker(provider="extension_alias-api")
 
     with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
-        cb.on_failure(reason="stream_exception", offender="bob (02)")
-        cb.on_failure(reason="stream_exception", offender="alice (01)")
-        cb.on_failure(reason="stream_exception", offender="alice (01)")
+        cb.on_failure(reason="stream_exception", caller="bob (02)")
+        cb.on_failure(reason="stream_exception", caller="alice (01)")
+        cb.on_failure(reason="stream_exception", caller="alice (01)")
         assert cb.state == _CircuitState.OPEN
         await asyncio.sleep(0)
         mock_alert.assert_awaited_once()
         context = mock_alert.await_args.args[2]
-        # Busiest offender first; each carries a failure count.
-        assert context["offending_users"] == "alice (01) x2, bob (02) x1"
+        # Hardest-hit user first; each carries a failure count.
+        assert context["affected_callers"] == "alice (01) x2, bob (02) x1"
 
 
-async def test_circuit_open_alert_omits_offending_users_when_unattributed(monkeypatch):
+async def test_circuit_open_alert_omits_affected_callers_when_unattributed(monkeypatch):
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
     monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
@@ -307,38 +313,39 @@ async def test_circuit_open_alert_omits_offending_users_when_unattributed(monkey
         await asyncio.sleep(0)
         mock_alert.assert_awaited_once()
         context = mock_alert.await_args.args[2]
-        assert "offending_users" not in context
+        assert "affected_callers" not in context
+        # No list to qualify, so no verdict about it either.
 
 
-def test_offenders_cleared_when_streak_breaks():
-    """A success resets the streak so the next trip names only new offenders."""
+def test_affected_callers_cleared_when_streak_breaks():
+    """A success resets the streak so the next trip names only newly hit users."""
     cb = _CircuitBreaker(
         provider="openai", failure_threshold=2, cooldown_seconds=30, min_availability=0.7
     )
-    cb.on_failure(reason="err", offender="alice (01)")
-    cb.on_success()  # streak broken → offenders forgotten
-    assert cb._offenders == {}
-    cb.on_failure(reason="err", offender="bob (02)")
-    assert cb._format_offenders() == "bob (02) x1"
+    cb.on_failure(reason="err", caller="alice (01)")
+    cb.on_success()  # streak broken → the affected-user tally is forgotten
+    assert cb._affected_callers == {}
+    cb.on_failure(reason="err", caller="bob (02)")
+    assert cb._format_affected_callers() == "bob (02) x1"
 
 
-def test_offender_tracking_caps_distinct_users():
-    """The distinct-offender set is bounded, but counts overflow into '+N more'."""
+def test_affected_user_tracking_caps_distinct_users():
+    """The distinct-user set is bounded, but the rest overflow into '+N more'."""
     cb = _CircuitBreaker(
         provider="openai",
         failure_threshold=100_000,
         cooldown_seconds=30,
         min_availability=0.0,
     )
-    for i in range(_MAX_TRACKED_OFFENDERS + 25):
-        cb.on_failure(reason="err", offender=f"user-{i}")
+    for i in range(_MAX_TRACKED_CALLERS + 25):
+        cb.on_failure(reason="err", caller=f"user-{i}")
     # Never tracks more than the cap distinct users.
-    assert len(cb._offenders) == _MAX_TRACKED_OFFENDERS
-    rendered = cb._format_offenders()
+    assert len(cb._affected_callers) == _MAX_TRACKED_CALLERS
+    rendered = cb._format_affected_callers()
     assert "+" in rendered and "more" in rendered
 
 
-async def test_registry_attributes_offender_from_request_context(monkeypatch):
+async def test_registry_names_affected_user_from_request_context(monkeypatch):
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
     monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
@@ -357,4 +364,119 @@ async def test_registry_attributes_offender_from_request_context(monkeypatch):
         await asyncio.sleep(0)
         mock_alert.assert_awaited_once()
         context = mock_alert.await_args.args[2]
-        assert context["offending_users"] == "alice (01ABC) x2"
+        assert context["affected_callers"] == "alice (01ABC) x2"
+
+
+async def test_upstream_fault_trip_does_not_label_its_victims_as_offenders(monkeypatch):
+    """An endpoint dropping SSE streams must not page with its users as culprits.
+
+    The production page this pins: a staging endpoint dropped streams mid-response,
+    the breaker tripped on ``stream_exception``, and the card named eleven users
+    under "Offending Users" — every one of them a casualty of a broken endpoint.
+    The Slack label is the context key title-cased (``alerts._format_message``
+    builds it as ``k.replace("_", " ").title()``; there is no label table), so the
+    key *is* the label and this asserts on the rendered card, not just the dict.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.7")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cb = _CircuitBreaker(provider="staging:api.staging.internal:443")
+
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
+        # A dropped stream carries no usage marker, so nothing here is
+        # attributable to what either caller sent.
+        cb.on_failure(reason="stream_exception", detail="peer closed connection", caller="alice")
+        cb.on_failure(reason="stream_exception", detail="peer closed connection", caller="bob")
+        assert cb.state == _CircuitState.OPEN
+        await asyncio.sleep(0)
+        mock_alert.assert_awaited_once()
+        context = mock_alert.await_args.args[2]
+
+    # The blast radius is still reported — who was hit, and how often, is what
+    # sizes the incident and is never dropped.
+    assert context["affected_callers"] == "alice x1, bob x1"
+
+    rendered = _format_message(AlertSeverity.ERROR, "Provider circuit opened", context)
+    assert "• *Affected Callers:* alice x1, bob x1" in rendered
+    assert "offending" not in rendered.lower()
+
+
+async def test_usage_limit_trip_makes_no_accusation_either(monkeypatch):
+    """Even a spent plan quota gets the same neutral label and no cause verdict.
+
+    Tempting to accuse here -- a shared quota really is spent by whoever spent it.
+    The counter cannot show who that was: ``on_success`` clears it, so every caller
+    whose requests *succeeded* against the plan is erased, and what survives is
+    whoever arrived after exhaustion. A verdict computed from this list would name
+    a set chosen to exclude the actual cause. The reach is reported; the cause is
+    left to ``upstream_error``.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.7")
+    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", True)
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    detail = "you (01ABC) have reached your weekly usage limit, upgrade your plan"
+    cb = _CircuitBreaker(provider="zai:api.z.ai:443")
+
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
+        cb.on_failure(reason="stream_exception", detail=detail, caller="alice (01ABC)")
+        cb.on_failure(reason="stream_exception", detail=detail, caller="alice (01ABC)")
+        assert cb.state == _CircuitState.OPEN
+        await asyncio.sleep(0)
+        mock_alert.assert_awaited_once()
+        context = mock_alert.await_args.args[2]
+
+    assert context["affected_callers"] == "alice (01ABC) x2"
+    rendered = _format_message(AlertSeverity.ERROR, "Provider circuit opened", context)
+    assert "• *Affected Callers:* alice (01ABC) x2" in rendered
+    # One label for every trip cause, so an operator never has to know which of
+    # two field names to search for -- and no sentence assigning blame.
+    assert "offending" not in rendered.lower()
+    assert "caller-driven" not in rendered.lower()
+    # The cause reading lives in the upstream error, which is still carried.
+    assert "usage limit" in rendered
+
+
+async def test_affected_callers_survive_json_serialization(monkeypatch, caplog):
+    """The renamed field must reach production logs, not just the LogRecord.
+
+    Both formatters emit only keys in ``_STRUCTURED_LOG_KEYS``, so a field set via
+    ``extra=`` is silently dropped from plain *and* JSON output unless it is
+    whitelisted there. Renaming ``offending_users`` without moving the whitelist
+    entry would delete the field from production logs while every assertion made
+    on the record alone still passed.
+    """
+    assert "affected_callers" in _STRUCTURED_LOG_KEYS
+    # The old, blame-asserting spelling is gone from the allowlist too, so a
+    # stale emitter cannot quietly keep publishing it.
+    assert "offending_users" not in _STRUCTURED_LOG_KEYS
+
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.7")
+
+    cb = _CircuitBreaker(provider="openai")
+
+    with (
+        patch("serving.observability.alerts.alert_slack", new=AsyncMock()),
+        caplog.at_level(logging.INFO, logger="routing.routers"),
+    ):
+        cb.on_failure(reason="stream_exception", caller="dave")
+        cb.on_failure(reason="stream_exception", caller="dave")
+        await asyncio.sleep(0)
+
+    records = [r for r in caplog.records if r.getMessage() == "circuit_open"]
+    assert len(records) == 1
+    payload = json.loads(JsonFormatter().format(records[0]))
+    assert payload["affected_callers"] == {"dave": 2}

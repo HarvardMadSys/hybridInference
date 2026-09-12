@@ -764,8 +764,9 @@ async def chat_completions(
             "affinity_key": affinity_key,
             # synthetic_probe is already published, right after the trust
             # check — before the early 404/403 exits above.
-            # User identity for failure attribution — the routing layer reads
-            # these to name the offending users in circuit-breaker alerts.
+            # User identity for blast-radius reporting — the routing layer reads
+            # these to name the callers a failure streak hit in circuit-breaker
+            # alerts.
             "user_id": user_id,
             "user_name": user_ctx.get("user_name"),
         }
