@@ -63,6 +63,7 @@ def test_summarizes_queue_wait_and_duration_deterministically() -> None:
     }
     assert [job["name"] for job in report["jobs"]] == ["Test A", "Test B"]
     assert report["jobs"][0]["run_wait_seconds"] == 30.0
+    assert report["anomalies"] == []
 
 
 def test_accepts_paginated_gh_api_slurp_payload() -> None:
@@ -95,7 +96,45 @@ def test_accepts_paginated_gh_api_slurp_payload() -> None:
     assert {job["name"] for job in report["jobs"]} == {"Backend", "Frontend"}
 
 
-def test_rejects_out_of_order_timestamps() -> None:
+def test_clamps_skipped_job_completed_before_it_started() -> None:
+    """Regression: run 34700471765 aborted the whole report over this one job.
+
+    GitHub reported the skipped ``docker-build`` job as completing one second
+    before it started. A timing report must survive that.
+    """
+    payload = {
+        "jobs": [
+            {
+                "name": "docker-build",
+                "conclusion": "skipped",
+                "runner_name": None,
+                "created_at": "2026-09-12T14:54:24Z",
+                "started_at": "2026-09-12T14:54:24Z",
+                "completed_at": "2026-09-12T14:54:23Z",
+            },
+            _job(
+                "Backend Quality",
+                created="2026-09-12T14:54:23Z",
+                started="2026-09-12T14:54:24Z",
+                completed="2026-09-12T14:54:43Z",
+            ),
+        ]
+    }
+
+    report = summarize_jobs(payload, "2026-09-12T14:50:44Z")
+
+    assert report["anomalies"] == [
+        {"job": "docker-build", "issue": "duration was negative (-1.0s); clamped to 0.0s"}
+    ]
+    skipped = next(job for job in report["jobs"] if job["name"] == "docker-build")
+    assert skipped["duration_seconds"] == 0.0
+    assert skipped["run_wait_seconds"] == 220.0
+    # The healthy sibling still reports real numbers.
+    assert report["summary"]["job_count"] == 2
+    assert report["summary"]["max_duration_seconds"] == 19.0
+
+
+def test_clamps_start_preceding_creation_and_run_start() -> None:
     payload = {
         "jobs": [
             _job(
@@ -107,8 +146,118 @@ def test_rejects_out_of_order_timestamps() -> None:
         ]
     }
 
-    with pytest.raises(MetricsError, match="out of order"):
-        summarize_jobs(payload, "2026-07-22T08:40:00Z")
+    report = summarize_jobs(payload, "2026-07-22T08:41:30Z")
+
+    assert [anomaly["issue"] for anomaly in report["anomalies"]] == [
+        "queue time was negative (-60.0s); clamped to 0.0s",
+        "time from run start was negative (-30.0s); clamped to 0.0s",
+    ]
+    assert report["jobs"][0]["queue_seconds"] == 0.0
+    assert report["jobs"][0]["run_wait_seconds"] == 0.0
+    assert report["jobs"][0]["duration_seconds"] == 120.0
+
+
+def test_keeps_job_with_unparseable_timestamp() -> None:
+    payload = {
+        "jobs": [
+            {
+                "name": "rerun",
+                "conclusion": "success",
+                "runner_name": "runner-1",
+                "created_at": "2026-07-22T08:41:14Z",
+                "started_at": "not-a-timestamp",
+                "completed_at": "2026-07-22T08:43:00Z",
+            }
+        ]
+    }
+
+    report = summarize_jobs(payload, "2026-07-22T08:41:14Z")
+
+    assert [anomaly["issue"] for anomaly in report["anomalies"]] == [
+        "completed_at without a started_at; duration unknown",
+        "job started_at is not a valid ISO timestamp: 'not-a-timestamp'",
+    ]
+    assert report["summary"]["job_count"] == 1
+    assert report["summary"]["measured_job_count"] == 0
+    assert report["jobs"][0]["duration_seconds"] is None
+
+
+def test_markdown_annotates_anomalous_job_and_warns() -> None:
+    report = summarize_jobs(
+        {
+            "jobs": [
+                {
+                    "name": "docker-build",
+                    "conclusion": "skipped",
+                    "runner_name": None,
+                    "created_at": "2026-09-12T14:54:24Z",
+                    "started_at": "2026-09-12T14:54:24Z",
+                    "completed_at": "2026-09-12T14:54:23Z",
+                }
+            ]
+        },
+        "2026-09-12T14:50:44Z",
+    )
+
+    markdown = render_markdown(report, "34700471765")
+
+    assert "| docker-build ⚠️ | — | 0.0s | 220.0s | 0.0s | skipped |" in markdown
+    assert "> [!WARNING]" in markdown
+    assert "> - `docker-build`: duration was negative (-1.0s); clamped to 0.0s" in markdown
+
+
+def test_still_rejects_structurally_invalid_payload() -> None:
+    """Timing quirks are tolerated; a payload with no jobs array is still fatal."""
+    with pytest.raises(MetricsError, match="jobs array"):
+        summarize_jobs({"total_count": 0}, "2026-07-22T08:41:14Z")
+
+
+def test_cli_exits_zero_on_out_of_order_timestamps(tmp_path: Path) -> None:
+    jobs_path = tmp_path / "jobs.json"
+    output_path = tmp_path / "metrics.json"
+    markdown_path = tmp_path / "metrics.md"
+    jobs_path.write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "name": "docker-build",
+                        "conclusion": "skipped",
+                        "runner_name": None,
+                        "created_at": "2026-09-12T14:54:24Z",
+                        "started_at": "2026-09-12T14:54:24Z",
+                        "completed_at": "2026-09-12T14:54:23Z",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SUMMARIZER),
+            "--jobs",
+            str(jobs_path),
+            "--run-id",
+            "34700471765",
+            "--run-created-at",
+            "2026-09-12T14:50:44Z",
+            "--output",
+            str(output_path),
+            "--markdown",
+            str(markdown_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "warning: docker-build: duration was negative" in result.stderr
+    assert json.loads(output_path.read_text(encoding="utf-8"))["anomalies"]
+    assert "> [!WARNING]" in markdown_path.read_text(encoding="utf-8")
 
 
 def test_keeps_unstarted_cancelled_job_without_fabricating_timings() -> None:
