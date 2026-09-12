@@ -144,6 +144,22 @@ def create_app() -> FastAPI:
         anthropic_messages.anthropic_aware_http_exception_handler,
     )
 
+    # Override FastAPI's own RequestValidationError handler, which it installs
+    # in FastAPI.__init__ and which answers a schema mismatch with
+    # {"detail": exc.errors()} -- a body that echoes the caller's submitted
+    # ``input`` back at them (a password or an API key, on the auth and admin
+    # routers). Same 422 status; the replacement publishes the ``loc`` field
+    # names, which tell a client what to fix, and drops ``input``, which only
+    # tells them what they already sent. Full detail to the log. Registered here
+    # for the same reason as the pair above: last registration wins, and this
+    # one has to be the last.
+    from fastapi.exceptions import RequestValidationError as _RequestValidationError
+
+    app.add_exception_handler(
+        _RequestValidationError,
+        anthropic_messages.anthropic_aware_validation_exception_handler,
+    )
+
     return app
 
 

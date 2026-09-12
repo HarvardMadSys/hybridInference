@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from serving.exceptions import scrub_error_for_user
+from serving.exceptions import safe_detail_text, scrub_error_for_user
 from serving.schemas import ErrorDetail, ErrorResponse
 from serving.utils.errors import categorize_exception
 from serving.utils.logging import get_logger
@@ -101,7 +101,20 @@ class FallbackErrorMiddleware:
 
 
 def install_error_handlers(app: FastAPI) -> None:
-    """Install global exception handlers that return OpenRouter-like errors."""
+    """Install global exception handlers that return OpenRouter-like errors.
+
+    Note on ``http_exc_handler`` below: on the real application it is
+    **shadowed and never invoked**. ``create_app`` re-registers
+    ``anthropic_messages.anthropic_aware_http_exception_handler`` for both
+    ``starlette.exceptions.HTTPException`` and ``fastapi.HTTPException`` after
+    calling this function, and Starlette's ``add_exception_handler`` is a plain
+    dict assignment, so the last registration wins (see
+    ``tests/unit/middleware/test_error_redaction.py`` for the assertion that
+    pins this). It is kept -- and kept redacted in step with the live handler --
+    because several test apps install only these handlers, and because a
+    divergence here is exactly how a fixed leak comes back the day someone
+    drops the re-registration.
+    """
 
     @app.exception_handler(HTTPException)
     async def http_exc_handler(request: Request, exc: HTTPException) -> JSONResponse:
@@ -118,10 +131,15 @@ def install_error_handlers(app: FastAPI) -> None:
                 "status_code": exc.status_code,
                 "path": request.url.path,
                 "method": request.method,
+                # See the live handler in routers/anthropic_messages.py: the
+                # response may not carry the detail, so the log always does.
+                "detail": str(exc.detail)[:2000],
             },
             exc_info=exc if exc.status_code >= 500 else None,
         )
-        content = _build_error_response(str(exc.detail), code=exc.status_code, typ=err_type)
+        content = _build_error_response(
+            safe_detail_text(exc.detail, exc.status_code), code=exc.status_code, typ=err_type
+        )
         return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
 
     @app.exception_handler(Exception)

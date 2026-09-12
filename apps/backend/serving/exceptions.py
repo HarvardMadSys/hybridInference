@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 import aiohttp
 
@@ -416,6 +417,36 @@ def generic_message_for_status(status_code: int) -> str:
     if 500 <= status_code < 600:
         return "Internal server error"
     return "Request failed"
+
+
+def safe_detail_text(detail: Any, status_code: int) -> str:
+    """Return response-safe text for the message slot of an ``HTTPException``.
+
+    Deliberately *not* a scrubber. The envelope builders cannot see where a
+    detail string came from, and running the provider-identity pass over every
+    detail would destroy the request-contract messages legitimate clients
+    depend on: ``scrub_provider_identity`` blanks vendor tokens, so
+    "Model 'claude-3-5-haiku-20241022' not found" would come back without the
+    model the caller actually asked for, and "Missing required field: model"
+    would survive only by luck. Provenance is therefore enforced where the text
+    is *produced* -- every site that turns an exception into a detail redacts
+    there (see ``scrub_error_for_user``) -- and this function is the backstop
+    for the one judgement an envelope can make safely, on type rather than on
+    content:
+
+      * a ``str`` detail is developer-authored contract text and is returned
+        unchanged;
+      * anything else is an object that was dropped into the message slot --
+        an exception, a pydantic error list carrying ``loc``/``input``, a raw
+        dict of internals -- and ``str()`` of those is internal by
+        construction, so it is replaced with the generic status message.
+
+    The status code is never touched: callers pass it through unchanged so a
+    429 stays a 429 and a 503 stays a 503.
+    """
+    if isinstance(detail, str):
+        return detail
+    return generic_message_for_status(status_code)
 
 
 def user_safe_error_for_log(raw: str | None, status_code: int | None) -> str | None:

@@ -23,7 +23,7 @@ import copy
 import json
 import os
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -40,7 +40,12 @@ from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.config.settings import has_role
-from serving.exceptions import operator_safe_error, scrub_error_for_user
+from serving.exceptions import (
+    generic_message_for_status,
+    operator_safe_error,
+    safe_detail_text,
+    scrub_error_for_user,
+)
 from serving.grant_auth import ledger_attribution
 from serving.model_access import is_model_disabled_for_user, is_model_outside_grant_scope
 from serving.observability.rejection_log import log_rejection
@@ -64,6 +69,9 @@ from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip_info
 from serving.utils.session_identity import consume_session_fields, session_identity
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+
+if TYPE_CHECKING:
+    from fastapi.exceptions import RequestValidationError
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -168,20 +176,39 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     is_anthropic = any(path.startswith(p) for p in _ANTHROPIC_PATHS)
 
     if isinstance(exc.detail, dict) and "error" in exc.detail:
-        # On the Anthropic surfaces these dict bodies (e.g. the concurrency
-        # limiter's {"error": {"code": ...}} or the quota check's
-        # {"error": "Daily cost quota exceeded", ...}) are NOT Anthropic-shaped,
+        # This branch returns a caller-built body essentially verbatim, so the
+        # redaction it needs cannot happen here: the bodies that come through
+        # carry fields no blanket rule may touch -- the quota 429's quota_usd /
+        # spent_usd / reset_at (the caller's own numbers, and what a client
+        # needs in order to back off correctly) and the concurrency limiter's
+        # structured code. The invariant is held at the *builders* instead:
+        # every one of them (servers/auth.py, servers/concurrency.py,
+        # quota.exceeded_payload, routers/internal_auth.error,
+        # routers/identity._error) is now passed developer-authored static text
+        # only. identity.py used to pass str(exc) here -- a raw PEM/key
+        # misconfiguration string, from an unauthenticated endpoint -- and that
+        # is the leak this branch was famous for; it is fixed at the raise site,
+        # and tests/unit/middleware/test_error_redaction.py scans the builders
+        # so it cannot creep back.
+        #
+        # On the Anthropic surfaces these dict bodies are NOT Anthropic-shaped,
         # so Claude Code's parser finds no error.type/message and shows an
         # opaque failure. Re-wrap them into the Anthropic envelope, preserving a
         # human-readable message from the inner error.
         if is_anthropic:
             inner = exc.detail["error"]
+            message: Any = None
             if isinstance(inner, dict):
-                message = inner.get("message") or inner.get("code") or str(inner)
-            else:
-                message = str(inner)
+                message = inner.get("message") or inner.get("code")
+            elif isinstance(inner, str):
+                message = inner
+            # str(inner) as a last resort would dump a whole dict of internals
+            # into the message a client renders; the generic status message is
+            # the safe floor. The status code is unchanged either way.
             return _anthropic_error(
-                exc.status_code, str(message), headers=dict(exc.headers or {}) or None
+                exc.status_code,
+                safe_detail_text(message, exc.status_code),
+                headers=dict(exc.headers or {}) or None,
             )
         return JSONResponse(
             status_code=exc.status_code,
@@ -200,10 +227,21 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
             "status_code": exc.status_code,
             "path": request.url.path,
             "method": request.method,
+            # Logged unconditionally, because the response below may not carry
+            # it: redaction is about the response only, and a detail the client
+            # never sees still has to be reconstructible from the log line that
+            # shares its X-Request-ID.
+            "detail": str(exc.detail)[:2000],
         },
         exc_info=exc if exc.status_code >= 500 else None,
     )
 
+    # ``safe_detail_text`` rather than ``str(exc.detail)`` on both arms below.
+    # A string detail is developer-authored contract text and is kept verbatim
+    # -- "Missing required field: model", "Model 'x' not found", the auth
+    # messages from deps.py -- because those are the messages a client is
+    # supposed to act on. A non-string detail is an object someone put in the
+    # message slot, and stringifying it is how internals reach a client.
     if is_anthropic:
         return JSONResponse(
             status_code=exc.status_code,
@@ -211,7 +249,7 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
                 "type": "error",
                 "error": {
                     "type": _ERROR_TYPE_BY_STATUS.get(exc.status_code, "api_error"),
-                    "message": str(exc.detail),
+                    "message": safe_detail_text(exc.detail, exc.status_code),
                 },
             },
             headers=dict(exc.headers or {}),
@@ -219,9 +257,114 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     # Non-Anthropic paths: produce the same OpenRouter shape as install_error_handlers.
     from serving.servers.middleware.error import _build_error_response
 
-    content = _build_error_response(str(exc.detail), code=exc.status_code, typ=err_type)
+    content = _build_error_response(
+        safe_detail_text(exc.detail, exc.status_code), code=exc.status_code, typ=err_type
+    )
     return JSONResponse(
         status_code=exc.status_code, content=content, headers=dict(exc.headers or {})
+    )
+
+
+#: How many ``loc`` paths a 422 body will name. A caller controls how many
+#: validation errors one request produces -- a 500-element array of malformed
+#: objects yields 500 entries -- so the field list is capped to keep the
+#: response bounded. The log line below carries the full set either way.
+_MAX_REPORTED_VALIDATION_FIELDS = 10
+
+
+def _validation_field_paths(errors: list[Any] | None) -> list[str]:
+    """Return the ``loc`` paths of a validation error, and nothing else.
+
+    Only ``loc`` is read. ``input`` (the caller's submitted value) and ``ctx``
+    (which can embed that value in a custom validator's message) are never
+    touched, so there is no path by which a submitted secret reaches the string
+    this returns.
+
+    ``loc`` segments are our own model field names plus list indices. The one
+    caller-derived segment that can appear is a mapping *key* on a
+    ``dict[str, ...]`` field -- a key name, never a value -- which is why
+    publishing ``loc`` does not reopen the echo that publishing ``input`` was.
+    """
+    paths: list[str] = []
+    for err in errors or []:
+        if not isinstance(err, dict):
+            continue
+        path = ".".join(str(part) for part in (err.get("loc") or ()))
+        if path and path not in paths:
+            paths.append(path)
+        if len(paths) >= _MAX_REPORTED_VALIDATION_FIELDS:
+            break
+    return paths
+
+
+async def anthropic_aware_validation_exception_handler(
+    request: Request, exc: RequestValidationError
+):
+    """Replace FastAPI's default 422 body, which echoes the caller back at itself.
+
+    FastAPI installs ``request_validation_exception_handler`` in
+    ``FastAPI.__init__`` and nothing overrode it, so a schema mismatch answered
+    with ``{"detail": exc.errors()}``. That list carries two different kinds of
+    thing, and they get opposite treatment:
+
+      * ``input`` -- the caller's own submitted value, echoed verbatim. On the
+        auth and admin routers that is a password, a token, or an API key,
+        written into a response body that lands in proxy logs and bug reports.
+        **Never published**, on any surface.
+      * ``loc`` -- which field failed. That is request-contract information: it
+        is the one thing that lets a legitimate client fix its request instead
+        of guessing, and a client cannot act on "Invalid request" alone.
+        **Published**, on every surface.
+
+    Both halves apply to ``/admin`` as well as to the public routers. The admin
+    surface is not exempted: an operator gets the field names for the same
+    reason a client does, and an operator's 422 is exactly as likely to be a
+    mistyped credential body as anyone else's -- which is precisely the value
+    that must not come back out.
+
+    The status is unchanged at 422 -- same as FastAPI's default -- and the
+    correlation id still rides on the ``X-Request-ID`` response header, so a
+    client that reports "I got a 422, here is the id" is still supportable. The
+    full validation detail, ``input`` included, goes to the log.
+
+    Registered on the Anthropic-aware pair in ``create_app`` alongside the
+    HTTPException handler, so the Anthropic surfaces keep their own envelope
+    shape here too; a Claude Code client parses ``error.type``/``error.message``
+    and shows an opaque failure for anything else. The field list therefore
+    rides in ``message`` rather than in a sibling key: ``ErrorDetail`` drops
+    unknown fields and the Anthropic envelope has nowhere to put one.
+    """
+    try:
+        errors: list[Any] | None = exc.errors()
+    except Exception:
+        # .errors() can itself raise on exotic payloads (a ctx value pydantic
+        # cannot render). Answering the request matters more than the log line,
+        # and a body with no field list is still a correct 422.
+        errors = None
+    detail = str(errors) if errors is not None else str(exc)
+    logger.warning(
+        "request_validation_error",
+        extra={
+            "error_type": "validation",
+            "status_code": 422,
+            "path": request.url.path,
+            "method": request.method,
+            "detail": detail[:2000],
+        },
+    )
+
+    message = generic_message_for_status(422)
+    fields = _validation_field_paths(errors)
+    if fields:
+        message = f"{message}: {', '.join(fields)}"
+    if any(request.url.path.startswith(p) for p in _ANTHROPIC_PATHS):
+        return _anthropic_error(422, message, error_type="invalid_request_error")
+
+    from serving.servers.middleware.error import _build_error_response
+
+    return JSONResponse(
+        status_code=422,
+        content=_build_error_response(message, code=422, typ="validation_error"),
     )
 
 
@@ -1255,7 +1398,12 @@ async def anthropic_messages(
                 prompt=body.get("messages") or "",
             )
         )
-        return _anthropic_error(exc.status_code, str(exc.detail))
+        # _resolve raises developer-authored contract text ("Model 'x' not
+        # found", "No provider is currently available ..."), which is kept --
+        # that message is the whole answer for the client. safe_detail_text
+        # only draws the line at a non-string detail. The rejection log above
+        # keeps the raw detail server-side either way.
+        return _anthropic_error(exc.status_code, safe_detail_text(exc.detail, exc.status_code))
 
     request_payload_for_log = copy.deepcopy(body)
 
@@ -1820,7 +1968,15 @@ async def anthropic_messages(
         resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
         prefill_load.release(prefill_lease, prefill_confirmed=True)
     except HTTPException as exc:
-        error_message = str(exc.detail)
+        # Not str(exc.detail): unlike the router's own HTTPExceptions (static
+        # contract text), one raised from inside adapter.messages() is an
+        # upstream failure being re-shaped, and its detail is whatever the
+        # provider said -- body, host, or key included. scrub_error_for_user
+        # keeps our own UserFacingError messages, surfaces an upstream message
+        # only with provider identity and secrets stripped, and otherwise falls
+        # back to the generic message for the status. The status itself is
+        # passed straight through, so a 429 from here is still a 429.
+        error_message = scrub_error_for_user(exc, request_id, exc.status_code)
         # ``exc=`` throughout: HTTPException/ClientResponseError carry a status,
         # and the registry drops 4xx client errors on that basis so one caller's
         # malformed request cannot open the circuit for everyone. The
@@ -2047,7 +2203,9 @@ async def anthropic_count_tokens(
             model_id, router_exec, user_ctx, model_visibility_resolver, for_dispatch=False
         )
     except HTTPException as exc:
-        return _anthropic_error(exc.status_code, str(exc.detail))
+        # Visibility check only, and _resolve's messages are static contract
+        # text; see the note on the same call in the messages handler.
+        return _anthropic_error(exc.status_code, safe_detail_text(exc.detail, exc.status_code))
 
     try:
         oai_messages, oai_params = anthropic_request_to_openai(body)

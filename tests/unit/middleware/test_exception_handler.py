@@ -53,7 +53,15 @@ class TestExceptionHandlers:
 
     @pytest.mark.asyncio
     async def test_user_already_exists_handler(self, app_with_handlers):
-        """Test UserAlreadyExistsError returns 409 with correct format."""
+        """Test UserAlreadyExistsError returns 409 without echoing the address.
+
+        This used to assert the opposite -- that the submitted address came back
+        in ``message`` and again in an ``email`` field. That is a membership
+        oracle: anyone with a list of addresses could sort it into "registered
+        here" and "not" by reading the error. The 409 and the ``error_code``
+        stay (the console's error map keys off the code, and the status is the
+        client contract); the address does not.
+        """
         transport = ASGITransport(app=app_with_handlers)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/test/user-exists")
@@ -61,9 +69,8 @@ class TestExceptionHandlers:
             assert response.status_code == 409
             data = response.json()
             assert data["error_code"] == "USER_ALREADY_EXISTS"
-            assert "test@example.com" in data["message"]
-            assert "email" in data
-            assert data["email"] == "test@example.com"
+            assert "test@example.com" not in response.text
+            assert "email" not in data
             assert "timestamp" in data
 
     @pytest.mark.asyncio
@@ -77,6 +84,24 @@ class TestExceptionHandlers:
             data = response.json()
             assert data["error_code"] == "INVALID_CREDENTIALS"
             assert "timestamp" in data
+
+    @pytest.mark.asyncio
+    async def test_raised_message_does_not_reach_the_body(self, app_with_handlers):
+        """Whatever a raiser interpolates stays server-side.
+
+        ``DuplicateAPIKeyError("Key already exists")`` is benign, but the same
+        handler shape is what carried the internal user id out of
+        ``UserNotFoundError(current_user["user_id"])``. The handler now writes
+        its own static message rather than ``str(exc)``, so the raiser's text
+        cannot reach a client regardless of what it says.
+        """
+        transport = ASGITransport(app=app_with_handlers)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/test/duplicate-key")
+
+            assert response.status_code == 409
+            assert "Key already exists" not in response.text
+            assert response.json()["message"] == "You already have an active API key"
 
     @pytest.mark.asyncio
     async def test_duplicate_api_key_handler(self, app_with_handlers):
@@ -100,8 +125,11 @@ class TestExceptionHandlers:
             assert response.status_code == 429
             data = response.json()
             assert data["error_code"] == "QUOTA_EXCEEDED"
+            # Kept, deliberately: a caller's own spend against their own cap is
+            # theirs to read, and it is what tells them how long to wait.
             assert data["quota"] == 100.0
             assert data["spent"] == 105.5
+            assert data["message"] == "Quota exceeded: $105.50 / $100.00"
             assert "timestamp" in data
 
     @pytest.mark.asyncio

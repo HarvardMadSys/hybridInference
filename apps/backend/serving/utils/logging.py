@@ -104,6 +104,23 @@ _STRUCTURED_LOG_KEYS = (
     "threshold",
     "window_sec",
     "block_seconds",
+    # The evidence the error redaction relies on existing.
+    #
+    # Error responses no longer carry internal detail (see
+    # servers/middleware/exception_handler.py and the validation handler in
+    # routers/anthropic_messages.py); the whole premise of that change is
+    # "redacted from the response, intact in the log". These are the keys that
+    # text was moved *into* -- ``detail`` carries the exception/validation text
+    # itself, ``error_code`` is the only machine-readable field on the
+    # ``domain_error`` line, and ``endpoint`` names the identity endpoint whose
+    # configuration fault stopped being published. Both formatters emit only
+    # keys listed here, so omitting them would drop the relocated text at format
+    # time and turn the redaction into a net loss of evidence -- the same
+    # failure mode the ``ip_bucket`` note above describes, but applied to the
+    # text a support request quoting an X-Request-ID is trying to recover.
+    "detail",
+    "endpoint",
+    "error_code",
 )
 
 
