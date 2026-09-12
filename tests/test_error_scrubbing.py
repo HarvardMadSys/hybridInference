@@ -283,6 +283,10 @@ UPSTREAM_QUOTA_SAMPLES = [
     'limit.", "type": "billing"}}',
     '{"error": {"message": "Your credit balance is too low to access this model."}}',
     '{"error": {"message": "Insufficient funds, please recharge your account."}}',
+    # Observed verbatim from a nested OpenAI-compatible gateway: reports our
+    # depleted plan without saying "quota", "balance", or "billing".
+    '{"error": {"message": "Weekly/Monthly Limit Exhausted", "type": "server_error", "code": 429}}',
+    '{"error": {"message": "Your daily limit has been reached."}}',
 ]
 
 
@@ -328,6 +332,15 @@ def test_user_safe_upstream_error_suppresses_quota_text():
     assert user_safe_upstream_error("You exceeded your current quota") is None
     # Plural marker forms are still caught.
     assert user_safe_upstream_error("All monthly quotas exhausted") is None
+    # A depleted plan phrased without any balance/billing/quota word.
+    assert user_safe_upstream_error("Weekly/Monthly Limit Exhausted") is None
+    assert user_safe_upstream_error("Your monthly limit has been reached") is None
+    # Limits the *user* can act on are not ours to hide, which is why the
+    # markers are period-qualified rather than a bare "limit reached".
+    assert (
+        user_safe_upstream_error("Maximum context length reached for this request")
+        == "Maximum context length reached for this request"
+    )
     # Non-quota upstream messages still pass through.
     assert user_safe_upstream_error("Model is overloaded") == "Model is overloaded"
     # Word boundaries: "quotation" must not trip the "quota" marker.
