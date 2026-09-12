@@ -126,6 +126,17 @@ class Settings(BaseSettings):
     # would otherwise take every user behind the IP offline. Entries that fail
     # to parse are logged and skipped.
     auth_failure_block_exempt_ips: str = ""
+    # Resolve who a rejected API key belongs to when auth fails, so the
+    # ``auth_failure`` log record (and any alert built from it) can name the
+    # account instead of only a count and an address. Worth having because the
+    # keys that fail here are either nobody's -- a scanner's random token -- or a
+    # deployment's own monitor, CI job or service account whose credential was
+    # rotated, revoked or expired, and only the second is something to go and
+    # fix. Costs one indexed lookup per failure, under the shared rejection
+    # enrichment budget (REJECTED_ENRICHMENT_MAX_CONCURRENT), so a flood sheds it
+    # instantly rather than queueing; the unbounded key lookup that already runs
+    # on this path is the larger cost of the two. Set false to spend nothing.
+    auth_failure_identify_caller: bool = True
 
     # Cloudflare Turnstile (signup captcha)
     turnstile_site_key: str = ""

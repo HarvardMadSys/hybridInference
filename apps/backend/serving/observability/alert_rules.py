@@ -12,6 +12,7 @@ import datetime as dt
 import functools
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from serving.observability import alerts as _alerts
@@ -26,6 +27,23 @@ from serving.utils.context import MODEL_NOT_FOUND
 #: breaching sample. One extra window of slack, so an evaluation that lands late
 #: does not race the sweep.
 _STALE_WINDOW_FACTOR = 2
+
+#: How many distinct offenders an auth alert names per dimension. Enough to act
+#: on, short enough that a scanner wave does not turn the card into a wall of
+#: text the reader scrolls past.
+_OFFENDERS_IN_ALERT = 3
+
+#: Longest request path rendered in an alert. A path is caller-chosen and
+#: effectively unbounded, so a source probing a two-kilobyte URL would otherwise
+#: push everything else in the message out of view.
+_PATH_IN_ALERT_CHARS = 60
+
+#: Distinct values an incident tally keeps per dimension. Past this a value not
+#: already tracked is dropped rather than added: an incident stays open for as
+#: long as the spike lasts, and a source rotating addresses must not be able to
+#: grow the tally for that whole time. Same bound, and the same "(capped)"
+#: honesty about the resulting counts, as ``routing/endpoint_health.py``.
+_MAX_TRACKED_OFFENDERS = 50
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -318,6 +336,213 @@ class P95LatencyRule:
         )
 
 
+def _top_offenders(
+    counts: collections.Counter[str],
+    *,
+    top: int = _OFFENDERS_IN_ALERT,
+    capped: bool = False,
+) -> str:
+    """Render a counter as ``value (n), value (n), +N more``.
+
+    ``capped`` marks a tally that stopped tracking new values, so the trailing
+    count is a floor rather than a total and the reader is told not to size the
+    incident from it.
+    """
+    if not counts:
+        return "n/a"
+    named = counts.most_common(top)
+    parts = [f"{value} ({count})" for value, count in named]
+    remaining = len(counts) - len(named)
+    if remaining > 0:
+        parts.append(f"+{remaining} more (capped)" if capped else f"+{remaining} more")
+    return ", ".join(parts)
+
+
+def _auth_failure_entry(record: logging.LogRecord) -> dict[str, Any]:
+    """Pull the identifying fields off an ``auth_failure`` record.
+
+    ``account`` is present only for the failures that have one: a key that
+    resolves to a real account in a state that refuses it (revoked, expired,
+    suspended), which ``servers/auth.py`` attaches under the same bounded
+    enrichment budget the rejection log uses. Most auth failures are anonymous
+    by construction — nobody was authenticated, which is the failure — so the
+    field is absent far more often than not.
+
+    Absent is *unresolved*, though, never proven anonymous, and the difference
+    matters most exactly when it is least convenient: the lookup is shed under
+    load, which is the spike being alerted on, and answers nothing on a timeout,
+    a failed lookup, or with ``auth_failure_identify_caller`` off. A name here is
+    evidence; no name is the absence of evidence, and nothing downstream may
+    read it as evidence of absence.
+
+    ``forwarded`` says the reported address did not come off the socket, which
+    ``ip_source`` states outright. Decided per record rather than by comparing
+    the window's reported and peer addresses: a window holding both a direct
+    failure from A and a forwarded one from B through peer A has every peer
+    address appearing as somebody's reported address, and the comparison then
+    hides precisely the forged hop this is for.
+    """
+    path = getattr(record, "path", None)
+    if isinstance(path, str) and len(path) > _PATH_IN_ALERT_CHARS:
+        path = path[:_PATH_IN_ALERT_CHARS] + "…"
+    user_id = getattr(record, "user_id", None)
+    state = getattr(record, "credential_state", None)
+    remote_ip = getattr(record, "remote_ip", None)
+    peer_ip = getattr(record, "peer_ip", None)
+    ip_source = getattr(record, "ip_source", None)
+    # Falling back to the addresses differing covers an older record, or one
+    # from a path that does not set ``ip_source``: the same fact, just inferred.
+    forwarded = ip_source != "socket" if ip_source else bool(peer_ip) and peer_ip != remote_ip
+    return {
+        "remote_ip": remote_ip,
+        "peer_ip": peer_ip,
+        "forwarded": forwarded,
+        "key_prefix": getattr(record, "key_prefix", None),
+        "reason": getattr(record, "reason", None),
+        "path": path,
+        "account": (f"{user_id} ({state})" if state else str(user_id)) if user_id else None,
+    }
+
+
+def _auth_failure_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Describe who a set of auth failures came from.
+
+    Shared by the breach card and the recovery card so both answer the same two
+    questions — where from, and whose — rather than the recovery naming only
+    the rule that closed.
+    """
+    counts: dict[str, collections.Counter[str]] = {
+        field_: collections.Counter(e[field_] for e in entries if e.get(field_))
+        for field_ in ("remote_ip", "key_prefix", "reason", "path", "account")
+    }
+    # Peers of the forwarded records only. Counting every peer and then
+    # subtracting the reported addresses would drop the whole line for a window
+    # that mixes direct and proxied failures through one socket.
+    peers: collections.Counter[str] = collections.Counter(
+        e["peer_ip"] for e in entries if e.get("forwarded") and e.get("peer_ip")
+    )
+    summary: dict[str, Any] = {
+        "distinct_ips": len(counts["remote_ip"]),
+        "top_ips": _top_offenders(counts["remote_ip"]),
+        "top_key_prefixes": _top_offenders(counts["key_prefix"]),
+        "failure_reasons": _top_offenders(counts["reason"]),
+    }
+    # Only when there is something to say. An anonymous scanner wave resolves no
+    # account and hits one path, and a row reading "n/a" is worse than no row.
+    if counts["account"]:
+        summary["known_accounts"] = _top_offenders(counts["account"])
+    if counts["path"]:
+        summary["top_paths"] = _top_offenders(counts["path"])
+    if peers:
+        # Some of the addresses above did not come off the socket, so they are
+        # only as trustworthy as the proxy that set them -- and a spoofed
+        # ``X-Forwarded-For`` is exactly what a source does to spread its
+        # failures across the blocklist's buckets. Naming the sockets they
+        # actually arrived on is what makes that visible.
+        summary["arrived_via_peers"] = _top_offenders(peers)
+    return summary
+
+
+@dataclass
+class _AuthFailureIncident:
+    """Running tally of one auth-failure incident, for its recovery card.
+
+    The window the rule alerts on holds the last ``window_sec`` of failures,
+    which is the right thing to breach on and the wrong thing to close on: by
+    the time the incident resolves that window is empty, which is why the
+    recovery card had nothing to say. This accumulates across the incident
+    instead, and is reset when its summary is handed over.
+
+    Counters are bounded (:data:`_MAX_TRACKED_OFFENDERS`): an incident lasts as
+    long as the spike does, and a source rotating addresses would otherwise let
+    it grow for that whole time.
+    """
+
+    ips: collections.Counter[str] = field(default_factory=collections.Counter)
+    keys: collections.Counter[str] = field(default_factory=collections.Counter)
+    reasons: collections.Counter[str] = field(default_factory=collections.Counter)
+    accounts: collections.Counter[str] = field(default_factory=collections.Counter)
+    total: int = 0
+    peak_in_window: int = 0
+    capped: bool = False
+    opened_at: float | None = None
+    last_seen: float | None = None
+
+    @property
+    def is_open(self) -> bool:
+        return self.opened_at is not None
+
+    def open(self, now: float) -> None:
+        """Start an incident, or leave a running one running."""
+        if self.opened_at is None:
+            self.opened_at = now
+
+    def observe(self, entries: list[dict[str, Any]], *, window_count: int, now: float) -> None:
+        """Fold failures into the open incident. A no-op when none is open.
+
+        Records arriving while the breach settles are folded in too: the
+        in-window count dipping under the threshold is not the incident ending,
+        and the addresses still arriving are the ones worth naming.
+        """
+        if self.opened_at is None:
+            return
+        self.last_seen = now
+        self.peak_in_window = max(self.peak_in_window, window_count)
+        for entry in entries:
+            self.total += 1
+            for counter, key in (
+                (self.ips, entry.get("remote_ip")),
+                (self.keys, entry.get("key_prefix")),
+                (self.reasons, entry.get("reason")),
+                (self.accounts, entry.get("account")),
+            ):
+                if not key:
+                    continue
+                if key not in counter and len(counter) >= _MAX_TRACKED_OFFENDERS:
+                    self.capped = True
+                    continue
+                counter[key] += 1
+
+    def summarize_and_reset(self, *, window_sec: int) -> dict[str, Any]:
+        """Describe the closing incident and clear the tally.
+
+        Empty when no incident was recorded — a resolution the rule never saw
+        open (a restart mid-incident, a breach closed by the stale sweep before
+        any record landed). Returning nothing leaves the recovery card as it was
+        rather than padding it with zeroes that read like measurements.
+        """
+        if not self.is_open or not self.total:
+            self.reset()
+            return {}
+        duration = int(max(0.0, (self.last_seen or 0.0) - (self.opened_at or 0.0)))
+        summary: dict[str, Any] = {
+            # Named for what it is: everything counted while the incident was
+            # open, not a rate and not a reading of the window, which is empty
+            # by now. "(capped)" says the per-dimension tallies stopped taking
+            # new values, so the totals below them are floors.
+            "failures_in_incident": f"{self.total} (capped)" if self.capped else str(self.total),
+            "peak_in_window": f"{self.peak_in_window} per {window_sec}s",
+            "incident_duration_sec": duration,
+            "distinct_ips": len(self.ips),
+            "top_ips": _top_offenders(self.ips, capped=self.capped),
+            "top_key_prefixes": _top_offenders(self.keys, capped=self.capped),
+            "failure_reasons": _top_offenders(self.reasons, capped=self.capped),
+        }
+        if self.accounts:
+            summary["known_accounts"] = _top_offenders(self.accounts, capped=self.capped)
+        self.reset()
+        return summary
+
+    def reset(self) -> None:
+        for counter in (self.ips, self.keys, self.reasons, self.accounts):
+            counter.clear()
+        self.total = 0
+        self.peak_in_window = 0
+        self.capped = False
+        self.opened_at = None
+        self.last_seen = None
+
+
 class AuthFailureSpikeRule:
     """Rule 4: auth-failure count over a sliding window.
 
@@ -329,6 +554,13 @@ class AuthFailureSpikeRule:
     ``servers/auth.py``, independently of this rule, so a disabled rule costs
     an operator no evidence. A deployment that wants the page sets
     ``enabled: true`` in its alerts.yaml.
+
+    When it does page, the card answers the two questions the operator opens it
+    with — *where from* and *whose* — rather than a count they cannot act on.
+    The breach card describes the window that breached; the recovery card
+    describes the incident that just closed, via
+    :class:`_AuthFailureIncident`, because the window it breached on is empty by
+    the time it resolves and a bare "Recovered" names nothing to go and look at.
     """
 
     name = "auth_failure_spike"
@@ -336,6 +568,7 @@ class AuthFailureSpikeRule:
     def __init__(self, cfg: CountRule) -> None:
         self._cfg = cfg
         self._window = _SlidingWindow(cfg.window_sec)
+        self._incident = _AuthFailureIncident()
 
     async def on_record(self, record: logging.LogRecord) -> None:
         """Track auth-failure events and alert when the count exceeds threshold in-window."""
@@ -344,36 +577,35 @@ class AuthFailureSpikeRule:
         if getattr(record, "event", None) != "auth_failure":
             return
         now = time.time()
-        self._window.add(
-            now,
-            {
-                "remote_ip": getattr(record, "remote_ip", None),
-                "key_prefix": getattr(record, "key_prefix", None),
-            },
-        )
+        entry = _auth_failure_entry(record)
+        self._window.add(now, entry)
         items = self._window.items(now)
+        breached = len(items) > self._cfg.threshold_count
+        if breached and not self._incident.is_open:
+            # Seeded from the whole breaching window rather than from the one
+            # record that crossed the threshold: those failures *are* the
+            # incident, and counting only what came after would report a total
+            # smaller than the peak it also reports, from a card that named
+            # none of the sources the breach was raised on.
+            self._incident.open(now)
+            arrived = items
+        else:
+            arrived = [entry]
+        self._incident.observe(arrived, window_count=len(items), now=now)
 
         def breach_context() -> dict[str, Any]:
-            ip_counts: collections.Counter[str] = collections.Counter(
-                it["remote_ip"] for it in items if it["remote_ip"]
-            )
-            key_counts: collections.Counter[str] = collections.Counter(
-                it["key_prefix"] for it in items if it["key_prefix"]
-            )
             return {
                 "count": len(items),
                 "window_sec": self._cfg.window_sec,
-                "top_ips": (
-                    ", ".join(f"{ip} ({c})" for ip, c in ip_counts.most_common(3)) or "n/a"
-                ),
-                "top_key_prefixes": (
-                    ", ".join(f"{p} ({c})" for p, c in key_counts.most_common(3)) or "n/a"
-                ),
+                **_auth_failure_summary(items),
             }
+
+        def resolution_context() -> dict[str, Any]:
+            return self._incident.summarize_and_reset(window_sec=self._cfg.window_sec)
 
         await alert_on_transition(
             key="auth_failure_spike",
-            breached=len(items) > self._cfg.threshold_count,
+            breached=breached,
             severity=AlertSeverity.WARN,
             title="Auth failure spike",
             context=breach_context,
@@ -382,6 +614,7 @@ class AuthFailureSpikeRule:
             # whose traffic stops should close on its own timescale.
             stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
             now=now,
+            resolution_context=resolution_context,
         )
 
 

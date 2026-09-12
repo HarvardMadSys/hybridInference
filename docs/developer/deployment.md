@@ -274,6 +274,39 @@ purpose:
   an address. It is on because the source is sometimes the deployment's own;
   see the troubleshooting entry below.
 
+### What an auth alert tells you
+
+An auth-failure card names the sources and, where it can, the accounts behind
+them — the addresses they came from, how many distinct ones, the leading
+characters of the keys presented, why each failed, and the paths being hit. The
+recovery card carries the same picture of the incident that just closed, rather
+than only the rule's name: by the time a spike resolves, the window it breached
+on is empty, so the numbers have to come from a tally kept across the incident.
+
+Two of those lines are worth reading carefully:
+
+- **Known accounts.** Most auth failures are anonymous by construction — nobody
+  was authenticated, which is the failure. A named account means a key this
+  deployment *did* issue was presented and refused, with `credential_state`
+  saying why (`revoked`, `expired`, `user_suspended`). That is the actionable
+  case: a monitor, CI job or service account whose credential went stale.
+  Resolving the owner costs one indexed lookup per failed auth, bounded by the
+  shared rejection-enrichment budget and shed instantly under a flood; set
+  `AUTH_FAILURE_IDENTIFY_CALLER=false` to spend nothing and lose the line. Read
+  a named account as evidence and no named account as *unknown*, never as proof
+  the traffic is external: the lookup is shed during exactly the flood you are
+  investigating, and answers nothing on a timeout, a failed lookup, or with the
+  setting off.
+- **Arrived via peers.** Present only when the reported addresses did not come
+  off the socket. They are then only as trustworthy as the proxy that set them,
+  and a forged `X-Forwarded-For` is exactly how a source spreads its failures
+  across the blocklist's buckets. The line names the sockets they actually
+  arrived on.
+
+Counts marked `(capped)` are floors, not totals: a source rotating addresses
+faster than the tally tracks them stops being counted rather than being allowed
+to grow it without bound. Do not size an incident from a capped number.
+
 ## Database
 
 PostgreSQL 16 runs in the `postgres` service with its data in the Docker volume

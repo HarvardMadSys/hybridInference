@@ -14,7 +14,7 @@ from typing import Any
 from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 from serving.adapters.key_pool import KeyPoolRoleRestricted
 from serving.exceptions import operator_safe_error
-from serving.observability.alerts import AlertSeverity, alert_on_transition, escape_slack_text
+from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
@@ -840,7 +840,9 @@ class _CircuitBreaker:
         if not self._affected_callers:
             return None
         named = self._affected_callers.most_common(top)
-        parts = [f"{escape_slack_text(user)} x{count}" for user, count in named]
+        # Not escaped here: ``alerts._format_message`` escapes every context
+        # value it renders, and escaping twice would double-encode an "&".
+        parts = [f"{user} x{count}" for user, count in named]
         remaining = len(self._affected_callers) - len(named)
         if remaining > 0:
             # "+N more" counts only callers the tracker kept. Once it is full

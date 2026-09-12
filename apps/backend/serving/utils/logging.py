@@ -32,6 +32,11 @@ _STRUCTURED_LOG_KEYS = (
     "session_id",
     "user_id",
     "key_prefix",
+    # Why a *resolved* credential was refused (revoked / expired /
+    # user_suspended), set alongside "user_id" on an auth_failure record for a
+    # key this deployment did issue. Without it the alert can name the account
+    # but not what is wrong with its key, which is the actionable half.
+    "credential_state",
     "reason",
     "age_sec",
     "idle_sec",
