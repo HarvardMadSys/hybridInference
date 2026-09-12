@@ -5,7 +5,6 @@ Covers TTL behavior, cache hits/misses, and write-through invalidation.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -141,11 +140,11 @@ class TestCacheHits:
     async def test_audit_entry_is_not_cached_past_the_key_deadline(
         self, cached, inner_store, cache
     ):
-        """A key expiring inside the TTL shortens the entry to its deadline.
+        """A key expiring inside the TTL shortens the entry to that window.
 
         Expiry is the one state here that changes without a write, so nothing
         invalidates on it. Cached for the full TTL, a row resolved seconds
-        before ``expires_at`` would go on reporting a live credential after it
+        before the deadline would go on reporting a live credential after it
         had lapsed — and, being reported live, would put its owner back into
         ``api_logs.user_id``.
         """
@@ -153,8 +152,8 @@ class TestCacheHits:
             "user_id": "u1",
             "role": "admin",
             "key_status": "active",
-            "expires_at": datetime.now(timezone.utc) + timedelta(seconds=4),
             "key_expired": False,
+            "expires_in_sec": 4.0,
             "user_status": "active",
         }
         recorded: list[int] = []
@@ -168,11 +167,7 @@ class TestCacheHits:
 
         await cached.get_key_owner_for_audit("h1")
 
-        # Bounded rather than exact: the deadline is four seconds out at the
-        # moment the row is built, and the assertion should survive a slow
-        # runner taking some of that before the cache is written.
-        assert len(recorded) == 1
-        assert 0 < recorded[0] <= 4
+        assert recorded == [4]
 
     async def test_audit_entry_trusts_the_row_over_a_local_clock(self, cached, inner_store, cache):
         """A live row whose deadline has locally passed gets the shortest life.
@@ -187,8 +182,8 @@ class TestCacheHits:
             "user_id": "u1",
             "role": "admin",
             "key_status": "active",
-            "expires_at": datetime.now(timezone.utc) - timedelta(seconds=2),
             "key_expired": False,
+            "expires_in_sec": -2.0,
             "user_status": "active",
         }
         recorded: list[int] = []
@@ -212,8 +207,8 @@ class TestCacheHits:
             "user_id": "u1",
             "role": "admin",
             "key_status": "active",
-            "expires_at": datetime.now(timezone.utc) - timedelta(days=1),
             "key_expired": True,
+            "expires_in_sec": -86400.0,
             "user_status": "active",
         }
         recorded: list[int] = []
@@ -237,8 +232,8 @@ class TestCacheHits:
             "user_id": "u1",
             "role": "admin",
             "key_status": "active",
-            "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
             "key_expired": False,
+            "expires_in_sec": 2592000.0,
             "user_status": "active",
         }
         recorded: list[int] = []

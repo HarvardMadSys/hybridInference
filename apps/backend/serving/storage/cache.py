@@ -16,13 +16,13 @@ import fnmatch
 import math
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from .base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import datetime
     from decimal import Decimal
     from typing import Literal
 
@@ -103,33 +103,35 @@ def _audit_entry_ttl(row: Row) -> int:
     """Return how long an audit row may be cached, never past its expiry.
 
     Every other state this row reports changes through a write that
-    :class:`CachedOperationalStore` invalidates on. A key reaching its
-    ``expires_at`` changes none, so the deadline is the only thing that can
-    stop a ``key_expired: False`` answer from outliving the fact. Rounded up
-    to at least a second, so a deadline moments away still caches rather than
+    :class:`CachedOperationalStore` invalidates on. A key reaching its deadline
+    changes none, so the remaining time is the only thing that can stop a
+    ``key_expired: False`` answer from outliving the fact. Rounded up to at
+    least a second, so a deadline moments away still caches rather than
     hammering the database, and only ever shortens the normal TTL.
 
-    Which of the two says "expired" matters: the row's flag is the answer
-    being cached, and the local remainder only bounds how long to keep it.
+    Both inputs come from the row, and deliberately so. The flag says whether
+    the credential has expired and ``expires_in_sec`` says how long that answer
+    holds; both are measured by the database. Subtracting a stored deadline
+    from this process's clock instead would extend the window by whatever the
+    gateway runs behind the database -- twenty seconds of skew would keep a
+    key cached as live for twenty seconds past its deadline.
     """
     if row.get("key_expired"):
-        # Already past the deadline *as the database evaluated it*. That answer
-        # no longer changes, so the entry has nothing to outlive.
+        # Already expired, as the database evaluated it. That answer no longer
+        # changes, so the entry has nothing to outlive.
         return _AUTH_CONTEXT_TTL
-    expires_at = row.get("expires_at")
-    if not isinstance(expires_at, datetime):
+    remaining = row.get("expires_in_sec")
+    if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+        # No deadline, or a store that does not report one.
         return _AUTH_CONTEXT_TTL
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
     if remaining >= _AUTH_CONTEXT_TTL:
         return _AUTH_CONTEXT_TTL
-    # Floored at a second rather than keyed off the sign of the remainder: the
-    # row's own flag decides whether it has expired, and the two can disagree
-    # across the query -- the database calls the key live moments before the
-    # deadline, this process reads a remainder already past it. Treating that
-    # as "expired, so cache it fully" would hand the full TTL to the one row
-    # this cap exists to shorten.
+    # Floored at a second rather than keyed off the sign: the flag decides
+    # whether the credential has expired, and it and the remainder can
+    # disagree across the query -- the database calls the key live, and by the
+    # time it answers the remainder has gone negative. Treating that as
+    # "expired, so cache it fully" would hand the full TTL to the one row this
+    # cap exists to shorten.
     return max(1, math.ceil(remaining))
 
 
@@ -255,7 +257,7 @@ class CachedOperationalStore(OperationalStore):
         Expiry is the exception that invalidation cannot cover: no write
         happens when a key's deadline passes, so there is no event to clear on
         and a row cached as "not expired" would keep saying so afterwards. The
-        TTL is therefore capped at the deadline itself.
+        TTL is therefore capped at the time the database says is left.
         """
         ck = self._auth_audit_key(key_hash)
         cached = await self._cache.get(ck)
