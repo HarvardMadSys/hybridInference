@@ -1121,6 +1121,17 @@ async def chat_completions(
         # Record routing observation for online learning (RouteWise)
         if not is_synthetic_probe:
             ns_usage = normalize_usage(raw_usage) or {}
+            # Authoritative observed cache usage from the provider.
+            # None means "provider did not report" (NOT equivalent to 0).
+            cached_tokens_raw = ns_usage.get("cache_read_tokens")
+            cached_tokens: int | None = None
+            if cached_tokens_raw is not None:
+                try:
+                    cached_tokens = int(cached_tokens_raw)
+                    if cached_tokens < 0:
+                        cached_tokens = None
+                except (TypeError, ValueError):
+                    cached_tokens = None
             completions_logger.record_routing_observation(
                 active_router,
                 model,
@@ -1131,6 +1142,7 @@ async def chat_completions(
                 prompt_tokens=int(ns_usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(ns_usage.get("completion_tokens", 0) or 0),
                 success=True,
+                cached_tokens=cached_tokens,
             )
 
         if is_synthetic_probe and provider != "router":

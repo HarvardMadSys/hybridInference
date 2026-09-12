@@ -156,6 +156,8 @@ class FeasibleProviderCandidate:
     prefix_cache_discount_usd: float = 0.0
     prefix_cache_expected_tokens: float = 0.0
     prefix_cache_adjustment_applied: bool = False
+    prefix_cache_evidence_state: str = "UNKNOWN"
+    prefix_cache_evidence_confidence: float = 0.0
     quota_pool: str | None = None
     concurrency_pool: str | None = None
     quota_used_fraction: float | None = None
@@ -1398,6 +1400,11 @@ class RouteWiseRouter:
                 output_tokens=predicted_output_tokens,
             )
 
+            # Default evidence fields (overridden in the on_demand branch when
+            # prefix-cache cost adjustment applies).
+            evidence_state = "UNKNOWN"
+            evidence_confidence = 0.0
+
             provider_type: Literal["on_demand", "quota", "concurrency"]
             if route_candidate.provider_type is ProviderType.ON_DEMAND:
                 provider_type = "on_demand"
@@ -1412,6 +1419,8 @@ class RouteWiseRouter:
                         prefix_discount,
                         prefix_expected,
                         prefix_applied,
+                        evidence_state,
+                        evidence_confidence,
                     ) = self._apply_prefix_cache_cost_adjustment(
                         model_id=model_id,
                         route_candidate=route_candidate,
@@ -1490,6 +1499,8 @@ class RouteWiseRouter:
                     prefix_cache_discount_usd=prefix_discount,
                     prefix_cache_expected_tokens=prefix_expected,
                     prefix_cache_adjustment_applied=prefix_applied,
+                    prefix_cache_evidence_state=evidence_state,
+                    prefix_cache_evidence_confidence=evidence_confidence,
                     quota_pool=quota_pool_id,
                     concurrency_pool=concurrency_pool_id,
                     quota_used_fraction=used_fraction,
@@ -1551,17 +1562,17 @@ class RouteWiseRouter:
         pricing: CandidatePricing,
         cold_cost: float,
         prefix_context: tuple[tuple[Any, ...], dict[str, Any]],
-    ) -> tuple[float, float, float, bool]:
+    ) -> tuple[float, float, float, bool, str, float]:
         """Return API effective cost after a guarded prefix-cache discount."""
         adapter = route_candidate.adapter
         if self._has_rotating_key_pool(adapter):
-            return cold_cost, 0.0, 0.0, False
+            return cold_cost, 0.0, 0.0, False, "UNKNOWN", 0.0
         delta = price_delta_per_token(
             pricing.prompt,
             pricing.cache_read,
         )
         if delta <= 0.0:
-            return cold_cost, 0.0, 0.0, False
+            return cold_cost, 0.0, 0.0, False, "UNKNOWN", 0.0
 
         blocks, info = prefix_context
         provider_id = str(getattr(adapter.config, "provider", "") or "")
@@ -1586,7 +1597,14 @@ class RouteWiseRouter:
         )
         discount = record.cache_discount if record.would_apply else 0.0
         adjusted = max(0.0, cold_cost - discount)
-        return adjusted, discount, record.expected_cached_tokens, record.would_apply
+        return (
+            adjusted,
+            discount,
+            record.expected_cached_tokens,
+            record.would_apply,
+            record.evidence_state,
+            record.evidence_confidence,
+        )
 
     @staticmethod
     def _has_rotating_key_pool(adapter: Any) -> bool:
@@ -1727,6 +1745,16 @@ class RouteWiseRouter:
                 c.endpoint_id: c.prefix_cache_expected_tokens
                 for c in candidates
                 if c.prefix_cache_expected_tokens > 0
+            },
+            "candidate_prefix_cache_evidence_states": {
+                c.endpoint_id: c.prefix_cache_evidence_state
+                for c in candidates
+                if c.prefix_cache_evidence_state != "UNKNOWN"
+            },
+            "candidate_prefix_cache_evidence_confidence": {
+                c.endpoint_id: c.prefix_cache_evidence_confidence
+                for c in candidates
+                if c.prefix_cache_evidence_confidence > 0.0
             },
             "candidate_mean_ttft_sec": {c.endpoint_id: c.mean_ttft_sec for c in candidates},
             "candidate_mean_ttft_sources": {c.endpoint_id: c.mean_ttft_source for c in candidates},
@@ -2244,6 +2272,14 @@ class RouteWiseRouter:
         actually served (``obs.endpoint_id``) — so failed, fallback, or lost-hedge
         attempts are never recorded as warm. ``RoutingObservation.request_id``
         explicitly correlates the success with its route-time prefix snapshot.
+
+        Authoritative observed cache usage (``obs.cached_tokens``) is recorded as
+        evidence for the scope:
+
+        - ``cached_tokens > 0``: VERIFIED_REUSABLE (positive evidence).
+        - ``cached_tokens == 0``: NEGATIVE (degrades confidence).
+        - ``cached_tokens is None``: no evidence; nothing recorded.
+          Successful dispatch may still establish POTENTIAL warming.
         """
         request_id = str(getattr(obs, "request_id", None) or "")
         if not request_id:
@@ -2266,6 +2302,14 @@ class RouteWiseRouter:
             scope,
             stashed.blocks,
         )
+        # Record authoritative observed cache usage as evidence.
+        cached_tokens = getattr(obs, "cached_tokens", None)
+        if cached_tokens is not None:
+            self.prefix_cache.record_evidence(scope, cached_tokens)
+        else:
+            # No authoritative observation: successful dispatch may still
+            # establish potential warming.
+            self.prefix_cache.record_dispatch(scope)
 
     @staticmethod
     def _cache_affecting_params(params: Any) -> str:

@@ -574,6 +574,8 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
             cache_params="{}",
         )
         router.prefix_cache.remember(scope, blocks)
+        # Record verified reuse evidence so the discount can apply.
+        router.prefix_cache.record_evidence(scope, cached_tokens=800)
 
     @staticmethod
     def _select(router: RouteWiseRouter):

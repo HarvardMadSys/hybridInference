@@ -106,6 +106,18 @@ class RoutingObservation:
     terminal: bool = True
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_tokens: int | None = None
+    """Authoritative observed cache usage from the provider.
+
+    - ``None``: provider did not report cache info, or usage is unavailable
+      (e.g. client disconnect before final usage). No positive or negative
+      evidence should be manufactured from this state.
+    - ``0``: provider explicitly reported no cache reuse for this request.
+    - ``>0``: provider reported cache reuse.
+
+    This value must NOT be synthesized: if the provider did not report usage,
+    leave it as ``None``. ``None`` and ``0`` MUST remain distinct.
+    """
     strategy_metadata: dict[str, Any] = field(default_factory=dict)
 
 

@@ -728,6 +728,17 @@ class StreamSession:
 
         if not self._is_synthetic_probe:
             stream_usage = normalize_usage(self._usage_data) if self._usage_data else {}
+            # Authoritative observed cache usage from the provider.
+            # None means "provider did not report" (NOT equivalent to 0).
+            cached_tokens_raw = stream_usage.get("cache_read_tokens")
+            cached_tokens: int | None = None
+            if cached_tokens_raw is not None:
+                try:
+                    cached_tokens = int(cached_tokens_raw)
+                    if cached_tokens < 0:
+                        cached_tokens = None
+                except (TypeError, ValueError):
+                    cached_tokens = None
             self._completions_logger.record_routing_observation(
                 self._active_router,
                 self._model,
@@ -741,6 +752,7 @@ class StreamSession:
                 # a routing win either -- don't reward RouteWise's cost/quality
                 # model for a response the user got nothing out of.
                 success=not is_empty_completion,
+                cached_tokens=cached_tokens,
             )
 
     async def _finalize_failure(self, exc: BaseException) -> None:
