@@ -41,8 +41,37 @@ from serving.utils.identity_tokens import (
     validate_authorization_request,
     verify_pkce,
 )
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/v1/identity", tags=["identity"])
+
+#: These three are the only messages this router publishes for a configuration
+#: fault, and they are static on purpose.
+#:
+#: ``str(exc)`` used to go out instead, and every one of these endpoints is
+#: reachable without a gateway credential (``/jwks`` and ``/token`` are
+#: unauthenticated by design). What that published was operator-side
+#: configuration detail: ``"IDENTITY_JWT_PRIVATE_KEY is not set"``,
+#: ``"... is not a usable PEM private key"``, ``"... must be an RSA key for
+#: RS256, got Ed25519PrivateKey"``, ``"... is 1024 bits; minimum is 2048"`` --
+#: environment variable names, key algorithm, and key size, handed to anyone
+#: who asks. The *distinction* those errors encode is still published, because
+#: consumers depend on it: a 404 means "this deployment does not offer
+#: cross-service identity" and a 500 means "it does, and it is broken". The
+#: status codes are unchanged; only the prose is. The full text now goes to the
+#: log, keyed to the same request as the ``X-Request-ID`` response header.
+_NOT_CONFIGURED_MESSAGE = "Cross-service identity is not configured on this deployment."
+_MISCONFIGURED_MESSAGE = "Cross-service identity is misconfigured on this deployment."
+#: Developer-authored and static, and it names the three fields a caller can
+#: actually fix. It is not derived from the exception, so it cannot pick up
+#: ``f"unknown client_id {client_id!r}"`` -- and a 400 that does not say which
+#: of the three was wrong is also the answer that is not an oracle.
+_INVALID_AUTHORIZATION_MESSAGE = (
+    "The authorization request is not acceptable. Check client_id, redirect_uri, "
+    "and code_challenge_method."
+)
 
 #: Consumers cache verification keys and re-fetch on an unknown ``kid``, so a
 #: rotation is picked up by the miss rather than by expiry. Five minutes keeps
@@ -85,18 +114,31 @@ async def jwks(response: Response) -> dict:
         # The other half of that distinction. A key is configured and cannot be
         # used, which is an operator error — answering 404 here would let a
         # production deploy with a mangled PEM pass for a feature nobody enabled.
+        _log_identity_fault("jwks", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
                 "error": {
                     "type": "identity_key_misconfigured",
-                    "message": str(exc),
+                    "message": _MISCONFIGURED_MESSAGE,
                 }
             },
         ) from exc
 
     response.headers["Cache-Control"] = _CACHE_CONTROL
     return document
+
+
+def _log_identity_fault(where: str, exc: Exception) -> None:
+    """Record the configuration fault the response no longer carries.
+
+    Redaction is about the response only: this is what an operator reads to
+    find out that the PEM is mangled or the issuer is unset.
+    """
+    logger.error(
+        "identity_configuration_error",
+        extra={"endpoint": where, "error_type": type(exc).__name__, "detail": str(exc)},
+    )
 
 
 def _error(status_code: int, error_type: str, message: str) -> HTTPException:
@@ -174,12 +216,24 @@ async def create_authorization_code(
             method=body.code_challenge_method,
         )
     except InvalidAuthorizationRequest as exc:
-        raise _error(status.HTTP_400_BAD_REQUEST, "invalid_request", str(exc)) from exc
-    except (IdentityNotConfigured, IdentityKeyUnavailable) as exc:
-        raise _error(status.HTTP_404_NOT_FOUND, "identity_not_configured", str(exc)) from exc
-    except IdentityKeyMisconfigured as exc:
+        logger.warning(
+            "identity_authorization_rejected",
+            extra={"endpoint": "code", "detail": str(exc)},
+        )
         raise _error(
-            status.HTTP_500_INTERNAL_SERVER_ERROR, "identity_key_misconfigured", str(exc)
+            status.HTTP_400_BAD_REQUEST, "invalid_request", _INVALID_AUTHORIZATION_MESSAGE
+        ) from exc
+    except (IdentityNotConfigured, IdentityKeyUnavailable) as exc:
+        _log_identity_fault("code", exc)
+        raise _error(
+            status.HTTP_404_NOT_FOUND, "identity_not_configured", _NOT_CONFIGURED_MESSAGE
+        ) from exc
+    except IdentityKeyMisconfigured as exc:
+        _log_identity_fault("code", exc)
+        raise _error(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "identity_key_misconfigured",
+            _MISCONFIGURED_MESSAGE,
         ) from exc
 
     code, code_hash = new_code()
@@ -224,10 +278,16 @@ async def exchange_authorization_code(
     try:
         assert_issuance_configured()
     except (IdentityNotConfigured, IdentityKeyUnavailable) as exc:
-        raise _error(status.HTTP_404_NOT_FOUND, "identity_not_configured", str(exc)) from exc
-    except IdentityKeyMisconfigured as exc:
+        _log_identity_fault("token", exc)
         raise _error(
-            status.HTTP_500_INTERNAL_SERVER_ERROR, "identity_key_misconfigured", str(exc)
+            status.HTTP_404_NOT_FOUND, "identity_not_configured", _NOT_CONFIGURED_MESSAGE
+        ) from exc
+    except IdentityKeyMisconfigured as exc:
+        _log_identity_fault("token", exc)
+        raise _error(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "identity_key_misconfigured",
+            _MISCONFIGURED_MESSAGE,
         ) from exc
 
     # Claimed before the caller's own inputs are checked, and deliberately so. A
@@ -264,14 +324,20 @@ async def exchange_authorization_code(
     try:
         token = mint_identity_token(user_id=user["id"])
     except (IdentityNotConfigured, IdentityKeyUnavailable) as exc:
-        raise _error(status.HTTP_404_NOT_FOUND, "identity_not_configured", str(exc)) from exc
+        _log_identity_fault("token", exc)
+        raise _error(
+            status.HTTP_404_NOT_FOUND, "identity_not_configured", _NOT_CONFIGURED_MESSAGE
+        ) from exc
     except IdentityKeyMisconfigured as exc:
         # Reachable only if the configuration changed between the precheck above
         # and this line — a rotation landing mid-request. Kept so that becomes a
         # typed error rather than a bare 500 with a traceback, and so the
         # unset/broken distinction survives all the way out.
+        _log_identity_fault("token", exc)
         raise _error(
-            status.HTTP_500_INTERNAL_SERVER_ERROR, "identity_key_misconfigured", str(exc)
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "identity_key_misconfigured",
+            _MISCONFIGURED_MESSAGE,
         ) from exc
 
     return {
