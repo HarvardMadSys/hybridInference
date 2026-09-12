@@ -778,10 +778,21 @@ class OperationalStore(ABC):
         on users who were never refused anything. Only the key's own limit
         answers "did this user run out?".
 
-        Implementations must use the enforcer's predicate verbatim —
-        ``spend + ESTIMATED_REQUEST_COST_USD > quota``, see
-        :func:`serving.quota.check` — so a user appears here on exactly the
-        request the gate starts refusing, not one earlier or later.
+        Implementations must use the enforcer's predicate verbatim — ``spend +
+        ESTIMATED_REQUEST_COST_USD > quota`` — so a user appears here on the
+        request the gate starts refusing, not one earlier or later. Take the
+        two numbers from :mod:`serving.quota`
+        (:data:`~serving.quota.ESTIMATED_REQUEST_COST_USD` and the NULL
+        fallback :data:`~serving.quota.DEFAULT_DAILY_QUOTA_USD`), which is what
+        the cloud-agent *grant* door uses via :func:`serving.quota.check`.
+
+        Be aware that this is not a guarantee across both doors. The API-key
+        door — ``verify_api_key`` in :mod:`serving.servers.auth`, and the path
+        nearly all traffic takes — does not import :mod:`serving.quota` for its
+        gate; it hardcodes the same ``0.01`` estimate and the same ``1000.0``
+        fallback inline. The values coincide today, so today the alert and the
+        429 agree. Tune one side without the other and they desynchronise, with
+        nothing to catch it.
 
         Args:
             limit: Most rows to return. Implementations log when the result is

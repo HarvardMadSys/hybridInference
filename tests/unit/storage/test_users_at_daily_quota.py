@@ -1,13 +1,19 @@
 """Unit tests for ``PostgresOperationalStore.query_users_at_daily_quota``.
 
 These mock the asyncpg pool, so what they can check is the *shape* of the
-query — that it asks the enforcer's question, with the enforcer's constants,
-through the enforcer's join — plus the row mapping and the truncation warning.
+query — that it asks the gate's question, binding ``serving.quota``'s constants
+rather than copies of them, through the same join
+``get_quota_context_for_user`` uses — plus the row mapping and the truncation
+warning. See ``test_binds_the_enforcers_constants_rather_than_literals`` for
+the limit of that: it ties this query to the cloud-agent *grant* door, and
+cannot speak for the API-key door, which hardcodes its own copies of the same
+two numbers.
 
 Whether the predicate selects the right rows is a question only a real
 database can answer; that test lives in
 ``tests/integration/storage/test_users_at_daily_quota_postgres.py`` (marked
-``dbtest``). These two are meant to be read together: a change that drifts the
+``dbtest``, and never yet executed in this environment — see its module
+docstring). These two are meant to be read together: a change that drifts the
 join away from ``get_quota_context_for_user`` fails here without needing a
 database, and a change that breaks the boundary fails there.
 """
@@ -61,11 +67,24 @@ class TestQueryShape:
     """The query must ask exactly what the quota gate asks."""
 
     async def test_binds_the_enforcers_constants_rather_than_literals(self, store, pg_conn):
+        """The query must bind ``serving.quota``'s constants, not copies of them.
+
+        What this actually protects is narrower than "the alert and the 429
+        always agree", so be precise about it: it binds this query to the
+        *grant* door, which reads the same two constants through
+        ``quota.check``/``quota.resolve_quota``. Retune ``serving/quota.py`` and
+        both move together; paste ``0.01`` into the SQL and they stop.
+
+        It cannot protect the API-key door. ``verify_api_key`` in
+        ``serving/servers/auth.py`` — the path nearly all traffic takes —
+        hardcodes its own ``0.01`` and its own ``1000.0`` inline and never
+        imports ``serving.quota`` for the gate. The values are equal today by
+        hand, and no test here (or anywhere) would notice if one side were
+        tuned alone.
+        """
         await store.query_users_at_daily_quota()
 
         args = pg_conn.fetch.await_args.args
-        # A hardcoded 0.01 here would silently stop matching the gate the day
-        # someone tunes the estimate in serving/quota.py.
         assert quota.ESTIMATED_REQUEST_COST_USD in args[1:]
         assert quota.DEFAULT_DAILY_QUOTA_USD in args[1:]
         assert "0.01" not in args[0]

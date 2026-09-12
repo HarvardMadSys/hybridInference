@@ -3074,15 +3074,32 @@ class PostgresOperationalStore(OperationalStore):
         status='active'``, so the key join cannot fan a user out into several
         rows; there is no need to de-duplicate afterwards.
 
-        **The predicate is the enforcer's, character for character.**
-        ``spend + ESTIMATED_REQUEST_COST_USD > quota``, with the same constant
-        :func:`serving.quota.check` uses, so the alert and the 429 flip on the
-        same request. Note this means a user can appear here *just under* their
-        cap (19.99 against 20.00): that is not an off-by-one, it is the
-        optimistic pre-charge, and the gate has already started refusing them.
-        The comparison is done in float8 rather than ``numeric`` for the same
-        reason — the enforcer compares Python floats, and matching its
-        arithmetic exactly is worth more here than numeric's extra precision.
+        **The predicate is the enforcer's** — ``spend +
+        ESTIMATED_REQUEST_COST_USD > quota`` — but read carefully *whose*
+        constants those are, because there are two doors and only one of them
+        shares them:
+
+        * The **grant door** (:mod:`serving.grant_auth`, cloud-agent tokens)
+          calls :func:`serving.quota.check` and :func:`serving.quota.resolve_quota`,
+          so it and this query move together by construction: retune
+          ``serving.quota`` and both follow.
+        * The **API-key door** (``verify_api_key`` in
+          :mod:`serving.servers.auth`) is the dominant path, and it does *not*
+          import :mod:`serving.quota` for the gate. It hardcodes its own
+          ``estimated_cost = 0.01`` and its own ``1000.0`` NULL fallback inline.
+
+        The two sets of numbers are equal today, so today the alert and the 429
+        do flip on the same request. That is a coincidence being maintained by
+        hand, not a guarantee: tune either side alone and this query and the
+        API-key gate silently disagree about who is out of quota. Change one,
+        change the other.
+
+        Note also that a user can appear here *just under* their cap (19.99
+        against 20.00): that is not an off-by-one, it is the optimistic
+        pre-charge, and the gate has already started refusing them. The
+        comparison is done in float8 rather than ``numeric`` for a related
+        reason — both doors compare Python floats, and matching that arithmetic
+        exactly is worth more here than numeric's extra precision.
 
         **The scan drives off today's counter rows.** ``user_daily_cost`` is
         keyed ``(user_id, day)`` with an index on ``day``, so today's slice is

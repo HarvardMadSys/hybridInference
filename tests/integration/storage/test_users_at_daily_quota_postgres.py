@@ -8,6 +8,29 @@ it is asked of a real database rather than a mock.
 
 Marked ``dbtest``: excluded from the default suite, run with
 ``pytest -m dbtest tests/integration/``.
+
+**Unproven in this environment.** These tests have never been executed here —
+no Postgres test database is wired up on this host, and the default ``make
+test`` deselects the ``dbtest`` marker, so nothing in this file has run even
+once. Read every assertion below as *intent*, not as evidence. Anyone with a
+test database should run them before trusting the claims they make.
+
+That matters because three behaviours have no other cover anywhere in the
+suite. The unit tests in ``tests/unit/storage/test_users_at_daily_quota.py``
+mock asyncpg, so they can only check the shape of the SQL string, never what it
+selects. These are the cases that only a real database can decide, and only
+this file asks:
+
+1. **An expired key is excluded** — ``test_expired_key_is_excluded``. Exercises
+   ``k.expires_at > NOW()``, which no mock evaluates.
+2. **A revoked key (and a suspended user) is excluded** —
+   ``test_suspended_user_and_revoked_key_are_excluded``. Exercises the
+   ``status = 'active'`` filters on both sides of the join.
+3. **A NULL quota falls back to the enforcer's default of 1000** —
+   ``test_null_quota_falls_back_to_the_enforcers_default``. Exercises
+   ``COALESCE(k.quota_daily_cost_usd, $2)`` against a real pre-migration row.
+
+If any of those three regressed, the default suite would stay green.
 """
 
 from __future__ import annotations
@@ -229,9 +252,12 @@ async def test_yesterdays_spend_is_not_todays(postgres_op_store):
 async def test_suspended_user_and_revoked_key_are_excluded(postgres_op_store):
     """Both are excluded because the enforcer resolves no cap for them.
 
-    ``UserCostOverrunJob`` compensates by holding an already-reported user open
-    for the rest of the UTC day, so this exclusion cannot turn into a false
-    "Recovered" card mid-day.
+    ``UserCostOverrunJob`` compensates for an already-reported user: when one
+    leaves the result set it re-checks them with ``get_quota_context_for_user``,
+    gets the same empty answer this exclusion produces, and holds the incident
+    open rather than letting the stale sweep post a false "Recovered". (A user
+    who leaves because their cap was *raised* still resolves there, and is
+    allowed to close.)
     """
     await _seed(
         postgres_op_store,
