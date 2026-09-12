@@ -1092,12 +1092,18 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.get_user_cost_period(user_id, period)
 
-    async def query_users_over_daily_threshold(
+    async def query_users_at_daily_quota(
         self,
-        thresholds: dict[str, float],
-    ) -> list[tuple[str, str, float]]:
-        """Delegate to wrapped store."""
-        return await self._store.query_users_over_daily_threshold(thresholds)
+        *,
+        limit: int = 500,
+    ) -> list[tuple[str, str, float, float]]:
+        """Delegate to wrapped store.
+
+        Deliberately uncached, like the threshold query it replaces: the alert
+        job's whole job is to notice the moment a user crosses their cap, and a
+        cached answer would date the alert by the TTL.
+        """
+        return await self._store.query_users_at_daily_quota(limit=limit)
 
     async def get_batch_usage(
         self, user_ids: list[str], period: Literal["today", "month"]

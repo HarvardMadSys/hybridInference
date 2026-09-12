@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import datetime as dt
+import functools
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol
@@ -597,28 +598,103 @@ class TrackedTaskFailureRateRule:
         )
 
 
+def _quota_card(
+    user_id: str,
+    role: str,
+    spend: float,
+    quota_usd: float,
+    stale: bool,
+) -> dict[str, Any]:
+    """Build the alert context for one account that has consumed its quota."""
+    card = {
+        "user_id": user_id,
+        "role": role,
+        "spend": f"${spend:.2f}",
+        # The account's own cap, not a role threshold — two users with the same
+        # role routinely have different ones, so the card has to carry the
+        # number that was actually enforced on this one.
+        "quota": f"${quota_usd:.2f}",
+        "over_by": f"${spend - quota_usd:+.2f}",
+    }
+    if stale:
+        card["note"] = (
+            "user or key is no longer active; figures are the last observed "
+            "today, held open until the UTC day rolls over"
+        )
+    return card
+
+
 class UserCostOverrunJob:
-    """Periodic job 8: per-user daily-cost threshold overrun."""
+    """Periodic job 8: users who have consumed their daily cost quota.
+
+    Reports accounts the quota gate has started refusing — spend measured
+    against ``api_keys.quota_daily_cost_usd``, the number actually enforced.
+    It used to compare spend against ``thresholds_per_role`` from
+    ``alerts.yaml``, which could not fire in either direction: the gate caps
+    spend at the *key's* limit, so a role threshold above that limit is
+    unreachable, and one below it names users nothing ever refused. Caps vary
+    per key even within one role (pro keys sit at 20/40/80/160/200 here), so no
+    single per-role number could have been right for them anyway.
+    """
 
     name = "user_cost_overrun"
 
     def __init__(self, cfg: UserOverrun, op_store: Any) -> None:
         self._cfg = cfg
         self._op_store = op_store
+        # Users already reported today, and the figures they were reported
+        # with. See ``run`` for why a user who leaves the result set mid-day
+        # must keep being asserted rather than allowed to fall silent.
+        self._latched_day: str | None = None
+        self._latched: dict[str, tuple[str, float, float]] = {}
 
     async def run(self) -> None:
-        """Query users whose daily cost exceeds their role threshold and emit alerts."""
+        """Alert once per user per UTC day on accounts that hit their own cap."""
         if not self._cfg.enabled or self._op_store is None:
             return
         try:
-            rows = await self._op_store.query_users_over_daily_threshold(
-                self._cfg.thresholds_per_role
-            )
+            rows = await self._op_store.query_users_at_daily_quota()
         except Exception:
             log.exception("user_cost_overrun query failed")
             return
-        today = dt.date.today().isoformat()
-        for user_id, role, daily_cost in rows:
+
+        # UTC, not ``date.today()``: the counter this reads rolls at UTC
+        # midnight, and the requirement is one alert per user per UTC day. On a
+        # host in any other zone the local date would split or merge days
+        # against the data, dropping or doubling an alert at the seam.
+        today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        if self._latched_day != today:
+            self._latched_day = today
+            self._latched = {}
+
+        current = {user_id: (role, spend, quota) for user_id, role, spend, quota in rows}
+
+        # The query requires an *active* user holding an *active* key, because
+        # that is the row the enforcer resolves a limit through. So a user
+        # suspended, or a key revoked, after we alerted simply vanishes from
+        # the result set — and since nothing would observe that incident again,
+        # the stale sweep would post "Recovered (no recent samples)" for an
+        # account that is still capped out and, if anything, is now in worse
+        # standing. That card would read as "they stopped spending", which is
+        # the opposite of what happened.
+        #
+        # So a user reported today stays asserted for the rest of the UTC day
+        # on their last known figures. That keeps the exactly-once guarantee
+        # (the dedupe key is unchanged and the cooldown is a day), and lets the
+        # incident close where it always closed: at the day rollover, when the
+        # key changes and the sweep retires yesterday's. The re-asserted card
+        # says the figures are stale, so nobody reads a frozen number as fresh.
+        #
+        # The alternative — dropping the ``status``/``expires_at`` filters so
+        # the row survives — was rejected: it would diverge from the enforcer's
+        # join, and start reporting caps that no request is measured against.
+        latched_only = {
+            user_id: value for user_id, value in self._latched.items() if user_id not in current
+        }
+        self._latched.update(current)
+
+        for user_id, (role, spend, quota_usd) in [*current.items(), *latched_only.items()]:
+            stale = user_id in latched_only
             # Through the tracker, not straight to the sink: the key embeds the
             # day, so once it rolls over nothing observes this one again and the
             # stale sweep is the only thing that can close its incident. Calling
@@ -627,13 +703,11 @@ class UserCostOverrunJob:
                 key=f"cost_overrun:{user_id}:{today}",
                 breached=True,
                 severity=AlertSeverity.WARN,
-                title="User cost overrun",
-                context=lambda user_id=user_id, role=role, daily_cost=daily_cost: {
-                    "user_id": user_id,
-                    "role": role,
-                    "daily_cost": f"${daily_cost:.2f}",
-                    "threshold": f"${self._cfg.thresholds_per_role.get(role, 0):.2f}",
-                },
+                title=f"Daily cost quota consumed by {user_id}",
+                # ``partial`` rather than a lambda over loop variables: the
+                # callable outlives this iteration, and binding by argument is
+                # what keeps every card holding its own user's numbers.
+                context=functools.partial(_quota_card, user_id, role, spend, quota_usd, stale),
                 cooldown_sec=self._cfg.cooldown_sec,
                 stale_after=self._cfg.check_interval_sec * _STALE_WINDOW_FACTOR,
             )
