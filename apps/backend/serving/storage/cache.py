@@ -13,6 +13,7 @@ CacheBackend.
 from __future__ import annotations
 
 import fnmatch
+import math
 import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
@@ -98,19 +99,61 @@ _USER_TTL = 60
 _HEALTH_TTL = 5
 
 
+def _audit_entry_ttl(row: Row) -> int:
+    """Return how long an audit row may be cached, never past its expiry.
+
+    Returns 0 for a row that must not be cached at all.
+
+    Every other state this row reports changes through a write that
+    :class:`CachedOperationalStore` invalidates on. A key reaching its deadline
+    changes none, so the remaining time is the only thing that can stop a
+    ``key_expired: False`` answer from outliving the fact. It only ever
+    shortens the normal TTL, never extends it.
+
+    Both inputs come from the row, and deliberately so. The flag says whether
+    the credential has expired and ``expires_in_sec`` says how long that answer
+    holds; both are measured by the database. Subtracting a stored deadline
+    from this process's clock instead would extend the window by whatever the
+    gateway runs behind the database -- twenty seconds of skew would keep a
+    key cached as live for twenty seconds past its deadline.
+    """
+    if row.get("key_expired"):
+        # Already expired, as the database evaluated it. That answer no longer
+        # changes, so the entry has nothing to outlive.
+        return _AUTH_CONTEXT_TTL
+    remaining = row.get("expires_in_sec")
+    if not isinstance(remaining, (int, float)) or isinstance(remaining, bool):
+        # No deadline, or a store that does not report one.
+        return _AUTH_CONTEXT_TTL
+    if remaining >= _AUTH_CONTEXT_TTL:
+        return _AUTH_CONTEXT_TTL
+    # Truncated, never rounded up: a second of rounding is a second of the row
+    # outliving the deadline it exists to respect, and the lookup's own latency
+    # has already eaten into the window before this value is used. Under a
+    # second there is no whole second left to give, so the row is not cached at
+    # all -- including when the remainder has gone negative while the flag
+    # still says live, which is the two disagreeing across one query rather
+    # than evidence the credential expired. Not caching costs little even
+    # under a flood: the only path that asks is the blocked one, where
+    # ``bounded_enrichment`` already caps lookups at eight at a time and sheds
+    # the rest.
+    return max(0, math.floor(remaining))
+
+
 class CachedOperationalStore(OperationalStore):
     """Transparent caching proxy over any OperationalStore.
 
     Cached reads:
         - get_auth_context_by_key_hash  (30 s)
         - get_auth_context_lightweight  (30 s)
+        - get_key_owner_for_audit       (30 s)
         - get_user_by_id                (60 s)
         - health_check                  ( 5 s)
 
     Write-through invalidation:
         - revoke_key / regenerate_key / update_key  → invalidate key caches
         - delete_user / update_user_fields          → invalidate user cache
-        - approve_user / reject_user                → invalidate user cache
+        - approve_user / reject_user                → invalidate user + auth caches
 
     Everything else passes straight through.
     """
@@ -128,6 +171,12 @@ class CachedOperationalStore(OperationalStore):
     @staticmethod
     def _auth_light_key(key_hash: str) -> str:
         return f"auth_light:{key_hash}"
+
+    @staticmethod
+    def _auth_audit_key(key_hash: str) -> str:
+        # Deliberately inside the ``auth_light:`` namespace -- see
+        # get_key_owner_for_audit for why it shares the existing invalidation.
+        return f"auth_light:audit:{key_hash}"
 
     @staticmethod
     def _user_key(user_id: str) -> str:
@@ -194,6 +243,36 @@ class CachedOperationalStore(OperationalStore):
         result = await self._store.get_auth_context_lightweight(key_hash)
         if result is not None:
             await self._cache.set(ck, result, _AUTH_CONTEXT_TTL)
+        return result
+
+    async def get_key_owner_for_audit(self, key_hash: str) -> Row | None:
+        """Return the cached audit identity for a presented key (30 s TTL).
+
+        Worth caching even though it answers for dead credentials -- more so,
+        in fact: its caller is the blocked-IP rejection path, where one refused
+        source retries in a loop, and a revoked key is a *hit* here where the
+        auth lookups keep missing.
+
+        Keyed under the ``auth_light:`` namespace on purpose, so every
+        invalidation this class already performs on a key or user write clears
+        this entry too. A separate prefix would have to be added to a dozen
+        call sites, and the one that got missed would keep labelling rows with
+        a credential state the database no longer holds.
+
+        Expiry is the exception that invalidation cannot cover: no write
+        happens when a key's deadline passes, so there is no event to clear on
+        and a row cached as "not expired" would keep saying so afterwards. The
+        TTL is therefore capped at the time the database says is left.
+        """
+        ck = self._auth_audit_key(key_hash)
+        cached = await self._cache.get(ck)
+        if cached is not None:
+            return cached
+        result = await self._store.get_key_owner_for_audit(key_hash)
+        if result is not None:
+            ttl = _audit_entry_ttl(result)
+            if ttl > 0:
+                await self._cache.set(ck, result, ttl)
         return result
 
     # -- user writes (invalidate user cache) ---------------------------------
@@ -265,14 +344,24 @@ class CachedOperationalStore(OperationalStore):
         return counts
 
     async def approve_user(self, user_id: str, *, admin_id: str, note: str | None = None) -> None:
-        """Delegate then invalidate user cache."""
+        """Delegate then invalidate user + auth caches."""
         await self._store.approve_user(user_id, admin_id=admin_id, note=note)
         await self._cache.delete(self._user_key(user_id))
+        # These two move ``users.status``, so they invalidate the auth
+        # namespace like every other status write. It used to be enough to drop
+        # the user entry, because the auth lookups filter on an active user and
+        # a pending one was therefore never cached at all. That stopped being
+        # true with ``get_key_owner_for_audit``, which caches a row whatever
+        # state the account is in -- so without this a decision leaves rejection
+        # rows labelled ``user_pending_approval`` for the rest of the TTL.
+        await self.invalidate_auth_caches()
 
     async def reject_user(self, user_id: str, *, admin_id: str, reason: str) -> None:
-        """Delegate then invalidate user cache."""
+        """Delegate then invalidate user + auth caches."""
         await self._store.reject_user(user_id, admin_id=admin_id, reason=reason)
         await self._cache.delete(self._user_key(user_id))
+        # Same reason as approve_user above.
+        await self.invalidate_auth_caches()
 
     async def invalidate_auth_caches(self) -> None:
         """Evict all cached auth-context entries (cache-only, no DB write)."""

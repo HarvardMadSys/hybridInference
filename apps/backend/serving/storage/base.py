@@ -361,6 +361,34 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def get_key_owner_for_audit(self, key_hash: str) -> Row | None:
+        """Resolve who a presented key belongs to, *whatever state it is in*.
+
+        **Never for authentication.** Unlike the two lookups above, this one
+        applies no ``status``/expiry filter, so it answers for a revoked,
+        expired or suspended credential — which is exactly why it must not
+        gate access. Its only caller labels an audit row (the ``ip_blocked``
+        rejection log in ``servers/auth.py``) with the identity behind the key.
+
+        That gap is the whole point: the callers that trip the auth-failure
+        blocklist are, by definition, the ones whose credential no longer
+        resolves — a monitor or CI job whose key was rotated or revoked. The
+        filtered lookups return ``None`` for precisely those, so the row an
+        operator reads while diagnosing the block is the one row that names
+        nobody.
+
+        Returns ``user_id, role, key_status, key_expired, expires_in_sec,
+        user_status`` — or ``None`` when no key with this hash was ever issued
+        (a scanner's random token). ``user_status`` is ``None`` when the owning
+        user row is gone. ``key_expired`` is evaluated by the store, against
+        the same clock the auth lookups use, and ``expires_in_sec`` is measured
+        against that same clock so a cache can stop serving that answer once
+        the deadline passes — expiry being the one state change here that fires
+        no write to invalidate on. ``expires_in_sec`` is ``None`` for a key
+        with no deadline.
+        """
+
+    @abstractmethod
     async def update_key_last_used(self, key_id: int) -> None:
         """Set ``last_used_at = NOW()`` for the given key id. Fire-and-forget."""
 

@@ -379,6 +379,128 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
 
 
 @pytest.mark.asyncio
+async def test_list_reports_the_credential_state_beside_the_user(admin_client_capture):
+    """An ``ip_blocked`` row names its account *and* says the key was dead.
+
+    That path resolves the owner of the presented key without authenticating
+    it, so the account alone would read as that user making an ordinary
+    request. The state is what tells an operator the caller is a monitor or
+    service account whose credential was rotated — and that repairing it will
+    not lift the block.
+    """
+    client, _calls, logger = admin_client_capture
+
+    async def _fake_fetch(query: str, *_args: Any) -> list[Any]:
+        assert "l.metadata->>'credential_state' AS credential_state" in query
+        assert "l.metadata->>'credential_owner_id' AS credential_owner_id" in query
+        return [
+            {
+                # No user_id: the gateway identified this caller from the key
+                # they presented, it did not authenticate them.
+                "request_id": "req-blocked",
+                "user_id": None,
+                "user_name": None,
+                "user_email": None,
+                "model_id": "gpt-4o-mini",
+                "provider": "openai",
+                "timestamp": datetime.now(timezone.utc),
+                "status_code": 429,
+                "latency_ms": 0,
+                "ttft_ms": None,
+                "stream": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "reasoning_tokens": None,
+                "cache_read_tokens": None,
+                "cache_write_tokens": None,
+                "total_tokens": None,
+                "cost_usd": None,
+                "error": "ip_blocked",
+                "user_ip": "203.0.113.7",
+                "peer_ip": None,
+                "ip_source": None,
+                "x_forwarded_for": None,
+                "user_agent": None,
+                "referer": None,
+                "agent": None,
+                "session_id": None,
+                "session_id_source": None,
+                "request_surface": None,
+                "credential_state": "revoked",
+                "credential_owner_id": "user-1",
+                "routewise": None,
+            }
+        ]
+
+    conn = await logger.pool.acquire().__aenter__()
+    conn.fetch = AsyncMock(side_effect=_fake_fetch)
+    conn.fetchrow = AsyncMock(return_value={"total": 1})
+
+    resp = await client.get("/admin/recent-requests")
+    assert resp.status_code == 200, resp.text
+
+    item = resp.json()["requests"][0]
+    assert item["error"] == "ip_blocked"
+    assert item["user_id"] is None
+    assert item["credential_owner_id"] == "user-1"
+    assert item["credential_state"] == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_list_credential_state_is_absent_on_an_ordinary_row(admin_client_capture):
+    """A row whose caller authenticated normally carries no state at all."""
+    client, _calls, logger = admin_client_capture
+
+    async def _fake_fetch(query: str, *_args: Any) -> list[Any]:
+        return [
+            {
+                "request_id": "req-ok",
+                "user_id": "user-1",
+                "user_name": "u",
+                "user_email": "u@example.com",
+                "model_id": "m",
+                "provider": "p",
+                "timestamp": datetime.now(timezone.utc),
+                "status_code": 200,
+                "latency_ms": 100,
+                "ttft_ms": 10,
+                "stream": False,
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "reasoning_tokens": None,
+                "cache_read_tokens": None,
+                "cache_write_tokens": None,
+                "total_tokens": 2,
+                "cost_usd": None,
+                "error": None,
+                "user_ip": None,
+                "peer_ip": None,
+                "ip_source": None,
+                "x_forwarded_for": None,
+                "user_agent": None,
+                "referer": None,
+                "agent": None,
+                "session_id": None,
+                "session_id_source": None,
+                "request_surface": None,
+                "routewise": None,
+            }
+        ]
+
+    conn = await logger.pool.acquire().__aenter__()
+    conn.fetch = AsyncMock(side_effect=_fake_fetch)
+    conn.fetchrow = AsyncMock(return_value={"total": 1})
+
+    resp = await client.get("/admin/recent-requests")
+    assert resp.status_code == 200, resp.text
+
+    item = resp.json()["requests"][0]
+    assert item["credential_state"] is None
+    assert item["credential_owner_id"] is None
+    assert item["user_id"] == "user-1"
+
+
+@pytest.mark.asyncio
 async def test_list_model_filter_escapes_like_wildcards(admin_client_capture):
     client, calls, _logger = admin_client_capture
 

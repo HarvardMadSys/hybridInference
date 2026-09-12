@@ -85,10 +85,33 @@ def _recording_queue(sink: list[dict]):
     return fake_queue_rejection_log
 
 
+def _audit_row(
+    *,
+    user_id: str = "u1",
+    role: str = "pro",
+    key_status: str = "active",
+    key_expired: bool = False,
+    user_status: str | None = "active",
+) -> dict[str, Any]:
+    """One ``get_key_owner_for_audit`` row — live by default.
+
+    That lookup applies no status filter (unlike the auth lookups), so the
+    columns saying whether the credential is live are part of its result and
+    every test here has to state them.
+    """
+    return {
+        "user_id": user_id,
+        "role": role,
+        "key_status": key_status,
+        "key_expired": key_expired,
+        "user_status": user_status,
+    }
+
+
 def _build_blocked_app(
     monkeypatch,
     *,
-    lightweight_user: dict[str, Any] | None,
+    audit_row: dict[str, Any] | None,
     logging_on: bool,
 ) -> tuple[FastAPI, list[dict], MagicMock]:
     """App with a POST inference route, for the ip_blocked rejection path.
@@ -107,7 +130,7 @@ def _build_blocked_app(
     monkeypatch.setattr("serving.servers.auth.queue_rejection_log", _recording_queue(log_calls))
 
     op = MagicMock()
-    op.get_auth_context_lightweight = AsyncMock(return_value=lightweight_user)
+    op.get_key_owner_for_audit = AsyncMock(return_value=audit_row)
 
     async def fake_op_store_dep():
         return op
@@ -165,10 +188,8 @@ async def test_blocked_ip_rejection_logs_prompt_and_user(monkeypatch, blocked_lo
     this path before: the refusal happens in a dependency, so nothing had read
     the body or resolved the presented key.
     """
-    user_row = {"user_id": "u1", "role": "pro", "email": None, "email_verified": True}
-    app, log_calls, _op = _build_blocked_app(
-        monkeypatch, lightweight_user=user_row, logging_on=True
-    )
+    user_row = _audit_row(user_id="u1", role="pro")
+    app, log_calls, _op = _build_blocked_app(monkeypatch, audit_row=user_row, logging_on=True)
     await blocked_localhost("127.0.0.1")
 
     messages = [{"role": "user", "content": "who am I"}]
@@ -187,13 +208,18 @@ async def test_blocked_ip_rejection_logs_prompt_and_user(monkeypatch, blocked_lo
     # Raw request text, not a parsed messages array: nothing decodes an
     # attacker-chosen body on this path. The content is still all there.
     assert '"who am I"' in log_calls[0]["prompt"]
-    assert log_calls[0]["user"] == {"user_id": "u1", "role": "pro", "authenticated": True}
+    assert log_calls[0]["user"] == {
+        "user_id": "u1",
+        "role": "pro",
+        "authenticated": True,
+        "credential_state": "active",
+    }
 
 
 @pytest.mark.asyncio
 async def test_blocked_ip_rejection_without_a_valid_key_has_no_user(monkeypatch, blocked_localhost):
     """A scanner with no resolvable key still logs its prompt, with a null user."""
-    app, log_calls, _op = _build_blocked_app(monkeypatch, lightweight_user=None, logging_on=True)
+    app, log_calls, _op = _build_blocked_app(monkeypatch, audit_row=None, logging_on=True)
     await blocked_localhost("127.0.0.1")
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
@@ -209,6 +235,143 @@ async def test_blocked_ip_rejection_without_a_valid_key_has_no_user(monkeypatch,
     assert '"probe"' in log_calls[0]["prompt"]
 
 
+def _restore_real_queue(monkeypatch) -> None:
+    """Undo the ``queue_rejection_log`` stand-in so the real writer runs.
+
+    Re-patching rather than ``monkeypatch.undo()``: the blocked_localhost
+    fixture shares this monkeypatch, and undoing everything would also restore
+    the blocklist settings the test needs.
+    """
+    from serving.observability.rejection_log import queue_rejection_log
+
+    monkeypatch.setattr("serving.servers.auth.queue_rejection_log", queue_rejection_log)
+
+
+async def _blocked_call(app) -> None:
+    """POST one inference request from the blocked address, then settle tasks."""
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer hyi-stale"},
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        await asyncio.sleep(0)
+    assert resp.status_code == 429
+
+
+@pytest.mark.parametrize(
+    ("row", "state"),
+    [
+        (_audit_row(key_status="revoked"), "revoked"),
+        (_audit_row(key_expired=True), "expired"),
+        (_audit_row(user_status="suspended"), "user_suspended"),
+        # Suspending a user also revokes their key, so this pair is what a
+        # suspended account actually looks like — and the account is the
+        # blocker, since rotating the credential cannot lift it.
+        (_audit_row(key_status="revoked", user_status="suspended"), "user_suspended"),
+        (_audit_row(user_status=None), "user_missing"),
+        ({"user_id": "u1", "role": "pro"}, "unknown"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_blocked_ip_names_the_owner_of_a_credential_that_no_longer_works(
+    monkeypatch, blocked_localhost, row, state
+):
+    """A dead credential still names its account — and says it is dead.
+
+    This is the case the blocklist actually produces: a monitor, CI job or
+    service account whose key was rotated, revoked or expired is what
+    accumulates auth failures until the source is refused. Resolving the caller
+    through a lookup that filters those out left exactly that row anonymous,
+    which is the one row an operator reads while working out whose caller is
+    stuck behind the block.
+
+    ``authenticated`` stays False throughout: the key resolved to a name, not to
+    an entitlement, and the rejection log's probe-trust check reads that flag.
+    """
+    app, log_calls, _op = _build_blocked_app(monkeypatch, audit_row=row, logging_on=True)
+    await blocked_localhost("127.0.0.1")
+
+    await _blocked_call(app)
+
+    assert log_calls[0]["error_code"] == "ip_blocked"
+    assert log_calls[0]["user"] == {
+        "user_id": "u1",
+        "role": "pro",
+        "authenticated": False,
+        "credential_state": state,
+    }
+
+
+@pytest.mark.asyncio
+async def test_blocked_ip_row_names_the_owner_without_claiming_the_user(
+    monkeypatch, blocked_localhost
+):
+    """A dead key's owner is recorded, but never as ``user_id``.
+
+    ``user_id`` promotes to the column the rest of the system reads as "this
+    account made this request", with no status filter anywhere: the user's own
+    Recent Requests lists by it, the usage detail counts it, and the admin
+    analytics count a distinct value as an active user. Anyone holding a
+    revoked key of someone else's would otherwise write their flood into that
+    account's history and to the top of those charts. The owner goes under its
+    own key, which claims only what was established: whose key this was.
+    """
+    app, _log_calls, _op = _build_blocked_app(
+        monkeypatch, audit_row=_audit_row(key_status="revoked"), logging_on=True
+    )
+    _restore_real_queue(monkeypatch)
+    await blocked_localhost("127.0.0.1")
+
+    store = AsyncMock()
+    app.state.services.log_store = store
+    rs = MagicMock()
+    rs.get_bool = AsyncMock(return_value=True)
+    app.state.services.runtime_settings = rs
+
+    await _blocked_call(app)
+    for _ in range(4):
+        await asyncio.sleep(0)
+
+    metadata = store.log_request.await_args.kwargs["metadata"]
+    assert metadata["user_id"] is None
+    assert metadata["credential_owner_id"] == "u1"
+    assert metadata["credential_state"] == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_blocked_ip_row_says_so_when_the_key_was_still_live(monkeypatch, blocked_localhost):
+    """A live key caught in someone else's block records ``active``.
+
+    The two populations behind a block need telling apart: a caller whose
+    credential is fine and is collateral damage, and one whose credential is
+    the reason the source is refused. The state is present on both, so the
+    difference is a value rather than a missing key — which on a best-effort
+    row would be indistinguishable from enrichment having been skipped.
+    """
+    app, _log_calls, _op = _build_blocked_app(monkeypatch, audit_row=_audit_row(), logging_on=True)
+    _restore_real_queue(monkeypatch)
+    await blocked_localhost("127.0.0.1")
+
+    store = AsyncMock()
+    app.state.services.log_store = store
+    rs = MagicMock()
+    rs.get_bool = AsyncMock(return_value=True)
+    app.state.services.runtime_settings = rs
+
+    await _blocked_call(app)
+    for _ in range(4):
+        await asyncio.sleep(0)
+
+    metadata = store.log_request.await_args.kwargs["metadata"]
+    # A live key is a real authenticated caller, refused for where it called
+    # from — so this one does belong in ``user_id``.
+    assert metadata["user_id"] == "u1"
+    assert "credential_owner_id" not in metadata
+    assert metadata["credential_state"] == "active"
+
+
 @pytest.mark.asyncio
 async def test_blocked_ip_treats_a_row_without_a_user_id_as_unresolved(
     monkeypatch, blocked_localhost
@@ -219,7 +382,7 @@ async def test_blocked_ip_treats_a_row_without_a_user_id_as_unresolved(
     dashboard as an identified free user, which is worse than an honest blank.
     """
     app, log_calls, _op = _build_blocked_app(
-        monkeypatch, lightweight_user={"role": "free"}, logging_on=True
+        monkeypatch, audit_row={"role": "free"}, logging_on=True
     )
     await blocked_localhost("127.0.0.1")
 
@@ -245,10 +408,7 @@ async def test_blocked_ip_skips_enrichment_when_rejection_logging_is_off(
     The shed path stays cheap: enrichment is only worth paying for when the row
     it enriches will actually be written.
     """
-    user_row = {"user_id": "u1", "role": "pro"}
-    app, log_calls, op = _build_blocked_app(
-        monkeypatch, lightweight_user=user_row, logging_on=False
-    )
+    app, log_calls, op = _build_blocked_app(monkeypatch, audit_row=_audit_row(), logging_on=False)
     await blocked_localhost("127.0.0.1")
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
@@ -263,7 +423,7 @@ async def test_blocked_ip_skips_enrichment_when_rejection_logging_is_off(
     assert resp.status_code == 429
     assert log_calls[0]["prompt"] == ""
     assert log_calls[0]["user"] is None
-    op.get_auth_context_lightweight.assert_not_called()
+    op.get_key_owner_for_audit.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -278,9 +438,7 @@ async def test_blocked_ip_identity_lookup_is_skipped_when_the_budget_is_spent(
     """
     import serving.observability.rejection_log as mod
 
-    app, log_calls, op = _build_blocked_app(
-        monkeypatch, lightweight_user={"user_id": "u1", "role": "pro"}, logging_on=True
-    )
+    app, log_calls, op = _build_blocked_app(monkeypatch, audit_row=_audit_row(), logging_on=True)
     await blocked_localhost("127.0.0.1")
 
     exhausted = asyncio.Semaphore(1)
@@ -299,7 +457,7 @@ async def test_blocked_ip_identity_lookup_is_skipped_when_the_budget_is_spent(
     assert resp.status_code == 429
     assert log_calls[0]["user"] is None
     assert log_calls[0]["prompt"] == ""
-    op.get_auth_context_lightweight.assert_not_awaited()
+    op.get_key_owner_for_audit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -323,7 +481,7 @@ async def test_blocked_ip_on_a_typed_body_route_bounds_an_oversized_prompt(
     monkeypatch.setattr("serving.servers.auth.queue_rejection_log", _recording_queue(log_calls))
 
     op = MagicMock()
-    op.get_auth_context_lightweight = AsyncMock(return_value=None)
+    op.get_key_owner_for_audit = AsyncMock(return_value=None)
 
     from fastapi import Depends
 
@@ -374,7 +532,7 @@ async def test_blocked_ip_queued_log_retains_no_body_bytes(monkeypatch, blocked_
     it. Dropping only the prompt would free one of two references to the same
     megabyte, leaving the queue unbounded in practice.
     """
-    app, log_calls, _op = _build_blocked_app(monkeypatch, lightweight_user=None, logging_on=True)
+    app, log_calls, _op = _build_blocked_app(monkeypatch, audit_row=None, logging_on=True)
     await blocked_localhost("127.0.0.1")
 
     body = {"model": "gpt-4", "messages": [{"role": "user", "content": "z" * 3000}]}
@@ -406,9 +564,7 @@ async def test_blocked_ip_settings_read_is_bounded_too(monkeypatch, blocked_loca
     """
     import serving.observability.rejection_log as mod
 
-    app, _log_calls, op = _build_blocked_app(
-        monkeypatch, lightweight_user={"user_id": "u1", "role": "pro"}, logging_on=True
-    )
+    app, _log_calls, op = _build_blocked_app(monkeypatch, audit_row=_audit_row(), logging_on=True)
     rs = app.state.services.runtime_settings
     await blocked_localhost("127.0.0.1")
 
@@ -429,13 +585,13 @@ async def test_blocked_ip_settings_read_is_bounded_too(monkeypatch, blocked_loca
     # Not consulted at all on the inline path. log_rejection is faked out here,
     # so this asserts the enrichment gate specifically.
     rs.get_bool.assert_not_awaited()
-    op.get_auth_context_lightweight.assert_not_awaited()
+    op.get_key_owner_for_audit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_blocked_ip_identity_lookup_failure_still_returns_429(monkeypatch, blocked_localhost):
     """A broken identity lookup degrades the log row, never the response."""
-    app, log_calls, op = _build_blocked_app(monkeypatch, lightweight_user=None, logging_on=True)
+    app, log_calls, op = _build_blocked_app(monkeypatch, audit_row=None, logging_on=True)
     op.get_auth_context_lightweight = AsyncMock(side_effect=RuntimeError("db down"))
     await blocked_localhost("127.0.0.1")
 

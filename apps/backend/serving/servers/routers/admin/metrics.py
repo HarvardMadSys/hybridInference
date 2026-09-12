@@ -919,6 +919,15 @@ async def admin_list_recent_requests(
                 l.metadata->>'session_id_source' AS session_id_source,
                 l.metadata->>'surface' AS request_surface,
                 l.metadata->>'request_type' AS request_type,
+                -- Set only where a row names a caller the gateway identified
+                -- but did not authenticate (a blocked IP presenting a revoked
+                -- or expired key). Such a caller is kept out of the user_id
+                -- column, which every other consumer reads as authenticated
+                -- activity, so this view is the one that names the account --
+                -- and says what state its credential is in rather than showing
+                -- it as an ordinary caller.
+                l.metadata->>'credential_state' AS credential_state,
+                l.metadata->>'credential_owner_id' AS credential_owner_id,
                 -- How the gateway itself ended the stream. Only the
                 -- cancellation path sets it, so it is what separates a real
                 -- client disconnect from an upstream that answered 499.
@@ -975,6 +984,8 @@ async def admin_list_recent_requests(
             error=row["error"],
             routewise=coerce_json_object(row.get("routewise")),
             request_type=row.get("request_type"),
+            credential_state=row.get("credential_state"),
+            credential_owner_id=row.get("credential_owner_id"),
             terminal_state=row.get("terminal_state"),
             num_turns=row.get("num_turns"),
             num_user_turns=row.get("num_user_turns"),

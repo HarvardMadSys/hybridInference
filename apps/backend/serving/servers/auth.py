@@ -112,6 +112,39 @@ def _extract_api_key(authorization: str | None, x_api_key: str | None) -> str | 
     return x_api_key or None
 
 
+def _credential_state(row: dict[str, Any]) -> str:
+    """Classify a presented key from an audit lookup row.
+
+    One short string for the rejection log: ``"user_<status>"`` when the
+    account itself is not active, otherwise the key's own status when it is not
+    active (``"revoked"``), ``"expired"`` past its deadline, or ``"active"``.
+    Single-valued on purpose, so an operator can query these rows by equality;
+    what it names is the blocker to clear first.
+
+    The account outranks the key, and that ordering is the substance of it:
+    suspending a user *also* revokes their key (``admin/users.py``), so the
+    overlap is the ordinary case rather than an edge. Reporting "revoked" there
+    would send an operator to rotate a credential, which cannot help while the
+    account itself is refused.
+
+    Anything the row does not state counts as not-live (``"unknown"``,
+    ``"user_missing"``), never as active — the flag derived from this decides
+    whether a caller is trusted, so absence of evidence must not read as
+    evidence of a live key.
+    """
+    key_status = str(row.get("key_status") or "").lower()
+    user_status = str(row.get("user_status") or "").lower()
+    if not key_status and not user_status:
+        return "unknown"
+    if user_status != "active":
+        return f"user_{user_status}" if user_status else "user_missing"
+    if key_status != "active":
+        return key_status or "unknown"
+    if row.get("key_expired"):
+        return "expired"
+    return "active"
+
+
 async def _identify_rejected_caller(
     authorization: str | None,
     x_api_key: str | None,
@@ -124,18 +157,39 @@ async def _identify_rejected_caller(
     labels the log row so an operator can distinguish a real account caught in
     an IP block from an anonymous scanner.
 
+    Deliberately resolves the key through
+    :meth:`OperationalStore.get_key_owner_for_audit`, which applies no status or
+    expiry filter, rather than through the auth lookups, which do. The filtered
+    ones answer "may this key in?" — and on this path the answer is already no.
+    The question here is "whose key is this?", and the callers that reach it are
+    overwhelmingly the ones a filtered lookup cannot answer for: a monitor, CI
+    job or service account whose key was rotated or revoked is what accumulates
+    the auth failures that trip the blocklist in the first place. Filtering
+    those out left the one row an operator reads while diagnosing a block
+    naming nobody, indistinguishable from an anonymous scanner — the exact
+    distinction this function exists to draw.
+
+    A resolved dead credential is reported *as* dead: ``credential_state`` says
+    which way (``revoked`` / ``expired`` / ``user_suspended`` / ...) and
+    ``authenticated`` stays False, so nothing downstream mistakes it for a live
+    key. That flag is load-bearing rather than cosmetic — ``log_rejection``
+    feeds it to the probe-trust check, and a revoked internal key must not be
+    able to suppress its own rejection rows with an ``X-Probe`` header.
+
     Runs under :func:`bounded_enrichment`, which matters more here than the name
-    suggests: ``CachedOperationalStore`` caches only *successful* auth lookups,
-    so a source spraying fresh random tokens misses the cache on every request
-    and reaches the shared Postgres pool. Unbounded, that would restore per
-    request exactly the database cost the IP block exists to eliminate, and could
-    starve real traffic of pool connections. Past the budget this returns
-    ``None`` instantly instead.
+    suggests: ``CachedOperationalStore`` caches only *successful* lookups, so a
+    source spraying fresh random tokens misses the cache on every request and
+    reaches the shared Postgres pool. Unbounded, that would restore per request
+    exactly the database cost the IP block exists to eliminate, and could starve
+    real traffic of pool connections. Past the budget this returns ``None``
+    instantly instead. One query either way — a fallback lookup after a filtered
+    miss would have doubled that flood's cost, which is why the audit lookup
+    replaces the filtered one here rather than backing it up.
 
     Returns the ``{user_id, role}`` shape :func:`log_rejection` consumes, or
-    ``None`` when no key was presented, the key does not resolve to an active
-    user, or the lookup is skipped/times out/fails — which is also exactly what
-    a credential-less scanner produces. Never raises.
+    ``None`` when no key was presented, the key was never issued by this
+    deployment, or the lookup is skipped/times out/fails — which is also exactly
+    what a credential-less scanner produces. Never raises.
     """
     api_key = _extract_api_key(authorization, x_api_key)
     if not api_key or not op_store:
@@ -144,7 +198,7 @@ async def _identify_rejected_caller(
         # Both cheap and local: an unset API_KEY_SECRET raises, and a store that
         # doesn't offer the lookup would raise before any coroutine exists to
         # hand to the budget.
-        work = op_store.get_auth_context_lightweight(hash_api_key(api_key))
+        work = op_store.get_key_owner_for_audit(hash_api_key(api_key))
     except Exception:
         return None
     row = await bounded_enrichment(work)
@@ -153,10 +207,16 @@ async def _identify_rejected_caller(
     # account rather than the unresolved caller it actually is.
     if not isinstance(row, dict) or not row.get("user_id"):
         return None
-    # ``authenticated``: the lookup resolved a live key, which is the same
-    # fact the normal auth path asserts with this flag — the rejection log's
-    # probe-trust check relies on it.
-    return {"user_id": row["user_id"], "role": row.get("role") or "free", "authenticated": True}
+    state = _credential_state(row)
+    return {
+        "user_id": row["user_id"],
+        "role": row.get("role") or "free",
+        # ``authenticated``: a *live* key resolved, which is the same fact the
+        # normal auth path asserts with this flag — the rejection log's
+        # probe-trust check relies on it, so a dead credential must not set it.
+        "authenticated": state == "active",
+        "credential_state": state,
+    }
 
 
 async def _authenticate_by_api_key(

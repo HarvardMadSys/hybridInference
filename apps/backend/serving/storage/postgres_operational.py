@@ -1653,6 +1653,38 @@ class PostgresOperationalStore(OperationalStore):
             )
         return _coerce_user_row(row)
 
+    async def get_key_owner_for_audit(self, key_hash: str) -> Row | None:
+        """Identity behind a presented key, with no status or expiry filter.
+
+        Diagnostic only -- see :meth:`OperationalStore.get_key_owner_for_audit`.
+        The join is LEFT so a key whose user row was deleted still names the
+        account it was issued to; ``key_expired`` is computed here rather than
+        derived from ``expires_at``, so the deadline is compared against the
+        database clock exactly as the auth lookups compare it.
+
+        ``expires_in_sec`` comes back alongside it for one reason: expiry is
+        the only state change here that fires no write, so a caching layer has
+        nothing to invalidate on and needs the remaining time to keep from
+        serving ``key_expired: False`` past the deadline. It is measured here
+        rather than by subtracting ``expires_at`` from the reader's clock --
+        the same clock that decides ``key_expired`` should decide how long that
+        answer holds, or a gateway running behind the database would extend the
+        window by exactly its own skew. NULL when the key has no deadline.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT k.user_id, u.role, "
+                "k.status AS key_status, "
+                "(k.expires_at IS NOT NULL AND k.expires_at <= NOW()) AS key_expired, "
+                "EXTRACT(EPOCH FROM (k.expires_at - NOW()))::float8 AS expires_in_sec, "
+                "u.status AS user_status "
+                "FROM api_keys k "
+                "LEFT JOIN users u ON u.id = k.user_id "
+                "WHERE k.key_hash = $1",
+                key_hash,
+            )
+        return dict(row) if row is not None else None
+
     async def update_key_last_used(self, key_id: int) -> None:
         """Set ``last_used_at = NOW()`` for the given key id."""
         async with self._pool.acquire() as conn:

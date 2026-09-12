@@ -417,9 +417,14 @@ async def log_rejection(
     ``error_code`` is a short machine-readable identifier (e.g.
     ``"concurrency_limit_exceeded"``); ``reason`` is a brief human-readable
     detail; ``user`` is the verified user dict or ``None`` for pre-auth
-    rejections. ``prompt`` is the original request prompt/messages; it is
-    persisted only when the store's content-retention policy
-    (``store_full_content``) allows, exactly as on the success path.
+    rejections — a pre-auth path that identified the caller without
+    authenticating them passes ``credential_state`` in it, and the row then
+    records what state that credential was in and keeps the owner out of
+    ``user_id`` (see the metadata block below for why).
+
+    ``prompt`` is the original request prompt/messages; it is persisted only
+    when the store's content-retention policy (``store_full_content``) allows,
+    exactly as on the success path.
     """
     log_store, runtime_settings = _resolve_services(request, log_store, runtime_settings)
     if not await rejection_logging_enabled(
@@ -434,14 +439,36 @@ async def log_rejection(
 
     ctx = req_ctx.get()
     request_id = ctx.get("request_id") or ""
+    # Whether the key that named this caller was still live. Set only where an
+    # identity is resolved *without* authenticating it — the blocked-IP path,
+    # which reaches accounts whose credential was revoked, expired or
+    # suspended. Absent on every row whose caller authenticated normally.
+    credential_state = user.get("credential_state") if user else None
+    # An identified-but-unauthenticated caller is deliberately kept out of
+    # ``user_id``: that column promotes to ``api_logs.user_id``, which the rest
+    # of the system reads as "this account made this request" with no status
+    # filter — ``/user/recent-requests`` lists by it alone, the usage detail
+    # counts it, and the admin analytics count a distinct value as an active
+    # user and rank top users by row count. Anyone holding a revoked key of
+    # someone else's could otherwise write thousands of rows into that account's
+    # history and to the top of those charts, during exactly the flood a block
+    # is holding back. The owner is recorded under its own key instead, which
+    # only the admin request view reads, and which claims no more than what was
+    # established: this key belongs to that account.
+    identified_not_authenticated = bool(credential_state) and not user.get("authenticated")
+    resolved_user_id = user.get("user_id") if user else None
     metadata: dict[str, Any] = {
         "rejection": True,
         "reason": reason,
         "route": request.url.path,
         "role": user.get("role") if user else None,
-        "user_id": user.get("user_id") if user else None,
+        "user_id": None if identified_not_authenticated else resolved_user_id,
         "ip": get_client_ip(request),
     }
+    if credential_state:
+        metadata["credential_state"] = credential_state
+    if identified_not_authenticated:
+        metadata["credential_owner_id"] = resolved_user_id
     # A rejected grant call is still a call the grant made. Without this the
     # usage window undercounts exactly the refusals an owner most wants to see,
     # and the row would not even carry the job column the cost report keys on.

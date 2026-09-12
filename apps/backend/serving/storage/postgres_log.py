@@ -1121,6 +1121,16 @@ class PostgresLogStore(LogStore):
         by ``DatabaseLogger.initialize`` (``database.py``) — when the
         broadcast subsystem hasn't been provisioned, that DELETE is skipped
         via a savepoint and the key is omitted from the result.
+
+        ``api_logs`` names an account two ways, and a purge that missed either
+        would leave the deleted id readable in the admin request view.
+        ``user_id`` is the caller the gateway authenticated;
+        ``metadata->>'credential_owner_id'`` is the account behind a key
+        presented on a rejection path that identified the caller without
+        authenticating them (``observability/rejection_log``), and those rows
+        carry a null ``user_id`` on purpose. ``idx_api_logs_credential_owner``
+        keeps the second predicate an index lookup rather than turning this
+        into a scan of the largest table in the deployment.
         """
         import asyncpg as _asyncpg
 
@@ -1131,7 +1141,10 @@ class PostgresLogStore(LogStore):
                 return 0
 
         async with self.pool.acquire() as conn, conn.transaction():
-            logs_status = await conn.execute("DELETE FROM api_logs WHERE user_id = $1", user_id)
+            logs_status = await conn.execute(
+                "DELETE FROM api_logs WHERE user_id = $1 OR metadata->>'credential_owner_id' = $1",
+                user_id,
+            )
             recipients_count: int | None
             try:
                 # email_broadcast_recipients is created lazily by the broadcast

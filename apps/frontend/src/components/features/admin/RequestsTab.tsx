@@ -121,6 +121,26 @@ function shortSessionId(sessionId: string): string {
   return sessionId.length > 10 ? `${sessionId.slice(0, 8)}…` : sessionId;
 }
 
+// A row can name the account behind the key a caller presented without that
+// key being usable — an `ip_blocked` rejection is refused ahead of the key
+// check, so the caller behind it is typically a monitor or service account
+// whose key was rotated or revoked. Such a caller is not in `user_id` (the
+// gateway identified them, it did not authenticate them) but in
+// `credential_owner_id`, and without the label the row would read as that
+// account making an ordinary request — missing the one fact that decides what
+// to do about it. `'active'` needs no label: it is a live key, refused for
+// where it called from.
+const CREDENTIAL_STATE_TITLE =
+  'The gateway matched this key to an account, but the key itself is not usable. ' +
+  'An IP block is applied before the key is read, so fixing the credential does ' +
+  'not lift the block — clear it under Auth blocks.';
+
+function formatCredentialState(state: string): string {
+  return state.startsWith('user_')
+    ? `${state.slice(5).replace(/_/g, ' ')} account`
+    : `${state} key`;
+}
+
 function applyOffsetJump(
   rawPage: string,
   total: number,
@@ -1029,9 +1049,29 @@ export function RequestsTab() {
                                 </span>
                               )}
                             </button>
+                          ) : req.credential_owner_id ? (
+                            // Identified, never authenticated: the key names
+                            // this account, which is not the same claim as the
+                            // account having made the request. Shown plainly
+                            // rather than as a filter chip for that reason —
+                            // the row is not part of that user's history.
+                            <span
+                              className="block max-w-[220px] truncate font-sans text-[13px] text-gray-500"
+                              title={`${req.credential_owner_id} — ${CREDENTIAL_STATE_TITLE}`}
+                            >
+                              {req.credential_owner_id}
+                            </span>
                           ) : (
                             <span className="text-gray-300">—</span>
                           )}
+                          {req.credential_state && req.credential_state !== 'active' ? (
+                            <span
+                              className="mt-0.5 inline-flex items-center rounded bg-amber-50 px-1 py-px font-sans text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20"
+                              title={CREDENTIAL_STATE_TITLE}
+                            >
+                              {formatCredentialState(req.credential_state)}
+                            </span>
+                          ) : null}
                         </td>
                         <td className="px-3 py-2.5 text-[12px] text-gray-600">
                           {(() => {
@@ -1229,8 +1269,14 @@ export function RequestsTab() {
                               <div>
                                 <span className="text-gray-500">User:</span>{' '}
                                 <span className="text-gray-700">
-                                  {req.user_name || req.user_id || '—'}
+                                  {req.user_name || req.user_id || req.credential_owner_id || '—'}
                                 </span>
+                                {req.credential_state && req.credential_state !== 'active' ? (
+                                  <span className="text-gray-500" title={CREDENTIAL_STATE_TITLE}>
+                                    {' '}
+                                    ({formatCredentialState(req.credential_state)})
+                                  </span>
+                                ) : null}
                               </div>
                               <div>
                                 <span className="text-gray-500">Email:</span>{' '}

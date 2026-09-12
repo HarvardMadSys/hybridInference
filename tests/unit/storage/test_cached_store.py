@@ -5,11 +5,13 @@ Covers TTL behavior, cache hits/misses, and write-through invalidation.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from serving.storage.cache import (
+    _AUTH_CONTEXT_TTL,
     CachedOperationalStore,
     InMemoryCache,
 )
@@ -29,6 +31,15 @@ def inner_store() -> MagicMock:
     store.get_auth_context_by_key_hash = AsyncMock(return_value={"id": 1, "user_id": "u1"})
     store.get_auth_context_lightweight = AsyncMock(
         return_value={"user_id": "u1", "email": "a@b.com", "role": "admin"}
+    )
+    store.get_key_owner_for_audit = AsyncMock(
+        return_value={
+            "user_id": "u1",
+            "role": "admin",
+            "key_status": "revoked",
+            "key_expired": False,
+            "user_status": "active",
+        }
     )
     store.query_users_over_daily_threshold = AsyncMock(return_value=[("u1", "free", 1.5)])
     store.update_user_fields = AsyncMock()
@@ -119,6 +130,174 @@ class TestCacheHits:
         await cached.get_auth_context_lightweight("h1")
 
         inner_store.get_auth_context_lightweight.assert_awaited_once_with("h1")
+
+    async def test_get_key_owner_for_audit_caches(self, cached, inner_store):
+        await cached.get_key_owner_for_audit("h1")
+        await cached.get_key_owner_for_audit("h1")
+
+        inner_store.get_key_owner_for_audit.assert_awaited_once_with("h1")
+
+    async def test_audit_entry_is_not_cached_past_the_key_deadline(
+        self, cached, inner_store, cache
+    ):
+        """A key expiring inside the TTL shortens the entry to that window.
+
+        Expiry is the one state here that changes without a write, so nothing
+        invalidates on it. Cached for the full TTL, a row resolved seconds
+        before the deadline would go on reporting a live credential after it
+        had lapsed — and, being reported live, would put its owner back into
+        ``api_logs.user_id``.
+        """
+        inner_store.get_key_owner_for_audit.return_value = {
+            "user_id": "u1",
+            "role": "admin",
+            "key_status": "active",
+            "key_expired": False,
+            "expires_in_sec": 4.0,
+            "user_status": "active",
+        }
+        recorded: list[int] = []
+        original_set = cache.set
+
+        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+            recorded.append(ttl)
+            await original_set(key, value, ttl)
+
+        cache.set = _record_ttl
+
+        await cached.get_key_owner_for_audit("h1")
+
+        assert recorded == [4]
+
+    @pytest.mark.parametrize("remaining", [0.4, -2.0])
+    async def test_audit_entry_is_not_cached_inside_the_last_second(
+        self, cached, inner_store, cache, remaining
+    ):
+        """A live row with under a second left is not cached at all.
+
+        There is no whole second to give it, and rounding up would be a second
+        of the row outliving the deadline — a lapsed credential labelled
+        active, with its owner written into ``api_logs.user_id``. A remainder
+        already negative while the flag still says live is the same case: the
+        database calling the key live and the window it measured closing
+        before the answer is used, not evidence the credential expired, so it
+        must not be read as "expired, cache it fully" either.
+
+        Costs little even under a flood: the only path that asks is the blocked
+        one, where the enrichment budget already caps lookups and sheds.
+        """
+        inner_store.get_key_owner_for_audit.return_value = {
+            "user_id": "u1",
+            "role": "admin",
+            "key_status": "active",
+            "key_expired": False,
+            "expires_in_sec": remaining,
+            "user_status": "active",
+        }
+        recorded: list[int] = []
+        original_set = cache.set
+
+        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+            recorded.append(ttl)
+            await original_set(key, value, ttl)
+
+        cache.set = _record_ttl
+
+        await cached.get_key_owner_for_audit("h1")
+        await cached.get_key_owner_for_audit("h1")
+
+        assert recorded == []
+        # Nothing cached, so the second read went back to the store.
+        assert inner_store.get_key_owner_for_audit.await_count == 2
+
+    async def test_audit_entry_keeps_the_normal_ttl_once_the_row_says_expired(
+        self, cached, inner_store, cache
+    ):
+        """An expired row is a stable answer, so it keeps the normal TTL."""
+        inner_store.get_key_owner_for_audit.return_value = {
+            "user_id": "u1",
+            "role": "admin",
+            "key_status": "active",
+            "key_expired": True,
+            "expires_in_sec": -86400.0,
+            "user_status": "active",
+        }
+        recorded: list[int] = []
+        original_set = cache.set
+
+        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+            recorded.append(ttl)
+            await original_set(key, value, ttl)
+
+        cache.set = _record_ttl
+
+        await cached.get_key_owner_for_audit("h1")
+
+        assert recorded == [_AUTH_CONTEXT_TTL]
+
+    async def test_audit_entry_keeps_the_normal_ttl_for_a_distant_deadline(
+        self, cached, inner_store, cache
+    ):
+        """The cap only ever shortens: a far-off expiry changes nothing."""
+        inner_store.get_key_owner_for_audit.return_value = {
+            "user_id": "u1",
+            "role": "admin",
+            "key_status": "active",
+            "key_expired": False,
+            "expires_in_sec": 2592000.0,
+            "user_status": "active",
+        }
+        recorded: list[int] = []
+        original_set = cache.set
+
+        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+            recorded.append(ttl)
+            await original_set(key, value, ttl)
+
+        cache.set = _record_ttl
+
+        await cached.get_key_owner_for_audit("h1")
+
+        assert recorded == [_AUTH_CONTEXT_TTL]
+
+    async def test_get_key_owner_for_audit_is_cleared_by_a_key_write(
+        self, cached, inner_store, cache
+    ):
+        """A revoked key's audit entry must not outlive the next key write.
+
+        It caches rows the auth lookups never see — including dead credentials
+        — so it is the entry most likely to be stale, and its key lives under
+        the ``auth_light:`` namespace precisely so every existing invalidation
+        clears it.
+        """
+        await cached.get_key_owner_for_audit("h1")
+        await cached.revoke_key("h1")
+        await cached.get_key_owner_for_audit("h1")
+
+        assert inner_store.get_key_owner_for_audit.await_count == 2
+
+    async def test_approval_decisions_clear_the_audit_entry(self, cached, inner_store):
+        """Approving or rejecting a user re-reads the audit identity.
+
+        The auth lookups filter on an active user, so a pending account was
+        never in this cache before ``get_key_owner_for_audit`` -- which caches
+        a row whatever state the account is in, and would otherwise keep
+        labelling rejection rows with the pre-decision state for a TTL.
+        """
+        for decide in (
+            lambda: cached.approve_user("u1", admin_id="admin-1"),
+            lambda: cached.reject_user("u1", admin_id="admin-1", reason="spam"),
+        ):
+            # Populate first, then count only the reads after the decision --
+            # the previous iteration leaves the entry cached, so counting from
+            # a populate that may itself be a hit would prove nothing.
+            await cached.get_key_owner_for_audit("h1")
+            inner_store.get_key_owner_for_audit.reset_mock()
+
+            await decide()
+            await cached.get_key_owner_for_audit("h1")
+
+            assert inner_store.get_key_owner_for_audit.await_count == 1
 
     async def test_health_check_caches(self, cached, inner_store):
         await cached.health_check()

@@ -339,6 +339,16 @@ key check*, which has two consequences worth internalising:
 - **The 429 hides the original error.** Whatever the caller reports after the
   block is in place says nothing about whether the underlying 401/403 was fixed.
 
+Which caller is it? Turn on the `log_rejected_requests` admin setting and the
+refusals land in Recent Requests as `ip_blocked` rows. Each row names the
+account behind the key the caller presented — including a key that was revoked
+or expired, which is what a stuck monitor is presenting — and labels it with the
+credential's state (`revoked`, `expired`, `user_suspended`) beside the user. A
+row with no user is unresolved, not proof of a stranger: the key may be one this
+deployment never issued, or the lookup may have been shed, since it runs on a
+strict budget that gives up first under exactly the flood a block is holding
+back.
+
 To recover, first fix the credential, then clear the block:
 
 ```bash
