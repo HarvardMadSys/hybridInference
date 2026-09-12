@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from routing.protocols import RoutingRequestOptions
     from serving.adapters.base import BaseAdapter
 
-from routing.endpoint_health import EndpointHealthRegistry
+from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
     PrefillLease,
@@ -461,6 +461,7 @@ class FixedRouter:
         pin_provider: str | None = None,
         required_modalities: frozenset[str] | None = None,
         prefill_tokens: int = 0,
+        exclude: set[str] | None = None,
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection with optional affinity.
 
@@ -474,6 +475,9 @@ class FixedRouter:
                 endpoints already saturated with prefill and to keep concurrent
                 mega-prefills spread across replicas. Zero keeps the historical
                 pure weighted-random behavior.
+            exclude: Endpoint ids this request has already been refused a
+                dispatch claim for, so a reselection does not hand back the
+                endpoint whose half-open probe another caller is holding.
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -507,10 +511,16 @@ class FixedRouter:
         with self._lock:
             snapshot = list(effective)
 
+        # ``allow_request`` is asked of every candidate here and answers for at
+        # most one dispatch, so it must stay a pure query -- the commit, and the
+        # half-open probe claim that goes with it, happen in
+        # ``_select_and_claim_adapter`` once this returns.
         allowed: list[tuple[BaseAdapter, float]] = [
             (adapter, weight)
             for adapter, weight in snapshot
-            if weight > 0 and self._health_registry.allow_request(endpoint_id_for_adapter(adapter))
+            if weight > 0
+            and endpoint_id_for_adapter(adapter) not in (exclude or ())
+            and self._health_registry.allow_request(endpoint_id_for_adapter(adapter))
         ]
 
         if not allowed:
@@ -612,6 +622,72 @@ class FixedRouter:
 
         return chosen
 
+    def _select_and_claim_adapter(
+        self,
+        model_id: str,
+        *,
+        pin_provider: str | None = None,
+        required_modalities: frozenset[str] | None = None,
+        prefill_tokens: int = 0,
+    ) -> tuple[BaseAdapter | None, DispatchClaim | None]:
+        """Select an adapter and claim the dispatch slot for its endpoint.
+
+        ``_select_adapter`` filters on a pure ``allow_request``, which cannot
+        tell two concurrent callers apart: on a half-open circuit both would be
+        handed the same recovering endpoint, which is the stampede the probe
+        exists to prevent. The claim is therefore taken here, once, on the single
+        adapter selection actually committed to -- covering every path an adapter
+        leaves ``_select_adapter`` by, affinity pin included.
+
+        A refused claim means another request holds the probe, not that the
+        endpoint is out: drop it for *this* selection only and reselect over the
+        rest. The loop is bounded by the route size because each pass excludes at
+        least one more endpoint id, and an emptied pool raises
+        ``AllCircuitsOpenError`` from ``_select_adapter`` exactly as a fully open
+        route already does.
+
+        Returns the claim alongside the adapter because the caller owes it back:
+        every dispatch path here releases it in a ``finally``, which is the only
+        unwind a cancelled coroutine or an abandoned SSE generator still runs.
+
+        An explicit pin bypasses admission entirely, as it always has, so it
+        neither consults nor spends a probe -- and holds no claim to release,
+        which is what keeps pinned traffic from freeing somebody else's.
+        """
+        if pin_provider:
+            return (
+                self._select_adapter(
+                    model_id,
+                    pin_provider=pin_provider,
+                    required_modalities=required_modalities,
+                    prefill_tokens=prefill_tokens,
+                ),
+                None,
+            )
+
+        route = self.routes.get(model_id)
+        attempts = len(route.adapters) if route and route.adapters else 1
+        exclude: set[str] = set()
+        for _ in range(attempts):
+            adapter = self._select_adapter(
+                model_id,
+                required_modalities=required_modalities,
+                prefill_tokens=prefill_tokens,
+                exclude=exclude,
+            )
+            if adapter is None:
+                return None, None
+            endpoint_id = endpoint_id_for_adapter(adapter)
+            claim = self._health_registry.begin_dispatch(endpoint_id)
+            if claim is not None:
+                return adapter, claim
+            exclude.add(endpoint_id)
+        # Every endpoint on the route refused a claim. Same disposition as an
+        # all-open route: the caller's request cannot be placed right now.
+        raise AllCircuitsOpenError(
+            f"All provider circuits are open or probing for model {model_id}: {sorted(exclude)}"
+        )
+
     def _dispatch_priority(
         self,
         endpoint_id: str,
@@ -695,7 +771,7 @@ class FixedRouter:
         )
         # Proof, for the next turn, that it really contains this prompt.
         anchor = prompt_anchor(messages)
-        primary = self._select_adapter(
+        primary, primary_claim = self._select_and_claim_adapter(
             model_id,
             pin_provider=pin_provider,
             required_modalities=required_modalities,
@@ -783,8 +859,11 @@ class FixedRouter:
                 # Fallback is still automatic routing, so it must honor the
                 # same shared circuit eligibility as the initial selection.
                 # Explicit pinning returned above and remains the sole circuit
-                # override.
-                if not self._health_registry.allow_request(endpoint_id):
+                # override. This is a dispatch point, not an enumeration: the
+                # loop calls the adapter in this same iteration, so it claims
+                # the half-open probe rather than merely querying admission.
+                fallback_claim = self._health_registry.begin_dispatch(endpoint_id)
+                if fallback_claim is None:
                     continue
                 try:
                     with req_ctx.push(
@@ -828,7 +907,17 @@ class FixedRouter:
                     )
                     failed_attempts.append(failed_attempt(adapter, fallback_error))
                     continue
+                finally:
+                    self._health_registry.end_dispatch(fallback_claim)
             raise primary_error
+        finally:
+            # Every exit, cancellation included: a claim the request keeps is a
+            # cooldown the endpoint spends invisible to selection. Released after
+            # the fallback loop rather than inside it because the loop never
+            # revisits ``primary`` -- holding it that long costs nothing, and an
+            # early release would let a second probe start while this one is
+            # still on the wire.
+            self._health_registry.end_dispatch(primary_claim)
 
     async def stream_chat_completion(
         self,
@@ -872,7 +961,7 @@ class FixedRouter:
         )
         # Proof, for the next turn, that it really contains this prompt.
         anchor = prompt_anchor(messages)
-        primary = self._select_adapter(
+        primary, primary_claim = self._select_and_claim_adapter(
             model_id,
             pin_provider=pin_provider,
             required_modalities=required_modalities,
@@ -986,8 +1075,12 @@ class FixedRouter:
                     continue
                 # Synthetic routing chunks are emitted only after circuit
                 # admission so an open automatic fallback is never exposed as
-                # an attempted upstream. Explicit pinning returned above.
-                if not self._health_registry.allow_request(adapter_endpoint_id):
+                # an attempted upstream. Explicit pinning returned above. The
+                # claim is taken here because this loop dispatches in the same
+                # iteration, and handed back by this generator's outermost
+                # ``finally`` -- the one unwind a client disconnect still runs.
+                fallback_claim = self._health_registry.begin_dispatch(adapter_endpoint_id)
+                if fallback_claim is None:
                     continue
                 try:
                     with req_ctx.push(
@@ -1042,6 +1135,11 @@ class FixedRouter:
                 finally:
                     # Covers the attempt that never reached a first token.
                     self._prefill_load.release(lease)
+                    # Per attempt, not once at the end: the loop overwrites
+                    # ``fallback_claim`` on every iteration, so a claim left for
+                    # the outer unwind would be the last one only, and every
+                    # earlier attempt's probe would sit out its whole deadline.
+                    self._health_registry.end_dispatch(fallback_claim)
             raise primary_error
         finally:
             # Backstop for every exit this generator has: an upstream error
@@ -1050,3 +1148,10 @@ class FixedRouter:
             # mid-stream and would otherwise strand the lease forever, making
             # the endpoint look permanently busy to every later request.
             self._prefill_load.release(lease)
+            # Same unwind, same reason, for the probe: GeneratorExit and
+            # CancelledError miss the ``except Exception`` above, and a stream
+            # that yields nothing but keep-alives never records a success, so
+            # this is the only release an abandoned probe gets. Without it one
+            # hung-up client costs a *healthy* single-route model a full cooldown
+            # of 503s.
+            self._health_registry.end_dispatch(primary_claim)

@@ -23,7 +23,12 @@ async def test_registry_circuit_lifecycle(monkeypatch):
         registry.record_failure(endpoint_id, reason="upstream_502")
         assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
 
+        # Asking is pure: the cooldown has elapsed, so the endpoint reads as
+        # admissible, but nothing moves until a caller commits to dispatching.
         assert registry.allow_request(endpoint_id) is True
+        assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
+
+        assert registry.begin_dispatch(endpoint_id) is not None
         assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.HALF_OPEN
 
         registry.record_success(endpoint_id)

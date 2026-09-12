@@ -1368,6 +1368,7 @@ class RouteWiseRouter:
         envelope: CostEnvelopeSnapshot | None,
         now: float,
         context: dict[str, Any] | None = None,
+        admission_refused: set[str] | None = None,
     ) -> tuple[list[FeasibleProviderCandidate], tuple[tuple[Any, ...], dict[str, Any]] | None]:
         model_id = self.canonical_model_id(model_id)
         entries = self.route_candidates.get(model_id)
@@ -1388,7 +1389,15 @@ class RouteWiseRouter:
             has_modality_match = True
             endpoint_id = route_candidate.endpoint_id
             self._health_registry.ensure(endpoint_id)
+            # A query, not a commit: this loop builds the feasible set and the
+            # solver picks from it later, so the probe claim belongs to
+            # ``_commit_candidate``.
             if not self._health_registry.allow_request(endpoint_id):
+                # Remembered, not just skipped: a solve that ends with nothing
+                # feasible has to say whether the route is misconfigured or
+                # merely unavailable, and those are a 500 and a 503.
+                if admission_refused is not None:
+                    admission_refused.add(endpoint_id)
                 continue
 
             pricing = route_candidate.effective_pricing()
@@ -1621,6 +1630,49 @@ class RouteWiseRouter:
             if threshold <= cumulative:
                 return candidate
         return last
+
+    def _commit_candidate(
+        self,
+        candidate: FeasibleProviderCandidate,
+    ) -> ProviderReservation | None:
+        """Claim one dispatch to ``candidate`` from both gatekeepers, or neither.
+
+        ``_build_candidates`` only queries circuit admission, because it runs over
+        every route candidate on every solve -- and a single request can solve
+        many times, once per retry and once per hedge checkpoint -- while at most
+        one candidate per solve is ever dispatched to. This is the point that
+        commits, so this is where the half-open probe is claimed.
+
+        Admission is claimed before capacity because a quota reservation is spent
+        on commit and deliberately never refunded (see ``_reserve_candidate``);
+        spending it for a dispatch the circuit then refuses would burn a scarce
+        subscription on a request that never left the process. Nothing leaks the
+        other way either: a claim taken for a reservation that then loses its
+        race is handed straight back, so a saturated concurrency pool cannot keep
+        re-consuming a recovering endpoint's cooldown without ever probing it.
+
+        The returned reservation owns *both* resources. Every unwind RouteWise
+        already has -- ``RoutingDecision.release``, the post-commit
+        ``except BaseException`` in ``_select_decision_locked``, the hedge leg's
+        ``_finish_backup`` -- releases capacity through it, and now returns the
+        probe by the same path instead of leaving it to time out.
+
+        Returns None when either gate refuses, which both callers already read as
+        "this candidate lost its race" -- drop it and re-solve over the rest.
+        """
+        claim = self._health_registry.begin_dispatch(candidate.endpoint_id)
+        if claim is None:
+            return None
+        reservation = self._reserve_candidate(candidate)
+        if reservation is None:
+            self._health_registry.end_dispatch(claim)
+            return None
+
+        def _release() -> None:
+            reservation.release()
+            self._health_registry.end_dispatch(claim)
+
+        return ProviderReservation(_release)
 
     def _reserve_candidate(
         self,
@@ -1920,22 +1972,33 @@ class RouteWiseRouter:
                     return None
 
         backup = current.provider
-        reservation = self._reserve_candidate(backup)
+        # Only now, at the one exit that actually hands out a second adapter:
+        # everything above -- the re-run candidate build, the deferral to a later
+        # checkpoint, the profile-less skip in
+        # ``_select_hedge_candidate_at_elapsed`` -- can drop a candidate without
+        # dispatching to it, and a probe spent there would never be reported on.
+        reservation = self._commit_candidate(backup)
         if reservation is None:
             return None
 
-        self._record_hedge_dispatch(
-            decision=decision,
-            backup=backup,
-            elapsed_sec=elapsed_sec,
-            success_probability=current.success_probability,
-        )
-        return CheckpointBackupDispatch(
-            backup=backup.adapter,
-            elapsed_sec=elapsed_sec,
-            success_probability=current.success_probability,
-            release=reservation.release,
-        )
+        try:
+            self._record_hedge_dispatch(
+                decision=decision,
+                backup=backup,
+                elapsed_sec=elapsed_sec,
+                success_probability=current.success_probability,
+            )
+            return CheckpointBackupDispatch(
+                backup=backup.adapter,
+                elapsed_sec=elapsed_sec,
+                success_probability=current.success_probability,
+                release=reservation.release,
+            )
+        except BaseException:
+            # ``HedgedAdapter._start_backup_at`` swallows whatever this raises,
+            # so nothing downstream would ever release a commit made above it.
+            reservation.release()
+            raise
 
     def _select_hedge_candidate_at_elapsed(
         self,
@@ -2071,6 +2134,24 @@ class RouteWiseRouter:
             routing["fallback_policy"] = "routewise_resolve"
             routing["failed_attempts"] = dedupe_failed_attempts(failed_attempts)
 
+    def _no_decision_error(self, model_id: str, trace: RoutingTrace) -> Exception:
+        """Say *why* the solve came back empty, in the terms the client needs.
+
+        A bare ValueError here maps to a 500 and reads, to an operator, as a
+        models.yaml mistake -- which is right only when the model genuinely has
+        no usable route. A provider recovery produces the same empty solve for a
+        wholly transient reason: every endpoint is open, or one is being probed
+        and this caller is not the prober. That is the condition FixedRouter
+        raises ``AllCircuitsOpenError`` for, mapped to 503 so the client backs
+        off and retries instead of chasing a phantom misconfiguration.
+        """
+        if trace.admission_refused:
+            return AllCircuitsOpenError(
+                f"All provider circuits are open for model {model_id}: "
+                f"{sorted(trace.admission_refused)}"
+            )
+        return ValueError(f"No route configured for model {model_id}")
+
     def _select_decision(
         self,
         model_id: str,
@@ -2103,6 +2184,7 @@ class RouteWiseRouter:
         envelope = self.envelope.snapshot(pool)
         now = time.time()
 
+        admission_refused: set[str] = set()
         candidates, prefix_context = self._build_candidates(
             model_id,
             prompt_tokens=prompt_tokens,
@@ -2110,7 +2192,9 @@ class RouteWiseRouter:
             envelope=envelope,
             now=now,
             context=context,
+            admission_refused=admission_refused,
         )
+        trace.admission_refused = admission_refused
         excluded_endpoint_ids = trace.excluded_endpoint_ids
         if excluded_endpoint_ids:
             candidates = [
@@ -2137,7 +2221,7 @@ class RouteWiseRouter:
             selected = self._sample_solution(candidates, solution)
             if selected is None:
                 return None
-            reservation = self._reserve_candidate(selected)
+            reservation = self._commit_candidate(selected)
             if reservation is not None:
                 try:
                     hedge_plan = self._select_hedge_plan(
@@ -2204,6 +2288,10 @@ class RouteWiseRouter:
                     # ownership lexical even if metadata or hedge setup fails.
                     reservation.release()
                     raise
+            # Losing the commit race on a recovering endpoint is the same
+            # condition the build filter reports, just observed a moment later.
+            if not self._health_registry.allow_request(selected.endpoint_id):
+                admission_refused.add(selected.endpoint_id)
             candidates = [c for c in candidates if c.endpoint_id != selected.endpoint_id]
             if not candidates:
                 return None
@@ -2642,7 +2730,7 @@ class RouteWiseRouter:
                 if next_decision is None:
                     if last_error is not None:
                         raise last_error
-                    raise ValueError(f"No route configured for model {model_id}")
+                    raise self._no_decision_error(model_id, trace)
 
                 decision = next_decision
                 primary = decision.adapter
@@ -2747,7 +2835,7 @@ class RouteWiseRouter:
                 if next_decision is None:
                     if last_error is not None:
                         raise last_error
-                    raise ValueError(f"No route configured for model {model_id}")
+                    raise self._no_decision_error(model_id, trace)
 
                 decision = next_decision
                 primary = decision.adapter
