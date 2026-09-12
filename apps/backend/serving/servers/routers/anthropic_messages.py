@@ -263,13 +263,22 @@ def _pick_dispatch_adapter(model_id: str, canonical: str, router_exec, user_role
     Taking a survivor in route order also keeps the existing preference instead
     of introducing the router's weighted selection, which would redistribute
     traffic on this surface.
+
+    Selection only *queries* admission: ``eligible_adapters`` filters on
+    ``allow_request``, which is pure, so an open circuit or an endpoint already
+    carrying a half-open probe drops out here without anything being claimed.
+    The claim itself is taken in the handler, next to ``_begin_prefill`` and for
+    the same reason -- the reroute below this can resolve a different model and
+    discard this adapter, and a probe spent on an endpoint nothing is sent to is
+    a recovery window burned for nothing.
     """
     eligible = router_exec.eligible_adapters(canonical)
     if not eligible:
-        # Every provider for this model is admin-disabled or has an open
-        # circuit. Same disposition the chat path gives AllCircuitsOpenError:
-        # 503, which this surface renders as overloaded_error so the client
-        # backs off instead of treating it as a permanent failure.
+        # Every provider for this model is admin-disabled, has an open circuit,
+        # or is already being probed. Same disposition the chat path gives
+        # AllCircuitsOpenError: 503, which this surface renders as
+        # overloaded_error so the client backs off instead of treating it as a
+        # permanent failure.
         raise HTTPException(503, f"No provider is currently available for model '{model_id}'")
     adapter, _weight = _pick_adapter_for_role(eligible, user_role)
     return adapter
@@ -1308,6 +1317,20 @@ async def anthropic_messages(
     # Register before dispatch so the endpoint appears in the health snapshot
     # even while its first request is still in flight (mirrors FixedRouter).
     health_registry.ensure(dispatch_endpoint_id)
+    # Claimed here, and not back in ``_pick_dispatch_adapter``: this is the first
+    # point at which the endpoint being called is settled. The reroute above can
+    # resolve a *different* model and throw the first adapter away, so a claim
+    # taken at resolution would be a probe spent on an endpoint nothing is ever
+    # sent to -- exactly the claim-without-dispatch that starves the recovery it
+    # is supposed to orchestrate. Released in the ``finally`` that brackets the
+    # dispatch below, on both the streaming and non-streaming paths.
+    dispatch_claim = health_registry.begin_dispatch(dispatch_endpoint_id)
+    if dispatch_claim is None:
+        # Another request is already probing this endpoint. ``eligible_adapters``
+        # filtered on the same rule a moment ago, so this is the lost race, not
+        # the common case -- and it gets the same 503 the empty-eligible path
+        # above gives, which this surface renders as overloaded_error.
+        return _anthropic_error(503, f"No provider is currently available for model '{model_id}'")
 
     # Snapshot messages before _sanitize_for_openai_backend mutates them in-place
     # (strips cache_control blocks). The log must preserve the original client payload.
@@ -1732,6 +1755,12 @@ async def anthropic_messages(
                 # client disconnect mid-prefill -- unwinds here, and must not
                 # leave the endpoint charged for a prefill nobody is doing.
                 prefill_load.release(prefill_lease)
+                # Same unwind for the probe. This surface is Claude Code's, where
+                # cancelling a turn mid-stream is routine, and a cancelled stream
+                # records no success -- ``health_success_recorded`` is gated on
+                # first content -- so without this one ESC would cost a
+                # recovering endpoint its whole cooldown.
+                health_registry.end_dispatch(dispatch_claim)
                 latency_ms = int((time.time() - start) * 1000)
                 if log_store:
                     final_acc = _finalize_response_acc(response_acc)
@@ -1937,6 +1966,12 @@ async def anthropic_messages(
         # only place that covers them all. Idempotent, so the confirmed release
         # on the success path stands.
         prefill_load.release(prefill_lease)
+        # The probe slot has the same lifetime as the lease and the same failure
+        # mode if it is not returned: the endpoint stays out of every candidate
+        # list until the claim's deadline. Bound to the dispatch, not to a
+        # recorded outcome -- a 4xx is exempted from the breaker and records
+        # nothing at all.
+        health_registry.end_dispatch(dispatch_claim)
 
     # Every branch above returns, so reaching here means the adapter produced a
     # response. Recorded before logging so a slow log store can't delay the

@@ -7,6 +7,7 @@ import os
 import threading
 import time
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -333,6 +334,35 @@ class _ProviderHealth:
         return max(0.0, min(1.0, self.ewma_success / self.ewma_total))
 
 
+@dataclass(frozen=True, slots=True)
+class DispatchClaim:
+    """One caller's right to send one request to an endpoint, and to hand it back.
+
+    Handed out by :meth:`EndpointHealthRegistry.begin_dispatch` and returned to
+    :meth:`EndpointHealthRegistry.end_dispatch`. ``probe_token`` names the
+    half-open probe slot this claim holds, or None when the circuit was closed
+    and admission cost nothing.
+
+    Ownership is what makes releasing safe. The tempting shortcut -- let any
+    recorded outcome for the endpoint hand the slot back -- is wrong in both
+    directions. Not every request that reaches an endpoint went through
+    admission: an explicit provider pin bypasses it by design, and a request let
+    through while the circuit was still closed can still be in flight a cooldown
+    later. Their outcomes would free a probe that is still running, and the next
+    caller would join it, and the next: the stampede this exists to prevent. Nor
+    does every probe produce an outcome -- a 4xx is exempted from the breaker,
+    and an abandoned stream records nothing at all -- so an outcome is neither
+    necessary nor sufficient evidence that a dispatch has ended.
+
+    The token is minted here rather than taken from the request id, which
+    ``RequestIdMiddleware`` copies verbatim from a client-supplied header: a
+    caller cannot forge one, because a caller never sees one.
+    """
+
+    endpoint_id: str
+    probe_token: int | None = None
+
+
 class _CircuitState:
     CLOSED = "closed"
     OPEN = "open"
@@ -372,6 +402,24 @@ class _CircuitBreaker:
         )
         self.consecutive_failures = 0
         self.last_opened: float | None = None
+        # ``time.perf_counter()`` instant at which the live half-open probe claim
+        # lapses (None = no claim held). Half-open admits one probe at a time, and
+        # the claim is handed back by the dispatch that took it; the deadline is
+        # the backstop for a dispatch that never unwinds at all -- a generator
+        # Starlette never iterates, a thread that dies -- so a missing release
+        # costs one cooldown of delay rather than wedging the endpoint out of the
+        # pool forever. Budgeted at ``cooldown_seconds`` so recovery latency is
+        # governed by the one knob that already governs it, and so a zero cooldown
+        # degenerates to the unconditional admission this breaker had before
+        # probes existed.
+        self._probe_deadline: float | None = None
+        # Which claim the live slot belongs to (None = free). Compared on release
+        # so a straggler from an already-lapsed claim, or a caller that was never
+        # admitted through ``begin_dispatch`` at all, cannot hand back the probe
+        # a different request is still running. Monotonic per breaker, never
+        # reused, and never exposed outside the process.
+        self._probe_token: int | None = None
+        self._next_probe_token: int = 1
         # Wall-clock epoch until which repeat circuit-open alerts are muted for a
         # subscription usage-limit outage (0.0 = not muted). Committed only once a
         # page is delivered (_send_circuit_alert) and cleared on recovery.
@@ -406,17 +454,80 @@ class _CircuitBreaker:
         self._lock = threading.Lock()
 
     def allow_request(self) -> bool:
+        """Report whether this endpoint is admissible, changing nothing.
+
+        Deliberately a pure predicate. Every hot caller is an *enumeration*
+        filter -- it asks this of every candidate on a route and then dispatches
+        to at most one -- so any state this advanced (the OPEN -> HALF_OPEN move
+        it used to make, a probe claim) would be advanced N times per request and
+        charged to N-1 endpoints that were never called. Committing to an
+        endpoint is :meth:`begin_dispatch`'s job, and only a caller that is about
+        to dispatch may call it.
+        """
         with self._lock:
+            return self._admits_locked(time.perf_counter())
+
+    def _admits_locked(self, now: float) -> bool:
+        if self.state == _CircuitState.CLOSED:
+            return True
+        if self.state == _CircuitState.OPEN:
+            # Reads as admissible the moment the cooldown is up even though the
+            # state is still OPEN: the transition belongs to the claim, so that
+            # merely listing candidates cannot spend the recovery window.
+            if self.last_opened is None:
+                return False
+            return (now - self.last_opened) >= self.cooldown_seconds
+        return not self._probe_claim_live_locked(now)
+
+    def _probe_claim_live_locked(self, now: float) -> bool:
+        return self._probe_deadline is not None and now < self._probe_deadline
+
+    def _claim_probe_locked(self, now: float) -> int:
+        self._probe_deadline = now + self.cooldown_seconds
+        self._probe_token = self._next_probe_token
+        self._next_probe_token += 1
+        return self._probe_token
+
+    def _release_probe_locked(self) -> None:
+        self._probe_deadline = None
+        self._probe_token = None
+
+    def end_dispatch(self, probe_token: int) -> None:
+        """Hand the probe slot back, if this claim is the one still holding it.
+
+        Matched on the token rather than released outright: by the time a slow
+        dispatch unwinds, its claim may already have lapsed and been re-issued,
+        and clearing the slot then would put two probes on the wire against an
+        endpoint that is being asked one question.
+        """
+        with self._lock:
+            if self._probe_token == probe_token:
+                self._release_probe_locked()
+
+    def begin_dispatch(self) -> tuple[bool, int | None]:
+        """Claim the right to dispatch one request, as ``(admitted, probe_token)``.
+
+        The single mutating step in admission, and the only one that opens the
+        half-open window. Call it exactly once, at the point a router has
+        committed to this endpoint, and hand the token back through
+        :meth:`end_dispatch` when the dispatch unwinds -- from a ``finally``, so
+        a client disconnect or a stream that never produced a token releases it
+        too. A token of None means the circuit was closed and nothing was taken.
+        """
+        with self._lock:
+            now = time.perf_counter()
             if self.state == _CircuitState.CLOSED:
-                return True
+                return True, None
             if self.state == _CircuitState.OPEN:
                 if self.last_opened is None:
-                    return False
-                if (time.perf_counter() - self.last_opened) >= self.cooldown_seconds:
-                    self.state = _CircuitState.HALF_OPEN
-                    return True
-                return False
-            return True
+                    return False, None
+                if (now - self.last_opened) < self.cooldown_seconds:
+                    return False, None
+                self.state = _CircuitState.HALF_OPEN
+                return True, self._claim_probe_locked(now)
+            if self._probe_claim_live_locked(now):
+                return False, None
+            return True, self._claim_probe_locked(now)
 
     def on_success(self) -> None:
         with self._lock:
@@ -438,6 +549,12 @@ class _CircuitBreaker:
                 )
                 self.state = _CircuitState.CLOSED
                 self.last_opened = None
+                # A closed circuit admits everyone, so the probe bookkeeping is
+                # dead weight from here; drop it rather than carry a deadline
+                # into the next outage. Scoped to the closing branch: an ordinary
+                # success on an already-closed circuit belongs to a request that
+                # never held a claim, and must not clear one.
+                self._release_probe_locked()
                 logger.info(
                     "circuit_closed",
                     extra={
@@ -760,10 +877,47 @@ class EndpointHealthRegistry:
         return circuit
 
     def allow_request(self, endpoint_id: str) -> bool:
-        """Return whether an endpoint's circuit admits a request."""
+        """Return whether an endpoint's circuit admits a request.
+
+        A pure query: routers call it once per candidate while enumerating a
+        route, so it must stay free of side effects. Use :meth:`begin_dispatch`
+        at the point the router commits to one of them.
+        """
         with self._lock:
             circuit = self._ensure_circuit_locked(endpoint_id)
         return circuit.allow_request()
+
+    def begin_dispatch(self, endpoint_id: str) -> DispatchClaim | None:
+        """Claim the right to send one request to ``endpoint_id``.
+
+        Returns None when the circuit is open, or when a half-open probe is
+        already in flight -- so a half-open window admits one caller instead of
+        every concurrent one. Call it once, where the router commits, and pair it
+        with :meth:`end_dispatch` in a ``finally`` covering the dispatch: a claim
+        is a resource with the same lifetime as a prefill lease, and a dispatch
+        that never hands it back costs the endpoint a cooldown of invisibility.
+        """
+        with self._lock:
+            circuit = self._ensure_circuit_locked(endpoint_id)
+        admitted, probe_token = circuit.begin_dispatch()
+        if not admitted:
+            return None
+        return DispatchClaim(endpoint_id, probe_token)
+
+    def end_dispatch(self, claim: DispatchClaim | None) -> None:
+        """Hand a dispatch claim back. Idempotent, and safe on None.
+
+        Takes the claim rather than an endpoint id so only the holder can free
+        the slot: releasing by name would let a pinned request -- which bypasses
+        admission and holds no claim -- hand back a probe that another request is
+        still running.
+        """
+        if claim is None or claim.probe_token is None:
+            return
+        with self._lock:
+            circuit = self._circuits.get(claim.endpoint_id)
+        if circuit is not None:
+            circuit.end_dispatch(claim.probe_token)
 
     def record_success(self, endpoint_id: str) -> None:
         """Record a successful endpoint request."""

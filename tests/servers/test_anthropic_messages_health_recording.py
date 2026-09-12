@@ -610,3 +610,80 @@ def test_is_non_empty_content_event(event_type, data, expected):
     from serving.servers.routers.anthropic_messages import _is_non_empty_content_event
 
     assert _is_non_empty_content_event(event_type, data) is expected
+
+
+# --- the half-open probe on this surface -----------------------------------
+
+
+def _half_open(registry, endpoint_id: str) -> None:
+    """Trip the endpoint and put it at the far end of its cooldown."""
+    for _ in range(20):
+        registry.record_failure(endpoint_id, reason="seeded")
+        if registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.OPEN:
+            break
+    else:  # pragma: no cover - defensive
+        raise AssertionError("circuit never opened")
+    circuit = registry._circuits[endpoint_id]
+    circuit.last_opened -= circuit.cooldown_seconds + 1
+
+
+@pytest.mark.asyncio
+async def test_resolution_does_not_spend_the_half_open_probe(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts
+):
+    """Resolving a model is not dispatching to it.
+
+    ``_resolve`` runs hundreds of lines before an upstream is touched, and the
+    reroute below it can resolve a *different* model and discard this adapter
+    entirely. A probe claimed here would be one spent on an endpoint nothing is
+    ever sent to -- the claim-without-dispatch that starves the recovery the
+    probe exists to orchestrate.
+    """
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    from serving.servers.routers import anthropic_messages
+
+    registry = anthropic_compat_router.endpoint_health_registry
+    endpoint_id = _endpoint_id(anthropic_compat_router)
+    _half_open(registry, endpoint_id)
+
+    for _ in range(5):
+        await anthropic_messages._resolve(NATIVE_MODEL, anthropic_compat_router, None)
+
+    assert registry.allow_request(endpoint_id) is True
+    assert registry.begin_dispatch(endpoint_id) is not None
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_a_client_error_probe_leaves_the_endpoint_probeable(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts, no_log_store
+):
+    """A 400 ends the dispatch, so the next caller may probe.
+
+    The breaker exempts client errors, so this probe records no outcome at all
+    and the circuit stays half-open. The release has to come from the dispatch
+    unwinding, not from an outcome -- otherwise one malformed body costs the
+    endpoint a whole cooldown, and every request behind it a 503.
+    """
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    registry = anthropic_compat_router.endpoint_health_registry
+    endpoint_id = _endpoint_id(anthropic_compat_router)
+    _half_open(registry, endpoint_id)
+
+    from fastapi import HTTPException
+
+    from serving.http import AsyncHTTPClient
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        raise HTTPException(400, "bad request")
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    first = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
+    assert first.status_code == 400
+    assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.HALF_OPEN
+
+    second = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
+    # 400 again, not the 503 a held probe would produce.
+    assert second.status_code == 400
+    await asyncio.sleep(0)

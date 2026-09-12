@@ -87,7 +87,8 @@ this order:
    an admin debugging aid, not a client feature. A pin that matches nothing
    raises `ProviderPinError`.
 4. **Weight and circuit admission.** Routes with weight `0` are dropped, as are
-   routes whose circuit is open. If nothing survives, `AllCircuitsOpenError`
+   routes whose circuit is open or already carrying a half-open probe. If
+   nothing survives, `AllCircuitsOpenError`
    names the endpoints it considered.
 5. **Session affinity.** A live pin for this caller and model wins, unless the
    pinned endpoint is backlogged (see [Session affinity](#session-affinity)).
@@ -100,8 +101,9 @@ this order:
 When the selected adapter raises, `FixedRouter` records the failure against
 that endpoint, drops the caller's affinity pin, and walks the model's remaining
 routes in declaration order — skipping weight-`0` routes, routes that cannot
-accept the request's modalities, and routes whose circuit is open. The first
-one that succeeds answers the request. If every route fails, the *primary*
+accept the request's modalities, and routes the breaker refuses a dispatch
+claim for (open, or already carrying a probe). The first one that succeeds
+answers the request. If every route fails, the *primary*
 error is re-raised, with the whole attempt list attached.
 
 Two deliberate exceptions:
@@ -124,12 +126,35 @@ router strips before forwarding. Clients never see either.
 
 `apps/backend/routing/endpoint_health.py` holds one `_ProviderHealth` (an EWMA of success
 rate) and one `_CircuitBreaker` per `endpoint_id`, in a process-scoped
-`EndpointHealthRegistry` shared by every router. `allow_request` is consulted
-during selection *and* during fallback, so an open circuit is skipped by both.
+`EndpointHealthRegistry` shared by every router.
+
+Admission is two calls, and the split matters:
+
+- **`allow_request(endpoint_id)`** is a pure predicate — is this endpoint a
+  candidate? Routers ask it of *every* route candidate while enumerating and
+  then dispatch to at most one, so it changes nothing.
+- **`begin_dispatch(endpoint_id)`** is the commit. It is called once, where a
+  router has settled on an endpoint, and returns a `DispatchClaim` or `None`
+  when the endpoint cannot take this request. The caller hands the claim back
+  through `end_dispatch(claim)` in a `finally` covering the dispatch, alongside
+  the prefill lease and for the same reason: a client disconnect or a cancelled
+  coroutine has to release it too.
 
 The breaker opens after `failure_threshold` consecutive failures, stays open
-for `cooldown_seconds`, then admits one half-open probe: a success closes it, a
-failure re-opens it. All four knobs read the environment first:
+for `cooldown_seconds`, and then admits **one** half-open probe at a time — a
+success closes it, a failure re-opens it. The slot belongs to the claim that
+took it: nothing else can free it, because an outcome recorded by a request that
+bypassed admission (an explicit `X-Route-Pin`, or one admitted while the circuit
+was still closed) says nothing about whether the probe has finished. A claim
+also carries a deadline of `cooldown_seconds` as a backstop, so a dispatch that
+never unwinds at all costs one extra cooldown rather than wedging the endpoint
+out of routing.
+
+The visible consequence: while an endpoint is being probed, concurrent callers
+that have nowhere else to go get `AllCircuitsOpenError` → **503**, not a second
+request onto a provider that is probably still down. On a route with a healthy
+sibling they are simply reselected onto it. All four knobs read the environment
+first:
 
 | Variable | Default | Meaning |
 |---|---|---|

@@ -55,6 +55,12 @@ class RoutingTrace:
     failed_attempts: list[dict[str, Any]] = field(default_factory=list)
     routewise_failed_attempts: list[dict[str, Any]] = field(default_factory=list)
     excluded_endpoint_ids: set[str] = field(default_factory=set)
+    # Endpoints the most recent solve dropped on circuit admission (open, or a
+    # half-open probe already in flight). Rewritten per solve, and read only when
+    # a solve found nothing: it is what separates "this model has no route" --
+    # a deployment error, and a 500 -- from "every provider is busy recovering",
+    # which is transient and owes the client a 503 it can retry.
+    admission_refused: set[str] = field(default_factory=set)
     initial_selected_endpoint: str | None = None
     initial_selected_provider_type: str | None = None
     fallback_policy: str | None = None
