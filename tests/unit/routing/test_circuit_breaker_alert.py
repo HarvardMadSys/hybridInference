@@ -261,15 +261,29 @@ def test_caller_str_collapses_whitespace_in_display_name():
     assert "\n" not in rendered
 
 
-def test_format_affected_callers_escapes_slack_control_characters():
-    """A display name with Slack mrkdwn control chars is escaped, not injected."""
+def test_affected_callers_are_escaped_in_the_rendered_alert():
+    """A display name with Slack mrkdwn control chars is escaped, not injected.
+
+    Asserted on the rendered message rather than on
+    ``_format_affected_callers``, because that is where the escaping now
+    happens: ``alerts._format_message`` escapes every context value it renders,
+    so no rule can forget to. Escaping here as well would double-encode the
+    ``&`` that escaping produces.
+    """
+    from serving.observability.alerts import AlertSeverity, _format_message
+
     cb = _CircuitBreaker(
         provider="openai", failure_threshold=999, cooldown_seconds=30, min_availability=0.0
     )
     cb.on_failure(reason="err", caller="<!channel> (01)")
     rendered = cb._format_affected_callers()
-    assert rendered == "&lt;!channel&gt; (01) x1"
-    assert "<" not in rendered and ">" not in rendered
+    assert rendered == "<!channel> (01) x1"
+
+    message = _format_message(
+        AlertSeverity.ERROR, "Provider circuit opened", {"affected_callers": rendered}
+    )
+    assert "&lt;!channel&gt; (01) x1" in message
+    assert "<!channel>" not in message
 
 
 async def test_circuit_open_alert_lists_affected_callers(monkeypatch):

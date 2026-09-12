@@ -223,13 +223,25 @@ def _format_message(
     # resolution rendered with the breach's own severity emoji is indis-
     # tinguishable from the outage. The webhook carries only this text, so the
     # recovery has to be said in it.
-    heading = f"{_EMOJI[severity]} *{title}*" if status == "firing" else f"✅ *Recovered:* {title}"
+    safe_title = escape_slack_text(title)
+    heading = (
+        f"{_EMOJI[severity]} *{safe_title}*"
+        if status == "firing"
+        else f"✅ *Recovered:* {safe_title}"
+    )
     lines = [heading, f"_{ts} · {info['environment']}_"]
     if context:
         lines.append("")
         for k, v in context.items():
             label = k.replace("_", " ").title()
-            lines.append(f"• *{label}:* {v}")
+            # Escaped here rather than at each call site. Context now routinely
+            # carries text the *caller being alerted about* chose — a client IP
+            # taken from a spoofable ``X-Forwarded-For`` hop, a request path, the
+            # first characters of a presented key — and one rule forgetting to
+            # escape is all it takes to let a scanner post ``<!channel>`` into the
+            # alert channel. Doing it in the single place every alert passes
+            # through means a new rule cannot reintroduce that.
+            lines.append(f"• *{label}:* {escape_slack_text(str(v))}")
     lines.append("")
     lines.append("*Server*")
     host_line = f"{info['hostname']} ({info['ip']})" if info["ip"] else info["hostname"]
@@ -381,6 +393,55 @@ _STATE_TRANSITIONS = ThresholdTransitionTracker(
 _STALE_SWEEP_INTERVAL_SEC = 60
 
 
+#: Per-key builders describing a *closing* incident, registered by
+#: ``alert_on_transition`` for the rules that pass ``resolution_context``. A
+#: recovery card otherwise carries only the metric identity, which is right for
+#: a rate or latency rule — the numbers describe a healthy system by then — but
+#: leaves an auth-failure recovery naming neither the addresses nor the accounts
+#: the incident was about. Registration is keyed on the incident, so the sweep
+#: and the pending-retry paths reach the same summary the transition edge would
+#: have sent. One entry per open incident; dropped on a confirmed close.
+_RESOLUTION_CONTEXT: dict[str, Callable[[], dict[str, Any]]] = {}
+
+#: Summaries already built, held for the rest of the incident. A rule that
+#: tallies an incident hands the tally over once and resets it — otherwise the
+#: next incident inherits this one's offenders — so a builder answers usefully
+#: exactly once. Three paths may each send this incident's recovery (the
+#: transition edge, a failed send's retry, the stale sweep), and without this
+#: whichever ran second would rebuild an emptied summary and post a recovery
+#: thinner than the one that failed to send.
+_RESOLUTION_DETAIL: dict[str, dict[str, Any]] = {}
+
+
+def _forget_resolution_detail(key: str) -> None:
+    """Drop an incident's summary and its builder. For a confirmed close."""
+    _RESOLUTION_CONTEXT.pop(key, None)
+    _RESOLUTION_DETAIL.pop(key, None)
+
+
+def _resolution_detail(key: str) -> dict[str, Any]:
+    """Summary of the incident closing on ``key``, or empty. Never raises.
+
+    A resolution is the last word on an incident; a builder that raises must not
+    be able to take the recovery card down with it.
+    """
+    cached = _RESOLUTION_DETAIL.get(key)
+    if cached is not None:
+        return dict(cached)
+    builder = _RESOLUTION_CONTEXT.get(key)
+    if builder is None:
+        return {}
+    try:
+        detail = builder()
+    except Exception:
+        log.debug("resolution context for %s failed", key, exc_info=True)
+        detail = {}
+    if not isinstance(detail, dict):
+        detail = {}
+    _RESOLUTION_DETAIL[key] = detail
+    return dict(detail)
+
+
 @dataclass
 class _PendingResolution:
     """A resolution whose delivery failed, kept for the sweep timer to retry.
@@ -410,6 +471,8 @@ def reset_transition_state() -> None:
         tracker_._firing.clear()
         tracker_._bounds.clear()
     _PENDING_RESOLUTIONS.clear()
+    _RESOLUTION_CONTEXT.clear()
+    _RESOLUTION_DETAIL.clear()
 
 
 async def alert_on_transition(
@@ -423,6 +486,7 @@ async def alert_on_transition(
     kind: Literal["metric", "state"] = "metric",
     stale_after: float | None = None,
     now: float | None = None,
+    resolution_context: Callable[[], dict[str, Any]] | None = None,
 ) -> bool:
     """Send only when the breach state changes, so incidents open and close once.
 
@@ -442,6 +506,14 @@ async def alert_on_transition(
     is only built when a message is actually attempted. A resolution
     carries just the metric identity, since breach numbers describe a healthy
     system by then and would only mislead on the recovery card.
+
+    ``resolution_context`` is the exception a rule may opt into: a summary of
+    the incident that just closed, as opposed to a reading of the metric now.
+    Some incidents are about *who*, not how much — an auth-failure spike is the
+    addresses and accounts behind it — and that identity is as worth having on
+    the recovery card as on the breach. It is built at most once per close,
+    then snapshotted for the retry path, because a rule that tallies an
+    incident has to be free to reset that tally once it is reported.
     """
     tracker = _TRANSITIONS if kind == "metric" else _STATE_TRANSITIONS
     moment = now or time.time()
@@ -456,6 +528,14 @@ async def alert_on_transition(
         # retry is stale — sending it later would announce a live breach as
         # recovered.
         _PENDING_RESOLUTIONS.pop(key, None)
+        # A summary built for a close that then failed to send describes an
+        # incident this breach has reopened; the next close builds its own.
+        _RESOLUTION_DETAIL.pop(key, None)
+        # Registered on the breach, not the close: the sweep paths below are
+        # handed a bare key, and a breach whose traffic then stops is resolved
+        # from there rather than from another call to this function.
+        if resolution_context is not None:
+            _RESOLUTION_CONTEXT[key] = resolution_context
         # Every breached evaluation still goes to the sink, exactly as before.
         # The cooldown there decides whether it becomes a message, and under the
         # control plane each repeat is what advances the incident's occurrence
@@ -470,10 +550,11 @@ async def alert_on_transition(
         )
     if transition != "resolved":
         return False
+    detail = {"alert": key, **_resolution_detail(key)}
     sent = await alert_slack(
         AlertSeverity.INFO,
         f"Recovered: {title}",
-        {"alert": key},
+        detail,
         dedupe_key=key,
         cooldown_sec=cooldown_sec,
         status="resolved",
@@ -489,6 +570,7 @@ async def alert_on_transition(
         # budgets) would otherwise leak one entry each.
         if not tracker.is_firing(key):
             tracker.forget(key)
+            _forget_resolution_detail(key)
         _PENDING_RESOLUTIONS.pop(key, None)
     else:
         # ``observe`` already cleared the key, so without this the only
@@ -531,7 +613,7 @@ async def sweep_stale_breaches() -> None:
             sent = await alert_slack(
                 AlertSeverity.INFO,
                 f"Recovered: {pending.title}",
-                {"alert": key},
+                {"alert": key, **_resolution_detail(key)},
                 dedupe_key=key,
                 cooldown_sec=0,
                 status="resolved",
@@ -552,6 +634,7 @@ async def sweep_stale_breaches() -> None:
             # Confirmed close: clears the re-armed firing state and the key's
             # staleness bound in one step.
             tracker.forget(key)
+            _forget_resolution_detail(key)
 
     for key in _TRANSITIONS.sweep(now):
         sent = False
@@ -564,7 +647,13 @@ async def sweep_stale_breaches() -> None:
                 # evaluated. Say so, instead of wording that reads as if the
                 # metric was measured healthy.
                 f"Recovered (no recent samples): {key}",
-                {"alert": key, "reason": "no samples within the rule window"},
+                # The rule's own summary first, then this path's reason, which
+                # must win the key if a rule happens to use the same name.
+                {
+                    "alert": key,
+                    **_resolution_detail(key),
+                    "reason": "no samples within the rule window",
+                },
                 dedupe_key=key,
                 cooldown_sec=0,
                 status="resolved",
@@ -583,6 +672,7 @@ async def sweep_stale_breaches() -> None:
             # Confirmed close: without this, dynamic keys (per-user cost,
             # per-period budgets) each leave a ``_bounds`` entry behind forever.
             _TRANSITIONS.forget(key)
+            _forget_resolution_detail(key)
         else:
             # The sweep already dropped the key, so leaving it dropped would
             # lose the resolution outright. Re-arm stale enough that the *next*

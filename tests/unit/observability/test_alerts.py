@@ -8,6 +8,8 @@ import pytest
 from serving.observability.alerts import (
     _EMOJI,
     _PENDING_RESOLUTIONS,
+    _RESOLUTION_CONTEXT,
+    _RESOLUTION_DETAIL,
     _STATE_TRANSITIONS,
     _TRANSITIONS,
     AlertSeverity,
@@ -862,3 +864,249 @@ class TestReBreachDuringAnInFlightRecoverySend:
         # The fresh incident survives the sweep's cleanup, with its own bound.
         assert _TRANSITIONS.is_firing("failed_request_rate")
         assert "failed_request_rate" in _TRANSITIONS._bounds
+
+
+def test_format_message_escapes_caller_controlled_context():
+    """A value chosen by whoever triggered the alert renders literally.
+
+    Alert context now routinely carries text the offending caller picked — a
+    client IP read off a spoofable ``X-Forwarded-For`` hop, a request path, the
+    leading characters of a presented key. Escaping is done here, once, rather
+    than in each rule, so that a rule added later cannot hand a scanner a way to
+    ping the alert channel.
+    """
+    message = _format_message(
+        AlertSeverity.WARN,
+        "Auth failure spike",
+        {"top_ips": "<!channel> (40)", "top_paths": "/v1/chat & /v1/models"},
+    )
+
+    assert "&lt;!channel&gt; (40)" in message
+    assert "<!channel>" not in message
+    assert "/v1/chat &amp; /v1/models" in message
+
+
+class TestResolutionCarriesIncidentDetail:
+    """A recovery card may describe the incident, not just name the rule.
+
+    The default stays as it was: breach numbers describe a healthy system by the
+    time it recovers. But some incidents are about *who* rather than how much,
+    and for those the identity is worth as much on the close as on the breach.
+    """
+
+    async def test_a_rule_summary_reaches_the_recovery_card(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            for breached in (True, False):
+                await alert_on_transition(
+                    key="auth_failure_spike",
+                    breached=breached,
+                    severity=AlertSeverity.WARN,
+                    title="Auth failure spike",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                    resolution_context=lambda: {"top_ips": "203.0.113.9 (412)"},
+                )
+
+        recovery = mock_post.await_args.args[1]
+        assert "Recovered:" in recovery
+        assert "203.0.113.9 (412)" in recovery
+
+    async def test_a_rule_that_opts_out_still_gets_the_bare_card(self, monkeypatch):
+        """Unchanged for every rule that does not pass one."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            for breached in (True, False):
+                await alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=breached,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+
+        assert "Alert:* circuit_open:zhipu" in mock_post.await_args.args[1]
+
+    async def test_a_retry_resends_the_summary_built_on_the_transition(self, monkeypatch):
+        """The builder answers once, so every path that may send must agree.
+
+        A rule that tallies an incident resets that tally when it hands the
+        summary over — otherwise the next incident inherits this one's
+        addresses. Rebuilding at retry time would therefore post a recovery
+        thinner than the one that failed to send.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        summaries = iter([{"top_ips": "203.0.113.9 (412)"}, {}])
+
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            # firing, resolution (dropped), sweep retry
+            new=AsyncMock(side_effect=[True, False, True]),
+        ) as mock_post:
+            for breached in (True, False):
+                await alert_on_transition(
+                    key="auth_failure_spike",
+                    breached=breached,
+                    severity=AlertSeverity.WARN,
+                    title="Auth failure spike",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                    resolution_context=lambda: next(summaries),
+                )
+            assert "auth_failure_spike" in _PENDING_RESOLUTIONS
+            await sweep_stale_breaches()
+
+        assert "203.0.113.9 (412)" in mock_post.await_args.args[1]
+        assert "auth_failure_spike" not in _PENDING_RESOLUTIONS
+
+    async def test_the_stale_sweep_carries_the_summary_too(self, monkeypatch):
+        """The likeliest way a spike ends is its traffic simply stopping.
+
+        That incident is closed by the sweep, which is handed a bare key — so
+        the summary has to be reachable from the key rather than passed along
+        the call that closes it.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            await alert_on_transition(
+                key="auth_failure_spike",
+                breached=True,
+                severity=AlertSeverity.WARN,
+                title="Auth failure spike",
+                context=dict,
+                cooldown_sec=0,
+                stale_after=0.0,
+                resolution_context=lambda: {"known_accounts": "01USER (revoked) (88)"},
+            )
+            await sweep_stale_breaches()
+
+        swept = mock_post.await_args.args[1]
+        assert "01USER (revoked) (88)" in swept
+        # The weaker claim this path makes must still win the "reason" key.
+        assert "no samples within the rule window" in swept
+
+    async def test_a_builder_that_raises_cannot_take_the_recovery_down(self, monkeypatch):
+        """A resolution is the last word on an incident; nothing may drop it."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+
+        def _boom() -> dict:
+            raise RuntimeError("tally is gone")
+
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            for breached in (True, False):
+                sent = await alert_on_transition(
+                    key="auth_failure_spike",
+                    breached=breached,
+                    severity=AlertSeverity.WARN,
+                    title="Auth failure spike",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                    resolution_context=_boom,
+                )
+
+        assert sent is True
+        assert "Recovered:" in mock_post.await_args.args[1]
+
+    async def test_a_closed_incident_leaves_no_builder_behind(self, monkeypatch):
+        """One entry per open incident, dropped on a confirmed close."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ):
+            for breached in (True, False):
+                await alert_on_transition(
+                    key="auth_failure_spike",
+                    breached=breached,
+                    severity=AlertSeverity.WARN,
+                    title="Auth failure spike",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                    resolution_context=lambda: {"top_ips": "203.0.113.9 (412)"},
+                )
+
+        assert "auth_failure_spike" not in _RESOLUTION_CONTEXT
+        assert "auth_failure_spike" not in _RESOLUTION_DETAIL
+
+    async def test_a_swept_retry_does_not_rebuild_an_emptied_summary(self, monkeypatch):
+        """The stale sweep re-arms rather than queueing, so it rebuilds.
+
+        A spike whose traffic stops closes here, and a dropped send puts the key
+        back for the next tick — which would call a builder that has already
+        handed its tally over.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        summaries = iter([{"top_ips": "203.0.113.9 (412)"}, {}])
+
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            # firing, first sweep (dropped), second sweep
+            new=AsyncMock(side_effect=[True, False, True]),
+        ) as mock_post:
+            await alert_on_transition(
+                key="auth_failure_spike",
+                breached=True,
+                severity=AlertSeverity.WARN,
+                title="Auth failure spike",
+                context=dict,
+                cooldown_sec=0,
+                stale_after=0.0,
+                resolution_context=lambda: next(summaries),
+            )
+            await sweep_stale_breaches()
+            await sweep_stale_breaches()
+
+        assert "203.0.113.9 (412)" in mock_post.await_args.args[1]
+        assert "auth_failure_spike" not in _RESOLUTION_DETAIL
+
+    async def test_a_reopened_incident_builds_its_own_summary(self, monkeypatch):
+        """A breach after a dropped close is a live incident, not the old one."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        summaries = iter([{"top_ips": "203.0.113.9 (412)"}, {"top_ips": "198.51.100.4 (7)"}])
+
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            # firing, close (dropped), re-breach, close
+            new=AsyncMock(side_effect=[True, False, True, True]),
+        ) as mock_post:
+            for breached in (True, False, True, False):
+                await alert_on_transition(
+                    key="auth_failure_spike",
+                    breached=breached,
+                    severity=AlertSeverity.WARN,
+                    title="Auth failure spike",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                    resolution_context=lambda: next(summaries),
+                )
+
+        recovery = mock_post.await_args.args[1]
+        assert "198.51.100.4 (7)" in recovery
+        assert "203.0.113.9 (412)" not in recovery

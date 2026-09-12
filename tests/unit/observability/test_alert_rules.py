@@ -1431,3 +1431,195 @@ async def test_sweep_keeps_closing_after_one_resolution_fails(monkeypatch):
         await engine._sweep_stale_breaches()
 
     assert mock_alert.await_count == 2
+
+
+class TestAuthFailureSpikeNamesWhoAndWhere:
+    """A spike alert has to answer "where from" and "whose", not just "how many".
+
+    An operator who opens the card wants an address to block and an account to
+    repair. A count and a window name neither, which is what left the page
+    unactionable.
+    """
+
+    @staticmethod
+    def _rule(**overrides):
+        from serving.observability.alert_rules import AuthFailureSpikeRule
+
+        cfg = AlertConfig().rules.auth_failure_spike
+        cfg.enabled = True
+        cfg.window_sec = 60
+        cfg.threshold_count = 3
+        for key, value in overrides.items():
+            setattr(cfg, key, value)
+        return AuthFailureSpikeRule(cfg)
+
+    @staticmethod
+    async def _feed(rule, records):
+        """Drive the rule and return the mocked transition calls."""
+        with patch(
+            "serving.observability.alert_rules.alert_on_transition",
+            new=AsyncMock(),
+        ) as mock_transition:
+            for record in records:
+                await rule.on_record(record)
+            return mock_transition
+
+    @staticmethod
+    def _failure(**fields):
+        fields.setdefault("reason", "invalid_api_key")
+        fields.setdefault("ip_source", "socket")
+        return _fake_event("auth_failure", **fields)
+
+    async def test_breach_card_names_addresses_keys_accounts_and_paths(self):
+        rule = self._rule()
+        records = [
+            self._failure(
+                remote_ip="203.0.113.9",
+                peer_ip="203.0.113.9",
+                key_prefix="hyi-ab",
+                path="/v1/chat/completions",
+            )
+            for _ in range(4)
+        ]
+        # One failure from a key this deployment did issue, whose owner is the
+        # actionable half of the alert: a live account with a dead credential.
+        records.append(
+            self._failure(
+                remote_ip="198.51.100.4",
+                peer_ip="198.51.100.4",
+                key_prefix="hyi-zz",
+                path="/v1/models",
+                user_id="01MONITOR",
+                credential_state="revoked",
+            )
+        )
+
+        mock_transition = await self._feed(rule, records)
+        context = mock_transition.await_args.kwargs["context"]()
+
+        assert context["count"] == 5
+        assert context["distinct_ips"] == 2
+        assert "203.0.113.9 (4)" in context["top_ips"]
+        assert "hyi-ab (4)" in context["top_key_prefixes"]
+        assert "invalid_api_key (5)" in context["failure_reasons"]
+        assert "01MONITOR (revoked) (1)" in context["known_accounts"]
+        assert "/v1/chat/completions (4)" in context["top_paths"]
+
+    async def test_an_anonymous_wave_carries_no_empty_account_row(self):
+        """A row reading "n/a" is worse than no row: it invites a second look."""
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [self._failure(remote_ip="203.0.113.9", key_prefix="hyi-ab") for _ in range(4)],
+        )
+        context = mock_transition.await_args.kwargs["context"]()
+
+        assert "known_accounts" not in context
+        assert "top_paths" not in context
+
+    async def test_forwarded_addresses_are_shown_against_the_sockets_they_came_on(self):
+        """A spoofed ``X-Forwarded-For`` is how a source spreads across buckets.
+
+        The reported addresses are only as trustworthy as the proxy that set
+        them, so naming the socket they actually arrived on is what makes a
+        forged hop visible.
+        """
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [
+                self._failure(
+                    remote_ip=f"203.0.113.{n}",
+                    peer_ip="198.51.100.7",
+                    ip_source="x-forwarded-for",
+                    key_prefix="hyi-ab",
+                )
+                for n in range(5)
+            ],
+        )
+        context = mock_transition.await_args.kwargs["context"]()
+
+        assert context["distinct_ips"] == 5
+        assert "198.51.100.7 (5)" in context["arrived_via_peers"]
+
+    async def test_a_long_path_cannot_crowd_out_the_rest_of_the_card(self):
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [self._failure(remote_ip="203.0.113.9", path="/v1/" + "a" * 4000) for _ in range(4)],
+        )
+        context = mock_transition.await_args.kwargs["context"]()
+
+        assert "…" in context["top_paths"]
+        assert len(context["top_paths"]) < 120
+
+    async def test_recovery_card_describes_the_incident_not_the_empty_window(self):
+        """By the time a spike resolves, the window it breached on is empty.
+
+        Which is exactly why the recovery card used to name only the rule. The
+        tally runs across the incident instead.
+        """
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [
+                self._failure(
+                    remote_ip="203.0.113.9",
+                    key_prefix="hyi-ab",
+                    user_id="01MONITOR",
+                    credential_state="expired",
+                )
+                for _ in range(6)
+            ],
+        )
+        summary = mock_transition.await_args.kwargs["resolution_context"]()
+
+        # All six: the four that breached (threshold 3) plus the two that
+        # arrived while the incident was open. A total smaller than the peak it
+        # sits next to would just read as a bug.
+        assert summary["failures_in_incident"] == "6"
+        assert summary["peak_in_window"] == "6 per 60s"
+        assert summary["distinct_ips"] == 1
+        assert "203.0.113.9 (6)" in summary["top_ips"]
+        assert "01MONITOR (expired) (6)" in summary["known_accounts"]
+        assert summary["incident_duration_sec"] >= 0
+
+    async def test_the_tally_is_handed_over_once_and_reset(self):
+        """The next incident must not inherit this one's addresses."""
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule, [self._failure(remote_ip="203.0.113.9") for _ in range(5)]
+        )
+        resolution_context = mock_transition.await_args.kwargs["resolution_context"]
+
+        assert resolution_context()["distinct_ips"] == 1
+        # Empty rather than a repeat: the alerts layer snapshots the first
+        # answer for its retry path, so a second call has nothing left to say.
+        assert resolution_context() == {}
+
+    async def test_a_resolution_the_rule_never_saw_open_adds_nothing(self):
+        """A restart mid-incident leaves no tally; zeroes would read as measured."""
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule, [self._failure(remote_ip="203.0.113.9") for _ in range(2)]
+        )
+
+        assert mock_transition.await_args.kwargs["breached"] is False
+        assert mock_transition.await_args.kwargs["resolution_context"]() == {}
+
+    async def test_a_source_rotating_addresses_cannot_grow_the_tally(self):
+        """An incident lasts as long as the spike; its tally must not."""
+        from serving.observability.alert_rules import _MAX_TRACKED_OFFENDERS
+
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [self._failure(remote_ip=f"203.0.113.{n}") for n in range(_MAX_TRACKED_OFFENDERS * 4)],
+        )
+        summary = mock_transition.await_args.kwargs["resolution_context"]()
+
+        assert summary["distinct_ips"] == _MAX_TRACKED_OFFENDERS
+        # The count is a floor, and the card says so rather than implying a
+        # total the reader could size the incident from.
+        assert "(capped)" in summary["failures_in_incident"]
+        assert "(capped)" in summary["top_ips"]

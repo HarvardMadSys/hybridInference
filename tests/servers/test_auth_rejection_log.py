@@ -14,10 +14,18 @@ from pydantic import BaseModel
 from serving.servers.auth import verify_api_key
 
 
-def _build_app(monkeypatch, *, op_store_user: dict[str, Any] | None) -> tuple[FastAPI, list[dict]]:
+def _build_app(
+    monkeypatch,
+    *,
+    op_store_user: dict[str, Any] | None,
+    audit_row: dict[str, Any] | None = None,
+) -> tuple[FastAPI, list[dict], MagicMock]:
     """Wire up a tiny app whose only endpoint depends on verify_api_key.
 
-    Returns the app plus the list that captures log_rejection invocations.
+    Returns the app, the list capturing log_rejection invocations, and the
+    op_store mock — the last so a test can assert whether the unfiltered
+    identity lookup was attempted at all. ``audit_row`` is what that lookup
+    answers with: ``None`` for a key this deployment never issued.
     """
     log_calls: list[dict] = []
 
@@ -31,11 +39,13 @@ def _build_app(monkeypatch, *, op_store_user: dict[str, Any] | None) -> tuple[Fa
 
     app = FastAPI()
 
+    op = MagicMock()
+    op.get_auth_context_by_key_hash = AsyncMock(return_value=op_store_user)
+    op.get_user_cost_today = AsyncMock(return_value=0.0)
+    op.update_key_last_used = AsyncMock()
+    op.get_key_owner_for_audit = AsyncMock(return_value=audit_row)
+
     async def fake_op_store_dep():
-        op = MagicMock()
-        op.get_auth_context_by_key_hash = AsyncMock(return_value=op_store_user)
-        op.get_user_cost_today = AsyncMock(return_value=0.0)
-        op.update_key_last_used = AsyncMock()
         return op
 
     async def fake_log_store_dep():
@@ -54,7 +64,7 @@ def _build_app(monkeypatch, *, op_store_user: dict[str, Any] | None) -> tuple[Fa
     app.state.services = type("S", (), {})()
     app.state.services.log_store = MagicMock()
     app.state.services.runtime_settings = MagicMock()
-    return app, log_calls
+    return app, log_calls, op
 
 
 class EmbedBody(BaseModel):
@@ -614,7 +624,7 @@ async def test_blocked_ip_identity_lookup_failure_still_returns_429(monkeypatch,
 @pytest.mark.asyncio
 async def test_missing_api_key_logs_rejection(monkeypatch):
     """No Authorization header -> 401 + log_rejection(error_code='auth_missing')."""
-    app, log_calls = _build_app(monkeypatch, op_store_user=None)
+    app, log_calls, _op = _build_app(monkeypatch, op_store_user=None)
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/v1/chat/completions")
@@ -629,7 +639,7 @@ async def test_missing_api_key_logs_rejection(monkeypatch):
 @pytest.mark.asyncio
 async def test_invalid_api_key_logs_rejection(monkeypatch):
     """Unknown key -> 401 + log_rejection(error_code='auth_invalid')."""
-    app, log_calls = _build_app(monkeypatch, op_store_user=None)
+    app, log_calls, _op = _build_app(monkeypatch, op_store_user=None)
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get(
@@ -654,7 +664,7 @@ async def test_quota_exceeded_logs_rejection(monkeypatch):
         "email_verified": True,
         "quota_daily_cost_usd": 0.001,  # very low
     }
-    app, log_calls = _build_app(monkeypatch, op_store_user=user_row)
+    app, log_calls, _op = _build_app(monkeypatch, op_store_user=user_row)
 
     # Override get_user_cost_today to push us over the quota.
     async def fake_op_store_dep():
@@ -679,3 +689,122 @@ async def test_quota_exceeded_logs_rejection(monkeypatch):
     assert len(log_calls) == 1
     assert log_calls[0]["error_code"] == "quota_exceeded"
     assert log_calls[0]["user"]["user_id"] == "u1"
+
+
+def _auth_failure_record(caplog):
+    """The one ``auth_failure`` record the rejection emitted."""
+    records = [r for r in caplog.records if getattr(r, "event", None) == "auth_failure"]
+    assert len(records) == 1
+    return records[0]
+
+
+@pytest.mark.asyncio
+async def test_invalid_key_names_the_account_behind_a_dead_credential(monkeypatch, caplog):
+    """The actionable half of an auth-failure spike is whose key it was.
+
+    A key that fails here is either nobody's — a scanner's random token — or a
+    deployment's own monitor or service account whose credential was rotated,
+    revoked or expired. Only the second is something to go and fix, and until
+    the record named it the two were the same anonymous 401.
+    """
+    app, log_calls, op = _build_app(
+        monkeypatch,
+        op_store_user=None,
+        audit_row=_audit_row(user_id="u1", role="pro", key_status="revoked"),
+    )
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    with caplog.at_level("WARNING", logger="serving.servers.auth"):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get(
+                "/v1/chat/completions", headers={"Authorization": "Bearer hyi-revoked"}
+            )
+            await asyncio.sleep(0)
+
+    assert resp.status_code == 401
+    record = _auth_failure_record(caplog)
+    assert record.user_id == "u1"
+    assert record.credential_state == "revoked"
+    # What was being reached for, and from where, for the same reason.
+    assert record.path == "/v1/chat/completions"
+    assert record.key_prefix == "hyi-re"
+    assert log_calls[0]["user"]["user_id"] == "u1"
+    # Never authenticated: the key resolved to a name, not to an entitlement.
+    assert log_calls[0]["user"]["authenticated"] is False
+    op.get_key_owner_for_audit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_invalid_key_that_was_never_issued_names_nobody(monkeypatch, caplog):
+    """A scanner's random token resolves to no one, and the record says so.
+
+    That absence is the signal: a spike with no accounts in it is outside
+    traffic, and a spike with one is a caller of this deployment's own.
+    """
+    app, log_calls, _op = _build_app(monkeypatch, op_store_user=None, audit_row=None)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    with caplog.at_level("WARNING", logger="serving.servers.auth"):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/v1/chat/completions", headers={"Authorization": "Bearer hyi-junk"})
+            await asyncio.sleep(0)
+
+    record = _auth_failure_record(caplog)
+    assert record.user_id is None
+    assert record.credential_state is None
+    assert log_calls[0]["user"] is None
+
+
+@pytest.mark.asyncio
+async def test_identifying_the_caller_can_be_switched_off(monkeypatch, caplog):
+    """A deployment that will not spend the lookup spends nothing at all."""
+    from serving.config.settings import get_settings
+
+    # Patched on the instance ``verify_api_key`` will read, not on the module
+    # global: the accessor is cached, and a cleared cache hands out a new one.
+    monkeypatch.setattr(get_settings(), "auth_failure_identify_caller", False)
+    app, _log_calls, op = _build_app(
+        monkeypatch, op_store_user=None, audit_row=_audit_row(key_status="revoked")
+    )
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    with caplog.at_level("WARNING", logger="serving.servers.auth"):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get(
+                "/v1/chat/completions", headers={"Authorization": "Bearer hyi-revoked"}
+            )
+            await asyncio.sleep(0)
+
+    assert resp.status_code == 401
+    op.get_key_owner_for_audit.assert_not_awaited()
+    assert _auth_failure_record(caplog).user_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_identity_lookup_still_returns_401(monkeypatch, caplog):
+    """Enrichment is diagnostic; it must never change what the caller is told."""
+    app, _log_calls, op = _build_app(monkeypatch, op_store_user=None, audit_row=None)
+    op.get_key_owner_for_audit = AsyncMock(side_effect=RuntimeError("pool exhausted"))
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    with caplog.at_level("WARNING", logger="serving.servers.auth"):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get(
+                "/v1/chat/completions", headers={"Authorization": "Bearer hyi-boom"}
+            )
+            await asyncio.sleep(0)
+
+    assert resp.status_code == 401
+    assert _auth_failure_record(caplog).user_id is None
+
+
+@pytest.mark.asyncio
+async def test_missing_key_records_the_path_it_was_missing_from(monkeypatch, caplog):
+    """No key means no account to resolve, but still somewhere it was aimed."""
+    app, _log_calls, op = _build_app(monkeypatch, op_store_user=None)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    with caplog.at_level("WARNING", logger="serving.servers.auth"):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/v1/chat/completions")
+            await asyncio.sleep(0)
+
+    record = _auth_failure_record(caplog)
+    assert record.path == "/v1/chat/completions"
+    assert record.reason == "missing_api_key"
+    op.get_key_owner_for_audit.assert_not_awaited()
