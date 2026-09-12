@@ -32,6 +32,14 @@ class JobMetric:
     duration_seconds: float | None
 
 
+@dataclass(frozen=True)
+class JobAnomaly:
+    """A job whose timestamps the Actions API reported inconsistently."""
+
+    job: str
+    issue: str
+
+
 def _parse_timestamp(value: Any, field: str) -> datetime:
     if not isinstance(value, str) or not value:
         raise MetricsError(f"job {field} must be a non-empty timestamp")
@@ -39,6 +47,49 @@ def _parse_timestamp(value: Any, field: str) -> datetime:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
         raise MetricsError(f"job {field} is not a valid ISO timestamp: {value!r}") from exc
+
+
+def _optional_timestamp(
+    value: Any,
+    field: str,
+    job_name: str,
+    anomalies: list[JobAnomaly],
+) -> datetime | None:
+    """Parse a job timestamp, recording an anomaly rather than raising on bad data."""
+    if value is None or (isinstance(value, str) and not value):
+        return None
+    try:
+        return _parse_timestamp(value, field)
+    except MetricsError as exc:
+        anomalies.append(JobAnomaly(job=job_name, issue=str(exc)))
+        return None
+
+
+def _elapsed(
+    start: datetime | None,
+    end: datetime | None,
+    label: str,
+    job_name: str,
+    anomalies: list[JobAnomaly],
+) -> float | None:
+    """Return a non-negative interval, clamping and recording out-of-order timestamps.
+
+    The Actions API reports inverted timestamps for skipped jobs, matrix legs,
+    reruns and cancelled-then-superseded runs. Those are reporting artifacts, not
+    build failures, so the offending value is clamped to zero and annotated.
+    """
+    if start is None or end is None:
+        return None
+    seconds = (end - start).total_seconds()
+    if seconds < 0:
+        anomalies.append(
+            JobAnomaly(
+                job=job_name,
+                issue=f"{label} was negative ({seconds:.1f}s); clamped to 0.0s",
+            )
+        )
+        return 0.0
+    return seconds
 
 
 def _jobs_from_payload(payload: Any) -> list[dict[str, Any]]:
@@ -66,34 +117,29 @@ def _nearest_rank(values: Sequence[float], percentile: float) -> float:
 
 
 def summarize_jobs(payload: Any, run_created_at: str) -> dict[str, Any]:
-    """Build a versioned timing report from an Actions jobs API payload."""
+    """Build a versioned timing report from an Actions jobs API payload.
+
+    Out-of-order or unparseable job timestamps are clamped and reported under
+    ``anomalies`` instead of aborting: a timing report must never fail the build.
+    """
     run_created = _parse_timestamp(run_created_at, "run_created_at")
     metrics: list[JobMetric] = []
+    anomalies: list[JobAnomaly] = []
 
     for job in _jobs_from_payload(payload):
         name = job.get("name")
         if not isinstance(name, str) or not name:
             raise MetricsError("Actions job name must be a non-empty string")
 
-        started_value = job.get("started_at")
-        completed_value = job.get("completed_at")
-        started = (
-            _parse_timestamp(started_value, "started_at")
-            if isinstance(started_value, str) and started_value
-            else None
-        )
-        completed = (
-            _parse_timestamp(completed_value, "completed_at")
-            if isinstance(completed_value, str) and completed_value
-            else None
-        )
-        created = None
-        if started is not None:
-            created = _parse_timestamp(job.get("created_at", run_created_at), "created_at")
-            if started < created or started < run_created:
-                raise MetricsError(f"Actions job timestamps are out of order: {name}")
-        if completed is not None and (started is None or completed < started):
-            raise MetricsError(f"Actions job timestamps are out of order: {name}")
+        started = _optional_timestamp(job.get("started_at"), "started_at", name, anomalies)
+        completed = _optional_timestamp(job.get("completed_at"), "completed_at", name, anomalies)
+        created = _optional_timestamp(job.get("created_at"), "created_at", name, anomalies)
+        if created is None:
+            created = run_created
+        if started is None and completed is not None:
+            anomalies.append(
+                JobAnomaly(job=name, issue="completed_at without a started_at; duration unknown")
+            )
 
         conclusion = job.get("conclusion")
         runner_name = job.get("runner_name")
@@ -102,11 +148,11 @@ def summarize_jobs(payload: Any, run_created_at: str) -> dict[str, Any]:
                 name=name,
                 conclusion=conclusion if isinstance(conclusion, str) else "",
                 runner_name=runner_name if isinstance(runner_name, str) else "",
-                queue_seconds=(started - created).total_seconds() if created else None,
-                run_wait_seconds=(started - run_created).total_seconds() if started else None,
-                duration_seconds=(completed - started).total_seconds()
-                if started and completed
-                else None,
+                queue_seconds=_elapsed(created, started, "queue time", name, anomalies),
+                run_wait_seconds=_elapsed(
+                    run_created, started, "time from run start", name, anomalies
+                ),
+                duration_seconds=_elapsed(started, completed, "duration", name, anomalies),
             )
         )
 
@@ -124,12 +170,18 @@ def summarize_jobs(payload: Any, run_created_at: str) -> dict[str, Any]:
             "max_duration_seconds": max(duration_values) if duration_values else None,
         },
         "jobs": [asdict(metric) for metric in sorted(metrics, key=lambda item: item.name)],
+        "anomalies": [
+            asdict(anomaly)
+            for anomaly in sorted(anomalies, key=lambda item: (item.job, item.issue))
+        ],
     }
 
 
 def render_markdown(report: dict[str, Any], run_id: str) -> str:
     """Render a compact GitHub job-summary table."""
     summary = report["summary"]
+    anomalies = report.get("anomalies") or []
+    flagged = {anomaly["job"] for anomaly in anomalies}
     lines = [
         "## CI timing",
         "",
@@ -141,12 +193,23 @@ def render_markdown(report: dict[str, Any], run_id: str) -> str:
         "|---|---|---:|---:|---:|---|",
     ]
     for job in report["jobs"]:
+        marker = " ⚠️" if job["name"] in flagged else ""
         lines.append(
-            f"| {job['name']} | {job['runner_name'] or '—'} | "
+            f"| {job['name']}{marker} | {job['runner_name'] or '—'} | "
             f"{_format_seconds(job['queue_seconds'])} | "
             f"{_format_seconds(job['run_wait_seconds'])} | "
             f"{_format_seconds(job['duration_seconds'])} | {job['conclusion'] or '—'} |"
         )
+    if anomalies:
+        lines.extend(
+            [
+                "",
+                "> [!WARNING]",
+                "> The Actions API reported inconsistent timestamps for some jobs. "
+                "Affected values are clamped; the rest of the report is unaffected.",
+            ]
+        )
+        lines.extend(f"> - `{anomaly['job']}`: {anomaly['issue']}" for anomaly in anomalies)
     return "\n".join(lines) + "\n"
 
 
@@ -178,6 +241,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = json.loads(args.jobs.read_text(encoding="utf-8"))
         report = summarize_jobs(payload, args.run_created_at)
         report["run_id"] = str(args.run_id)
+        for anomaly in report["anomalies"]:
+            print(f"warning: {anomaly['job']}: {anomaly['issue']}", file=sys.stderr)
         _write_atomic(args.output, json.dumps(report, indent=2, sort_keys=True) + "\n")
         if args.markdown:
             _write_atomic(args.markdown, render_markdown(report, str(args.run_id)))
