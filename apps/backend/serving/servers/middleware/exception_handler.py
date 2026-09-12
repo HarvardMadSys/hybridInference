@@ -63,6 +63,13 @@ def _log_domain_exception(
     the raiser's own message survives. Keyed by path and status so a support
     request quoting the ``X-Request-ID`` header (attached to every response by
     ``RequestIdMiddleware``) can be matched to the line that explains it.
+
+    ``detail`` and ``error_code`` must stay in
+    ``serving.utils.logging._STRUCTURED_LOG_KEYS``: both formatters emit only
+    the keys listed there, so dropping either would delete this line's payload
+    at format time -- ``detail`` is the text the response stopped carrying, and
+    ``error_code`` is the only machine-readable field here -- and the redaction
+    would become a net loss of evidence rather than a relocation of it.
     """
     logger.warning(
         "domain_error",

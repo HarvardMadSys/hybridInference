@@ -45,6 +45,7 @@ from serving.servers.middleware.exception_handler import install_exception_handl
 from serving.servers.middleware.request_id import RequestIdMiddleware
 from serving.servers.routers import anthropic_messages
 from serving.utils.identity_keys import ENV_PRIVATE_KEY
+from serving.utils.logging import _STRUCTURED_LOG_KEYS, JsonFormatter, PlainFormatter
 
 # A string with one of each thing the policy calls internal: a file path, a key
 # path, a parse error, a provider name, and an internal identifier. If any
@@ -58,6 +59,12 @@ SECRET_FRAGMENTS = ("/etc/", "identity.pem", "PEM parse", "kid=abc123", "IDENTIT
 # Developer-authored request-contract messages. These are the whole answer for a
 # client that sent a bad request, and redaction must leave them alone.
 CONTRACT_MESSAGE = "Missing required field: model"
+
+# A body that is wrong in two different ways at once: a nested object where a
+# string belongs (carrying something secret-shaped) and a non-integer. Two
+# errors means two ``loc`` paths, which is what a client needs, and two
+# ``input`` values, which is what it must never get back.
+BAD_VALIDATION_BODY = {"model": {"nested": "sk-secret-value"}, "max_tokens": "not-an-int"}
 
 
 def assert_no_secret(payload: str) -> None:
@@ -166,6 +173,31 @@ def client() -> TestClient:
     add("/domain/quota", domain_quota)
     add("/domain/suspended", domain_suspended)
 
+    # A third surface, mounted only for the validation probe: the 422 policy is
+    # the same on /admin as it is on the public routers, and the way to show
+    # that is to drive an admin path rather than to assert it in prose.
+    app.add_api_route("/admin/probe/validate", validate, methods=["POST"])
+
+    app.add_middleware(RequestIdMiddleware)
+    _wire_like_create_app(app)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.fixture
+def identity_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """The real ``/v1/identity`` router with a deliberately broken signing key.
+
+    Module scope rather than a method fixture because two classes need it: the
+    envelope-3 tests, which assert the operator's configuration fault is not in
+    the response, and the formatter tests, which assert it *is* in the log.
+    """
+    from serving.servers.routers import identity
+    from serving.utils import identity_keys
+
+    monkeypatch.setattr(identity_keys, "_PRIVATE_CACHE", {}, raising=False)
+    monkeypatch.setenv(ENV_PRIVATE_KEY, "definitely not a key")
+    app = FastAPI()
+    app.include_router(identity.router)
     app.add_middleware(RequestIdMiddleware)
     _wire_like_create_app(app)
     return TestClient(app, raise_server_exceptions=False)
@@ -287,19 +319,6 @@ class TestEnvelope3DictShortCircuit:
     the test drives the real endpoint rather than a stand-in.
     """
 
-    @pytest.fixture
-    def identity_client(self, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-        from serving.servers.routers import identity
-        from serving.utils import identity_keys
-
-        monkeypatch.setattr(identity_keys, "_PRIVATE_CACHE", {}, raising=False)
-        monkeypatch.setenv(ENV_PRIVATE_KEY, "definitely not a key")
-        app = FastAPI()
-        app.include_router(identity.router)
-        app.add_middleware(RequestIdMiddleware)
-        _wire_like_create_app(app)
-        return TestClient(app, raise_server_exceptions=False)
-
     def test_jwks_misconfiguration_is_not_published(self, identity_client: TestClient) -> None:
         resp = identity_client.get("/v1/identity/jwks")
 
@@ -410,32 +429,64 @@ class TestEnvelope4DomainExceptions:
 
 
 class TestEnvelope5RequestValidation:
-    """FastAPI's default 422 echoed the caller's ``input`` and our ``loc`` paths."""
+    """FastAPI's default 422 echoed the caller's ``input`` back at them.
 
-    @pytest.mark.parametrize("prefix", ["/v1/messages/probe", "/probe"])
-    def test_input_and_loc_are_gone(self, client: TestClient, prefix: str) -> None:
-        resp = client.post(
-            f"{prefix}/validate",
-            json={"model": {"nested": "sk-secret-value"}, "max_tokens": "not-an-int"},
-        )
+    The split is decided and is not a matter of surface: ``loc`` names which
+    field was wrong, which is contract information a legitimate client needs in
+    order to fix its request, and it is published everywhere. ``input`` is the
+    caller's submitted value -- a password on ``/auth``, a key on ``/admin`` --
+    and it is published nowhere. Both halves are asserted below, on the public
+    routers and on ``/admin`` alike, so neither can regress into the other.
+    """
+
+    @pytest.mark.parametrize("prefix", ["/v1/messages/probe", "/probe", "/admin/probe"])
+    def test_loc_field_names_are_published(self, client: TestClient, prefix: str) -> None:
+        resp = client.post(f"{prefix}/validate", json=BAD_VALIDATION_BODY)
 
         assert resp.status_code == 422
+        # Both failing fields are named, with the ``body`` / ``query`` segment
+        # that says where to look. Asserted as the full path rather than as
+        # "model": ``ErrorDetail`` carries a ``model`` key of its own, so the
+        # bare word would pass on an empty field list.
+        assert "body.model" in resp.text
+        assert "body.max_tokens" in resp.text
+
+    @pytest.mark.parametrize("prefix", ["/v1/messages/probe", "/probe", "/admin/probe"])
+    def test_the_submitted_input_is_never_published(self, client: TestClient, prefix: str) -> None:
+        resp = client.post(f"{prefix}/validate", json=BAD_VALIDATION_BODY)
+
+        assert resp.status_code == 422
+        # The values, in either error entry ...
         assert "sk-secret-value" not in resp.text
         assert "not-an-int" not in resp.text
-        assert "loc" not in resp.text
+        # ... and pydantic's own keys, so a future "just forward errors()" does
+        # not slip the whole entry back in alongside the field names.
         assert '"input"' not in resp.text
-        assert "max_tokens" not in resp.text
+        assert '"loc"' not in resp.text
+        assert '"ctx"' not in resp.text
 
     def test_anthropic_surface_keeps_its_envelope_shape(self, client: TestClient) -> None:
         body = client.post("/v1/messages/probe/validate", json={}).json()
         assert body["type"] == "error"
         assert body["error"]["type"] == "invalid_request_error"
-        assert body["error"]["message"] == "Invalid request"
+        # Claude Code renders error.message, so the field names have to ride in
+        # it: ErrorDetail drops unknown keys and this envelope has no slot.
+        assert body["error"]["message"].startswith("Invalid request: ")
+        assert "body.model" in body["error"]["message"]
 
     def test_other_surfaces_keep_theirs(self, client: TestClient) -> None:
         body = client.post("/probe/validate", json={}).json()
         assert body["error"]["code"] == 422
         assert body["error"]["type"] == "validation_error"
+        assert "body.max_tokens" in body["error"]["message"]
+
+    def test_the_field_list_is_bounded(self, client: TestClient) -> None:
+        """A caller controls the error count; it must not control the body size."""
+        paths = anthropic_messages._validation_field_paths(
+            [{"loc": ("body", i), "input": "sk-secret-value"} for i in range(500)]
+        )
+        assert len(paths) == anthropic_messages._MAX_REPORTED_VALIDATION_FIELDS
+        assert not any("sk-secret" in p for p in paths)
 
     def test_detail_still_reaches_the_log(
         self, client: TestClient, caplog: pytest.LogCaptureFixture
@@ -447,6 +498,86 @@ class TestEnvelope5RequestValidation:
         records = [r for r in caplog.records if r.msg == "request_validation_error"]
         assert records, "the validation detail must still be logged"
         assert "sk-secret-value" in records[0].detail
+
+
+# ---------------------------------------------------------------------------
+# (b2) The other half of option A: the log, asserted through the formatter
+# ---------------------------------------------------------------------------
+
+
+def _formatted(record: logging.LogRecord) -> tuple[str, str]:
+    """Render one record through both production formatters.
+
+    ``logger.warning(extra={...})`` writes every key onto the ``LogRecord``
+    whatever it is called, so ``record.detail`` is populated even on a build
+    where nothing is emitted: both formatters serialize only the keys listed in
+    ``_STRUCTURED_LOG_KEYS`` and drop the rest silently. An assertion on the
+    record attribute therefore cannot tell "we logged it" from "we dropped it at
+    format time", which is precisely how the redaction could become a net loss
+    of evidence while the tests stayed green. These two strings are what an
+    operator actually greps.
+    """
+    json_line = JsonFormatter().format(record)
+    plain_line = PlainFormatter(fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s").format(
+        record
+    )
+    return json_line, plain_line
+
+
+class TestRedactedDetailReachesTheEmittedLine:
+    """Whatever the response stopped carrying, the emitted log line must carry."""
+
+    def test_the_relocated_keys_are_allowlisted(self) -> None:
+        # Asserted directly as well as through the formatters, because this is
+        # the failure the formatter tests would otherwise report as a confusing
+        # "the text is missing from the JSON" -- the cause is one tuple.
+        for key in ("detail", "error_code", "endpoint"):
+            assert key in _STRUCTURED_LOG_KEYS, (
+                f"{key!r} carries text the redaction removed from responses; "
+                "dropping it from the allowlist destroys the evidence the "
+                "redaction relies on existing"
+            )
+
+    def test_domain_error_detail_and_code_are_emitted(
+        self, client: TestClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        logger_name = "serving.servers.middleware.exception_handler"
+        with caplog.at_level(logging.WARNING, logger=logger_name):
+            client.get("/probe/domain/user-not-found")
+
+        record = next(r for r in caplog.records if r.msg == "domain_error")
+        for rendered in _formatted(record):
+            # The internal id the 404 body stopped echoing ...
+            assert "usr_01H8INTERNALID" in rendered, rendered
+            # ... and the only machine-readable key on the line, which is what
+            # makes the record greppable by failure kind rather than by prose.
+            assert "USER_NOT_FOUND" in rendered, rendered
+
+    def test_validation_input_is_emitted(
+        self, client: TestClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        logger_name = "serving.servers.routers.anthropic_messages"
+        with caplog.at_level(logging.WARNING, logger=logger_name):
+            client.post("/probe/validate", json={"model": {"a": "sk-secret-value"}})
+
+        record = next(r for r in caplog.records if r.msg == "request_validation_error")
+        for rendered in _formatted(record):
+            # The submitted value that the 422 body no longer echoes.
+            assert "sk-secret-value" in rendered, rendered
+
+    def test_identity_configuration_fault_is_emitted(
+        self, identity_client: TestClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        logger_name = "serving.servers.routers.identity"
+        with caplog.at_level(logging.ERROR, logger=logger_name):
+            identity_client.get("/v1/identity/jwks")
+
+        record = next(r for r in caplog.records if r.msg == "identity_configuration_error")
+        for rendered in _formatted(record):
+            assert "PEM" in rendered, rendered
+            # ``endpoint`` is how an operator tells the JWKS fault from the
+            # token-mint fault; both log the same message name.
+            assert "jwks" in rendered, rendered
 
 
 # ---------------------------------------------------------------------------
@@ -502,56 +633,176 @@ class TestContractMessagesSurvive:
 
 
 _EXCEPTION_NAMES = {"exc", "e", "err", "ex", "exception"}
+
 #: Bare names that build a client-facing error, plus ``internal_auth.error``,
-#: which is the same builder reached through its module. Matching on the bare
-#: attribute ``.error`` instead would sweep in every ``logger.error(f"... {exc}")``
-#: in these files -- server-side logging, which this change deliberately keeps.
-_RESPONSE_BUILDERS = {"HTTPException", "_error", "_anthropic_error"}
+#: which is the same builder reached through its module. ``JSONResponse`` and
+#: ``_build_error_response`` are the two generic envelope builders -- envelope 4
+#: is assembled straight into a ``JSONResponse``, so leaving it out left the
+#: whole domain-exception surface unguarded. Matching on the bare attribute
+#: ``.error`` instead would sweep in every ``logger.error(f"... {exc}")`` in
+#: these files -- server-side logging, which this change deliberately keeps.
+_RESPONSE_BUILDERS = {
+    "HTTPException",
+    "JSONResponse",
+    "_anthropic_error",
+    "_build_error_response",
+    "_error",
+}
 _QUALIFIED_BUILDERS = {("internal_auth", "error"), ("quota", "exceeded_payload")}
 
-#: Public surfaces only. ``routers/admin/`` is deliberately not in this set: it
-#: is an operator surface behind admin authentication, where the exception text
-#: in a 400/503 is the diagnostic the operator called the endpoint to get. If
-#: that judgement ever changes, add the directory here and the failures will
-#: enumerate the work.
-_GUARDED = (
-    "serving/servers/auth.py",
-    "serving/servers/concurrency.py",
-    "serving/servers/deps.py",
-    "serving/servers/middleware/error.py",
-    "serving/servers/middleware/exception_handler.py",
-    "serving/servers/routers/anthropic_messages.py",
-    "serving/servers/routers/auth_routes.py",
-    "serving/servers/routers/completions.py",
-    "serving/servers/routers/embeddings.py",
-    "serving/servers/routers/identity.py",
-    "serving/servers/routers/internal_auth.py",
-    "serving/servers/routers/qdrant_proxy.py",
-    "serving/servers/routers/rag.py",
-    "serving/servers/routers/responses.py",
-    "serving/servers/routers/user_routes.py",
-)
+#: Builders where only some arguments become the response body. A
+#: ``JSONResponse``'s body is its ``content`` -- first positional per Starlette's
+#: signature, or the keyword -- and nothing else: ``headers=`` is not prose a
+#: client renders, and ``status_code=`` is a number. Any builder not listed here
+#: is checked on every argument.
+_BODY_ARGS = {"JSONResponse": ("content",)}
+
+#: Attributes of an exception that carry a *typed value* rather than message
+#: text, and so may be rendered into a client-facing string. Deny by default:
+#: an attribute that is not listed here is treated as text of unknown
+#: provenance, so a ``f"{exc.upstream_body}"`` written next year fails this test
+#: on the day it is written rather than on the day someone remembers a denylist
+#: exists. The three listed are the ones the domain handlers render --
+#: ``AccountSuspendedError.status`` (an account state an admin set) and
+#: ``QuotaExceededError.quota`` / ``.spent`` (the caller's own numbers) -- each
+#: already published as a structured field of the same body, beside the sentence
+#: that renders it. Adding a fourth is a deliberate act that shows up in a diff.
+_TYPED_EXCEPTION_FIELDS = {"quota", "spent", "status"}
+
+#: Builtins that turn an object into a string.
+_TEXT_RENDERERS = {"str", "repr", "format"}
+
+#: Everything under here is a public surface, by construction. A router added
+#: next month is covered the day it lands, rather than the day someone
+#: remembers that a list of filenames exists somewhere in the tests.
+_GUARDED_ROOT = "serving/servers"
+
+#: The one deliberate exclusion. ``routers/admin/`` is an operator surface
+#: behind admin authentication, where the exception text in a 400/503 is the
+#: diagnostic the operator called the endpoint to get. Note this is about
+#: *exception text in error envelopes* only -- the 422 validation policy makes
+#: no such exemption, and ``TestEnvelope5RequestValidation`` drives ``/admin``
+#: to prove it. If the judgement here ever changes, delete this constant and
+#: the failures will enumerate the work.
+_UNGUARDED_PREFIX = "serving/servers/routers/admin/"
+
+
+def _renders_an_exception(node: ast.AST) -> bool:
+    """True if ``node`` is an exception name, or a value reached from one.
+
+    Walks back through attribute access, subscripting and calls, so
+    ``exc.detail``, ``exc.args[0]`` and ``exc.errors()`` all resolve to ``exc``.
+    A typed field (see ``_TYPED_EXCEPTION_FIELDS``) stops the walk: it is a
+    number or a state, not the raiser's prose.
+    """
+    while True:
+        if isinstance(node, ast.Attribute):
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id in _EXCEPTION_NAMES
+                and node.attr in _TYPED_EXCEPTION_FIELDS
+            ):
+                return False
+            node = node.value
+        elif isinstance(node, ast.Subscript):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        else:
+            break
+    return isinstance(node, ast.Name) and node.id in _EXCEPTION_NAMES
 
 
 def _exception_derived(node: ast.AST) -> bool:
-    """True if ``node`` renders an exception into text: ``str(exc)`` or ``f"{exc}"``."""
+    """True if ``node`` renders an exception into text, by any of the five routes.
+
+    ``str(exc)`` / ``str(exc.detail)`` / ``repr(exc)`` / ``format(exc)``,
+    f-strings, ``"%s" % exc``, and ``"{}".format(exc)``. The docstring on the
+    test below promises "no exception text reaches a client-facing builder";
+    checking only ``str(<name>)`` and f-strings made that promise narrower than
+    it read, and ``str(exc.detail)`` -- the exact call this change removed from
+    the live handler -- walked straight through it.
+    """
     for child in ast.walk(node):
+        if isinstance(child, ast.FormattedValue) and _renders_an_exception(child.value):
+            return True
+        # "%s" % exc, and "%s: %s" % (code, exc)
+        if isinstance(child, ast.BinOp) and isinstance(child.op, ast.Mod):
+            right = child.right
+            operands = right.elts if isinstance(right, ast.Tuple) else [right]
+            if any(_renders_an_exception(operand) for operand in operands):
+                return True
+        if not isinstance(child, ast.Call):
+            continue
+        rendered = any(_renders_an_exception(arg) for arg in child.args)
+        # str(exc), repr(exc), format(exc)
+        if isinstance(child.func, ast.Name) and child.func.id in _TEXT_RENDERERS and rendered:
+            return True
+        # "{}".format(exc), "{e}".format(e=exc)
         if (
-            isinstance(child, ast.Call)
-            and isinstance(child.func, ast.Name)
-            and child.func.id == "str"
-            and child.args
-            and isinstance(child.args[0], ast.Name)
-            and child.args[0].id in _EXCEPTION_NAMES
+            isinstance(child.func, ast.Attribute)
+            and child.func.attr == "format"
+            and (rendered or any(_renders_an_exception(kw.value) for kw in child.keywords))
         ):
             return True
-        if isinstance(child, ast.FormattedValue):
-            inner = child.value
-            if isinstance(inner, ast.Attribute):
-                inner = inner.value
-            if isinstance(inner, ast.Name) and inner.id in _EXCEPTION_NAMES:
-                return True
     return False
+
+
+def _builder_leak(node: ast.Call) -> bool:
+    """True if ``node`` is a client-facing error builder handed exception text.
+
+    One function so the tree scan and the snippet-level regression test below
+    exercise the same rule; two copies would let the scan drift away from the
+    thing that claims to test it.
+    """
+    if isinstance(node.func, ast.Name):
+        name = node.func.id
+        if name not in _RESPONSE_BUILDERS:
+            return False
+    elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+        name = node.func.attr
+        if (node.func.value.id, name) not in _QUALIFIED_BUILDERS:
+            return False
+    else:
+        return False
+
+    body_args = _BODY_ARGS.get(name)
+    if body_args is None:
+        checked = [*node.args, *(kw.value for kw in node.keywords)]
+    else:
+        # Starlette puts ``content`` first, so a positional call is the body
+        # too; every other argument of such a builder is metadata.
+        checked = list(node.args[:1])
+        checked += [kw.value for kw in node.keywords if kw.arg in body_args]
+    return any(_exception_derived(arg) for arg in checked)
+
+
+def _guarded_modules(backend: pathlib.Path) -> list[str]:
+    """Every public-surface module under ``serving/servers/``, admin excluded."""
+    root = backend / _GUARDED_ROOT
+    modules = [p.relative_to(backend).as_posix() for p in sorted(root.rglob("*.py"))]
+    return [m for m in modules if not m.startswith(_UNGUARDED_PREFIX)]
+
+
+def test_the_guard_covers_the_public_surface_by_construction() -> None:
+    """A glob that matches nothing would make the guard below pass vacuously.
+
+    This is the failure mode a glob trades for the one it removes: the old
+    hand-maintained list could go stale silently, and a mistyped root here could
+    guard zero files just as silently. So the shape of the match is asserted.
+    """
+    backend = pathlib.Path(__file__).resolve().parents[3] / "apps" / "backend"
+    modules = _guarded_modules(backend)
+
+    assert len(modules) > 20, f"the glob matched {len(modules)} files; the tree has many more"
+    # A router, a middleware and a top-level module: the three shapes that live
+    # under the root, so a glob that lost a directory level is caught.
+    assert "serving/servers/routers/anthropic_messages.py" in modules
+    assert "serving/servers/middleware/exception_handler.py" in modules
+    assert "serving/servers/deps.py" in modules
+    # The exclusion holds, and is the *only* exclusion.
+    assert not any(m.startswith(_UNGUARDED_PREFIX) for m in modules)
+    assert (backend / _UNGUARDED_PREFIX / "users.py").exists(), "admin surface moved"
 
 
 def test_no_public_response_builder_is_handed_exception_text() -> None:
@@ -559,34 +810,66 @@ def test_no_public_response_builder_is_handed_exception_text() -> None:
 
     An envelope cannot tell developer-authored contract text from exception text
     -- both arrive as ``str`` -- so the rule has to hold where the text is
-    produced: no call that builds a client-facing error may be handed
-    ``str(exc)`` or an f-string interpolating one. Redact at the raise site
-    (``scrub_error_for_user``) or write a static message.
+    produced: no call that builds a client-facing error may be handed text
+    rendered from an exception. Redact at the raise site
+    (``scrub_error_for_user``), pass a typed field, or write a static message.
     """
     backend = pathlib.Path(__file__).resolve().parents[3] / "apps" / "backend"
     offenders: list[str] = []
 
-    for relative in _GUARDED:
-        path = backend / relative
-        assert path.exists(), f"guard list is stale: {relative}"
-        tree = ast.parse(path.read_text())
+    for relative in _guarded_modules(backend):
+        tree = ast.parse((backend / relative).read_text())
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            if isinstance(node.func, ast.Name):
-                if node.func.id not in _RESPONSE_BUILDERS:
-                    continue
-            elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-                if (node.func.value.id, node.func.attr) not in _QUALIFIED_BUILDERS:
-                    continue
-            else:
-                continue
-            if any(_exception_derived(arg) for arg in node.args) or any(
-                _exception_derived(kw.value) for kw in node.keywords
-            ):
+            if isinstance(node, ast.Call) and _builder_leak(node):
                 offenders.append(f"{relative}:{node.lineno}")
 
     assert not offenders, (
         "exception-derived text is being handed to a client-facing error builder at: "
         + ", ".join(offenders)
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "HTTPException(500, str(exc))",
+        # The exact call this change removed from the live handler, which the
+        # first version of the guard walked straight past.
+        "HTTPException(500, str(exc.detail))",
+        "HTTPException(500, repr(exc))",
+        'HTTPException(500, f"failed: {exc}")',
+        'HTTPException(500, f"failed: {exc.detail}")',
+        'HTTPException(500, "failed: %s" % exc)',
+        'HTTPException(500, "failed: %s (%s)" % (code, exc))',
+        'HTTPException(500, "failed: {}".format(exc))',
+        'HTTPException(500, "failed: {e}".format(e=exc.args[0]))',
+        # Envelope 4 is assembled straight into a JSONResponse, keyword or
+        # positional.
+        'JSONResponse(content={"message": str(exc)})',
+        'JSONResponse({"message": str(exc)}, status_code=500)',
+        "_build_error_response(str(exc.errors()))",
+    ],
+)
+def test_the_guard_detects_every_form_it_claims_to(source: str) -> None:
+    """A guard that silently stops matching is worse than none: it reads as proof."""
+    assert _builder_leak(ast.parse(source).body[0].value), f"no longer detected: {source}"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # A typed field rendered into a developer-authored sentence -- what the
+        # domain handlers do, and the reason _TYPED_EXCEPTION_FIELDS exists.
+        'JSONResponse(content={"message": f"Quota exceeded: ${exc.spent:.2f}"})',
+        'JSONResponse(content={"message": f"Account is {exc.status}"})',
+        # Redacted at the raise site: the prescribed fix, which must stay legal.
+        "HTTPException(429, scrub_error_for_user(exc, request_id, 429))",
+        # A non-body argument of a body-only builder.
+        "JSONResponse(content={}, headers=str(exc.headers))",
+        # Server-side logging, which this change deliberately keeps intact.
+        'logger.warning("http_error", extra={"detail": str(exc)})',
+    ],
+)
+def test_the_guard_does_not_flag_the_prescribed_patterns(source: str) -> None:
+    """False positives would push people to evade the guard rather than obey it."""
+    assert not _builder_leak(ast.parse(source).body[0].value), f"false positive: {source}"

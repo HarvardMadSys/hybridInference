@@ -265,6 +265,38 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     )
 
 
+#: How many ``loc`` paths a 422 body will name. A caller controls how many
+#: validation errors one request produces -- a 500-element array of malformed
+#: objects yields 500 entries -- so the field list is capped to keep the
+#: response bounded. The log line below carries the full set either way.
+_MAX_REPORTED_VALIDATION_FIELDS = 10
+
+
+def _validation_field_paths(errors: list[Any] | None) -> list[str]:
+    """Return the ``loc`` paths of a validation error, and nothing else.
+
+    Only ``loc`` is read. ``input`` (the caller's submitted value) and ``ctx``
+    (which can embed that value in a custom validator's message) are never
+    touched, so there is no path by which a submitted secret reaches the string
+    this returns.
+
+    ``loc`` segments are our own model field names plus list indices. The one
+    caller-derived segment that can appear is a mapping *key* on a
+    ``dict[str, ...]`` field -- a key name, never a value -- which is why
+    publishing ``loc`` does not reopen the echo that publishing ``input`` was.
+    """
+    paths: list[str] = []
+    for err in errors or []:
+        if not isinstance(err, dict):
+            continue
+        path = ".".join(str(part) for part in (err.get("loc") or ()))
+        if path and path not in paths:
+            paths.append(path)
+        if len(paths) >= _MAX_REPORTED_VALIDATION_FIELDS:
+            break
+    return paths
+
+
 async def anthropic_aware_validation_exception_handler(
     request: Request, exc: RequestValidationError
 ):
@@ -272,31 +304,44 @@ async def anthropic_aware_validation_exception_handler(
 
     FastAPI installs ``request_validation_exception_handler`` in
     ``FastAPI.__init__`` and nothing overrode it, so a schema mismatch answered
-    with ``{"detail": exc.errors()}`` -- and every entry in that list carries
-    two things we do not publish:
+    with ``{"detail": exc.errors()}``. That list carries two different kinds of
+    thing, and they get opposite treatment:
 
-      * ``input``: the caller's own submitted value, echoed verbatim. On the
+      * ``input`` -- the caller's own submitted value, echoed verbatim. On the
         auth and admin routers that is a password, a token, or an API key,
         written into a response body that lands in proxy logs and bug reports.
-      * ``loc``: the path through our own pydantic models, which is internal
-        structure (nested model and field names) rather than a public contract.
+        **Never published**, on any surface.
+      * ``loc`` -- which field failed. That is request-contract information: it
+        is the one thing that lets a legitimate client fix its request instead
+        of guessing, and a client cannot act on "Invalid request" alone.
+        **Published**, on every surface.
+
+    Both halves apply to ``/admin`` as well as to the public routers. The admin
+    surface is not exempted: an operator gets the field names for the same
+    reason a client does, and an operator's 422 is exactly as likely to be a
+    mistyped credential body as anyone else's -- which is precisely the value
+    that must not come back out.
 
     The status is unchanged at 422 -- same as FastAPI's default -- and the
     correlation id still rides on the ``X-Request-ID`` response header, so a
     client that reports "I got a 422, here is the id" is still supportable. The
-    full validation detail goes to the log, not to the client.
+    full validation detail, ``input`` included, goes to the log.
 
     Registered on the Anthropic-aware pair in ``create_app`` alongside the
     HTTPException handler, so the Anthropic surfaces keep their own envelope
     shape here too; a Claude Code client parses ``error.type``/``error.message``
-    and shows an opaque failure for anything else.
+    and shows an opaque failure for anything else. The field list therefore
+    rides in ``message`` rather than in a sibling key: ``ErrorDetail`` drops
+    unknown fields and the Anthropic envelope has nowhere to put one.
     """
     try:
-        detail = str(exc.errors())
+        errors: list[Any] | None = exc.errors()
     except Exception:
         # .errors() can itself raise on exotic payloads (a ctx value pydantic
-        # cannot render). Answering the request matters more than the log line.
-        detail = str(exc)
+        # cannot render). Answering the request matters more than the log line,
+        # and a body with no field list is still a correct 422.
+        errors = None
+    detail = str(errors) if errors is not None else str(exc)
     logger.warning(
         "request_validation_error",
         extra={
@@ -309,6 +354,9 @@ async def anthropic_aware_validation_exception_handler(
     )
 
     message = generic_message_for_status(422)
+    fields = _validation_field_paths(errors)
+    if fields:
+        message = f"{message}: {', '.join(fields)}"
     if any(request.url.path.startswith(p) for p in _ANTHROPIC_PATHS):
         return _anthropic_error(422, message, error_type="invalid_request_error")
 
