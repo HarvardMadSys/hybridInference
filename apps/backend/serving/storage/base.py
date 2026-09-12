@@ -377,9 +377,13 @@ class OperationalStore(ABC):
         operator reads while diagnosing the block is the one row that names
         nobody.
 
-        Returns ``user_id, role, key_status, key_expired, user_status`` — or
-        ``None`` when no key with this hash was ever issued (a scanner's random
-        token). ``user_status`` is ``None`` when the owning user row is gone.
+        Returns ``user_id, role, key_status, expires_at, key_expired,
+        user_status`` — or ``None`` when no key with this hash was ever issued
+        (a scanner's random token). ``user_status`` is ``None`` when the owning
+        user row is gone. ``key_expired`` is evaluated by the store, against
+        the same clock the auth lookups use; ``expires_at`` accompanies it so a
+        cache can stop serving that answer once the deadline passes, expiry
+        being the one state change here that fires no write to invalidate on.
         """
 
     @abstractmethod

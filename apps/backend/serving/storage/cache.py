@@ -13,15 +13,16 @@ CacheBackend.
 from __future__ import annotations
 
 import fnmatch
+import math
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from .base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from datetime import datetime
     from decimal import Decimal
     from typing import Literal
 
@@ -96,6 +97,29 @@ class InMemoryCache(CacheBackend):
 _AUTH_CONTEXT_TTL = 30
 _USER_TTL = 60
 _HEALTH_TTL = 5
+
+
+def _audit_entry_ttl(row: Row) -> int:
+    """Return how long an audit row may be cached, never past its expiry.
+
+    Every other state this row reports changes through a write that
+    :class:`CachedOperationalStore` invalidates on. A key reaching its
+    ``expires_at`` changes none, so the deadline is the only thing that can
+    stop a ``key_expired: False`` answer from outliving the fact. Rounded up
+    to at least a second, so a deadline moments away still caches rather than
+    hammering the database, and only ever shortens the normal TTL.
+    """
+    expires_at = row.get("expires_at")
+    if not isinstance(expires_at, datetime):
+        return _AUTH_CONTEXT_TTL
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
+    if remaining >= _AUTH_CONTEXT_TTL:
+        return _AUTH_CONTEXT_TTL
+    # Past the deadline the row already says ``key_expired``; that answer is
+    # stable, so it needs no shortened life.
+    return max(1, math.ceil(remaining)) if remaining > 0 else _AUTH_CONTEXT_TTL
 
 
 class CachedOperationalStore(OperationalStore):
@@ -216,6 +240,11 @@ class CachedOperationalStore(OperationalStore):
         this entry too. A separate prefix would have to be added to a dozen
         call sites, and the one that got missed would keep labelling rows with
         a credential state the database no longer holds.
+
+        Expiry is the exception that invalidation cannot cover: no write
+        happens when a key's deadline passes, so there is no event to clear on
+        and a row cached as "not expired" would keep saying so afterwards. The
+        TTL is therefore capped at the deadline itself.
         """
         ck = self._auth_audit_key(key_hash)
         cached = await self._cache.get(ck)
@@ -223,7 +252,7 @@ class CachedOperationalStore(OperationalStore):
             return cached
         result = await self._store.get_key_owner_for_audit(key_hash)
         if result is not None:
-            await self._cache.set(ck, result, _AUTH_CONTEXT_TTL)
+            await self._cache.set(ck, result, _audit_entry_ttl(result))
         return result
 
     # -- user writes (invalidate user cache) ---------------------------------

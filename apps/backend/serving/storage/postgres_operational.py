@@ -1659,13 +1659,19 @@ class PostgresOperationalStore(OperationalStore):
         Diagnostic only -- see :meth:`OperationalStore.get_key_owner_for_audit`.
         The join is LEFT so a key whose user row was deleted still names the
         account it was issued to; ``key_expired`` is computed here rather than
-        returning ``expires_at``, so the deadline is compared against the
+        derived from ``expires_at``, so the deadline is compared against the
         database clock exactly as the auth lookups compare it.
+
+        ``expires_at`` comes back alongside it for one reason: expiry is the
+        only state change here that fires no write, so a caching layer has
+        nothing to invalidate on and needs the deadline itself to keep from
+        serving ``key_expired: False`` past it.
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.user_id, u.role, "
                 "k.status AS key_status, "
+                "k.expires_at, "
                 "(k.expires_at IS NOT NULL AND k.expires_at <= NOW()) AS key_expired, "
                 "u.status AS user_status "
                 "FROM api_keys k "

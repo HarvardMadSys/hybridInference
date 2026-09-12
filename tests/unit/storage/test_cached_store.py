@@ -5,11 +5,14 @@ Covers TTL behavior, cache hits/misses, and write-through invalidation.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from serving.storage.cache import (
+    _AUTH_CONTEXT_TTL,
     CachedOperationalStore,
     InMemoryCache,
 )
@@ -134,6 +137,67 @@ class TestCacheHits:
         await cached.get_key_owner_for_audit("h1")
 
         inner_store.get_key_owner_for_audit.assert_awaited_once_with("h1")
+
+    async def test_audit_entry_is_not_cached_past_the_key_deadline(
+        self, cached, inner_store, cache
+    ):
+        """A key expiring inside the TTL shortens the entry to its deadline.
+
+        Expiry is the one state here that changes without a write, so nothing
+        invalidates on it. Cached for the full TTL, a row resolved seconds
+        before ``expires_at`` would go on reporting a live credential after it
+        had lapsed — and, being reported live, would put its owner back into
+        ``api_logs.user_id``.
+        """
+        inner_store.get_key_owner_for_audit.return_value = {
+            "user_id": "u1",
+            "role": "admin",
+            "key_status": "active",
+            "expires_at": datetime.now(timezone.utc) + timedelta(seconds=4),
+            "key_expired": False,
+            "user_status": "active",
+        }
+        recorded: list[int] = []
+        original_set = cache.set
+
+        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+            recorded.append(ttl)
+            await original_set(key, value, ttl)
+
+        cache.set = _record_ttl
+
+        await cached.get_key_owner_for_audit("h1")
+
+        # Bounded rather than exact: the deadline is four seconds out at the
+        # moment the row is built, and the assertion should survive a slow
+        # runner taking some of that before the cache is written.
+        assert len(recorded) == 1
+        assert 0 < recorded[0] <= 4
+
+    async def test_audit_entry_keeps_the_normal_ttl_for_a_distant_deadline(
+        self, cached, inner_store, cache
+    ):
+        """The cap only ever shortens: a far-off expiry changes nothing."""
+        inner_store.get_key_owner_for_audit.return_value = {
+            "user_id": "u1",
+            "role": "admin",
+            "key_status": "active",
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
+            "key_expired": False,
+            "user_status": "active",
+        }
+        recorded: list[int] = []
+        original_set = cache.set
+
+        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+            recorded.append(ttl)
+            await original_set(key, value, ttl)
+
+        cache.set = _record_ttl
+
+        await cached.get_key_owner_for_audit("h1")
+
+        assert recorded == [_AUTH_CONTEXT_TTL]
 
     async def test_get_key_owner_for_audit_is_cleared_by_a_key_write(
         self, cached, inner_store, cache

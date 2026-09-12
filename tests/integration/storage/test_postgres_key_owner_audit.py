@@ -113,6 +113,7 @@ async def test_live_key_resolves_and_reads_as_active(postgres_op_store):
     assert row["user_id"] == "u-audit-live"
     assert row["key_status"] == "active"
     assert row["key_expired"] is False
+    assert row["expires_at"] is None
     assert row["user_status"] == "active"
 
 
@@ -152,6 +153,9 @@ async def test_expired_key_is_reported_as_expired(postgres_op_store):
     assert row is not None
     assert row["key_status"] == "active"
     assert row["key_expired"] is True
+    # The deadline itself comes back too: expiry fires no write, so a cache
+    # has nothing to invalidate on and needs it to bound the entry's life.
+    assert row["expires_at"] is not None
 
 
 async def test_suspended_owner_is_reported_with_a_live_key(postgres_op_store):
