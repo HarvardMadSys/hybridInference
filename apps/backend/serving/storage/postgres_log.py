@@ -975,6 +975,7 @@ class PostgresLogStore(LogStore):
         model_ids: list[str],
         since: dt.datetime,
         limit: int | None = None,
+        include_metadata: bool = True,
     ) -> list[Row]:
         """Fetch recent api_logs rows for RouteWise startup bootstrap.
 
@@ -982,16 +983,26 @@ class PostgresLogStore(LogStore):
         probe traffic logged via ``log_synthetic_probes`` does not skew the
         replayed latency profiles or cost envelope, matching the live path which
         never records routing observations for probes.
+
+        ``include_metadata=False`` selects only the columns the envelope replay
+        reads. The ``metadata`` JSONB is the widest column on the table and is
+        decoded per row, so the envelope pass -- which wants token counts and
+        nothing else -- should not pay for it.
         """
         if not model_ids or (limit is not None and limit <= 0):
             return []
+        columns = (
+            """timestamp, model_id, provider, ttft_ms, latency_ms,
+                   status_code, error, prompt_tokens, completion_tokens,
+                   metadata"""
+            if include_metadata
+            else "timestamp, model_id, prompt_tokens, completion_tokens"
+        )
         async with self.pool.acquire() as conn:
             if limit is None:
                 rows = await conn.fetch(
-                    """
-                    SELECT timestamp, model_id, provider, ttft_ms, latency_ms,
-                           status_code, error, prompt_tokens, completion_tokens,
-                           metadata
+                    f"""
+                    SELECT {columns}
                     FROM api_logs
                     WHERE timestamp >= $1
                       AND model_id = ANY($2::text[])
@@ -1003,12 +1014,10 @@ class PostgresLogStore(LogStore):
                 )
             else:
                 rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT *
                     FROM (
-                        SELECT timestamp, model_id, provider, ttft_ms, latency_ms,
-                               status_code, error, prompt_tokens, completion_tokens,
-                               metadata
+                        SELECT {columns}
                         FROM api_logs
                         WHERE timestamp >= $1
                           AND model_id = ANY($2::text[])
@@ -1026,19 +1035,23 @@ class PostgresLogStore(LogStore):
         normalized: list[Row] = []
         for raw_row in rows:
             row = dict(raw_row)
-            metadata = _metadata_dict(row.get("metadata"))
-            routewise = metadata.get("routewise")
-            endpoint_id = (
-                _string_or_none(metadata.get("endpoint_id"))
-                or (
-                    _string_or_none(routewise.get("primary_provider"))
-                    if isinstance(routewise, dict)
-                    else None
+            if include_metadata:
+                metadata = _metadata_dict(row.get("metadata"))
+                routewise = metadata.get("routewise")
+                endpoint_id = (
+                    _string_or_none(metadata.get("endpoint_id"))
+                    or (
+                        _string_or_none(routewise.get("primary_provider"))
+                        if isinstance(routewise, dict)
+                        else None
+                    )
+                    or _string_or_none(metadata.get("base_url"))
+                    or _string_or_none(row.get("provider"))
                 )
-                or _string_or_none(metadata.get("base_url"))
-                or _string_or_none(row.get("provider"))
-            )
-            failed_attempts = metadata.get("failed_attempts")
+                failed_attempts = metadata.get("failed_attempts")
+            else:
+                endpoint_id = None
+                failed_attempts = None
             normalized.append(
                 {
                     "timestamp": row.get("timestamp"),

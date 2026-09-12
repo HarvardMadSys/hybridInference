@@ -402,10 +402,16 @@ async def _bootstrap_routewise_from_logs(
                 include_envelope=False,
             )
             donor_overrides = (donor_overrides_by_router or {}).get(id(rw), {})
+            # Bounded like the latency pass. An unbounded fetch reads every
+            # api_logs row in the envelope window at each boot, and anything past
+            # the estimator's own envelope_max_samples cap is dropped on arrival.
+            # include_metadata=False keeps the widest column out of the result:
+            # this pass replays token counts only.
             envelope_rows = await log_store.get_routewise_bootstrap_rows(
                 model_ids=sorted({*model_ids, *donor_overrides}),
                 since=now - dt.timedelta(seconds=envelope_window_sec),
-                limit=None,
+                limit=max_rows,
+                include_metadata=False,
             )
             envelope_counts = rw.bootstrap_from_log_rows(
                 envelope_rows,

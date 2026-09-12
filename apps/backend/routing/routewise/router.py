@@ -289,6 +289,10 @@ class RouteWiseRouter:
         self._adapter_endpoint_ids: dict[int, str] = {}
         self._endpoint_adapter: dict[str, Any] = {}
         self._endpoint_models: dict[str, set[str]] = {}
+        # Canonical model ids with at least one quota route. The envelope is
+        # priced into quota candidates only, so models outside this set never
+        # need an L/U snapshot; see _select_decision_locked.
+        self._quota_bearing_models: set[str] = set()
         # Canonical model ids this router is responsible for. ``None`` means
         # "every model in the attached table" and is only correct for a router
         # that genuinely serves the whole table. The registry narrows this to
@@ -306,6 +310,8 @@ class RouteWiseRouter:
             upper_percentile=self.config.envelope_upper_percentile,
             window_sec=self.config.envelope_window_hours * 3600.0,
             min_samples=self.config.envelope_min_samples,
+            max_samples=self.config.envelope_max_samples,
+            cache_ttl_sec=self.config.envelope_cache_ttl_sec,
         )
         self.quota_snapshots = ProviderQuotaSnapshotStore()
         # One resource manager per pool id, built from route-level policies.
@@ -476,11 +482,14 @@ class RouteWiseRouter:
         self._adapter_endpoint_ids = {}
         self._endpoint_adapter = {}
         self._endpoint_models = {}
+        self._quota_bearing_models = set()
         self._latency_profiles = {}
         self._latency_history_priors_ms = {}
         self._classify_all()
         self._build_resource_pools()
         for model_id, candidates in self.route_candidates.items():
+            if any(candidate.provider_type is ProviderType.QUOTA for candidate in candidates):
+                self._quota_bearing_models.add(model_id)
             for candidate in candidates:
                 adapter = candidate.adapter
                 self._adapter_provider_type[id(adapter)] = candidate.provider_type
@@ -1748,7 +1757,7 @@ class RouteWiseRouter:
             if selected.concurrency_pool
             else None
         )
-        return {
+        metadata: dict[str, Any] = {
             "request_id": request_id,
             "timestamp": time.time(),
             "is_streaming": False,
@@ -1768,26 +1777,9 @@ class RouteWiseRouter:
             "lp_status": solution.status,
             "lp_weights": dict(solution.weights),
             "candidate_costs_usd": {c.endpoint_id: c.effective_cost_usd for c in candidates},
-            "candidate_request_costs_usd": {c.endpoint_id: c.request_cost_usd for c in candidates},
-            "candidate_cost_reasons": {c.endpoint_id: c.cost_reason for c in candidates},
-            "candidate_prefix_cache_discounts_usd": {
-                c.endpoint_id: c.prefix_cache_discount_usd
-                for c in candidates
-                if c.prefix_cache_discount_usd > 0
-            },
-            "candidate_prefix_cache_expected_tokens": {
-                c.endpoint_id: c.prefix_cache_expected_tokens
-                for c in candidates
-                if c.prefix_cache_expected_tokens > 0
-            },
             "candidate_mean_ttft_sec": {c.endpoint_id: c.mean_ttft_sec for c in candidates},
             "candidate_mean_ttft_sources": {c.endpoint_id: c.mean_ttft_source for c in candidates},
             "candidate_provider_types": {c.endpoint_id: c.provider_type for c in candidates},
-            "candidate_quota_used_fraction": {
-                c.endpoint_id: c.quota_used_fraction
-                for c in candidates
-                if c.quota_used_fraction is not None
-            },
             "candidate_quota_remaining": {
                 c.endpoint_id: c.quota_remaining
                 for c in candidates
@@ -1855,6 +1847,31 @@ class RouteWiseRouter:
             "routing_estimated_cost_usd": self._routing_dollar_estimate(selected),
             # lp_weights and lp_status (above) already use canonical names.
         }
+        if self.config.decision_metadata_candidate_detail:
+            metadata.update(
+                {
+                    "candidate_request_costs_usd": {
+                        c.endpoint_id: c.request_cost_usd for c in candidates
+                    },
+                    "candidate_cost_reasons": {c.endpoint_id: c.cost_reason for c in candidates},
+                    "candidate_prefix_cache_discounts_usd": {
+                        c.endpoint_id: c.prefix_cache_discount_usd
+                        for c in candidates
+                        if c.prefix_cache_discount_usd > 0
+                    },
+                    "candidate_prefix_cache_expected_tokens": {
+                        c.endpoint_id: c.prefix_cache_expected_tokens
+                        for c in candidates
+                        if c.prefix_cache_expected_tokens > 0
+                    },
+                    "candidate_quota_used_fraction": {
+                        c.endpoint_id: c.quota_used_fraction
+                        for c in candidates
+                        if c.quota_used_fraction is not None
+                    },
+                }
+            )
+        return metadata
 
     def _select_hedge_plan(
         self,
@@ -2181,7 +2198,10 @@ class RouteWiseRouter:
         prompt_tokens = self._prompt_tokens_from_context(context)
         prediction = self._predict_output(model_id, prompt_tokens, context)
         pool = self._routewise_pool(model_id)
-        envelope = self.envelope.snapshot(pool)
+        # Only quota candidates are priced off the envelope. Sorting a window of
+        # workload costs to reach three unread metadata fields is the whole cost
+        # of the snapshot for an on-demand-only model, so skip it.
+        envelope = self.envelope.snapshot(pool) if model_id in self._quota_bearing_models else None
         now = time.time()
 
         admission_refused: set[str] = set()

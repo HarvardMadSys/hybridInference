@@ -418,6 +418,25 @@ async def test_postgres_log_store_routewise_bootstrap_rows_are_normalized(
         "m:provider-b",
         "m:provider-a",
     ]
+
+    # The envelope replay wants token counts only. It skips the metadata
+    # column -- the widest on the table, and decoded per row -- so the
+    # metadata-derived fields come back unset while the synthetic-probe
+    # exclusion, ordering and token counts are unchanged.
+    lean_rows = await log_store.get_routewise_bootstrap_rows(
+        model_ids=["m"],
+        since=now - dt.timedelta(minutes=1),
+        limit=None,
+        include_metadata=False,
+    )
+    assert len(lean_rows) == len(all_rows)
+    assert [row["timestamp"] for row in lean_rows] == [row["timestamp"] for row in all_rows]
+    assert [row["prompt_tokens"] for row in lean_rows] == [row["prompt_tokens"] for row in all_rows]
+    assert [row["completion_tokens"] for row in lean_rows] == [
+        row["completion_tokens"] for row in all_rows
+    ]
+    assert all(row["endpoint_id"] is None for row in lean_rows)
+    assert all(row["failed_attempts"] == () for row in lean_rows)
     # The synthetic probe row is filtered out of the bootstrap entirely.
     assert "m:provider-synthetic" not in [row["endpoint_id"] for row in all_rows]
 

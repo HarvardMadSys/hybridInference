@@ -593,7 +593,12 @@ models:
         assert latency_call["model_ids"] == ["alias", "m"]
         assert envelope_call["model_ids"] == ["alias", "m"]
         assert latency_call["limit"] == 123
-        assert envelope_call["limit"] is None
+        # The envelope pass is bounded too: an unbounded fetch reads every
+        # api_logs row in the window at each boot, and it replays token counts
+        # only, so it does not ask for the metadata column.
+        assert envelope_call["limit"] == 123
+        assert envelope_call["include_metadata"] is False
+        assert latency_call.get("include_metadata", True) is True
         assert (envelope_call["since"] - latency_call["since"]).total_seconds() < 0
         rw.bootstrap_from_log_rows.assert_any_call(
             [{"model_id": "m", "source": "latency"}],
