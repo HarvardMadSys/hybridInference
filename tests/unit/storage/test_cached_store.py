@@ -174,6 +174,61 @@ class TestCacheHits:
         assert len(recorded) == 1
         assert 0 < recorded[0] <= 4
 
+    async def test_audit_entry_trusts_the_row_over_a_local_clock(self, cached, inner_store, cache):
+        """A live row whose deadline has locally passed gets the shortest life.
+
+        The two can disagree across the query: the database calls the key live
+        moments before ``expires_at``, and by the time this process subtracts,
+        the remainder is already negative. The row's flag is the answer being
+        cached, so a negative remainder must not be read as "expired, cache it
+        fully" — that hands the full TTL to the one row the cap exists for.
+        """
+        inner_store.get_key_owner_for_audit.return_value = {
+            "user_id": "u1",
+            "role": "admin",
+            "key_status": "active",
+            "expires_at": datetime.now(timezone.utc) - timedelta(seconds=2),
+            "key_expired": False,
+            "user_status": "active",
+        }
+        recorded: list[int] = []
+        original_set = cache.set
+
+        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+            recorded.append(ttl)
+            await original_set(key, value, ttl)
+
+        cache.set = _record_ttl
+
+        await cached.get_key_owner_for_audit("h1")
+
+        assert recorded == [1]
+
+    async def test_audit_entry_keeps_the_normal_ttl_once_the_row_says_expired(
+        self, cached, inner_store, cache
+    ):
+        """An expired row is a stable answer, so it keeps the normal TTL."""
+        inner_store.get_key_owner_for_audit.return_value = {
+            "user_id": "u1",
+            "role": "admin",
+            "key_status": "active",
+            "expires_at": datetime.now(timezone.utc) - timedelta(days=1),
+            "key_expired": True,
+            "user_status": "active",
+        }
+        recorded: list[int] = []
+        original_set = cache.set
+
+        async def _record_ttl(key: str, value: Any, ttl: int) -> None:
+            recorded.append(ttl)
+            await original_set(key, value, ttl)
+
+        cache.set = _record_ttl
+
+        await cached.get_key_owner_for_audit("h1")
+
+        assert recorded == [_AUTH_CONTEXT_TTL]
+
     async def test_audit_entry_keeps_the_normal_ttl_for_a_distant_deadline(
         self, cached, inner_store, cache
     ):

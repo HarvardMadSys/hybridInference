@@ -108,7 +108,14 @@ def _audit_entry_ttl(row: Row) -> int:
     stop a ``key_expired: False`` answer from outliving the fact. Rounded up
     to at least a second, so a deadline moments away still caches rather than
     hammering the database, and only ever shortens the normal TTL.
+
+    Which of the two says "expired" matters: the row's flag is the answer
+    being cached, and the local remainder only bounds how long to keep it.
     """
+    if row.get("key_expired"):
+        # Already past the deadline *as the database evaluated it*. That answer
+        # no longer changes, so the entry has nothing to outlive.
+        return _AUTH_CONTEXT_TTL
     expires_at = row.get("expires_at")
     if not isinstance(expires_at, datetime):
         return _AUTH_CONTEXT_TTL
@@ -117,9 +124,13 @@ def _audit_entry_ttl(row: Row) -> int:
     remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
     if remaining >= _AUTH_CONTEXT_TTL:
         return _AUTH_CONTEXT_TTL
-    # Past the deadline the row already says ``key_expired``; that answer is
-    # stable, so it needs no shortened life.
-    return max(1, math.ceil(remaining)) if remaining > 0 else _AUTH_CONTEXT_TTL
+    # Floored at a second rather than keyed off the sign of the remainder: the
+    # row's own flag decides whether it has expired, and the two can disagree
+    # across the query -- the database calls the key live moments before the
+    # deadline, this process reads a remainder already past it. Treating that
+    # as "expired, so cache it fully" would hand the full TTL to the one row
+    # this cap exists to shorten.
+    return max(1, math.ceil(remaining))
 
 
 class CachedOperationalStore(OperationalStore):
