@@ -125,6 +125,18 @@ AlertEngine ticker (every 5 min)
 | 8 | User cost overrun | 5 min | operational store | any user with `daily_cost > threshold[role]` | 24 h per `cost_overrun:{user_id}:{date}` | warn |
 | 9 | Per-provider hourly spend | 5 min | hourly request logs | any provider with `hourly_spend > budget[provider]` | 1 h per `provider_spend:{provider}:{hour}` | warn |
 
+> **Superseded 2026-09-12 — alert #8.** The trigger above is no longer what
+> ships. `daily_cost > threshold[role]` could not fire in either direction:
+> nothing enforces a per-role number, the enforced cap is the *per-key*
+> `api_keys.quota_daily_cost_usd`, and the gate stops spending at that cap — so
+> a role threshold above it is unreachable and one below it names users nothing
+> ever refused. Caps also differ between keys of the same role. Alert #8 now
+> measures each user's UTC daily spend against their own key's cap using the
+> gate's own predicate (`spend + estimate > cap`, `serving.quota`), via
+> `query_users_at_daily_quota` on the operational store. The tick interval,
+> severity and `cost_overrun:{user_id}:{date}` dedupe key are unchanged.
+> See `apps/backend/serving/observability/alert_rules.py` (`UserCostOverrunJob`).
+
 ### Slack message format (consistent across all alerts)
 
 ```
@@ -202,6 +214,15 @@ cost:
       anthropic: 50.00
       openrouter: 200.00
 ```
+
+> **Superseded 2026-09-12 — `cost.user_overrun.thresholds_per_role`.** The
+> block above shows it as live config; it is not, as of the change described in
+> the note under alert #8. The key is still parsed, and documented as inert on
+> `UserOverrun` in `apps/backend/serving/observability/alert_config.py`, purely
+> so a deployment's existing `alerts.yaml` keeps round-tripping instead of
+> having the value silently swallowed by pydantic's `extra="ignore"`. Nothing
+> reads it. Removing it from a deployment's YAML is safe and changes nothing;
+> tuning it changes nothing either.
 
 ### Environment variables
 

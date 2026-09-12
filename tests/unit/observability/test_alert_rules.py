@@ -938,13 +938,33 @@ async def test_concurrency_rejected_never_alerts(monkeypatch):
 
 
 class _FakeOpStore:
-    def __init__(self, rows):
-        self._rows = rows
-        self.calls = 0
+    """Stands in for the operational store; ``rows`` may be swapped per sweep.
 
-    async def query_users_over_daily_threshold(self, thresholds):
+    ``quota_context`` is what ``get_quota_context_for_user`` returns — the
+    lookup the job uses to tell a user who *recovered* (cap raised) from one who
+    became *unobservable* (suspended, key revoked). Non-empty by default: the
+    account still resolves a cap.
+    """
+
+    def __init__(self, rows, quota_context=None):
+        self.rows = rows
+        self.calls = 0
+        self.context_calls: list[str] = []
+        self.quota_context = (
+            [{"id": "k1", "user_id": "u1", "quota_daily_cost_usd": 20.0, "role": "free"}]
+            if quota_context is None
+            else quota_context
+        )
+
+    async def query_users_at_daily_quota(self, *, limit: int = 500):
         self.calls += 1
-        return self._rows
+        return self.rows
+
+    async def get_quota_context_for_user(self, user_id: str):
+        self.context_calls.append(user_id)
+        if isinstance(self.quota_context, Exception):
+            raise self.quota_context
+        return self.quota_context
 
 
 async def test_user_cost_overrun_job_fires(monkeypatch):
@@ -955,9 +975,11 @@ async def test_user_cost_overrun_job_fires(monkeypatch):
     reset_dedupe_state()
 
     cfg = AlertConfig()
-    cfg.cost.user_overrun.thresholds_per_role = {"free": 5.0}
     cfg.cost.user_overrun.cooldown_sec = 1
-    op_store = _FakeOpStore([("u1", "free", 7.50)])
+    # (user_id, role, spend, their own key's cap) — 19.99 against a 20.00 cap
+    # is what the gate refusing a request actually looks like, since it
+    # pre-charges the estimate.
+    op_store = _FakeOpStore([("u1", "free", 19.99, 20.0)])
 
     job = UserCostOverrunJob(cfg.cost.user_overrun, op_store)
 
@@ -968,7 +990,226 @@ async def test_user_cost_overrun_job_fires(monkeypatch):
         await job.run()
         assert mock_alert.await_count == 1
         args, _ = mock_alert.call_args
-        assert "User cost overrun" in args[1]
+        # The card has to name the user and the cap that was enforced on them,
+        # not a role threshold: two "free" users can have different caps.
+        assert "u1" in args[1]
+        context = args[2]
+        assert context["user_id"] == "u1"
+        assert context["role"] == "free"
+        assert context["spend"] == "$19.99"
+        assert context["quota"] == "$20.00"
+        assert "note" not in context
+
+
+async def test_user_cost_overrun_job_alerts_once_per_user_per_day(monkeypatch):
+    """Repeated sweeps over the same user send one message, not one per sweep.
+
+    Exercises the real dedupe (``alert_slack`` is not patched here), which is
+    what the per-day guarantee actually rests on: the key embeds the UTC day
+    and the cooldown is 24h.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alert_rules import UserCostOverrunJob
+    from serving.observability.alerts import reset_dedupe_state, reset_transition_state
+
+    reset_dedupe_state()
+    reset_transition_state()
+
+    cfg = AlertConfig()
+    assert cfg.cost.user_overrun.cooldown_sec == 86400
+    op_store = _FakeOpStore([("u1", "free", 20.05, 20.0)])
+    job = UserCostOverrunJob(cfg.cost.user_overrun, op_store)
+
+    with patch(
+        "serving.observability.alerts._post_to_slack",
+        new=AsyncMock(return_value=True),
+    ) as mock_post:
+        for _ in range(3):
+            await job.run()
+
+    assert mock_post.await_count == 1
+    assert op_store.calls == 3
+
+
+async def test_user_cost_overrun_job_holds_alert_open_when_key_revoked(monkeypatch):
+    """A user who becomes *unobservable* mid-day is still reported as breached.
+
+    The query only sees active users holding active keys. Suspending the user
+    or revoking the key removes the row, and with nothing observing the
+    incident the stale sweep would post a "Recovered" card for an account that
+    is still capped out. The job confirms the account no longer resolves —
+    ``get_quota_context_for_user`` comes back empty, exactly as it does for the
+    enforcer — and only then re-asserts, flagged as stale.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alert_rules import UserCostOverrunJob
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    cfg.cost.user_overrun.cooldown_sec = 0  # every sweep reaches the sink
+    op_store = _FakeOpStore([("u1", "pro", 80.05, 80.0)])
+    job = UserCostOverrunJob(cfg.cost.user_overrun, op_store)
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await job.run()
+        # The key is revoked between sweeps: the user vanishes from the query,
+        # and now resolves no cap anywhere.
+        op_store.rows = []
+        op_store.quota_context = []
+        await job.run()
+
+        assert mock_alert.await_count == 2
+        # Both are breach cards for the same incident — no "Recovered".
+        first_call, second_call = mock_alert.call_args_list
+        assert first_call.args[1] == second_call.args[1]
+        assert "Recovered" not in second_call.args[1]
+        # The second carries the last known figures, and says they are stale.
+        held = second_call.args[2]
+        assert held["spend"] == "$80.05"
+        assert held["quota"] == "$80.00"
+        assert held["over_by"] == "$0.05"
+        assert "no longer active" in held["note"]
+    assert op_store.context_calls == ["u1"]
+
+
+async def test_user_cost_overrun_job_stops_asserting_when_the_cap_is_raised(monkeypatch):
+    """Raising the cap ends the incident; it must not produce repeat cards.
+
+    This is the regression the latch originally caused. An operator raising the
+    quota is the routine response to this very alert, and it is by far the most
+    likely reason a user leaves the result set — far likelier than suspension.
+    Re-asserting without asking why produced repeat breach cards quoting the
+    *old* cap, annotated "user or key is no longer active", which for an account
+    that is plainly active is a false statement; and it held the incident open
+    until the UTC day rolled instead of closing it shortly after the fix.
+
+    The user still resolves through ``get_quota_context_for_user``, so the job
+    drops the latch and asserts nothing further. The stale sweep then closes the
+    incident, exactly where it closed before this job latched at all.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alert_rules import UserCostOverrunJob
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    cfg.cost.user_overrun.cooldown_sec = 0  # every sweep would reach the sink
+    op_store = _FakeOpStore([("u1", "pro", 80.05, 80.0)])
+    job = UserCostOverrunJob(cfg.cost.user_overrun, op_store)
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await job.run()
+        # The operator raises the cap 80 -> 200. The user drops out of the
+        # query, but their account still resolves a cap through the key.
+        op_store.rows = []
+        op_store.quota_context = [{"id": "k1", "quota_daily_cost_usd": 200.0}]
+        await job.run()
+        await job.run()
+
+    # One card, from the sweep that actually observed the breach.
+    assert mock_alert.await_count == 1
+    assert "note" not in mock_alert.call_args.args[2]
+    # Re-checked once on the sweep they left, then forgotten entirely.
+    assert op_store.context_calls == ["u1"]
+    assert job._latched == {}
+
+
+async def test_user_cost_overrun_job_never_claims_inactive_when_the_recheck_fails(monkeypatch):
+    """A failed re-check holds the incident but must not assert a status.
+
+    Holding is the safe side — a false "Recovered" on a capped-out account is
+    the worse card — but the card cannot say "no longer active", because that is
+    precisely what the sweep failed to establish.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alert_rules import UserCostOverrunJob
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    cfg.cost.user_overrun.cooldown_sec = 0
+    op_store = _FakeOpStore([("u1", "pro", 80.05, 80.0)])
+    job = UserCostOverrunJob(cfg.cost.user_overrun, op_store)
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await job.run()
+        op_store.rows = []
+        op_store.quota_context = RuntimeError("pool exhausted")
+        await job.run()
+
+    assert mock_alert.await_count == 2
+    held = mock_alert.call_args_list[1].args[2]
+    assert "no longer active" not in held["note"]
+    assert "could not be re-checked" in held["note"]
+    # Still latched, so the next healthy sweep gets to decide properly.
+    assert "u1" in job._latched
+
+
+async def test_user_cost_overrun_boundary_card_is_not_self_contradictory(monkeypatch):
+    """$19.99 against a $20.00 cap is a refusal, and must not read as "-$0.01".
+
+    The predicate that selects these users includes the gate's optimistic
+    pre-charge, so the boundary row is genuinely *under* the cap in raw spend.
+    Signing ``spend - quota`` renders that as a negative overage on a card
+    titled "Daily cost quota consumed", which an operator reads as a bug.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alert_rules import UserCostOverrunJob
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    op_store = _FakeOpStore([("u1", "free", 19.99, 20.0)])
+    job = UserCostOverrunJob(cfg.cost.user_overrun, op_store)
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await job.run()
+
+    card = mock_alert.call_args.args[2]
+    assert card["spend"] == "$19.99"
+    assert card["quota"] == "$20.00"
+    assert card["over_by"] == "$0.00 (at cap)"
+    assert "-" not in card["over_by"]
+
+
+async def test_user_cost_overrun_job_forgets_latched_users_on_day_rollover(monkeypatch):
+    """Yesterday's held-open users are dropped so the sweep can close them."""
+    from serving.observability.alert_rules import UserCostOverrunJob
+
+    cfg = AlertConfig()
+    op_store = _FakeOpStore([("u1", "pro", 80.05, 80.0)])
+    job = UserCostOverrunJob(cfg.cost.user_overrun, op_store)
+
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
+        await job.run()
+        assert "u1" in job._latched
+        # Pretend the UTC day rolled over while the user stayed at their cap.
+        job._latched_day = "1999-01-01"
+        op_store.rows = []
+        await job.run()
+
+    # Nothing re-asserted: the incident key changed with the day, and the
+    # stale sweep is what retires yesterday's. The rollover clears the latch
+    # before anything is re-checked, so it costs no store round-trip either.
+    assert job._latched == {}
+    assert op_store.context_calls == []
 
 
 class _FakeLogStore:

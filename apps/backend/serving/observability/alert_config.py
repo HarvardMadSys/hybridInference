@@ -209,6 +209,19 @@ class UserOverrun(BaseModel):
     enabled: bool = True
     check_interval_sec: int = 300
     cooldown_sec: int = 86400
+    #: **Parsed, never consulted.** ``UserCostOverrunJob`` now measures spend
+    #: against each account's own ``api_keys.quota_daily_cost_usd``, because
+    #: that is the only limit anything enforces. A per-role threshold cannot
+    #: express it: caps differ between keys of the same role, and the gate
+    #: stops spending at the cap, so any role threshold above it is unreachable
+    #: while one below it fires on users who were never refused anything.
+    #:
+    #: The field stays anyway, rather than being deleted: every deployment's
+    #: ``alerts.yaml`` still sets it, and the value would then be swallowed by
+    #: pydantic's default ``extra="ignore"`` — an operator would go on tuning a
+    #: number that no longer exists, with nothing to tell them. Keeping it
+    #: parsed and documented as inert is the honest version of that. Deleting
+    #: it from a deployment's YAML is safe and changes nothing.
     thresholds_per_role: dict[str, float] = Field(
         default_factory=lambda: {
             "free": 5.0,

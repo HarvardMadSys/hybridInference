@@ -41,7 +41,7 @@ def inner_store() -> MagicMock:
             "user_status": "active",
         }
     )
-    store.query_users_over_daily_threshold = AsyncMock(return_value=[("u1", "free", 1.5)])
+    store.query_users_at_daily_quota = AsyncMock(return_value=[("u1", "free", 20.0, 20.0)])
     store.update_user_fields = AsyncMock()
     store.update_user_last_login = AsyncMock()
     store.delete_user = AsyncMock()
@@ -305,13 +305,13 @@ class TestCacheHits:
 
         inner_store.health_check.assert_awaited_once()
 
-    async def test_query_users_over_daily_threshold_passes_through(self, cached, inner_store):
-        thresholds = {"free": 1.0}
+    async def test_query_users_at_daily_quota_passes_through(self, cached, inner_store):
+        # Deliberately uncached: the alert exists to catch the moment a user
+        # crosses their cap, so every sweep must reach the database.
+        result = await cached.query_users_at_daily_quota(limit=50)
 
-        result = await cached.query_users_over_daily_threshold(thresholds)
-
-        assert result == [("u1", "free", 1.5)]
-        inner_store.query_users_over_daily_threshold.assert_awaited_once_with(thresholds)
+        assert result == [("u1", "free", 20.0, 20.0)]
+        inner_store.query_users_at_daily_quota.assert_awaited_once_with(limit=50)
 
 
 # ------------------------------------------------------------------

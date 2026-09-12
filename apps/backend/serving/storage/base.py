@@ -759,14 +759,45 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
-    async def query_users_over_daily_threshold(
+    async def query_users_at_daily_quota(
         self,
-        thresholds: dict[str, float],
-    ) -> list[tuple[str, str, float]]:
-        """Return users whose UTC daily cost is above their role threshold.
+        *,
+        limit: int = 500,
+    ) -> list[tuple[str, str, float, float]]:
+        """Return users whose UTC daily spend has consumed their own quota.
 
-        Returns ``(user_id, role, daily_cost)`` tuples ordered by highest
-        daily cost first. Reads from the ``user_daily_cost`` counter table.
+        Returns ``(user_id, role, spend_usd, quota_usd)`` tuples, largest
+        overage (``spend - quota``) first. Reads today's row from the
+        ``user_daily_cost`` counter table and the limit from the user's single
+        active API key.
+
+        This replaced a per-*role* threshold query, which could not work: the
+        enforced cap is ``api_keys.quota_daily_cost_usd``, a per-key number,
+        and the gate stops spending at that cap. A role threshold above the
+        cap is unreachable (the gate caps spend first), and one below it fires
+        on users who were never refused anything. Only the key's own limit
+        answers "did this user run out?".
+
+        Implementations must use the enforcer's predicate verbatim — ``spend +
+        ESTIMATED_REQUEST_COST_USD > quota`` — so a user appears here on the
+        request the gate starts refusing, not one earlier or later. Take the
+        two numbers from :mod:`serving.quota`
+        (:data:`~serving.quota.ESTIMATED_REQUEST_COST_USD` and the NULL
+        fallback :data:`~serving.quota.DEFAULT_DAILY_QUOTA_USD`), which is what
+        the cloud-agent *grant* door uses via :func:`serving.quota.check`.
+
+        Be aware that this is not a guarantee across both doors. The API-key
+        door — ``verify_api_key`` in :mod:`serving.servers.auth`, and the path
+        nearly all traffic takes — does not import :mod:`serving.quota` for its
+        gate; it hardcodes the same ``0.01`` estimate and the same ``1000.0``
+        fallback inline. The values coincide today, so today the alert and the
+        429 agree. Tune one side without the other and they desynchronise, with
+        nothing to catch it.
+
+        Args:
+            limit: Most rows to return. Implementations log when the result is
+                truncated, so a day that overflows it is visible rather than
+                silently cut off.
         """
 
     @abstractmethod

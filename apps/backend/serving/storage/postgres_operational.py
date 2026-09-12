@@ -11,7 +11,7 @@ import json
 import os
 from typing import TYPE_CHECKING, Any, Literal
 
-from serving import grants
+from serving import grants, quota
 from serving.config.settings import ROLE_RANK, VALID_ROLES
 from serving.exceptions import DuplicateAPIKeyError
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
@@ -3051,45 +3051,122 @@ class PostgresOperationalStore(OperationalStore):
             )
         return float(row["cost_usd"]) if row else 0.0
 
-    async def query_users_over_daily_threshold(
+    async def query_users_at_daily_quota(
         self,
-        thresholds: dict[str, float],
-    ) -> list[tuple[str, str, float]]:
-        """Return users whose today's cost exceeds the per-role threshold.
+        *,
+        limit: int = 500,
+    ) -> list[tuple[str, str, float, float]]:
+        """Return users whose today's spend has consumed their own key's quota.
 
-        Joins the daily-cost counter table to the users table for today's row,
-        and filters by the per-role threshold. Used by the
-        ``UserCostOverrunJob`` periodic alert.
+        Asks the question the gate asks, with the gate's own numbers: would
+        this account's next request be refused? See
+        :meth:`serving.storage.base.OperationalStore.query_users_at_daily_quota`
+        for why the per-role predicate this replaced could never fire.
 
-        Roles and thresholds are passed as bound parameters via a VALUES-based
-        CTE built with ``unnest``, so callers may pass arbitrary dict keys
-        without risking SQL injection.
+        Three details are load-bearing:
+
+        **The join is the canonical one.** Same shape as
+        :meth:`get_quota_context_for_user`, which is what the enforcer resolves
+        a user's limit through — ``k.user_id = u.id``, key ``active`` and
+        unexpired, user ``active``. A different join here would alert on a
+        limit no request is ever measured against.
+        ``idx_api_keys_user_unique`` is ``UNIQUE(user_id) WHERE
+        status='active'``, so the key join cannot fan a user out into several
+        rows; there is no need to de-duplicate afterwards.
+
+        **The predicate is the enforcer's** — ``spend +
+        ESTIMATED_REQUEST_COST_USD > quota`` — but read carefully *whose*
+        constants those are, because there are two doors and only one of them
+        shares them:
+
+        * The **grant door** (:mod:`serving.grant_auth`, cloud-agent tokens)
+          calls :func:`serving.quota.check` and :func:`serving.quota.resolve_quota`,
+          so it and this query move together by construction: retune
+          ``serving.quota`` and both follow.
+        * The **API-key door** (``verify_api_key`` in
+          :mod:`serving.servers.auth`) is the dominant path, and it does *not*
+          import :mod:`serving.quota` for the gate. It hardcodes its own
+          ``estimated_cost = 0.01`` and its own ``1000.0`` NULL fallback inline.
+
+        The two sets of numbers are equal today, so today the alert and the 429
+        do flip on the same request. That is a coincidence being maintained by
+        hand, not a guarantee: tune either side alone and this query and the
+        API-key gate silently disagree about who is out of quota. Change one,
+        change the other.
+
+        Note also that a user can appear here *just under* their cap (19.99
+        against 20.00): that is not an off-by-one, it is the optimistic
+        pre-charge, and the gate has already started refusing them. The
+        comparison is done in float8 rather than ``numeric`` for a related
+        reason — both doors compare Python floats, and matching that arithmetic
+        exactly is worth more here than numeric's extra precision.
+
+        **The scan drives off today's counter rows.** ``user_daily_cost`` is
+        keyed ``(user_id, day)`` with an index on ``day``, so today's slice is
+        a few hundred rows; each one probes the unique active-key index and the
+        users primary key. Driving from ``users`` instead (as the per-role
+        query did) would scan every account that ever existed. It also means a
+        user with no spend today cannot appear — which is what "consumed their
+        quota" should mean, and incidentally keeps a hypothetical zero-dollar
+        key from alerting every day on no traffic at all.
+
+        Args:
+            limit: Most rows to return, largest overage first.
+
+        Returns:
+            ``(user_id, role, spend_usd, quota_usd)``, largest overage first.
         """
-        if not thresholds:
-            return []
-        roles = list(thresholds.keys())
-        values = [float(thresholds[r]) for r in roles]
-        # ``user_daily_cost.day`` is stored as TEXT (YYYY-MM-DD); compare on
-        # the same representation. Roles/thresholds flow in as bound params
-        # via unnest, eliminating the previous f-string interpolation.
+        # Two notes on the query below.
+        #
+        # ``user_daily_cost.day`` is TEXT (YYYY-MM-DD); compare on the same
+        # representation rather than casting the column, which would cost the
+        # index scan.
+        #
+        # It orders by overage, not by raw spend. With per-key caps the biggest
+        # spender is usually just the user with the biggest allowance: a $200
+        # key one dollar past its cap would outrank a $20 free account five
+        # dollars past its own, and on a truncated list the free account — the
+        # one whose behaviour actually changed — would be the row that fell
+        # off. Overage is what a truncated list must keep.
         sql = """
-            WITH thresholds(role, threshold) AS (
-                SELECT * FROM unnest($1::text[], $2::numeric[])
-            )
-            SELECT u.id AS user_id, u.role AS role,
-                   COALESCE(udc.cost_usd, 0)::float AS daily_cost
-            FROM users u
-            JOIN thresholds t ON t.role = u.role
-            LEFT JOIN user_daily_cost udc
-              ON udc.user_id = u.id
-             AND udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')
-            WHERE COALESCE(udc.cost_usd, 0) > t.threshold
-            ORDER BY daily_cost DESC
-            LIMIT 100
+            SELECT u.id AS user_id,
+                   u.role AS role,
+                   udc.cost_usd::float8 AS spend_usd,
+                   COALESCE(k.quota_daily_cost_usd, $2::float8)::float8 AS quota_usd
+            FROM user_daily_cost udc
+            JOIN users u
+              ON u.id = udc.user_id
+             AND u.status = 'active'
+            JOIN api_keys k
+              ON k.user_id = u.id
+             AND k.status = 'active'
+             AND (k.expires_at IS NULL OR k.expires_at > NOW())
+            WHERE udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')
+              AND udc.cost_usd + $3::float8 > COALESCE(k.quota_daily_cost_usd, $2::float8)
+            ORDER BY (udc.cost_usd - COALESCE(k.quota_daily_cost_usd, $2::float8)) DESC
+            LIMIT $1
         """
+        # Fetch one more row than asked for, so truncation is a fact rather
+        # than an inference from "len == limit".
+        capped = max(1, limit)
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(sql, roles, values)
-        return [(r["user_id"], r["role"], float(r["daily_cost"])) for r in rows]
+            rows = await conn.fetch(
+                sql,
+                capped + 1,
+                quota.DEFAULT_DAILY_QUOTA_USD,
+                quota.ESTIMATED_REQUEST_COST_USD,
+            )
+        if len(rows) > capped:
+            logger.warning(
+                "query_users_at_daily_quota truncated at %d rows; more users are at "
+                "their daily quota than this sweep will report. Raise the limit or "
+                "check for a cap misconfiguration.",
+                capped,
+            )
+            rows = rows[:capped]
+        return [
+            (r["user_id"], r["role"], float(r["spend_usd"]), float(r["quota_usd"])) for r in rows
+        ]
 
     async def get_user_cost_period(
         self,

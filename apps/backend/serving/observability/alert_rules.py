@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import datetime as dt
+import functools
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol
@@ -597,28 +598,114 @@ class TrackedTaskFailureRateRule:
         )
 
 
+#: Attached only once :meth:`UserCostOverrunJob._hold_unobservable` has
+#: *confirmed* the account no longer resolves. Claiming this of an account that
+#: is in fact active — the case where an operator simply raised the cap — is a
+#: false statement on an incident card, so the confirmation is not optional.
+_NOTE_UNOBSERVABLE = (
+    "user or key is no longer active; figures are the last observed "
+    "today, held open until the UTC day rolls over"
+)
+
+#: The same hold, taken without confirmation because the re-check itself failed.
+#: Deliberately says nothing about the account's status: that is precisely what
+#: could not be established this sweep.
+_NOTE_UNCONFIRMED = (
+    "this account could not be re-checked this sweep; figures are the last "
+    "observed today and may be out of date"
+)
+
+
+def _quota_card(
+    user_id: str,
+    role: str,
+    spend: float,
+    quota_usd: float,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Build the alert context for one account that has consumed its quota."""
+    # Clamped at zero rather than signed. The predicate that selects these rows
+    # includes the gate's optimistic pre-charge, so an account is already being
+    # refused at $19.99 against a $20.00 cap — and rendering that as
+    # "over_by: $-0.01" on a card titled "quota consumed" reads as a
+    # contradiction rather than as the boundary case it is. At or below the cap
+    # the honest word is "at cap".
+    over = spend - quota_usd
+    card = {
+        "user_id": user_id,
+        "role": role,
+        "spend": f"${spend:.2f}",
+        # The account's own cap, not a role threshold — two users with the same
+        # role routinely have different ones, so the card has to carry the
+        # number that was actually enforced on this one.
+        "quota": f"${quota_usd:.2f}",
+        "over_by": f"${over:.2f}" if over > 0 else "$0.00 (at cap)",
+    }
+    if note:
+        card["note"] = note
+    return card
+
+
 class UserCostOverrunJob:
-    """Periodic job 8: per-user daily-cost threshold overrun."""
+    """Periodic job 8: users who have consumed their daily cost quota.
+
+    Reports accounts the quota gate has started refusing — spend measured
+    against ``api_keys.quota_daily_cost_usd``, the number actually enforced.
+    It used to compare spend against ``thresholds_per_role`` from
+    ``alerts.yaml``, which could not fire in either direction: the gate caps
+    spend at the *key's* limit, so a role threshold above that limit is
+    unreachable, and one below it names users nothing ever refused. Caps vary
+    per key even within one role (pro keys sit at 20/40/80/160/200 here), so no
+    single per-role number could have been right for them anyway.
+    """
 
     name = "user_cost_overrun"
 
     def __init__(self, cfg: UserOverrun, op_store: Any) -> None:
         self._cfg = cfg
         self._op_store = op_store
+        # Users already reported today, and the figures they were reported
+        # with. See ``_hold_unobservable`` for the one narrow case in which a
+        # user who leaves the result set mid-day keeps being asserted.
+        self._latched_day: str | None = None
+        self._latched: dict[str, tuple[str, float, float]] = {}
 
     async def run(self) -> None:
-        """Query users whose daily cost exceeds their role threshold and emit alerts."""
+        """Alert once per user per UTC day on accounts that hit their own cap."""
         if not self._cfg.enabled or self._op_store is None:
             return
         try:
-            rows = await self._op_store.query_users_over_daily_threshold(
-                self._cfg.thresholds_per_role
-            )
+            rows = await self._op_store.query_users_at_daily_quota()
         except Exception:
             log.exception("user_cost_overrun query failed")
             return
-        today = dt.date.today().isoformat()
-        for user_id, role, daily_cost in rows:
+
+        # UTC, not ``date.today()``: the counter this reads rolls at UTC
+        # midnight, and the requirement is one alert per user per UTC day. On a
+        # host in any other zone the local date would split or merge days
+        # against the data, dropping or doubling an alert at the seam.
+        today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        if self._latched_day != today:
+            self._latched_day = today
+            self._latched = {}
+
+        current = {user_id: (role, spend, quota) for user_id, role, spend, quota in rows}
+
+        departed = {
+            user_id: value for user_id, value in self._latched.items() if user_id not in current
+        }
+        held = await self._hold_unobservable(departed)
+        self._latched.update(current)
+
+        # (role, spend, quota, note) for every card this sweep asserts. Fresh
+        # rows carry no note; held ones carry the reason they are being held.
+        cards: dict[str, tuple[str, float, float, str | None]] = {
+            user_id: (role, spend, quota_usd, None)
+            for user_id, (role, spend, quota_usd) in current.items()
+        }
+        cards.update(held)
+
+        for user_id, (role, spend, quota_usd, note) in cards.items():
             # Through the tracker, not straight to the sink: the key embeds the
             # day, so once it rolls over nothing observes this one again and the
             # stale sweep is the only thing that can close its incident. Calling
@@ -627,16 +714,80 @@ class UserCostOverrunJob:
                 key=f"cost_overrun:{user_id}:{today}",
                 breached=True,
                 severity=AlertSeverity.WARN,
-                title="User cost overrun",
-                context=lambda user_id=user_id, role=role, daily_cost=daily_cost: {
-                    "user_id": user_id,
-                    "role": role,
-                    "daily_cost": f"${daily_cost:.2f}",
-                    "threshold": f"${self._cfg.thresholds_per_role.get(role, 0):.2f}",
-                },
+                title=f"Daily cost quota consumed by {user_id}",
+                # ``partial`` rather than a lambda over loop variables: the
+                # callable outlives this iteration, and binding by argument is
+                # what keeps every card holding its own user's numbers.
+                context=functools.partial(_quota_card, user_id, role, spend, quota_usd, note),
                 cooldown_sec=self._cfg.cooldown_sec,
                 stale_after=self._cfg.check_interval_sec * _STALE_WINDOW_FACTOR,
             )
+
+    async def _hold_unobservable(
+        self,
+        departed: dict[str, tuple[str, float, float]],
+    ) -> dict[str, tuple[str, float, float, str]]:
+        """Decide, per departed user, whether the incident ended or went blind.
+
+        A user reported earlier today who is no longer in the result set left
+        for one of two reasons, and they need opposite handling:
+
+        * **They recovered.** Overwhelmingly the common case, and usually a
+          direct response to *this alert*: an operator raises the cap, a routine
+          edit visible in ``admin_audit_log``. (The counter resetting at UTC
+          midnight lands here too, in the narrow window where the database has
+          rolled the day and this host's clock has not yet cleared the latch.)
+          Either way the incident is genuinely over and must be allowed to
+          close.
+        * **They became unobservable.** The user was suspended or their key
+          revoked, so the enforcer resolves no cap for them at all — and this
+          query, which joins exactly as the enforcer does, stops seeing them.
+          Nothing will evaluate that incident again, so the stale sweep would
+          post "Recovered (no recent samples)" for an account that is, if
+          anything, in worse standing than when it was reported.
+
+        Re-asserting *every* departure without distinguishing the two — the
+        first version of this job — turned each remediation into repeat breach
+        cards quoting a cap the operator had already raised, annotated "user or
+        key is no longer active", which in that case is simply false. It also
+        held the incident open until the day rolled instead of closing it a
+        sweep or two after the fix.
+
+        ``get_quota_context_for_user`` settles it directly and cheaply: it is
+        the same active-user-plus-active-unexpired-key lookup the grant door
+        resolves a cap through, one indexed row per departed user, and only for
+        users already reported today (single digits in practice). Rows back
+        means the account still resolves, so it recovered; only an empty answer
+        justifies holding.
+
+        Args:
+            departed: Users latched earlier today that this sweep did not see,
+                mapped to the figures they were last reported with.
+
+        Returns:
+            The subset to keep asserting, each with the note its card carries.
+            Recovered users are dropped from the latch as a side effect.
+        """
+        held: dict[str, tuple[str, float, float, str]] = {}
+        for user_id, (role, spend, quota_usd) in departed.items():
+            try:
+                still_resolves = bool(await self._op_store.get_quota_context_for_user(user_id))
+            except Exception:
+                # Cannot tell recovered from unobservable. Hold — a false
+                # "Recovered" on a capped-out account is the worse card — but
+                # say only that, never that the account is inactive.
+                log.exception("user_cost_overrun could not re-check %s", user_id)
+                held[user_id] = (role, spend, quota_usd, _NOTE_UNCONFIRMED)
+                continue
+            if still_resolves:
+                # Recovered. Drop the latch and assert nothing, which lets the
+                # incident close exactly where it closed before this job
+                # latched at all: the stale sweep, roughly two check intervals
+                # after the fix.
+                del self._latched[user_id]
+                continue
+            held[user_id] = (role, spend, quota_usd, _NOTE_UNOBSERVABLE)
+        return held
 
 
 class ProviderHourlySpendJob:
