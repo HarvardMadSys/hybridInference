@@ -102,12 +102,13 @@ _HEALTH_TTL = 5
 def _audit_entry_ttl(row: Row) -> int:
     """Return how long an audit row may be cached, never past its expiry.
 
+    Returns 0 for a row that must not be cached at all.
+
     Every other state this row reports changes through a write that
     :class:`CachedOperationalStore` invalidates on. A key reaching its deadline
     changes none, so the remaining time is the only thing that can stop a
-    ``key_expired: False`` answer from outliving the fact. Rounded up to at
-    least a second, so a deadline moments away still caches rather than
-    hammering the database, and only ever shortens the normal TTL.
+    ``key_expired: False`` answer from outliving the fact. It only ever
+    shortens the normal TTL, never extends it.
 
     Both inputs come from the row, and deliberately so. The flag says whether
     the credential has expired and ``expires_in_sec`` says how long that answer
@@ -126,13 +127,17 @@ def _audit_entry_ttl(row: Row) -> int:
         return _AUTH_CONTEXT_TTL
     if remaining >= _AUTH_CONTEXT_TTL:
         return _AUTH_CONTEXT_TTL
-    # Floored at a second rather than keyed off the sign: the flag decides
-    # whether the credential has expired, and it and the remainder can
-    # disagree across the query -- the database calls the key live, and by the
-    # time it answers the remainder has gone negative. Treating that as
-    # "expired, so cache it fully" would hand the full TTL to the one row this
-    # cap exists to shorten.
-    return max(1, math.ceil(remaining))
+    # Truncated, never rounded up: a second of rounding is a second of the row
+    # outliving the deadline it exists to respect, and the lookup's own latency
+    # has already eaten into the window before this value is used. Under a
+    # second there is no whole second left to give, so the row is not cached at
+    # all -- including when the remainder has gone negative while the flag
+    # still says live, which is the two disagreeing across one query rather
+    # than evidence the credential expired. Not caching costs little even
+    # under a flood: the only path that asks is the blocked one, where
+    # ``bounded_enrichment`` already caps lookups at eight at a time and sheds
+    # the rest.
+    return max(0, math.floor(remaining))
 
 
 class CachedOperationalStore(OperationalStore):
@@ -265,7 +270,9 @@ class CachedOperationalStore(OperationalStore):
             return cached
         result = await self._store.get_key_owner_for_audit(key_hash)
         if result is not None:
-            await self._cache.set(ck, result, _audit_entry_ttl(result))
+            ttl = _audit_entry_ttl(result)
+            if ttl > 0:
+                await self._cache.set(ck, result, ttl)
         return result
 
     # -- user writes (invalidate user cache) ---------------------------------

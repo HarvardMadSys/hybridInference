@@ -169,21 +169,29 @@ class TestCacheHits:
 
         assert recorded == [4]
 
-    async def test_audit_entry_trusts_the_row_over_a_local_clock(self, cached, inner_store, cache):
-        """A live row whose deadline has locally passed gets the shortest life.
+    @pytest.mark.parametrize("remaining", [0.4, -2.0])
+    async def test_audit_entry_is_not_cached_inside_the_last_second(
+        self, cached, inner_store, cache, remaining
+    ):
+        """A live row with under a second left is not cached at all.
 
-        The two can disagree across the query: the database calls the key live
-        moments before ``expires_at``, and by the time this process subtracts,
-        the remainder is already negative. The row's flag is the answer being
-        cached, so a negative remainder must not be read as "expired, cache it
-        fully" — that hands the full TTL to the one row the cap exists for.
+        There is no whole second to give it, and rounding up would be a second
+        of the row outliving the deadline — a lapsed credential labelled
+        active, with its owner written into ``api_logs.user_id``. A remainder
+        already negative while the flag still says live is the same case: the
+        database calling the key live and the window it measured closing
+        before the answer is used, not evidence the credential expired, so it
+        must not be read as "expired, cache it fully" either.
+
+        Costs little even under a flood: the only path that asks is the blocked
+        one, where the enrichment budget already caps lookups and sheds.
         """
         inner_store.get_key_owner_for_audit.return_value = {
             "user_id": "u1",
             "role": "admin",
             "key_status": "active",
             "key_expired": False,
-            "expires_in_sec": -2.0,
+            "expires_in_sec": remaining,
             "user_status": "active",
         }
         recorded: list[int] = []
@@ -196,8 +204,11 @@ class TestCacheHits:
         cache.set = _record_ttl
 
         await cached.get_key_owner_for_audit("h1")
+        await cached.get_key_owner_for_audit("h1")
 
-        assert recorded == [1]
+        assert recorded == []
+        # Nothing cached, so the second read went back to the store.
+        assert inner_store.get_key_owner_for_audit.await_count == 2
 
     async def test_audit_entry_keeps_the_normal_ttl_once_the_row_says_expired(
         self, cached, inner_store, cache
