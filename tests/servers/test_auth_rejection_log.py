@@ -737,8 +737,9 @@ async def test_invalid_key_names_the_account_behind_a_dead_credential(monkeypatc
 async def test_invalid_key_that_was_never_issued_names_nobody(monkeypatch, caplog):
     """A scanner's random token resolves to no one, and the record says so.
 
-    That absence is the signal: a spike with no accounts in it is outside
-    traffic, and a spike with one is a caller of this deployment's own.
+    Note what this does *not* establish. The same empty fields come back when
+    the lookup is shed, times out or is switched off, so downstream the absence
+    reads as unresolved, never as proof that the caller was external.
     """
     app, log_calls, _op = _build_app(monkeypatch, op_store_user=None, audit_row=None)
     transport = ASGITransport(app=app, raise_app_exceptions=False)

@@ -289,11 +289,14 @@ Two of those lines are worth reading carefully:
   was authenticated, which is the failure. A named account means a key this
   deployment *did* issue was presented and refused, with `credential_state`
   saying why (`revoked`, `expired`, `user_suspended`). That is the actionable
-  case: a monitor, CI job or service account whose credential went stale. An
-  alert with no accounts in it is outside traffic. Resolving the owner costs one
-  indexed lookup per failed auth, bounded by the shared rejection-enrichment
-  budget and shed instantly under a flood; set
-  `AUTH_FAILURE_IDENTIFY_CALLER=false` to spend nothing and lose the line.
+  case: a monitor, CI job or service account whose credential went stale.
+  Resolving the owner costs one indexed lookup per failed auth, bounded by the
+  shared rejection-enrichment budget and shed instantly under a flood; set
+  `AUTH_FAILURE_IDENTIFY_CALLER=false` to spend nothing and lose the line. Read
+  a named account as evidence and no named account as *unknown*, never as proof
+  the traffic is external: the lookup is shed during exactly the flood you are
+  investigating, and answers nothing on a timeout, a failed lookup, or with the
+  setting off.
 - **Arrived via peers.** Present only when the reported addresses did not come
   off the socket. They are then only as trustworthy as the proxy that set them,
   and a forged `X-Forwarded-For` is exactly how a source spreads its failures

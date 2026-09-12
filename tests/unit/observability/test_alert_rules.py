@@ -1542,6 +1542,67 @@ class TestAuthFailureSpikeNamesWhoAndWhere:
         assert context["distinct_ips"] == 5
         assert "198.51.100.7 (5)" in context["arrived_via_peers"]
 
+    async def test_one_forwarded_failure_among_direct_ones_still_names_its_socket(self):
+        """Forwarding is a property of a record, not of the window.
+
+        A window holding a direct failure from A and a forwarded one from B
+        through peer A has every peer address also appearing as somebody's
+        reported address. Comparing the two sets over the window therefore finds
+        nothing and drops the line — hiding the one forged hop it exists for.
+        """
+        rule = self._rule()
+        records = [
+            self._failure(remote_ip="203.0.113.9", peer_ip="203.0.113.9", ip_source="socket")
+            for _ in range(4)
+        ]
+        records.append(
+            self._failure(
+                remote_ip="198.51.100.4",
+                peer_ip="203.0.113.9",
+                ip_source="x-forwarded-for",
+            )
+        )
+
+        mock_transition = await self._feed(rule, records)
+        context = mock_transition.await_args.kwargs["context"]()
+
+        # The socket the forged hop arrived on, counted once — not five times,
+        # which would name the four direct failures as forwarded too.
+        assert context["arrived_via_peers"] == "203.0.113.9 (1)"
+
+    async def test_a_wholly_direct_window_names_no_peers(self):
+        """Nothing was forwarded, so there is no second address to distrust."""
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [
+                self._failure(remote_ip="203.0.113.9", peer_ip="203.0.113.9", ip_source="socket")
+                for _ in range(5)
+            ],
+        )
+
+        assert "arrived_via_peers" not in mock_transition.await_args.kwargs["context"]()
+
+    async def test_forwarding_is_inferred_when_a_record_omits_ip_source(self):
+        """An older record still says the same thing, just less directly."""
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [
+                _fake_event(
+                    "auth_failure",
+                    reason="invalid_api_key",
+                    remote_ip="198.51.100.4",
+                    peer_ip="203.0.113.9",
+                )
+                for _ in range(5)
+            ],
+        )
+
+        assert mock_transition.await_args.kwargs["context"]()["arrived_via_peers"] == (
+            "203.0.113.9 (5)"
+        )
+
     async def test_a_long_path_cannot_crowd_out_the_rest_of_the_card(self):
         rule = self._rule()
         mock_transition = await self._feed(

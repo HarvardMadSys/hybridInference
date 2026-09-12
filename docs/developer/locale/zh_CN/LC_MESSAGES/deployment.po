@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-12 14:56+0000\n"
+"POT-Creation-Date: 2026-09-12 15:02+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -617,35 +617,41 @@ msgid ""
 "key this deployment *did* issue was presented and refused, with "
 "`credential_state` saying why (`revoked`, `expired`, `user_suspended`). "
 "That is the actionable case: a monitor, CI job or service account whose "
-"credential went stale. An alert with no accounts in it is outside "
-"traffic. Resolving the owner costs one indexed lookup per failed auth, "
-"bounded by the shared rejection-enrichment budget and shed instantly "
-"under a flood; set `AUTH_FAILURE_IDENTIFY_CALLER=false` to spend nothing "
-"and lose the line."
-msgstr "**已知账户**。绝大多数认证失败在构成上就是匿名的——没有任何人通过认证，这正是失败本身。出现了账户，说明有人出示了本部署*确实*签发过的密钥而被拒绝，`credential_state` 会说明原因（`revoked`、`expired`、`user_suspended`）。这才是可处理的那一类：某个监控、CI 任务或服务账户的凭据已经失效。一条不含任何账户的告警，说的是外部流量。解析持有者的代价是每次认证失败一次索引查询，受共享的拒绝请求富化预算约束，洪泛之下会被立即丢弃；设为 `AUTH_FAILURE_IDENTIFY_CALLER=false` 即可分文不花，代价是失去这一行。"
+"credential went stale. Resolving the owner costs one indexed lookup per "
+"failed auth, bounded by the shared rejection-enrichment budget and shed "
+"instantly under a flood; set `AUTH_FAILURE_IDENTIFY_CALLER=false` to "
+"spend nothing and lose the line. Read a named account as evidence and no "
+"named account as *unknown*, never as proof the traffic is external: the "
+"lookup is shed during exactly the flood you are investigating, and "
+"answers nothing on a timeout, a failed lookup, or with the setting off."
+msgstr "**已知账户**。绝大多数认证失败在构成上就是匿名的——没有任何人通过认证，这正是失败本身。出现了账户，说明有人出示了本部署*确实*签发过的密钥而被拒绝，`credential_state` 会说明原因（`revoked`、`expired`、`user_suspended`）。这才是可处理的那一类：某个监控、CI 任务或服务账户的凭据已经失效。解析持有者的代价是每次认证失败一次索引查询，受共享的拒绝请求富化预算约束，洪泛之下会被立即丢弃；设为 `AUTH_FAILURE_IDENTIFY_CALLER=false` 即可分文不花，代价是失去这一行。把出现账户读作证据，把没有账户读作*未知*，而绝不要读作流量来自外部的证明：这个查询恰恰会在你正在排查的那场洪泛里被丢弃，并且在超时、查询失败或该设置被关闭时都不会给出任何结果。"
 
-#: ../developer/deployment.md:297
+#: ../developer/deployment.md:300
 msgid ""
 "**Arrived via peers.** Present only when the reported addresses did not "
 "come off the socket. They are then only as trustworthy as the proxy that "
 "set them, and a forged `X-Forwarded-For` is exactly how a source spreads "
 "its failures across the blocklist's buckets. The line names the sockets "
 "they actually arrived on."
-msgstr "**通过对端到达**。只有当报告出来的地址并非取自套接字时才会出现。这时它们的可信度只等同于设置它们的那层代理，而伪造 `X-Forwarded-For` 正是一个来源把自己的失败分散到封禁名单各个分桶里的办法。这一行给出它们真正到达时所用的套接字地址。"
+msgstr ""
+"**通过对端到达**。只有当报告出来的地址并非取自套接字时才会出现。这时它们的可信度只等同于设置它们的那层代理，而伪造 `X-Forwarded-"
+"For` 正是一个来源把自己的失败分散到封禁名单各个分桶里的办法。这一行给出它们真正到达时所用的套接字地址。"
 
-#: ../developer/deployment.md:303
+#: ../developer/deployment.md:306
 msgid ""
 "Counts marked `(capped)` are floors, not totals: a source rotating "
 "addresses faster than the tally tracks them stops being counted rather "
 "than being allowed to grow it without bound. Do not size an incident from"
 " a capped number."
-msgstr "标记为 `(capped)` 的计数是下限而不是总数：一个来源轮换地址的速度快过统计所能跟踪的上限时，它就不再被计入，而不是被允许把统计无限撑大。不要用一个带上限标记的数字去估量事件的规模。"
+msgstr ""
+"标记为 `(capped)` "
+"的计数是下限而不是总数：一个来源轮换地址的速度快过统计所能跟踪的上限时，它就不再被计入，而不是被允许把统计无限撑大。不要用一个带上限标记的数字去估量事件的规模。"
 
-#: ../developer/deployment.md:307
+#: ../developer/deployment.md:310
 msgid "Database"
 msgstr "数据库"
 
-#: ../developer/deployment.md:309
+#: ../developer/deployment.md:312
 msgid ""
 "PostgreSQL 16 runs in the `postgres` service with its data in the Docker "
 "volume `hybridinference_postgres_data`. A psql shell:"
@@ -653,15 +659,15 @@ msgstr ""
 "PostgreSQL 16 跑在 `postgres` 服务里，数据放在 Docker 卷 "
 "`hybridinference_postgres_data` 中。开一个 psql shell："
 
-#: ../developer/deployment.md:316
+#: ../developer/deployment.md:319
 msgid "Schema details are in [Database](database.md)."
 msgstr "表结构细节见[数据库](database.md)。"
 
-#: ../developer/deployment.md:318
+#: ../developer/deployment.md:321
 msgid "pgAdmin (optional)"
 msgstr "pgAdmin（可选）"
 
-#: ../developer/deployment.md:324
+#: ../developer/deployment.md:327
 msgid ""
 "pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so "
 "an SSH tunnel to that port is enough to reach it. The console can also "
@@ -674,7 +680,7 @@ msgstr ""
 "`apps/frontend/src/app/pgadmin/[[...path]]/route.ts` 按 admin "
 "会话把关；该文件在任何非预期情况下都拒绝，包括连不上后端的时候。"
 
-#: ../developer/deployment.md:330
+#: ../developer/deployment.md:333
 msgid ""
 "One thing to get right: whether pgAdmin *also* asks for its own login is "
 "set by `PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The "
@@ -686,15 +692,15 @@ msgstr ""
 "决定，而两处的默认值并不一致。Compose 服务回退到 `False`，也就是完全不需要登录就能用 pgAdmin；`.env.example`"
 " 建议 `True`，也就是在控制台这道关卡之后再开启 pgAdmin 自己的登录。两者之中 `True` 更安全。"
 
-#: ../developer/deployment.md:336
+#: ../developer/deployment.md:339
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/deployment.md:338
+#: ../developer/deployment.md:341
 msgid "A service will not start"
 msgstr "某个服务起不来"
 
-#: ../developer/deployment.md:345
+#: ../developer/deployment.md:348
 #, python-brace-format
 msgid ""
 "`required variable DB_NAME is missing a value: DB_NAME must be set in "
@@ -708,23 +714,23 @@ msgstr ""
 "`DB_PASSWORD` 是用 `${VAR:?message}` 形式声明为必填的，所以冒号之后那半句是 Compose "
 "文件自己写的文案，也是这一行里最好 grep 的部分。"
 
-#: ../developer/deployment.md:350
+#: ../developer/deployment.md:353
 msgid ""
 "Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or "
 "`DB_PORT`."
 msgstr "端口已被占用——覆盖 `BACKEND_PORT`、`FRONTEND_PORT` 或 `DB_PORT`。"
 
-#: ../developer/deployment.md:351
+#: ../developer/deployment.md:354
 msgid ""
 "Database connection failed — check `make ps` for the `postgres` health "
 "status."
 msgstr "数据库连接失败——用 `make ps` 查看 `postgres` 的健康状态。"
 
-#: ../developer/deployment.md:353
+#: ../developer/deployment.md:356
 msgid "A monitor or service account is suddenly getting 429s"
 msgstr "监控或服务账号突然开始收到 429"
 
-#: ../developer/deployment.md:355
+#: ../developer/deployment.md:358
 msgid ""
 "`Too many authentication failures from this IP. Temporarily blocked.` is "
 "the gateway's own abuse defense, not a provider error and not a quota. "
@@ -737,7 +743,7 @@ msgstr ""
 "`AUTH_FAILURE_BLOCK_THRESHOLD` 次认证失败（默认是一天 200 次）之后，就会被拒绝 "
 "`AUTH_FAILURE_BLOCK_DURATION_SEC`（一天）。"
 
-#: ../developer/deployment.md:361
+#: ../developer/deployment.md:364
 msgid ""
 "The awkward case is a caller you own — a status monitor, a CI job, a "
 "service account — whose key was rotated, revoked, or never reached its "
@@ -748,21 +754,21 @@ msgstr ""
 "麻烦的情形是你自己的调用方——状态监控、CI "
 "任务、服务账号——它的密钥被轮换了、被吊销了，或者根本没进到它的运行环境里。它按计划不断重试，越过阈值，然后就在*密钥检查之前*被拒绝，这带来两个值得记住的后果："
 
-#: ../developer/deployment.md:366
+#: ../developer/deployment.md:369
 msgid ""
 "**Repairing the credential does not lift the block.** The blocklist is "
 "consulted before the presented key is read, so a corrected key gets the "
 "same 429 until the deadline passes."
 msgstr "**修好凭据并不会解除封禁**。黑名单的判断发生在读取所带密钥之前，所以在期限走完之前，正确的密钥拿到的还是同一个 429。"
 
-#: ../developer/deployment.md:369
+#: ../developer/deployment.md:372
 msgid ""
 "**The 429 hides the original error.** Whatever the caller reports after "
 "the block is in place says nothing about whether the underlying 401/403 "
 "was fixed."
 msgstr "**429 掩盖了原始错误**。封禁生效之后，调用方报什么都说明不了底层那个 401/403 究竟修好了没有。"
 
-#: ../developer/deployment.md:372
+#: ../developer/deployment.md:375
 msgid ""
 "Which caller is it? Turn on the `log_rejected_requests` admin setting and"
 " the refusals land in Recent Requests as `ip_blocked` rows. Each row "
@@ -778,11 +784,11 @@ msgstr ""
 " Recent Requests "
 "里。每一行都会给出调用方所带密钥背后的账号——包括已被吊销或已过期的密钥，卡住的监控带的正是这种——并在用户旁边标出该凭据的状态（`revoked`、`expired`、`user_suspended`）。没有用户的那一行是没能查出来，而不是证明对方是陌生人：可能这套部署从来没签发过那个密钥，也可能这次身份查询被丢弃了——它跑在很紧的预算上，而封禁正在挡住的那种洪水，恰恰最先让它放弃。"
 
-#: ../developer/deployment.md:382
+#: ../developer/deployment.md:385
 msgid "To recover, first fix the credential, then clear the block:"
 msgstr "要恢复，先修好凭据，再解除封禁："
 
-#: ../developer/deployment.md:397
+#: ../developer/deployment.md:400
 msgid ""
 "`cleared: false` means there was nothing to lift — it lapsed, or that "
 "bucket was never blocked. Clearing grants no immunity: a caller still "
@@ -795,7 +801,7 @@ msgstr ""
 "表示没有什么可解除的——封禁已经到期，或者那个分桶从来没被封过。解除不授予任何豁免：仍然带着错误密钥的调用方，越过阈值后会再次被封。对于根本就不该被封的来源，应该把它列进"
 " `AUTH_FAILURE_BLOCK_EXEMPT_IPS`（逗号分隔的地址或 CIDR）。"
 
-#: ../developer/deployment.md:403
+#: ../developer/deployment.md:406
 msgid ""
 "The blocklist is per-process, in-memory state. On the single-process "
 "default both endpoints are exact, and a restart also clears every block. "
@@ -805,15 +811,15 @@ msgstr ""
 "黑名单是进程内的内存状态。在默认的单进程部署下，这两个接口给出的都是准确结果，而且重启也会清掉所有封禁。跑多个 worker 时，每个 "
 "worker 各记一份计数，所以列表只反映应答的那个 worker，解除也可能需要调用多次。"
 
-#: ../developer/deployment.md:408
+#: ../developer/deployment.md:411
 msgid "Resetting the stack"
 msgstr "重置这套服务栈"
 
-#: ../developer/deployment.md:410
+#: ../developer/deployment.md:413
 msgid "**Stop and start, keeping data:**"
 msgstr "**停止再启动，保留数据：**"
 
-#: ../developer/deployment.md:416
+#: ../developer/deployment.md:419
 msgid ""
 "**Destroy the database and start clean.** `docker compose down -v` does "
 "*not* do this. `postgres_data` is declared `external: true` in "
@@ -825,7 +831,7 @@ msgstr ""
 "`deploy/docker/docker-compose.yml` 里声明为 `external: true`，而 Compose "
 "从不删除外部卷——`down -v` 会返回成功，却把卷原封不动地留着，于是 `make up` 又回到完全相同的数据上。要按名字删除它："
 
-#: ../developer/deployment.md:429
+#: ../developer/deployment.md:432
 msgid ""
 "`docker volume rm` is irreversible and takes every account, API key and "
 "request log with it. Take a `pg_dump` first if any of it matters."
@@ -833,7 +839,7 @@ msgstr ""
 "`docker volume rm` 不可逆，会连同每一个账户、每一把 API key 和所有请求日志一起带走。只要其中还有任何东西重要，先做一次"
 " `pg_dump`。"
 
-#: ../developer/deployment.md:433
+#: ../developer/deployment.md:436
 msgid ""
 "pgAdmin's own volume (`hybridinference_pgadmin_data`) and the on-call "
 "relay's (`hybridinference_codex_oncall_data`) are ordinary local volumes,"
@@ -848,7 +854,7 @@ msgstr ""
 "down`，这里没有任何命令会替你加上 `-v`——你得自己跑 `docker compose --profile admin --profile"
 " oncall down -v`，或者像上面那样按名字删卷。"
 
-#: ../developer/deployment.md:440
+#: ../developer/deployment.md:443
 msgid "Rebuilding after code changes"
 msgstr "改动代码后重新构建"
 

@@ -365,18 +365,37 @@ def _auth_failure_entry(record: logging.LogRecord) -> dict[str, Any]:
     suspended), which ``servers/auth.py`` attaches under the same bounded
     enrichment budget the rejection log uses. Most auth failures are anonymous
     by construction — nobody was authenticated, which is the failure — so the
-    field is absent far more often than not, and that absence is itself the
-    signal that a spike is outside traffic rather than a deployment's own
-    caller with a dead credential.
+    field is absent far more often than not.
+
+    Absent is *unresolved*, though, never proven anonymous, and the difference
+    matters most exactly when it is least convenient: the lookup is shed under
+    load, which is the spike being alerted on, and answers nothing on a timeout,
+    a failed lookup, or with ``auth_failure_identify_caller`` off. A name here is
+    evidence; no name is the absence of evidence, and nothing downstream may
+    read it as evidence of absence.
+
+    ``forwarded`` says the reported address did not come off the socket, which
+    ``ip_source`` states outright. Decided per record rather than by comparing
+    the window's reported and peer addresses: a window holding both a direct
+    failure from A and a forwarded one from B through peer A has every peer
+    address appearing as somebody's reported address, and the comparison then
+    hides precisely the forged hop this is for.
     """
     path = getattr(record, "path", None)
     if isinstance(path, str) and len(path) > _PATH_IN_ALERT_CHARS:
         path = path[:_PATH_IN_ALERT_CHARS] + "…"
     user_id = getattr(record, "user_id", None)
     state = getattr(record, "credential_state", None)
+    remote_ip = getattr(record, "remote_ip", None)
+    peer_ip = getattr(record, "peer_ip", None)
+    ip_source = getattr(record, "ip_source", None)
+    # Falling back to the addresses differing covers an older record, or one
+    # from a path that does not set ``ip_source``: the same fact, just inferred.
+    forwarded = ip_source != "socket" if ip_source else bool(peer_ip) and peer_ip != remote_ip
     return {
-        "remote_ip": getattr(record, "remote_ip", None),
-        "peer_ip": getattr(record, "peer_ip", None),
+        "remote_ip": remote_ip,
+        "peer_ip": peer_ip,
+        "forwarded": forwarded,
         "key_prefix": getattr(record, "key_prefix", None),
         "reason": getattr(record, "reason", None),
         "path": path,
@@ -393,8 +412,14 @@ def _auth_failure_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """
     counts: dict[str, collections.Counter[str]] = {
         field_: collections.Counter(e[field_] for e in entries if e.get(field_))
-        for field_ in ("remote_ip", "peer_ip", "key_prefix", "reason", "path", "account")
+        for field_ in ("remote_ip", "key_prefix", "reason", "path", "account")
     }
+    # Peers of the forwarded records only. Counting every peer and then
+    # subtracting the reported addresses would drop the whole line for a window
+    # that mixes direct and proxied failures through one socket.
+    peers: collections.Counter[str] = collections.Counter(
+        e["peer_ip"] for e in entries if e.get("forwarded") and e.get("peer_ip")
+    )
     summary: dict[str, Any] = {
         "distinct_ips": len(counts["remote_ip"]),
         "top_ips": _top_offenders(counts["remote_ip"]),
@@ -407,13 +432,13 @@ def _auth_failure_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
         summary["known_accounts"] = _top_offenders(counts["account"])
     if counts["path"]:
         summary["top_paths"] = _top_offenders(counts["path"])
-    if set(counts["peer_ip"]) - set(counts["remote_ip"]):
-        # The addresses above did not come off the socket, so they are only as
-        # trustworthy as the proxy that set them -- and a spoofed
+    if peers:
+        # Some of the addresses above did not come off the socket, so they are
+        # only as trustworthy as the proxy that set them -- and a spoofed
         # ``X-Forwarded-For`` is exactly what a source does to spread its
         # failures across the blocklist's buckets. Naming the sockets they
         # actually arrived on is what makes that visible.
-        summary["arrived_via_peers"] = _top_offenders(counts["peer_ip"])
+        summary["arrived_via_peers"] = _top_offenders(peers)
     return summary
 
 
