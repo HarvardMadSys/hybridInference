@@ -173,6 +173,30 @@ async def test_suspended_owner_is_reported_with_a_live_key(postgres_op_store):
     assert row["user_status"] == "suspended"
 
 
+async def test_a_suspended_owner_and_a_revoked_key_are_both_reported(postgres_op_store):
+    """Suspension revokes the key too, so the row has to carry both facts.
+
+    ``admin/users.py`` suspends a user and then revokes their key, so this
+    pair is what a suspended account looks like in practice. The caller
+    classifies it as the account's problem, which it can only do if the lookup
+    reports the account's status alongside the key's.
+    """
+    store, pool = postgres_op_store
+    await _seed(
+        store,
+        pool,
+        user_id="u-audit-both",
+        key_hash="h-audit-both",
+        user_status="suspended",
+        key_status="revoked",
+    )
+
+    row = await store.get_key_owner_for_audit("h-audit-both")
+    assert row is not None
+    assert row["key_status"] == "revoked"
+    assert row["user_status"] == "suspended"
+
+
 async def test_unknown_hash_resolves_to_nothing(postgres_op_store):
     """A scanner's random token names nobody, which is the honest answer."""
     store, _pool = postgres_op_store

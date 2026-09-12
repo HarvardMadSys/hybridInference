@@ -115,21 +115,33 @@ def _extract_api_key(authorization: str | None, x_api_key: str | None) -> str | 
 def _credential_state(row: dict[str, Any]) -> str:
     """Classify a presented key from an audit lookup row.
 
-    One short string for the rejection log: ``"active"``, the key's own status
-    when it is not active (``"revoked"``), ``"expired"`` past its deadline, or
-    ``"user_<status>"`` when the key is fine and its owner is not. Anything the
-    row does not state counts as not-live (``"unknown"``, ``"user_missing"``),
-    never as active — the flag derived from this decides whether a caller is
-    trusted, so absence of evidence must not read as evidence of a live key.
+    One short string for the rejection log: ``"user_<status>"`` when the
+    account itself is not active, otherwise the key's own status when it is not
+    active (``"revoked"``), ``"expired"`` past its deadline, or ``"active"``.
+    Single-valued on purpose, so an operator can query these rows by equality;
+    what it names is the blocker to clear first.
+
+    The account outranks the key, and that ordering is the substance of it:
+    suspending a user *also* revokes their key (``admin/users.py``), so the
+    overlap is the ordinary case rather than an edge. Reporting "revoked" there
+    would send an operator to rotate a credential, which cannot help while the
+    account itself is refused.
+
+    Anything the row does not state counts as not-live (``"unknown"``,
+    ``"user_missing"``), never as active — the flag derived from this decides
+    whether a caller is trusted, so absence of evidence must not read as
+    evidence of a live key.
     """
     key_status = str(row.get("key_status") or "").lower()
+    user_status = str(row.get("user_status") or "").lower()
+    if not key_status and not user_status:
+        return "unknown"
+    if user_status != "active":
+        return f"user_{user_status}" if user_status else "user_missing"
     if key_status != "active":
         return key_status or "unknown"
     if row.get("key_expired"):
         return "expired"
-    user_status = str(row.get("user_status") or "").lower()
-    if user_status != "active":
-        return f"user_{user_status}" if user_status else "user_missing"
     return "active"
 
 

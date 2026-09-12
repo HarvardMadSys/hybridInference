@@ -266,6 +266,10 @@ async def _blocked_call(app) -> None:
         (_audit_row(key_status="revoked"), "revoked"),
         (_audit_row(key_expired=True), "expired"),
         (_audit_row(user_status="suspended"), "user_suspended"),
+        # Suspending a user also revokes their key, so this pair is what a
+        # suspended account actually looks like — and the account is the
+        # blocker, since rotating the credential cannot lift it.
+        (_audit_row(key_status="revoked", user_status="suspended"), "user_suspended"),
         (_audit_row(user_status=None), "user_missing"),
         ({"user_id": "u1", "role": "pro"}, "unknown"),
     ],
