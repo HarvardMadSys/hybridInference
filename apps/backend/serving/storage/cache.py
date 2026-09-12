@@ -111,7 +111,7 @@ class CachedOperationalStore(OperationalStore):
     Write-through invalidation:
         - revoke_key / regenerate_key / update_key  → invalidate key caches
         - delete_user / update_user_fields          → invalidate user cache
-        - approve_user / reject_user                → invalidate user cache
+        - approve_user / reject_user                → invalidate user + auth caches
 
     Everything else passes straight through.
     """
@@ -295,14 +295,24 @@ class CachedOperationalStore(OperationalStore):
         return counts
 
     async def approve_user(self, user_id: str, *, admin_id: str, note: str | None = None) -> None:
-        """Delegate then invalidate user cache."""
+        """Delegate then invalidate user + auth caches."""
         await self._store.approve_user(user_id, admin_id=admin_id, note=note)
         await self._cache.delete(self._user_key(user_id))
+        # These two move ``users.status``, so they invalidate the auth
+        # namespace like every other status write. It used to be enough to drop
+        # the user entry, because the auth lookups filter on an active user and
+        # a pending one was therefore never cached at all. That stopped being
+        # true with ``get_key_owner_for_audit``, which caches a row whatever
+        # state the account is in -- so without this a decision leaves rejection
+        # rows labelled ``user_pending_approval`` for the rest of the TTL.
+        await self.invalidate_auth_caches()
 
     async def reject_user(self, user_id: str, *, admin_id: str, reason: str) -> None:
-        """Delegate then invalidate user cache."""
+        """Delegate then invalidate user + auth caches."""
         await self._store.reject_user(user_id, admin_id=admin_id, reason=reason)
         await self._cache.delete(self._user_key(user_id))
+        # Same reason as approve_user above.
+        await self.invalidate_auth_caches()
 
     async def invalidate_auth_caches(self) -> None:
         """Evict all cached auth-context entries (cache-only, no DB write)."""

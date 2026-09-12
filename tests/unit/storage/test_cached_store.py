@@ -151,6 +151,29 @@ class TestCacheHits:
 
         assert inner_store.get_key_owner_for_audit.await_count == 2
 
+    async def test_approval_decisions_clear_the_audit_entry(self, cached, inner_store):
+        """Approving or rejecting a user re-reads the audit identity.
+
+        The auth lookups filter on an active user, so a pending account was
+        never in this cache before ``get_key_owner_for_audit`` -- which caches
+        a row whatever state the account is in, and would otherwise keep
+        labelling rejection rows with the pre-decision state for a TTL.
+        """
+        for decide in (
+            lambda: cached.approve_user("u1", admin_id="admin-1"),
+            lambda: cached.reject_user("u1", admin_id="admin-1", reason="spam"),
+        ):
+            # Populate first, then count only the reads after the decision --
+            # the previous iteration leaves the entry cached, so counting from
+            # a populate that may itself be a hit would prove nothing.
+            await cached.get_key_owner_for_audit("h1")
+            inner_store.get_key_owner_for_audit.reset_mock()
+
+            await decide()
+            await cached.get_key_owner_for_audit("h1")
+
+            assert inner_store.get_key_owner_for_audit.await_count == 1
+
     async def test_health_check_caches(self, cached, inner_store):
         await cached.health_check()
         await cached.health_check()
