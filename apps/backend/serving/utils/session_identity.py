@@ -4,9 +4,11 @@
 it -- exists so one conversation's requests can be pulled out of the firehose,
 and RouteWise's prefix-cache cost adjustment scopes its warm entries on the
 same value. Both were built around ``X-Session-ID``, the gateway's own header,
-and both are empty for exactly the traffic they are most useful on: **no coding
-agent sends that header**. A Claude Code session is hundreds of requests, and
-every one of them logs ``session_id = NULL``.
+and both were empty for exactly the traffic they are most useful on, because no
+coding agent sent that header. Some now send one of their own -- Claude Code
+sends ``x-claude-code-session-id`` -- but never the gateway's. A Claude Code
+session is hundreds of requests, and every one of them logged
+``session_id = NULL``.
 
 Those requests are not anonymous, though. Each agent already carries a session
 identifier of its own, in its own idiom, and this module reads whichever idiom
@@ -26,9 +28,15 @@ the client used:
 * ``metadata.session_id`` / ``client_metadata.session_id`` in the request body
   -- a client that declares the session where it declares everything else.
   Codex uses ``client_metadata``.
-* ``metadata.user_id`` in the request body -- Claude Code packs three ids into
-  that one string (``user_<hash>_account_<uuid>_session_<uuid>``), so the
-  trailing ``_session_`` segment is the run.
+* ``x-claude-code-session-id`` -- Claude Code's own header, a bare UUID it
+  sends on every request. Purpose-built for this and needing no inference, so
+  it is the strongest source after the gateway's own header.
+* ``metadata.user_id`` in the request body -- Claude Code packs the device, the
+  account and the run into this one Anthropic field. Two shapes: current
+  clients (>= 2.1.78) send a JSON object whose ``session_id`` member is the
+  run, and older ones sent ``user_<hash>_account_<uuid>_session_<uuid>``, where
+  the trailing ``_session_`` segment was the run. Both are read; the source
+  says which.
 
 The source is reported alongside the value and recorded as
 ``metadata.session_id_source``, because these are not equally strong claims: a
@@ -49,6 +57,7 @@ being told it.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -66,6 +75,7 @@ CANONICAL_SESSION_HEADER = "X-Session-ID"
 #: because header names with underscores, while legal, are dropped by default by
 #: some intermediaries (nginx among them) and clients differ over which to send.
 _AGENT_SESSION_HEADERS = (
+    "x-claude-code-session-id",
     "x-opencode-session",
     "x-session-affinity",
     "session-id",
@@ -84,6 +94,17 @@ _BODY_SESSION_OBJECTS = ("metadata", "client_metadata")
 #: bound is rejected rather than truncated: truncation would silently merge two
 #: sessions that share a prefix, which is worse than recording neither.
 MAX_SESSION_ID_CHARS = 128
+
+#: Bound on Claude Code's ``metadata.user_id`` *container* before it is decoded
+#: -- distinct from :data:`MAX_SESSION_ID_CHARS`, which bounds the id read out
+#: of it. Claude Code caps its own serialized metadata at 512 bytes and a real
+#: value measures ~190, so this is generous for every shape it sends. It exists
+#: because the field is client-controlled and ``json.loads`` recurses per level
+#: of nesting: without a bound, a deeply nested value raises ``RecursionError``,
+#: which is not a ``ValueError`` and would escape as a 500. At this length the
+#: reachable depth is far under the interpreter's limit; the decode below also
+#: catches ``RecursionError`` directly, so neither guard stands alone.
+MAX_USER_ID_CHARS = 1024
 
 # Control characters break log rendering and JSON round-tripping, and no client
 # means to send them; a value carrying one is malformed rather than long.
@@ -134,8 +155,22 @@ def normalize_session_id(value: Any) -> str | None:
     return session_id
 
 
-def _claude_code_session_id(metadata: Mapping[str, Any]) -> str | None:
-    """Return the session packed into Claude Code's ``metadata.user_id``.
+def _claude_code_session_id(metadata: Mapping[str, Any]) -> SessionIdentity | None:
+    """Return the session Claude Code packs into ``metadata.user_id``.
+
+    Two formats, because Claude Code changed shape in 2.1.78 (2026-03-17) and
+    both are still in the wild. The current one is a JSON object::
+
+        {"device_id": "...", "account_uuid": "...", "session_id": "..."}
+
+    read by name, which is robust to the key order (an operator's
+    ``CLAUDE_CODE_EXTRA_METADATA`` keys are serialized ahead of the canonical
+    ones) and to optional members. The retired one packed the same three ids
+    into one underscore-delimited string, and is still parsed for older clients.
+
+    Which format answered is reported as the source, because they are not
+    equally strong claims and an operator looking at a grouping needs to know
+    which parse produced it without re-deriving it.
 
     Claude Code sends one string carrying the user, the account and the run
     (``user_<hash>_account_<uuid>_session_<uuid>``). Only the value of the
@@ -147,10 +182,48 @@ def _claude_code_session_id(metadata: Mapping[str, Any]) -> str | None:
     user_id = metadata.get("user_id")
     if not isinstance(user_id, str):
         return None
+
+    # Current Claude Code (>= 2.1.78) sends a JSON object, so the value starts
+    # with ``{`` and the composite regex below can never match it. Try the JSON
+    # shape first: it is the one live clients send, and it names its session
+    # rather than positioning it.
+    candidate = user_id.strip()
+    if candidate.startswith("{"):
+        if len(candidate) > MAX_USER_ID_CHARS:
+            return None
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, RecursionError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        # The Claude markers are required, not just a ``session_id`` key. This
+        # field is Anthropic's *user* identifier, and another client is free to
+        # use a JSON object as its user identity; one that happened to carry a
+        # ``session_id`` member -- ``{"session_id": "tenant-plan"}`` -- would
+        # otherwise collapse every request behind that value into one invented
+        # session. The legacy branch below insists on its whole composite shape
+        # for exactly this reason, and this branch has to hold the same line.
+        # Presence, not content: ``account_uuid`` is the empty string when the
+        # client authenticated with an API key rather than an account.
+        if "device_id" not in parsed or "account_uuid" not in parsed:
+            return None
+        # ``session_id`` only. ``parent_session_id``, present on a subagent
+        # run, names the session that spawned this one -- reading it would
+        # merge every subagent into its parent, the same trap as OpenCode's
+        # ``x-parent-session-id``.
+        declared = normalize_session_id(parsed.get("session_id"))
+        if declared is None:
+            return None
+        return SessionIdentity(declared, "metadata.user_id.session_id")
+
     match = _CLAUDE_CODE_USER_ID_RE.match(user_id)
     if match is None:
         return None
-    return normalize_session_id(match.group("sid"))
+    derived = normalize_session_id(match.group("sid"))
+    if derived is None:
+        return None
+    return SessionIdentity(derived, "metadata.user_id")
 
 
 def session_identity(
@@ -204,7 +277,7 @@ def session_identity(
     if isinstance(metadata, dict):
         derived = _claude_code_session_id(metadata)
         if derived is not None:
-            return SessionIdentity(derived, "metadata.user_id")
+            return derived
 
     return None
 

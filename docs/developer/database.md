@@ -130,7 +130,22 @@ request used:
 | `session-id` / `thread-id` headers (the `session_id` / `conversation_id` spellings too) | Codex CLI, which stamps its run on every request |
 | `x-session-affinity` / `x-opencode-session` headers | OpenCode and its Kilo Code fork, which send the affinity header beside `X-Session-ID` on any provider they do not recognise as their own, and `x-opencode-session` on one they do |
 | `metadata.session_id` or `client_metadata.session_id` in the request body | a client that labels the session where it labels everything else; Codex uses `client_metadata` |
-| `metadata.user_id` in the request body | Claude Code, which packs the run into `user_<hash>_account_<uuid>_session_<uuid>` |
+| `x-claude-code-session-id` header | Claude Code's own header, a bare UUID on every request — purpose-built for this, so it needs no inference |
+| `metadata.user_id` in the request body | Claude Code, which packs the device, account and run into Anthropic's one `user_id` field. Two shapes — see below |
+
+Claude Code changed that field's shape in **2.1.78** (2026-03-17). Current
+clients send a JSON object — `{"device_id": …, "account_uuid": …, "session_id":
+…}` — whose `session_id` member is the run; older ones sent the underscore
+composite `user_<hash>_account_<uuid>_session_<uuid>`. Both are read, and the
+recorded source distinguishes them (`metadata.user_id.session_id` versus
+`metadata.user_id`). The JSON is read by member name rather than position,
+because an operator's `CLAUDE_CODE_EXTRA_METADATA` keys are serialized ahead of
+the canonical ones. `parent_session_id`, present on a subagent run, is
+deliberately not read — it names the session that spawned this one.
+
+A gateway that only understood the retired composite logged no session for any
+current Claude Code request, silently: a parser anchored at `^user_` cannot
+match a value whose first character is `{`.
 
 Those clients have two request paths, and only one of them sends the headers.
 The older `packages/opencode` path builds them directly; the newer
