@@ -2266,32 +2266,46 @@ class RouteWiseRouter:
         self.pending_prefix_cache.put(stash_key, blocks, scopes)
 
     def _commit_prefix_cache_observation(self, obs: RoutingObservation) -> None:
-        """On a selected success, commit the winning provider's prefix to memory.
+        """On a selected observation, update prefix memory and cache evidence.
 
-        Only successful observations warm history, and only under the endpoint that
-        actually served (``obs.endpoint_id``) — so failed, fallback, or lost-hedge
-        attempts are never recorded as warm. ``RoutingObservation.request_id``
-        explicitly correlates the success with its route-time prefix snapshot.
+        Two distinct concerns are handled separately:
 
-        Authoritative observed cache usage (``obs.cached_tokens``) is recorded as
-        evidence for the scope:
+        1. **Prefix warming** (``obs.success``): only successful dispatches
+           may have populated the endpoint's cache. A non-terminal failed
+           attempt must not consume the stash because the winning
+           fallback/hedge observation still needs it.
 
-        - ``cached_tokens > 0``: VERIFIED_REUSABLE (positive evidence).
-        - ``cached_tokens == 0``: NEGATIVE (degrades confidence).
-        - ``cached_tokens is None``: no evidence; nothing recorded.
-          Successful dispatch may still establish POTENTIAL warming.
+        2. **Authoritative cache evidence** (``obs.cached_tokens``): observed
+           cache usage is recorded whenever it is available, independently
+           of whether the completion produced content. A streamed HTTP 200
+           with no completion content has ``success=False`` but may still
+           carry authoritative ``cached_tokens`` that must update evidence.
         """
         request_id = str(getattr(obs, "request_id", None) or "")
         if not request_id:
             return
-        # A non-terminal failed attempt must not consume the stash because the
-        # winning fallback/hedge observation still needs it. A terminal failed
-        # observation (including an empty completion) has no future winner and
-        # therefore discards it without warming.
+
+        # Record authoritative cache evidence BEFORE the success/warming gate
+        # so that a streamed empty-completion path (success=False) still
+        # learns from an observed cache hit or miss.
+        cached_tokens = getattr(obs, "cached_tokens", None)
+        endpoint_id = getattr(obs, "endpoint_id", None)
+
         if not obs.success:
             if getattr(obs, "terminal", True):
-                self.pending_prefix_cache.discard(request_id)
+                # Terminal failure: no future winner. If authoritative cache
+                # evidence exists, extract the stash scope BEFORE discarding
+                # so the evidence can still be recorded.
+                if endpoint_id and cached_tokens is not None:
+                    stashed = self.pending_prefix_cache.pop(request_id)
+                    if stashed is not None:
+                        scope = stashed.scopes.get(endpoint_id)
+                        if scope is not None:
+                            self.prefix_cache.record_evidence(scope, cached_tokens)
+                else:
+                    self.pending_prefix_cache.discard(request_id)
             return
+
         stashed = self.pending_prefix_cache.pop(request_id)
         if stashed is None:
             return
@@ -2303,7 +2317,6 @@ class RouteWiseRouter:
             stashed.blocks,
         )
         # Record authoritative observed cache usage as evidence.
-        cached_tokens = getattr(obs, "cached_tokens", None)
         if cached_tokens is not None:
             self.prefix_cache.record_evidence(scope, cached_tokens)
         else:

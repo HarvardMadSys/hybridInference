@@ -475,3 +475,99 @@ class TestEvidenceAwareFallbackAndHedge:
         )
         # A must NOT have evidence from B's success
         assert rec_a.would_apply is False, "A failed and must not receive B's cache evidence."
+
+
+@pytest.mark.unit
+class TestEvidenceAwareStreamedEmptyCompletion:
+    """Regression test: streamed HTTP 200 with no completion content.
+
+    A streamed response that produces no content results in success=False
+    (empty completion). The terminal observation may still carry
+    authoritative cached_tokens=0. The evidence must be recorded even
+    though success=False, so prior VERIFIED_REUSABLE state does not
+    survive incorrectly.
+    """
+
+    def _router(self) -> tuple[RouteWiseRouter, SimpleNamespace, SimpleNamespace]:
+        expensive_cold = _api_adapter(
+            "prov-a", "prov-a:h:1", prompt_price=0.30, cache_read_price=0.03
+        )
+        cheap_cold = _api_adapter(
+            "prov-b", "prov-b:h:1", prompt_price=0.25, cache_read_price=0.25
+        )
+        router = RouteWiseRouter(
+            route_table=_route_table(expensive_cold, cheap_cold),
+            config=RouteWiseConfig(
+                budget_alpha=0.0,
+                prefix_cache_cost_adjustment_enabled=True,
+            ),
+        )
+        router.prefix_cache = PrefixCacheCoordinator(
+            enabled=True,
+            memory=SessionProviderPrefixMemory(min_match_tokens=1),
+            block_size=8,
+            secret=SECRET,
+            tokenize=_chars,
+        )
+        return router, expensive_cold, cheap_cold
+
+    def _scope(self, router: RouteWiseRouter, provider: str, endpoint: str):
+        return router.prefix_cache.scope_for(
+            session="sess-1",
+            provider_id=provider,
+            endpoint_id=endpoint,
+            model_profile="m1",
+            user="userA",
+            cache_params="{}",
+        )
+
+    def test_streamed_empty_completion_records_negative_evidence(self) -> None:
+        """Streamed HTTP 200 with no content: cached_tokens=0 must still record NEGATIVE."""
+        router, expensive_cold, cheap_cold = self._router()
+
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
+        blocks = router.prefix_cache.build_blocks(_MSGS1)
+
+        # Step 1: Establish VERIFIED_REUSABLE evidence for prov-a
+        router.prefix_cache.remember(scope_a, blocks)
+        router.prefix_cache.record_evidence(scope_a, cached_tokens=800)
+
+        # Verify evidence is VERIFIED_REUSABLE
+        rec_before = router.prefix_cache.evaluate(
+            scope_a,
+            router.prefix_cache.build_blocks(_MSGS2),
+            cold_cost=0.01,
+            price_delta=price_delta_per_token(0.30, 0.03),
+        )
+        assert rec_before.evidence_state == "VERIFIED_REUSABLE"
+        assert rec_before.would_apply is True
+
+        # Step 2: Simulate streamed empty-completion path:
+        # success=False, terminal=True, cached_tokens=0
+        router._stash_prefix_for_commit(
+            (blocks, {"scopes": {"prov-a:h:1": scope_a}}), "r1"
+        )
+        router._commit_prefix_cache_observation(
+            _obs(
+                "prov-a:h:1",
+                request_id="r1",
+                success=False,
+                terminal=True,
+                cached_tokens=0,
+            )
+        )
+
+        # Step 3: Evidence should now be NEGATIVE (not VERIFIED_REUSABLE)
+        rec_after = router.prefix_cache.evaluate(
+            scope_a,
+            router.prefix_cache.build_blocks(_MSGS2),
+            cold_cost=0.01,
+            price_delta=price_delta_per_token(0.30, 0.03),
+        )
+        assert rec_after.evidence_state == "NEGATIVE", (
+            f"After streamed empty-completion with cached_tokens=0, "
+            f"evidence should be NEGATIVE, got {rec_after.evidence_state}"
+        )
+        assert rec_after.would_apply is False, (
+            "NEGATIVE evidence should not produce a discount"
+        )
