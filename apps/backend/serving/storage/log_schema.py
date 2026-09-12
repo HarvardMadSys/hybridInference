@@ -339,6 +339,20 @@ _API_LOGS_INDEXES = [
         "ON api_logs(agent_job_id) WHERE agent_job_id IS NOT NULL",
     ),
     (
+        "idx_api_logs_credential_owner",
+        # Partial, and for one query: the admin hard-delete has to reach rows
+        # that name an account in metadata rather than in user_id (a caller the
+        # gateway identified without authenticating — see
+        # ``observability/rejection_log``). Those rows are a tiny slice of the
+        # table, so the index is small; without it that purge degrades from an
+        # indexed delete to a scan of the whole table. The predicate is
+        # ``IS NOT NULL`` rather than a ``metadata ? key`` test so the planner
+        # can prove an equality lookup implies it and actually use the index.
+        "CREATE INDEX IF NOT EXISTS idx_api_logs_credential_owner "
+        "ON api_logs ((metadata->>'credential_owner_id')) "
+        "WHERE metadata->>'credential_owner_id' IS NOT NULL",
+    ),
+    (
         "idx_api_logs_served_endpoint",
         "CREATE INDEX IF NOT EXISTS idx_api_logs_served_endpoint "
         "ON api_logs(served_endpoint_id, timestamp DESC) WHERE served_endpoint_id IS NOT NULL",
