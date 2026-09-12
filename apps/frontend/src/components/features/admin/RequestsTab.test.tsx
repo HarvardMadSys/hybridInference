@@ -527,22 +527,49 @@ describe('RequestsTab credential state', () => {
 
   afterEach(cleanup);
 
-  it('labels a blocked row whose key no longer works, beside the user it names', async () => {
+  it('names the account behind a dead key, and labels the key', async () => {
     // What the auth-failure blocklist actually catches: a caller of the
-    // deployment's own whose key was rotated away. Without the label the row
-    // reads as that account making an ordinary request.
+    // deployment's own whose key was rotated away. The account is named from
+    // credential_owner_id — it is not in user_id, because the gateway
+    // identified this caller without authenticating them — and the label is
+    // what stops the row reading as an ordinary request by that user.
     mockList([
       makeRequest({
         status_code: 429,
         error: 'ip_blocked',
+        user_id: null,
+        user_name: null,
+        user_email: null,
         credential_state: 'revoked',
+        credential_owner_id: 'user_1',
       }),
     ]);
 
     render(<RequestsTab />);
 
     expect(await screen.findByText('revoked key')).toBeInTheDocument();
-    expect(screen.getAllByText('Ada').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('user_1').length).toBeGreaterThan(0);
+  });
+
+  it('does not offer the named account as a filter chip', async () => {
+    // Filtering by a user means "this user's requests". These are not: the
+    // row is a refusal of someone holding their key.
+    mockList([
+      makeRequest({
+        status_code: 429,
+        error: 'ip_blocked',
+        user_id: null,
+        user_name: null,
+        user_email: null,
+        credential_state: 'revoked',
+        credential_owner_id: 'user_1',
+      }),
+    ]);
+
+    render(<RequestsTab />);
+
+    await screen.findByText('revoked key');
+    expect(screen.queryByRole('button', { name: /user_1/ })).not.toBeInTheDocument();
   });
 
   it('reads a suspended owner as an account, not a key', async () => {
@@ -550,7 +577,11 @@ describe('RequestsTab credential state', () => {
       makeRequest({
         status_code: 429,
         error: 'ip_blocked',
+        user_id: null,
+        user_name: null,
+        user_email: null,
         credential_state: 'user_suspended',
+        credential_owner_id: 'user_1',
       }),
     ]);
 

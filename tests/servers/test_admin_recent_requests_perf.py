@@ -392,12 +392,15 @@ async def test_list_reports_the_credential_state_beside_the_user(admin_client_ca
 
     async def _fake_fetch(query: str, *_args: Any) -> list[Any]:
         assert "l.metadata->>'credential_state' AS credential_state" in query
+        assert "l.metadata->>'credential_owner_id' AS credential_owner_id" in query
         return [
             {
+                # No user_id: the gateway identified this caller from the key
+                # they presented, it did not authenticate them.
                 "request_id": "req-blocked",
-                "user_id": "user-1",
-                "user_name": "monitor",
-                "user_email": "monitor@example.com",
+                "user_id": None,
+                "user_name": None,
+                "user_email": None,
                 "model_id": "gpt-4o-mini",
                 "provider": "openai",
                 "timestamp": datetime.now(timezone.utc),
@@ -424,6 +427,7 @@ async def test_list_reports_the_credential_state_beside_the_user(admin_client_ca
                 "session_id_source": None,
                 "request_surface": None,
                 "credential_state": "revoked",
+                "credential_owner_id": "user-1",
                 "routewise": None,
             }
         ]
@@ -437,7 +441,8 @@ async def test_list_reports_the_credential_state_beside_the_user(admin_client_ca
 
     item = resp.json()["requests"][0]
     assert item["error"] == "ip_blocked"
-    assert item["user_id"] == "user-1"
+    assert item["user_id"] is None
+    assert item["credential_owner_id"] == "user-1"
     assert item["credential_state"] == "revoked"
 
 
@@ -489,7 +494,10 @@ async def test_list_credential_state_is_absent_on_an_ordinary_row(admin_client_c
     resp = await client.get("/admin/recent-requests")
     assert resp.status_code == 200, resp.text
 
-    assert resp.json()["requests"][0]["credential_state"] is None
+    item = resp.json()["requests"][0]
+    assert item["credential_state"] is None
+    assert item["credential_owner_id"] is None
+    assert item["user_id"] == "user-1"
 
 
 @pytest.mark.asyncio

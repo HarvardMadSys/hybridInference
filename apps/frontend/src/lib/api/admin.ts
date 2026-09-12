@@ -574,12 +574,17 @@ export interface AdminRecentRequestItem {
   // "embedding" for /v1/embeddings traffic; null/undefined implies a
   // chat/completion request.
   request_type?: string | null;
-  // State of the credential behind `user_id` on a row the gateway identified
+  // State of the credential a caller presented on a row the gateway identified
   // but never authenticated — an `ip_blocked` rejection, refused ahead of the
   // key check. `'active'` means a live key was presented; `'revoked'`,
   // `'expired'` and the `user_<status>` values mean a dead one was, and
   // repairing it will not lift the block. Null on normally authenticated rows.
   credential_state?: string | null;
+  // The account that key belongs to, when the caller was identified without
+  // being authenticated. Deliberately not `user_id`: a dead key proves whose
+  // key it was, not who made the request, and `user_id` is what the rest of the
+  // console counts as that user's own activity. Null when `user_id` is set.
+  credential_owner_id?: string | null;
   // How the gateway ended the stream (`metadata.terminal_state`). Only its
   // cancellation path sets it, so `'client_disconnect'` — not the bare 499 —
   // is what identifies a caller that hung up: an upstream provider can answer

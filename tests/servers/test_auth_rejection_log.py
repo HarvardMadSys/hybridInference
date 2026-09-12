@@ -301,11 +301,18 @@ async def test_blocked_ip_names_the_owner_of_a_credential_that_no_longer_works(
 
 
 @pytest.mark.asyncio
-async def test_blocked_ip_row_records_the_credential_state(monkeypatch, blocked_localhost):
-    """The state reaches ``api_logs.metadata``, not just the log call.
+async def test_blocked_ip_row_names_the_owner_without_claiming_the_user(
+    monkeypatch, blocked_localhost
+):
+    """A dead key's owner is recorded, but never as ``user_id``.
 
-    The row names the account, so without this the dashboard would show a
-    revoked key's traffic as that user making ordinary requests.
+    ``user_id`` promotes to the column the rest of the system reads as "this
+    account made this request", with no status filter anywhere: the user's own
+    Recent Requests lists by it, the usage detail counts it, and the admin
+    analytics count a distinct value as an active user. Anyone holding a
+    revoked key of someone else's would otherwise write their flood into that
+    account's history and to the top of those charts. The owner goes under its
+    own key, which claims only what was established: whose key this was.
     """
     app, _log_calls, _op = _build_blocked_app(
         monkeypatch, audit_row=_audit_row(key_status="revoked"), logging_on=True
@@ -324,7 +331,8 @@ async def test_blocked_ip_row_records_the_credential_state(monkeypatch, blocked_
         await asyncio.sleep(0)
 
     metadata = store.log_request.await_args.kwargs["metadata"]
-    assert metadata["user_id"] == "u1"
+    assert metadata["user_id"] is None
+    assert metadata["credential_owner_id"] == "u1"
     assert metadata["credential_state"] == "revoked"
 
 
@@ -353,7 +361,10 @@ async def test_blocked_ip_row_says_so_when_the_key_was_still_live(monkeypatch, b
         await asyncio.sleep(0)
 
     metadata = store.log_request.await_args.kwargs["metadata"]
+    # A live key is a real authenticated caller, refused for where it called
+    # from — so this one does belong in ``user_id``.
     assert metadata["user_id"] == "u1"
+    assert "credential_owner_id" not in metadata
     assert metadata["credential_state"] == "active"
 
 
