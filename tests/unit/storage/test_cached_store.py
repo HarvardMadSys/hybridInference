@@ -30,6 +30,15 @@ def inner_store() -> MagicMock:
     store.get_auth_context_lightweight = AsyncMock(
         return_value={"user_id": "u1", "email": "a@b.com", "role": "admin"}
     )
+    store.get_key_owner_for_audit = AsyncMock(
+        return_value={
+            "user_id": "u1",
+            "role": "admin",
+            "key_status": "revoked",
+            "key_expired": False,
+            "user_status": "active",
+        }
+    )
     store.query_users_over_daily_threshold = AsyncMock(return_value=[("u1", "free", 1.5)])
     store.update_user_fields = AsyncMock()
     store.update_user_last_login = AsyncMock()
@@ -119,6 +128,28 @@ class TestCacheHits:
         await cached.get_auth_context_lightweight("h1")
 
         inner_store.get_auth_context_lightweight.assert_awaited_once_with("h1")
+
+    async def test_get_key_owner_for_audit_caches(self, cached, inner_store):
+        await cached.get_key_owner_for_audit("h1")
+        await cached.get_key_owner_for_audit("h1")
+
+        inner_store.get_key_owner_for_audit.assert_awaited_once_with("h1")
+
+    async def test_get_key_owner_for_audit_is_cleared_by_a_key_write(
+        self, cached, inner_store, cache
+    ):
+        """A revoked key's audit entry must not outlive the next key write.
+
+        It caches rows the auth lookups never see — including dead credentials
+        — so it is the entry most likely to be stale, and its key lives under
+        the ``auth_light:`` namespace precisely so every existing invalidation
+        clears it.
+        """
+        await cached.get_key_owner_for_audit("h1")
+        await cached.revoke_key("h1")
+        await cached.get_key_owner_for_audit("h1")
+
+        assert inner_store.get_key_owner_for_audit.await_count == 2
 
     async def test_health_check_caches(self, cached, inner_store):
         await cached.health_check()

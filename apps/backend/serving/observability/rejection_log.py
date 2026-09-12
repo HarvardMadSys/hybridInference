@@ -417,9 +417,13 @@ async def log_rejection(
     ``error_code`` is a short machine-readable identifier (e.g.
     ``"concurrency_limit_exceeded"``); ``reason`` is a brief human-readable
     detail; ``user`` is the verified user dict or ``None`` for pre-auth
-    rejections. ``prompt`` is the original request prompt/messages; it is
-    persisted only when the store's content-retention policy
-    (``store_full_content``) allows, exactly as on the success path.
+    rejections — a pre-auth path that identified the caller without
+    authenticating them passes ``credential_state`` in it, and the row records
+    what state that credential was in.
+
+    ``prompt`` is the original request prompt/messages; it is persisted only
+    when the store's content-retention policy (``store_full_content``) allows,
+    exactly as on the success path.
     """
     log_store, runtime_settings = _resolve_services(request, log_store, runtime_settings)
     if not await rejection_logging_enabled(
@@ -442,6 +446,16 @@ async def log_rejection(
         "user_id": user.get("user_id") if user else None,
         "ip": get_client_ip(request),
     }
+    # Whether the key that named this user was still live. Set only where an
+    # identity is resolved without authenticating it — the blocked-IP path,
+    # which reaches accounts whose credential was revoked, expired or
+    # suspended. Recorded because the account alone would read as "this user
+    # made this request", when the fact an operator needs is that the caller
+    # presented a dead key of theirs (and that repairing it does not lift the
+    # block). Absent on every row whose caller was authenticated normally.
+    credential_state = user.get("credential_state") if user else None
+    if credential_state:
+        metadata["credential_state"] = credential_state
     # A rejected grant call is still a call the grant made. Without this the
     # usage window undercounts exactly the refusals an owner most wants to see,
     # and the row would not even carry the job column the cost report keys on.

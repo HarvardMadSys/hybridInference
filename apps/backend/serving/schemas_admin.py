@@ -782,6 +782,14 @@ class AdminRecentRequestItem(BaseModel):
     # "embedding" for /v1/embeddings traffic; None (legacy) implies a
     # chat/completion request.
     request_type: str | None = None
+    # State of the credential behind ``user_id`` on a row whose caller was
+    # identified but never authenticated — an ``ip_blocked`` rejection, where
+    # the blocklist refuses the source ahead of the key check. "active" means
+    # a live key was presented; "revoked" / "expired" / "user_suspended" (and
+    # the other ``user_<status>`` values) mean a dead one was, and the block
+    # will outlive repairing it. None on every row whose caller authenticated
+    # normally, which is all of them but these.
+    credential_state: str | None = None
     # How the gateway ended the stream, from metadata->>'terminal_state'.
     # "client_disconnect" (the caller hung up) or "request_timeout" (the gateway
     # deadline fired) — set only by ``completions_stream._finalize_cancelled``,

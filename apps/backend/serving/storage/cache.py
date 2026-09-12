@@ -104,6 +104,7 @@ class CachedOperationalStore(OperationalStore):
     Cached reads:
         - get_auth_context_by_key_hash  (30 s)
         - get_auth_context_lightweight  (30 s)
+        - get_key_owner_for_audit       (30 s)
         - get_user_by_id                (60 s)
         - health_check                  ( 5 s)
 
@@ -128,6 +129,12 @@ class CachedOperationalStore(OperationalStore):
     @staticmethod
     def _auth_light_key(key_hash: str) -> str:
         return f"auth_light:{key_hash}"
+
+    @staticmethod
+    def _auth_audit_key(key_hash: str) -> str:
+        # Deliberately inside the ``auth_light:`` namespace -- see
+        # get_key_owner_for_audit for why it shares the existing invalidation.
+        return f"auth_light:audit:{key_hash}"
 
     @staticmethod
     def _user_key(user_id: str) -> str:
@@ -192,6 +199,29 @@ class CachedOperationalStore(OperationalStore):
         if cached is not None:
             return cached
         result = await self._store.get_auth_context_lightweight(key_hash)
+        if result is not None:
+            await self._cache.set(ck, result, _AUTH_CONTEXT_TTL)
+        return result
+
+    async def get_key_owner_for_audit(self, key_hash: str) -> Row | None:
+        """Return the cached audit identity for a presented key (30 s TTL).
+
+        Worth caching even though it answers for dead credentials -- more so,
+        in fact: its caller is the blocked-IP rejection path, where one refused
+        source retries in a loop, and a revoked key is a *hit* here where the
+        auth lookups keep missing.
+
+        Keyed under the ``auth_light:`` namespace on purpose, so every
+        invalidation this class already performs on a key or user write clears
+        this entry too. A separate prefix would have to be added to a dozen
+        call sites, and the one that got missed would keep labelling rows with
+        a credential state the database no longer holds.
+        """
+        ck = self._auth_audit_key(key_hash)
+        cached = await self._cache.get(ck)
+        if cached is not None:
+            return cached
+        result = await self._store.get_key_owner_for_audit(key_hash)
         if result is not None:
             await self._cache.set(ck, result, _AUTH_CONTEXT_TTL)
         return result

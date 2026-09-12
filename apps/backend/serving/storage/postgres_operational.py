@@ -1653,6 +1653,28 @@ class PostgresOperationalStore(OperationalStore):
             )
         return _coerce_user_row(row)
 
+    async def get_key_owner_for_audit(self, key_hash: str) -> Row | None:
+        """Identity behind a presented key, with no status or expiry filter.
+
+        Diagnostic only -- see :meth:`OperationalStore.get_key_owner_for_audit`.
+        The join is LEFT so a key whose user row was deleted still names the
+        account it was issued to; ``key_expired`` is computed here rather than
+        returning ``expires_at``, so the deadline is compared against the
+        database clock exactly as the auth lookups compare it.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT k.user_id, u.role, "
+                "k.status AS key_status, "
+                "(k.expires_at IS NOT NULL AND k.expires_at <= NOW()) AS key_expired, "
+                "u.status AS user_status "
+                "FROM api_keys k "
+                "LEFT JOIN users u ON u.id = k.user_id "
+                "WHERE k.key_hash = $1",
+                key_hash,
+            )
+        return dict(row) if row is not None else None
+
     async def update_key_last_used(self, key_id: int) -> None:
         """Set ``last_used_at = NOW()`` for the given key id."""
         async with self._pool.acquire() as conn:

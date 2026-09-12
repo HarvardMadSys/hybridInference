@@ -500,3 +500,73 @@ describe('RequestsTab client disconnect classification', () => {
     expect(unmarked[0].className).not.toContain('amber');
   });
 });
+
+describe('RequestsTab credential state', () => {
+  function mockList(requests: AdminRecentRequestItem[]): void {
+    vi.mocked(getRequestMetrics).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      windows: [],
+    });
+    vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(listRecentRequests).mockResolvedValue({
+      requests,
+      total: requests.length,
+      limit: 50,
+      offset: 0,
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(cleanup);
+
+  it('labels a blocked row whose key no longer works, beside the user it names', async () => {
+    // What the auth-failure blocklist actually catches: a caller of the
+    // deployment's own whose key was rotated away. Without the label the row
+    // reads as that account making an ordinary request.
+    mockList([
+      makeRequest({
+        status_code: 429,
+        error: 'ip_blocked',
+        credential_state: 'revoked',
+      }),
+    ]);
+
+    render(<RequestsTab />);
+
+    expect(await screen.findByText('revoked key')).toBeInTheDocument();
+    expect(screen.getAllByText('Ada').length).toBeGreaterThan(0);
+  });
+
+  it('reads a suspended owner as an account, not a key', async () => {
+    mockList([
+      makeRequest({
+        status_code: 429,
+        error: 'ip_blocked',
+        credential_state: 'user_suspended',
+      }),
+    ]);
+
+    render(<RequestsTab />);
+
+    expect(await screen.findByText('suspended account')).toBeInTheDocument();
+  });
+
+  it('shows no label when the key presented was still live', async () => {
+    // A live key refused for *where* it called from is collateral damage, not
+    // a credential problem — nothing to tell the operator to go fix.
+    mockList([makeRequest({ status_code: 429, error: 'ip_blocked', credential_state: 'active' })]);
+
+    render(<RequestsTab />);
+
+    await screen.findAllByText('Ada');
+    expect(screen.queryByText('active key')).not.toBeInTheDocument();
+  });
+});

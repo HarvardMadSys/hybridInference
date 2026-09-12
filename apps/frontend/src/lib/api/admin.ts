@@ -574,6 +574,12 @@ export interface AdminRecentRequestItem {
   // "embedding" for /v1/embeddings traffic; null/undefined implies a
   // chat/completion request.
   request_type?: string | null;
+  // State of the credential behind `user_id` on a row the gateway identified
+  // but never authenticated — an `ip_blocked` rejection, refused ahead of the
+  // key check. `'active'` means a live key was presented; `'revoked'`,
+  // `'expired'` and the `user_<status>` values mean a dead one was, and
+  // repairing it will not lift the block. Null on normally authenticated rows.
+  credential_state?: string | null;
   // How the gateway ended the stream (`metadata.terminal_state`). Only its
   // cancellation path sets it, so `'client_disconnect'` — not the bare 499 —
   // is what identifies a caller that hung up: an upstream provider can answer
