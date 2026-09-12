@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -60,7 +61,7 @@ async def postgres_op_store():
 
     await _wipe()
     try:
-        yield store
+        yield store, pool
     finally:
         await _wipe()
         await pool.close()
@@ -68,6 +69,7 @@ async def postgres_op_store():
 
 async def _seed(
     store: PostgresOperationalStore,
+    pool: Any,
     *,
     user_id: str,
     key_hash: str,
@@ -75,29 +77,37 @@ async def _seed(
     key_status: str = "active",
     expires_at: datetime | None = None,
 ) -> None:
-    """Create one user and one key for them, in the requested states."""
+    """Create one user and one key for them, in the requested states.
+
+    The key row is inserted directly rather than through ``create_key``: that
+    method writes ``api_key_encrypted``, a column this store's own
+    ``initialize()`` does not create, so going through it would make these
+    tests depend on some other module having built the fuller schema first.
+    Only columns ``initialize()`` creates are touched here.
+    """
     await store.create_user(
         user_id=user_id,
         email=f"{user_id}@example.com",
         password_hash="x",
         status=user_status,
     )
-    await store.create_key(
-        key_hash=key_hash,
-        key_prefix="sk-audit",
-        user_id=user_id,
-        account_id=user_id,
-        expires_at=expires_at,
-    )
-    # create_key has no status param — rows default to 'active' via the schema.
-    if key_status != "active":
-        await store.update_key(user_id, status=key_status)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO api_keys (key_hash, key_prefix, user_id, account_id, "
+            "status, expires_at) VALUES ($1, $2, $3, $3, $4, $5)",
+            key_hash,
+            "sk-audit",
+            user_id,
+            key_status,
+            expires_at,
+        )
 
 
-async def test_live_key_resolves_and_reads_as_active(postgres_op_store: PostgresOperationalStore):
-    await _seed(postgres_op_store, user_id="u-audit-live", key_hash="h-audit-live")
+async def test_live_key_resolves_and_reads_as_active(postgres_op_store):
+    store, pool = postgres_op_store
+    await _seed(store, pool, user_id="u-audit-live", key_hash="h-audit-live")
 
-    row = await postgres_op_store.get_key_owner_for_audit("h-audit-live")
+    row = await store.get_key_owner_for_audit("h-audit-live")
 
     assert row is not None
     assert row["user_id"] == "u-audit-live"
@@ -106,59 +116,64 @@ async def test_live_key_resolves_and_reads_as_active(postgres_op_store: Postgres
     assert row["user_status"] == "active"
 
 
-async def test_revoked_key_still_names_its_owner(postgres_op_store: PostgresOperationalStore):
+async def test_revoked_key_still_names_its_owner(postgres_op_store):
     """The case the blocklist actually produces: a key that was rotated away."""
+    store, pool = postgres_op_store
     await _seed(
-        postgres_op_store,
+        store,
+        pool,
         user_id="u-audit-revoked",
         key_hash="h-audit-revoked",
         key_status="revoked",
     )
 
-    assert await postgres_op_store.get_auth_context_lightweight("h-audit-revoked") is None
+    assert await store.get_auth_context_lightweight("h-audit-revoked") is None
 
-    row = await postgres_op_store.get_key_owner_for_audit("h-audit-revoked")
+    row = await store.get_key_owner_for_audit("h-audit-revoked")
     assert row is not None
     assert row["user_id"] == "u-audit-revoked"
     assert row["key_status"] == "revoked"
 
 
-async def test_expired_key_is_reported_as_expired(postgres_op_store: PostgresOperationalStore):
+async def test_expired_key_is_reported_as_expired(postgres_op_store):
     """Expiry is compared against the database clock, not the caller's."""
+    store, pool = postgres_op_store
     await _seed(
-        postgres_op_store,
+        store,
+        pool,
         user_id="u-audit-expired",
         key_hash="h-audit-expired",
         expires_at=datetime.now(timezone.utc) - timedelta(days=1),
     )
 
-    assert await postgres_op_store.get_auth_context_lightweight("h-audit-expired") is None
+    assert await store.get_auth_context_lightweight("h-audit-expired") is None
 
-    row = await postgres_op_store.get_key_owner_for_audit("h-audit-expired")
+    row = await store.get_key_owner_for_audit("h-audit-expired")
     assert row is not None
     assert row["key_status"] == "active"
     assert row["key_expired"] is True
 
 
-async def test_suspended_owner_is_reported_with_a_live_key(
-    postgres_op_store: PostgresOperationalStore,
-):
+async def test_suspended_owner_is_reported_with_a_live_key(postgres_op_store):
+    store, pool = postgres_op_store
     await _seed(
-        postgres_op_store,
+        store,
+        pool,
         user_id="u-audit-suspended",
         key_hash="h-audit-suspended",
         user_status="suspended",
     )
 
-    assert await postgres_op_store.get_auth_context_lightweight("h-audit-suspended") is None
+    assert await store.get_auth_context_lightweight("h-audit-suspended") is None
 
-    row = await postgres_op_store.get_key_owner_for_audit("h-audit-suspended")
+    row = await store.get_key_owner_for_audit("h-audit-suspended")
     assert row is not None
     assert row["key_status"] == "active"
     assert row["key_expired"] is False
     assert row["user_status"] == "suspended"
 
 
-async def test_unknown_hash_resolves_to_nothing(postgres_op_store: PostgresOperationalStore):
+async def test_unknown_hash_resolves_to_nothing(postgres_op_store):
     """A scanner's random token names nobody, which is the honest answer."""
-    assert await postgres_op_store.get_key_owner_for_audit("h-audit-never-issued") is None
+    store, _pool = postgres_op_store
+    assert await store.get_key_owner_for_audit("h-audit-never-issued") is None

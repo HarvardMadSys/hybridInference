@@ -277,6 +277,46 @@ class TestAPIKeyManagement:
         assert ctx_after is None, "Auth cache must be invalidated after key revocation"
 
     @pytest.mark.asyncio
+    async def test_removing_a_revoked_key_invalidates_the_audit_cache(
+        self,
+        auth_app_client: AsyncClient,
+        test_user_with_key,
+        auth_headers,
+        auth_backend,
+        auth_db_logger,
+    ):
+        """Removing a revoked key must not leave it still naming its owner.
+
+        ``get_key_owner_for_audit`` caches rows the auth lookups never did — a
+        revoked key among them — so this branch has to evict them too. Without
+        that, an ``ip_blocked`` row keeps naming the former owner of a key the
+        database no longer holds, for the rest of the TTL.
+        """
+        from serving.servers.auth import hash_api_key
+
+        operational_store, _, _, _ = auth_backend
+        key_hash = hash_api_key(test_user_with_key["api_key"])
+
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET status = 'revoked' WHERE key_prefix = $1",
+                test_user_with_key["key_prefix"],
+            )
+
+        warmed = await operational_store.get_key_owner_for_audit(key_hash)
+        assert warmed is not None, "a revoked key is exactly what this lookup answers for"
+        assert warmed["key_status"] == "revoked"
+
+        response = await auth_app_client.delete(
+            f"/user/api-keys/{test_user_with_key['key_prefix']}",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "deleted"
+
+        assert await operational_store.get_key_owner_for_audit(key_hash) is None
+
+    @pytest.mark.asyncio
     async def test_delete_api_key_not_found(
         self, auth_app_client: AsyncClient, test_user, auth_headers
     ):

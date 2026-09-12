@@ -595,9 +595,13 @@ async def delete_api_key(
             current_user["user_id"],
             audit_details,
         )
-        # Revoke bypasses CachedOperationalStore, so evict the auth cache entry
-        # explicitly so the key cannot be used after revocation.
-        if audit_action == "revoke_key" and op_store:
+        # Both branches write api_keys directly, bypassing
+        # CachedOperationalStore, so the auth cache is evicted here rather than
+        # by the store. Revoking, so the key cannot be used afterwards; and
+        # deleting, because the audit lookup caches revoked rows the auth
+        # lookups never did (see ``get_key_owner_for_audit``) and would go on
+        # naming the former owner of a key that no longer exists.
+        if op_store:
             await op_store.invalidate_auth_caches()
         return response
 
