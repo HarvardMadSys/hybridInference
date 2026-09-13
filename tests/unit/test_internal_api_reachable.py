@@ -1,13 +1,13 @@
 """The internal API the cloud agent calls is actually routed to the backend.
 
-Nginx sends unmatched paths to the frontend, so a backend path reaches FastAPI
-only if `next.config.js` rewrites it. Every route the control plane calls was
-missing from that list, and the failure is silent in the worst way: the caller
-gets a 404 whose body is an HTML page, which reads as "the gateway is down"
-rather than "this path is not forwarded". Verified against both live
-deployments before this was fixed — `/internal/verify-admin` answered the
-gateway's JSON 401 while `/internal/model-catalog`, on the same host, answered
-the frontend's HTML.
+The Cloudflare tunnel routes every public path to the frontend container, so a
+backend path reaches FastAPI only if `next.config.js` rewrites it. Every route
+the control plane calls was missing from that list, and the failure is silent
+in the worst way: the caller gets a 404 whose body is an HTML page, which reads
+as "the gateway is down" rather than "this path is not forwarded". Verified
+against both live deployments before this was fixed — `/internal/verify-admin`
+answered the gateway's JSON 401 while `/internal/model-catalog`, on the same
+host, answered the frontend's HTML.
 
 A route existing and a route being reachable are different facts, and every
 test in this repository asserted the first one.

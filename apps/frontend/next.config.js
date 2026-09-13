@@ -85,11 +85,12 @@ const nextConfig = {
           destination: `${BACKEND_INTERNAL_URL}/internal/playground/:path*`,
         },
         // The cloud agent's control plane runs on its own machine and reaches
-        // this gateway over its public origin. Nginx sends unmatched paths here,
-        // so a path with no rewrite is answered by Next.js — and its 404 is an
-        // HTML page, which reads to the caller as "the gateway is down" rather
-        // than "this path is not forwarded". Every one of these was unreachable
-        // in production and staging until this entry existed.
+        // this gateway over its public origin. The Cloudflare tunnel routes that
+        // origin straight to this container, so a path with no rewrite in this
+        // table is answered by Next.js — and its 404 is an HTML page, which reads
+        // to the caller as "the gateway is down" rather than "this path is not
+        // forwarded". Every one of these was unreachable in production and
+        // staging until this entry existed.
         //
         // Named individually, because this prefix is shared: /internal/verify-*
         // authenticate a browser session by cookie, and a blanket
@@ -120,9 +121,9 @@ const nextConfig = {
           destination: `${BACKEND_INTERNAL_URL}/internal/agent-grants/:path*`,
         },
         { source: '/health', destination: `${BACKEND_INTERNAL_URL}/health` },
-        // Public homepage updates. Nginx routes unmatched paths to the frontend,
-        // so this rewrite forwards the request on to FastAPI (same pattern as
-        // /health). Without it the static frontend would 404 the fetch in prod.
+        // Public homepage updates. The tunnel routes every public path to this
+        // container, so this rewrite forwards the request on to FastAPI (same
+        // pattern as /health). Without it the frontend would 404 the fetch in prod.
         { source: '/site-updates', destination: `${BACKEND_INTERNAL_URL}/site-updates` },
         // Public distribution identity consumed by SiteConfigProvider.
         { source: '/site-config', destination: `${BACKEND_INTERNAL_URL}/site-config` },
