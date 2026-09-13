@@ -1793,6 +1793,7 @@ def _probe_router(
     *,
     config: RouteWiseConfig | None = None,
     endpoints: int = 1,
+    hold: tuple[asyncio.Event, asyncio.Event] | None = None,
 ) -> RouteWiseRouter:
     """A router whose probes report when each one starts and finishes."""
     adapters = {
@@ -1810,6 +1811,11 @@ def _probe_router(
 
     async def stream(_messages, **_params):
         async with overlap.track():
+            if hold is not None:
+                # Park the probe on the wire so a caller can act while it runs.
+                entered, release = hold
+                entered.set()
+                await release.wait()
             # Hand the loop to whatever else wants to probe: without a shared
             # gate this is where a sibling's probe slips in alongside this one.
             await asyncio.sleep(0)
@@ -1960,24 +1966,39 @@ class TestProbeConcurrencyGate:
         assert active_when_admitted == [1, 1]
         assert gate.active == 0
 
-    async def test_a_retired_router_stops_capping_the_live_ones(self):
-        """stop() drops the claim: a model out of service is not a model probing."""
-        gate = _ProbeConcurrencyGate()
+    async def test_stopping_a_router_mid_manual_probe_keeps_its_claim(self):
+        """Retirement must not raise the cap under a probe still on the wire.
+
+        `/probes/run` calls run_probe_once() outside the model transition lock
+        and stop() cancels only the background loop, so a manual probe outlives
+        the retirement. Releasing the claim there would let a sibling configured
+        higher admit probes alongside it -- the collision this gate exists to
+        stop. A probe holds a reference to its router, so the weak claim already
+        expires at the right moment: when nothing can still be probing for it.
+        """
+        overlap = _OverlapRecorder()
+        in_probe, holding = asyncio.Event(), asyncio.Event()
+        strict = _probe_router(
+            "strict-model",
+            overlap,
+            config=RouteWiseConfig(routewise_probe_max_concurrency=1),
+            hold=(in_probe, holding),
+        )
         generous = _probe_router(
             "generous-model",
-            _OverlapRecorder(),
+            overlap,
             config=RouteWiseConfig(routewise_probe_max_concurrency=4),
         )
-        retired = _probe_router(
-            "retired-model",
-            _OverlapRecorder(),
-            config=RouteWiseConfig(routewise_probe_max_concurrency=1),
-        )
-        assert gate.limit == 1
 
-        await retired.stop()
+        manual = asyncio.create_task(strict.run_probe_once(idle_only=False))
+        await asyncio.wait_for(in_probe.wait(), timeout=1)
 
-        assert gate.limit == 4
+        await strict.stop()
+
+        assert _effective_probe_limit() == 1
+
+        holding.set()
+        assert [result.ok for result in await manual] == [True]
         assert generous.config.routewise_probe_max_concurrency == 4
 
     async def test_a_router_alone_with_a_generous_limit_probes_in_parallel(self):

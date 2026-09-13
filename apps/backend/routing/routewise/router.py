@@ -154,15 +154,19 @@ def _claim_probe_limit(owner: Any, limit: int) -> None:
     learned instead at acquisition would arrive too late: a router configured
     for four could take four slots in the window before a router configured for
     one first asked, and slots already granted cannot be recalled.
+
+    The claim is weak and lasts the router's lifetime rather than ending at
+    ``stop()``. That is the liveness signal we actually want: ``stop()`` cancels
+    the background loop but not a manual ``run_probe_once`` from
+    ``/probes/run``, which runs outside the model transition lock, so a
+    retirement can land while a probe is still on the wire -- and a probe holds
+    a reference to its router, so a router that is collectable is one with no
+    probe left to finish. Releasing at ``stop()`` would instead raise the cap
+    under that in-flight probe and let a sibling configured higher join it.
+    A stale claim only over-serializes probing, which is the safe direction.
     """
     with _PROBE_LIMIT_LOCK:
         _PROBE_LIMIT_CLAIMS[owner] = max(int(limit), 1)
-
-
-def _release_probe_limit(owner: Any) -> None:
-    """Drop *owner*'s claim, so a retired router stops capping live ones."""
-    with _PROBE_LIMIT_LOCK:
-        _PROBE_LIMIT_CLAIMS.pop(owner, None)
 
 
 def _effective_probe_limit() -> int:
@@ -667,9 +671,6 @@ class RouteWiseRouter:
         async with self._lifecycle_lock:
             self._validate_envelope_calibration()
             self._lifecycle_started = True
-            # Re-assert the claim a previous stop() dropped, before any task
-            # this call starts can reach the gate.
-            _claim_probe_limit(self, self.config.routewise_probe_max_concurrency)
             if self.prefix_cache.enabled and (
                 self._prefix_cache_sweep_task is None or self._prefix_cache_sweep_task.done()
             ):
@@ -743,9 +744,6 @@ class RouteWiseRouter:
                 if probe_task is not None:
                     probe_task.cancel()
                     await _await_cancelled_child(probe_task)
-
-            # A retired router must stop capping the models still probing.
-            _release_probe_limit(self)
 
     async def _sweep_pending_prefix_cache_loop(self) -> None:
         try:

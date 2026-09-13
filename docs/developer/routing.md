@@ -650,12 +650,15 @@ its own concurrency error, and that refusal lands on whichever request is in
 flight — real traffic as often as the probe. All routers in a worker therefore
 share one gate, whose capacity is the lowest value any of them configures. Each
 router registers that value when it is built, which is before any router starts
-probing, and drops it again when the router stops. The guarantee is
-forward-looking: a router built while another is mid-cycle — an admin strategy
-change, a runtime model publish — caps every probe not yet dispatched and the
-gate then grants nothing further until the overlap has drained, but it cannot
-shrink an overlap already on the wire, since no client-side action un-sends a
-request that has left. Like RouteWise's other concurrency state
+probing, and the claim lasts as long as the router object — not until `stop()`,
+which cancels the background loop but not a manual probe from `/probes/run`
+that is still on the wire. The guarantee is forward-looking: a router built
+while another is mid-cycle — an admin strategy change, a runtime model publish
+— caps every probe not yet dispatched and the gate then grants nothing further
+until the overlap has drained, but it cannot shrink an overlap already sent,
+since no client-side action un-sends a request that has left. Erring the other
+way only over-serializes probing, so a claim outliving its usefulness is the
+safe direction. Like RouteWise's other concurrency state
 the gate is per worker; the cross-worker guard is the DB probe lease
 (`routewise_probe_leases`), which is keyed per model and so stops two workers
 probing one model rather than capping probe traffic deployment-wide.
