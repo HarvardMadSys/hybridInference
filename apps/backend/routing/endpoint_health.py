@@ -15,6 +15,10 @@ from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 from serving.adapters.key_pool import KeyPoolRoleRestricted
 from serving.exceptions import operator_safe_error
 from serving.observability.alerts import AlertSeverity, alert_on_transition
+from serving.observability.state_alert_policy import (
+    circuit_open_policy,
+    set_usage_limit_paging as _set_usage_limit_paging,
+)
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
@@ -103,16 +107,21 @@ _AUTH_ALERT_COOLDOWN_SEC = 300
 # comparison the breaker needs.
 _MIN_ALERT_GAP_SEC = MIN_ALERT_GAP.total_seconds()
 
-# Whether a subscription usage-limit trip pages at all. A deployment that runs on
-# subscription plans exhausts them as a matter of course: the page names nothing
-# an operator can act on — no key rotation or restart shortens the provider's
-# window — and the endpoint re-arms itself when it resets, so such a deployment
-# can drop the page entirely. Default True keeps the one-page-per-outage
-# behaviour; set from ``state_changes.circuit_open.page_on_usage_limit`` in
-# alerts.yaml at startup (see ``set_usage_limit_paging``). Non-usage-limit trips
-# page regardless — this gate is scoped to outages the parser recognizes as a
-# plan window running dry.
-_PAGE_ON_USAGE_LIMIT = True
+# The ``state_changes.circuit_open`` block of alerts.yaml, installed at startup
+# by ``serving.servers.bootstrap`` and read here on every page. Three fields
+# matter to this module:
+#
+# ``page_on_usage_limit`` — whether a subscription usage-limit trip pages at
+#   all. A deployment that runs on subscription plans exhausts them as a matter
+#   of course: the page names nothing an operator can act on — no key rotation
+#   or restart shortens the provider's window — and the endpoint re-arms itself
+#   when it resets, so such a deployment can drop the page entirely. Default
+#   True keeps the one-page-per-outage behaviour. Non-usage-limit trips page
+#   regardless — this gate is scoped to outages the parser recognizes as a plan
+#   window running dry.
+# ``enabled`` — whether the circuit-open page is raised at all.
+# ``cooldown_sec`` — the spacing between repeats of one provider's page, which
+#   until now was a literal 300 here and ignored whatever alerts.yaml asked for.
 
 # Title of the upstream-auth page. Shared by the firing and resolving edges so
 # the recovery card reads as the same incident ("Recovered: <title>").
@@ -127,9 +136,12 @@ _AUTH_ALERT_SCHEDULE_INTERVAL_SEC = 5.0
 
 
 def set_usage_limit_paging(enabled: bool) -> None:
-    """Set whether subscription usage-limit trips page (see ``_PAGE_ON_USAGE_LIMIT``)."""
-    global _PAGE_ON_USAGE_LIMIT
-    _PAGE_ON_USAGE_LIMIT = bool(enabled)
+    """Set whether subscription usage-limit trips page.
+
+    Re-exported from ``serving.observability.state_alert_policy`` so the
+    breaker's callers keep one import site for the knob they already used.
+    """
+    _set_usage_limit_paging(enabled)
 
 
 def _auth_alert_key(endpoint_id: str) -> str:
@@ -577,7 +589,7 @@ class _CircuitBreaker:
                         severity=AlertSeverity.ERROR,
                         title="Provider circuit opened",
                         context=dict,
-                        cooldown_sec=300,
+                        cooldown_sec=circuit_open_policy().cooldown_sec,
                         kind="state",
                     )
                 )
@@ -691,9 +703,11 @@ class _CircuitBreaker:
                 and (time.monotonic() - self._usage_limit_alerted_at) < _MIN_ALERT_GAP_SEC
             )
             rate_limited = usage_limit is not None and plan_limit_recent
-            # A deployment that has turned plan-usage paging off (see
-            # ``_PAGE_ON_USAGE_LIMIT``) takes the same path as a held-back page:
-            # silent, and with the mute deadline armed below.
+            # A deployment that has turned the circuit page off outright
+            # (``state_changes.circuit_open.enabled: false``) or only its
+            # plan-usage half off (``page_on_usage_limit: false``) takes the same
+            # path as a held-back page: silent, and with the mute deadline armed
+            # below.
             #
             # Reason-agnostic within the floor, because the deadline alone does not
             # hold here: behind a key pool, one sibling key with quota left reads as
@@ -705,8 +719,14 @@ class _CircuitBreaker:
             # mute an unrelated outage on the same endpoint for up to the floor —
             # the same trade the ``max()`` re-arm below already makes, and bounded
             # the same way, because the stamp only advances once per floor.
-            paging_off = not _PAGE_ON_USAGE_LIMIT and (usage_limit is not None or plan_limit_recent)
-            if muted or rate_limited or paging_off:
+            policy = circuit_open_policy()
+            paging_off = not policy.page_on_usage_limit and (
+                usage_limit is not None or plan_limit_recent
+            )
+            # ``enabled: false`` silences the page for every trip cause, not just
+            # the plan-usage ones, so it is checked outside ``paging_off``.
+            alerting_off = not policy.enabled
+            if alerting_off or muted or rate_limited or paging_off:
                 if paging_off and usage_limit is not None and not plan_limit_recent:
                     # Start this floor's silence. Stamped here rather than after a
                     # delivery (there is none) so the reason-agnostic gate above has
@@ -724,8 +744,8 @@ class _CircuitBreaker:
                     # and that text carries no usage marker, so it is neither
                     # ``muted`` (a recovery cleared the deadline) nor
                     # ``rate_limited`` (it does not parse as a usage limit). Held
-                    # back and un-muted, those probes would page at the 300s alert
-                    # cooldown — worse than what this floor exists to fix. ``max``
+                    # back and un-muted, those probes would page at the
+                    # configured alert cooldown — worse than what this floor exists to fix. ``max``
                     # so a deadline already further out is never shortened.
                     self._alert_suppressed_until = max(
                         self._alert_suppressed_until,
@@ -750,7 +770,9 @@ class _CircuitBreaker:
                         # applies it is the reason, and the other two only
                         # describe how long the same silence had left to run.
                         "gate": (
-                            "usage_limit_paging_off"
+                            "circuit_open_disabled"
+                            if alerting_off
+                            else "usage_limit_paging_off"
                             if paging_off
                             else "muted"
                             if muted
@@ -849,7 +871,7 @@ class _CircuitBreaker:
                 severity=AlertSeverity.ERROR,
                 title="Provider circuit opened",
                 context=lambda: context,
-                cooldown_sec=300,
+                cooldown_sec=circuit_open_policy().cooldown_sec,
                 kind="state",
             )
         finally:

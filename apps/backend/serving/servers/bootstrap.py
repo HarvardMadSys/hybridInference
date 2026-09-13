@@ -933,22 +933,22 @@ async def initialize() -> AppServices:
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
 
-    # The circuit breaker pages ``alert_slack`` directly, which is gated on the
-    # webhook/relay env vars and not on ALERTS_ENABLED — so its plan-usage mute
-    # has to be applied outside the alert-engine block below, or the knob would be
-    # ignored by exactly the deployments still being paged. Best-effort: a
-    # deployment with no alerts.yaml keeps the default (page once per outage).
+    # Both state alerts — the breaker's ``circuit_open`` and the health route's
+    # ``db_disconnect`` — page ``alert_slack`` directly, gated on the
+    # webhook/relay env vars and not on ALERTS_ENABLED. Their policy therefore
+    # has to be applied outside the alert-engine block below, or every knob in
+    # ``state_changes`` would be ignored by exactly the deployments still being
+    # paged. Best-effort: a deployment with no alerts.yaml keeps the defaults
+    # (page once per outage, 300s apart).
     try:
-        from routing.endpoint_health import set_usage_limit_paging
         from serving.observability.alert_config import load_alert_config as _load_alert_config
+        from serving.observability.state_alert_policy import apply_state_change_policy
 
-        set_usage_limit_paging(
-            _load_alert_config(
-                str(resolve_config_path("alerts").path)
-            ).state_changes.circuit_open.page_on_usage_limit
+        apply_state_change_policy(
+            _load_alert_config(str(resolve_config_path("alerts").path)).state_changes
         )
     except Exception:
-        logger.debug("circuit-open alert policy unavailable; keeping defaults", exc_info=True)
+        logger.debug("state-change alert policy unavailable; keeping defaults", exc_info=True)
 
     # In-process alerting framework. Defaults to disabled. Operators flip the
     # ALERTS_ENABLED env var (or set SLACK_ALERTS_WEBHOOK_URL) to turn it on.

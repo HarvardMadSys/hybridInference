@@ -259,7 +259,13 @@ class Rules(BaseModel):
 
 
 class StateChange(BaseModel):
-    """State-change alert configuration."""
+    """State-change alert configuration.
+
+    Read by ``serving.observability.state_alert_policy``, which the two state
+    alert sites — the circuit breaker and the health route — consult on every
+    page. ``enabled: false`` stops the page being raised at all;
+    ``cooldown_sec`` is the spacing between repeats of one key's page.
+    """
 
     enabled: bool = True
     cooldown_sec: int = 300
@@ -268,10 +274,11 @@ class StateChange(BaseModel):
 class CircuitOpenStateChange(StateChange):
     """Circuit-open page configuration.
 
-    ``page_on_usage_limit`` is the only field the circuit breaker reads today.
+    ``page_on_usage_limit`` narrows the inherited ``enabled`` to one trip cause.
     Turn it off where subscription plans running dry is routine: that page names
     nothing an operator can act on, and the breaker re-arms itself once the
-    provider's window resets. Trips for every other reason still page.
+    provider's window resets. Trips for every other reason still page — which is
+    the difference from ``enabled: false``, which silences all of them.
     """
 
     page_on_usage_limit: bool = True
