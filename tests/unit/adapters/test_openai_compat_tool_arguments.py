@@ -168,6 +168,31 @@ async def test_decoded_object_arguments_are_re_encoded():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_decoded_object_that_cannot_be_re_encoded_is_replaced():
+    # `json.loads` accepts the non-standard NaN literal, so a decoded object
+    # can hold a float that `json.dumps` would re-emit bare -- which is not
+    # JSON and would fail the same upstream check. Repair it like any other
+    # unusable shape instead of forwarding a second poison.
+    sent = await _sent_messages(_adapter(), _transcript({"a": float("nan")}))
+
+    assert _sent_arguments(sent) == "{}"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_deeply_nested_argument_string_is_repaired_not_raised():
+    # The request body's own parse saw `arguments` as an opaque string, so this
+    # is the first time its contents are decoded -- and `json.loads` answers a
+    # few thousand levels of nesting with RecursionError, which a client can
+    # send in a handful of kilobytes. A repair pass on the request path must
+    # never be the thing that fails the turn.
+    sent = await _sent_messages(_adapter(), _transcript("[" * 50_000 + "]" * 50_000))
+
+    assert _sent_arguments(sent) == "{}"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_the_callers_message_list_is_never_mutated():
     # The list handed in is the router's ``self._messages``: it is written
     # verbatim to ``api_logs.prompt`` and re-read on every fallback attempt, so

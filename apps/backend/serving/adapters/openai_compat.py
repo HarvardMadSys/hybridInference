@@ -99,9 +99,10 @@ def _repaired_tool_arguments(raw: Any) -> str | None:
     object becomes ``"{}"``. The substitution only ever turns a guaranteed 400
     into a request the upstream accepts -- every input that would have
     succeeded (a JSON object string) is handed back untouched, by identity, so
-    the caller can tell a repair happened. A ``dict`` is re-encoded instead of
+    the caller can tell a repair happened. A ``dict`` is re-encoded rather than
     discarded: it is not the shape the OpenAI schema asks for, but several
-    clients send the decoded object and its content is intact.
+    clients send the decoded object and its content is intact — unless it will
+    not encode to JSON, which puts it back with every other unusable shape.
 
     This mirrors what the gateway's other ingresses already do --
     ``anthropic_translator._normalize_tool_input``, ``claude_format`` and
@@ -111,13 +112,25 @@ def _repaired_tool_arguments(raw: Any) -> str | None:
     string verbatim and so needs this.
     """
     if isinstance(raw, dict):
-        return json.dumps(raw)
+        try:
+            # allow_nan=False: `json.loads` accepts the non-standard NaN and
+            # Infinity literals, so a decoded object can hold a float that the
+            # default `dumps` re-emits bare -- not JSON, and rejected by the
+            # very upstream check this function exists to satisfy.
+            return json.dumps(raw, allow_nan=False)
+        except (TypeError, ValueError, RecursionError):
+            return "{}"
     try:
-        # An empty/whitespace-only string is not valid JSON, and `json.loads`
-        # of a non-string (None, int, list) raises TypeError rather than
-        # JSONDecodeError -- both end up at `parsed = None` and get repaired.
+        # Non-strings and blank strings never reach `json.loads`: the guard
+        # sends them straight to `parsed = None` to be repaired. The catch
+        # covers what parsing a real string can still throw -- malformed JSON,
+        # and RecursionError from a deeply nested argument string, which a
+        # client can reach in a few kilobytes because the request body's own
+        # parse saw `arguments` as an opaque string and never decoded its
+        # contents. TypeError is belt and braces for a non-str slipping past
+        # the guard.
         parsed = json.loads(raw) if isinstance(raw, str) and raw.strip() else None
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, RecursionError):
         parsed = None
     return None if isinstance(parsed, dict) else "{}"
 
