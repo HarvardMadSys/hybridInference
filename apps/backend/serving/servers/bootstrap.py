@@ -407,10 +407,20 @@ async def _bootstrap_routewise_from_logs(
             # the estimator's own envelope_max_samples cap is dropped on arrival.
             # include_metadata=False keeps the widest column out of the result:
             # this pass replays token counts only.
+            #
+            # The bound never drops below envelope_min_samples, mirroring
+            # CostEnvelopeEstimator._window_maxlen. The envelope stays
+            # uncalibrated until it holds that many samples, and a quota-only
+            # model that cannot reach it is refused by RouteWiseRouter.start():
+            # the gateway would fail to boot, so it would never serve the very
+            # traffic that fills the window. A cap here has to bound the replay,
+            # not gate calibration. db_bootstrap_max_rows <= 0 still disables
+            # the replay outright -- that path returns above.
+            envelope_limit = max(max_rows, max(int(rw.config.envelope_min_samples), 1))
             envelope_rows = await log_store.get_routewise_bootstrap_rows(
                 model_ids=sorted({*model_ids, *donor_overrides}),
                 since=now - dt.timedelta(seconds=envelope_window_sec),
-                limit=max_rows,
+                limit=envelope_limit,
                 include_metadata=False,
             )
             envelope_counts = rw.bootstrap_from_log_rows(
