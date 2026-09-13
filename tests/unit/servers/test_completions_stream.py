@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
@@ -909,3 +910,87 @@ async def test_done_sentinel_passes_through_unchanged():
     chunks = [_content_chunk("gpt-4", "hi", finish="stop"), "data: [DONE]\n\n"]
     out = await _consume(session.stream(_aiter(chunks)))
     assert out[-1] == "data: [DONE]\n\n"
+
+
+# ---------------------------------------------------------------------------
+# StreamSession — the structured event StreamFailureRateRule alerts on
+# ---------------------------------------------------------------------------
+
+
+def _stream_failed_records(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if getattr(r, "event", None) == "stream_failed"]
+
+
+@pytest.mark.asyncio
+async def test_stream_failure_emits_structured_event_for_the_alert_rule(caplog):
+    """The failure log carries the attributes ``StreamFailureRateRule`` selects on.
+
+    The rule matches ``event``/``model`` rather than a substring of the message
+    precisely so the alert engine — whose handler sits on the root logger and
+    therefore sees its own output — can never trigger it on a record it emitted
+    itself. That only holds while these extras exist, so they are asserted here.
+    """
+    session = _make_session()
+
+    async def _gen():
+        yield _content_chunk("gpt-4", "partial")
+        raise RuntimeError("upstream blew up")
+
+    with caplog.at_level(logging.ERROR, logger="serving.servers.routers.completions_stream"):
+        await _consume(session.stream(_gen()))
+
+    records = _stream_failed_records(caplog)
+    assert len(records) == 1
+    assert records[0].model == "gpt-4"
+    # The exception *class*, never its message: a relayed upstream error can
+    # quote the caller's own request back, and this field reaches Slack.
+    assert records[0].error_type == "RuntimeError"
+    assert "upstream blew up" not in str(records[0].error_type)
+    # The human-readable message operators grep for is unchanged.
+    assert "Stream failed for model=gpt-4" in records[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_client_disconnect_emits_no_stream_failed_event(caplog):
+    """A disconnect must not page. It is what makes a threshold of 8 safe.
+
+    ``GeneratorExit`` is a ``BaseException``, so it bypasses the ``except
+    Exception`` branch that emits the event. If this ever regressed, the rule
+    would fire on ordinary client behaviour.
+    """
+    session = _make_session()
+
+    async def _slow():
+        yield _content_chunk("gpt-4", "partial")
+        await asyncio.sleep(10)
+
+    gen = session.stream(_slow())
+    await gen.__anext__()
+    await gen.__anext__()
+
+    with caplog.at_level(logging.ERROR, logger="serving.servers.routers.completions_stream"):
+        await gen.aclose()
+
+    assert _stream_failed_records(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_middleware_timeout_emits_no_stream_failed_event(caplog):
+    """A ``TimeoutMiddleware`` deadline is a cancellation, not a stream failure."""
+    session = _make_session(timeout_fired_probe=lambda: True)
+
+    async def _slow():
+        yield _content_chunk("gpt-4", "partial")
+        await asyncio.sleep(10)
+
+    gen = session.stream(_slow())
+    await gen.__anext__()
+    await gen.__anext__()
+
+    with (
+        caplog.at_level(logging.ERROR, logger="serving.servers.routers.completions_stream"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await gen.athrow(asyncio.CancelledError())
+
+    assert _stream_failed_records(caplog) == []

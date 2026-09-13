@@ -505,9 +505,25 @@ class StreamSession:
             # trace anywhere. The IndexError behind #1361 ran for 18 days with
             # nothing in the logs but "Internal server error" -- no type, no
             # frame, nothing to grep for.
+            # The ``extra`` is load-bearing, not decoration: ``StreamFailureRateRule``
+            # (serving/observability/alert_rules.py) selects on ``event`` and scopes
+            # its window by ``model``. Matching a structured attribute rather than a
+            # substring of this message is what keeps the alert engine -- whose
+            # handler sits on the root logger and therefore sees its own output --
+            # from ever triggering the rule on a record it emitted itself. Removing
+            # or renaming these fields silently disables that alert; the message
+            # text stays as it is because operators grep for it.
             logger.error(
                 f"Stream failed for model={self._model} request_id={self._request_id}",
                 exc_info=True,
+                extra={
+                    "event": "stream_failed",
+                    "model": self._model,
+                    # Class name only. The exception *message* can quote relayed
+                    # upstream text, which can echo the caller's own content, and
+                    # this field is rendered on an alert card.
+                    "error_type": type(exc).__name__,
+                },
             )
             await self._finalize_failure(exc)
             exc_status_code = _extract_exception_status_code(exc)
