@@ -98,8 +98,8 @@ the rung that won. First match wins:
    Starlette reports no client). Source `socket`. This is both the direct-
    connection case and the last resort when no forwarded hop was usable. Like
    rung 1, it is *not* passed through the routability filter — so on the
-   ordinary Docker-behind-nginx deployment with `TRUST_PROXY_HEADERS` off, this
-   rung reports the bridge address. That is a separate, pre-existing pollution
+   ordinary Docker deployment with `TRUST_PROXY_HEADERS` off, this rung reports
+   the bridge address. That is a separate, pre-existing pollution
    class the filter deliberately leaves alone; only rungs 2 and 3 are filtered.
 
 `CF-Connecting-IP` is checked before `X-Forwarded-For` deliberately: Cloudflare

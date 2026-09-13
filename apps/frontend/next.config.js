@@ -73,10 +73,6 @@ const nextConfig = {
         { source: '/user/:path*', destination: `${BACKEND_INTERNAL_URL}/user/:path*` },
         { source: '/admin/:path*', destination: `${BACKEND_INTERNAL_URL}/admin/:path*` },
         {
-          source: '/internal/verify-grafana',
-          destination: `${BACKEND_INTERNAL_URL}/internal/verify-grafana`,
-        },
-        {
           source: '/internal/verify-admin',
           destination: `${BACKEND_INTERNAL_URL}/internal/verify-admin`,
         },
@@ -92,8 +88,8 @@ const nextConfig = {
         // forwarded". Every one of these was unreachable in production and
         // staging until this entry existed.
         //
-        // Named individually, because this prefix is shared: /internal/verify-*
-        // authenticate a browser session by cookie, and a blanket
+        // Named individually, because this prefix is shared: /internal/verify-admin
+        // authenticates a browser session by cookie, and a blanket
         // /internal/:path* would forward whatever lands here next without anyone
         // deciding it should be reachable from outside.
         {

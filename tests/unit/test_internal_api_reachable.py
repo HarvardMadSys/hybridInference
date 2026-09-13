@@ -98,11 +98,11 @@ def test_every_internal_route_is_forwarded_by_the_frontend() -> None:
 def test_the_shared_internal_prefix_is_not_forwarded_wholesale() -> None:
     """No rewrite forwards `/internal` blindly.
 
-    `/internal` also carries `verify-admin` and `verify-grafana`, which
-    authenticate a browser session by cookie. A `/internal/:path*` rewrite
-    would forward whatever is added under this prefix next, without anyone
-    deciding it should be reachable from outside — the opposite mistake to the
-    one above, and the easy way to "fix" a failure of the first test.
+    `/internal` also carries `verify-admin`, which authenticates a browser
+    session by cookie. A `/internal/:path*` rewrite would forward whatever is
+    added under this prefix next, without anyone deciding it should be
+    reachable from outside — the opposite mistake to the one above, and the
+    easy way to "fix" a failure of the first test.
     """
     blanket = [
         source
