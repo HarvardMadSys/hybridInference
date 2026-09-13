@@ -245,7 +245,16 @@ class _ProbeConcurrencyGate:
             raise
 
     def _release(self) -> None:
-        """Hand the slot to the next waiter.
+        """Hand the slot on, plus any others the current limit now allows.
+
+        The loop condition already admits exactly one waiter per release while
+        the cap holds steady. It drains further only when the cap has risen
+        since these probes queued -- a retired router's claim expiring -- which
+        is the one case where waking a single waiter would leave a whole queued
+        cycle serialized at a limit nothing configures any more. A claim expires
+        by garbage collection, which has no usable hook and can run on any
+        thread, so the refill lands on the next release rather than the instant
+        the cap rises.
 
         Deliberately synchronous: releasing from a ``finally`` that is already
         unwinding a cancellation must not await, or the release is itself
@@ -259,7 +268,6 @@ class _ProbeConcurrencyGate:
                 continue
             self._active += 1
             waiter.set_result(None)
-            return
 
 
 _PROBE_GATES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _ProbeConcurrencyGate] = (

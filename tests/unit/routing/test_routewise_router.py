@@ -1966,6 +1966,44 @@ class TestProbeConcurrencyGate:
         assert active_when_admitted == [1, 1]
         assert gate.active == 0
 
+    async def test_a_release_refills_every_slot_the_risen_limit_allows(self, probe_limit_claims):
+        """A queued cycle takes the capacity a retired model was holding down.
+
+        Waking exactly one waiter per release is right while the cap holds
+        steady, but when a retirement raises it the whole queued batch would
+        otherwise stay serialized at a limit nothing configures any more.
+        """
+        gate = _ProbeConcurrencyGate()
+        generous, strict = _Claimant(), _Claimant()
+        _claim_probe_limit(generous, 4)
+        _claim_probe_limit(strict, 1)
+        release = asyncio.Event()
+        admitted: list[tuple[str, int]] = []
+
+        async def _probe(name: str) -> None:
+            async with gate.slot():
+                admitted.append((name, gate.active))
+                await release.wait()
+
+        running = asyncio.create_task(_probe("in-flight"))
+        await asyncio.sleep(0)
+        queued = [asyncio.create_task(_probe(f"queued-{index}")) for index in range(3)]
+        await asyncio.sleep(0)
+        assert admitted == [("in-flight", 1)]
+
+        # The limit-1 model is retired and its claim expires.
+        probe_limit_claims.pop(strict)
+        assert gate.limit == 4
+
+        release.set()
+        await asyncio.gather(running, *queued)
+
+        # One release admitted all three, so the first to run finds every slot
+        # taken; the count falls as each finishes on the already-set event.
+        # Waking one waiter per release would have shown 1 every time.
+        assert admitted[1:] == [("queued-0", 3), ("queued-1", 2), ("queued-2", 1)]
+        assert gate.active == 0
+
     async def test_the_slot_is_free_while_the_sample_is_persisted(self):
         """The gate caps provider traffic, not the operational store.
 
