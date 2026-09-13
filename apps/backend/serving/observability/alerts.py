@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from serving.observability.alert_transitions import (
     ThresholdTransitionTracker,
 )
+from serving.utils import context as req_ctx
 from serving.utils.secret_urls import posting_to, scrub
 
 log = logging.getLogger(__name__)
@@ -239,6 +240,45 @@ def escape_slack_text(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+#: Longest request id rendered into an alert. The value is whatever the client
+#: sent, so it needs a bound: an id long enough to push the server block out of
+#: Slack's message limit would cost the page the very fields an operator reads
+#: first. Comfortably above the 24 hex characters the gateway generates itself.
+_REQUEST_ID_MAX_LEN = 128
+
+
+def _current_request_id() -> str | None:
+    """Sanitised request id of the request being served, or ``None``.
+
+    ``X-Request-ID`` is a *client-supplied* header that ``RequestIdMiddleware``
+    propagates verbatim, so what lands in the request context is whatever the
+    caller chose to send — not something the gateway generated. Treat it as
+    hostile: collapse it to one line (a newline would otherwise let a caller
+    forge bullets of their own in the card) and bound its length. Do not
+    "simplify" either step away on the assumption that this is a hex token.
+
+    Mrkdwn escaping is deliberately *not* done here. ``_format_message`` escapes
+    every context value it renders, at that single choke point precisely so no
+    producer can forget; escaping again would double-encode an ``&`` in the id.
+    ``endpoint_health._format_affected_callers`` leaves it alone for the same
+    reason. The escape still has to happen — an id of ``<!channel>`` would
+    otherwise ping the alert channel on the caller's behalf — it just happens
+    once, there.
+
+    ``None`` outside a request — the rules engine, the failed-request alerter
+    and the stale sweep all alert from background tasks with no request context,
+    and an alert about aggregate behaviour has no single request to point at.
+    """
+    value = req_ctx.get().get("request_id")
+    if not isinstance(value, str):
+        return None
+    # Same idiom as ``endpoint_health._detail_str``.
+    cleaned = " ".join(value.split())
+    if not cleaned:
+        return None
+    return cleaned[:_REQUEST_ID_MAX_LEN]
+
+
 def _format_message(
     severity: AlertSeverity,
     title: str,
@@ -427,7 +467,22 @@ async def alert_slack(
                     return False
             except Exception:
                 log.debug("alert snooze check failed; sending alert", exc_info=True)
-        message = _format_message(severity, title, context, status)
+        # Name the request that tripped the alert, so the page can be joined to
+        # a row in ``api_logs`` instead of to a minute of traffic. Firing only:
+        # a resolution's context is just the alert key, and the id of whichever
+        # request happened to observe the recovery describes a *healthy*
+        # request — pointing an investigation at it would be worse than saying
+        # nothing. A caller that already put an id in the context knows better
+        # than the ambient one, so it wins.
+        #
+        # Copied, never mutated: ``alert_on_transition`` hands the same dict to
+        # every repeat of an incident, and a rule may hold it as its own state.
+        detail = context
+        if not resolution and "request_id" not in context:
+            request_id = _current_request_id()
+            if request_id:
+                detail = {**context, "request_id": request_id}
+        message = _format_message(severity, title, detail, status)
         attempted = True
         sent = await _post_to_slack(webhook_url, message, dedupe_key=key)
         return sent

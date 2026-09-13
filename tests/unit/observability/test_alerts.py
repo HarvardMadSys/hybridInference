@@ -13,6 +13,7 @@ from serving.observability.alerts import (
     _PENDING_RESOLUTION_MAX_AGE_SEC,
     _PENDING_RESOLUTION_MAX_ATTEMPTS,
     _PENDING_RESOLUTIONS,
+    _REQUEST_ID_MAX_LEN,
     _RESOLUTION_CONTEXT,
     _RESOLUTION_DETAIL,
     _STATE_TRANSITIONS,
@@ -30,6 +31,7 @@ from serving.observability.alerts import (
     server_info,
     sweep_stale_breaches,
 )
+from serving.utils import context as req_ctx
 from serving.utils.secret_urls import redact_url, scrub, url_fingerprint
 
 
@@ -899,6 +901,159 @@ def test_format_message_escapes_caller_controlled_context():
     assert "&lt;!channel&gt; (40)" in message
     assert "<!channel>" not in message
     assert "/v1/chat &amp; /v1/models" in message
+
+
+class TestAlertsNameTheTriggeringRequest:
+    """A page should be joinable to a row in ``api_logs``.
+
+    Without the request id an operator reading "Provider circuit opened" has
+    only a timestamp to go on, and has to guess which of the requests in that
+    minute is the one the alert is about.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_request_context(self):
+        """Start each test with no ambient request.
+
+        The contextvar is process-wide, and a sync test elsewhere in the suite
+        that writes one outside a task (``tests/unit/test_auth_key_hash.py``
+        seeds a scope) leaves it visible to whatever runs next in the same
+        worker. The "no request context" cases here would then depend on test
+        ordering.
+        """
+        saved = req_ctx.get()
+        req_ctx.set({})
+        yield
+        req_ctx.set(saved)
+
+    async def test_a_firing_page_carries_the_request_id(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with (
+            patch(
+                "serving.observability.alerts._post_to_slack",
+                new=AsyncMock(return_value=True),
+            ) as mock_post,
+            patch(
+                "serving.observability.alerts._format_message",
+                wraps=_format_message,
+            ) as mock_format,
+            req_ctx.push(request_id="abc123def456"),
+        ):
+            await alert_slack(AlertSeverity.ERROR, "Provider circuit opened", {"provider": "zhipu"})
+
+        # The label is the key title-cased; ``_format_message`` has no label table.
+        assert "• *Request Id:* abc123def456" in mock_post.await_args.args[1]
+        assert mock_format.call_args.args[2]["request_id"] == "abc123def456"
+
+    async def test_no_request_context_leaves_the_field_off(self, monkeypatch):
+        """Background alerters (rules engine, stale sweep) have no request."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            sent = await alert_slack(AlertSeverity.WARN, "Failure rate high", {"rate": "0.4"})
+
+        assert sent is True
+        assert "Request Id" not in mock_post.await_args.args[1]
+
+    async def test_a_caller_supplied_id_wins(self, monkeypatch):
+        """A caller alerting *about* one request knows better than the ambient one.
+
+        The failed-request alerter reads its rows out of the database, so the
+        request it is paging about is not the request it is running under.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with (
+            patch(
+                "serving.observability.alerts._post_to_slack",
+                new=AsyncMock(return_value=True),
+            ) as mock_post,
+            req_ctx.push(request_id="ambient"),
+        ):
+            await alert_slack(AlertSeverity.ERROR, "Request failed", {"request_id": "explicit"})
+
+        assert "• *Request Id:* explicit" in mock_post.await_args.args[1]
+        assert "ambient" not in mock_post.await_args.args[1]
+
+    async def test_a_resolution_does_not_gain_the_field(self, monkeypatch):
+        """The request that observed the recovery is a *healthy* request.
+
+        Naming it on the recovery card would point an investigation at a
+        request that has nothing to do with the incident.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with (
+            patch(
+                "serving.observability.alerts._post_to_slack",
+                new=AsyncMock(return_value=True),
+            ) as mock_post,
+            req_ctx.push(request_id="recovering-request"),
+        ):
+            await alert_slack(
+                AlertSeverity.INFO,
+                "Recovered: Provider circuit opened",
+                {"alert": "circuit_open:zhipu"},
+                status="resolved",
+            )
+
+        assert "Request Id" not in mock_post.await_args.args[1]
+        assert "recovering-request" not in mock_post.await_args.args[1]
+
+    async def test_a_hostile_request_id_is_escaped(self, monkeypatch):
+        """``X-Request-ID`` is client-supplied and propagated verbatim.
+
+        Without the escape, naming your own request ``<!channel>`` is enough to
+        make the gateway ping the alert channel for you.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with (
+            patch(
+                "serving.observability.alerts._post_to_slack",
+                new=AsyncMock(return_value=True),
+            ) as mock_post,
+            req_ctx.push(request_id="<!channel>\nfake line"),
+        ):
+            await alert_slack(AlertSeverity.ERROR, "Provider circuit opened", {})
+
+        message = mock_post.await_args.args[1]
+        # Escaped once, by ``_format_message``: the newline is gone so the id
+        # cannot forge a bullet, and the mention renders as literal text.
+        assert "• *Request Id:* &lt;!channel&gt; fake line" in message
+        assert "<!channel>" not in message
+
+    async def test_an_overlong_request_id_is_bounded(self, monkeypatch):
+        """An unbounded id could push the server block past Slack's limit."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with (
+            patch(
+                "serving.observability.alerts._post_to_slack",
+                new=AsyncMock(return_value=True),
+            ) as mock_post,
+            req_ctx.push(request_id="z" * 5000),
+        ):
+            await alert_slack(AlertSeverity.ERROR, "Provider circuit opened", {})
+
+        message = mock_post.await_args.args[1]
+        assert f"• *Request Id:* {'z' * _REQUEST_ID_MAX_LEN}\n" in message
+        assert "z" * (_REQUEST_ID_MAX_LEN + 1) not in message
+        # The fields an operator reads first still made it into the card.
+        assert "*Server*" in message
+
+    async def test_the_callers_context_dict_is_not_mutated(self, monkeypatch):
+        """``alert_on_transition`` hands the same dict to every repeat."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        context = {"provider": "zhipu"}
+        with (
+            patch(
+                "serving.observability.alerts._post_to_slack",
+                new=AsyncMock(return_value=True),
+            ),
+            req_ctx.push(request_id="abc123def456"),
+        ):
+            await alert_slack(AlertSeverity.ERROR, "Provider circuit opened", context)
+
+        assert context == {"provider": "zhipu"}
 
 
 class TestResolutionCarriesIncidentDetail:
