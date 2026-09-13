@@ -15,8 +15,21 @@ from routing.endpoint_health import (
     _CircuitBreaker,
     _CircuitState,
 )
+from serving.observability import state_alert_policy
 from serving.observability.alerts import AlertSeverity, _format_message, reset_transition_state
 from serving.utils.logging import _STRUCTURED_LOG_KEYS, JsonFormatter
+
+
+def _set_usage_limit_paging(monkeypatch, enabled: bool) -> None:
+    """Pin the plan-usage paging knob for one test, restoring it afterwards."""
+    monkeypatch.setattr(
+        state_alert_policy,
+        "_CIRCUIT_OPEN",
+        state_alert_policy.circuit_open_policy().model_copy(
+            update={"page_on_usage_limit": enabled}
+        ),
+        raising=True,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -474,7 +487,7 @@ async def test_usage_limit_trip_makes_no_accusation_either(monkeypatch):
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
     monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.7")
-    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", True)
+    _set_usage_limit_paging(monkeypatch, True)
     from serving.observability.alerts import reset_dedupe_state
 
     reset_dedupe_state()

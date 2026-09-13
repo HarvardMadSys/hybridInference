@@ -11,7 +11,6 @@ import logging
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
-from routing import endpoint_health
 from routing.endpoint_health import (
     _ALERT_TASKS,
     _MIN_ALERT_GAP_SEC,
@@ -19,6 +18,21 @@ from routing.endpoint_health import (
     _CircuitState,
     set_usage_limit_paging,
 )
+from serving.observability import state_alert_policy
+from serving.observability.alert_config import CircuitOpenStateChange
+
+
+def _set_usage_limit_paging(monkeypatch, enabled: bool) -> None:
+    """Pin the plan-usage paging knob for one test, restoring it afterwards."""
+    monkeypatch.setattr(
+        state_alert_policy,
+        "_CIRCUIT_OPEN",
+        state_alert_policy.circuit_open_policy().model_copy(
+            update={"page_on_usage_limit": enabled}
+        ),
+        raising=True,
+    )
+
 
 # "weekly usage limit" with no explicit timestamp -> reset ~7 days out,
 # comfortably in the future regardless of when the test runs.
@@ -421,7 +435,7 @@ async def test_usage_limit_paging_off_never_pages(monkeypatch):
     # (``state_changes.circuit_open.page_on_usage_limit: false``). The trip is
     # still logged and the endpoint still opens; only the page is dropped.
     _trip_env(monkeypatch)
-    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", False)
+    _set_usage_limit_paging(monkeypatch, False)
     cb = _CircuitBreaker(provider="zai:api.z.ai:443")
 
     with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
@@ -446,7 +460,7 @@ async def test_usage_limit_paging_off_still_pages_other_outages(monkeypatch):
     # The mute is scoped to plan exhaustion. An endpoint that breaks for any
     # other reason is a real outage and pages as before.
     _trip_env(monkeypatch)
-    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", False)
+    _set_usage_limit_paging(monkeypatch, False)
     cb = _CircuitBreaker(provider="zai:api.z.ai:443")
 
     with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
@@ -460,11 +474,27 @@ async def test_usage_limit_paging_off_still_pages_other_outages(monkeypatch):
 def test_set_usage_limit_paging_toggles_the_policy(monkeypatch):
     # Startup wiring reads alerts.yaml and calls the setter; nothing else mutates
     # the flag, so a bad value must not leave paging in an undefined state.
-    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", True)
+    _set_usage_limit_paging(monkeypatch, True)
     set_usage_limit_paging(False)
-    assert endpoint_health._PAGE_ON_USAGE_LIMIT is False
+    assert state_alert_policy.circuit_open_policy().page_on_usage_limit is False
     set_usage_limit_paging(True)
-    assert endpoint_health._PAGE_ON_USAGE_LIMIT is True
+    assert state_alert_policy.circuit_open_policy().page_on_usage_limit is True
+
+
+def test_set_usage_limit_paging_leaves_the_other_knobs_alone(monkeypatch):
+    # The setter exists for one field. Rebuilding the whole policy from its
+    # default would silently undo a deployment's cooldown and enabled settings.
+    monkeypatch.setattr(
+        state_alert_policy,
+        "_CIRCUIT_OPEN",
+        CircuitOpenStateChange(enabled=False, cooldown_sec=120),
+        raising=True,
+    )
+    set_usage_limit_paging(False)
+    policy = state_alert_policy.circuit_open_policy()
+    assert policy.page_on_usage_limit is False
+    assert policy.enabled is False
+    assert policy.cooldown_sec == 120
 
 
 async def test_usage_limit_paging_off_survives_pooled_key_recovery(monkeypatch):
@@ -473,7 +503,7 @@ async def test_usage_limit_paging_off_survives_pooled_key_recovery(monkeypatch):
     # next streak trips as KeyPoolExhausted — no usage marker. With paging off
     # that must still not page.
     _trip_env(monkeypatch)
-    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", False)
+    _set_usage_limit_paging(monkeypatch, False)
     cb = _CircuitBreaker(provider="glm-5.2:zai-api")
 
     with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
@@ -496,7 +526,7 @@ async def test_usage_limit_paging_off_pages_again_after_the_floor(monkeypatch):
     # The reason-agnostic silence is bounded by the floor, not permanent: an
     # endpoint that breaks for an unrelated reason once it elapses still pages.
     _trip_env(monkeypatch)
-    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", False)
+    _set_usage_limit_paging(monkeypatch, False)
     cb = _CircuitBreaker(provider="glm-5.2:zai-api")
 
     with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()) as mock_alert:
@@ -519,7 +549,7 @@ async def test_usage_limit_paging_off_floor_does_not_slide_forever(monkeypatch):
     # The stamp advances once per floor, not on every muted failure, so a plan
     # that stays dry cannot push its silence out indefinitely.
     _trip_env(monkeypatch)
-    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", False)
+    _set_usage_limit_paging(monkeypatch, False)
     cb = _CircuitBreaker(provider="glm-5.2:zai-api")
 
     with patch("routing.endpoint_health.alert_on_transition", new=AsyncMock()):

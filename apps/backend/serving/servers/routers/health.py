@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from serving.config.settings import has_role
 from serving.observability.alerts import AlertSeverity, alert_on_transition
+from serving.observability.state_alert_policy import db_disconnect_policy
 from serving.servers.auth import is_user_auth_enabled, optional_verify_api_key
 from serving.servers.deps import (
     database_enabled,
@@ -151,7 +152,11 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
     # sinks unreachable spends their timeouts in sequence and a recovery may
     # additionally wait out an in-flight one. Awaiting that here would let an
     # alerting outage restart a healthy gateway.
-    if op_store:
+    db_policy = db_disconnect_policy()
+    # ``state_changes.db_disconnect.enabled: false`` skips the report entirely
+    # rather than sending and letting the sink drop it: a fresh process has no
+    # open incident to close, so nothing is stranded by not reporting.
+    if op_store and db_policy.enabled:
         _report_in_background(
             alert_on_transition(
                 key=f"db_disconnect:{op_status.get('backend', 'operational')}",
@@ -163,11 +168,11 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
                     "store": "operational_store",
                     "error": (op_error or "health_check returned False")[:500],
                 },
-                cooldown_sec=300,
+                cooldown_sec=db_policy.cooldown_sec,
                 kind="state",
             )
         )
-    if log_store:
+    if log_store and db_policy.enabled:
         _report_in_background(
             alert_on_transition(
                 key=f"db_disconnect:{log_status.get('backend', 'log')}_log",
@@ -179,7 +184,7 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
                     "store": "log_store",
                     "error": (log_error or "health_check returned False")[:500],
                 },
-                cooldown_sec=300,
+                cooldown_sec=db_policy.cooldown_sec,
                 kind="state",
             )
         )
