@@ -4,6 +4,7 @@ import asyncio
 import logging
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from serving.observability.alerts import (
@@ -29,6 +30,7 @@ from serving.observability.alerts import (
     server_info,
     sweep_stale_breaches,
 )
+from serving.utils.secret_urls import redact_url, scrub, url_fingerprint
 
 
 @pytest.fixture(autouse=True)
@@ -1487,3 +1489,194 @@ class TestTheNoSamplesSweepStopsRetrying:
         # it keeps re-posting.
         assert not _TRANSITIONS._firing
         assert not _TRANSITIONS._bounds
+
+
+#: Captured before any patching: ``patch`` on ``alerts.httpx.AsyncClient``
+#: rebinds the attribute on the httpx module itself, so a factory that looked
+#: the class up by name would call itself.
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
+
+
+def _real_client_over(handler):
+    """Patch target giving the *real* ``httpx.AsyncClient`` a mock transport.
+
+    The stub client the classes above patch in never reaches httpx's own
+    logging, which is exactly where the credential leak lives — so these tests
+    drive the real client and let ``httpx`` write its request line.
+    """
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return _REAL_ASYNC_CLIENT(*args, **kwargs)
+
+    return factory
+
+
+class TestTheRequestLineCannotCarryTheWebhook:
+    """``httpx`` logs the full request URL at INFO for every call it makes.
+
+    For a Slack incoming webhook that URL *is* the credential: the
+    ``T…/B…/…`` path is the whole secret, with no separate token behind it. So
+    the request line wrote the credential into the application log once per
+    alert post — 221 lines in 24h of container logs on the deployment where
+    this was measured — and anyone who could read logs could post to the
+    channel. The fix redacts that URL for this sender only; these tests hold
+    both halves of that: the secret never appears, and the line still does.
+    """
+
+    #: Obviously fake, and shaped like the real thing so the assertions below
+    #: have something to find. ``.test`` is a reserved TLD; nothing resolves.
+    WEBHOOK = "https://hooks.slack.test/services/T00000000/B00000000/nOtArEaLtOkEn"
+    SECRET_PATH = "/services/T00000000/B00000000/nOtArEaLtOkEn"
+
+    def _assert_no_secret(self, caplog):
+        """Nothing in the formatted output may carry the URL, path or token."""
+        assert self.WEBHOOK not in caplog.text
+        assert self.SECRET_PATH not in caplog.text
+        assert "nOtArEaLtOkEn" not in caplog.text
+
+    async def test_a_delivered_post_writes_no_copy_of_the_url(self, caplog):
+        """The steady-state case: 221 of those 221 lines were successful posts."""
+        with (
+            patch(
+                "serving.observability.alerts.httpx.AsyncClient",
+                _real_client_over(lambda _req: httpx.Response(200)),
+            ),
+            caplog.at_level(logging.DEBUG),
+        ):
+            sent = await _post_to_slack(self.WEBHOOK, "body", dedupe_key="circuit_open:zhipu")
+
+        assert sent is True
+        self._assert_no_secret(caplog)
+        # Redacted, not silenced: httpx still logged the call, and the host plus
+        # the fingerprint still answer "did we post, and to which sink".
+        assert "HTTP Request" in caplog.text
+        assert "hooks.slack.test" in caplog.text
+        assert url_fingerprint(self.WEBHOOK) in caplog.text
+
+    async def test_a_refusal_still_names_its_status_and_alert(self, caplog):
+        """The WARNING is the primary delivery signal now that the URL is gone."""
+        with (
+            patch(
+                "serving.observability.alerts.httpx.AsyncClient",
+                _real_client_over(lambda _req: httpx.Response(404)),
+            ),
+            caplog.at_level(logging.DEBUG),
+        ):
+            sent = await _post_to_slack(self.WEBHOOK, "body", dedupe_key="circuit_open:zhipu")
+
+        assert sent is False
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and r.name == "serving.observability.alerts"
+        ]
+        assert len(warnings) == 1
+        assert "404" in warnings[0].getMessage()
+        assert "circuit_open:zhipu" in warnings[0].getMessage()
+        assert url_fingerprint(self.WEBHOOK) in warnings[0].getMessage()
+        self._assert_no_secret(caplog)
+
+    async def test_a_transport_error_is_logged_without_the_url(self, caplog):
+        """A real ``httpx`` transport failure, formatted traceback and all.
+
+        Alone this one proves nothing: it passes against the unfixed sender too,
+        because httpx's own error wording omits the URL and the request line is
+        never reached when the post never completes. It is a regression guard —
+        the case below is the one that fails without the fix.
+        """
+
+        def _refuse(request):
+            raise httpx.ConnectError("connection refused", request=request)
+
+        with (
+            patch(
+                "serving.observability.alerts.httpx.AsyncClient",
+                _real_client_over(_refuse),
+            ),
+            caplog.at_level(logging.DEBUG),
+        ):
+            sent = await _post_to_slack(self.WEBHOOK, "body", dedupe_key="circuit_open:zhipu")
+
+        assert sent is False
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1
+        assert "circuit_open:zhipu" in errors[0].getMessage()
+        assert alert_delivery_failures_total() == {"exception": 1}
+        self._assert_no_secret(caplog)
+
+    async def test_an_error_that_quotes_the_url_is_scrubbed_out_of_the_traceback(self, caplog):
+        """The traceback is the leak path that survives a careful log call.
+
+        An exception worded in terms of the request carries the URL into the
+        formatted output even when every ``%s`` in the log call is safe, and
+        nothing about httpx guarantees its wording stays URL-free across
+        versions or proxies. So the rendered traceback is scrubbed, not trusted.
+        """
+
+        def _fail_loudly(_request):
+            raise RuntimeError(f"could not reach {self.WEBHOOK}")
+
+        with (
+            patch(
+                "serving.observability.alerts.httpx.AsyncClient",
+                _real_client_over(_fail_loudly),
+            ),
+            caplog.at_level(logging.DEBUG),
+        ):
+            sent = await _post_to_slack(self.WEBHOOK, "body", dedupe_key="circuit_open:zhipu")
+
+        assert sent is False
+        self._assert_no_secret(caplog)
+        # The failure is still reported, and still identifies the sink.
+        assert "could not reach" in caplog.text
+        assert url_fingerprint(self.WEBHOOK) in caplog.text
+
+    async def test_httpx_is_not_muted_for_every_other_call_site(self, caplog):
+        """Scoped to the alert path: the blunt fix would have cost the rest.
+
+        ``logging.getLogger("httpx").setLevel(WARNING)`` at import time would
+        have fixed this file and silently removed the request line from every
+        adapter, probe and health check in the gateway.
+        """
+        with patch(
+            "serving.observability.alerts.httpx.AsyncClient",
+            _real_client_over(lambda _req: httpx.Response(200)),
+        ):
+            await _post_to_slack(self.WEBHOOK, "body", dedupe_key="k")
+
+        # Same process, same logger, a call that is not an alert post.
+        other = "https://example.test/v1/models?verbose=1"
+        with caplog.at_level(logging.DEBUG):
+            async with _REAL_ASYNC_CLIENT(
+                transport=httpx.MockTransport(lambda _req: httpx.Response(200))
+            ) as client:
+                await client.get(other)
+
+        assert other in caplog.text
+        assert logging.getLogger("httpx").level == logging.NOTSET
+        assert logging.getLogger("httpx").disabled is False
+
+
+class TestTheRedactedFormNamesTheSinkOnly:
+    """What replaces the URL has to be usable and has to not be the URL."""
+
+    WEBHOOK = "https://hooks.slack.test/services/T00000000/B00000000/nOtArEaLtOkEn"
+
+    def test_it_keeps_the_host_and_drops_everything_after_it(self):
+        redacted = redact_url(self.WEBHOOK)
+        assert redacted.startswith("https://hooks.slack.test/")
+        assert "services" not in redacted
+        assert "nOtArEaLtOkEn" not in redacted
+
+    def test_two_webhooks_on_one_host_stay_distinguishable(self):
+        """ "Which webhook did we post to" must survive the redaction."""
+        other = self.WEBHOOK.replace("nOtArEaLtOkEn", "aLsOnOtReAl")
+        assert redact_url(self.WEBHOOK) != redact_url(other)
+        assert redact_url(self.WEBHOOK) == redact_url(self.WEBHOOK)
+
+    def test_a_path_only_mention_is_scrubbed_too(self):
+        """Some errors name the request target without the host in front."""
+        scrubbed = scrub("POST /services/T00000000/B00000000/nOtArEaLtOkEn failed", self.WEBHOOK)
+        assert "nOtArEaLtOkEn" not in scrubbed
+        assert url_fingerprint(self.WEBHOOK) in scrubbed

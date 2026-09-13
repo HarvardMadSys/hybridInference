@@ -15,6 +15,7 @@ import platform
 import socket
 import threading
 import time
+import traceback
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 from serving.observability.alert_transitions import (
     ThresholdTransitionTracker,
 )
+from serving.utils.secret_urls import posting_to, scrub
 
 log = logging.getLogger(__name__)
 
@@ -293,24 +295,40 @@ async def _post_to_slack(webhook_url: str, message: str, *, dedupe_key: str = ""
 
     ``webhook_url`` is deliberately never logged. It is a bearer credential —
     whoever holds it can post to the channel — and this line exists to be read
-    by people who do not need it.
+    by people who do not need it. The same holds for the lines this function
+    does not write: ``httpx`` logs the full request URL at INFO for every call,
+    which put the credential into the container log a few hundred times a day,
+    so the post runs inside ``posting_to`` and every line about it — httpx's
+    own included — names the sink as ``scheme://host/#<fingerprint>`` instead.
     """
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(webhook_url, json={"text": message})
-        if 200 <= resp.status_code < 300:
-            return True
-        _DELIVERY_FAILURES_TOTAL[str(resp.status_code)] += 1
-        log.warning(
-            "slack webhook post rejected: status=%s alert=%s",
-            resp.status_code,
-            dedupe_key or "-",
-        )
-        return False
-    except Exception:
-        _DELIVERY_FAILURES_TOTAL["exception"] += 1
-        log.exception("slack webhook post failed: alert=%s", dedupe_key or "-")
-        return False
+    with posting_to(webhook_url) as sink:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(webhook_url, json={"text": message})
+            if 200 <= resp.status_code < 300:
+                return True
+            _DELIVERY_FAILURES_TOTAL[str(resp.status_code)] += 1
+            log.warning(
+                "slack webhook post rejected: status=%s alert=%s sink=%s",
+                resp.status_code,
+                dedupe_key or "-",
+                sink,
+            )
+            return False
+        except Exception:
+            _DELIVERY_FAILURES_TOTAL["exception"] += 1
+            # Rendered and scrubbed here rather than handed to ``log.exception``:
+            # a transport that words its error in terms of the request puts the
+            # URL in the traceback, and the traceback is formatted inside the
+            # handler, long after the last point at which the whole string is in
+            # our hands.
+            log.error(
+                "slack webhook post failed: alert=%s sink=%s\n%s",
+                dedupe_key or "-",
+                sink,
+                scrub(traceback.format_exc(), webhook_url),
+            )
+            return False
 
 
 async def alert_slack(
