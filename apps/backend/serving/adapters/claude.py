@@ -25,6 +25,7 @@ import aiohttp
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+    from contextlib import AbstractAsyncContextManager
 
 from serving.stream import done_sentinel, make_final_usage_chunk
 from serving.utils.logging import get_logger
@@ -46,6 +47,8 @@ from .claude_format import (
     parse_response_content,
     parse_usage,
 )
+from .openai_compat import _key_pool_provider_label
+from .upstream_limiter import UpstreamSlot, acquire_upstream_slot, outcome_status, upstream_slot
 
 logger = get_logger(__name__)
 
@@ -55,6 +58,30 @@ class ClaudeAdapter(BaseAdapter):
 
     # Anthropic API version
     ANTHROPIC_VERSION = "vertex-2023-10-16"
+
+    async def _acquire_upstream_slot(self) -> UpstreamSlot:
+        """Take an outbound concurrency slot for this endpoint's provider account.
+
+        Single-key adapter, so the bucket — keyed on (provider label, key) — is
+        fixed for the route. Raises ``UpstreamSaturated`` when the account's
+        allowance is already full, which the router turns into a fallback to
+        another endpoint. The streaming path holds the slot for the whole body
+        iteration, not just the response open: concurrency means generations in
+        flight.
+        """
+        return await acquire_upstream_slot(
+            _key_pool_provider_label(self.config),
+            self.config.api_key,
+            base_url=self.config.base_url,
+        )
+
+    def _upstream_slot(self) -> AbstractAsyncContextManager[UpstreamSlot]:
+        """Return an ``async with`` guard around :meth:`_acquire_upstream_slot`."""
+        return upstream_slot(
+            _key_pool_provider_label(self.config),
+            self.config.api_key,
+            base_url=self.config.base_url,
+        )
 
     def _convert_content_block(self, block: dict[str, Any] | str) -> dict[str, Any]:
         """Convert a single content block from OpenAI format to Claude format."""
@@ -143,13 +170,14 @@ class ClaudeAdapter(BaseAdapter):
         # after Vertex may have already generated and billed the response) or
         # on a deterministic 4xx would double-bill and add latency; resilience
         # comes from the router's fallback chain (same policy as openai_compat).
-        data = await self.http.json_post_with_retry(
-            endpoint,
-            json=payload,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=120),
-            retries=1,
-        )
+        async with self._upstream_slot():
+            data = await self.http.json_post_with_retry(
+                endpoint,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=120),
+                retries=1,
+            )
 
         if "Code" in data and "Error" in data:
             error_code = data.get("Code")
@@ -244,6 +272,11 @@ class ClaudeAdapter(BaseAdapter):
         logger.debug(f"Starting stream to: {endpoint}")
         logger.debug(f"Payload summary: {json.dumps(self._summarize_messages(converted_msgs))}")
 
+        slot = await self._acquire_upstream_slot()
+        # What the concurrency limiter is told when the slot goes back. Neutral
+        # by default so an exit neither branch below reaches — a client
+        # disconnect closing this generator mid-stream — moves no AIMD state.
+        upstream_outcome: int | None = None
         try:
             # Google Vertex API may return non-streaming JSON instead of SSE
             # Try to use ndjson mode which is more tolerant
@@ -374,6 +407,7 @@ class ClaudeAdapter(BaseAdapter):
                             cache_read_reported=cache_read_reported,
                             reasoning_tokens=thinking_tokens,
                         )
+                        upstream_outcome = 200
                         yield done_sentinel()
                         return
 
@@ -396,6 +430,7 @@ class ClaudeAdapter(BaseAdapter):
                         cache_read_reported=cache_read_reported,
                         reasoning_tokens=thinking_tokens,
                     )
+                    upstream_outcome = 200
                     yield done_sentinel()
                     return
 
@@ -422,7 +457,11 @@ class ClaudeAdapter(BaseAdapter):
 
                 if result.is_done:
                     break
+            # Loop ran to completion or broke on ``is_done``: the upstream
+            # answered, so the concurrency level it was asked to hold was fine.
+            upstream_outcome = 200
         except Exception as e:
+            upstream_outcome = outcome_status(e)
             logger.error(f"[CLAUDE STREAM ERROR] {type(e).__name__}: {e}")
             if isinstance(e, aiohttp.ClientResponseError):
                 logger.error(f"Response status: {e.status}, message: {e.message}")
@@ -435,6 +474,12 @@ class ClaudeAdapter(BaseAdapter):
                     logger.error("Response body: No response body available")
             # Fail-fast: propagate error immediately instead of fallback
             raise
+        finally:
+            # The slot was held across the whole generation, not just the
+            # response open. Released here so it comes back on every exit —
+            # the two early returns above, the error path, and a client
+            # disconnect that closes this generator mid-stream.
+            slot.release(status_code=upstream_outcome)
 
         # Always emit collected tool calls, the final usage chunk, and [DONE]
         # after the upstream closes -- even if message_stop was never received

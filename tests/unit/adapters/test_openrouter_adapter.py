@@ -16,6 +16,7 @@ from serving.adapters.profiles import (
     get_usage_normalizer,
     normalize_usage_openrouter,
 )
+from serving.adapters.upstream_limiter import UpstreamSlot
 
 
 def test_usage_info_default_upstream_cost_is_none() -> None:
@@ -446,10 +447,10 @@ async def test_openrouter_adapter_stream_threads_upstream_cost() -> None:
 
     async def fake_open_stream(url, payload, timeout=None):
         # Drive the parent's _open_stream_with_pool contract:
-        # yields exactly one (stream_iter, lease, first_chunk).
+        # yields exactly one (stream_iter, lease, first_chunk, slot).
         gen = fake_stream()
         first = await gen.__anext__()
-        yield gen, None, first
+        yield gen, None, first, UpstreamSlot(None)
 
     with patch.object(adapter, "_open_stream_with_pool", fake_open_stream):
         chunks: list[str] = []
