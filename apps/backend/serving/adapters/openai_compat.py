@@ -1100,6 +1100,7 @@ class OpenAICompatAdapter(BaseAdapter):
         # client-side cancellations (CancelledError, GeneratorExit) are
         # BaseExceptions that never mute either.
         stream_error = False
+        stream_status = 200
         try:
             async for chunk in _drain():
                 if not chunk.strip():
@@ -1114,6 +1115,28 @@ class OpenAICompatAdapter(BaseAdapter):
 
                     try:
                         data = json.loads(data_str)
+
+                        # A gateway may have committed HTTP 200 before its
+                        # upstream failed. Preserve the SSE error instead of
+                        # dropping a choices-less frame and reporting EOF as
+                        # an incomplete stream (or treating [DONE] as success).
+                        if isinstance(data, dict) and (upstream_error := data.get("error")):
+                            code = (
+                                upstream_error.get("code")
+                                if isinstance(upstream_error, dict)
+                                else None
+                            )
+                            if isinstance(code, str) and len(code) == 3 and code.isdecimal():
+                                code = int(code)
+                            status = code if type(code) is int and 400 <= code <= 599 else 502
+                            error = aiohttp.ClientResponseError(
+                                request_info=SimpleNamespace(real_url=url),
+                                history=(),
+                                status=status,
+                                message=str(upstream_error),
+                            )
+                            error.error_body = data_str
+                            raise error
 
                         raw_choices = data.get("choices") if isinstance(data, dict) else None
                         if isinstance(raw_choices, list) and any(
@@ -1147,6 +1170,12 @@ class OpenAICompatAdapter(BaseAdapter):
                 self.config.id,
                 getattr(stream_timeout, "sock_read", -1.0) if stream_timeout else -1.0,
             )
+        except aiohttp.ClientResponseError as exc:
+            # In-band HTTP errors use the same key-health classification as
+            # opening errors; a request-scoped 400 must not mute a valid key.
+            # Do not restart a generation once response bytes have arrived.
+            stream_status = exc.status
+            raise
         except aiohttp.ClientError:
             # Mid-stream upstream I/O failure (disconnect, ClientPayloadError):
             # mute the key, then propagate to the client as before.
@@ -1154,7 +1183,9 @@ class OpenAICompatAdapter(BaseAdapter):
             raise
         finally:
             if active_lease is not None and self._key_pool is not None:
-                self._key_pool.release(active_lease, status_code=0 if stream_error else 200)
+                self._key_pool.release(
+                    active_lease, status_code=0 if stream_error else stream_status
+                )
                 logger.debug(
                     "key_pool_active_affinities",
                     extra={

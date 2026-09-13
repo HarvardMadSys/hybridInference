@@ -256,6 +256,20 @@ _UPSTREAM_QUOTA_MARKERS: tuple[str, ...] = (
     "spending limits",
     "usage limit",
     "usage limits",
+    # Period-qualified allowances, plus the bare exhaustion phrasing: a provider
+    # that answers "Weekly/Monthly Limit Exhausted" is reporting our depleted
+    # plan without using any of the words above. The qualified forms also cover
+    # the "...limit reached" variants, which is why bare "limit reached" stays
+    # out -- that would suppress limits the *user* can act on (context length,
+    # per-request token caps) rather than our account's.
+    "daily limit",
+    "daily limits",
+    "weekly limit",
+    "weekly limits",
+    "monthly limit",
+    "monthly limits",
+    "limit exhausted",
+    "limits exhausted",
     "purchase more",
 )
 # Word-boundary anchored so "quota" does not match "quotation".
