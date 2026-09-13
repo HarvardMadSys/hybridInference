@@ -8,6 +8,7 @@ import pytest
 
 from serving.observability.alerts import (
     _EMOJI,
+    _LAST_FIRED,
     _PENDING_RESOLUTION_MAX_AGE_SEC,
     _PENDING_RESOLUTION_MAX_ATTEMPTS,
     _PENDING_RESOLUTIONS,
@@ -1147,6 +1148,21 @@ class _StubClient:
         return _StubResponse(self._status_code)
 
 
+class _RaisingClient(_StubClient):
+    """Transport error rather than an answer — the ``except`` branch's case."""
+
+    def __init__(self) -> None:
+        super().__init__(0)
+
+    async def post(self, _url: str, json: dict | None = None) -> _StubResponse:
+        raise RuntimeError("connection refused")
+
+
+def _webhook_refusing_to_connect():
+    """Patch target for ``httpx.AsyncClient`` whose posts raise."""
+    return lambda *_args, **_kwargs: _RaisingClient()
+
+
 def _webhook_answering(status_code: int):
     """Patch target for ``httpx.AsyncClient`` that always returns ``status_code``."""
     return lambda *_args, **_kwargs: _StubClient(status_code)
@@ -1195,9 +1211,14 @@ class TestARefusedDeliveryIsVisible:
         ):
             await _post_to_slack(self.WEBHOOK, "body", dedupe_key="circuit_open:zhipu")
 
-        logged = "\n".join(r.getMessage() for r in caplog.records)
-        assert self.WEBHOOK not in logged
-        assert "sUpErSeCrEtToKeN" not in logged
+        # Assert the line exists before asserting what it omits: a version of
+        # this module that logs nothing at all would otherwise pass here, and
+        # silence is the defect the class above exists to catch.
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING]
+        # ``caplog.text`` is the *formatted* output, so this covers the
+        # traceback of the ``except`` branch as well as the message itself.
+        assert self.WEBHOOK not in caplog.text
+        assert "sUpErSeCrEtToKeN" not in caplog.text
 
     async def test_a_delivered_alert_says_nothing(self, caplog):
         """One line per refusal, none per success: this must stay greppable."""
@@ -1222,6 +1243,32 @@ class TestARefusedDeliveryIsVisible:
             await _post_to_slack(self.WEBHOOK, "body", dedupe_key="k")
 
         assert alert_delivery_failures_total() == {"404": 2}
+
+    async def test_a_transport_error_still_names_the_alert_it_lost(self, caplog):
+        """The ``except`` branch logged already; what it never said was *which*.
+
+        A traceback with no key tells an operator the sink is unhappy but not
+        which page went missing, and the counter needs the transport failures
+        too or a webhook that stops resolving looks like a healthy one.
+        """
+        with (
+            patch(
+                "serving.observability.alerts.httpx.AsyncClient",
+                _webhook_refusing_to_connect(),
+            ),
+            caplog.at_level(logging.DEBUG, logger="serving.observability.alerts"),
+        ):
+            sent = await _post_to_slack(self.WEBHOOK, "body", dedupe_key="circuit_open:zhipu")
+
+        assert sent is False
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1
+        assert "circuit_open:zhipu" in errors[0].getMessage()
+        assert alert_delivery_failures_total() == {"exception": 1}
+        # ``caplog.text`` carries the formatted traceback, so this covers the
+        # frames as well as the message.
+        assert self.WEBHOOK not in caplog.text
+        assert "sUpErSeCrEtToKeN" not in caplog.text
 
 
 class TestTheCooldownIsArmedOnTheAttempt:
@@ -1271,6 +1318,45 @@ class TestTheCooldownIsArmedOnTheAttempt:
         # Failed attempt, free retry that lands — and then silence, because the
         # delivered alert is under cooldown like any other.
         assert mock_post.await_count == 2
+
+    async def test_a_failed_resolution_does_not_arm_the_firing_cooldown(self, monkeypatch):
+        """A close nobody read must not delay the page that follows it.
+
+        The guard skips resolutions outright — a recovery may never be
+        suppressed — so arming the cooldown on a failed close buys no
+        suppression at all. It would only push the window for the *next* breach
+        out by a full cooldown, measured from the moment the close failed, and
+        the sweep's own caps are what bound the resolution retries instead.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_dedupe_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=False),
+        ) as mock_post:
+            # The resolution edge, then the retry the sweep would make.
+            for _ in range(2):
+                await alert_slack(
+                    AlertSeverity.INFO,
+                    "Recovered: Provider failed",
+                    {},
+                    dedupe_key="K",
+                    cooldown_sec=300,
+                    status="resolved",
+                )
+            assert mock_post.await_count == 2
+            assert "K" not in _LAST_FIRED
+
+            sent = await alert_slack(
+                AlertSeverity.ERROR,
+                "Provider failed",
+                {},
+                dedupe_key="K",
+                cooldown_sec=300,
+            )
+
+        assert sent is False  # the sink is still refusing
+        assert mock_post.await_count == 3  # but the breach was attempted, not swallowed
 
 
 class TestPendingResolutionsStopRetrying:

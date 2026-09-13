@@ -16,7 +16,7 @@ import socket
 import threading
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
@@ -39,9 +39,10 @@ _LAST_FIRED: dict[str, float] = defaultdict(float)
 #: resolution waits on it instead of being dropped; see ``alert_slack``.
 _IN_FLIGHT: dict[str, asyncio.Event] = {}
 
-#: Consecutive failed delivery attempts per dedupe key, cleared by a success.
+#: Consecutive failed *firing* deliveries per dedupe key, cleared by a success.
 #: A count rather than a flag because the cooldown guard spends exactly one
-#: free retry on it — see ``alert_slack``.
+#: free retry on it — see ``alert_slack``. Resolutions are not counted here:
+#: they bypass the cooldown, so they never compete for that retry.
 _FAILED_DELIVERIES: dict[str, int] = {}
 
 #: Failed webhook deliveries since process start, keyed by HTTP status as a
@@ -420,16 +421,17 @@ async def alert_slack(
             done = _IN_FLIGHT.pop(key, None)
             if done is not None:
                 done.set()
-            if attempted:
-                if sent:
-                    _FAILED_DELIVERIES.pop(key, None)
-                else:
-                    _FAILED_DELIVERIES[key] = _FAILED_DELIVERIES.get(key, 0) + 1
+            if sent:
+                # Any delivered post proves the sink answers for this key, so
+                # whatever streak it was carrying is over.
+                _FAILED_DELIVERIES.pop(key, None)
+            elif attempted and not resolution:
+                _FAILED_DELIVERIES[key] = _FAILED_DELIVERIES.get(key, 0) + 1
             if sent and resolution:
                 # The breach is over, so the next one must page immediately
                 # rather than serve out the cooldown this incident started.
                 _LAST_FIRED.pop(key, None)
-            elif attempted:
+            elif attempted and not resolution:
                 # Armed on the attempt, not on delivery. Arming only on success
                 # meant a sink that never succeeds never armed anything: the
                 # same breach was re-posted at every evaluation for as long as
@@ -440,6 +442,14 @@ async def alert_slack(
                 #
                 # A *snoozed* or short-circuited call never reaches here with
                 # ``attempted`` set, so it still costs no cooldown.
+                #
+                # Resolutions stay out of both tables entirely, exactly as
+                # before: they never consult the cooldown, so arming it on a
+                # failed close would buy no suppression and would instead push
+                # the window for the *next* breach out by a full cooldown from
+                # the moment the close failed — a message nobody read delaying
+                # a page somebody needs. The resolution retries are bounded by
+                # the sweep caps below instead.
                 _LAST_FIRED[key] = _monotonic()
 
 
@@ -530,8 +540,11 @@ class _PendingResolution:
 
     kind: Literal["metric", "state"]
     title: str
-    #: ``time.time()`` of the send that failed, for the age cap below.
-    queued_at: float = 0.0
+    #: ``time.time()`` of the send that failed, for the age cap below. Defaulted
+    #: from the clock rather than to ``0.0``: a zero would read as "queued at the
+    #: epoch" and the age cap would drop the entry on its first sweep, which is
+    #: a silent way for a future caller to lose a resolution.
+    queued_at: float = field(default_factory=time.time)
     #: Retries spent by the sweep, for the attempt cap below.
     attempts: int = 0
 
