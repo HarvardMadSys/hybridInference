@@ -14,7 +14,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from inspect import isawaitable
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from routing.protocols import RoutingRequestOptions
     from serving.adapters.base import BaseAdapter
 
-from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry
+from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry, _http_status_of
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
     PrefillLease,
@@ -135,6 +135,119 @@ def current_affinity_key() -> str | None:
 AFFINITY_TTL_SECONDS: float = 300.0
 AFFINITY_SWEEP_THRESHOLD: int = 1000
 AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
+
+
+# HTTP statuses that describe the *request the client sent*, as opposed to the
+# state of whichever route happened to answer it. Only these may displace the
+# primary route's error when a request is reported to the caller — see
+# ``_select_surfaced_error``.
+#
+# Deliberately excluded, though they are all 4xx:
+#   401 / 403 / 407 — a rejected credential is this gateway's own
+#       misconfiguration, not anything in the caller's payload. 403 is also what
+#       several providers return for "you've reached your concurrent request
+#       limit", which clears on its own within seconds.
+#   408 / 429 — upstream slowness and overload.
+# Promoting any of those over a primary transport failure would relabel a
+# recoverable capacity blip on one route as a terminal, non-retryable client
+# error, and would tell users their key was revoked when it was not.
+_REQUEST_DESCRIBING_STATUSES = frozenset({400, 404, 413, 422})
+
+
+@dataclass(frozen=True)
+class _RouteAttempt:
+    """One dispatched route and the exception it raised.
+
+    ``failed_attempt()`` renders an attempt down to a dict of strings and drops
+    the exception object, so the ``failed_attempts`` telemetry list it builds
+    cannot answer "which of these should the caller actually be told about?".
+    This keeps the exceptions themselves, in dispatch order, alongside it.
+    """
+
+    adapter: BaseAdapter
+    error: BaseException
+
+
+def _describes_request(exc: BaseException) -> bool:
+    """Return whether ``exc`` reports something wrong with the request itself.
+
+    Borrows ``endpoint_health``'s status extraction rather than duck-typing the
+    exception again here: the breaker already decides what counts as a client
+    error from the same attributes, and two readers that disagree about where an
+    upstream's status lives would classify the same failure two ways.
+    """
+    return _http_status_of(exc) in _REQUEST_DESCRIBING_STATUSES
+
+
+def _select_surfaced_error(attempts: Sequence[_RouteAttempt]) -> _RouteAttempt:
+    """Choose which of several failed attempts the caller is told about.
+
+    ``attempts[0]`` is the primary pick and remains the default: a request is
+    normally reported the way the route chosen for it reported it, and every
+    other attempt is preserved either way as ``failed_attempts`` telemetry.
+
+    That default is overridden in exactly one case — the primary's failure says
+    nothing about the request while some fallback's does. A dead endpoint raises
+    a bare ``ClientConnectorError`` carrying no HTTP status at all, which the
+    classifier in ``completions_stream`` defaults to 500 and renders as
+    "Internal server error": a *retryable* status for a request that can never
+    succeed, hiding the 400 a live route had already returned explaining what is
+    malformed in the payload. Which of the two answers a user got came down to
+    the weighted coin flip at selection time.
+
+    Only request-describing statuses can win that way; see
+    ``_REQUEST_DESCRIBING_STATUSES`` for why a fallback's 403 or 429 must not.
+    """
+    primary = attempts[0]
+    if _describes_request(primary.error):
+        return primary
+    return next(
+        (attempt for attempt in attempts[1:] if _describes_request(attempt.error)),
+        primary,
+    )
+
+
+def _raise_surfaced_error(
+    attempts: Sequence[_RouteAttempt],
+    failed_attempts: list[dict[str, str]],
+) -> NoReturn:
+    """Raise the error the caller is told about, once every route has failed.
+
+    Guarantees the raised exception carries ``_routing``. The error-log path
+    reads ``exc._routing`` to attribute the failure to a real upstream; with it
+    absent, ``completions_stream`` falls back to the provider it last saw on the
+    wire — the final fallback *attempted*, not the one being reported — or to
+    the ``"router"`` sentinel, which the provider-performance aggregations drop
+    outright, taking cost accounting with them. The primary's error is given a
+    block by its caller before fallback even begins, but a fallback's error has
+    none, so surfacing one without this would reintroduce exactly the
+    misattribution that block exists to prevent.
+
+    Raises rather than returning the exception so the ``raise`` happens inside
+    the caller's ``except`` block: Python then chains implicitly, giving the
+    surfaced fallback error the primary's failure as its ``__context__`` and
+    leaving a re-raised primary error's chain untouched. Returning it and
+    writing ``raise ... from primary_error`` at the call site would instead
+    claim a direct causal link that does not exist (two routes failed
+    independently) and, when the primary is the one selected, make it its own
+    cause.
+    """
+    selected = _select_surfaced_error(attempts)
+    exc = selected.error
+    routing = getattr(exc, "_routing", None)
+    if isinstance(routing, dict):
+        # ``failed_attempts`` is stored by reference, so the primary's block
+        # already reflects every attempt appended after it was built; a block
+        # attached further upstream (a nested router, an adapter) does not.
+        routing.setdefault("failed_attempts", failed_attempts)
+    else:
+        exc._routing = {  # type: ignore[attr-defined]
+            "provider": selected.adapter.config.provider,
+            "base_url": selected.adapter.config.base_url,
+            "endpoint_id": endpoint_id_for_adapter(selected.adapter),
+            "failed_attempts": failed_attempts,
+        }
+    raise exc
 
 
 # ============================================================================
@@ -830,13 +943,18 @@ class FixedRouter:
                 exc=primary_error,
             )
             failed_attempts = [failed_attempt(primary, primary_error)]
+            # Kept in step with ``failed_attempts`` because that list holds only
+            # rendered strings; ``_raise_surfaced_error`` below needs the exception
+            # objects to decide which failure the caller is told about.
+            attempts = [_RouteAttempt(primary, primary_error)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream instead of the "router"
             # sentinel — mirrors the success-path resp["_routing"] injection.
-            # The outer error handler covers both re-raise points below
-            # (pin mode and all-providers-failed); ``failed_attempts`` is stored
-            # by reference so it reflects any fallback attempts appended before
-            # ``primary_error`` is finally re-raised.
+            # Covers the pin-mode re-raise below; the all-providers-failed exit
+            # may surface a fallback's error instead, and ``_raise_surfaced_error``
+            # attaches that one's block. ``failed_attempts`` is stored by
+            # reference either way, so whichever block is surfaced reflects every
+            # fallback attempt appended after this point.
             if not hasattr(primary_error, "_routing"):
                 primary_error._routing = {  # type: ignore[attr-defined]
                     "provider": primary.config.provider,
@@ -906,10 +1024,11 @@ class FixedRouter:
                         exc=fallback_error,
                     )
                     failed_attempts.append(failed_attempt(adapter, fallback_error))
+                    attempts.append(_RouteAttempt(adapter, fallback_error))
                     continue
                 finally:
                     self._health_registry.end_dispatch(fallback_claim)
-            raise primary_error
+            _raise_surfaced_error(attempts, failed_attempts)
         finally:
             # Every exit, cancellation included: a claim the request keeps is a
             # cooldown the endpoint spends invisible to selection. Released after
@@ -1030,6 +1149,10 @@ class FixedRouter:
                 exc=primary_error,
             )
             failed_attempts = [failed_attempt(primary, primary_error)]
+            # Kept in step with ``failed_attempts`` because that list holds only
+            # rendered strings; ``_raise_surfaced_error`` below needs the exception
+            # objects to decide which failure the caller is told about.
+            attempts = [_RouteAttempt(primary, primary_error)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream. Unlike the
             # non-streaming twin below, this generator never gets a chance to
@@ -1040,13 +1163,16 @@ class FixedRouter:
             # the consumer keeps overwriting its provider with the latest one
             # seen. When every attempt fails without yielding content, that
             # leaves the last (lowest-priority) fallback attributed instead
-            # of primary, whose error is what's actually re-raised below.
+            # of the attempt whose error is what's actually surfaced below.
             # Setting exc._routing here mirrors chat_completion's pattern and
-            # takes priority over the consumer's SSE-derived guess. Covers
-            # all three re-raise points below (pin mode, a stream already
-            # committed to primary, and all-providers-failed); failed_attempts
-            # is stored by reference so it reflects any fallback attempts
-            # appended before primary_error is finally re-raised.
+            # takes priority over the consumer's SSE-derived guess. Covers the
+            # two re-raise points below that are pinned to primary (pin mode,
+            # and a stream already committed to primary); the all-providers-
+            # failed exit may surface a fallback's error instead, and
+            # ``_raise_surfaced_error`` attaches that one's block.
+            # failed_attempts is stored by reference either way, so whichever
+            # block is surfaced reflects every fallback attempt appended after
+            # this point.
             if not hasattr(primary_error, "_routing"):
                 primary_error._routing = {  # type: ignore[attr-defined]
                     "provider": primary.config.provider,
@@ -1125,6 +1251,7 @@ class FixedRouter:
                         exc=fallback_error,
                     )
                     failed_attempts.append(failed_attempt(adapter, fallback_error))
+                    attempts.append(_RouteAttempt(adapter, fallback_error))
                     # Once this fallback provider's bytes reached the client the
                     # SSE stream has committed to it (same invariant as the
                     # primary path above). Re-raise instead of splicing yet
@@ -1140,7 +1267,7 @@ class FixedRouter:
                     # the outer unwind would be the last one only, and every
                     # earlier attempt's probe would sit out its whole deadline.
                     self._health_registry.end_dispatch(fallback_claim)
-            raise primary_error
+            _raise_surfaced_error(attempts, failed_attempts)
         finally:
             # Backstop for every exit this generator has: an upstream error
             # before the first token, and — the case that actually leaks in
