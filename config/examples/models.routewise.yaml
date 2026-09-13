@@ -139,6 +139,9 @@ models:
       # Remaining probe settings
       # routewise_probe_timeout_sec: 30.0
       # routewise_probe_idle_threshold_sec: 900.0
+      # Probes in flight across the whole gateway, not per model. Raise it only
+      # when every provider behind every probed model can take the extra
+      # parallel request; where models disagree, the lowest value wins.
       # routewise_probe_max_concurrency: 1
       #
       # Prefix-cache-aware cost adjustment
