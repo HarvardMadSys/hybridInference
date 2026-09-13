@@ -126,6 +126,17 @@ _STRUCTURED_LOG_KEYS = (
     "detail",
     "endpoint",
     "error_code",
+    # A tool call the gateway streamed out with arguments that are not a JSON
+    # object (``tool_call_arguments_unparseable``, servers/routers/
+    # completions_stream.py). ``tool_call_id`` and ``function_name`` are what
+    # locate the offending call inside the conversation carrying it -- the
+    # incident behind this event was a single poisoned call, replayed on every
+    # subsequent turn, and fixing it meant naming it. ``arguments_len`` stands
+    # in for the arguments themselves, which are user data and never logged.
+    "tool_call_id",
+    "function_name",
+    "finish_reason",
+    "arguments_len",
 )
 
 
