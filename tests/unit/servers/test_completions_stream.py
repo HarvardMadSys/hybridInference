@@ -17,8 +17,10 @@ from serving.servers.routers.completions_stream import (
     StreamSession,
     _ToolCallAccumulator,
     _TTFTTracker,
+    _unparseable_tool_call_arguments,
 )
 from serving.servers.routers.routing_info import RoutingInfo
+from serving.utils.logging import _STRUCTURED_LOG_KEYS, JsonFormatter, PlainFormatter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -994,3 +996,364 @@ async def test_middleware_timeout_emits_no_stream_failed_event(caplog):
         await gen.athrow(asyncio.CancelledError())
 
     assert _stream_failed_records(caplog) == []
+
+
+# StreamSession — producer-side tool-call argument checking
+#
+# A tool call whose ``function.arguments`` is not a JSON object is one the
+# client cannot execute and, once it is in the conversation history, one that
+# local sglang answers with a hard 400 on every following turn. These cover the
+# end-of-stream detection that makes the gateway emitting one visible.
+# ---------------------------------------------------------------------------
+
+_UNPARSEABLE_EVENT = "tool_call_arguments_unparseable"
+
+
+def _tool_call_chunk(deltas: list[dict[str, Any]], finish: str | None = None) -> str:
+    payload = {
+        "id": "x",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "gpt-4",
+        "choices": [{"index": 0, "delta": {"tool_calls": deltas}, "finish_reason": finish}],
+    }
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _tool_call_stream(
+    arguments: str,
+    *,
+    name: str = "phone_away",
+    call_id: str = "call_eff0b25a44c543059151a2c7",
+    finish: str = "tool_calls",
+) -> list[str]:
+    """Chunks for a stream that emits exactly one tool call with ``arguments``."""
+    return [
+        _routing_chunk("sglang"),
+        _tool_call_chunk(
+            [{"index": 0, "id": call_id, "type": "function", "function": {"name": name}}]
+        ),
+        _tool_call_chunk([{"index": 0, "function": {"arguments": arguments}}], finish=finish),
+    ]
+
+
+def _unparseable_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if getattr(r, "event", None) == _UNPARSEABLE_EVENT]
+
+
+def test_unparseable_tool_call_arguments_classifies_the_shapes():
+    """The helper separates the three production shapes from a healthy call."""
+    findings = _unparseable_tool_call_arguments(
+        [
+            {"id": "ok", "function": {"name": "f", "arguments": '{"q": "hi"}'}},
+            {"id": "ok_empty_object", "function": {"name": "f", "arguments": "{}"}},
+            {"id": "never_started", "function": {"name": "f", "arguments": ""}},
+            {"id": "truncated", "function": {"name": "f", "arguments": "{"}},
+            {"id": "no_open_brace", "function": {"name": "f", "arguments": '"text": "hi"}'}},
+            {"id": "array", "function": {"name": "f", "arguments": "[1, 2]"}},
+        ]
+    )
+
+    assert [(tc["id"], reason) for tc, reason in findings] == [
+        ("never_started", "empty"),
+        ("truncated", "invalid_json"),
+        ("no_open_brace", "invalid_json"),
+        ("array", "not_an_object"),
+    ]
+
+
+def test_unparseable_tool_call_arguments_ignores_a_missing_arguments_string():
+    """A dict built by some other producer, with no arguments string, is skipped."""
+    assert _unparseable_tool_call_arguments([{"id": "a"}, {"id": "b", "function": {}}]) == []
+
+
+@pytest.mark.asyncio
+async def test_valid_tool_call_arguments_log_nothing(caplog: pytest.LogCaptureFixture):
+    """A clean tool-call stream produces no producer-side warning."""
+    session = _make_session()
+    with caplog.at_level(logging.WARNING):
+        await _consume(session.stream(_aiter(_tool_call_stream('{"minutes": 30}'))))
+
+    assert _unparseable_records(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_stream_without_tool_calls_logs_nothing(caplog: pytest.LogCaptureFixture):
+    """Ordinary text completions never reach the check."""
+    session = _make_session()
+    with caplog.at_level(logging.WARNING):
+        await _consume(session.stream(_aiter([_content_chunk("gpt-4", "hi", finish="stop")])))
+
+    assert _unparseable_records(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_truncated_tool_call_arguments_warn_once_with_full_attribution(
+    caplog: pytest.LogCaptureFixture,
+):
+    """The production shape: arguments ``"{"`` delivered as a complete tool call.
+
+    Reproduces the call that wedged a conversation for 14 days -- streamed out
+    with ``finish_reason: "tool_calls"``, so it looked complete to the client
+    and to us. One warning, naming the call precisely enough to find it in the
+    history that carries it.
+    """
+    session = _make_session()
+    with caplog.at_level(logging.WARNING):
+        await _consume(session.stream(_aiter(_tool_call_stream("{"))))
+
+    records = _unparseable_records(caplog)
+    assert len(records) == 1
+    record = records[0]
+    assert record.levelno == logging.WARNING
+    assert record.reason == "invalid_json"
+    assert record.request_id == "rid-1"
+    assert record.model == "gpt-4"
+    assert record.endpoint_id == "sglang:api:443"
+    assert record.tool_call_id == "call_eff0b25a44c543059151a2c7"
+    assert record.function_name == "phone_away"
+    assert record.finish_reason == "tool_calls"
+    assert record.arguments_len == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_and_brace_less_argument_shapes_are_reported_apart(
+    caplog: pytest.LogCaptureFixture,
+):
+    """The other two shapes seen in prod get their own reasons."""
+    for arguments, expected_reason, expected_len in (
+        ("", "empty", 0),
+        ('"text": "hi"}', "invalid_json", 13),
+    ):
+        caplog.clear()
+        session = _make_session()
+        with caplog.at_level(logging.WARNING):
+            await _consume(session.stream(_aiter(_tool_call_stream(arguments))))
+
+        records = _unparseable_records(caplog)
+        assert len(records) == 1, f"{arguments!r} produced {len(records)} warnings"
+        assert records[0].reason == expected_reason
+        assert records[0].arguments_len == expected_len
+
+
+def _rendered_lines(record: logging.LogRecord) -> tuple[str, str]:
+    """Render one record through both production formatters.
+
+    ``logger.warning(extra={...})`` writes every key onto the ``LogRecord``
+    whatever it is called, so asserting on a record attribute cannot tell "we
+    logged it" from "we dropped it at format time": both formatters serialize
+    only the keys listed in ``_STRUCTURED_LOG_KEYS`` and discard the rest
+    silently. These two strings are what an operator actually greps -- which
+    makes them also the honest place to prove the arguments are *not* in the
+    line, rather than trusting a record attribute nothing emits.
+    """
+    json_line = JsonFormatter().format(record)
+    plain_line = PlainFormatter(fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s").format(
+        record
+    )
+    return json_line, plain_line
+
+
+@pytest.mark.asyncio
+async def test_the_unparseable_event_fields_reach_the_emitted_line(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Every field the event exists to carry survives both formatters.
+
+    Asserted directly against the allowlist as well as through the formatters,
+    because this is the failure the formatter assertions would otherwise report
+    as a puzzling "the attribution is missing from the JSON" -- the cause is one
+    tuple. Without the registration the record still carries all seven fields
+    and every line emitted in production carries none of them, which is the
+    whole event reduced to a message string.
+    """
+    for key in ("tool_call_id", "function_name", "finish_reason", "arguments_len"):
+        assert key in _STRUCTURED_LOG_KEYS, (
+            f"{key!r} is what locates the broken call; unlisted, both formatters "
+            "drop it and the warning names no call at all"
+        )
+
+    session = _make_session()
+    with caplog.at_level(logging.WARNING):
+        await _consume(session.stream(_aiter(_tool_call_stream("{"))))
+
+    (record,) = _unparseable_records(caplog)
+    json_line, plain_line = _rendered_lines(record)
+    assert json.loads(json_line)["event"] == _UNPARSEABLE_EVENT
+    for line in (json_line, plain_line):
+        assert "call_eff0b25a44c543059151a2c7" in line
+        assert "phone_away" in line
+        assert "tool_calls" in line
+        assert "invalid_json" in line
+        assert "sglang:api:443" in line
+
+
+@pytest.mark.asyncio
+async def test_warning_never_carries_the_argument_content(caplog: pytest.LogCaptureFixture):
+    """Tool arguments are user data: the record reports a length, never the text.
+
+    Asserted against the lines both production formatters emit, and against the
+    whole record besides, since a key that is merely unlisted today would start
+    leaking the moment someone allowlists it.
+    """
+    secret = '{"path": "/srv/data/quarterly-plan.txt", "note": "canary-must-not-be-logged'
+    session = _make_session()
+    with caplog.at_level(logging.WARNING):
+        await _consume(session.stream(_aiter(_tool_call_stream(secret))))
+
+    records = _unparseable_records(caplog)
+    assert len(records) == 1
+    rendered = "".join(
+        (
+            records[0].getMessage(),
+            json.dumps(records[0].__dict__, default=str),
+            *_rendered_lines(records[0]),
+        )
+    )
+    assert "quarterly-plan" not in rendered
+    assert "canary-must-not-be-logged" not in rendered
+    assert records[0].arguments_len == len(secret)
+
+
+@pytest.mark.asyncio
+async def test_several_bad_tool_calls_warn_once_each(caplog: pytest.LogCaptureFixture):
+    """Each broken call is named individually; a healthy sibling is not."""
+    session = _make_session()
+    chunks = [
+        _tool_call_chunk(
+            [
+                {"index": 0, "id": "call_a", "function": {"name": "f1", "arguments": "{"}},
+                {"index": 1, "id": "call_b", "function": {"name": "f2", "arguments": '{"ok": 1}'}},
+                {"index": 2, "id": "call_c", "function": {"name": "f3", "arguments": ""}},
+            ],
+            finish="tool_calls",
+        )
+    ]
+    with caplog.at_level(logging.WARNING):
+        await _consume(session.stream(_aiter(chunks)))
+
+    records = _unparseable_records(caplog)
+    assert [(r.tool_call_id, r.reason) for r in records] == [
+        ("call_a", "invalid_json"),
+        ("call_c", "empty"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_detection_does_not_alter_what_the_client_receives(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Detection only: the SSE bytes and the logged finish_reason are untouched.
+
+    The gateway cannot tell an upstream truncation from a client disconnect from
+    a model emitting garbage, so it must not repair the arguments or rewrite
+    ``finish_reason`` -- the client keeps seeing exactly what the upstream sent.
+    """
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+    chunks = _tool_call_stream("{")
+
+    with caplog.at_level(logging.WARNING):
+        out = await _consume(session.stream(_aiter(chunks)))
+
+    forwarded = [
+        json.loads(line[6:])
+        for line in out[1:]  # skip the synthesized role chunk
+        if line.startswith("data: ")
+    ]
+    tool_deltas = [
+        tc
+        for payload in forwarded
+        for choice in payload.get("choices") or []
+        for tc in choice.get("delta", {}).get("tool_calls") or []
+    ]
+    assert tool_deltas[-1]["function"]["arguments"] == "{"
+    assert [c.get("finish_reason") for p in forwarded for c in p.get("choices") or []][-1] == (
+        "tool_calls"
+    )
+
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    message = log_data["response"]["choices"][0]["message"]
+    assert message["tool_calls"][0]["function"]["arguments"] == "{"
+    assert log_data["response"]["choices"][0]["finish_reason"] == "tool_calls"
+    assert log_data["status_code"] == 200
+
+
+@pytest.mark.asyncio
+async def test_client_disconnect_mid_tool_call_does_not_warn(caplog: pytest.LogCaptureFixture):
+    """A disconnect-truncated tool call is the client's doing, not a gateway bug.
+
+    Documented choice: the check runs on the success path only. Aborts are
+    common (the abort log line already records them) and their arguments are
+    truncated by definition, so warning here would bury the case the event
+    exists for -- a stream that ran to completion and still emitted a broken
+    call.
+    """
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+
+    async def _slow():
+        yield _tool_call_chunk(
+            [{"index": 0, "id": "call_a", "type": "function", "function": {"name": "f"}}]
+        )
+        yield _tool_call_chunk([{"index": 0, "function": {"arguments": "{"}}])
+        await asyncio.sleep(10)  # client goes away mid-arguments
+
+    with caplog.at_level(logging.WARNING):
+        gen = session.stream(_slow())
+        for _ in range(3):  # role chunk + the two tool-call chunks
+            await gen.__anext__()
+        with pytest.raises(asyncio.CancelledError):
+            await gen.athrow(asyncio.CancelledError())
+
+    assert _unparseable_records(caplog) == []
+    # The abort itself is still recorded, so this really did take the abort path.
+    assert cl_logger.schedule_log.call_args.args[1]["status_code"] == 499
+
+
+@pytest.mark.asyncio
+async def test_mid_stream_failure_does_not_warn(caplog: pytest.LogCaptureFixture):
+    """An upstream exception already explains the truncation, and is already logged."""
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+
+    async def _gen():
+        yield _tool_call_chunk(
+            [{"index": 0, "id": "call_a", "type": "function", "function": {"name": "f"}}]
+        )
+        yield _tool_call_chunk([{"index": 0, "function": {"arguments": "{"}}])
+        raise RuntimeError("upstream blew up")
+
+    with caplog.at_level(logging.WARNING):
+        await _consume(session.stream(_gen()))
+
+    assert _unparseable_records(caplog) == []
+    assert cl_logger.schedule_log.call_args.args[1]["status_code"] == 500
+
+
+@pytest.mark.asyncio
+async def test_arguments_json_loads_cannot_handle_still_finish_the_stream():
+    """The check can never turn a stream that succeeded into one that failed.
+
+    ``json.loads`` answers ~10k nesting levels with ``RecursionError``, which is
+    a sibling of ``JSONDecodeError`` rather than a subclass -- and a runaway
+    generation emitting thousands of ``[`` reaches that on its own. The check
+    runs inside the ``try`` that converts an exception into an error chunk and a
+    500 row, so an unhandled one here would append a failure to a response the
+    client had already received in full: detection rewriting the outcome it
+    exists to observe.
+    """
+    depth = 20_000
+    arguments = "[" * depth + "]" * depth
+    with pytest.raises(RecursionError):
+        json.loads(arguments)  # the premise of this test, asserted not assumed
+
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+    out = await _consume(session.stream(_aiter(_tool_call_stream(arguments))))
+
+    assert not any('"error"' in chunk for chunk in out)
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["status_code"] == 200
+    message = log_data["response"]["choices"][0]["message"]
+    assert message["tool_calls"][0]["function"]["arguments"] == arguments

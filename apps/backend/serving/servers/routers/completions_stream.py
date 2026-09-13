@@ -105,6 +105,50 @@ def _is_empty_completion(response_for_db: dict[str, Any]) -> bool:
     )
 
 
+def _unparseable_tool_call_arguments(
+    tool_calls: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], str]]:
+    """Return ``(tool_call, reason)`` for every call whose arguments won't parse.
+
+    ``function.arguments`` is a *string* that must carry a JSON object: the
+    client feeds it straight to its tool executor, and every OpenAI-compatible
+    upstream re-validates it when the call comes back inside the next turn's
+    history. A malformed one is therefore not a cosmetic defect -- local sglang
+    answers a replayed bad call with a hard 400 ("Assistant tool call
+    function.arguments must be valid JSON"), which wedges that conversation
+    permanently, because the poisoned turn is in the history from then on.
+
+    Reasons are reported apart so a log reader can tell the shapes seen in
+    production from each other:
+
+    - ``empty`` -- ``""``, arguments that never started;
+    - ``invalid_json`` -- ``"{"`` (truncated) or ``'"text": "..."}'`` (missing
+      its opening brace);
+    - ``not_an_object`` -- parses, but as an array/scalar, so no tool can be
+      called with it. Stricter than what sglang rejects; kept separate so the
+      difference is visible in the logs rather than argued about here.
+    """
+    findings: list[tuple[dict[str, Any], str]] = []
+    for tool_call in tool_calls:
+        function = tool_call.get("function")
+        arguments = function.get("arguments") if isinstance(function, dict) else None
+        if not isinstance(arguments, str):
+            # ToolCallAccumulator only ever stores a str here; a non-str means
+            # some other producer built the dict, and we have nothing to judge.
+            continue
+        if not arguments:
+            findings.append((tool_call, "empty"))
+            continue
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            findings.append((tool_call, "invalid_json"))
+            continue
+        if not isinstance(parsed, dict):
+            findings.append((tool_call, "not_an_object"))
+    return findings
+
+
 class ToolCallAccumulator:
     """Merge tool_calls deltas indexed by ``index`` into complete tool calls.
 
@@ -498,6 +542,21 @@ class StreamSession:
                     f"request_id={self._request_id}"
                 )
 
+            # Suppressed deliberately: the check is diagnostics, and anything
+            # that raises inside this ``try`` becomes an error chunk appended to
+            # a response the client has already received in full, plus a 500
+            # ``api_logs`` row for a request that succeeded. That is the check
+            # rewriting the outcome it exists only to observe -- the one thing
+            # "detection only" forbids. Not hypothetical: ``json.loads`` raises
+            # ``RecursionError`` (a sibling of ``JSONDecodeError``, not a
+            # subclass, so the helper's own handler does not cover it) past
+            # ~10k nesting levels, which a runaway generation reaches on its
+            # own. Same rule the Anthropic stream accumulator states as
+            # "logging must never disrupt the forwarded stream"
+            # (``routers/anthropic_messages.py``).
+            with suppress(Exception):
+                self._warn_on_unparseable_tool_calls()
+
             await self._finalize_success()
         except Exception as exc:
             # exc_info, not just the scrubbed user message: a router-internal
@@ -637,6 +696,66 @@ class StreamSession:
         fr = choice.get("finish_reason")
         if fr:
             self._finish_reason_for_db = fr
+
+    # -- internal: end-of-stream checks -------------------------------------
+
+    def _warn_on_unparseable_tool_calls(self) -> None:
+        """Log every tool call this stream emitted that a client cannot execute.
+
+        Detection only. We deliberately do NOT repair the arguments, drop the
+        call, or rewrite ``finish_reason``: from here the gateway cannot tell an
+        upstream that truncated from a model that emitted garbage, and silently
+        relabelling would make a real upstream failure look like a clean stop.
+        That is the same policy the adapters already follow when they refuse to
+        overwrite a ``"length"`` finish (see ``adapters/openai_compat.py`` and
+        ``adapters/anthropic.py``) -- this check adds the missing half, which is
+        knowing it happened at all. The bytes the client receives are unchanged.
+
+        Runs once, at end of stream, over strings the per-chunk loop has already
+        accumulated, so it costs nothing per delta.
+
+        Success path only. ``_finalize_cancelled`` (client disconnect, gateway
+        timeout) and ``_finalize_failure`` (mid-stream exception) deliberately
+        skip it: in both cases the accumulation was cut off by something we
+        already know about and already log -- a disconnect-truncated tool call
+        is the client's doing, not a gateway bug, and the abort logs show these
+        are common. Warning there would bury the case this exists for, which is
+        a stream that ran to completion and still handed the client a tool call
+        it cannot run (in the incident that prompted this, the poisoned call
+        arrived with ``finish_reason: "tool_calls"``, because openai_compat
+        normalizes a tool-bearing ``"stop"`` to ``"tool_calls"``).
+
+        ``finish_reason`` rides along on the record for exactly that reason: a
+        ``"length"`` finish explains truncated arguments (max_tokens hit), while
+        ``"tool_calls"`` or ``"stop"`` means the upstream called it complete and
+        it was not.
+        """
+        if not self._tool_calls:
+            return
+        for tool_call, reason in _unparseable_tool_call_arguments(self._tool_calls.to_list()):
+            function = tool_call.get("function")
+            function = function if isinstance(function, dict) else {}
+            arguments = function.get("arguments")
+            logger.warning(
+                "Emitted a tool call whose function.arguments is not a JSON object "
+                f"(reason={reason}): model={self._model}, request_id={self._request_id}",
+                extra={
+                    "event": "tool_call_arguments_unparseable",
+                    "request_id": self._request_id,
+                    "model": self._model,
+                    "endpoint_id": self._routing.endpoint_id,
+                    "tool_call_id": tool_call.get("id") or None,
+                    "function_name": function.get("name") or None,
+                    "finish_reason": self._finish_reason_for_db,
+                    "reason": reason,
+                    # Length only, never the string itself: tool arguments carry
+                    # user data (paths, queries, message bodies), and this record
+                    # exists to say a call was broken, not to quote it. The length
+                    # is what distinguishes "a couple of bytes" from "cut off at
+                    # the very end of a long argument".
+                    "arguments_len": len(arguments) if isinstance(arguments, str) else 0,
+                },
+            )
 
     # -- internal: finalization ---------------------------------------------
 

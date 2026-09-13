@@ -175,9 +175,43 @@ waiting for the average to catch up.
 State is per process. Each backend worker keeps its own breakers.
 
 This is separate from the routing file's `health_check:` probe loop
-(`apps/backend/routing/health.py`), which polls `local_deployment` endpoints' `/health` on
-an interval and only influences the weight assignment described in
-[Configuration](configuration.md).
+(`apps/backend/routing/health.py`), which polls `local_deployment` endpoints'
+`/health` on an interval. That loop is **observation only** — it logs each
+transition and publishes its verdicts on `GET /routing`, but no request is ever
+routed differently because of it; see [Configuration](configuration.md) for why.
+The circuit breaker described above is what actually takes a failing endpoint
+out of rotation.
+
+## Routes excluded from selection
+
+A route whose *effective* weight is zero is skipped by weighted selection and by
+every fallback loop, so it is configured capacity that does not exist. Four
+mechanisms can produce one, and `GET /health/deep` names which under
+`route_exclusions` — one entry per (model, endpoint) pair carrying the configured
+weight, the effective weight, and a `reasons` list:
+
+| Reason | Set by | Undone in |
+|---|---|---|
+| `weight_override` | a `provider_weight_overrides` row for that (model, endpoint) | admin console → routing weights |
+| `provider_disabled` | a `disabled_providers` row for that provider label | admin console → providers |
+| `routing_yaml` | the local/remote split `RoutingManager` applies once at boot | the overlay's `routing.yaml` |
+| `configured_zero` | `weight: 0` in the model registry | the overlay's `models.yaml` |
+
+`routing_yaml` can only appear where no weight-override resolver is attached —
+a deployment with no operational store. With one, selection reads the
+registration weights directly and never looks at the list `RoutingManager`
+rewrote, so that file's local/remote split does not reach the weights at all.
+
+The same exclusions are merged into the `providers` map — as
+`excluded_from_models` and `exclusion_reasons` — including for endpoints that
+appear nowhere else in it, because a route that is never dispatched to never
+reaches the endpoint-health registry at all. They deliberately do not degrade the
+deep-health verdict: zeroing a route is an operator decision, not an outage.
+
+The gateway also names them at boot and after every override reload:
+`route_weight_zeroed` at `WARNING` when a configured route is zeroed at runtime,
+`route_weight_overridden` at `INFO` when it is merely re-weighted. Both lines
+carry `configured_weight`, `effective_weight`, and the reason.
 
 ## Prefill-aware selection
 
@@ -275,8 +309,8 @@ the admin playground) publishes nothing and shares one anonymous binding.
 | `GET /v1/models` | List published models. |
 | `POST /v1/chat/completions` | Chat completion with automatic routing. |
 | `GET /health` | Liveness plus a `routes_configured` count. |
-| `GET /health/deep` | Per-endpoint availability and circuit state. |
-| `GET /routing` | Current weight distribution per model. |
+| `GET /health/deep` | Per-endpoint availability, circuit state, and `route_exclusions`. |
+| `GET /routing` | Current weight distribution per model, plus the probe's `endpoint_health` map. |
 
 ```{warning}
 `GET /routing` requires no authentication and returns, for every published
@@ -284,6 +318,10 @@ model, each route's `provider`, **`base_url`**, and weight. On a public host
 that discloses your upstream topology — including private LAN addresses and
 any internal hostnames in a route's base URL. Put it behind your reverse proxy,
 or do not expose it.
+
+`GET /health/deep` is unauthenticated on the same terms: its `providers` keys
+are `endpoint_id`s (`provider:host:port`), and each `route_exclusions` entry
+carries that route's `base_url` too. Gate both, not just `/routing`.
 ```
 
 Runtime administration lives under `/admin/...`, requires admin

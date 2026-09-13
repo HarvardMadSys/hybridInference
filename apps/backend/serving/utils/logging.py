@@ -88,6 +88,13 @@ _STRUCTURED_LOG_KEYS = (
     "availability",
     "trip_cause",
     "upstream_error",
+    # Runtime route-weight divergence (routing/routers.py, events
+    # ``route_weight_zeroed`` / ``route_weight_overridden``). The pair is the
+    # whole record: "this route is at 0.0" is only actionable next to the
+    # weight the configuration asked for, which is what says whether an
+    # operator zeroed it at runtime or the overlay always read that way.
+    "configured_weight",
+    "effective_weight",
     # Who the failure streak hit. Formerly "offending_users", which named the
     # victims of an upstream fault as its culprits — see the module comment on
     # routing/endpoint_health._MAX_TRACKED_CALLERS.
@@ -126,6 +133,28 @@ _STRUCTURED_LOG_KEYS = (
     "detail",
     "endpoint",
     "error_code",
+    # Which client tool call the OpenAI-compatible adapter had to repair
+    # (``tool_call_arguments_repaired`` in adapters/openai_compat.py). The
+    # repair hides the producer's bug from the user, so this line is the only
+    # remaining trace of it -- and without the id and function name it says
+    # only "something somewhere sent bad JSON". The argument text is user data
+    # and is deliberately not among these keys.
+    #
+    # The same ``tool_call_id`` also locates a tool call the gateway streamed
+    # OUT with arguments that are not a JSON object
+    # (``tool_call_arguments_unparseable``, servers/routers/
+    # completions_stream.py) -- the producer-side half of the same incident,
+    # which was a single poisoned call replayed on every subsequent turn.
+    # That event adds ``function_name`` (the adapter's repair path calls the
+    # same field ``tool_name``, since ``name`` collides with
+    # ``LogRecord.name``), the upstream ``finish_reason``, and
+    # ``arguments_len`` -- which stands in for the arguments themselves, user
+    # data that is never logged.
+    "tool_call_id",
+    "tool_name",
+    "function_name",
+    "finish_reason",
+    "arguments_len",
 )
 
 

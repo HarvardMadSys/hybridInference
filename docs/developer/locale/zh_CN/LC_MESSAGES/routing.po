@@ -431,12 +431,129 @@ msgstr "状态是按进程隔离的。每个后端 worker 各自维护自己的�
 msgid ""
 "This is separate from the routing file's `health_check:` probe loop "
 "(`apps/backend/routing/health.py`), which polls `local_deployment` "
-"endpoints' `/health` on an interval and only influences the weight "
-"assignment described in [Configuration](configuration.md)."
+"endpoints' `/health` on an interval. That loop is **observation only** — it "
+"logs each transition and publishes its verdicts on `GET /routing`, but no "
+"request is ever routed differently because of it; see "
+"[Configuration](configuration.md) for why. The circuit breaker described "
+"above is what actually takes a failing endpoint out of rotation."
 msgstr ""
 "这与路由文件里的 `health_check:` "
 "探测循环（`apps/backend/routing/health.py`）是两回事：后者按固定间隔轮询 `local_deployment` "
-"端点的 `/health`，只影响 [配置](configuration.md) 中描述的权重分配。"
+"端点的 `/health`。该循环**只做观测**——它会记录每一次状态翻转，并把结论发布在 `GET /routing` "
+"上，但不会因此改变任何一次请求的选路；原因见 [配置](configuration.md)。"
+"真正把故障端点移出轮转的，是上文描述的熔断器。"
+
+#: ../developer/routing.md:186
+msgid "Routes excluded from selection"
+msgstr "被排除在选路之外的路由"
+
+#: ../developer/routing.md:188
+msgid ""
+"A route whose *effective* weight is zero is skipped by weighted selection "
+"and by every fallback loop, so it is configured capacity that does not "
+"exist. Four mechanisms can produce one, and `GET /health/deep` names which "
+"under `route_exclusions` — one entry per (model, endpoint) pair carrying the "
+"configured weight, the effective weight, and a `reasons` list:"
+msgstr ""
+"*有效*权重为 0 的路由会被加权选路和每一处回退循环跳过，因此它是配置上存在、实际却不存在的容量。"
+"有四种机制会造成这种情况，`GET /health/deep` 会在 `route_exclusions` 下指明是哪一种——"
+"每个（模型，端点）组合一条记录，附带配置权重、有效权重，以及一个 `reasons` 列表："
+
+#: ../developer/routing.md
+msgid "Reason"
+msgstr "原因"
+
+#: ../developer/routing.md
+msgid "Set by"
+msgstr "由谁设置"
+
+#: ../developer/routing.md
+msgid "Undone in"
+msgstr "在哪里撤销"
+
+#: ../developer/routing.md
+msgid "`weight_override`"
+msgstr "`weight_override`"
+
+#: ../developer/routing.md
+msgid "a `provider_weight_overrides` row for that (model, endpoint)"
+msgstr "针对该（模型，端点）的一条 `provider_weight_overrides` 记录"
+
+#: ../developer/routing.md
+msgid "admin console → routing weights"
+msgstr "管理控制台 → 路由权重"
+
+#: ../developer/routing.md
+msgid "`provider_disabled`"
+msgstr "`provider_disabled`"
+
+#: ../developer/routing.md
+msgid "a `disabled_providers` row for that provider label"
+msgstr "针对该 provider 标签的一条 `disabled_providers` 记录"
+
+#: ../developer/routing.md
+msgid "admin console → providers"
+msgstr "管理控制台 → 提供方"
+
+#: ../developer/routing.md
+msgid "`routing_yaml`"
+msgstr "`routing_yaml`"
+
+#: ../developer/routing.md
+msgid "the local/remote split `RoutingManager` applies once at boot"
+msgstr "`RoutingManager` 在启动时应用一次的本地/远端拆分"
+
+#: ../developer/routing.md
+msgid "the overlay's `routing.yaml`"
+msgstr "该部署 overlay 的 `routing.yaml`"
+
+#: ../developer/routing.md
+msgid "`configured_zero`"
+msgstr "`configured_zero`"
+
+#: ../developer/routing.md
+msgid "`weight: 0` in the model registry"
+msgstr "模型注册表里的 `weight: 0`"
+
+#: ../developer/routing.md
+msgid "the overlay's `models.yaml`"
+msgstr "该部署 overlay 的 `models.yaml`"
+
+#: ../developer/routing.md:200
+msgid ""
+"`routing_yaml` can only appear where no weight-override resolver is attached "
+"— a deployment with no operational store. With one, selection reads the "
+"registration weights directly and never looks at the list `RoutingManager` "
+"rewrote, so that file's local/remote split does not reach the weights at all."
+msgstr ""
+"`routing_yaml` 只会出现在没有挂载权重覆盖解析器的部署上——也就是没有运维存储的部署。"
+"一旦挂上，选路会直接读取注册权重，完全不会去看 `RoutingManager` 改写过的那份列表，"
+"于是该文件的本地/远端拆分根本影响不到权重。"
+
+#: ../developer/routing.md:196
+msgid ""
+"The same exclusions are merged into the `providers` map — as "
+"`excluded_from_models` and `exclusion_reasons` — including for endpoints "
+"that appear nowhere else in it, because a route that is never dispatched to "
+"never reaches the endpoint-health registry at all. They deliberately do not "
+"degrade the deep-health verdict: zeroing a route is an operator decision, "
+"not an outage."
+msgstr ""
+"同样的排除信息也会合并进 `providers` 映射——以 `excluded_from_models` 和 "
+"`exclusion_reasons` 的形式——其中包括那些本来完全不会出现在该映射里的端点，"
+"因为从未被派发过请求的路由根本不会进入端点健康登记表。它们刻意不会拉低 deep health 的结论："
+"把一条路由置零是运维人员的决定，而不是故障。"
+
+#: ../developer/routing.md:203
+msgid ""
+"The gateway also names them at boot and after every override reload: "
+"`route_weight_zeroed` at `WARNING` when a configured route is zeroed at "
+"runtime, `route_weight_overridden` at `INFO` when it is merely re-weighted. "
+"Both lines carry `configured_weight`, `effective_weight`, and the reason."
+msgstr ""
+"网关也会在启动时以及每次覆盖值重载后点名这些路由：当一条已配置的路由在运行时被置零，"
+"以 `WARNING` 记录 `route_weight_zeroed`；当它只是被重新加权，以 `INFO` 记录 "
+"`route_weight_overridden`。两条日志都带有 `configured_weight`、`effective_weight` 和原因。"
 
 #: ../developer/routing.md:182
 msgid "Prefill-aware selection"
@@ -748,16 +865,18 @@ msgid "`GET /health/deep`"
 msgstr ""
 
 #: ../developer/routing.md
-msgid "Per-endpoint availability and circuit state."
-msgstr "逐端点的可用性与熔断状态。"
+msgid "Per-endpoint availability, circuit state, and `route_exclusions`."
+msgstr "逐端点的可用性、熔断状态，以及 `route_exclusions`。"
 
 #: ../developer/routing.md
 msgid "`GET /routing`"
 msgstr ""
 
 #: ../developer/routing.md
-msgid "Current weight distribution per model."
-msgstr "每个模型当前的权重分布。"
+msgid ""
+"Current weight distribution per model, plus the probe's `endpoint_health` "
+"map."
+msgstr "每个模型当前的权重分布，外加探测循环的 `endpoint_health` 映射。"
 
 #: ../developer/routing.md:282
 msgid ""
@@ -770,6 +889,16 @@ msgstr ""
 "`GET /routing` 不需要任何鉴权，它会为每个已发布的模型返回各条路由的 `provider`、**`base_url`** "
 "和权重。在公网主机上，这等于泄露你的上游拓扑——包括内网地址，以及路由 base URL "
 "里出现的任何内部主机名。把它放到你的反向代理之后，或者干脆不要暴露它。"
+
+#: ../developer/routing.md:322
+msgid ""
+"`GET /health/deep` is unauthenticated on the same terms: its `providers` "
+"keys are `endpoint_id`s (`provider:host:port`), and each `route_exclusions` "
+"entry carries that route's `base_url` too. Gate both, not just `/routing`."
+msgstr ""
+"`GET /health/deep` 同样不需要鉴权：它的 `providers` 键就是 `endpoint_id`"
+"（`provider:host:port`），而每条 `route_exclusions` 记录还带着该路由的 `base_url`。"
+"两个端点都要设防，不是只管 `/routing`。"
 
 #: ../developer/routing.md:289
 msgid ""
@@ -1645,4 +1774,3 @@ msgstr ""
 #~ msgstr ""
 #~ "熔断器在连续 `failure_threshold` 次失败后打开，保持打开 "
 #~ "`cooldown_seconds` 秒，然后放行一次半开探测：成功就关闭它，失败就重新打开。这四个旋钮都优先读取环境变量："
-

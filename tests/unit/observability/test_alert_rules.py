@@ -726,7 +726,7 @@ async def test_auth_ip_blocked_wave_delivers_one_named_message(monkeypatch):
 
     posted: list[dict] = []
 
-    async def _capture(_url, message):
+    async def _capture(_url, message, **_kwargs):
         posted.append(message)
         return True
 
@@ -2086,7 +2086,7 @@ async def test_client_error_burst_cooldown_suppresses_the_repeat(monkeypatch) ->
     rule = _client_error_rule(cooldown_sec=3600)
     posted: list[dict] = []
 
-    async def _capture(_url, message):
+    async def _capture(_url, message, **_kwargs):
         posted.append(message)
         return True
 
@@ -2233,7 +2233,7 @@ async def test_stream_failure_rate_cooldowns_are_per_model(monkeypatch) -> None:
     rule = _stream_failure_rule(cooldown_sec=3600)
     posted: list[dict] = []
 
-    async def _capture(_url, message):
+    async def _capture(_url, message, **_kwargs):
         posted.append(message)
         return True
 
