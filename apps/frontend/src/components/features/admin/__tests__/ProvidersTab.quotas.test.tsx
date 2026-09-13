@@ -33,6 +33,9 @@ vi.mock('@/app/dashboard/admin/ProviderOverviewTab', () => ({
     <button onClick={() => onManageKeys('zai')}>Manage keys for zai</button>
   ),
 }));
+vi.mock('@/app/dashboard/admin/UpstreamConcurrencyPanel', () => ({
+  UpstreamConcurrencyPanel: () => null,
+}));
 
 import {
   getProviderQuotas,
