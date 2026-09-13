@@ -20,6 +20,30 @@ def _get_tiktoken_encoding():
     return tiktoken.get_encoding("cl100k_base")
 
 
+# Passed to every ``Encoding.encode()`` call in this module.
+#
+# tiktoken defaults to ``disallowed_special="all"``, which raises ``ValueError``
+# on any input containing the *literal text* of a special token for the
+# encoding (for cl100k_base: ``<|endoftext|>``, ``<|endofprompt|>`` and the
+# ``<|fim_*|>`` trio). That text is entirely user-controlled -- pasting a
+# tokenizer doc, a prompt-engineering article, or training-data samples is
+# enough to trip it.
+#
+# An empty tuple means "treat special-token text as ordinary text", which is
+# the only correct choice here: this module *estimates* token counts for usage
+# accounting, cost, rate limits and routing size hints. It never constructs
+# model input, so there is nothing for a real special token to control and
+# nothing to defend against -- the literal characters are just characters.
+#
+# Do NOT "harden" this back to the default. Doing so turns a user's paste into
+# a gateway-side crash: the streaming usage-fallback path runs *after* the
+# whole answer has been forwarded to the client, so the request is delivered
+# and then fails -- an error frame with no ``[DONE]``, no usage, no cost
+# recorded, plus an undeserved hit to the endpoint's availability EWMA. On the
+# pre-dispatch routing path it is a plain 500 with nothing delivered at all.
+_DISALLOWED_SPECIAL: tuple[str, ...] = ()
+
+
 def _count_with_tiktoken(text: str) -> int:
     """Count tokens for a string using tiktoken when available.
 
@@ -34,7 +58,7 @@ def _count_with_tiktoken(text: str) -> int:
     """
     encoding = _get_tiktoken_encoding()
     if encoding:
-        return len(encoding.encode(text))
+        return len(encoding.encode(text, disallowed_special=_DISALLOWED_SPECIAL))
     else:
         # 4 characters ≈ 1 token (rough heuristic)
         return max(1, len(text) // 4)
@@ -57,7 +81,7 @@ def tokenize_text(text: str) -> list[int]:
 
     encoding = _get_tiktoken_encoding()
     if encoding:
-        return encoding.encode(text)
+        return encoding.encode(text, disallowed_special=_DISALLOWED_SPECIAL)
     else:
         # Fallback: use character codes grouped by 4 as pseudo-tokens
         # This ensures consistent behavior even without tiktoken
