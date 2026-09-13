@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 # Keepalive cadence: emit an SSE comment after this many idle seconds so
-# intermediate proxies (Cloudflare 100s, Nginx 120s) see activity and don't
+# intermediate proxies (the Cloudflare tunnel, 100s) see activity and don't
 # drop the connection during long upstream pauses (e.g., reasoning).
 _KEEPALIVE_INTERVAL = 15
 _SENTINEL: Any = object()

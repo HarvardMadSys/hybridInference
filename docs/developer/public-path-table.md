@@ -105,7 +105,6 @@ Every destination below is `${BACKEND_INTERNAL_URL}` plus the same path.
 | `/auth/:path*` | authentication routes |
 | `/user/:path*` | the user dashboard API |
 | `/admin/:path*` | the admin API |
-| `/internal/verify-grafana` | *(see note below)* |
 | `/internal/verify-admin` | cookie-session admin check (used by the pgAdmin handler) |
 | `/internal/playground/:path*` | the admin-only model playground the console's dashboard calls |
 | `/internal/model-catalog` | model catalog read |
@@ -118,16 +117,12 @@ Every destination below is `${BACKEND_INTERNAL_URL}` plus the same path.
 
 Note on `/internal`: the entries are named individually rather than forwarded as
 a blanket `/internal/:path*`, and that is deliberate. The prefix is shared —
-`/internal/verify-*` authenticate a browser session by cookie — so a blanket
+`/internal/verify-admin` authenticates a browser session by cookie — so a blanket
 rule would publish whatever route lands under `/internal` next without anyone
 deciding it should be reachable from outside. `/internal/agent-grants` is the
 one exception granted a whole sub-prefix, because every route on that router
 carries a dispatch-token dependency at the router level and so is authorized by
 construction.
-
-Note on `/internal/verify-grafana`: the rewrite exists, but no route matching
-that path is registered in `apps/backend` at this revision. It forwards to a
-gateway 404.
 
 ## Why `/pgadmin` is a route handler and not a rewrite
 

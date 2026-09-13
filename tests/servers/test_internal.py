@@ -1,4 +1,4 @@
-"""Integration tests for internal auth_request endpoints.
+"""Integration tests for the internal admin-check endpoint.
 
 Run with: make test-db
 """
@@ -70,7 +70,7 @@ class TestVerifyAdmin:
         auth_backend,
         test_user,
     ) -> None:
-        """Admin sessions should pass the auth_request check."""
+        """Admin sessions should pass the admin check."""
         operational_store, _, _, _ = auth_backend
         refresh_token = "test-refresh-admin"
         await _set_user_role(operational_store, test_user["id"], "admin")
@@ -90,7 +90,7 @@ class TestVerifyAdmin:
         auth_backend,
         test_user,
     ) -> None:
-        """Internal sessions should not pass the admin auth_request check."""
+        """Internal sessions should not pass the admin check."""
         operational_store, _, _, _ = auth_backend
         refresh_token = "test-refresh-internal"
         await _set_user_role(operational_store, test_user["id"], "internal")

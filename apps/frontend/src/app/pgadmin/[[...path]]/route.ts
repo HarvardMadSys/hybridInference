@@ -1,12 +1,14 @@
 /**
  * Admin-gated reverse proxy for pgAdmin.
  *
- * Why this lives in the console rather than in Nginx: public traffic reaches
- * this app first and the console's own rewrite table (next.config.js) is what
- * actually routes `/v1/`, `/auth/`, `/health` and friends on to FastAPI. Nginx
- * still holds a `/pgadmin/` block with an `auth_request` gate, but nothing
- * public goes through Nginx any more, so that block never runs — which is why
- * clicking pgAdmin in the dashboard returned the console's own 404 page.
+ * Why this lives in the console rather than in a web server out front: the
+ * Cloudflare tunnel routes public traffic straight to this container, so this
+ * app sees it first, and the console's own rewrite table (next.config.js) is
+ * what actually routes `/v1/`, `/auth/`, `/health` and friends on to FastAPI.
+ * The gate used to be an Nginx `/pgadmin/` block with `auth_request`; once
+ * nothing public went through Nginx that block stopped running — clicking
+ * pgAdmin in the dashboard returned the console's own 404 page — and host nginx
+ * was purged from both deployments on 2026-09-13.
  *
  * A rewrite alone cannot replace it: rewrites cannot authenticate. Whether
  * pgAdmin also asks for a login depends on the host — `SERVER_MODE` defaults
