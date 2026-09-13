@@ -295,6 +295,41 @@ def test_backend_matrix_keeps_the_fast_stage_one_smoke() -> None:
     assert by_name["Smoke runnable router example"]["if"] == "matrix.image == 'backend'"
 
 
+def test_compose_jobs_cannot_strand_docker_volumes() -> None:
+    """Both Compose stacks name a project per run, on runners that never forget.
+
+    A volume the project declares but no service mounts survives
+    `down --volumes`, so CI stranded one per run until the disk filled. The
+    teardown removes whatever still carries the run's project label and fails
+    the job, and each run reaps what a hard-cancelled predecessor left behind.
+    """
+    workflow = _workflow("ci.yml")
+
+    for job, teardown_name in (
+        ("docker-build", "Stop runnable router example"),
+        ("tutorial-e2e", "Reset tutorial E2E"),
+    ):
+        by_name = {step.get("name"): step for step in workflow["jobs"][job]["steps"]}
+
+        reaper = by_name["Reap Compose volumes stranded by older CI runs"]["run"]
+        assert "'name=^hi-tutorial-'" in reaper
+        assert "'name=^hi-example-'" in reaper
+        # Far past this workflow's longest job timeout, so the reaper can never
+        # reach a sibling job running concurrently on the same runner.
+        assert "6 * 60 * 60" in reaper
+        assert 'docker volume rm "${volume}"' in reaper
+
+        teardown = by_name[teardown_name]
+        assert str(teardown["if"]).startswith("always()")
+        assert "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" in teardown["run"]
+        assert "xargs -r docker volume rm" in teardown["run"]
+        assert "left volumes behind" in teardown["run"]
+        assert "exit 1" in teardown["run"]
+
+    timeouts = [workflow["jobs"][job]["timeout-minutes"] for job in ("tutorial-e2e",)]
+    assert max(timeouts) * 60 < 6 * 60 * 60
+
+
 def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     workflow = _workflow("ci.yml")
     changes = workflow["jobs"]["changes"]

@@ -648,6 +648,29 @@ jobs:
           # with shallow clones on the self-hosted runner pool.
           fetch-depth: 0
 
+      - name: Reap Compose volumes stranded by older CI runs
+        run: |
+          # An always() teardown does not survive a hard cancel, so every run
+          # reaps what earlier ones stranded. Both Compose stacks in this
+          # workflow use a per-run project name, so these prefixes match this
+          # workflow's own volumes and nothing else, and the six-hour floor sits
+          # far past the longest timeout here -- a sibling job sharing this
+          # self-hosted runner can never fall inside the window.
+          cutoff="$(($(date -u +%s) - 6 * 60 * 60))"
+          docker volume ls --quiet \
+            --filter 'name=^hi-tutorial-' \
+            --filter 'name=^hi-example-' |
+            while read -r volume; do
+              created="$(docker volume inspect \
+                --format '{{.CreatedAt}}' "${volume}" 2>/dev/null)" || continue
+              created_epoch="$(date -u -d "${created}" +%s 2>/dev/null)" || continue
+              if test "${created_epoch}" -lt "${cutoff}"; then
+                if docker volume rm "${volume}" >/dev/null 2>&1; then
+                  echo "reaped stale CI volume ${volume}"
+                fi
+              fi
+            done
+
       # Same-user self-hosted runners share Buildx default builder state.
       # Keep builds, retries, Compose, and post-step cleanup within each job.
       - name: Isolate the Buildx config per job
@@ -737,6 +760,20 @@ jobs:
           docker image rm \
             "${COMPOSE_PROJECT_NAME}-backend" \
             "${COMPOSE_PROJECT_NAME}-example-provider" || true
+          # `down` keeps volumes on purpose -- it is the documented tutorial
+          # stop command -- and `down --volumes` would only remove the ones its
+          # services still reference. This project name belongs to this run
+          # alone, so anything still carrying its label is a leak on a runner
+          # that never forgets. Remove it, then fail: the next one gets caught
+          # here rather than on a disk that filled up months later.
+          leaked_volumes="$(docker volume ls --quiet \
+            --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}")"
+          if test -n "${leaked_volumes}"; then
+            echo "${leaked_volumes}" | xargs -r docker volume rm || true
+            echo "example cleanup left volumes behind:" >&2
+            echo "${leaked_volumes}" >&2
+            exit 1
+          fi
 
   tutorial-e2e:
     name: Tutorial E2E
@@ -778,6 +815,29 @@ jobs:
             echo "EXAMPLE_RESET_STATE_FILE=${RUNNER_TEMP}/hi-tutorial-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-reset.json"
           } >> "${GITHUB_ENV}"
           echo "frontend_port=${frontend_port}" >> "${GITHUB_OUTPUT}"
+
+      - name: Reap Compose volumes stranded by older CI runs
+        run: |
+          # An always() teardown does not survive a hard cancel, so every run
+          # reaps what earlier ones stranded. Both Compose stacks in this
+          # workflow use a per-run project name, so these prefixes match this
+          # workflow's own volumes and nothing else, and the six-hour floor sits
+          # far past the longest timeout here -- a sibling job sharing this
+          # self-hosted runner can never fall inside the window.
+          cutoff="$(($(date -u +%s) - 6 * 60 * 60))"
+          docker volume ls --quiet \
+            --filter 'name=^hi-tutorial-' \
+            --filter 'name=^hi-example-' |
+            while read -r volume; do
+              created="$(docker volume inspect \
+                --format '{{.CreatedAt}}' "${volume}" 2>/dev/null)" || continue
+              created_epoch="$(date -u -d "${created}" +%s 2>/dev/null)" || continue
+              if test "${created_epoch}" -lt "${cutoff}"; then
+                if docker volume rm "${volume}" >/dev/null 2>&1; then
+                  echo "reaped stale CI volume ${volume}"
+                fi
+              fi
+            done
 
       - name: Isolate the Buildx config per job
         run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
@@ -1128,6 +1188,20 @@ jobs:
             "${COMPOSE_PROJECT_NAME}-backend" \
             "${COMPOSE_PROJECT_NAME}-frontend" \
             "${COMPOSE_PROJECT_NAME}-example-provider" || true
+          # `demo-reset` removes the volumes its services still reference, which
+          # is every volume this stack is supposed to have. This project name
+          # belongs to this run alone, so anything still carrying its label is a
+          # leak on a runner that never forgets. Remove it, then fail: the next
+          # one gets caught here rather than on a disk that filled up months
+          # later.
+          leaked_volumes="$(docker volume ls --quiet \
+            --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}")"
+          if test -n "${leaked_volumes}"; then
+            echo "${leaked_volumes}" | xargs -r docker volume rm || true
+            echo "tutorial cleanup left volumes behind:" >&2
+            echo "${leaked_volumes}" >&2
+            exit 1
+          fi
           test ! -e var
           git diff --exit-code
           test -z "$(git status --porcelain --untracked-files=all)"
