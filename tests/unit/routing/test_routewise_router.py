@@ -1966,6 +1966,39 @@ class TestProbeConcurrencyGate:
         assert active_when_admitted == [1, 1]
         assert gate.active == 0
 
+    async def test_the_slot_is_free_while_the_sample_is_persisted(self):
+        """The gate caps provider traffic, not the operational store.
+
+        Held across the sample write, a store that is slow -- an exhausted pool,
+        a write waiting out its command timeout -- would queue probes for every
+        model in the worker with no provider call in flight at all.
+        """
+        overlap = _OverlapRecorder()
+        first = _probe_router("first-model", overlap)
+        second = _probe_router("second-model", overlap)
+
+        persisting, finish_persist = asyncio.Event(), asyncio.Event()
+
+        async def _slow_insert(**_kwargs):
+            persisting.set()
+            await finish_persist.wait()
+            return 1
+
+        store = MagicMock()
+        store.insert_routewise_probe_sample = _slow_insert
+        first.attach_operational_store(store)
+
+        stuck = asyncio.create_task(first.run_probe_once(idle_only=False))
+        await asyncio.wait_for(persisting.wait(), timeout=1)
+
+        # The provider call is done, so the sibling probes now rather than
+        # queueing behind a database write.
+        sibling = await asyncio.wait_for(second.run_probe_once(idle_only=False), timeout=1)
+        assert [result.ok for result in sibling] == [True]
+
+        finish_persist.set()
+        assert [result.ok for result in await stuck] == [True]
+
     async def test_stopping_a_router_mid_manual_probe_keeps_its_claim(self):
         """Retirement must not raise the cap under a probe still on the wire.
 

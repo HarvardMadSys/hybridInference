@@ -910,7 +910,8 @@ class RouteWiseRouter:
         router in the process rather than per router, so two models that share
         one provider subscription cannot probe it at the same moment — see
         ``_ProbeConcurrencyGate``. A manual probe from the admin console queues
-        behind the background loops for the same reason.
+        behind the background loops for the same reason. The cap covers the
+        provider call only; sample recording and persistence happen outside it.
 
         Endpoints whose catalog entry is ``on_demand: true`` are never probed,
         even when named explicitly via ``endpoint_id`` — see ``_probe_targets``.
@@ -926,13 +927,7 @@ class RouteWiseRouter:
             self._last_probe_results = []
             return []
 
-        gate = _probe_concurrency_gate()
-
-        async def _guarded_probe(target_endpoint: str) -> RouteWiseProbeResult:
-            async with gate.slot():
-                return await self._probe_endpoint(target_endpoint)
-
-        results = await asyncio.gather(*(_guarded_probe(endpoint) for endpoint in endpoints))
+        results = await asyncio.gather(*(self._probe_endpoint(endpoint) for endpoint in endpoints))
         self._last_probe_results = list(results)
         return list(results)
 
@@ -981,11 +976,17 @@ class RouteWiseRouter:
     async def _probe_endpoint(self, endpoint_id: str) -> RouteWiseProbeResult:
         adapter = self._endpoint_adapter[endpoint_id]
         model_id = sorted(self._endpoint_models.get(endpoint_id) or {adapter.config.id})[0]
+        # The gate caps provider traffic, so it spans the provider call and
+        # nothing after it. Recording and persisting the sample outside it keeps
+        # a slow operational store -- an exhausted pool, a write waiting out its
+        # command timeout -- from queueing probes for every model in the worker
+        # while no provider call is in flight at all.
         try:
-            ttft_ms = await asyncio.wait_for(
-                self._measure_probe_ttft_ms(adapter),
-                timeout=max(float(self.config.routewise_probe_timeout_sec), 1.0),
-            )
+            async with _probe_concurrency_gate().slot():
+                ttft_ms = await asyncio.wait_for(
+                    self._measure_probe_ttft_ms(adapter),
+                    timeout=max(float(self.config.routewise_probe_timeout_sec), 1.0),
+                )
         except Exception as exc:
             error = self._probe_error_summary(exc)
             result = RouteWiseProbeResult(
