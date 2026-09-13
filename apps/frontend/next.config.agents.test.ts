@@ -32,7 +32,7 @@ function loadConfig(env: Record<string, string | undefined>) {
   // CommonJS, and cached by path — drop it so each case re-reads the env.
   const path = require.resolve('./next.config.js');
   delete require.cache[path];
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate: see above.
   return require('./next.config.js');
 }
 
