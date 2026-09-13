@@ -29,6 +29,7 @@ from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
+    from contextlib import AbstractAsyncContextManager
 
 from .base import BaseAdapter
 from .claude_format import (
@@ -43,7 +44,8 @@ from .claude_format import (
     parse_response_content,
     parse_usage,
 )
-from .openai_compat import _COMPLETION_TIMEOUT_S
+from .openai_compat import _COMPLETION_TIMEOUT_S, _key_pool_provider_label
+from .upstream_limiter import UpstreamSlot, upstream_slot
 
 logger = get_logger(__name__)
 
@@ -133,6 +135,22 @@ class AnthropicAdapter(BaseAdapter):
             headers["accept"] = "application/json"
         return headers
 
+    def _upstream_slot(self) -> AbstractAsyncContextManager[UpstreamSlot]:
+        """Return a guard holding an outbound concurrency slot for the block.
+
+        This adapter is single-key (``config.api_key``), so the bucket is fixed
+        for the route. For a stream the guard must wrap the whole body
+        iteration, not just the response open — concurrency is generations in
+        flight. Entering it raises ``UpstreamSaturated`` when the provider
+        account's allowance is already full, which the router turns into a
+        fallback to another endpoint.
+        """
+        return upstream_slot(
+            _key_pool_provider_label(self.config),
+            self.config.api_key,
+            base_url=self.config.base_url,
+        )
+
     # ------------------------------------------------------------------
     # OpenAI-format northbound -> Anthropic upstream
     # ------------------------------------------------------------------
@@ -188,13 +206,14 @@ class AnthropicAdapter(BaseAdapter):
         # non-idempotent (re-sending after a post-generation timeout or on a
         # deterministic 4xx double-bills / hammers a 429'd provider). Resilience
         # comes from the router's fallback chain (same policy as openai_compat).
-        upstream = await http.json_post_with_retry(
-            self._upstream_url(),
-            json=payload,
-            headers=self._upstream_headers(streaming=False),
-            timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
-            retries=1,
-        )
+        async with self._upstream_slot():
+            upstream = await http.json_post_with_retry(
+                self._upstream_url(),
+                json=payload,
+                headers=self._upstream_headers(streaming=False),
+                timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                retries=1,
+            )
 
         # Translate Anthropic response -> OpenAI Chat Completion shape.
         text, tool_calls = parse_response_content(upstream.get("content", []))
@@ -259,12 +278,18 @@ class AnthropicAdapter(BaseAdapter):
         finish_reason = "stop"
         total_content = ""
 
-        async with session.post(
-            self._upstream_url(),
-            json=payload,
-            headers=self._upstream_headers(streaming=True),
-            timeout=timeout,
-        ) as resp:
+        # The slot is chained onto the response context manager so it is held for
+        # the whole body iteration below — a generation in flight, not just an
+        # open response — and released on every exit, client disconnect included.
+        async with (
+            self._upstream_slot(),
+            session.post(
+                self._upstream_url(),
+                json=payload,
+                headers=self._upstream_headers(streaming=True),
+                timeout=timeout,
+            ) as resp,
+        ):
             if resp.status >= 400:
                 error_body = await resp.text()
                 raise aiohttp.ClientResponseError(
@@ -357,13 +382,14 @@ class AnthropicAdapter(BaseAdapter):
 
         http = AsyncHTTPClient.shared()
         # retries=1: non-idempotent POST, see chat_completion.
-        return await http.json_post_with_retry(
-            self._upstream_url(),
-            json=forward,
-            headers=self._upstream_headers(streaming=False, extra_headers=extra_headers),
-            timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
-            retries=1,
-        )
+        async with self._upstream_slot():
+            return await http.json_post_with_retry(
+                self._upstream_url(),
+                json=forward,
+                headers=self._upstream_headers(streaming=False, extra_headers=extra_headers),
+                timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                retries=1,
+            )
 
     async def stream_messages(
         self,
@@ -396,12 +422,16 @@ class AnthropicAdapter(BaseAdapter):
             "cache_read_input_tokens": 0,
         }
 
-        async with session.post(
-            self._upstream_url(),
-            json=forward,
-            headers=self._upstream_headers(streaming=True, extra_headers=extra_headers),
-            timeout=timeout,
-        ) as resp:
+        # Slot held for the whole passthrough stream; see stream_chat_completion.
+        async with (
+            self._upstream_slot(),
+            session.post(
+                self._upstream_url(),
+                json=forward,
+                headers=self._upstream_headers(streaming=True, extra_headers=extra_headers),
+                timeout=timeout,
+            ) as resp,
+        ):
             if resp.status >= 400:
                 error_body = await resp.text()
                 raise aiohttp.ClientResponseError(

@@ -39,6 +39,7 @@ from routing.prefill_load import (
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
+from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.config.settings import has_role
 from serving.exceptions import (
     generic_message_for_status,
@@ -1873,6 +1874,39 @@ async def anthropic_messages(
                     },
                 }
                 yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
+            except UpstreamSaturated as exc:
+                # This gateway is already holding as many concurrent requests
+                # against the provider account as its adaptive limit allows, and
+                # none came free while this one waited. Same client answer as the
+                # exhausted-pool case above and for the same reason: the fix is to
+                # back off, not to retry immediately, and this surface pins one
+                # adapter up front so there is no fallback chain to try instead.
+                # Retry-after is short because a slot can free at any moment.
+                #
+                # ``_record_dispatch_failure`` is still called for the log trail;
+                # ``endpoint_health`` filters this exception out of the breaker
+                # itself, since the endpoint was never asked.
+                stream_failed = True
+                stream_status_code = 429
+                stream_error_message = scrub_error_for_user(None, request_id, 429)
+                stream_error_operator = operator_safe_error(exc)
+                logger.warning(
+                    f"[{request_id}] Streaming dispatch failed: upstream concurrency saturated"
+                )
+                _record_dispatch_failure(
+                    dispatch_endpoint_id,
+                    reason="messages_stream_exception",
+                    detail=stream_error_operator,
+                    exc=exc,
+                )
+                err = {
+                    "type": "error",
+                    "error": {
+                        "type": "rate_limit_error",
+                        "message": stream_error_message,
+                    },
+                }
+                yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
             except Exception as exc:
                 # Deliberately not BaseException: a client disconnect arrives as
                 # CancelledError and must pass straight through. The client gave
@@ -2063,6 +2097,37 @@ async def anthropic_messages(
         return _anthropic_error(
             429, error_message, headers={"retry-after": str(int(KeyPool.MUTE_SECONDS))}
         )
+    except UpstreamSaturated as exc:
+        # The adaptive outbound limit for this provider account is already full
+        # and no slot came free while this request waited. Answered like the
+        # exhausted pool above -- a rate-limit condition the client should back
+        # off on, not an internal fault -- because this surface pins one adapter
+        # up front and has no fallback chain to try instead. The retry-after is
+        # one second, not a mute window: a slot frees the moment any in-flight
+        # generation finishes.
+        error_message = scrub_error_for_user(None, request_id, 429)
+        logger.warning(f"[{request_id}] Adapter messages() failed: upstream concurrency saturated")
+        _record_dispatch_failure(
+            dispatch_endpoint_id,
+            reason="messages_exception",
+            detail=operator_safe_error(exc),
+            exc=exc,
+        )
+        _log_failure(
+            log_store,
+            request_id=request_id,
+            canonical=canonical,
+            adapter=adapter,
+            metadata=metadata,
+            params_for_log=params_for_log,
+            messages_for_log=messages_for_log,
+            request_payload_for_log=request_payload_for_log,
+            start=start,
+            status_code=429,
+            error_message=error_message,
+            operator_error=operator_safe_error(exc),
+        )
+        return _anthropic_error(429, error_message, headers={"retry-after": "1"})
     except (TimeoutError, asyncio.TimeoutError) as exc:
         # Upstream exceeded the (generous) completion timeout. Surface a 504
         # gateway-timeout rather than a generic 502 "Internal server error" so

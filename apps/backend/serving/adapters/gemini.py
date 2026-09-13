@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 from collections.abc import AsyncGenerator
+from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 import aiohttp
@@ -11,7 +12,8 @@ import aiohttp
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
-from .openai_compat import _COMPLETION_TIMEOUT_S
+from .openai_compat import _COMPLETION_TIMEOUT_S, _key_pool_provider_label
+from .upstream_limiter import UpstreamSlot, acquire_upstream_slot, outcome_status, upstream_slot
 
 
 class GeminiAdapter(BaseAdapter):
@@ -301,6 +303,30 @@ class GeminiAdapter(BaseAdapter):
 
         return {"toolConfig": cfg} if cfg else {}
 
+    async def _acquire_upstream_slot(self) -> UpstreamSlot:
+        """Take an outbound concurrency slot for this endpoint's provider account.
+
+        Single-key adapter (the key rides in the query string), so the bucket —
+        keyed on (provider label, key) — is fixed for the route. Raises
+        ``UpstreamSaturated`` when the account's allowance is already full,
+        which the router turns into a fallback to another endpoint. The
+        streaming path holds the slot for the whole body iteration, not just the
+        response open: concurrency means generations in flight.
+        """
+        return await acquire_upstream_slot(
+            _key_pool_provider_label(self.config),
+            self.config.api_key,
+            base_url=self.config.base_url,
+        )
+
+    def _upstream_slot(self) -> AbstractAsyncContextManager[UpstreamSlot]:
+        """Return an ``async with`` guard around :meth:`_acquire_upstream_slot`."""
+        return upstream_slot(
+            _key_pool_provider_label(self.config),
+            self.config.api_key,
+            base_url=self.config.base_url,
+        )
+
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         """Execute non-streaming chat completion with thinking and cache token extraction."""
         request_body = self._convert_messages_to_gemini(messages)
@@ -327,12 +353,13 @@ class GeminiAdapter(BaseAdapter):
         # rate-limited providers). Resilience comes from the router's fallback
         # chain (same policy as openai_compat). The explicit timeout replaces
         # the previous unbounded wait.
-        data = await self.http.json_post_with_retry(
-            url,
-            json=request_body,
-            timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
-            retries=1,
-        )
+        async with self._upstream_slot():
+            data = await self.http.json_post_with_retry(
+                url,
+                json=request_body,
+                timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                retries=1,
+            )
 
         if "candidates" not in data or not data["candidates"]:
             raise ValueError(f"Unexpected Gemini response structure: {json.dumps(data)}")
@@ -489,126 +516,146 @@ class GeminiAdapter(BaseAdapter):
 
         # Auto-detect upstream streaming format (SSE vs NDJSON) and parse both.
         headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
-        async for line in self.http.stream_post(
-            url, json=request_body, headers=headers, mode="auto"
-        ):
-            if not line:
-                continue
-            try:
-                # Accept either raw JSON line or SSE 'data: ' prefixed line.
-                raw = line[6:] if line.startswith("data: ") else line
-                if raw.strip() == "[DONE]":
-                    break
-                data = json.loads(raw)
+        slot = await self._acquire_upstream_slot()
+        # What the concurrency limiter is told when the slot goes back.
+        # Neutral by default so an exit neither branch below reaches -- a
+        # client disconnect closing this generator mid-stream -- moves no
+        # AIMD state.
+        upstream_outcome: int | None = None
+        try:
+            async for line in self.http.stream_post(
+                url, json=request_body, headers=headers, mode="auto"
+            ):
+                if not line:
+                    continue
+                try:
+                    # Accept either raw JSON line or SSE 'data: ' prefixed line.
+                    raw = line[6:] if line.startswith("data: ") else line
+                    if raw.strip() == "[DONE]":
+                        break
+                    data = json.loads(raw)
 
-                emitted_any = False
-                # Reset per-frame: not every frame carries a candidate (blocked
-                # prompts, usage-only, or in-band error frames), and a stale value
-                # from a prior frame must not leak into the late finishReason guard.
-                candidate = None
-                if data.get("candidates"):
-                    candidate = data["candidates"][0]
+                    emitted_any = False
+                    # Reset per-frame: not every frame carries a candidate (blocked
+                    # prompts, usage-only, or in-band error frames), and a stale value
+                    # from a prior frame must not leak into the late finishReason guard.
+                    candidate = None
+                    if data.get("candidates"):
+                        candidate = data["candidates"][0]
 
-                    # Track finish reason from upstream
-                    if candidate.get("finishReason"):
-                        finish_reason_raw = candidate["finishReason"]
+                        # Track finish reason from upstream
+                        if candidate.get("finishReason"):
+                            finish_reason_raw = candidate["finishReason"]
 
-                    # Handle case where content or parts might be missing
-                    if "content" not in candidate:
-                        # Some events might carry top-level incremental text
-                        # without nesting into content/parts. Fall back below.
-                        content_parts = []
-                    else:
-                        content_parts = candidate["content"].get("parts", [])
+                        # Handle case where content or parts might be missing
+                        if "content" not in candidate:
+                            # Some events might carry top-level incremental text
+                            # without nesting into content/parts. Fall back below.
+                            content_parts = []
+                        else:
+                            content_parts = candidate["content"].get("parts", [])
 
-                    for part in content_parts:
-                        if "text" in part:
-                            text = part["text"]
-                            total_content += text
-                            yield self.format_stream_chunk(text, self.config.id)
-                            emitted_any = True
-                        elif "functionCall" in part:
-                            # Mark that we detected a function call
-                            has_function_call = True
+                        for part in content_parts:
+                            if "text" in part:
+                                text = part["text"]
+                                total_content += text
+                                yield self.format_stream_chunk(text, self.config.id)
+                                emitted_any = True
+                            elif "functionCall" in part:
+                                # Mark that we detected a function call
+                                has_function_call = True
 
-                            func_call = part["functionCall"]
-                            name = func_call.get("name")
-                            args_obj = func_call.get("args", {})
-                            try:
-                                args_str = json.dumps(args_obj)
-                            except Exception:
-                                args_str = "{}"
-                            # Emit OpenAI-compatible tool_calls delta
-                            # Note: Gemini returns complete functionCall in one chunk,
-                            # unlike incremental streaming. We still follow OpenAI spec.
-                            # Clients accumulate streamed tool calls by `index`, so
-                            # parallel calls need distinct, increasing indices (a
-                            # constant 0 merges them into one corrupted call), and
-                            # ids must be unique (same-millisecond timestamps
-                            # collide).
-                            chunk = {
-                                "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": self.config.id,
-                                "choices": [
-                                    {
-                                        "index": 0,
-                                        "delta": {
-                                            "tool_calls": [
-                                                {
-                                                    "index": tool_call_count,
-                                                    "id": f"call_{uuid.uuid4().hex}",
-                                                    "type": "function",
-                                                    "function": {
-                                                        "name": name or "",
-                                                        "arguments": args_str,
-                                                    },
-                                                }
-                                            ]
-                                        },
-                                        "finish_reason": None,
-                                    }
-                                ],
-                            }
-                            tool_call_count += 1
-                            yield f"data: {json.dumps(chunk)}\n\n"
-                            emitted_any = True
+                                func_call = part["functionCall"]
+                                name = func_call.get("name")
+                                args_obj = func_call.get("args", {})
+                                try:
+                                    args_str = json.dumps(args_obj)
+                                except Exception:
+                                    args_str = "{}"
+                                # Emit OpenAI-compatible tool_calls delta
+                                # Note: Gemini returns complete functionCall in one chunk,
+                                # unlike incremental streaming. We still follow OpenAI spec.
+                                # Clients accumulate streamed tool calls by `index`, so
+                                # parallel calls need distinct, increasing indices (a
+                                # constant 0 merges them into one corrupted call), and
+                                # ids must be unique (same-millisecond timestamps
+                                # collide).
+                                chunk = {
+                                    "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+                                    "object": "chat.completion.chunk",
+                                    "created": int(time.time()),
+                                    "model": self.config.id,
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {
+                                                "tool_calls": [
+                                                    {
+                                                        "index": tool_call_count,
+                                                        "id": f"call_{uuid.uuid4().hex}",
+                                                        "type": "function",
+                                                        "function": {
+                                                            "name": name or "",
+                                                            "arguments": args_str,
+                                                        },
+                                                    }
+                                                ]
+                                            },
+                                            "finish_reason": None,
+                                        }
+                                    ],
+                                }
+                                tool_call_count += 1
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                                emitted_any = True
 
-                # Fallbacks: some frames surface incremental text at top-level
-                if not emitted_any:
-                    for key in ("text", "deltaText", "partialText"):
-                        if isinstance(data.get(key), str) and data[key]:
-                            t = data[key]
-                            total_content += t
-                            yield self.format_stream_chunk(t, self.config.id)
-                            emitted_any = True
-                            break
+                    # Fallbacks: some frames surface incremental text at top-level
+                    if not emitted_any:
+                        for key in ("text", "deltaText", "partialText"):
+                            if isinstance(data.get(key), str) and data[key]:
+                                t = data[key]
+                                total_content += t
+                                yield self.format_stream_chunk(t, self.config.id)
+                                emitted_any = True
+                                break
 
-                # Handle empty content case (e.g., after tool execution)
-                # When Gemini returns finishReason with empty content, we should still
-                # emit at least one chunk to signal the response has started/completed
-                if not emitted_any and candidate and candidate.get("finishReason"):
-                    # Emit an empty content delta to satisfy client expectations
-                    yield self.format_stream_chunk("", self.config.id)
-                    emitted_any = True
+                    # Handle empty content case (e.g., after tool execution)
+                    # When Gemini returns finishReason with empty content, we should still
+                    # emit at least one chunk to signal the response has started/completed
+                    if not emitted_any and candidate and candidate.get("finishReason"):
+                        # Emit an empty content delta to satisfy client expectations
+                        yield self.format_stream_chunk("", self.config.id)
+                        emitted_any = True
 
-                # Extract all usage metadata from each chunk
-                if "usageMetadata" in data:
-                    usage_meta = data["usageMetadata"]
-                    prompt_tokens = usage_meta.get("promptTokenCount", prompt_tokens)
-                    reasoning_tokens = usage_meta.get("thoughtsTokenCount", reasoning_tokens)
-                    cached_tokens = usage_meta.get("cachedContentTokenCount", cached_tokens)
-                    cache_read_reported = (
-                        cache_read_reported or "cachedContentTokenCount" in usage_meta
-                    )
-                    completion_tokens_upstream = usage_meta.get(
-                        "candidatesTokenCount", completion_tokens_upstream
-                    )
-                    total_tokens_upstream = usage_meta.get("totalTokenCount", total_tokens_upstream)
+                    # Extract all usage metadata from each chunk
+                    if "usageMetadata" in data:
+                        usage_meta = data["usageMetadata"]
+                        prompt_tokens = usage_meta.get("promptTokenCount", prompt_tokens)
+                        reasoning_tokens = usage_meta.get("thoughtsTokenCount", reasoning_tokens)
+                        cached_tokens = usage_meta.get("cachedContentTokenCount", cached_tokens)
+                        cache_read_reported = (
+                            cache_read_reported or "cachedContentTokenCount" in usage_meta
+                        )
+                        completion_tokens_upstream = usage_meta.get(
+                            "candidatesTokenCount", completion_tokens_upstream
+                        )
+                        total_tokens_upstream = usage_meta.get(
+                            "totalTokenCount", total_tokens_upstream
+                        )
 
-            except json.JSONDecodeError:
-                continue
+                except json.JSONDecodeError:
+                    continue
+            # Loop ran to completion or broke on [DONE]: the upstream
+            # answered, so the concurrency level it was asked to hold was
+            # fine.
+            upstream_outcome = 200
+        except Exception as exc:
+            upstream_outcome = outcome_status(exc)
+            raise
+        finally:
+            # Held across the whole generation, not just the response open,
+            # so it comes back on every exit path this ``finally`` covers.
+            slot.release(status_code=upstream_outcome)
 
         # Prefer upstream precise values, fall back to estimation
         final_prompt_tokens = prompt_tokens or estimate_prompt_tokens(messages)

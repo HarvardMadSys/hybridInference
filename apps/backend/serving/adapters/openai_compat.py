@@ -36,6 +36,7 @@ from .profiles import (
     resolve_tool_choice_for_profile,
     supports_guided_json,
 )
+from .upstream_limiter import UpstreamSaturated, UpstreamSlot, acquire_upstream_slot
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
@@ -609,6 +610,23 @@ class OpenAICompatAdapter(BaseAdapter):
 
         return headers
 
+    async def _acquire_upstream_slot(self, api_key: str | None) -> UpstreamSlot:
+        """Take an outbound concurrency slot for the key this request will use.
+
+        Buckets are per (provider label, key), so a pooled adapter must pass the
+        key it just leased rather than the route's configured one — sibling keys
+        are usually separate accounts with separate allowances. Local inference
+        servers get an inert slot (see ``upstream_limiter.is_local_endpoint``).
+
+        Raises:
+            UpstreamSaturated: no slot came free within the acquire timeout.
+        """
+        return await acquire_upstream_slot(
+            self._key_pool_provider_label,
+            api_key,
+            base_url=self.config.base_url,
+        )
+
     async def _post_with_pool(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         """POST JSON with sequential key-pool rotation on any upstream error.
 
@@ -625,9 +643,16 @@ class OpenAICompatAdapter(BaseAdapter):
         Pool exhaustion re-raises the last error (or KeyPoolExhausted if none was
         seen yet), which the caller surfaces as an upstream failure for the
         router fallback chain.
+
+        Both branches hold an outbound concurrency slot for the duration of the
+        request (see ``upstream_limiter``). In the pooled branch a saturated key
+        rotates like any other key-specific failure — a sibling key may have
+        room — and only a request that finds every usable key saturated fails
+        with ``UpstreamSaturated``.
         """
         if self._key_pool is None:
             headers = self._build_headers()
+            slot = await self._acquire_upstream_slot(self.config.api_key)
             # retries=1 => exactly one attempt, NO retry. A chat.completion POST
             # is non-idempotent: re-sending on any ClientError (which includes a
             # response-phase >=400, or a total timeout that fires while the
@@ -637,13 +662,26 @@ class OpenAICompatAdapter(BaseAdapter):
             # comes from the router's provider fallback chain, not from blindly
             # re-running the same generation (mirrors the pooled path, which does
             # one json_post per key).
-            return await self.http.json_post_with_retry(
-                url=url,
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
-                retries=1,
-            )
+            try:
+                response = await self.http.json_post_with_retry(
+                    url=url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                    retries=1,
+                )
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                slot.release(
+                    status_code=e.status if isinstance(e, aiohttp.ClientResponseError) else 0
+                )
+                raise
+            else:
+                slot.release(status_code=200)
+                return response
+            finally:
+                # Idempotent; the release that matters ran above. This one only
+                # covers an exit neither branch saw — cancellation, most of all.
+                slot.release()
 
         affinity_key = _pool_affinity_key()
         provider = self._key_pool_provider_label
@@ -686,6 +724,19 @@ class OpenAICompatAdapter(BaseAdapter):
                 },
             )
 
+            try:
+                slot = await self._acquire_upstream_slot(api_key)
+            except UpstreamSaturated as saturated:
+                # This key's outbound allowance is full. Rotate rather than
+                # fail: sibling keys are separate accounts with their own
+                # allowances, and ``tried`` already holds this one so the next
+                # pass picks a different key. The lease is released neutrally —
+                # nothing was sent, so the key is neither credited with a
+                # success nor charged with a failure, and it must not be muted.
+                self._key_pool.release(lease, status_code=None)
+                last_error = saturated
+                continue
+
             headers = self._build_headers(api_key_override=api_key)
             try:
                 response = await self.http.json_post(
@@ -696,6 +747,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 )
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
+                slot.release(status_code=status)
                 outcome = self._key_pool.release(lease, status_code=status, tried=tried)
                 if outcome is ReleaseOutcome.PROPAGATE:
                     # Either a request-scoped client error (fails identically on
@@ -722,6 +774,11 @@ class OpenAICompatAdapter(BaseAdapter):
                 )
                 last_error = e
                 continue  # try next key
+            else:
+                slot.release(status_code=200)
+            finally:
+                # Idempotent; covers an exit neither branch above saw.
+                slot.release()
 
             self._key_pool.release(lease, status_code=200)
             logger.debug(
@@ -752,10 +809,10 @@ class OpenAICompatAdapter(BaseAdapter):
 
     async def _open_stream_with_pool(
         self, url: str, payload: dict[str, Any], timeout: Any = None
-    ) -> AsyncGenerator[tuple[Any, Any, str], None]:
+    ) -> AsyncGenerator[tuple[Any, Any, str, UpstreamSlot], None]:
         """Open a streaming POST with sequential key-pool rotation on opening errors.
 
-        Yields exactly one tuple: ``(stream_iter, lease, first_chunk)``.
+        Yields exactly one tuple: ``(stream_iter, lease, first_chunk, slot)``.
 
         - ``stream_iter`` is the underlying async iterator from ``stream_post``;
           the caller should continue iterating it after processing
@@ -764,18 +821,26 @@ class OpenAICompatAdapter(BaseAdapter):
           or ``None`` when no pool is configured.
         - ``first_chunk`` is the first chunk already pulled from the iterator
           (must be processed first by the caller).
+        - ``slot`` is the outbound concurrency slot, which the caller must
+          release wherever it releases the lease. Concurrency means *generations
+          in flight*, not responses opened, so the slot has to live as long as
+          the stream does — every exit path included (normal end, mid-stream
+          error, client disconnect). Releasing it here, where the body has not
+          been read yet, would cap nothing.
 
         Rotates keys only on status (``ClientResponseError``) opening errors,
         which the client raises before any response-body byte is read: 429/auth
         rotate (muting the key only once there is nothing left to rotate to),
-        request-scoped 4xx propagate. A non-status I/O error may instead be a
-        disconnect after the upstream returned 2xx and began streaming, so it
-        propagates without rotating to avoid re-submitting (duplicate generation
-        / double billing). Mid-stream errors are handled by the streaming
-        consumer, not here.
+        request-scoped 4xx propagate. A key whose outbound allowance is full
+        rotates the same way, without touching the key's own state. A non-status
+        I/O error may instead be a disconnect after the upstream returned 2xx and
+        began streaming, so it propagates without rotating to avoid re-submitting
+        (duplicate generation / double billing). Mid-stream errors are handled by
+        the streaming consumer, not here.
         """
         if self._key_pool is None:
             headers = self._build_headers()
+            slot = await self._acquire_upstream_slot(self.config.api_key)
             stream_iter = self.http.stream_post(
                 url=url, json=payload, headers=headers, timeout=timeout
             )
@@ -783,9 +848,19 @@ class OpenAICompatAdapter(BaseAdapter):
                 first = await stream_iter.__anext__()
             except StopAsyncIteration:
                 # Empty stream is incomplete. Yield no lease/chunk so the
-                # caller's terminal-signal check raises the upstream error.
+                # caller's terminal-signal check raises the upstream error — and
+                # hand the slot back here, since nobody downstream will.
+                slot.release(status_code=0)
                 return
-            yield stream_iter, None, first
+            except BaseException as exc:
+                # Nothing was yielded, so the slot is this frame's to return. A
+                # status error is the AIMD signal that matters (429); anything
+                # else — I/O failure, cancellation — is a neutral release.
+                slot.release(
+                    status_code=exc.status if isinstance(exc, aiohttp.ClientResponseError) else None
+                )
+                raise
+            yield stream_iter, None, first, slot
             return
 
         affinity_key = _pool_affinity_key()
@@ -824,6 +899,17 @@ class OpenAICompatAdapter(BaseAdapter):
                 },
             )
 
+            try:
+                slot = await self._acquire_upstream_slot(api_key)
+            except UpstreamSaturated as saturated:
+                # Same rotation as the non-streaming path: this key's outbound
+                # allowance is full, a sibling's may not be. Neutral lease
+                # release — nothing was sent, so the key is neither credited nor
+                # muted.
+                self._key_pool.release(lease, status_code=None)
+                last_error = saturated
+                continue
+
             headers = self._build_headers(api_key_override=api_key)
             stream_iter = self.http.stream_post(
                 url=url, json=payload, headers=headers, timeout=timeout
@@ -838,6 +924,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 # ``tried`` deliberately: that is the pool's "cannot rotate"
                 # signal, and it is the mute -- not a rotation here -- that moves
                 # the next request along.
+                slot.release(status_code=0)
                 self._key_pool.release(lease, status_code=0)
                 logger.debug(
                     "key_pool_active_affinities",
@@ -851,6 +938,7 @@ class OpenAICompatAdapter(BaseAdapter):
             except aiohttp.ClientResponseError as e:
                 # Status error — raised by the client before any response body
                 # byte is read, so re-issuing the request on another key is safe.
+                slot.release(status_code=e.status)
                 outcome = self._key_pool.release(lease, status_code=e.status, tried=tried)
                 if outcome is ReleaseOutcome.PROPAGATE:
                     # Nothing to rotate to: request-scoped error, or a transient
@@ -883,11 +971,20 @@ class OpenAICompatAdapter(BaseAdapter):
                 # not mute or rotate — release the key unchanged and propagate.
                 # Neutral (None), NOT 200: crediting a success here would reset
                 # the sole-key backoff streak mid-outage.
+                slot.release(status_code=None)
                 self._key_pool.release(lease, status_code=None)
                 raise
+            except BaseException:
+                # Cancellation before the first chunk: the slot is held for a
+                # request that no longer exists, so hand it back here — nothing
+                # downstream ever learns this attempt happened. The key pool
+                # needs nothing; a neutral release is its no-op.
+                slot.release()
+                raise
 
-            # First chunk read successfully — commit the lease (caller releases on stream end)
-            yield stream_iter, lease, first
+            # First chunk read successfully — commit the lease and the slot
+            # (caller releases both on stream end).
+            yield stream_iter, lease, first, slot
             return
 
         # Loop exhausted — every key errored on open, or the pool had no usable
@@ -1214,12 +1311,14 @@ class OpenAICompatAdapter(BaseAdapter):
         primed: str | None = None
         stream_iter: AsyncIterator[str] | None = None
         active_lease = None
+        active_slot: UpstreamSlot | None = None
 
-        async for it, lease, first in self._open_stream_with_pool(
+        async for it, lease, first, slot in self._open_stream_with_pool(
             url, payload, timeout=stream_timeout
         ):
             stream_iter = it
             active_lease = lease
+            active_slot = slot
             primed = first
             break  # helper yields exactly once
 
@@ -1291,6 +1390,13 @@ class OpenAICompatAdapter(BaseAdapter):
             stream_error = True
             raise
         finally:
+            # The outbound slot was held for the whole generation, not just the
+            # response open, so it comes back here — on every exit path this
+            # ``finally`` covers, client disconnect and mid-stream error
+            # included. Released with the same outcome as the lease, and
+            # unconditionally on the pool: a pool-less adapter still holds one.
+            if active_slot is not None:
+                active_slot.release(status_code=0 if stream_error else 200)
             if active_lease is not None and self._key_pool is not None:
                 self._key_pool.release(active_lease, status_code=0 if stream_error else 200)
                 logger.debug(

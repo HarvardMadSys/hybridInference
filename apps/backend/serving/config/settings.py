@@ -191,6 +191,22 @@ class Settings(BaseSettings):
     # Enable RouteWise online routing subsystem (per-model opt-in via models.yaml)
     enable_routewise: bool = False
 
+    # Adaptive cap on the gateway's own outbound concurrency against one remote
+    # account (serving.adapters.upstream_limiter). One bucket per
+    # (provider label, API key); local inference servers are never limited.
+    # The limit starts at _initial, drops by one on every upstream 429, and
+    # probes upward by one every _probe_success_interval *successful (HTTP 200)
+    # responses*, staying within [1, _max]. Only a 200 advances that counter —
+    # an error is not evidence the provider has headroom. A request that finds
+    # its bucket full waits up to _acquire_timeout_sec for a slot before failing
+    # over to another endpoint, so the value should stay well under the
+    # client-facing request timeout.
+    upstream_concurrency_enabled: bool = True
+    upstream_concurrency_initial_limit: int = Field(default=8, ge=1)
+    upstream_concurrency_max_limit: int = Field(default=64, ge=1)
+    upstream_concurrency_probe_success_interval: int = Field(default=100, ge=1)
+    upstream_concurrency_acquire_timeout_sec: float = Field(default=30.0, gt=0.0)
+
     # Slack alerting (optional). Empty SLACK_WEBHOOK_URL disables the feature
     # entirely — no scheduler job is registered and no errors are raised.
     slack_webhook_url: str = ""

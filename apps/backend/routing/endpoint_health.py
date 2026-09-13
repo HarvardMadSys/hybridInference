@@ -13,6 +13,7 @@ from typing import Any
 
 from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 from serving.adapters.key_pool import KeyPoolRoleRestricted
+from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.exceptions import operator_safe_error
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.observability.state_alert_policy import (
@@ -1010,6 +1011,31 @@ class EndpointHealthRegistry:
                 "role_restricted_skip_breaker",
                 extra={
                     "event": "role_restricted_skip_breaker",
+                    "endpoint_id": endpoint_id,
+                    "detail": _detail_str(detail or operator_safe_error(exc)),
+                },
+            )
+            return
+        if exc is not None and isinstance(exc, UpstreamSaturated):
+            # This gateway declined to open another concurrent request against
+            # the provider account behind this endpoint (see
+            # ``serving.adapters.upstream_limiter``). Nothing was sent, so the
+            # endpoint answered nothing and must not be charged for it — the
+            # same reading as the role-restricted case above, for a limit this
+            # process imposed on itself rather than one the vendor imposed.
+            #
+            # Counting it would also be self-amplifying in a way a real upstream
+            # failure is not. One bucket is shared by every endpoint on that
+            # account, so a burst on one model would open the circuit on models
+            # that never sent a byte; and an endpoint whose circuit is open is
+            # skipped entirely, which is the opposite of what a concurrency
+            # limiter is for — the point is to keep using the endpoint at a rate
+            # it accepts. The request still fails over: the router's fallback
+            # chain runs off the exception, not off this accounting.
+            logger.info(
+                "gateway_throttle_skip_breaker",
+                extra={
+                    "event": "gateway_throttle_skip_breaker",
                     "endpoint_id": endpoint_id,
                     "detail": _detail_str(detail or operator_safe_error(exc)),
                 },
