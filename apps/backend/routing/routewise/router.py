@@ -27,6 +27,8 @@ import random
 import threading
 import time
 import uuid
+import weakref
+from collections import deque
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -138,6 +140,107 @@ async def _await_cancelled_child(task: asyncio.Task[Any]) -> None:
     current = asyncio.current_task()
     if current is not None and current.cancelling():
         raise asyncio.CancelledError
+
+
+class _ProbeConcurrencyGate:
+    """Process-wide cap on RouteWise latency probes in flight.
+
+    ``routewise_probe_max_concurrency`` says how much probe traffic the gateway
+    may put on its providers at once, but every RouteWise model builds its own
+    router with its own probe loop, so a semaphore owned by one router
+    multiplies the configured cap by the number of models. Models that share a
+    provider subscription then probe it at the same moment, and the provider
+    answers the collision with its own concurrency error -- which lands on
+    whichever request happens to be in flight, real traffic included, rather
+    than on the probe that caused it.
+
+    One gate per event loop makes the setting mean what it says. Capacity is
+    the lowest limit any probing router asks for: routers normally agree, and
+    where they disagree the model that wants a single probe is the one whose
+    provider cannot take two.
+    """
+
+    def __init__(self) -> None:
+        self._limit = 0
+        self._active = 0
+        self._waiters: deque[asyncio.Future[None]] = deque()
+
+    @property
+    def limit(self) -> int:
+        """Effective cap across all routers, or 0 until one claims the gate."""
+        return self._limit
+
+    @property
+    def active(self) -> int:
+        """Probes currently holding a slot."""
+        return self._active
+
+    @contextlib.asynccontextmanager
+    async def slot(self, limit: int) -> AsyncIterator[None]:
+        """Hold one probe slot for the duration of the block."""
+        await self._acquire(limit)
+        try:
+            yield
+        finally:
+            self._release()
+
+    async def _acquire(self, limit: int) -> None:
+        requested = max(int(limit), 1)
+        self._limit = requested if self._limit == 0 else min(self._limit, requested)
+        if self._active < self._limit:
+            self._active += 1
+            return
+        waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._waiters.append(waiter)
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            if waiter.done() and not waiter.cancelled():
+                # The slot was handed over before the cancellation landed. Pass
+                # it on rather than lose it: a slot that leaks here is gone for
+                # the life of the process, and at the default limit of 1 that
+                # ends probing altogether.
+                self._release()
+            else:
+                with contextlib.suppress(ValueError):
+                    self._waiters.remove(waiter)
+            raise
+
+    def _release(self) -> None:
+        """Hand the slot to the next waiter.
+
+        Deliberately synchronous: releasing from a ``finally`` that is already
+        unwinding a cancellation must not await, or the release is itself
+        cancelled and the slot is lost.
+        """
+        self._active = max(self._active - 1, 0)
+        while self._waiters and self._active < self._limit:
+            waiter = self._waiters.popleft()
+            if waiter.done():
+                continue
+            self._active += 1
+            waiter.set_result(None)
+            return
+
+
+_PROBE_GATES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _ProbeConcurrencyGate] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _probe_concurrency_gate() -> _ProbeConcurrencyGate:
+    """Return this event loop's probe gate, creating it on first use.
+
+    Keyed by loop rather than kept as one module-level object because asyncio
+    futures belong to the loop that created them, and every ``asyncio.run`` --
+    each test included -- brings a fresh loop.
+    """
+    loop = asyncio.get_running_loop()
+    gate = _PROBE_GATES.get(loop)
+    if gate is None:
+        gate = _ProbeConcurrencyGate()
+        _PROBE_GATES[loop] = gate
+    return gate
 
 
 @dataclass(frozen=True)
@@ -760,6 +863,12 @@ class RouteWiseRouter:
         LP. Provider failures are recorded as failed latency outcomes so they
         receive the normal RouteWise 60s error penalty.
 
+        ``routewise_probe_max_concurrency`` is enforced across every RouteWise
+        router in the process rather than per router, so two models that share
+        one provider subscription cannot probe it at the same moment — see
+        ``_ProbeConcurrencyGate``. A manual probe from the admin console queues
+        behind the background loops for the same reason.
+
         Endpoints whose catalog entry is ``on_demand: true`` are never probed,
         even when named explicitly via ``endpoint_id`` — see ``_probe_targets``.
         """
@@ -774,10 +883,11 @@ class RouteWiseRouter:
             self._last_probe_results = []
             return []
 
-        semaphore = asyncio.Semaphore(max(int(self.config.routewise_probe_max_concurrency), 1))
+        gate = _probe_concurrency_gate()
+        probe_limit = int(self.config.routewise_probe_max_concurrency)
 
         async def _guarded_probe(target_endpoint: str) -> RouteWiseProbeResult:
-            async with semaphore:
+            async with gate.slot(probe_limit):
                 return await self._probe_endpoint(target_endpoint)
 
         results = await asyncio.gather(*(_guarded_probe(endpoint) for endpoint in endpoints))

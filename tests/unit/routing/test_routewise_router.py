@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import itertools
 import json
 import logging
+import threading
 import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,7 +23,12 @@ from routing.routewise.decisions import ProviderReservation, RoutingDecision, Ro
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.hedging import HedgedAdapter
 from routing.routewise.quota import ProviderQuotaSnapshotStore
-from routing.routewise.router import ProviderType, RouteWiseRouter
+from routing.routewise.router import (
+    ProviderType,
+    RouteWiseRouter,
+    _probe_concurrency_gate,
+    _ProbeConcurrencyGate,
+)
 from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 
 # ---------------------------------------------------------------------------
@@ -1749,6 +1756,158 @@ class TestRouteWiseLayer2:
         # B's weights must only contain B's endpoints.
         for eid in b_weights:
             assert eid.startswith("model-b:")
+
+
+class _OverlapRecorder:
+    """Counts how many tracked blocks are open at the same time."""
+
+    def __init__(self) -> None:
+        self.active = 0
+        self.peak = 0
+
+    @contextlib.asynccontextmanager
+    async def track(self):
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        try:
+            yield
+        finally:
+            self.active -= 1
+
+
+async def _gate_limit_in_this_loop() -> int:
+    return _probe_concurrency_gate().limit
+
+
+def _probe_router(model_id: str, overlap: _OverlapRecorder) -> RouteWiseRouter:
+    """A one-endpoint router whose probe reports when it starts and finishes."""
+    endpoint_id = f"{model_id}:shared-api"
+    adapter = _make_adapter(
+        provider_type="on_demand",
+        prompt_price="3.0",
+        completion_price="15.0",
+        endpoint_id=endpoint_id,
+    )
+    table = _FakeRouteTable()
+    table.add(model_id, [(adapter, 1.0)])
+    router = RouteWiseRouter(route_table=table, config=RouteWiseConfig())
+
+    async def stream(_messages, **_params):
+        async with overlap.track():
+            # Hand the loop to the sibling router: without a shared gate this
+            # is where its probe slips in alongside this one.
+            await asyncio.sleep(0)
+            yield 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+
+    adapter.stream_chat_completion = stream
+    router._endpoint_adapter = {endpoint_id: adapter}
+    router._endpoint_models = {endpoint_id: {model_id}}
+    return router
+
+
+@pytest.mark.unit
+class TestProbeConcurrencyGate:
+    """routewise_probe_max_concurrency caps the process, not one router.
+
+    Every RouteWise model gets its own router and its own probe loop, so a cap
+    owned by a router is multiplied by the number of models. Two models sitting
+    on one provider subscription then probe it at the same moment, the provider
+    refuses the second with its own concurrency error, and that refusal lands on
+    whatever request is in flight -- real traffic as often as the probe.
+    """
+
+    async def test_two_routers_never_probe_the_shared_provider_at_once(self):
+        """The regression: sibling models must not stack probes on one subscription."""
+        overlap = _OverlapRecorder()
+        first = _probe_router("kimi-first", overlap)
+        second = _probe_router("kimi-second", overlap)
+
+        batches = await asyncio.gather(
+            first.run_probe_once(idle_only=False),
+            second.run_probe_once(idle_only=False),
+        )
+
+        assert [result.ok for batch in batches for result in batch] == [True, True]
+        assert overlap.peak == 1
+
+    async def test_gate_takes_the_lowest_limit_any_router_asks_for(self):
+        """A model that can afford one probe holds the whole process to one."""
+        gate = _ProbeConcurrencyGate()
+        entered = asyncio.Event()
+
+        async with gate.slot(4):
+            assert gate.limit == 4
+        async with gate.slot(1):
+            assert gate.limit == 1
+
+        async def _second_probe() -> None:
+            async with gate.slot(4):
+                entered.set()
+
+        # A router still configured for four probes queues behind the one in
+        # flight: the lowest claim is what the shared gate enforces.
+        async with gate.slot(4):
+            assert gate.limit == 1
+            queued = asyncio.create_task(_second_probe())
+            await asyncio.sleep(0)
+            assert not entered.is_set()
+
+        await asyncio.wait_for(queued, timeout=1)
+        assert entered.is_set()
+        assert gate.active == 0
+
+    async def test_cancelling_a_waiting_probe_leaves_the_slot_usable(self):
+        """Shutdown cancels probe tasks; a slot lost there would end probing.
+
+        The gate lives as long as the worker, so a slot leaked by a cancelled
+        probe is never recovered -- and at the default limit of 1 that silently
+        stops every RouteWise model probing until a restart.
+        """
+        gate = _ProbeConcurrencyGate()
+        released = asyncio.Event()
+
+        async def _hold() -> None:
+            async with gate.slot(1):
+                await released.wait()
+
+        async def _queue() -> None:
+            async with gate.slot(1):
+                pass
+
+        holder = asyncio.create_task(_hold())
+        await asyncio.sleep(0)
+        waiting = asyncio.create_task(_queue())
+        await asyncio.sleep(0)
+
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+
+        released.set()
+        await holder
+        assert gate.active == 0
+
+        async with gate.slot(1):
+            assert gate.active == 1
+
+    async def test_each_event_loop_gets_its_own_gate(self):
+        """Gate state cannot outlive its loop: asyncio futures belong to one."""
+        gate = _probe_concurrency_gate()
+        assert _probe_concurrency_gate() is gate
+        async with gate.slot(1):
+            pass
+        assert gate.limit == 1
+
+        limits: list[int] = []
+        thread = threading.Thread(
+            target=lambda: limits.append(asyncio.run(_gate_limit_in_this_loop()))
+        )
+        thread.start()
+        thread.join()
+
+        # Unclaimed, so it is not this loop's gate -- whose waiters would belong
+        # to a loop that has since closed.
+        assert limits == [0]
 
 
 @pytest.mark.unit

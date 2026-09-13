@@ -641,6 +641,19 @@ the active prober (`routewise_probe_enabled`), which runs in-process and does
 not require an operational store; persisting probe samples is an optimization
 on top.
 
+**Probe concurrency is process-wide.** `routewise_probe_max_concurrency`
+(default `1`) is a `router_params:` key, but every RouteWise model owns a
+router and a probe loop of its own, so enforcing it per router would multiply
+it by the number of models. Two models pointed at one provider subscription
+would then probe it simultaneously, the provider would refuse the second with
+its own concurrency error, and that refusal lands on whichever request is in
+flight — real traffic as often as the probe. All routers in a worker therefore
+share one gate, and where models configure different values the lowest wins.
+Like RouteWise's other concurrency state the gate is per worker; the
+cross-worker guard is the DB probe lease (`routewise_probe_leases`), which is
+keyed per model and so stops two workers probing one model rather than capping
+probe traffic deployment-wide.
+
 Configuration splits by ownership:
 
 - **`router_params:` (per model)** — algorithm knobs only. The accepted keys and
