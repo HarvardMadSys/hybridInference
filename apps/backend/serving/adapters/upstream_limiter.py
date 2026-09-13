@@ -385,6 +385,33 @@ class UpstreamConcurrencyLimiter:
         """Whether this limiter polices anything at all."""
         return self._enabled
 
+    # The four tunables below are exposed read-only so an operator reading the
+    # live state can see what the numbers are being measured against — a limit
+    # of 8 means nothing without knowing whether that is the starting value or
+    # the ceiling. They are the resolved values, already clamped by __init__, so
+    # they reflect what the controller actually enforces rather than what the
+    # environment asked for.
+
+    @property
+    def initial_limit(self) -> int:
+        """Limit a bucket starts at, before any AIMD feedback moves it."""
+        return self._initial_limit
+
+    @property
+    def max_limit(self) -> int:
+        """Ceiling a probe will never raise a bucket past."""
+        return self._max_limit
+
+    @property
+    def probe_success_interval(self) -> int:
+        """HTTP 200s a bucket must count before it probes for headroom."""
+        return self._probe_success_interval
+
+    @property
+    def acquire_timeout(self) -> float:
+        """Seconds a request waits for a slot before :class:`UpstreamSaturated`."""
+        return self._acquire_timeout
+
     async def acquire(
         self,
         provider: str,
@@ -468,14 +495,25 @@ class UpstreamConcurrencyLimiter:
             self._buckets[(label, fingerprint)] = bucket
         return bucket
 
-    def snapshot(self) -> dict[tuple[str, str], dict[str, int]]:
-        """Return per-bucket limit/in-flight/queue depth, for tests and debugging."""
+    def snapshot(self) -> dict[tuple[str, str], dict[str, int | bool]]:
+        """Return each bucket's live AIMD state, keyed by (provider, fingerprint).
+
+        Read by tests, by debugging, and by the admin
+        ``/admin/upstream-concurrency`` view. A bucket exists only once traffic
+        has created it, so an idle gateway snapshots empty — that is the true
+        answer, not a missing one.
+
+        Nothing here is derived from the credential beyond the fingerprint the
+        bucket was already keyed by: the raw key is never held on a bucket, so
+        it cannot leak through this method.
+        """
         return {
             key: {
                 "limit": bucket.limit,
                 "in_flight": bucket.in_flight,
                 "waiting": len(bucket.waiters),
                 "successes_since_probe": bucket.successes_since_probe,
+                "probing": bucket.probing,
             }
             for key, bucket in self._buckets.items()
         }
