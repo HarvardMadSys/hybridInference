@@ -703,7 +703,7 @@ async def test_recovery_cannot_overtake_the_page_it_closes(monkeypatch):
         await release_lookup.wait()
         return False
 
-    async def _record_post(_webhook_url: str, message: str) -> bool:
+    async def _record_post(_webhook_url: str, message: str, **_kwargs: object) -> bool:
         # The plain-webhook sink has only the text, so that is where the recovery
         # is distinguishable — see ``alerts._format_message``.
         posted.append("resolved" if "*Recovered:*" in message else "firing")

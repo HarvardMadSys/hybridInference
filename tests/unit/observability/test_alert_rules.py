@@ -726,7 +726,7 @@ async def test_auth_ip_blocked_wave_delivers_one_named_message(monkeypatch):
 
     posted: list[dict] = []
 
-    async def _capture(_url, message):
+    async def _capture(_url, message, **_kwargs):
         posted.append(message)
         return True
 
