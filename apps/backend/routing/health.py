@@ -9,11 +9,23 @@ from typing import Any
 
 import aiohttp
 
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class HealthMonitor:
     """Health monitoring for deployment endpoints.
 
     Periodically checks endpoint health via GET /health requests.
+
+    The verdict is advisory. ``RoutingManager.apply()`` is the only reader, it
+    runs once during bootstrap -- synchronously, before the prober task this
+    class starts has had a single chance to run -- so no dispatch decision has
+    ever been made from ``_status``. Until that changes (gating needs hysteresis
+    and a guard against zeroing a model's last route, which is a routing change,
+    not a reporting one), the probe's job is to *say* what it found: transitions
+    are logged, and ``status_snapshot`` publishes the map on ``/routing``.
     """
 
     def __init__(self, timeout_s: int, interval_s: int) -> None:
@@ -38,6 +50,14 @@ class HealthMonitor:
             True if healthy or unknown, False if known unhealthy.
         """
         return self._status.get(endpoint, True)
+
+    def status_snapshot(self) -> dict[str, bool]:
+        """Return a detached copy of the per-endpoint probe verdicts.
+
+        Empty until the prober has completed its first pass, which is also the
+        state ``is_healthy`` answers ``True`` from.
+        """
+        return dict(self._status)
 
     async def _check_once(self, session: Any, endpoint: str) -> bool:
         """Perform a single health check against the origin's /health path.
@@ -69,8 +89,46 @@ class HealthMonitor:
                     return_exceptions=True,
                 )
                 for ep, ok in zip(endpoints, results, strict=False):
-                    self._status[ep] = bool(ok) if not isinstance(ok, Exception) else False
+                    healthy = bool(ok) if not isinstance(ok, Exception) else False
+                    self._record(ep, healthy)
                 await asyncio.sleep(self.interval_s)
+
+    def _record(self, endpoint: str, healthy: bool) -> None:
+        """Store one probe verdict, logging only when it changes.
+
+        Transitions only. A permanently dead endpoint probed every 60s would
+        otherwise emit 1440 identical lines a day, which is how a signal becomes
+        something operators filter out. The first pass compares against the
+        optimistic default ``is_healthy`` already returns, so a first probe that
+        succeeds is silent and a first probe that fails is not.
+        """
+        previous = self._status.get(endpoint, True)
+        self._status[endpoint] = healthy
+        if healthy == previous:
+            return
+        if healthy:
+            logger.warning(
+                "Health probe recovered: %s now answers /health (advisory only; "
+                "routing does not consult this verdict)",
+                endpoint,
+                extra={
+                    "event": "endpoint_probe_recovered",
+                    "endpoint": endpoint,
+                    "status": "healthy",
+                },
+            )
+            return
+        logger.warning(
+            "Health probe failing: %s did not answer /health within %ss (advisory only; "
+            "routing does not consult this verdict, so the endpoint keeps taking traffic)",
+            endpoint,
+            self.timeout_s,
+            extra={
+                "event": "endpoint_probe_failed",
+                "endpoint": endpoint,
+                "status": "unhealthy",
+            },
+        )
 
     def start(self, endpoints: list[str]) -> None:
         """Start health monitoring for given endpoints.

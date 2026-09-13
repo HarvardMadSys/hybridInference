@@ -367,6 +367,17 @@ async def deep_health(
     if overall == "unhealthy":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
+    # Routes automatic selection can never pick, with the mechanism that
+    # zeroed each one. Reported alongside `providers` rather than folded into
+    # it because the exclusion is per (model, endpoint) -- one endpoint can be
+    # live for one model and overridden to zero for another -- and because the
+    # remediation differs per cause. Deliberately does NOT feed `overall`: an
+    # operator zeroing a route is a decision, not an outage, and degrading the
+    # deployment's health on it would page for a working gateway.
+    route_exclusions = (
+        router_exec.get_route_exclusions() if hasattr(router_exec, "get_route_exclusions") else []
+    )
+
     return {
         "status": overall,
         "routes_configured": routes_count,
@@ -376,6 +387,7 @@ async def deep_health(
             "log_store": store_health["log_store"],
         },
         "providers": provider_status,
+        "route_exclusions": route_exclusions,
     }
 
 

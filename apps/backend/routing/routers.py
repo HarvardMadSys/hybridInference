@@ -136,6 +136,44 @@ AFFINITY_TTL_SECONDS: float = 300.0
 AFFINITY_SWEEP_THRESHOLD: int = 1000
 AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
 
+# Why a route's effective weight stops matching the weight its configuration
+# asked for. Reported separately, never merged, because each names a different
+# owner and a different remediation -- see ``FixedRouter.get_route_exclusions``.
+#: A ``provider_weight_overrides`` row set this (model, endpoint) pair's weight.
+EXCLUSION_WEIGHT_OVERRIDE = "weight_override"
+#: A ``disabled_providers`` row zeroes every adapter carrying that provider label.
+EXCLUSION_PROVIDER_DISABLED = "provider_disabled"
+#: ``RoutingManager`` reweighted the route from ``routing.yaml``'s local/remote
+#: split. Only reachable where no weight-override resolver is attached: with one,
+#: selection reads the registration weights and the manager's pass is inert.
+EXCLUSION_ROUTING_YAML = "routing_yaml"
+#: No runtime mechanism is involved: the model registry itself declares weight 0.
+EXCLUSION_CONFIGURED_ZERO = "configured_zero"
+
+#: Tolerance for comparing two weight shares. The configured and effective sides
+#: are normalized by separate divisions, so an unchanged route can land a few
+#: ULPs apart; without a tolerance every even split would be reported as
+#: diverged.
+_WEIGHT_SHARE_EPSILON = 1e-9
+
+
+def _shares_differ(left: float, right: float) -> bool:
+    """Return whether two normalized weight shares differ meaningfully."""
+    return abs(left - right) > _WEIGHT_SHARE_EPSILON
+
+
+def _weight_shares(weights: Sequence[float]) -> list[float]:
+    """Return weights as shares of their own total, or all-zero when it is zero.
+
+    Reporting only. Registration weights and selection weights live on different
+    scales (see ``FixedRouter.describe_route_weights``); this is what makes the
+    two comparable without either side having to be renormalized in place.
+    """
+    total = sum(weights)
+    if total <= 0:
+        return [0.0 for _ in weights]
+    return [float(weight) / total for weight in weights]
+
 
 # HTTP statuses that describe the *request the client sent*, as opposed to the
 # state of whichever route happened to answer it. Only these may displace the
@@ -318,6 +356,10 @@ class FixedRouter:
         # counts, which lets one mega-prefill monopolize a replica while its
         # siblings idle; this is the signal that lets selection see that.
         self._prefill_load = PrefillLoadTracker()
+        # Divergence set last announced by ``log_route_weight_divergence``.
+        # None (not an empty set) means "never reported", which is what lets a
+        # gateway with no overrides boot silently.
+        self._logged_weight_divergence: frozenset[tuple[Any, ...]] | None = None
 
     @property
     def prefill_load(self) -> PrefillLoadTracker:
@@ -394,8 +436,267 @@ class FixedRouter:
             del self._affinity[k]
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
-        """Return a snapshot of provider availability and circuit state."""
-        return self._health_registry.snapshot()
+        """Return a snapshot of provider availability, circuit state and exclusions.
+
+        The exclusion half is merged in -- and endpoints that appear *only* as
+        excluded are added to the map -- because a zero-weighted route is never
+        dispatched to, so it never reaches the health registry at all. Without
+        it a model down to its last live route reads here exactly like a model
+        that only ever had one: the health snapshot can only describe endpoints
+        traffic has already been sent to.
+        """
+        status = self._health_registry.snapshot()
+        for fact in self.get_route_exclusions():
+            entry = status.setdefault(fact["endpoint_id"], {})
+            models = entry.setdefault("excluded_from_models", [])
+            if fact["model_id"] not in models:
+                models.append(fact["model_id"])
+            reasons = entry.setdefault("exclusion_reasons", [])
+            for reason in fact["reasons"]:
+                if reason not in reasons:
+                    reasons.append(reason)
+        for entry in status.values():
+            # One endpoint can be excluded from several models for several
+            # reasons; sort so the payload is stable across calls (and so tests
+            # do not depend on dict iteration order).
+            if "excluded_from_models" in entry:
+                entry["excluded_from_models"].sort()
+                entry["exclusion_reasons"].sort()
+        return status
+
+    def describe_route_weights(self) -> list[dict[str, Any]]:
+        """Explain every published route's effective weight and what changed it.
+
+        One entry per (model, endpoint) pair, carrying the weight the model
+        registry asked for, the weight routing actually uses, and the mechanism
+        behind any difference. Both weights are reported as **shares of the
+        model's route table** -- each side normalized over that model's routes --
+        because the two are kept on different scales internally (registration
+        weights before normalization, selection weights after), and a report that
+        mixed the scales would flag every multi-route model as diverged.
+
+        This deliberately *mirrors* ``_get_effective_adapters`` instead of
+        calling it. That method may await an async-only override resolver, which
+        raises when called from inside a running event loop -- and this runs on
+        ``/health/deep``, inside exactly such a loop. A diagnostic must never be
+        the thing that takes the status endpoint down.
+        ``test_describe_route_weights_agrees_with_selection`` pins the mirror
+        against drift.
+
+        Known limit: an override resolver that exposes only the async
+        ``get_for_model`` cannot be read from here, so its overrides are reported
+        as absent. That under-reports rather than raises, which is the right
+        failure for a status surface; every resolver the gateway constructs
+        exposes the sync snapshot.
+        """
+        disabled_resolver = self.disabled_provider_resolver
+        facts: list[dict[str, Any]] = []
+        for model_id, route in self._published_routes_snapshot():
+            overrides = self._weight_override_snapshot(model_id)
+            # What the model registry asked for, before anything at runtime.
+            registered = route.raw_adapters or [
+                (adapter, weight, endpoint_id_for_adapter(adapter))
+                for adapter, weight in route.adapters
+            ]
+            # Where selection starts from, mirroring ``_get_effective_adapters``:
+            # the pre-normalization registration weights when a readable override
+            # resolver can rewrite them, otherwise the live normalized list --
+            # which is also the one ``RoutingManager.apply()`` mutates in place.
+            if overrides is None or not route.raw_adapters:
+                baseline = [
+                    (adapter, weight, endpoint_id_for_adapter(adapter))
+                    for adapter, weight in route.adapters
+                ]
+                overrides = {}
+            else:
+                baseline = list(route.raw_adapters)
+            # Keyed by adapter, not by position: ``RoutingManager.apply()``
+            # rebuilds ``route.adapters`` covered-first, so it can reorder the
+            # list relative to ``raw_adapters``.
+            registered_shares = _weight_shares([weight for _, weight, _ in registered])
+            registered_share = {
+                adapter: share
+                for (adapter, _weight, _endpoint_id), share in zip(
+                    registered, registered_shares, strict=False
+                )
+            }
+            baseline_share = _weight_shares([weight for _, weight, _ in baseline])
+            effective_weights: list[float] = []
+            per_route_reasons: list[list[str]] = []
+            for index, (adapter, base_weight, endpoint_id) in enumerate(baseline):
+                configured = registered_share.get(adapter, 0.0)
+                reasons: list[str] = []
+                # Attribution is by *mechanism*, never by comparing the route's
+                # own configured and effective shares. Zeroing one route raises
+                # every sibling's share, and blaming the survivor for the share
+                # it inherited is how a report turns one operator action into a
+                # line per route.
+                if configured <= 0:
+                    reasons.append(EXCLUSION_CONFIGURED_ZERO)
+                elif _shares_differ(baseline_share[index], configured):
+                    # Selection's starting weights are not the registry's, and
+                    # no runtime override has been applied yet: what rewrote
+                    # them is RoutingManager applying routing.yaml's local/remote
+                    # split. Unreachable with a weight resolver attached, where
+                    # selection reads the registration weights and the manager's
+                    # pass is inert.
+                    reasons.append(EXCLUSION_ROUTING_YAML)
+                weight = float(base_weight)
+                override = overrides.get(endpoint_id)
+                if override is not None and float(override) != weight:
+                    weight = float(override)
+                    reasons.append(EXCLUSION_WEIGHT_OVERRIDE)
+                if disabled_resolver is not None and disabled_resolver.is_disabled(
+                    adapter.config.provider
+                ):
+                    weight = 0.0
+                    reasons.append(EXCLUSION_PROVIDER_DISABLED)
+                effective_weights.append(weight)
+                per_route_reasons.append(reasons)
+            effective_share = _weight_shares(effective_weights)
+            for index, (adapter, _base_weight, endpoint_id) in enumerate(baseline):
+                facts.append(
+                    {
+                        "model_id": model_id,
+                        "endpoint_id": endpoint_id,
+                        "provider": adapter.config.provider,
+                        "base_url": adapter.config.base_url,
+                        "configured_weight": registered_share.get(adapter, 0.0),
+                        "effective_weight": effective_share[index],
+                        "reasons": per_route_reasons[index],
+                    }
+                )
+        return facts
+
+    def get_route_exclusions(self) -> list[dict[str, Any]]:
+        """Return the published routes automatic selection can never pick.
+
+        A zero effective weight is skipped both by weighted selection and by
+        every fallback loop (``if adapter == primary or weight <= 0``), so these
+        routes are configured capacity that does not exist. The cause labels are
+        kept separate rather than merged into one "disabled" flag: a
+        ``provider_weight_overrides`` row is per (model, endpoint) and is undone
+        in the admin console's routing-weights view, a ``disabled_providers``
+        row is a provider-wide kill switch undone in the providers view, a
+        ``routing.yaml`` split is undone in the overlay's routing file, and a
+        weight of 0 in the model registry is undone in its models file.
+        Different owners, different fixes.
+        """
+        return [fact for fact in self.describe_route_weights() if fact["effective_weight"] <= 0]
+
+    def log_route_weight_divergence(self) -> None:
+        """Log every route whose effective weight differs from its configured one.
+
+        Called once at startup and again after each override / disabled-provider
+        reload, so an operator reading the boot log can see the runtime weight
+        table rather than having to query the operational store to discover that
+        a model with six configured routes has one live one.
+
+        Self-deduplicating on the divergence set: the refresh loops call this
+        every time a reload reports a change, and a weight that has been zero
+        for 71 days must not print a line per reload.
+        """
+        # A route the registry itself weights at zero is configuration, not
+        # divergence, so it is reported by ``get_route_exclusions`` but never
+        # announced here -- the boot log would otherwise carry a permanent line
+        # for every deliberately parked route.
+        diverged = [
+            fact
+            for fact in self.describe_route_weights()
+            if set(fact["reasons"]) - {EXCLUSION_CONFIGURED_ZERO}
+        ]
+        signature = frozenset(
+            (
+                fact["model_id"],
+                fact["endpoint_id"],
+                fact["effective_weight"],
+                tuple(fact["reasons"]),
+            )
+            for fact in diverged
+        )
+        with self._lock:
+            previous = self._logged_weight_divergence
+            if signature == previous:
+                return
+            self._logged_weight_divergence = signature
+        if not diverged:
+            # ``previous`` is None on the first call, so a gateway that boots
+            # with no overrides at all stays silent instead of announcing that
+            # nothing changed.
+            if previous:
+                logger.info(
+                    "route_weight_divergence_cleared",
+                    extra={"event": "route_weight_divergence_cleared"},
+                )
+            return
+        for fact in diverged:
+            zeroed = fact["effective_weight"] <= 0
+            # A route zeroed at runtime is removed capacity and is what the
+            # RCA had to find by hand; a route merely re-weighted is still
+            # routable, so it is reported but not as a warning.
+            log = logger.warning if zeroed else logger.info
+            # The verb says what happened to the weight, never which mechanism
+            # did it -- "overridden" is also the name of one of the four causes,
+            # so a provider-disabled route announced as "overridden" would send
+            # an operator to the wrong admin tab. The cause is in the brackets.
+            log(
+                "Route %s at runtime: %s via %s is %.4g (config: %.4g) [%s]",
+                "zeroed" if zeroed else "re-weighted",
+                fact["model_id"],
+                fact["endpoint_id"],
+                fact["effective_weight"],
+                fact["configured_weight"],
+                ", ".join(fact["reasons"]) or "unknown",
+                extra={
+                    "event": "route_weight_zeroed" if zeroed else "route_weight_overridden",
+                    "model_id": fact["model_id"],
+                    "endpoint_id": fact["endpoint_id"],
+                    "provider": fact["provider"],
+                    "configured_weight": fact["configured_weight"],
+                    "effective_weight": fact["effective_weight"],
+                    "reason": ", ".join(fact["reasons"]) or "unknown",
+                },
+            )
+
+    def _published_routes_snapshot(self) -> list[tuple[str, RouteConfig]]:
+        """Return one (canonical model id, route) pair per published route.
+
+        Aliases share a ``RouteConfig`` by reference, so reporting per route key
+        would list the same endpoints once per alias.
+        """
+        with self._lock:
+            items = list(self.routes.items())
+        seen_canonical_ids: set[str] = set()
+        snapshot: list[tuple[str, RouteConfig]] = []
+        for route_key, route in items:
+            if not route.published:
+                continue
+            canonical_model_id = route.canonical_model_id or route_key
+            if canonical_model_id in seen_canonical_ids:
+                continue
+            seen_canonical_ids.add(canonical_model_id)
+            snapshot.append((canonical_model_id, route))
+        return snapshot
+
+    def _weight_override_snapshot(self, model_id: str) -> dict[str, float] | None:
+        """Return the synchronous weight-override snapshot for one model.
+
+        ``None`` means "no overrides are readable from here": either no resolver
+        is attached -- the case ``_get_effective_adapters`` itself falls back to
+        the route's own weights for -- or the one attached offers only the async
+        ``get_for_model`` shape, which a diagnostic must not await (see
+        ``describe_route_weights``). Reporting the second as "no overrides" can
+        understate an override that is in fact set; every resolver the gateway
+        constructs exposes the sync snapshot, and under-reporting beats a status
+        endpoint that raises.
+        """
+        resolver = self.weight_override_resolver
+        if resolver is None:
+            return None
+        get_snapshot = getattr(resolver, "get_snapshot_for_model", None)
+        if get_snapshot is None:
+            return None
+        return dict(get_snapshot(model_id))
 
     def record_observation(self, obs: RoutingObservation) -> None:
         """Ignore observations because fixed routing has no online-learning state."""

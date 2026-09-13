@@ -243,23 +243,44 @@ def _collect_routewise_runtime_routers(
     return routewise_routers, model_ids_by_router
 
 
+def _report_route_weight_divergence(router: Any | None) -> None:
+    """Announce routes whose runtime weight no longer matches their config.
+
+    Never lets a diagnostic abort the caller: this runs in bootstrap and inside
+    the refresh loops, and losing route weights over a logging fault would be a
+    strictly worse outcome than losing the log line.
+    """
+    if router is None or not hasattr(router, "log_route_weight_divergence"):
+        return
+    try:
+        router.log_route_weight_divergence()
+    except Exception:
+        logger.warning("Route weight divergence report failed", exc_info=True)
+
+
 async def _refresh_weight_override_snapshots(
     resolver: WeightOverrideResolver,
     model_router_registry: ModelRouterRegistry | None = None,
     *,
     interval_seconds: float = 10.0,
     rebuild_pending: bool = False,
+    router: Any | None = None,
 ) -> None:
     """Periodically reload route weight overrides so workers converge after admin edits."""
     refresh_state = _EffectiveRouteRefreshState(rebuild_pending=rebuild_pending)
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            await _reload_effective_route_state(
+            changed = await _reload_effective_route_state(
                 resolver,
                 model_router_registry,
                 refresh_state,
             )
+            if changed:
+                # The report itself is deduplicated on the divergence set, so a
+                # reload that changed a model this router does not serve costs
+                # one walk of the route table and no log line.
+                _report_route_weight_divergence(router)
         except Exception:
             logger.warning("Route weight override snapshot refresh failed", exc_info=True)
 
@@ -270,17 +291,20 @@ async def _refresh_disabled_provider_snapshots(
     *,
     interval_seconds: float = 10.0,
     rebuild_pending: bool = False,
+    router: Any | None = None,
 ) -> None:
     """Periodically reload the disabled-provider set so workers converge after admin edits."""
     refresh_state = _EffectiveRouteRefreshState(rebuild_pending=rebuild_pending)
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            await _reload_effective_route_state(
+            changed = await _reload_effective_route_state(
                 resolver,
                 model_router_registry,
                 refresh_state,
             )
+            if changed:
+                _report_route_weight_divergence(router)
         except Exception:
             logger.warning("Disabled provider snapshot refresh failed", exc_info=True)
 
@@ -1148,6 +1172,7 @@ async def initialize() -> AppServices:
                     weight_override_resolver,
                     model_router_registry,
                     rebuild_pending=weight_rebuild_pending,
+                    router=router,
                 )
             )
             _BACKGROUND_TASKS.add(weight_override_refresh_task)
@@ -1173,6 +1198,7 @@ async def initialize() -> AppServices:
                     disabled_provider_resolver,
                     model_router_registry,
                     rebuild_pending=disabled_rebuild_pending,
+                    router=router,
                 )
             )
             _BACKGROUND_TASKS.add(disabled_provider_refresh_task)
@@ -1180,6 +1206,12 @@ async def initialize() -> AppServices:
             logger.info("Disabled provider resolver initialized")
         except Exception as exc:
             logger.warning(f"Disabled provider resolver initialization failed: {exc}")
+
+    # Say which routes the operational store just took out of service. Both
+    # resolvers are attached by now, so this is the first moment the effective
+    # weight table exists — and a boot log that does not name the difference is
+    # how a model spent 71 days with a zero-weighted route nobody knew about.
+    _report_route_weight_divergence(router)
 
     # Per-user concurrency limiter — reads live caps from RuntimeSettings so
     # operators can tune them at runtime. Falls back to registry defaults
