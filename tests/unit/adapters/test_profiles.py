@@ -7,9 +7,11 @@ import copy
 import pytest
 
 from serving.adapters.profiles import (
+    _DEFAULT_STREAM_IDLE_TIMEOUT_S,
     ProviderProfile,
     filter_sampling_params,
     function_call_delta_to_tool_calls,
+    get_stream_first_byte_timeout_seconds,
     get_stream_idle_timeout_seconds,
     get_usage_normalizer,
     normalize_messages_for_profile,
@@ -37,9 +39,20 @@ def test_function_call_delta_returns_none(profile, delta) -> None:
     assert function_call_delta_to_tool_calls(profile, delta) is None
 
 
-def test_stream_idle_timeout_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stream_idle_timeout_is_on_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset must mean *enabled*: a detector nobody configures protects nobody.
+
+    It sat behind an unset env var in production and so never fired once, while
+    the deployment proxy's own 300s read timeout kept expiring whole batches of
+    already-committed streams at a stalled replica.
+    """
     monkeypatch.delenv("STREAM_IDLE_TIMEOUT_SECONDS", raising=False)
-    assert get_stream_idle_timeout_seconds(ProviderProfile.OPENROUTER) is None
+    assert get_stream_idle_timeout_seconds(ProviderProfile.OPENROUTER) == 180.0
+
+
+def test_stream_idle_default_stays_under_the_proxy_read_timeout() -> None:
+    """The gateway must reach its own verdict before the proxy tears the stream down."""
+    assert _DEFAULT_STREAM_IDLE_TIMEOUT_S < 300.0
 
 
 def test_stream_idle_timeout_parses_positive_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,13 +60,40 @@ def test_stream_idle_timeout_parses_positive_env(monkeypatch: pytest.MonkeyPatch
     assert get_stream_idle_timeout_seconds(ProviderProfile.OPENROUTER) == 300.5
 
 
-@pytest.mark.parametrize("raw", ["", "  ", "0", "-1", "nope"])
-def test_stream_idle_timeout_ignores_disabled_or_invalid_env(
+@pytest.mark.parametrize("raw", ["0", "-1"])
+def test_stream_idle_timeout_non_positive_env_disables(
     monkeypatch: pytest.MonkeyPatch,
     raw: str,
 ) -> None:
+    """An explicit opt-out stays available for a deployment that wants none."""
     monkeypatch.setenv("STREAM_IDLE_TIMEOUT_SECONDS", raw)
     assert get_stream_idle_timeout_seconds(ProviderProfile.OPENROUTER) is None
+
+
+@pytest.mark.parametrize("raw", ["", "  ", "nope"])
+def test_stream_idle_timeout_blank_or_invalid_env_keeps_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+) -> None:
+    """A typo must not silently disable it -- silent-off is the bug being fixed."""
+    monkeypatch.setenv("STREAM_IDLE_TIMEOUT_SECONDS", raw)
+    assert get_stream_idle_timeout_seconds(ProviderProfile.OPENROUTER) == 180.0
+
+
+def test_stream_first_byte_timeout_unbounded_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prefill gets no ceiling unless a deployment asks for one.
+
+    A full 1M-token prompt measures 138s to first token on the local sglang
+    replicas, and nothing in a slow prefill distinguishes it from a stall -- so
+    this budget is separate from the mid-stream one, and defaults to off.
+    """
+    monkeypatch.delenv("STREAM_FIRST_BYTE_TIMEOUT_SECONDS", raising=False)
+    assert get_stream_first_byte_timeout_seconds(ProviderProfile.OPENROUTER) is None
+
+
+def test_stream_first_byte_timeout_parses_positive_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STREAM_FIRST_BYTE_TIMEOUT_SECONDS", "600")
+    assert get_stream_first_byte_timeout_seconds(ProviderProfile.OPENROUTER) == 600.0
 
 
 # ---------------------------------------------------------------------------

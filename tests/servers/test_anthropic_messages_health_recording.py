@@ -456,6 +456,8 @@ async def test_streaming_idle_timeout_records_failure(
 
     monkeypatch.setattr(amod, "_KEEPALIVE_INTERVAL", 0.02)
     monkeypatch.setattr(amod, "_MAX_STREAM_IDLE", 0.08)
+    # Silent from the very start, so it is the pre-first-frame ceiling that decides.
+    monkeypatch.setattr(amod, "_MAX_FIRST_FRAME_IDLE", 0.08)
 
     async def _iter():
         await asyncio.sleep(5)  # effectively never within the test window
