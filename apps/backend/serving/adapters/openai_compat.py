@@ -80,6 +80,133 @@ def _normalize_text_content(content: Any) -> Any:
     return flatten_text_content(content)
 
 
+def _repaired_tool_arguments(raw: Any) -> str | None:
+    """Return a replacement for a tool call's ``arguments``, or None to keep it.
+
+    ``function.arguments`` must be a string holding a JSON *object*. sglang and
+    vLLM enforce that on every historical assistant tool call in the request,
+    not just the newest one, and reject the whole turn with a 400
+    (``Assistant tool call function.arguments must be valid JSON.`` or
+    ``... must be a JSON object.``). Because clients replay the transcript, a
+    single malformed call poisons that conversation permanently: every later
+    turn resends it and fails the same way. Three broken shapes were observed
+    in production -- a truncated ``"{"``, a fragment missing its leading brace,
+    and an empty string -- all of them produced by a client-side streaming
+    tool-call parser, none of them repairable into the arguments the model
+    originally meant.
+
+    So normalize rather than validate: anything that does not decode to an
+    object becomes ``"{}"``. The substitution only ever turns a guaranteed 400
+    into a request the upstream accepts -- every input that would have
+    succeeded (a JSON object string) is handed back untouched, by identity, so
+    the caller can tell a repair happened. A ``dict`` is re-encoded rather than
+    discarded: it is not the shape the OpenAI schema asks for, but several
+    clients send the decoded object and its content is intact — unless it will
+    not encode to JSON, which puts it back with every other unusable shape.
+
+    This mirrors what the gateway's other ingresses already do --
+    ``anthropic_translator._normalize_tool_input``, ``claude_format`` and
+    ``gemini`` all coerce a malformed tool input to an empty object. The
+    ``/v1/messages`` surface is structurally immune because it re-serializes
+    through ``json.dumps``; ``/v1/chat/completions`` forwards the client's
+    string verbatim and so needs this.
+    """
+    if isinstance(raw, dict):
+        try:
+            # allow_nan=False: `json.loads` accepts the non-standard NaN and
+            # Infinity literals, so a decoded object can hold a float that the
+            # default `dumps` re-emits bare -- not JSON, and rejected by the
+            # very upstream check this function exists to satisfy.
+            return json.dumps(raw, allow_nan=False)
+        except (TypeError, ValueError, RecursionError):
+            return "{}"
+    try:
+        # Non-strings and blank strings never reach `json.loads`: the guard
+        # sends them straight to `parsed = None` to be repaired. The catch
+        # covers what parsing a real string can still throw -- malformed JSON,
+        # and RecursionError from a deeply nested argument string, which a
+        # client can reach in a few kilobytes because the request body's own
+        # parse saw `arguments` as an opaque string and never decoded its
+        # contents. TypeError is belt and braces for a non-str slipping past
+        # the guard.
+        parsed = json.loads(raw) if isinstance(raw, str) and raw.strip() else None
+    except (json.JSONDecodeError, TypeError, RecursionError):
+        parsed = None
+    return None if isinstance(parsed, dict) else "{}"
+
+
+def _sanitize_tool_call_arguments(
+    messages: list[dict[str, Any]], *, endpoint_id: str
+) -> list[dict[str, Any]]:
+    """Repair malformed ``tool_calls[*].function.arguments`` copy-on-write.
+
+    Copy-on-write is load-bearing, not stylistic: the list handed in is the
+    router's ``self._messages``, which is written verbatim to
+    ``api_logs.prompt`` and re-read on every fallback attempt. Mutating it
+    would rewrite the request log to something the client never sent and change
+    what the next route in the fallback chain sees. Only the messages and tool
+    calls that actually needed a repair are rebuilt; a well-formed list is
+    handed back as the same object, like the system-ordering pass above it.
+
+    Every unexpected shape (``tool_calls`` absent, None, or not a list; an
+    entry that is not a mapping or carries no ``function``) is skipped rather
+    than raised on -- this sits on the request path for every model, so it must
+    never be the thing that fails a turn.
+    """
+    repaired_messages: list[dict[str, Any]] | None = None
+
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+
+        repaired_calls: list[Any] | None = None
+        for call_index, tool_call in enumerate(tool_calls):
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            raw = function.get("arguments")
+            repaired = _repaired_tool_arguments(raw)
+            if repaired is None:
+                continue
+
+            if repaired_calls is None:
+                repaired_calls = list(tool_calls)
+            repaired_calls[call_index] = {
+                **tool_call,
+                "function": {**function, "arguments": repaired},
+            }
+            # The producer-side bug outlives the consumer-side symptom: once
+            # the 400s stop, this line is the only remaining evidence that a
+            # client is still emitting unparseable tool calls. The argument
+            # text itself is user data and is never logged -- the id and the
+            # function name are enough to find the conversation.
+            logger.warning(
+                "tool_call_arguments_repaired",
+                extra={
+                    "event": "tool_call_arguments_repaired",
+                    "tool_call_id": tool_call.get("id"),
+                    # Not "name": logging refuses an `extra` key that collides
+                    # with a LogRecord attribute, and LogRecord.name is the
+                    # logger's own name.
+                    "tool_name": function.get("name"),
+                    "endpoint_id": endpoint_id,
+                },
+            )
+
+        if repaired_calls is None:
+            continue
+        if repaired_messages is None:
+            repaired_messages = list(messages)
+        repaired_messages[index] = {**message, "tool_calls": repaired_calls}
+
+    return messages if repaired_messages is None else repaired_messages
+
+
 def _caller_role() -> str | None:
     """Return the requesting user's role, or None for an unrestricted caller.
 
@@ -385,9 +512,20 @@ class OpenAICompatAdapter(BaseAdapter):
         no-op on a list already in the accepted shape — it hands back the
         argument itself, no copy — while the profile normalization and
         per-message cleaning below apply as they always have.
+
+        Historical tool-call ``arguments`` are repaired for the same reason and
+        on the same terms — see :func:`_sanitize_tool_call_arguments`. This
+        method is the single chokepoint both :meth:`chat_completion` and
+        :meth:`stream_chat_completion` build their payload through, and
+        ``OpenRouterAdapter`` inherits all three, so every OpenAI-compatible
+        route is covered by the one call.
         """
         messages = merge_leading_system_messages(messages)
         messages = normalize_messages_for_profile(self._usage_profile, messages)
+        messages = _sanitize_tool_call_arguments(
+            messages,
+            endpoint_id=getattr(self.config, "endpoint_id", None) or self.config.provider,
+        )
         return [self._clean_message(msg) for msg in messages]
 
     def _normalize_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
