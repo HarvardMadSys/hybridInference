@@ -513,8 +513,13 @@ class FixedRouter:
             # RCA had to find by hand; a route merely re-weighted is still
             # routable, so it is reported but not as a warning.
             log = logger.warning if zeroed else logger.info
+            # The verb says what happened to the weight, never which mechanism
+            # did it -- "overridden" is also the name of one of the four causes,
+            # so a provider-disabled route announced as "overridden" would send
+            # an operator to the wrong admin tab. The cause is in the brackets.
             log(
-                "Route weight overridden at runtime: %s via %s is %.4g (config: %.4g) [%s]",
+                "Route %s at runtime: %s via %s is %.4g (config: %.4g) [%s]",
+                "zeroed" if zeroed else "re-weighted",
                 fact["model_id"],
                 fact["endpoint_id"],
                 fact["effective_weight"],

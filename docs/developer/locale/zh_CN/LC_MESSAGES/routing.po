@@ -451,12 +451,12 @@ msgstr "被排除在选路之外的路由"
 msgid ""
 "A route whose *effective* weight is zero is skipped by weighted selection "
 "and by every fallback loop, so it is configured capacity that does not "
-"exist. Three mechanisms can produce one, and `GET /health/deep` names which "
+"exist. Four mechanisms can produce one, and `GET /health/deep` names which "
 "under `route_exclusions` — one entry per (model, endpoint) pair carrying the "
 "configured weight, the effective weight, and a `reasons` list:"
 msgstr ""
 "*有效*权重为 0 的路由会被加权选路和每一处回退循环跳过，因此它是配置上存在、实际却不存在的容量。"
-"有三种机制会造成这种情况，`GET /health/deep` 会在 `route_exclusions` 下指明是哪一种——"
+"有四种机制会造成这种情况，`GET /health/deep` 会在 `route_exclusions` 下指明是哪一种——"
 "每个（模型，端点）组合一条记录，附带配置权重、有效权重，以及一个 `reasons` 列表："
 
 #: ../developer/routing.md
@@ -496,6 +496,18 @@ msgid "admin console → providers"
 msgstr "管理控制台 → 提供方"
 
 #: ../developer/routing.md
+msgid "`routing_yaml`"
+msgstr "`routing_yaml`"
+
+#: ../developer/routing.md
+msgid "the local/remote split `RoutingManager` applies once at boot"
+msgstr "`RoutingManager` 在启动时应用一次的本地/远端拆分"
+
+#: ../developer/routing.md
+msgid "the overlay's `routing.yaml`"
+msgstr "该部署 overlay 的 `routing.yaml`"
+
+#: ../developer/routing.md
 msgid "`configured_zero`"
 msgstr "`configured_zero`"
 
@@ -506,6 +518,17 @@ msgstr "模型注册表里的 `weight: 0`"
 #: ../developer/routing.md
 msgid "the overlay's `models.yaml`"
 msgstr "该部署 overlay 的 `models.yaml`"
+
+#: ../developer/routing.md:200
+msgid ""
+"`routing_yaml` can only appear where no weight-override resolver is attached "
+"— a deployment with no operational store. With one, selection reads the "
+"registration weights directly and never looks at the list `RoutingManager` "
+"rewrote, so that file's local/remote split does not reach the weights at all."
+msgstr ""
+"`routing_yaml` 只会出现在没有挂载权重覆盖解析器的部署上——也就是没有运维存储的部署。"
+"一旦挂上，选路会直接读取注册权重，完全不会去看 `RoutingManager` 改写过的那份列表，"
+"于是该文件的本地/远端拆分根本影响不到权重。"
 
 #: ../developer/routing.md:196
 msgid ""
@@ -866,6 +889,16 @@ msgstr ""
 "`GET /routing` 不需要任何鉴权，它会为每个已发布的模型返回各条路由的 `provider`、**`base_url`** "
 "和权重。在公网主机上，这等于泄露你的上游拓扑——包括内网地址，以及路由 base URL "
 "里出现的任何内部主机名。把它放到你的反向代理之后，或者干脆不要暴露它。"
+
+#: ../developer/routing.md:322
+msgid ""
+"`GET /health/deep` is unauthenticated on the same terms: its `providers` "
+"keys are `endpoint_id`s (`provider:host:port`), and each `route_exclusions` "
+"entry carries that route's `base_url` too. Gate both, not just `/routing`."
+msgstr ""
+"`GET /health/deep` 同样不需要鉴权：它的 `providers` 键就是 `endpoint_id`"
+"（`provider:host:port`），而每条 `route_exclusions` 记录还带着该路由的 `base_url`。"
+"两个端点都要设防，不是只管 `/routing`。"
 
 #: ../developer/routing.md:289
 msgid ""

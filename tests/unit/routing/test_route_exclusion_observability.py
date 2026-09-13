@@ -138,6 +138,28 @@ def test_exclusions_merge_onto_an_existing_health_entry():
 
 
 @pytest.mark.unit
+def test_the_registry_never_learns_about_the_exclusions():
+    """The merge writes into the snapshot's own dicts, never the registry's.
+
+    ``EndpointHealthRegistry.snapshot()`` builds fresh dicts today, which is the
+    only reason the merge is safe. Pinned because the failure mode is silent: a
+    snapshot that handed back its internal entries would let a status read
+    accumulate ``excluded_from_models`` into the live health state, and nothing
+    else in the tree would notice.
+    """
+    router, _adapters = _router_like_production()
+    router._on_failure("local-8005:host:443", reason="upstream_500")
+
+    first = router.get_provider_status()
+    first["local-8005:host:443"]["excluded_from_models"].append("not-a-model")
+
+    assert "excluded_from_models" not in router._health_registry.snapshot()["local-8005:host:443"]
+    assert router.get_provider_status()["local-8005:host:443"]["excluded_from_models"] == [
+        "deepseek-v4-flash"
+    ]
+
+
+@pytest.mark.unit
 def test_both_causes_on_one_route_are_both_named():
     adapter = _EchoAdapter(_cfg("m", "zai"))
     other = _EchoAdapter(_cfg("m", "ollama"))
@@ -221,6 +243,37 @@ def test_describe_route_weights_agrees_with_selection(with_resolvers: bool):
 
 
 @pytest.mark.unit
+def test_the_report_follows_selection_past_a_manager_reweight():
+    """The production shape: an operational store *and* a routing.yaml split.
+
+    ``apply()`` rewrites ``route.adapters`` in place and can reorder it, while
+    ``_get_effective_adapters`` reads ``raw_adapters`` whenever a resolver is
+    attached and so ignores that rewrite entirely. The report has to make the
+    same choice; keying its configured shares by adapter rather than by position
+    is what stops the reorder from mis-pairing them.
+    """
+    live = _EchoAdapter(_cfg("m", "local-8004"))
+    overridden = _EchoAdapter(_cfg("m", "local-8005"))
+    remote = _EchoAdapter(_cfg("m", "zai"))
+    router = FixedRouter(
+        weight_override_resolver=_SnapshotWeightResolver({"m": {"local-8005:host:443": 0.0}}),
+    )
+    router.register_route("m", [(live, 1.0), (overridden, 1.0), (remote, 2.0)])
+    router.routes["m"].adapters = [(remote, 0.5), (live, 0.5), (overridden, 0.0)]
+
+    effective = router._get_effective_adapters("m", router.routes["m"])
+    total = sum(weight for _, weight in effective)
+    from_selection = {adapter.config.provider: weight / total for adapter, weight in effective}
+    facts = {fact["provider"]: fact for fact in router.describe_route_weights()}
+
+    assert {p: f["effective_weight"] for p, f in facts.items()} == pytest.approx(from_selection)
+    # The manager's weights are inert here, so nothing is blamed on routing.yaml.
+    assert facts["local-8005"]["reasons"] == [EXCLUSION_WEIGHT_OVERRIDE]
+    assert facts["zai"]["reasons"] == []
+    assert facts["zai"]["configured_weight"] == pytest.approx(0.5)
+
+
+@pytest.mark.unit
 def test_routing_manager_reweighting_is_attributed_to_routing_yaml():
     """Without a weight resolver, selection reads the weights the manager wrote."""
     local = _EchoAdapter(_cfg("m", "local-8004"))
@@ -258,6 +311,13 @@ def test_divergence_is_logged_once_and_names_the_mechanism(caplog):
     assert by_endpoint["deepseek:host:443"].reason == EXCLUSION_PROVIDER_DISABLED
     assert by_endpoint["deepseek:host:443"].effective_weight == 0.0
     assert by_endpoint["deepseek:host:443"].configured_weight == pytest.approx(1 / 3)
+    # The rendered line must not name a mechanism in its verb: "overridden" is
+    # one of the four causes, so a provider-disabled route announced that way
+    # sends the reader to the wrong admin tab. The verb says what happened to
+    # the weight; the bracketed reason says who did it.
+    message = by_endpoint["deepseek:host:443"].getMessage()
+    assert "zeroed at runtime" in message
+    assert f"[{EXCLUSION_PROVIDER_DISABLED}]" in message
 
 
 @pytest.mark.unit
