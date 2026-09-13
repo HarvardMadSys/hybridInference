@@ -14,6 +14,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import aiohttp
 
 from serving.config.settings import get_settings
+from serving.exceptions import UpstreamStreamIdleError
 from serving.stream import done_sentinel
 from serving.utils.logging import get_logger
 from serving.utils.messages import flatten_text_content, merge_leading_system_messages
@@ -29,6 +30,7 @@ from .profiles import (
     filter_response_format,
     filter_sampling_params,
     function_call_delta_to_tool_calls,
+    get_stream_first_byte_timeout_seconds,
     get_stream_idle_timeout_seconds,
     get_usage_normalizer,
     normalize_messages_for_profile,
@@ -66,6 +68,51 @@ except (TypeError, ValueError):
         _DEFAULT_COMPLETION_TIMEOUT_S,
     )
     _COMPLETION_TIMEOUT_S = _DEFAULT_COMPLETION_TIMEOUT_S
+
+
+async def _iter_with_idle_timeout(
+    source: AsyncIterator[str],
+    idle_timeout: float | None,
+    *,
+    endpoint_id: str | None = None,
+    frames_already_seen: int = 0,
+) -> AsyncIterator[str]:
+    """Re-yield ``source``, raising if it goes quiet for ``idle_timeout`` seconds.
+
+    The caller has already pulled the first frame out of ``source`` (that is what
+    commits the key lease), so every gap this measures is an *inter-chunk* gap.
+    Prefill is over by the time the first frame lands, which is precisely why a
+    budget this tight is safe here and would not be safe on the socket.
+
+    The clock runs only while awaiting the upstream. A consumer that stops
+    pulling -- a slow client, backpressure -- suspends this generator at the
+    ``yield``, outside the timed await, so a slow *reader* can never be mistaken
+    for a silent *writer*.
+
+    ``wait_for`` cancels the pending ``__anext__`` on expiry, which throws
+    ``CancelledError`` into ``stream_post`` at its read and unwinds its
+    ``__aexit__`` -- so the wedged connection is torn down rather than left
+    hanging on a backend that will never answer. A cancellation arriving from
+    *outside* (client disconnect) is a ``BaseException`` that propagates through
+    this generator untouched and is never converted into an upstream fault.
+    """
+    if idle_timeout is None:
+        async for item in source:
+            yield item
+        return
+
+    frames = frames_already_seen
+    while True:
+        try:
+            item = await asyncio.wait_for(source.__anext__(), idle_timeout)
+        except StopAsyncIteration:
+            return
+        except asyncio.TimeoutError as exc:
+            raise UpstreamStreamIdleError(
+                idle_timeout, endpoint_id=endpoint_id, frames=frames
+            ) from exc
+        frames += 1
+        yield item
 
 
 def _normalize_text_content(content: Any) -> Any:
@@ -537,15 +584,23 @@ class OpenAICompatAdapter(BaseAdapter):
         return resolve_tool_choice_for_profile(self._usage_profile, tool_choice)
 
     def _build_stream_timeout(self) -> aiohttp.ClientTimeout | None:
-        """Return a provider-specific streaming timeout, if configured."""
-        idle_timeout = get_stream_idle_timeout_seconds(self._usage_profile)
-        if idle_timeout is None:
+        """Return the socket-level streaming timeout, if one is configured.
+
+        ``sock_read`` is a *byte-anchored* clock: aiohttp restarts it on every
+        read, including the one that waits out prefill for the first token. It
+        therefore cannot express "give the first token as long as it needs, but
+        not the tenth" -- so only the first-byte budget goes here (unbounded by
+        default), and the mid-stream idle budget is enforced per frame in
+        ``_iter_with_idle_timeout`` where the two can be told apart.
+        """
+        first_byte_timeout = get_stream_first_byte_timeout_seconds(self._usage_profile)
+        if first_byte_timeout is None:
             return None
         try:
-            return aiohttp.ClientTimeout(total=None, sock_read=idle_timeout)
+            return aiohttp.ClientTimeout(total=None, sock_read=first_byte_timeout)
         except TypeError:
             # Test doubles may expose a simplified ClientTimeout(total=...) shim.
-            return SimpleNamespace(total=None, sock_read=idle_timeout)
+            return SimpleNamespace(total=None, sock_read=first_byte_timeout)
 
     def _format_passthrough_chunk(self, processed_chunk: dict[str, Any]) -> str:
         """Forward an upstream delta while normalizing model/role fields."""
@@ -1223,11 +1278,23 @@ class OpenAICompatAdapter(BaseAdapter):
             primed = first
             break  # helper yields exactly once
 
+        idle_timeout = get_stream_idle_timeout_seconds(self._usage_profile)
+        stream_endpoint_id = getattr(self.config, "endpoint_id", None) or self.config.provider
+
         async def _drain() -> AsyncIterator[str]:
             if primed is not None:
                 yield primed
             if stream_iter is not None:
-                async for c in stream_iter:
+                # Guarded from here on, not from the first frame: ``primed`` is
+                # already in hand, so prefill is behind us and what remains is
+                # decode, where silence means a stalled backend rather than a
+                # long prompt.
+                async for c in _iter_with_idle_timeout(
+                    stream_iter,
+                    idle_timeout,
+                    endpoint_id=stream_endpoint_id,
+                    frames_already_seen=1,  # ``primed``
+                ):
                     yield c
 
         # Stream response. Only failures reading from the upstream iterator mute
@@ -1276,15 +1343,35 @@ class OpenAICompatAdapter(BaseAdapter):
                 # Surfacing it as an upstream error keeps partial content
                 # observable without fabricating a normal final chunk + [DONE].
                 raise aiohttp.ClientError(_INCOMPLETE_STREAM_ERROR)
-        except asyncio.TimeoutError:
-            # Idle timeout reading upstream: mute the key, end the stream
-            # gracefully (flush + [DONE] are still emitted below).
+        except UpstreamStreamIdleError as exc:
+            # The mid-stream idle detector fired. Mute the key and propagate --
+            # the router charges the endpoint a ``stream_exception``, which is
+            # the whole point: a wedged replica has to stop being selected.
             stream_error = True
             logger.warning(
-                "[OpenAICompat] Stream idle timeout for model=%s after %.1fs",
-                self.config.id,
-                getattr(stream_timeout, "sock_read", -1.0) if stream_timeout else -1.0,
+                "upstream_stream_idle",
+                extra={
+                    "event": "upstream_stream_idle",
+                    "model": self.config.id,
+                    "provider": self.config.provider,
+                    "endpoint_id": stream_endpoint_id,
+                    "idle_seconds": exc.idle_seconds,
+                    "frames": exc.frames,
+                },
             )
+            raise
+        except asyncio.TimeoutError as exc:
+            # A socket-level read timeout, i.e. the optional first-byte budget.
+            # It used to be swallowed here and the stream capped with a normal
+            # flush + [DONE], which handed the caller a truncated answer dressed
+            # as a complete one and told the router nothing. Re-raised as the
+            # same distinct fault so both timers land in one place.
+            stream_error = True
+            sock_read = getattr(stream_timeout, "sock_read", None) if stream_timeout else None
+            raise UpstreamStreamIdleError(
+                float(sock_read) if sock_read else 0.0,
+                endpoint_id=stream_endpoint_id,
+            ) from exc
         except aiohttp.ClientError:
             # Mid-stream upstream I/O failure (disconnect, ClientPayloadError):
             # mute the key, then propagate to the client as before.
