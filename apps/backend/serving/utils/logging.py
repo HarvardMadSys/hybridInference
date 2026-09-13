@@ -139,8 +139,22 @@ _STRUCTURED_LOG_KEYS = (
     # remaining trace of it -- and without the id and function name it says
     # only "something somewhere sent bad JSON". The argument text is user data
     # and is deliberately not among these keys.
+    #
+    # The same ``tool_call_id`` also locates a tool call the gateway streamed
+    # OUT with arguments that are not a JSON object
+    # (``tool_call_arguments_unparseable``, servers/routers/
+    # completions_stream.py) -- the producer-side half of the same incident,
+    # which was a single poisoned call replayed on every subsequent turn.
+    # That event adds ``function_name`` (the adapter's repair path calls the
+    # same field ``tool_name``, since ``name`` collides with
+    # ``LogRecord.name``), the upstream ``finish_reason``, and
+    # ``arguments_len`` -- which stands in for the arguments themselves, user
+    # data that is never logged.
     "tool_call_id",
     "tool_name",
+    "function_name",
+    "finish_reason",
+    "arguments_len",
 )
 
 
