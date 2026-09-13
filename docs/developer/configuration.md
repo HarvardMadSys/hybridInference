@@ -606,9 +606,19 @@ list.
 
 Health probing covers `local_deployment` endpoints only — remote providers do not
 serve the gateway's `/health` path and would be marked unhealthy for it. Each
-probe is a `GET` to the endpoint's origin root plus `/health`. An endpoint that
-fails is excluded from grouping, so its weight goes to the surviving routes; it
-returns automatically when a probe succeeds.
+probe is a `GET` to the endpoint's origin root plus `/health`.
+
+**The probe is advisory: it does not change routing.** `RoutingManager.apply()`
+is the only reader of its verdicts and it runs once, during bootstrap,
+synchronously — before the prober task it just started has had a chance to run a
+single probe. So grouping always sees every endpoint as healthy, and an endpoint
+that fails every probe keeps its weight and keeps taking traffic. What the probe
+does do is report: each transition (healthy → unhealthy and back) is logged at
+`WARNING`, and `GET /routing` publishes the current verdicts under
+`manager_status.endpoint_health`, alongside `endpoint_health_enforced: false` as
+a standing reminder that the map is observation, not admission control. Removing
+a wedged endpoint from rotation is the circuit breaker's job
+([Routing](routing.md)).
 
 Unlike the model registry, this file's expander handles `${VAR}`,
 `${VAR:-default}`, and variables embedded in longer strings, at any depth.

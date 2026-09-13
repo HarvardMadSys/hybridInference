@@ -88,6 +88,13 @@ _STRUCTURED_LOG_KEYS = (
     "availability",
     "trip_cause",
     "upstream_error",
+    # Runtime route-weight divergence (routing/routers.py, events
+    # ``route_weight_zeroed`` / ``route_weight_overridden``). The pair is the
+    # whole record: "this route is at 0.0" is only actionable next to the
+    # weight the configuration asked for, which is what says whether an
+    # operator zeroed it at runtime or the overlay always read that way.
+    "configured_weight",
+    "effective_weight",
     # Who the failure streak hit. Formerly "offending_users", which named the
     # victims of an upstream fault as its culprits — see the module comment on
     # routing/endpoint_health._MAX_TRACKED_CALLERS.

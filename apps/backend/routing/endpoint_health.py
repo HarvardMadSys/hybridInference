@@ -621,6 +621,36 @@ class _CircuitBreaker:
             by_streak = self.consecutive_failures >= self.failure_threshold
             by_availability = availability is not None and availability < self.min_availability
             if not (by_streak or by_availability):
+                # Every failure before the one that trips the breaker used to
+                # return here in silence, so an endpoint failing steadily just
+                # under both thresholds -- the shape that never pages -- left no
+                # evidence at all that it was failing. INFO rather than DEBUG
+                # because the volume is bounded: a streak emits at most
+                # ``failure_threshold - 1`` of these before it trips, and the
+                # sibling ``client_error_skip_breaker`` line on the same logger
+                # is already INFO at strictly higher volume.
+                logger.info(
+                    "Endpoint failure below circuit threshold: %s (%s) "
+                    "consecutive=%d/%d availability=%s",
+                    self.provider,
+                    reason or "unknown",
+                    self.consecutive_failures,
+                    self.failure_threshold,
+                    f"{availability:.2f}" if availability is not None else "n/a",
+                    extra={
+                        "event": "endpoint_failure_below_threshold",
+                        # Carries the endpoint id: the breaker is constructed
+                        # per endpoint and names that field ``provider``, and
+                        # ``circuit_open`` reports it under the same key, so the
+                        # two join.
+                        "provider": self.provider,
+                        "reason": reason or "unknown",
+                        "consecutive_failures": self.consecutive_failures,
+                        "threshold": self.failure_threshold,
+                        "availability": availability,
+                        "upstream_error": detail,
+                    },
+                )
                 return
 
             prev_state = self.state
