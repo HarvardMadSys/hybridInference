@@ -142,6 +142,29 @@ async def _await_cancelled_child(task: asyncio.Task[Any]) -> None:
         raise asyncio.CancelledError
 
 
+_PROBE_LIMIT_CLAIMS: weakref.WeakKeyDictionary[Any, int] = weakref.WeakKeyDictionary()
+_PROBE_LIMIT_LOCK = threading.Lock()
+
+
+def _claim_probe_limit(owner: Any, limit: int) -> None:
+    """Register *owner*'s ``routewise_probe_max_concurrency``.
+
+    Called when a router is built, which is before any router can probe, so the
+    effective cap is known in full by the time the first slot is granted. A cap
+    learned instead at acquisition would arrive too late: a router configured
+    for four could take four slots in the window before a router configured for
+    one first asked, and slots already granted cannot be recalled.
+    """
+    with _PROBE_LIMIT_LOCK:
+        _PROBE_LIMIT_CLAIMS[owner] = max(int(limit), 1)
+
+
+def _effective_probe_limit() -> int:
+    """The lowest limit any live router claims; 1 when none has."""
+    with _PROBE_LIMIT_LOCK:
+        return min(_PROBE_LIMIT_CLAIMS.values(), default=1)
+
+
 class _ProbeConcurrencyGate:
     """Process-wide cap on RouteWise latency probes in flight.
 
@@ -155,20 +178,19 @@ class _ProbeConcurrencyGate:
     than on the probe that caused it.
 
     One gate per event loop makes the setting mean what it says. Capacity is
-    the lowest limit any probing router asks for: routers normally agree, and
-    where they disagree the model that wants a single probe is the one whose
-    provider cannot take two.
+    the lowest limit any router claims: routers normally agree, and where they
+    disagree the model that wants a single probe is the one whose provider
+    cannot take two.
     """
 
     def __init__(self) -> None:
-        self._limit = 0
         self._active = 0
         self._waiters: deque[asyncio.Future[None]] = deque()
 
     @property
     def limit(self) -> int:
-        """Effective cap across all routers, or 0 until one claims the gate."""
-        return self._limit
+        """Effective cap across every router that has claimed one."""
+        return _effective_probe_limit()
 
     @property
     def active(self) -> int:
@@ -176,18 +198,16 @@ class _ProbeConcurrencyGate:
         return self._active
 
     @contextlib.asynccontextmanager
-    async def slot(self, limit: int) -> AsyncIterator[None]:
+    async def slot(self) -> AsyncIterator[None]:
         """Hold one probe slot for the duration of the block."""
-        await self._acquire(limit)
+        await self._acquire()
         try:
             yield
         finally:
             self._release()
 
-    async def _acquire(self, limit: int) -> None:
-        requested = max(int(limit), 1)
-        self._limit = requested if self._limit == 0 else min(self._limit, requested)
-        if self._active < self._limit:
+    async def _acquire(self) -> None:
+        if self._active < self.limit:
             self._active += 1
             return
         waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
@@ -214,7 +234,8 @@ class _ProbeConcurrencyGate:
         cancelled and the slot is lost.
         """
         self._active = max(self._active - 1, 0)
-        while self._waiters and self._active < self._limit:
+        limit = self.limit
+        while self._waiters and self._active < limit:
             waiter = self._waiters.popleft()
             if waiter.done():
                 continue
@@ -383,6 +404,10 @@ class RouteWiseRouter:
 
         self.route_table = route_table
         self.config = config
+        # Claimed here, not when this router first probes: every RouteWise
+        # router is built before any of them starts a probe loop, so the shared
+        # gate knows the whole set of limits before it grants its first slot.
+        _claim_probe_limit(self, self.config.routewise_probe_max_concurrency)
         self._rng = random.Random(self.config.random_seed)
         self.reference_api_price = self._parse_reference_api_price(config.reference_api_price)
         self.route_candidates: dict[str, list[RouteProviderCandidate]] = {}
@@ -884,10 +909,9 @@ class RouteWiseRouter:
             return []
 
         gate = _probe_concurrency_gate()
-        probe_limit = int(self.config.routewise_probe_max_concurrency)
 
         async def _guarded_probe(target_endpoint: str) -> RouteWiseProbeResult:
-            async with gate.slot(probe_limit):
+            async with gate.slot():
                 return await self._probe_endpoint(target_endpoint)
 
         results = await asyncio.gather(*(_guarded_probe(endpoint) for endpoint in endpoints))

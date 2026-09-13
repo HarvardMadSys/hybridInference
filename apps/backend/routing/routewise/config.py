@@ -103,7 +103,8 @@ class RouteWiseConfig:
     # probe loop, so a per-router cap would let models sharing one provider
     # subscription probe it simultaneously and trip the provider's own
     # concurrency limit. Where models configure different values the lowest one
-    # wins, process-wide.
+    # wins, process-wide, and each router registers its value when it is built
+    # so the whole set is known before the first probe goes out.
     routewise_probe_enabled: bool = False
     routewise_probe_interval_sec: float = 300.0
     routewise_probe_timeout_sec: float = 30.0

@@ -10,11 +10,13 @@ import json
 import logging
 import threading
 import time
+import weakref
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import routing.routewise.router as routewise_router_module
 from routing.route_table import EffectiveRoute
 from routing.routers import FixedRouter, RoutingObservation
 from routing.routewise.candidates import QuotaSource
@@ -26,6 +28,8 @@ from routing.routewise.quota import ProviderQuotaSnapshotStore
 from routing.routewise.router import (
     ProviderType,
     RouteWiseRouter,
+    _claim_probe_limit,
+    _effective_probe_limit,
     _probe_concurrency_gate,
     _ProbeConcurrencyGate,
 )
@@ -1758,6 +1762,10 @@ class TestRouteWiseLayer2:
             assert eid.startswith("model-b:")
 
 
+class _Claimant:
+    """Stands in for a router that claims a probe-concurrency limit."""
+
+
 class _OverlapRecorder:
     """Counts how many tracked blocks are open at the same time."""
 
@@ -1775,37 +1783,61 @@ class _OverlapRecorder:
             self.active -= 1
 
 
-async def _gate_limit_in_this_loop() -> int:
-    return _probe_concurrency_gate().limit
+async def _gate_active_in_this_loop() -> int:
+    return _probe_concurrency_gate().active
 
 
-def _probe_router(model_id: str, overlap: _OverlapRecorder) -> RouteWiseRouter:
-    """A one-endpoint router whose probe reports when it starts and finishes."""
-    endpoint_id = f"{model_id}:shared-api"
-    adapter = _make_adapter(
-        provider_type="on_demand",
-        prompt_price="3.0",
-        completion_price="15.0",
-        endpoint_id=endpoint_id,
-    )
+def _probe_router(
+    model_id: str,
+    overlap: _OverlapRecorder,
+    *,
+    config: RouteWiseConfig | None = None,
+    endpoints: int = 1,
+) -> RouteWiseRouter:
+    """A router whose probes report when each one starts and finishes."""
+    adapters = {
+        f"{model_id}:api-{index}": _make_adapter(
+            provider_type="on_demand",
+            prompt_price="3.0",
+            completion_price="15.0",
+            endpoint_id=f"{model_id}:api-{index}",
+        )
+        for index in range(endpoints)
+    }
     table = _FakeRouteTable()
-    table.add(model_id, [(adapter, 1.0)])
-    router = RouteWiseRouter(route_table=table, config=RouteWiseConfig())
+    table.add(model_id, [(adapter, 1.0 / endpoints) for adapter in adapters.values()])
+    router = RouteWiseRouter(route_table=table, config=config or RouteWiseConfig())
 
     async def stream(_messages, **_params):
         async with overlap.track():
-            # Hand the loop to the sibling router: without a shared gate this
-            # is where its probe slips in alongside this one.
+            # Hand the loop to whatever else wants to probe: without a shared
+            # gate this is where a sibling's probe slips in alongside this one.
             await asyncio.sleep(0)
             yield 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
 
-    adapter.stream_chat_completion = stream
-    router._endpoint_adapter = {endpoint_id: adapter}
-    router._endpoint_models = {endpoint_id: {model_id}}
+    for adapter in adapters.values():
+        adapter.stream_chat_completion = stream
+    router._endpoint_adapter = dict(adapters)
+    router._endpoint_models = {endpoint_id: {model_id} for endpoint_id in adapters}
     return router
 
 
+@pytest.fixture
+def probe_limit_claims(monkeypatch):
+    """Isolate the process-wide probe-limit claims from other tests.
+
+    The claims are module state on purpose -- a cap shared by every router in
+    the worker is the whole point -- so a test that asserts a limit above 1 has
+    to start from an empty registry rather than inherit every router another
+    test left alive.
+    """
+    claims: weakref.WeakKeyDictionary[Any, int] = weakref.WeakKeyDictionary()
+    monkeypatch.setattr(routewise_router_module, "_PROBE_LIMIT_CLAIMS", claims)
+    return claims
+
+
 @pytest.mark.unit
+@pytest.mark.usefixtures("probe_limit_claims")
 class TestProbeConcurrencyGate:
     """routewise_probe_max_concurrency caps the process, not one router.
 
@@ -1830,24 +1862,24 @@ class TestProbeConcurrencyGate:
         assert [result.ok for batch in batches for result in batch] == [True, True]
         assert overlap.peak == 1
 
-    async def test_gate_takes_the_lowest_limit_any_router_asks_for(self):
+    async def test_gate_takes_the_lowest_limit_any_router_claims(self):
         """A model that can afford one probe holds the whole process to one."""
         gate = _ProbeConcurrencyGate()
+        generous, strict = _Claimant(), _Claimant()
+        _claim_probe_limit(generous, 4)
+        assert gate.limit == 4
+        _claim_probe_limit(strict, 1)
+        assert gate.limit == 1
+
         entered = asyncio.Event()
 
-        async with gate.slot(4):
-            assert gate.limit == 4
-        async with gate.slot(1):
-            assert gate.limit == 1
-
         async def _second_probe() -> None:
-            async with gate.slot(4):
+            async with gate.slot():
                 entered.set()
 
-        # A router still configured for four probes queues behind the one in
-        # flight: the lowest claim is what the shared gate enforces.
-        async with gate.slot(4):
-            assert gate.limit == 1
+        # A probe for the router still configured for four queues behind the
+        # one in flight: the lowest claim is what the shared gate enforces.
+        async with gate.slot():
             queued = asyncio.create_task(_second_probe())
             await asyncio.sleep(0)
             assert not entered.is_set()
@@ -1855,6 +1887,52 @@ class TestProbeConcurrencyGate:
         await asyncio.wait_for(queued, timeout=1)
         assert entered.is_set()
         assert gate.active == 0
+
+    async def test_a_strict_router_built_after_a_generous_one_still_caps_it(self):
+        """Limits are claimed when routers are built, not when they first probe.
+
+        A cap learned at acquisition arrives too late: the generous router's
+        cycle can take every slot it wants in the window before the strict one
+        first asks, and a granted slot cannot be recalled.
+        """
+        overlap = _OverlapRecorder()
+        generous = _probe_router(
+            "generous-model",
+            overlap,
+            config=RouteWiseConfig(routewise_probe_max_concurrency=4),
+            endpoints=4,
+        )
+        # Built second, and it never probes in this test -- its claim alone has
+        # to hold the generous router's cycle to one probe at a time. Bound to a
+        # name because claims are weak: a router the registry has dropped stops
+        # capping the models that are still live.
+        strict = _probe_router(
+            "strict-model",
+            overlap,
+            config=RouteWiseConfig(routewise_probe_max_concurrency=1),
+        )
+        assert _effective_probe_limit() == 1
+        assert strict.config.routewise_probe_max_concurrency == 1
+
+        results = await generous.run_probe_once(idle_only=False)
+
+        assert [result.ok for result in results] == [True] * 4
+        assert overlap.peak == 1
+
+    async def test_a_router_alone_with_a_generous_limit_probes_in_parallel(self):
+        """The cap is still the configured number when nothing lowers it."""
+        overlap = _OverlapRecorder()
+        generous = _probe_router(
+            "only-model",
+            overlap,
+            config=RouteWiseConfig(routewise_probe_max_concurrency=4),
+            endpoints=4,
+        )
+
+        results = await generous.run_probe_once(idle_only=False)
+
+        assert [result.ok for result in results] == [True] * 4
+        assert overlap.peak == 4
 
     async def test_cancelling_a_waiting_probe_leaves_the_slot_usable(self):
         """Shutdown cancels probe tasks; a slot lost there would end probing.
@@ -1867,11 +1945,11 @@ class TestProbeConcurrencyGate:
         released = asyncio.Event()
 
         async def _hold() -> None:
-            async with gate.slot(1):
+            async with gate.slot():
                 await released.wait()
 
         async def _queue() -> None:
-            async with gate.slot(1):
+            async with gate.slot():
                 pass
 
         holder = asyncio.create_task(_hold())
@@ -1887,27 +1965,26 @@ class TestProbeConcurrencyGate:
         await holder
         assert gate.active == 0
 
-        async with gate.slot(1):
+        async with gate.slot():
             assert gate.active == 1
 
     async def test_each_event_loop_gets_its_own_gate(self):
         """Gate state cannot outlive its loop: asyncio futures belong to one."""
         gate = _probe_concurrency_gate()
         assert _probe_concurrency_gate() is gate
-        async with gate.slot(1):
-            pass
-        assert gate.limit == 1
 
-        limits: list[int] = []
-        thread = threading.Thread(
-            target=lambda: limits.append(asyncio.run(_gate_limit_in_this_loop()))
-        )
-        thread.start()
-        thread.join()
+        actives: list[int] = []
+        async with gate.slot():
+            assert gate.active == 1
+            thread = threading.Thread(
+                target=lambda: actives.append(asyncio.run(_gate_active_in_this_loop()))
+            )
+            thread.start()
+            thread.join()
 
-        # Unclaimed, so it is not this loop's gate -- whose waiters would belong
-        # to a loop that has since closed.
-        assert limits == [0]
+        # A fresh loop's gate carries none of this one's occupancy -- sharing
+        # one would mean waiters parked on a loop that has since closed.
+        assert actives == [0]
 
 
 @pytest.mark.unit

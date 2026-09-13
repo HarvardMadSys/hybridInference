@@ -648,11 +648,13 @@ it by the number of models. Two models pointed at one provider subscription
 would then probe it simultaneously, the provider would refuse the second with
 its own concurrency error, and that refusal lands on whichever request is in
 flight — real traffic as often as the probe. All routers in a worker therefore
-share one gate, and where models configure different values the lowest wins.
-Like RouteWise's other concurrency state the gate is per worker; the
-cross-worker guard is the DB probe lease (`routewise_probe_leases`), which is
-keyed per model and so stops two workers probing one model rather than capping
-probe traffic deployment-wide.
+share one gate, whose capacity is the lowest value any of them configures. Each
+router registers that value when it is built, which is before any router starts
+probing: a cap discovered at probe time would arrive after slots it cannot
+recall had already been handed out. Like RouteWise's other concurrency state
+the gate is per worker; the cross-worker guard is the DB probe lease
+(`routewise_probe_leases`), which is keyed per model and so stops two workers
+probing one model rather than capping probe traffic deployment-wide.
 
 Configuration splits by ownership:
 
