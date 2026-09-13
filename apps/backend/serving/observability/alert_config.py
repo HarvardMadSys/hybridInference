@@ -152,6 +152,82 @@ class TrackedTaskFailureRateConfig(BaseModel):
     cooldown_sec: int = 1800
 
 
+class ClientErrorBurstConfig(BaseModel):
+    """Config for ``ClientErrorBurstRule``.
+
+    Fires when more than ``threshold_count`` ``client_error_skip_breaker``
+    events arrive within ``window_sec``. That event is the line
+    ``EndpointHealth.record_failure`` (``routing/endpoint_health.py``) logs on
+    its way *past* the circuit breaker: a 4xx that is not 408/429 is a malformed
+    request, not evidence the endpoint is sick, so it is deliberately not
+    counted against the breaker.
+
+    That exemption is the right call and it is exactly why this rule has to
+    exist. Every other rule is blind to a sustained relayed-4xx storm:
+    ``fivexx_rate`` because a 400 is not a 5xx, ``failed_request_rate`` because
+    a percentage threshold at ``min_samples`` needs far more failure than one
+    wedged client produces, and ``circuit_open`` because these never reach the
+    breaker at all. A single conversation carrying a poisoned historical tool
+    call, replayed every turn, produced 306 user-visible failures over 14 days
+    here and paged nobody.
+
+    A **count**, not a percentage, for the same reason ``AuthIpBlockedConfig``
+    counts: the symptom is a small absolute number of failures that never moves
+    the denominator. ``threshold_count`` is how many are tolerated -- strictly
+    more than it in one window is a breach, matching
+    ``PendingPrefixCacheLeakConfig`` and ``AuthFailureSpikeConfig``.
+
+    **On by default.** Unlike ``auth_failure_spike`` -- anonymous scanner noise
+    with nothing to act on -- every event counted here is a request that was
+    authenticated, routed, and then failed in front of a user, and the card
+    names the endpoint and status to go and look at. The alerting framework as
+    a whole is still off unless a deployment sets ``ALERTS_ENABLED`` /
+    ``SLACK_ALERTS_WEBHOOK_URL``, so "on" here only affects a deployment that
+    has already asked to be paged; with ``cooldown_sec`` at an hour the
+    worst case for a noisy deployment is one message per hour.
+    """
+
+    enabled: bool = True
+    window_sec: int = 600
+    threshold_count: int = 12
+    cooldown_sec: int = 3600
+
+
+class StreamFailureRateConfig(BaseModel):
+    """Config for ``StreamFailureRateRule``, counted **per model**.
+
+    Fires when more than ``threshold_count`` ``stream_failed`` events arrive for
+    one model within ``window_sec``. Window and cooldown are per model, like the
+    per-provider and per-task rules.
+
+    **``threshold_count``, not ``threshold_pct``, despite the ``_rate`` suffix
+    that ``failed_request_rate`` and ``fivexx_rate`` use for percentages.** This
+    is deliberate, and must not be "fixed": the ``Stream failed for model=``
+    record carries no denominator. Nothing in that codepath counts the streams
+    that *finished*, so a percentage would be computed against a number the rule
+    cannot see -- an unseeable denominator gives a threshold that reads precise
+    and can never fire. Counting what actually happened is the honest version.
+    The overlay YAML sets ``threshold_count``; implementing ``threshold_pct``
+    here would leave that key ignored and the rule running on a default nobody
+    chose.
+
+    A threshold as low as 8 is safe because client disconnects and
+    ``TimeoutMiddleware`` deadlines never reach this log line: both arrive as
+    ``asyncio.CancelledError`` / ``GeneratorExit``, which are ``BaseException``
+    subclasses, so they skip the ``except Exception`` handler in
+    ``servers/routers/completions_stream.py`` that emits the event and land in
+    the ``_finalize_cancelled`` handler below it instead. Eight of these in ten
+    minutes for one model are eight real mid-stream failures a user saw.
+
+    **On by default**, for the same reasons as ``ClientErrorBurstConfig``.
+    """
+
+    enabled: bool = True
+    window_sec: int = 600
+    threshold_count: int = 8
+    cooldown_sec: int = 3600
+
+
 class Rules(BaseModel):
     """Container for log-stream rules."""
 
@@ -175,6 +251,11 @@ class Rules(BaseModel):
     tracked_task_failure_rate: TrackedTaskFailureRateConfig = Field(
         default_factory=TrackedTaskFailureRateConfig
     )
+    # Both on by default: these watch authenticated, routed requests that failed
+    # in front of a user, and nothing else in this file can see either symptom.
+    # See ClientErrorBurstConfig and StreamFailureRateConfig.
+    client_error_burst: ClientErrorBurstConfig = Field(default_factory=ClientErrorBurstConfig)
+    stream_failure_rate: StreamFailureRateConfig = Field(default_factory=StreamFailureRateConfig)
 
 
 class StateChange(BaseModel):
