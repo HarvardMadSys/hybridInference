@@ -1,12 +1,15 @@
 """Tests for serving.observability.alerts.alert_slack."""
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from serving.observability.alerts import (
     _EMOJI,
+    _PENDING_RESOLUTION_MAX_AGE_SEC,
+    _PENDING_RESOLUTION_MAX_ATTEMPTS,
     _PENDING_RESOLUTIONS,
     _RESOLUTION_CONTEXT,
     _RESOLUTION_DETAIL,
@@ -16,6 +19,8 @@ from serving.observability.alerts import (
     _base_url,
     _detect_environment,
     _format_message,
+    _post_to_slack,
+    alert_delivery_failures_total,
     alert_on_transition,
     alert_slack,
     reset_dedupe_state,
@@ -55,7 +60,14 @@ async def test_alert_slack_posts_when_webhook_set(monkeypatch):
         assert "Foo" in message and "bar" in message
 
 
-async def test_failed_delivery_does_not_consume_cooldown(monkeypatch):
+async def test_one_failed_delivery_is_retried_immediately(monkeypatch):
+    """A blip must not swallow the page it dropped.
+
+    The cooldown is armed on the attempt now, so the retry that covers a
+    transient failure is an explicit exception rather than a side effect of
+    never arming — see ``test_a_permanently_failing_sink_stops_after_one_retry``
+    for the other half.
+    """
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/fallback")
     with patch(
         "serving.observability.alerts._post_to_slack",
@@ -389,7 +401,7 @@ class TestResolutionWaitsForAnInFlightFiring:
         release = asyncio.Event()
         posted: list[str] = []
 
-        async def slow_post(_url, message):
+        async def slow_post(_url, message, **_kwargs):
             if "Recovered" not in message:
                 started.set()
                 await release.wait()
@@ -454,7 +466,7 @@ class TestResolutionWaitsForAnInFlightFiring:
             await release_lookup.wait()
             return False
 
-        async def record_post(_url, message):
+        async def record_post(_url, message, **_kwargs):
             posted.append(message)
             return True
 
@@ -549,7 +561,7 @@ class TestTheResolutionWaitOutlivesASlowSend:
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def slow_post(_url, message):
+        async def slow_post(_url, message, **_kwargs):
             if "Recovered" not in message:
                 started.set()
                 # Outlives one wait window but not the attempt bound.
@@ -773,7 +785,7 @@ class TestReBreachDuringAnInFlightRecoverySend:
         reset_transition_state()
         recoveries = []
 
-        async def post(_url, message):
+        async def post(_url, message, **_kwargs):
             if "Recovered" in message:
                 recoveries.append(message)
                 if len(recoveries) == 1:
@@ -801,7 +813,7 @@ class TestReBreachDuringAnInFlightRecoverySend:
         reset_transition_state()
         recoveries = []
 
-        async def post(_url, message):
+        async def post(_url, message, **_kwargs):
             if "Recovered" not in message:
                 return True
             recoveries.append(message)
@@ -849,7 +861,7 @@ class TestReBreachDuringAnInFlightRecoverySend:
                 now=clock[0],
             )
 
-        async def post(_url, message):
+        async def post(_url, message, **_kwargs):
             if "no recent samples" in message:
                 # Traffic returns and the metric re-breaches while the sweep's
                 # close is on the wire.
@@ -1110,3 +1122,282 @@ class TestResolutionCarriesIncidentDetail:
         recovery = mock_post.await_args.args[1]
         assert "198.51.100.4 (7)" in recovery
         assert "203.0.113.9 (412)" not in recovery
+
+
+class _StubResponse:
+    """Just the attribute ``_post_to_slack`` reads off an httpx response."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _StubClient:
+    """Async-context httpx client that answers every post with one status."""
+
+    def __init__(self, status_code: int) -> None:
+        self._status_code = status_code
+
+    async def __aenter__(self) -> "_StubClient":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+    async def post(self, _url: str, json: dict | None = None) -> _StubResponse:
+        return _StubResponse(self._status_code)
+
+
+def _webhook_answering(status_code: int):
+    """Patch target for ``httpx.AsyncClient`` that always returns ``status_code``."""
+    return lambda *_args, **_kwargs: _StubClient(status_code)
+
+
+class TestARefusedDeliveryIsVisible:
+    """A revoked webhook answers every post with 404 and raises nothing.
+
+    Logging only from the ``except`` branch made that a silent black hole: 199
+    consecutive posts were refused over a fortnight, every one of them answered
+    rather than failed, and not a single line was written. The only trace was
+    httpx's INFO line for the request, which nobody greps, so the alert channel
+    stayed dead from the moment the webhook was rotated until someone noticed
+    the silence.
+    """
+
+    #: Shaped like a real webhook so the leak assertion has something to find.
+    WEBHOOK = "https://hooks.slack.com/services/T00000000/B00000000/sUpErSeCrEtToKeN"
+
+    async def test_a_non_2xx_logs_once_with_the_status_and_the_alert(self, caplog):
+        with (
+            patch("serving.observability.alerts.httpx.AsyncClient", _webhook_answering(404)),
+            caplog.at_level(logging.WARNING, logger="serving.observability.alerts"),
+        ):
+            sent = await _post_to_slack(self.WEBHOOK, "body", dedupe_key="circuit_open:zhipu")
+
+        assert sent is False
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        # The status says *why* (404 revoked, 429 throttled) and the key says
+        # which alert was lost — enough to act on without reading the payload.
+        assert "404" in warnings[0].getMessage()
+        assert "circuit_open:zhipu" in warnings[0].getMessage()
+
+    async def test_the_webhook_url_is_never_logged(self, caplog):
+        """The URL is a bearer credential: holding it is permission to post.
+
+        This deployment already leaks it through httpx's own INFO logging, which
+        is being dealt with separately. Adding a second copy — in a line whose
+        whole purpose is to be read by whoever is on call — would make that
+        worse rather than better.
+        """
+        with (
+            patch("serving.observability.alerts.httpx.AsyncClient", _webhook_answering(404)),
+            caplog.at_level(logging.DEBUG, logger="serving.observability.alerts"),
+        ):
+            await _post_to_slack(self.WEBHOOK, "body", dedupe_key="circuit_open:zhipu")
+
+        logged = "\n".join(r.getMessage() for r in caplog.records)
+        assert self.WEBHOOK not in logged
+        assert "sUpErSeCrEtToKeN" not in logged
+
+    async def test_a_delivered_alert_says_nothing(self, caplog):
+        """One line per refusal, none per success: this must stay greppable."""
+        with (
+            patch("serving.observability.alerts.httpx.AsyncClient", _webhook_answering(200)),
+            caplog.at_level(logging.WARNING, logger="serving.observability.alerts"),
+        ):
+            sent = await _post_to_slack(self.WEBHOOK, "body", dedupe_key="circuit_open:zhipu")
+
+        assert sent is True
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    async def test_refusals_are_counted_by_status(self):
+        """A counter is the only shape delivery health can honestly take here.
+
+        An alert about the alert transport would have to travel over the
+        transport that is failing. The count is left for the independent
+        control-plane path to read instead.
+        """
+        with patch("serving.observability.alerts.httpx.AsyncClient", _webhook_answering(404)):
+            await _post_to_slack(self.WEBHOOK, "body", dedupe_key="k")
+            await _post_to_slack(self.WEBHOOK, "body", dedupe_key="k")
+
+        assert alert_delivery_failures_total() == {"404": 2}
+
+
+class TestTheCooldownIsArmedOnTheAttempt:
+    """A sink that never succeeds must not become an unbounded retry loop.
+
+    Arming the cooldown on delivery meant the dedupe table stayed empty for as
+    long as the webhook refused, so a live breach was re-posted at every single
+    evaluation — the failure that produced the least visible alerting was also
+    the one that generated the most traffic.
+    """
+
+    async def test_a_permanently_failing_sink_stops_after_one_retry(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=False),
+        ) as mock_post:
+            for _ in range(5):
+                sent = await alert_slack(
+                    AlertSeverity.ERROR,
+                    "Provider failed",
+                    {},
+                    dedupe_key="K",
+                    cooldown_sec=300,
+                )
+                assert sent is False
+
+        # The original attempt plus the one free retry the transient case buys.
+        assert mock_post.await_count == 2
+
+    async def test_a_recovered_sink_serves_the_whole_cooldown_again(self, monkeypatch):
+        """A delivered alert resets the failure count, so the exception closes."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(side_effect=[False, True, True]),
+        ) as mock_post:
+            for _ in range(4):
+                await alert_slack(
+                    AlertSeverity.ERROR,
+                    "Provider failed",
+                    {},
+                    dedupe_key="K",
+                    cooldown_sec=300,
+                )
+
+        # Failed attempt, free retry that lands — and then silence, because the
+        # delivered alert is under cooldown like any other.
+        assert mock_post.await_count == 2
+
+
+class TestPendingResolutionsStopRetrying:
+    """The retry queue must drain while the sink is down, not accumulate.
+
+    A queued resolution can only be confirmed by the sink it cannot reach, so
+    every entry was retried on every tick and none ever left: roughly 87% of the
+    undelivered posts in the production window were this one loop, all of them
+    landing in the same second of each minute.
+    """
+
+    @staticmethod
+    async def _circuit(breached: bool) -> bool:
+        return await alert_on_transition(
+            key="circuit_open:zhipu",
+            breached=breached,
+            severity=AlertSeverity.ERROR,
+            title="Provider circuit opened",
+            context=dict,
+            cooldown_sec=0,
+            kind="state",
+        )
+
+    async def test_the_queue_gives_up_after_the_attempt_cap(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        clock = [1_000.0]
+        monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=False),
+        ) as mock_post:
+            await self._circuit(True)
+            await self._circuit(False)
+            assert "circuit_open:zhipu" in _PENDING_RESOLUTIONS
+            # Well past the cap: a tick a minute, as the scheduler runs it.
+            for _ in range(_PENDING_RESOLUTION_MAX_ATTEMPTS + 5):
+                clock[0] += 60.0
+                await sweep_stale_breaches()
+
+        assert not _PENDING_RESOLUTIONS
+        # Breach, failed close, then a bounded number of retries — not one per
+        # tick for the life of the process.
+        assert mock_post.await_count == 2 + _PENDING_RESOLUTION_MAX_ATTEMPTS
+
+    async def test_an_entry_older_than_the_age_cap_is_dropped(self, monkeypatch):
+        """The attempt cap assumes a tick a minute; a quiet process ticks rarely.
+
+        A recovery announced this long after the fact tells an operator nothing
+        they cannot see from the absence of breaches, so age bounds it too.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        clock = [1_000.0]
+        monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=False),
+        ) as mock_post:
+            await self._circuit(True)
+            await self._circuit(False)
+            clock[0] += _PENDING_RESOLUTION_MAX_AGE_SEC + 1.0
+            await sweep_stale_breaches()
+            assert not _PENDING_RESOLUTIONS
+            await sweep_stale_breaches()
+
+        # Breach, failed close, one last try — the second sweep has nothing left.
+        assert mock_post.await_count == 3
+
+    async def test_a_re_breach_still_cancels_before_the_cap(self, monkeypatch):
+        """Giving up must not be reached by announcing a live outage as over."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=False),
+        ):
+            await self._circuit(True)
+            await self._circuit(False)
+            await self._circuit(True)
+            await sweep_stale_breaches()
+
+        assert not _PENDING_RESOLUTIONS
+        assert _STATE_TRANSITIONS.is_firing("circuit_open:zhipu")
+
+
+class TestTheNoSamplesSweepStopsRetrying:
+    """The sweep's own re-arm path is the same loop wearing a different hat.
+
+    A failed no-samples close re-arms the key so the next tick retries it, which
+    while the sink is down means every open incident is re-posted once a minute
+    for as long as the process lives.
+    """
+
+    async def test_a_down_sink_does_not_re_arm_for_ever(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        clock = [1_000.0]
+        monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=False),
+        ) as mock_post:
+            await alert_on_transition(
+                key="failed_request_rate",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Failed-request rate exceeded",
+                context=dict,
+                cooldown_sec=0,
+                stale_after=3_600.0,
+                now=clock[0],
+            )
+            clock[0] += 3_600.0
+            for _ in range(_PENDING_RESOLUTION_MAX_ATTEMPTS + 5):
+                await sweep_stale_breaches()
+                clock[0] += 60.0
+
+        assert mock_post.await_count == 1 + _PENDING_RESOLUTION_MAX_ATTEMPTS
+        # Given up on, not left armed — a key the sweep keeps returning is a key
+        # it keeps re-posting.
+        assert not _TRANSITIONS._firing
+        assert not _TRANSITIONS._bounds
