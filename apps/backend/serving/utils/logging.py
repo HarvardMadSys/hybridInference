@@ -126,14 +126,25 @@ _STRUCTURED_LOG_KEYS = (
     "detail",
     "endpoint",
     "error_code",
-    # A tool call the gateway streamed out with arguments that are not a JSON
-    # object (``tool_call_arguments_unparseable``, servers/routers/
-    # completions_stream.py). ``tool_call_id`` and ``function_name`` are what
-    # locate the offending call inside the conversation carrying it -- the
-    # incident behind this event was a single poisoned call, replayed on every
-    # subsequent turn, and fixing it meant naming it. ``arguments_len`` stands
-    # in for the arguments themselves, which are user data and never logged.
+    # Which client tool call the OpenAI-compatible adapter had to repair
+    # (``tool_call_arguments_repaired`` in adapters/openai_compat.py). The
+    # repair hides the producer's bug from the user, so this line is the only
+    # remaining trace of it -- and without the id and function name it says
+    # only "something somewhere sent bad JSON". The argument text is user data
+    # and is deliberately not among these keys.
+    #
+    # The same ``tool_call_id`` also locates a tool call the gateway streamed
+    # OUT with arguments that are not a JSON object
+    # (``tool_call_arguments_unparseable``, servers/routers/
+    # completions_stream.py) -- the producer-side half of the same incident,
+    # which was a single poisoned call replayed on every subsequent turn.
+    # That event adds ``function_name`` (the adapter's repair path calls the
+    # same field ``tool_name``, since ``name`` collides with
+    # ``LogRecord.name``), the upstream ``finish_reason``, and
+    # ``arguments_len`` -- which stands in for the arguments themselves, user
+    # data that is never logged.
     "tool_call_id",
+    "tool_name",
     "function_name",
     "finish_reason",
     "arguments_len",
