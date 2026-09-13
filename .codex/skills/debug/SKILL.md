@@ -22,7 +22,7 @@ apps/backend/serving/     # FastAPI app — HTTP layer, SSE streaming, middlewar
   config/                  # Settings (pydantic-settings), runtime settings
   observability/           # Metrics, alerts, logging
   servers/                 # App bootstrap, routers, middleware, SSE
-  storage/                 # Database layer (postgres / D1)
+  storage/                 # Database layer (Postgres via asyncpg)
 apps/backend/routing/      # Routing engine — strategies, circuit breaker, EWMA health, provider registry
   routewise/               # Per-model routing config
 apps/frontend/             # Next.js frontend
@@ -108,7 +108,7 @@ Use this decision tree to find the right area:
 | Model not found / routing config issue | `config/models.yaml` (incl. per-model `router:` / `router_params:`), `config/routing.yaml`, `routing/model_router_registry.py` |
 | Auth failure (401/403, bad API key, JWT error) | `serving/auth/`, `serving/servers/auth.py`, `serving/config/settings.py` |
 | SSE streaming interrupted / malformed chunks | `serving/stream.py`, `serving/servers/sse.py` |
-| Database error (connection, query, migration) | `serving/storage/`, check `DB_BACKEND` env var (`postgres` vs `d1`) |
+| Database error (connection, query, migration) | `serving/storage/` — Postgres via asyncpg; check the `DB_*` connection vars in `serving/config/settings.py` |
 | Config / env var not picked up | `serving/config/settings.py` — check `get_settings()` cache (tests auto-clear via `conftest._reset_settings_cache`) |
 | Middleware / CORS / rate-limit | `serving/servers/middleware/` |
 | Alert not firing / wrong threshold | `config/alerts.yaml`, `serving/observability/alerts.py` |
