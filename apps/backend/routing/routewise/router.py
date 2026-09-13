@@ -159,6 +159,12 @@ def _claim_probe_limit(owner: Any, limit: int) -> None:
         _PROBE_LIMIT_CLAIMS[owner] = max(int(limit), 1)
 
 
+def _release_probe_limit(owner: Any) -> None:
+    """Drop *owner*'s claim, so a retired router stops capping live ones."""
+    with _PROBE_LIMIT_LOCK:
+        _PROBE_LIMIT_CLAIMS.pop(owner, None)
+
+
 def _effective_probe_limit() -> int:
     """The lowest limit any live router claims; 1 when none has."""
     with _PROBE_LIMIT_LOCK:
@@ -181,6 +187,14 @@ class _ProbeConcurrencyGate:
     the lowest limit any router claims: routers normally agree, and where they
     disagree the model that wants a single probe is the one whose provider
     cannot take two.
+
+    The guarantee is forward-looking, not retroactive. A router built while
+    another is mid-cycle -- an admin strategy change, a runtime model publish --
+    lowers the cap for every probe not yet dispatched, and the gate then grants
+    nothing further until the overlap has drained to the new limit. It cannot
+    shrink the overlap already on the wire, because no client-side action
+    un-sends a request that has left; a probe is one 8-token call, so that
+    residue is bounded by ``routewise_probe_timeout_sec``.
     """
 
     def __init__(self) -> None:
@@ -653,6 +667,9 @@ class RouteWiseRouter:
         async with self._lifecycle_lock:
             self._validate_envelope_calibration()
             self._lifecycle_started = True
+            # Re-assert the claim a previous stop() dropped, before any task
+            # this call starts can reach the gate.
+            _claim_probe_limit(self, self.config.routewise_probe_max_concurrency)
             if self.prefix_cache.enabled and (
                 self._prefix_cache_sweep_task is None or self._prefix_cache_sweep_task.done()
             ):
@@ -726,6 +743,9 @@ class RouteWiseRouter:
                 if probe_task is not None:
                     probe_task.cancel()
                     await _await_cancelled_child(probe_task)
+
+            # A retired router must stop capping the models still probing.
+            _release_probe_limit(self)
 
     async def _sweep_pending_prefix_cache_loop(self) -> None:
         try:

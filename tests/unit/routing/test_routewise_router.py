@@ -1919,6 +1919,67 @@ class TestProbeConcurrencyGate:
         assert [result.ok for result in results] == [True] * 4
         assert overlap.peak == 1
 
+    async def test_a_limit_claimed_mid_cycle_binds_the_probes_not_yet_sent(self):
+        """A router built while another is probing caps what has not gone out yet.
+
+        Not what already has: no client-side action un-sends a request that has
+        left, so the gate's guarantee is forward-looking. From the claim on, it
+        grants nothing further until the overlap has drained to the new limit.
+        """
+        gate = _ProbeConcurrencyGate()
+        generous, strict = _Claimant(), _Claimant()
+        _claim_probe_limit(generous, 3)
+        release = asyncio.Event()
+        active_when_admitted: list[int] = []
+
+        async def _in_flight() -> None:
+            async with gate.slot():
+                await release.wait()
+
+        async def _not_yet_sent() -> None:
+            async with gate.slot():
+                active_when_admitted.append(gate.active)
+
+        running = [asyncio.create_task(_in_flight()) for _ in range(3)]
+        await asyncio.sleep(0)
+        assert gate.active == 3
+
+        queued = [asyncio.create_task(_not_yet_sent()) for _ in range(2)]
+        await asyncio.sleep(0)
+        assert active_when_admitted == []
+
+        # The strategy change lands mid-cycle.
+        _claim_probe_limit(strict, 1)
+        assert gate.limit == 1
+
+        release.set()
+        await asyncio.gather(*running, *queued)
+
+        # Each queued probe waited for the overlap to drain to the new limit
+        # rather than joining it.
+        assert active_when_admitted == [1, 1]
+        assert gate.active == 0
+
+    async def test_a_retired_router_stops_capping_the_live_ones(self):
+        """stop() drops the claim: a model out of service is not a model probing."""
+        gate = _ProbeConcurrencyGate()
+        generous = _probe_router(
+            "generous-model",
+            _OverlapRecorder(),
+            config=RouteWiseConfig(routewise_probe_max_concurrency=4),
+        )
+        retired = _probe_router(
+            "retired-model",
+            _OverlapRecorder(),
+            config=RouteWiseConfig(routewise_probe_max_concurrency=1),
+        )
+        assert gate.limit == 1
+
+        await retired.stop()
+
+        assert gate.limit == 4
+        assert generous.config.routewise_probe_max_concurrency == 4
+
     async def test_a_router_alone_with_a_generous_limit_probes_in_parallel(self):
         """The cap is still the configured number when nothing lowers it."""
         overlap = _OverlapRecorder()
