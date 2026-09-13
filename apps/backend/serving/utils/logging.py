@@ -126,6 +126,14 @@ _STRUCTURED_LOG_KEYS = (
     "detail",
     "endpoint",
     "error_code",
+    # Which client tool call the OpenAI-compatible adapter had to repair
+    # (``tool_call_arguments_repaired`` in adapters/openai_compat.py). The
+    # repair hides the producer's bug from the user, so this line is the only
+    # remaining trace of it -- and without the id and function name it says
+    # only "something somewhere sent bad JSON". The argument text is user data
+    # and is deliberately not among these keys.
+    "tool_call_id",
+    "tool_name",
 )
 
 
