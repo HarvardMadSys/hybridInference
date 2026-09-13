@@ -20,6 +20,7 @@ from serving.servers.routers.completions_stream import (
     _unparseable_tool_call_arguments,
 )
 from serving.servers.routers.routing_info import RoutingInfo
+from serving.utils.logging import _STRUCTURED_LOG_KEYS, JsonFormatter, PlainFormatter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -1052,13 +1053,65 @@ async def test_empty_and_brace_less_argument_shapes_are_reported_apart(
         assert records[0].arguments_len == expected_len
 
 
+def _rendered_lines(record: logging.LogRecord) -> tuple[str, str]:
+    """Render one record through both production formatters.
+
+    ``logger.warning(extra={...})`` writes every key onto the ``LogRecord``
+    whatever it is called, so asserting on a record attribute cannot tell "we
+    logged it" from "we dropped it at format time": both formatters serialize
+    only the keys listed in ``_STRUCTURED_LOG_KEYS`` and discard the rest
+    silently. These two strings are what an operator actually greps -- which
+    makes them also the honest place to prove the arguments are *not* in the
+    line, rather than trusting a record attribute nothing emits.
+    """
+    json_line = JsonFormatter().format(record)
+    plain_line = PlainFormatter(fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s").format(
+        record
+    )
+    return json_line, plain_line
+
+
+@pytest.mark.asyncio
+async def test_the_unparseable_event_fields_reach_the_emitted_line(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Every field the event exists to carry survives both formatters.
+
+    Asserted directly against the allowlist as well as through the formatters,
+    because this is the failure the formatter assertions would otherwise report
+    as a puzzling "the attribution is missing from the JSON" -- the cause is one
+    tuple. Without the registration the record still carries all seven fields
+    and every line emitted in production carries none of them, which is the
+    whole event reduced to a message string.
+    """
+    for key in ("tool_call_id", "function_name", "finish_reason", "arguments_len"):
+        assert key in _STRUCTURED_LOG_KEYS, (
+            f"{key!r} is what locates the broken call; unlisted, both formatters "
+            "drop it and the warning names no call at all"
+        )
+
+    session = _make_session()
+    with caplog.at_level(logging.WARNING):
+        await _consume(session.stream(_aiter(_tool_call_stream("{"))))
+
+    (record,) = _unparseable_records(caplog)
+    json_line, plain_line = _rendered_lines(record)
+    assert json.loads(json_line)["event"] == _UNPARSEABLE_EVENT
+    for line in (json_line, plain_line):
+        assert "call_eff0b25a44c543059151a2c7" in line
+        assert "phone_away" in line
+        assert "tool_calls" in line
+        assert "invalid_json" in line
+        assert "sglang:api:443" in line
+
+
 @pytest.mark.asyncio
 async def test_warning_never_carries_the_argument_content(caplog: pytest.LogCaptureFixture):
     """Tool arguments are user data: the record reports a length, never the text.
 
-    Asserted against the fully formatted record (message plus the structured
-    extras both formatters emit), not just the message, since that is what
-    actually reaches a log sink.
+    Asserted against the lines both production formatters emit, and against the
+    whole record besides, since a key that is merely unlisted today would start
+    leaking the moment someone allowlists it.
     """
     secret = '{"path": "/srv/data/quarterly-plan.txt", "note": "canary-must-not-be-logged'
     session = _make_session()
@@ -1067,7 +1120,13 @@ async def test_warning_never_carries_the_argument_content(caplog: pytest.LogCapt
 
     records = _unparseable_records(caplog)
     assert len(records) == 1
-    rendered = records[0].getMessage() + json.dumps(records[0].__dict__, default=str)
+    rendered = "".join(
+        (
+            records[0].getMessage(),
+            json.dumps(records[0].__dict__, default=str),
+            *_rendered_lines(records[0]),
+        )
+    )
     assert "quarterly-plan" not in rendered
     assert "canary-must-not-be-logged" not in rendered
     assert records[0].arguments_len == len(secret)
@@ -1187,3 +1246,31 @@ async def test_mid_stream_failure_does_not_warn(caplog: pytest.LogCaptureFixture
 
     assert _unparseable_records(caplog) == []
     assert cl_logger.schedule_log.call_args.args[1]["status_code"] == 500
+
+
+@pytest.mark.asyncio
+async def test_arguments_json_loads_cannot_handle_still_finish_the_stream():
+    """The check can never turn a stream that succeeded into one that failed.
+
+    ``json.loads`` answers ~10k nesting levels with ``RecursionError``, which is
+    a sibling of ``JSONDecodeError`` rather than a subclass -- and a runaway
+    generation emitting thousands of ``[`` reaches that on its own. The check
+    runs inside the ``try`` that converts an exception into an error chunk and a
+    500 row, so an unhandled one here would append a failure to a response the
+    client had already received in full: detection rewriting the outcome it
+    exists to observe.
+    """
+    depth = 20_000
+    arguments = "[" * depth + "]" * depth
+    with pytest.raises(RecursionError):
+        json.loads(arguments)  # the premise of this test, asserted not assumed
+
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+    out = await _consume(session.stream(_aiter(_tool_call_stream(arguments))))
+
+    assert not any('"error"' in chunk for chunk in out)
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["status_code"] == 200
+    message = log_data["response"]["choices"][0]["message"]
+    assert message["tool_calls"][0]["function"]["arguments"] == arguments

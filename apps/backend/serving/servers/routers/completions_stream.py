@@ -542,7 +542,20 @@ class StreamSession:
                     f"request_id={self._request_id}"
                 )
 
-            self._warn_on_unparseable_tool_calls()
+            # Suppressed deliberately: the check is diagnostics, and anything
+            # that raises inside this ``try`` becomes an error chunk appended to
+            # a response the client has already received in full, plus a 500
+            # ``api_logs`` row for a request that succeeded. That is the check
+            # rewriting the outcome it exists only to observe -- the one thing
+            # "detection only" forbids. Not hypothetical: ``json.loads`` raises
+            # ``RecursionError`` (a sibling of ``JSONDecodeError``, not a
+            # subclass, so the helper's own handler does not cover it) past
+            # ~10k nesting levels, which a runaway generation reaches on its
+            # own. Same rule the Anthropic stream accumulator states as
+            # "logging must never disrupt the forwarded stream"
+            # (``routers/anthropic_messages.py``).
+            with suppress(Exception):
+                self._warn_on_unparseable_tool_calls()
 
             await self._finalize_success()
         except Exception as exc:
