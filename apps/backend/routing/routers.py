@@ -241,12 +241,21 @@ def _raise_surfaced_error(
         # attached further upstream (a nested router, an adapter) does not.
         routing.setdefault("failed_attempts", failed_attempts)
     else:
-        exc._routing = {  # type: ignore[attr-defined]
+        routing = {
             "provider": selected.adapter.config.provider,
             "base_url": selected.adapter.config.base_url,
             "endpoint_id": endpoint_id_for_adapter(selected.adapter),
             "failed_attempts": failed_attempts,
         }
+        exc._routing = routing  # type: ignore[attr-defined]
+    if selected is not attempts[0]:
+        # Same marker the success path puts on a response served by a fallback,
+        # and it matters more here: this block's provider is the route that
+        # produced the status being reported, not the route the request was
+        # actually sent to. Without it an ``api_logs`` row reads as if routing
+        # had picked this endpoint. ``setdefault`` so a block built further
+        # upstream keeps whatever it already decided.
+        routing.setdefault("fallback", True)
     raise exc
 
 

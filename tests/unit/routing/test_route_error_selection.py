@@ -81,10 +81,15 @@ class _RaisingAdapter(BaseAdapter):
         yield  # make this an async generator  # pragma: no cover
 
 
-def _router(primary: BaseAdapter, backup: BaseAdapter) -> FixedRouter:
-    """Route ``m`` over both adapters, with selection pinned to ``primary``."""
+def _router(primary: BaseAdapter, *backups: BaseAdapter) -> FixedRouter:
+    """Route ``m`` over every adapter, with selection pinned to ``primary``.
+
+    Backups are tried in the order given: the fallback loop walks the route's
+    registered adapters, and with no weight-override resolver installed that is
+    registration order.
+    """
     router = FixedRouter()
-    router.register_route("m", [(primary, 0.9), (backup, 0.1)])
+    router.register_route("m", [(primary, 0.9), *((backup, 0.1) for backup in backups)])
     # Defeat the weighted coin flip: this suite is about what happens *after*
     # the primary fails, so which adapter is primary must not be random.
     router._select_adapter = lambda model_id, **kw: primary  # type: ignore[assignment]
@@ -193,8 +198,38 @@ async def test_stream_surfaced_fallback_error_carries_routing():
     assert routing is not None
     assert routing["provider"] == "live-local"
     assert routing["endpoint_id"] == "live-local"
+    # The provider named here is not where the request was routed, so the row
+    # has to say so -- same marker the success path puts on a fallback response.
+    assert routing["fallback"] is True
     # The chain is telemetry for both attempts regardless of which one is shown.
     assert [a["provider"] for a in routing["failed_attempts"]] == ["dead-local", "live-local"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_surfaces_the_first_eligible_fallback_not_the_last_attempted():
+    """Attribution must follow the error that is reported, not the last route tried.
+
+    The generator emits a synthetic routing chunk before *every* fallback
+    attempt and the consumer keeps overwriting its provider with the latest one
+    seen, so without ``_routing`` on the surfaced error this row would be
+    attributed to ``busy-remote`` -- a route whose 429 nobody is being shown.
+    """
+    primary = _RaisingAdapter(_cfg("dead-local"), _TransportError("Cannot connect to host"))
+    first = _RaisingAdapter(_cfg("live-local"), _UpstreamStatusError(400, _POISON_400))
+    last = _RaisingAdapter(_cfg("busy-remote"), _UpstreamStatusError(429, "rate limited"))
+    router = _router(primary, first, last)
+
+    with pytest.raises(_UpstreamStatusError) as exc_info:
+        await _drain_stream(router)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value._routing["provider"] == "live-local"
+    assert [a["provider"] for a in exc_info.value._routing["failed_attempts"]] == [
+        "dead-local",
+        "live-local",
+        "busy-remote",
+    ]
 
 
 @pytest.mark.unit
@@ -213,6 +248,8 @@ async def test_stream_keeps_primary_error_when_fallback_is_only_rate_limited():
     routing = getattr(exc_info.value, "_routing", None)
     assert routing is not None
     assert routing["provider"] == "dead-local"
+    # The request really was routed here, so the fallback marker stays off.
+    assert "fallback" not in routing
     assert [a["provider"] for a in routing["failed_attempts"]] == ["dead-local", "busy-remote"]
 
 
