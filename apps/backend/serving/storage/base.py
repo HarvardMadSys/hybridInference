@@ -1553,6 +1553,7 @@ class LogStore(ABC):
         model_ids: list[str],
         since: datetime,
         limit: int | None = None,
+        include_metadata: bool = True,
     ) -> list[Row]:
         """Fetch recent request rows for RouteWise startup bootstrap.
 
@@ -1560,6 +1561,12 @@ class LogStore(ABC):
         in-memory rolling windows can replay them oldest-to-newest.  When
         ``limit`` is provided, implementations should return the most recent
         ``limit`` rows from the window, still ordered ascending for replay.
+
+        ``include_metadata`` drives the per-row metadata JSON that only the
+        latency replay reads (``endpoint_id`` and ``failed_attempts``).  The
+        envelope replay needs token counts alone, so it passes ``False`` and
+        implementations may leave those fields unset rather than fetching and
+        decoding a JSON document per row.
         """
 
     @abstractmethod

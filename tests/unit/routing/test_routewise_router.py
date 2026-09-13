@@ -3098,7 +3098,10 @@ class TestRouteWiseDecisionMetadata:
         reads one field-name contract. The default config does not dispatch
         hedges, so hedge fields are disabled/None.
         """
-        router, _conc, _quota, _api = _make_router_with_all_tiers()
+        # The per-candidate request costs this checks against are opt-in detail.
+        router, _conc, _quota, _api = _make_router_with_all_tiers(
+            RouteWiseConfig(decision_metadata_candidate_detail=True)
+        )
         request_id = "req-test-canonical"
         context = {"request_id": request_id}
 
@@ -3852,3 +3855,101 @@ class TestUpstreamPriorityIsNotPublished:
         # The dispatch ran (so the assertion is not vacuous) and carried no
         # priority: an sglang backend serves these at its own default.
         assert seen == [None]
+
+
+@pytest.mark.unit
+class TestRouteWiseEnvelopeOnTheDecisionPath:
+    """The L/U snapshot is quota pricing, so on-demand-only models skip it.
+
+    Deriving it means sorting a window of workload costs, and that window holds
+    one sample per request. Paying for it on a model with no quota route bought
+    three metadata fields nothing reads back.
+    """
+
+    def test_on_demand_only_model_does_not_snapshot_the_envelope(self):
+        router, _api_a, _api_b = _make_router_with_two_api()
+        assert router._quota_bearing_models == set()
+        for _ in range(5):
+            router.predictor.update("test-model", 500)
+        router.envelope.snapshot = MagicMock(side_effect=AssertionError("snapshot taken"))
+
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+
+        assert decision is not None
+        router.envelope.snapshot.assert_not_called()
+
+    def test_quota_bearing_model_still_snapshots_the_envelope(self):
+        router, _quota, _api = _make_router_with_quota_and_api()
+        assert router._quota_bearing_models == {"test-model"}
+        for _ in range(5):
+            router.predictor.update("test-model", 500)
+        spy = MagicMock(wraps=router.envelope.snapshot)
+        router.envelope.snapshot = spy
+
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+
+        assert decision is not None
+        spy.assert_called()
+
+    def test_envelope_observations_continue_for_on_demand_only_models(self):
+        """Skipping the snapshot must not stop the window from filling.
+
+        An admin can add a quota route to a live model; its envelope has to be
+        calibrated from the traffic that came before, not from zero.
+        """
+        router, _api_a, _api_b = _make_router_with_two_api()
+
+        router.record_observation(
+            RoutingObservation(
+                model_id="test-model",
+                endpoint_id="test-model:api-a",
+                ttft_ms=120.0,
+                total_latency_ms=900.0,
+                token_count=1500,
+                prompt_tokens=1000,
+                completion_tokens=500,
+                success=True,
+                request_id="req-envelope",
+            )
+        )
+
+        assert router.envelope.sample_count("test-model") == 1
+
+
+@pytest.mark.unit
+class TestRouteWiseDecisionMetadataCandidateDetail:
+    def test_candidate_detail_is_absent_by_default(self):
+        router, _conc, _quota, _api = _make_router_with_all_tiers()
+
+        meta = router._select_decision("test-model", {"request_id": "req-lean"}).metadata
+
+        for key in (
+            "candidate_request_costs_usd",
+            "candidate_cost_reasons",
+            "candidate_prefix_cache_discounts_usd",
+            "candidate_prefix_cache_expected_tokens",
+            "candidate_quota_used_fraction",
+        ):
+            assert key not in meta
+        # The fields the console and the decisions panel read stay put.
+        for key in (
+            "candidate_costs_usd",
+            "candidate_mean_ttft_sec",
+            "candidate_mean_ttft_sources",
+            "candidate_provider_types",
+            "candidate_quota_remaining",
+            "lp_weights",
+            "lp_status",
+        ):
+            assert key in meta
+
+    def test_candidate_detail_is_restored_when_enabled(self):
+        router, _conc, _quota, _api = _make_router_with_all_tiers(
+            RouteWiseConfig(decision_metadata_candidate_detail=True)
+        )
+
+        meta = router._select_decision("test-model", {"request_id": "req-detail"}).metadata
+
+        selected = meta["selected_endpoint"]
+        assert meta["candidate_request_costs_usd"][selected] > 0
+        assert meta["candidate_cost_reasons"][selected]

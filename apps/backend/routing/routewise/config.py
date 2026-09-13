@@ -71,6 +71,16 @@ class RouteWiseConfig:
     envelope_lower_percentile: float = 10.0
     envelope_upper_percentile: float = 90.0
     envelope_min_samples: int = 1
+    # Cap on samples retained per pool inside the envelope window, mirroring
+    # latency_max_samples_per_profile. The window is otherwise one sample per
+    # request for envelope_window_hours, so both its memory and the cost of the
+    # percentile sort grow with traffic. 0 restores the unbounded window.
+    envelope_max_samples: int = 20_000
+    # Seconds an L/U snapshot is reused before it is recomputed. The envelope
+    # describes hours of workload, so a snapshot a second old is the same
+    # snapshot; recomputing it per request is what made routing cost scale with
+    # traffic. 0 recomputes on every decision.
+    envelope_cache_ttl_sec: float = 1.0
     # DB-bootstrap-only donor models: replay these models' historical rows
     # into THIS model's envelope (priced with this model's routes) so a model
     # with no traffic of its own can cold-start from a sibling serving the
@@ -111,6 +121,13 @@ class RouteWiseConfig:
     routewise_probe_idle_only: bool = True
     routewise_probe_idle_threshold_sec: float = 900.0
     routewise_probe_max_concurrency: int = 1
+
+    # Per-candidate detail in the decision metadata persisted to
+    # api_logs.metadata->'routewise'. The per-request fields nothing reads back
+    # (each candidate's request cost, cost reason, prefix-cache discount and
+    # quota use) are worth roughly a third of the blob, so they are opt-in for
+    # studying a deployment's decisions rather than always-on storage.
+    decision_metadata_candidate_detail: bool = False
 
     # Guarded cache-aware cost adjustment. When enabled, on-demand candidates
     # can use the prefix-cache estimate as an effective-cost discount before the LP.

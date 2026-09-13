@@ -551,6 +551,9 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
             config=RouteWiseConfig(
                 budget_alpha=0.0,
                 prefix_cache_cost_adjustment_enabled=cost_adjustment,
+                # These assertions read the per-candidate cost breakdown, which
+                # is opt-in detail rather than always-on decision metadata.
+                decision_metadata_candidate_detail=True,
             ),
         )
         router.prefix_cache = PrefixCacheCoordinator(
