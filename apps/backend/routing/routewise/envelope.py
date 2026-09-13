@@ -61,7 +61,9 @@ class CostEnvelopeEstimator:
     the way ``ProviderProfile.max_samples`` caps the latency window. Without a
     cap the window holds one sample per request for its whole duration, so both
     memory and the cost of the ``snapshot`` sort grow with traffic. ``0`` keeps
-    the unbounded behavior.
+    the unbounded behavior. A cap below ``min_samples`` is raised to it: the
+    window would otherwise be unable to hold the number of samples calibration
+    requires, leaving the pool uncalibrated no matter how much traffic arrives.
 
     ``cache_ttl_sec`` memoizes ``snapshot`` for that many seconds of the caller's
     own clock. Percentiles over a window measured in hours do not move between
@@ -82,6 +84,19 @@ class CostEnvelopeEstimator:
     _cache: dict[str, tuple[float, CostEnvelopeSnapshot | None]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
+    def _window_maxlen(self) -> int | None:
+        """Return the retained-sample cap, or ``None`` for an unbounded window.
+
+        Never returns a cap below ``min_samples``. ``snapshot`` reports
+        uncalibrated until the window holds that many samples, so a smaller cap
+        would be a permanent floor on calibration rather than a bound on cost:
+        a quota-only pool would refuse to start and a mixed one would mask its
+        quota leg forever, however much traffic arrived.
+        """
+        if self.max_samples <= 0:
+            return None
+        return max(int(self.max_samples), max(int(self.min_samples), 1))
+
     def observe(self, pool: str, cost_usd: float, *, now: float | None = None) -> None:
         """Add one cheapest API-equivalent cost sample."""
         if cost_usd <= 0:
@@ -90,8 +105,7 @@ class CostEnvelopeEstimator:
         with self._lock:
             samples = self._samples.get(pool)
             if samples is None:
-                maxlen = int(self.max_samples) if self.max_samples > 0 else None
-                samples = self._samples[pool] = deque(maxlen=maxlen)
+                samples = self._samples[pool] = deque(maxlen=self._window_maxlen())
             samples.append((ts, float(cost_usd)))
             self._prune_locked(pool, ts)
             # Holding a cached "uncalibrated" answer across a new sample would

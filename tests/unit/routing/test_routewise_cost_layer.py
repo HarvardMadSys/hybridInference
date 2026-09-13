@@ -138,6 +138,43 @@ def test_envelope_caps_retained_samples_at_max_samples():
 
 
 @pytest.mark.unit
+def test_envelope_sample_cap_never_starves_calibration():
+    """A cap below ``min_samples`` is raised to it, not honored literally.
+
+    ``snapshot`` reports uncalibrated until the window holds ``min_samples``
+    entries, so a smaller cap would be a permanent floor on calibration rather
+    than a bound on cost: the pool could never calibrate however much traffic
+    arrived, failing a quota-only model's startup validation outright and
+    masking a mixed model's quota leg forever.
+    """
+    estimator = CostEnvelopeEstimator(
+        lower_percentile=0,
+        upper_percentile=100,
+        min_samples=50,
+        max_samples=10,
+        window_sec=10_000.0,
+    )
+
+    for i in range(500):
+        estimator.observe("m", 0.001 * (i % 7 + 1), now=float(i))
+
+    snap = estimator.snapshot("m", now=500.0)
+    assert snap is not None
+    assert snap.sample_count == 50
+
+
+@pytest.mark.unit
+def test_envelope_sample_cap_is_honored_when_it_clears_min_samples():
+    """The ordinary case still retains exactly ``max_samples``."""
+    estimator = CostEnvelopeEstimator(min_samples=1, max_samples=10, window_sec=10_000.0)
+
+    for i in range(500):
+        estimator.observe("m", 0.001 * (i % 7 + 1), now=float(i))
+
+    assert estimator.sample_count("m", now=500.0) == 10
+
+
+@pytest.mark.unit
 def test_envelope_reuses_a_calibrated_snapshot_within_the_cache_ttl():
     """L/U describes hours of workload, so it is not re-derived per request."""
     estimator = CostEnvelopeEstimator(
