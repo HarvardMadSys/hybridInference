@@ -55,10 +55,20 @@ services:
     networks:
       - hybridinference
 
-volumes:
-  # Compose checks declared external volumes even when their service is not
-  # selected. A fresh Docker host must not need the production database volume
-  # just to run Stage 1. Stage 2 keeps its existing example_postgres_data volume.
-  postgres_data:
-    external: false
-    name: ${COMPOSE_PROJECT_NAME:-hybridinference-example}_unused_postgres_data
+  # Stage 1 never starts Postgres, but Compose resolves -- and provisions -- the
+  # volumes of every service in the graph it builds, including ones `--no-deps`
+  # leaves stopped. So the production `postgres_data` mount reached a fresh
+  # Docker host as a missing external volume and failed `make up
+  # DISTRIBUTION=example` before it started anything. Renaming that declaration
+  # to a per-project volume answered the fresh-host problem but created a real
+  # volume nobody mounts, and `down --volumes` removes only the volumes its
+  # services still reference, so every CI run with a per-run project name left
+  # one behind for good. Compose merges service volumes by target, so replacing
+  # the mount instead takes `postgres_data` out of the model entirely: no
+  # external volume to demand, and no throwaway volume to leak. Stage 2 replaces
+  # this same target with its own example_postgres_data in
+  # docker-compose.demo.yml.
+  postgres:
+    volumes:
+      - type: tmpfs
+        target: /var/lib/postgresql/data
