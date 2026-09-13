@@ -5,7 +5,7 @@ log event on success or failure. Consumed by TrackedTaskFailureRateRule
 in serving.observability.alert_rules.
 
 Use this for any background work where the caller doesn't await the
-result (DB writes, telemetry, dual-write shadows). The naked
+result (DB writes, telemetry, cost increments). The naked
 ``asyncio.ensure_future`` / ``asyncio.create_task`` patterns are
 permitted only for tasks whose completion is otherwise observable
 (e.g., the AlertEngine drain task).
@@ -32,7 +32,7 @@ def tracked_task(coro: Awaitable[None], *, name: str) -> asyncio.Task[None]:
 
     The ``name`` becomes the dimension key for the alert rule —
     use a short, stable identifier (e.g., "request_log", "cost_increment",
-    "dual_write_shadow"). Returns the wrapping task; callers normally
+    "embedding_cost_increment"). Returns the wrapping task; callers normally
     discard the return value.
     """
 
