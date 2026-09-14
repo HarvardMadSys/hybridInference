@@ -214,6 +214,27 @@ def test_local_backend_owns_only_observations_inside_its_declared_scope() -> Non
 
 
 @pytest.mark.unit
+def test_local_backend_resolves_a_provider_scope_to_the_endpoints_it_serves() -> None:
+    """The declared range and the feedback attribution must agree.
+
+    A provider label is a legal scope entry, but an observation names a
+    canonical endpoint id, so the backend indexes its own route table to bridge
+    the two. Without that, a request whose dispatch record was evicted would
+    lose its feedback.
+    """
+    local = _adapter(_LOCAL_ENDPOINT, provider="local-service")
+    backend = LocalBackend(
+        _route_table(local),
+        endpoint_scope={"local-service"},
+        model_scope={_MODEL_ID},
+    )
+
+    assert backend.adapter_in_scope(local)
+    assert backend.owns_observation(_observation(_LOCAL_ENDPOINT))
+    assert not backend.owns_observation(_observation(_CLOUD_ENDPOINT))
+
+
+@pytest.mark.unit
 def test_local_backend_without_a_scope_claims_every_endpoint() -> None:
     # An undeclared scope is the single-domain default; the hybrid router keeps
     # its dispatch record for the ambiguous case.

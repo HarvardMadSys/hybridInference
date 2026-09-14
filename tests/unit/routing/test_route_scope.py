@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from routing.route_scope import (
+    ObservationScope,
     RouteScopeView,
     adapter_in_endpoint_scope,
     endpoint_ids_in_view,
@@ -58,6 +59,50 @@ def test_adapter_in_endpoint_scope_selects_nothing_when_scope_is_empty() -> None
 
     assert not adapter_in_endpoint_scope(adapter, frozenset())
     assert not adapter_in_endpoint_scope(adapter, set())
+
+
+@pytest.mark.unit
+def test_observation_scope_resolves_a_provider_label_to_its_endpoints() -> None:
+    """An observation carries an endpoint id, not the provider label.
+
+    Declaring a provider must therefore claim the canonical endpoints that
+    provider serves once they are indexed -- otherwise the declared range and
+    the feedback attribution disagree.
+    """
+    local = _adapter("model:local-12003", provider="local-service")
+    other = _adapter("model:zai-api", provider="zai")
+
+    scope = ObservationScope({"local-service"}, adapters=(local, other))
+
+    assert scope.includes_endpoint("model:local-12003")
+    assert not scope.includes_endpoint("model:zai-api")
+
+
+@pytest.mark.unit
+def test_observation_scope_admits_an_unindexed_endpoint_only_by_explicit_id() -> None:
+    scope = ObservationScope({"local-service", "model:cloud-api"}, adapters=())
+
+    assert scope.includes_endpoint("model:cloud-api")
+    assert not scope.includes_endpoint("model:unknown-api")
+
+
+@pytest.mark.unit
+def test_observation_scope_without_a_declaration_claims_every_endpoint() -> None:
+    scope = ObservationScope(None)
+
+    assert scope.is_declared() is False
+    assert scope.includes_endpoint("anything-at-all")
+
+
+@pytest.mark.unit
+def test_observation_scope_indexes_adapters_seen_after_construction() -> None:
+    scope = ObservationScope({"local-service"})
+
+    assert not scope.includes_endpoint("model:local-12003")
+
+    scope.prime((_adapter("model:local-12003", provider="local-service"),))
+
+    assert scope.includes_endpoint("model:local-12003")
 
 
 @pytest.mark.unit

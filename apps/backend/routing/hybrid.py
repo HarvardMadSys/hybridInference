@@ -179,11 +179,21 @@ class HybridRouter:
         decisions[request_id] = backend_name
 
     def _resolve_feedback_backend(self, obs: RoutingObservation) -> str | None:
-        """Return the one backend that served ``obs``, or None if unsettled."""
+        """Return the one backend that served ``obs``, or None if unsettled.
+
+        The dispatch record outlives every non-terminal sample because one
+        request emits several: the completions logger reports each failed
+        attempt with ``terminal=False`` before the final ``terminal=True``
+        result. Consuming the record on the first of those would leave the
+        terminal result unattributable, so it is dropped only once the request
+        concludes -- or by the bounded eviction that keeps the map finite.
+        """
         request_id = getattr(obs, "request_id", None)
         if isinstance(request_id, str) and request_id:
-            recorded = self._backend_decisions.pop(request_id, None)
+            recorded = self._backend_decisions.get(request_id)
             if recorded is not None:
+                if getattr(obs, "terminal", True):
+                    self._backend_decisions.pop(request_id, None)
                 return recorded
         owners = [
             backend_name
@@ -280,6 +290,10 @@ class HybridRouter:
         backend, or to two, is dropped rather than broadcast: a duplicated
         sample corrupts the online state of a backend that never served the
         request, which is worse than a missing one.
+
+        One request produces several observations -- per-attempt failures carry
+        ``terminal=False`` -- so the dispatch record is only consumed by the
+        terminal one.
         """
         backend_name = self._resolve_feedback_backend(obs)
         if backend_name is None:

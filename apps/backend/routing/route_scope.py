@@ -25,7 +25,7 @@ from routing.endpoints import endpoint_id_for_adapter
 from routing.route_table import EffectiveRoute, RouteTableView
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable, Collection, Iterable
 
     from serving.adapters.base import BaseAdapter
 
@@ -47,16 +47,33 @@ class ObservationScope:
     circuit breaker currently excludes is still this backend's own endpoint, so
     its feedback must land here rather than being broadcast.
 
+    A scope entry may be a canonical endpoint id (``{model}:{location}``) or a
+    provider label. The provider case needs an endpoint-to-provider index,
+    because an observation carries only the canonical endpoint id: declaring
+    ``{"local-service"}`` must claim ``combo-model:local-12003`` once that
+    endpoint is known to belong to ``local-service``. Pass the adapters this
+    backend serves to build the index up front; entries stay unresolved (and so
+    unmatched) until an adapter for that endpoint has been seen.
+
     ``None`` means the backend declares no scope and claims every endpoint.
     That is correct for a backend that is the only one in its composition, and
     wrong for a hybrid one -- two always-claiming backends cannot be told apart
     from an observation alone. Prefer passing the explicit set.
     """
 
-    __slots__ = ("_endpoints",)
+    __slots__ = ("_endpoint_providers", "_endpoints", "_providers")
 
-    def __init__(self, endpoint_scope: Collection[str] | None = None) -> None:
+    def __init__(
+        self,
+        endpoint_scope: Collection[str] | None = None,
+        *,
+        adapters: Iterable[BaseAdapter] = (),
+    ) -> None:
         self._endpoints = frozenset(endpoint_scope) if endpoint_scope is not None else None
+        self._providers: frozenset[str] = frozenset()
+        self._endpoint_providers: dict[str, str] = {}
+        if self._endpoints is not None:
+            self._index_adapters(adapters)
 
     @property
     def endpoint_scope(self) -> frozenset[str] | None:
@@ -67,20 +84,47 @@ class ObservationScope:
         """Return whether this scope narrows anything at all."""
         return self._endpoints is not None
 
+    def prime(self, adapters: Iterable[BaseAdapter]) -> None:
+        """Index adapters so provider entries can resolve to endpoint ids."""
+        if self._endpoints is not None:
+            self._index_adapters(adapters)
+
     def includes_adapter(self, adapter: BaseAdapter) -> bool:
         """Return whether ``adapter`` is inside the scope."""
         if self._endpoints is None:
             return True
-        return (
-            endpoint_id_for_adapter(adapter) in self._endpoints
-            or getattr(adapter.config, "provider", None) in self._endpoints
-        )
+        provider = getattr(adapter.config, "provider", None)
+        if isinstance(provider, str):
+            self._endpoint_providers[endpoint_id_for_adapter(adapter)] = provider
+        return self.includes_endpoint(endpoint_id_for_adapter(adapter))
 
     def includes_endpoint(self, endpoint_id: str) -> bool:
-        """Return whether an endpoint id is inside the scope."""
-        if self._endpoints is None:
+        """Return whether an endpoint id is inside the scope.
+
+        An explicit entry matches by id. A provider entry matches once this
+        endpoint has been indexed as belonging to that provider; an endpoint
+        nothing has indexed stays outside the scope rather than being claimed
+        by a backend that may not serve it.
+        """
+        endpoints = self._endpoints
+        if endpoints is None:
             return True
-        return endpoint_id in self._endpoints
+        if endpoint_id in endpoints:
+            return True
+        provider = self._endpoint_providers.get(endpoint_id)
+        return provider is not None and provider in self._providers
+
+    def _index_adapters(self, adapters: Iterable[BaseAdapter]) -> None:
+        """Record which endpoint ids each declared provider label covers."""
+        for adapter in adapters:
+            endpoint_id = endpoint_id_for_adapter(adapter)
+            provider = getattr(adapter.config, "provider", None)
+            if isinstance(provider, str):
+                self._endpoint_providers[endpoint_id] = provider
+        known_providers = set(self._endpoint_providers.values())
+        self._providers = frozenset(
+            entry for entry in self._endpoints or () if entry in known_providers
+        )
 
 
 def adapter_in_endpoint_scope(
@@ -92,10 +136,17 @@ def adapter_in_endpoint_scope(
     The set holds canonical endpoint ids (``{model}:{location}``) and provider
     labels. An empty set selects nothing: a backend whose range nobody declared
     must not silently fall back to the whole fleet.
+
+    Matching an adapter directly is what makes a provider entry usable at all;
+    :class:`ObservationScope` needs the adapter-derived index instead because an
+    observation names only an endpoint id.
     """
     if not endpoint_scope:
         return False
-    return ObservationScope(endpoint_scope).includes_adapter(adapter)
+    return (
+        endpoint_id_for_adapter(adapter) in endpoint_scope
+        or getattr(adapter.config, "provider", None) in endpoint_scope
+    )
 
 
 def endpoint_ids_in_view(view: RouteTableView) -> frozenset[str]:

@@ -184,15 +184,22 @@ class _CountingBackend:
         return True
 
 
-def _observation(endpoint_id: str, *, request_id: str | None = None) -> RoutingObservation:
+def _observation(
+    endpoint_id: str,
+    *,
+    request_id: str | None = None,
+    terminal: bool = True,
+    success: bool = True,
+) -> RoutingObservation:
     return RoutingObservation(
         model_id=_MODEL_ID,
         endpoint_id=endpoint_id,
         ttft_ms=10.0,
         total_latency_ms=30.0,
         token_count=4,
-        success=True,
+        success=success,
         request_id=request_id,
+        terminal=terminal,
     )
 
 
@@ -589,6 +596,49 @@ def test_ambiguous_feedback_without_a_dispatch_record_is_dropped() -> None:
 
     assert local.observations == []
     assert cloud.observations == []
+
+
+@pytest.mark.unit
+def test_nonterminal_attempt_feedback_does_not_consume_the_dispatch_record() -> None:
+    """One request emits several observations, and only the last is terminal.
+
+    The completions logger reports every failed attempt with ``terminal=False``
+    before the final ``terminal=True`` result, all under one request id. If the
+    first of those consumed the record, the terminal result would lose its
+    attribution against a second backend that also claims the endpoint.
+    """
+    local = _CountingBackend("local", owns=True)
+    cloud = _CountingBackend("cloud", owns=True)
+    router = _hybrid(policy=_ForceBackend("cloud"), local=local, cloud=cloud)
+    router.select_backend_name(_MODEL_ID, _MESSAGES, request_id="fallback-request")
+
+    failed_endpoint = f"{_MODEL_ID}:primary-api"
+    router.record_observation(
+        _observation(failed_endpoint, request_id="fallback-request", terminal=False, success=False)
+    )
+    router.record_observation(_observation(_SHARED_ENDPOINT, request_id="fallback-request"))
+
+    assert cloud.observations == [failed_endpoint, _SHARED_ENDPOINT]
+    assert local.observations == []
+
+
+@pytest.mark.unit
+def test_terminal_feedback_releases_the_dispatch_record() -> None:
+    """After the terminal result the record is gone, so the map stays bounded."""
+    local = _CountingBackend("local", owns=True)
+    cloud = _CountingBackend("cloud", owns=True)
+    router = _hybrid(policy=_ForceBackend("cloud"), local=local, cloud=cloud)
+    router.select_backend_name(_MODEL_ID, _MESSAGES, request_id="release-request")
+
+    router.record_observation(_observation(_SHARED_ENDPOINT, request_id="release-request"))
+    assert cloud.observations == [_SHARED_ENDPOINT]
+
+    # The record is released, so a late duplicate is no longer attributable to
+    # a side and is dropped instead of being counted twice.
+    router.record_observation(_observation(_SHARED_ENDPOINT, request_id="release-request"))
+
+    assert cloud.observations == [_SHARED_ENDPOINT]
+    assert local.observations == []
 
 
 @pytest.mark.unit

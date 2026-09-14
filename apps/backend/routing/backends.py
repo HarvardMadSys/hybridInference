@@ -62,6 +62,23 @@ _REQUIRED_ROUTER_METHODS = (
 )
 
 
+def _adapters_in_router(router: Any) -> tuple[Any, ...]:
+    """Return every adapter the wrapped router currently routes to.
+
+    Read through the optional ``RouteTableView`` capability, so a router that
+    does not expose a route table simply contributes no index entries instead
+    of failing construction.
+    """
+    iterate = getattr(router, "iter_effective_routes", None)
+    if not callable(iterate):
+        return ()
+    try:
+        routes = iterate()
+    except Exception:  # pragma: no cover - a router with an unusable view
+        return ()
+    return tuple(adapter for route in routes for adapter, _weight in route.adapters)
+
+
 @runtime_checkable
 class RoutingBackend(Protocol):
     """One execution domain a hybrid router can delegate a request to.
@@ -291,8 +308,16 @@ class LocalBackend(RoutingBackendBase):
         manage_lifecycle: bool = False,
     ) -> None:
         super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
-        self._observation_scope = ObservationScope(endpoint_scope)
         self._model_scope = frozenset(model_scope) if model_scope is not None else None
+        # Seed the provider index from the wrapped router's own route table so a
+        # provider-label scope resolves to the endpoint ids that provider
+        # actually serves. Without this, declaring {"local-service"} would only
+        # match an observation that carried the label itself, and the canonical
+        # endpoint id an observation really carries would look out of scope.
+        self._observation_scope = ObservationScope(
+            endpoint_scope,
+            adapters=_adapters_in_router(router),
+        )
 
     @property
     def endpoint_scope(self) -> frozenset[str] | None:
@@ -314,6 +339,13 @@ class LocalBackend(RoutingBackendBase):
     def adapter_in_scope(self, adapter: Any) -> bool:
         """Return whether ``adapter`` is inside the declared local range."""
         return self._observation_scope.includes_adapter(adapter)
+
+    def refresh_route_table(self) -> None:
+        """Delegate the refresh and re-index the endpoints it may have changed."""
+        refresh = getattr(self._router, "refresh_route_table", None)
+        if callable(refresh):
+            refresh()
+        self._observation_scope.prime(_adapters_in_router(self._router))
 
 
 class RouteWiseCloudBackend(RoutingBackendBase):
