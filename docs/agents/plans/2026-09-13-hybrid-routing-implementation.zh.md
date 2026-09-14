@@ -12,7 +12,7 @@
 - HybridRouter 是公共路由抽象的设计名称，代码以现有 RouterProtocol 为唯一公共契约，不新增重复接口。
 - FixedRouter / RouteWiseRouter 是同层实现，各自保留决策、重试及状态流程。现有具体 `routing.hybrid.HybridRouter` 是组合实现，不是公共抽象本身。
 - 不要求独立提取 RouteWisePolicy，不要求把 RouteWise 接入现有具体组合 Router。它由 Registry 直接返回可以满足统一抽象。
-- Router 决定目标及失败后怎么办；Backend 执行指定 endpoint，不自行重选或跨目标 fallback。
+- Router 决定目标及失败后怎么办。Backend 分两种角色：`LeafBackend` 只执行绑定的那一个 endpoint（要求被包装 Router 声明 `supports_exact_dispatch`），`TreeBackend` 是路由子树入口、把请求委托给范围受限的内部 Router；`LocalBackend` / `CloudBackend` 属于后者。指令显式区分 `ExecuteEndpoint` 与 `DelegatePool`，不匹配的指令在 I/O 前按组合错误拒绝。
 - 沿用模型配置、默认策略、Registry 缓存、别名和 Admin 切换；不新增请求级策略选择。
 - 保留 Fixed / RouteWise 行为与 RouteWise 全池候选，包括显式 concurrency 的 local；继续复用 adapter、共享状态和 library。
 - 不新增本地资源管理、队列、预测器或 Greedy / Nimbus，不增加“Fixed 分域 + RouteWise 云内选择”的默认路径。

@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from routing.backends import FixedCloudBackend, LeafBackend, LocalBackend, TreeBackend
+from routing.backends import (
+    FixedCloudBackend,
+    LeafBackend,
+    LocalBackend,
+    RouteWiseCloudBackend,
+    TreeBackend,
+)
 from routing.decisions import FallbackAttempt, RoutingDecision, RoutingTarget
 from routing.dispatch import (
     DelegatePool,
@@ -300,6 +306,9 @@ async def test_a_leaf_sends_a_binding_instruction_to_its_router() -> None:
 
     class _OptionsRecorder:
         name = "recorder"
+        # Declares the capability a leaf requires; this double exists to assert
+        # what a capable router is sent.
+        supports_exact_dispatch = True
 
         def __init__(self) -> None:
             self.seen: list[RoutingRequestOptions | None] = []
@@ -450,6 +459,196 @@ def test_a_caller_scope_can_narrow_a_pool_but_never_widen_it() -> None:
     )
     assert widened is not None
     assert widened.endpoint_scope == frozenset({_LOCAL_ENDPOINT})
+
+
+# ---------------------------------------------------------------------------
+# A leaf's binding, against routers and ranges it does not control
+# ---------------------------------------------------------------------------
+
+
+class _IncapableRouter:
+    """A router that declares no exact-dispatch capability."""
+
+    name = "incapable"
+
+    async def chat_completion(self, model_id: str, messages: Any, **kwargs: Any) -> Any:
+        return {}
+
+    def stream_chat_completion(self, model_id: str, messages: Any, **kwargs: Any) -> Any:
+        return None
+
+    def record_observation(self, obs: Any) -> None:
+        pass
+
+    def get_provider_status(self) -> dict[str, Any]:
+        return {}
+
+
+@pytest.mark.unit
+def test_a_leaf_refuses_a_router_that_cannot_dispatch_exactly() -> None:
+    """The controls a leaf sends are a request, and it requires them to be honored.
+
+    Handing them to a router that ignores them would dispatch to an endpoint
+    nobody asked for, so the leaf refuses at construction instead of accepting a
+    binding it cannot keep.
+    """
+    with pytest.raises(DispatchMismatchError, match="does not declare supports_exact_dispatch"):
+        LeafBackend(_IncapableRouter(), endpoint_id=_LOCAL_ENDPOINT, model_id=_MODEL_ID)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_leaf_never_widens_the_range_the_caller_granted() -> None:
+    """A caller that excluded this endpoint is not overruled by the binding."""
+    bound = _adapter(_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL)
+    leaf = LeafBackend(_shared_router(bound), endpoint_id=_LOCAL_ENDPOINT, model_id=_MODEL_ID)
+
+    with pytest.raises(DispatchMismatchError, match="outside the range the caller granted"):
+        await leaf.chat_completion(
+            _MODEL_ID,
+            _MESSAGES,
+            routing_options=RoutingRequestOptions(endpoint_scope=frozenset({_CLOUD_ENDPOINT})),
+        )
+
+    assert bound.chat_calls == 0, "the excluded endpoint was dispatched anyway"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_leaf_accepts_a_label_range_that_covers_its_binding() -> None:
+    """A provider label is the same grant as the endpoints it resolves to."""
+    bound = _adapter(_LOCAL_ENDPOINT, provider="owned", base_url=_LOCAL_URL)
+    leaf = LeafBackend(_shared_router(bound), endpoint_id=_LOCAL_ENDPOINT, model_id=_MODEL_ID)
+
+    await leaf.chat_completion(
+        _MODEL_ID,
+        _MESSAGES,
+        routing_options=RoutingRequestOptions(endpoint_scope=frozenset({"owned"})),
+    )
+
+    assert bound.chat_calls == 1
+
+
+@pytest.mark.unit
+def test_a_label_range_accepts_an_exact_binding_it_covers() -> None:
+    """A pool declared by provider label must not reject its own endpoints.
+
+    Comparing the binding's endpoint id against raw label entries reads a
+    legitimate range as disjoint, which silently breaks the fallback that named
+    it.
+    """
+    cloud = _adapter(_CLOUD_ENDPOINT, provider="cloud-provider", base_url="https://a.example/v1")
+    pool = FixedCloudBackend(
+        _shared_router(cloud),
+        endpoint_scope={"cloud-provider"},
+        model_scope={_MODEL_ID},
+    )
+
+    check_dispatch(
+        pool,
+        ExecuteEndpoint(EndpointBinding(endpoint_id=_CLOUD_ENDPOINT, model_id=_MODEL_ID)),
+        _MODEL_ID,
+    )
+
+
+def _routewise_pool(*adapters: _RecordingAdapter) -> RouteWiseCloudBackend:
+    """Build a scoped RouteWise wrapper over ``adapters``."""
+    from routing.routewise.config import RouteWiseConfig
+    from routing.routewise.router import RouteWiseRouter
+
+    table = _shared_router(*adapters)
+    return RouteWiseCloudBackend(
+        RouteWiseRouter(
+            route_table=table,
+            config=RouteWiseConfig(budget_alpha=0.0, random_seed=0, routewise_probe_enabled=False),
+        ),
+        table=table,
+        endpoint_scope={endpoint_id_for_adapter(adapter) for adapter in adapters},
+        model_scope={_MODEL_ID},
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_narrowed_caller_range_reaches_a_routewise_pool(streaming: bool) -> None:
+    """A pool's own router consumes the narrowed range, not just the wrapper.
+
+    Computing an intersection the sub-router then ignores would let a request be
+    served by an endpoint the caller excluded. The decision is made over the
+    candidate set, so the range has to reach it -- passing it along in the
+    request options is not enough on its own.
+    """
+    expensive = _adapter(_CLOUD_ENDPOINT, provider="expensive", base_url="https://a.example/v1")
+    cheap = _adapter(f"{_MODEL_ID}:cloud-b", provider="cheap", base_url="https://b.example/v1")
+    pool = _routewise_pool(expensive, cheap)
+
+    options = RoutingRequestOptions(endpoint_scope=frozenset({_CLOUD_ENDPOINT}))
+    if streaming:
+        chunks = [
+            chunk
+            async for chunk in pool.stream_chat_completion(
+                _MODEL_ID, _MESSAGES, routing_options=options
+            )
+        ]
+        assert chunks
+    else:
+        await pool.chat_completion(_MODEL_ID, _MESSAGES, routing_options=options)
+
+    assert expensive.chat_calls + expensive.stream_calls == 1
+    assert cheap.chat_calls + cheap.stream_calls == 0, (
+        "the sub-router served an endpoint the caller excluded"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_composition_error_is_not_recorded_as_a_failed_attempt() -> None:
+    """An empty pool is a composition mistake, not an upstream failure to retry.
+
+    Recording it would report a provider fault for an endpoint nothing was ever
+    sent to, and falling through would let the request be served by a backend the
+    composition never chose for it.
+    """
+    local_adapter = _adapter(_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL)
+    cloud_adapter = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    shared = _shared_router(local_adapter, cloud_adapter)
+    router = HybridRouter(
+        policy=_DomainOnlyPolicy(),
+        local=LocalBackend(shared, endpoint_scope=set(), model_scope={_MODEL_ID}, name="local"),
+        cloud=FixedCloudBackend(shared, endpoint_scope={_CLOUD_ENDPOINT}, model_scope={_MODEL_ID}),
+    )
+
+    with pytest.raises(DispatchMismatchError):
+        await router.chat_completion(_MODEL_ID, _MESSAGES, request_id="empty-pool")
+
+    assert local_adapter.chat_calls == 0
+    assert cloud_adapter.chat_calls == 0, "the request fell through to another backend"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_composition_error_propagates_from_the_streaming_path_too() -> None:
+    """Both request paths dispose of a composition error the same way."""
+    local_adapter = _adapter(_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL)
+    cloud_adapter = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    shared = _shared_router(local_adapter, cloud_adapter)
+    router = HybridRouter(
+        policy=_DomainOnlyPolicy(),
+        local=LocalBackend(shared, endpoint_scope=set(), model_scope={_MODEL_ID}, name="local"),
+        cloud=FixedCloudBackend(shared, endpoint_scope={_CLOUD_ENDPOINT}, model_scope={_MODEL_ID}),
+    )
+
+    with pytest.raises(DispatchMismatchError):
+        _ = [
+            chunk
+            async for chunk in router.stream_chat_completion(
+                _MODEL_ID, _MESSAGES, request_id="empty-pool-stream"
+            )
+        ]
+
+    assert local_adapter.stream_calls == 0
+    assert cloud_adapter.stream_calls == 0
 
 
 # ---------------------------------------------------------------------------

@@ -50,6 +50,7 @@ from routing.dispatch import (
     DelegatePool,
     DispatchMismatchError,
     ExecuteEndpoint,
+    supports_exact_dispatch,
 )
 from routing.endpoints import endpoint_id_for_adapter
 from routing.protocols import RoutingRequestOptions
@@ -354,6 +355,21 @@ class RoutingBackendBase:
         """
         return None
 
+    def scope_endpoints(self, scope: Collection[str]) -> frozenset[str]:
+        """Expand a declared range into the canonical endpoints it resolves to.
+
+        A range may name canonical endpoint ids, provider labels, or both. Every
+        range comparison in this module goes through here first, because
+        comparing an endpoint id against raw entries rejects a provider label
+        that legitimately covers it -- the same range expressed two ways would
+        read as disjoint.
+        """
+        return frozenset(
+            endpoint_id_for_adapter(adapter)
+            for adapter in _adapters_in_router(self._router)
+            if adapter_in_endpoint_scope(adapter, scope)
+        )
+
     def record_observation(self, obs: RoutingObservation) -> None:
         """Forward feedback to the wrapped router."""
         self._router.record_observation(obs)
@@ -440,6 +456,12 @@ class LeafBackend(RoutingBackendBase):
     ) -> None:
         if not endpoint_id:
             raise ValueError("LeafBackend requires a non-empty endpoint_id")
+        if not supports_exact_dispatch(router):
+            raise DispatchMismatchError(
+                f"LeafBackend executes exactly one endpoint, which requires a router that "
+                f"honors an exact dispatch; {type(router).__name__} does not declare "
+                f"supports_exact_dispatch. Wrap a router that does, or adapt this one first."
+            )
         super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
         self._endpoint_id = endpoint_id
         self._model_id = model_id
@@ -518,6 +540,15 @@ class LeafBackend(RoutingBackendBase):
         ``allow_fallback`` forbids it walking the route after a failure. Together
         they are what makes the instruction binding rather than advisory.
         """
+        imposed = routing_options.endpoint_scope if routing_options is not None else None
+        if imposed is not None and self._endpoint_id not in self.scope_endpoints(imposed):
+            # A child scope narrows its parent's grant and never widens it. The
+            # caller has already said which endpoints are usable; dispatching the
+            # binding anyway would serve one it excluded.
+            raise DispatchMismatchError(
+                f"{type(self).__name__} {self.name!r} is bound to {self._endpoint_id!r}, "
+                f"which is outside the range the caller granted ({sorted(imposed)})"
+            )
         if routing_options is None:
             return RoutingRequestOptions(
                 preferred_endpoint_id=self._endpoint_id,
@@ -631,10 +662,13 @@ class TreeBackend(RoutingBackendBase):
         scope = self.dispatch_scope(model_id)
         if scope is None:
             return
+        # Both sides normalized to canonical endpoints first: the declared range
+        # may be expressed as provider labels, and the binding names an endpoint.
+        allowed = self.scope_endpoints(scope)
         bound = instruction.binding.endpoint_id
-        if bound not in scope:
+        if bound not in allowed:
             raise DispatchMismatchError(
-                f"{type(self).__name__} {self.name!r} may dispatch inside {sorted(scope)} "
+                f"{type(self).__name__} {self.name!r} may dispatch inside {sorted(allowed)} "
                 f"and was asked to execute {bound!r}"
             )
 
@@ -658,11 +692,12 @@ class TreeBackend(RoutingBackendBase):
         declared = self.dispatch_scope(model_id)
         if declared is None:
             return routing_options
+        allowed = self.scope_endpoints(declared)
         imposed = routing_options.endpoint_scope if routing_options is not None else None
-        effective = declared if imposed is None else (imposed & declared)
+        effective = allowed if imposed is None else (self.scope_endpoints(imposed) & allowed)
         if not effective:
             raise DispatchMismatchError(
-                f"{type(self).__name__} {self.name!r} may dispatch inside {sorted(declared)} "
+                f"{type(self).__name__} {self.name!r} may dispatch inside {sorted(allowed)} "
                 f"and was restricted to {sorted(imposed or ())}"
             )
         if routing_options is None:

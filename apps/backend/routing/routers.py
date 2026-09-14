@@ -384,6 +384,16 @@ class FixedRouter:
             weighted-random selection over ``routes`` is unchanged.
     """
 
+    #: Declares that this router honors an exact dispatch: ``require_target``
+    #: makes ``preferred_endpoint_id`` binding instead of substitutable, and
+    #: ``allow_fallback=False`` stops it walking the rest of the route. A leaf
+    #: backend requires this declaration rather than assuming it, so a router
+    #: that would ignore the controls is refused instead of silently answering
+    #: from an endpoint nobody asked for.
+    supports_exact_dispatch = True
+    #: Declares that ``endpoint_scope`` bounds selection *and* fallback here.
+    supports_endpoint_scope = True
+
     def __init__(
         self,
         params: Any = None,

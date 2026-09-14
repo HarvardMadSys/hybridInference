@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
+from routing.route_scope import adapter_in_endpoint_scope
 from routing.routers import AllCircuitsOpenError, adapter_supports_modalities
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
@@ -399,6 +400,15 @@ class RouteWiseRouter:
     router only changes the selection policy for models configured with
     ``router: routewise``.
     """
+
+    #: See ``FixedRouter.supports_exact_dispatch``. RouteWise honors both
+    #: controls at its feasible-set boundary: an exact dispatch restricts the
+    #: candidates to the one endpoint it named, and ``endpoint_scope`` restricts
+    #: them to the range the caller granted. Both are opt-in, so a request that
+    #: sets neither -- every existing ``router: routewise`` request -- is decided
+    #: over the full pool exactly as before.
+    supports_exact_dispatch = True
+    supports_endpoint_scope = True
 
     def __init__(
         self,
@@ -1589,6 +1599,11 @@ class RouteWiseRouter:
             context.get("required_modalities", frozenset()) if context is not None else frozenset()
         )
         has_modality_match = not required_modalities
+        # The caller's restriction, when it expressed one. Checked after the
+        # modality filter so an empty result is reported as "nothing feasible"
+        # rather than as a modality mismatch it is not.
+        endpoint_scope = context.get("endpoint_scope") if context is not None else None
+        required_endpoint_id = context.get("required_endpoint_id") if context is not None else None
 
         for route_candidate in entries:
             adapter = route_candidate.adapter
@@ -1596,6 +1611,14 @@ class RouteWiseRouter:
                 continue
             has_modality_match = True
             endpoint_id = route_candidate.endpoint_id
+            if required_endpoint_id is not None and endpoint_id != required_endpoint_id:
+                # An exact dispatch: this endpoint and no other, so the solve
+                # never sees a candidate it was forbidden to use.
+                continue
+            if endpoint_scope is not None and not adapter_in_endpoint_scope(
+                adapter, endpoint_scope
+            ):
+                continue
             self._health_registry.ensure(endpoint_id)
             # A query, not a commit: this loop builds the feasible set and the
             # solver picks from it later, so the probe claim belongs to
@@ -2937,6 +2960,20 @@ class RouteWiseRouter:
             "required_modalities": (
                 routing_options.required_modalities if routing_options is not None else frozenset()
             ),
+            # A caller that owns the candidate order narrows this decision before
+            # it is made. ``endpoint_scope`` is the range it granted (endpoint ids
+            # and/or provider labels) and ``required_endpoint_id`` is the one
+            # endpoint an exact dispatch committed to. Both unset -- which is what
+            # every existing ``router: routewise`` request does -- leaves the
+            # decision over the full candidate pool exactly as before.
+            "endpoint_scope": (
+                routing_options.endpoint_scope if routing_options is not None else None
+            ),
+            "required_endpoint_id": (
+                routing_options.preferred_endpoint_id
+                if routing_options is not None and routing_options.require_target
+                else None
+            ),
         }
         trace = RoutingTrace(request_id=str(request_id))
         decision: RoutingDecision | None = None
@@ -3039,6 +3076,20 @@ class RouteWiseRouter:
             "request_id": request_id,
             "required_modalities": (
                 routing_options.required_modalities if routing_options is not None else frozenset()
+            ),
+            # A caller that owns the candidate order narrows this decision before
+            # it is made. ``endpoint_scope`` is the range it granted (endpoint ids
+            # and/or provider labels) and ``required_endpoint_id`` is the one
+            # endpoint an exact dispatch committed to. Both unset -- which is what
+            # every existing ``router: routewise`` request does -- leaves the
+            # decision over the full candidate pool exactly as before.
+            "endpoint_scope": (
+                routing_options.endpoint_scope if routing_options is not None else None
+            ),
+            "required_endpoint_id": (
+                routing_options.preferred_endpoint_id
+                if routing_options is not None and routing_options.require_target
+                else None
             ),
         }
         trace = RoutingTrace(request_id=str(request_id))

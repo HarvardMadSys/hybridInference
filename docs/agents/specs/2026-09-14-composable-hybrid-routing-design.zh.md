@@ -149,7 +149,13 @@ BackendDispatch = ExecuteEndpoint | DelegatePool
 
 `EndpointBinding` 表示已解析的 endpoint id、实际 Adapter 及适用的路由快照/版本；不只是在派发时重新查表的字符串。对应 attempt 另外持有已经取得的预留。`DelegatePool.pool_id` 必须匹配 Backend 的声明范围，并与模型、模态、调用方约束取交集。
 
-LeafBackend 只接受 ExecuteEndpoint，TreeBackend 只接受 DelegatePool；构建器或派发入口在产生上游 I/O 前拒绝不匹配的指令。若父 Router 已经选定具体 endpoint，就走 LeafBackend 派发，不再调用子 Router 重新选一次。
+LeafBackend 只接受它绑定的那一个 ExecuteEndpoint，并在构造时要求被包装的 Router 声明支持精确派发（`supports_exact_dispatch`）；不声明的 Router 在构建阶段被拒绝，而不是接受之后忽略约束。
+
+TreeBackend **以 DelegatePool 为主**：委托给它的池由内部 Router 选路。它还接受**落在自己声明范围内**的 ExecuteEndpoint，这是保留旧包装精确派发的兼容能力，不是角色互斥的例外：越界绑定同样在 I/O 前拒绝。两种角色的严格互斥是目标，当前对 TreeBackend 保留这一条兼容路径，已由 `TreeBackend.check_instruction` 与测试锁定。
+
+派发入口在产生上游 I/O 前拒绝不匹配的指令。若父 Router 已经选定具体 endpoint，就走 LeafBackend 派发，不再调用子 Router 重新选一次。组合错误（不匹配指令、空范围）不计入 attempt、不产生 provider 故障样本、不触发自动 fallback，普通与流式两条路径一致。
+
+范围在比较和求交之前**统一规范化为当前模型的 canonical endpoint 集合**：声明范围与绑定可能分别用 provider 标签和 endpoint id 表达，直接对两者做字符串集合运算会把同一个有效范围误判为空。窄于池声明范围的调用方范围必须传到子 Router 的候选集合，而不只是放在请求选项里。
 
 ### 4.2 共同上下文
 

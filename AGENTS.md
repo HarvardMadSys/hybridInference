@@ -110,14 +110,20 @@ For the full diagram (network layer, observability, storage), see
   `router: routewise` directly returns RouteWiseRouter. Returning a concrete
   implementation through the common contract is valid; it does not by itself
   prove that the target backend execution boundary is wired.
-- **Backend** — [backends.py](apps/backend/routing/backends.py) provides local
-  and cloud execution domains. In the target design, the router selects a
-  canonical endpoint and coordinates subsequent attempts; a backend executes
-  that endpoint through existing adapters, without resampling or cross-endpoint
-  fallback. Existing wrappers still delegate to full routers and permit broader
-  selection behavior: preserve their compatibility contracts while introducing
-  the strict dispatch boundary. Do not describe those wrappers as the completed
-  target or duplicate adapter implementations and shared state.
+- **Backend** — [backends.py](apps/backend/routing/backends.py) provides callable
+  inference capability in one of two roles. A `LeafBackend` executes the single
+  endpoint it is bound to: no resampling, no cross-endpoint fallback, and it
+  requires the wrapped router to declare `supports_exact_dispatch` because
+  requesting the controls is not the same as having them honored. A
+  `TreeBackend` is the entry to a routing subtree and delegates to a scoped
+  internal router; `LocalBackend` and `CloudBackend` are pools in that sense.
+  The instructions are explicit and distinct
+  ([dispatch.py](apps/backend/routing/dispatch.py)): `ExecuteEndpoint` binds one
+  endpoint, `DelegatePool` grants selection inside a named pool, and a mismatch
+  is refused before any upstream I/O as a composition error -- never recorded as
+  an attempted provider. A pool accepts an in-scope `ExecuteEndpoint` as well, as
+  a compatibility capability for the existing wrappers. Neither role duplicates
+  adapter implementations or shared state.
   **Preserve Fixed and RouteWise request behavior.** RouteWise keeps its full
   candidate pool, reservations, re-solving, hedging, learning and lifecycle,
   using `llm_routewise.core` for algorithm primitives. Do not force it through

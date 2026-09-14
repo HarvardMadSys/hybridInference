@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 from routing.decisions import BackendSelection, RoutingDecision, RoutingTarget
 from routing.dispatch import (
+    DispatchMismatchError,
     accepts_delegation,
     backend_pool_id,
     bound_endpoint,
@@ -353,6 +354,13 @@ class HybridRouter:
                     attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
                     errors.append(exc)
                 continue
+            except DispatchMismatchError:
+                # A composition error raised inside the backend, from a range
+                # check the plan could not make on its own. Nothing was sent, so
+                # it must not be recorded as an attempted upstream, and it must
+                # not fall through to a backend the composition never chose for
+                # this request.
+                raise
             except Exception as exc:
                 attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
                 errors.append(exc)
@@ -802,6 +810,10 @@ async def _fallback_stream(
             if not attempt.exact:
                 attempts.append(_attempt_record(attempt.backend, attempt.endpoint_id, exc))
                 errors.append(exc)
+        except DispatchMismatchError:
+            # Same composition error, same disposition as the non-streaming path:
+            # propagate it rather than recording a provider failure or continuing.
+            raise
         except Exception as exc:
             if committed:
                 # The client already holds part of this answer. Restarting on

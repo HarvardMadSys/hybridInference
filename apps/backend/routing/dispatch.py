@@ -51,6 +51,7 @@ __all__ = [
     "bound_endpoint",
     "check_dispatch",
     "dispatch_for_attempt",
+    "supports_exact_dispatch",
 ]
 
 
@@ -170,6 +171,20 @@ def accepts_delegation(backend: Any) -> bool:
     """
     declared = getattr(backend, "accepts_delegation", None)
     return True if declared is None else bool(declared)
+
+
+def supports_exact_dispatch(router: Any) -> bool:
+    """Return whether ``router`` declares that it honors an exact dispatch.
+
+    A leaf cannot verify the claim by reading the code of whatever it was handed,
+    so this is a declaration the router makes and the leaf requires: honoring
+    ``require_target`` means refusing to substitute another endpoint, and
+    honoring ``allow_fallback=False`` means not walking the rest of the route.
+    Requesting those controls from a router that ignores them produces a dispatch
+    to an endpoint nobody asked for, which is exactly the failure the leaf exists
+    to prevent, so the leaf refuses such a router at construction.
+    """
+    return bool(getattr(router, "supports_exact_dispatch", False))
 
 
 def bound_endpoint(backend: Any) -> str | None:
