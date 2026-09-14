@@ -16,6 +16,8 @@ from serving.observability.alerts import (
     _REQUEST_ID_MAX_LEN,
     _RESOLUTION_CONTEXT,
     _RESOLUTION_DETAIL,
+    _SILENT_RESOLUTIONS,
+    _STALE_RETRY_ATTEMPTS,
     _STATE_TRANSITIONS,
     _TRANSITIONS,
     AlertSeverity,
@@ -1280,6 +1282,201 @@ class TestResolutionCarriesIncidentDetail:
         recovery = mock_post.await_args.args[1]
         assert "198.51.100.4 (7)" in recovery
         assert "203.0.113.9 (412)" not in recovery
+
+
+class TestASilencedCloseSaysNothingButStillCloses:
+    """``announce_resolution=False``: no card, and no incident left open either.
+
+    For a rule that only ever observes a transition, going quiet is its normal
+    state rather than a measurement, so every close it can produce would report
+    a recovery nobody observed. Suppressing the card must not reintroduce the
+    problem the tracker exists to solve — a key firing forever, and a ``_bounds``
+    entry per dynamic key — so the close still has to happen, silently.
+    """
+
+    @staticmethod
+    async def _blocked(breached: bool, *, announce: bool = False, **kwargs) -> bool:
+        return await alert_on_transition(
+            key="auth_ip_blocked",
+            breached=breached,
+            severity=AlertSeverity.WARN,
+            title="Auth-failure blocklist refusing a source",
+            context=dict,
+            cooldown_sec=0,
+            announce_resolution=announce,
+            **kwargs,
+        )
+
+    async def test_the_breach_card_is_unaffected(self, monkeypatch):
+        """Only the close is silenced; the page an operator needs still goes."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            fired = await self._blocked(True, kind="state")
+
+        assert fired is True
+        assert "Auth-failure blocklist refusing a source" in mock_post.await_args.args[1]
+
+    async def test_the_resolved_edge_sends_nothing_and_clears_the_tracker(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            await self._blocked(True, kind="state")
+            mock_post.reset_mock()
+            closed = await self._blocked(False, kind="state")
+
+        # Nothing was sent, which is what the return says.
+        mock_post.assert_not_awaited()
+        assert closed is False
+        # And the incident is genuinely over rather than stuck firing.
+        assert not _STATE_TRANSITIONS.is_firing("auth_ip_blocked")
+        assert not _STATE_TRANSITIONS._bounds
+        assert "auth_ip_blocked" not in _PENDING_RESOLUTIONS
+        assert "auth_ip_blocked" not in _SILENT_RESOLUTIONS
+        assert "auth_ip_blocked" not in _RESOLUTION_CONTEXT
+        assert "auth_ip_blocked" not in _RESOLUTION_DETAIL
+
+    async def test_the_stale_sweep_posts_no_no_samples_card(self, monkeypatch):
+        """The sweep is the close this rule would actually reach in production.
+
+        Its traffic stops by construction — one record per blocking transition,
+        and the block outlasts the rule window many times over — so without the
+        opt-out every block would be followed by "Recovered (no recent
+        samples)" while the source was still being refused.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        clock = [1_000.0]
+        monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            await self._blocked(True, stale_after=600.0, now=clock[0])
+            mock_post.reset_mock()
+            clock[0] += 601.0
+            await sweep_stale_breaches()
+
+        mock_post.assert_not_awaited()
+        # Swept means closed: no firing key, and none of the per-key registries
+        # holding an entry a dynamic key would leak.
+        assert not _TRANSITIONS.is_firing("auth_ip_blocked")
+        assert not _TRANSITIONS._bounds
+        assert "auth_ip_blocked" not in _STALE_RETRY_ATTEMPTS
+        assert "auth_ip_blocked" not in _SILENT_RESOLUTIONS
+        assert "auth_ip_blocked" not in _RESOLUTION_CONTEXT
+        assert "auth_ip_blocked" not in _RESOLUTION_DETAIL
+
+    async def test_a_swept_silent_key_does_not_come_back_next_tick(self, monkeypatch):
+        """Nothing to retry, so nothing may be re-armed for the next sweep."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        clock = [1_000.0]
+        monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            await self._blocked(True, stale_after=600.0, now=clock[0])
+            mock_post.reset_mock()
+            clock[0] += 601.0
+            await sweep_stale_breaches()
+            clock[0] += 601.0
+            await sweep_stale_breaches()
+
+        mock_post.assert_not_awaited()
+        assert not _TRANSITIONS._firing
+
+    async def test_a_rule_that_does_not_opt_out_still_announces_both_closes(self, monkeypatch):
+        """The generic default is untouched: both recovery cards still send."""
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        clock = [1_000.0]
+        monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            # The settling edge.
+            await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            closed = await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            assert closed is True
+            assert "Recovered: Provider circuit opened" in mock_post.await_args.args[1]
+
+            # And the no-samples close.
+            await alert_on_transition(
+                key="failed_request_rate",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Failed-request rate exceeded",
+                context=dict,
+                cooldown_sec=0,
+                stale_after=600.0,
+                now=clock[0],
+            )
+            clock[0] += 601.0
+            await sweep_stale_breaches()
+
+        assert "Recovered (no recent samples): failed_request_rate" in mock_post.await_args.args[1]
+
+    async def test_a_rule_that_stops_opting_out_is_not_held_silent(self, monkeypatch):
+        """The opt-out is rewritten on every breach, in both directions.
+
+        Registering on the breach edge is what makes the sweep reachable, but it
+        also means a stale registration could outlive the rule that asked for
+        it — a key that flips back to announcing must announce.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            await self._blocked(True, kind="state")
+            await self._blocked(True, announce=True, kind="state")
+            mock_post.reset_mock()
+            closed = await self._blocked(False, announce=True, kind="state")
+
+        assert closed is True
+        assert "Recovered:" in mock_post.await_args.args[1]
+
+    async def test_reset_transition_state_clears_the_silent_registry(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ):
+            await self._blocked(True, kind="state")
+
+        assert "auth_ip_blocked" in _SILENT_RESOLUTIONS
+        reset_transition_state()
+        assert not _SILENT_RESOLUTIONS
 
 
 class _StubResponse:

@@ -10,8 +10,8 @@ import pytest
 
 import serving.observability.alerts as alerts_module
 from serving.observability.alert_config import AlertConfig
-from serving.observability.alert_rules import AlertEngine
-from serving.observability.alerts import reset_transition_state
+from serving.observability.alert_rules import AlertEngine, AuthIpBlockedRule
+from serving.observability.alerts import reset_transition_state, sweep_stale_breaches
 from serving.observability.log_handler import AlertingLogHandler
 from serving.utils.context import MODEL_NOT_FOUND
 
@@ -758,6 +758,61 @@ async def test_auth_ip_blocked_wave_delivers_one_named_message(monkeypatch):
             assert "/admin/auth-blocks" in body, body
         finally:
             await engine.stop()
+
+
+async def test_auth_ip_blocked_closes_without_announcing_a_recovery(monkeypatch):
+    """The block outlasts the records, so no close this rule reaches is news.
+
+    ``utils/auth_failure_blocklist.py`` emits one record per blocking
+    *transition* and then returns early for an already-blocked bucket, while the
+    block stands for ``auth_failure_block_duration_sec`` (a day by default) --
+    orders of magnitude longer than this rule's staleness bound. The silence
+    that follows a block is therefore guaranteed rather than informative, and a
+    "Recovered (no recent samples)" card would read as though the source had
+    been let back in while it is still being refused.
+
+    Driven through the real rule and the real ``alert_slack``, not a mocked
+    transition: the card this suppresses is emitted by the sweep, which is
+    handed a bare key, so the opt-out only works if it survives the trip from
+    the rule into the tracker.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig().rules.auth_ip_blocked
+    rule = AuthIpBlockedRule(cfg)
+
+    posted: list[str] = []
+
+    async def _capture(_url, message, **_kwargs):
+        posted.append(message)
+        return True
+
+    clock = [1_000.0]
+    monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+
+    with patch("serving.observability.alerts._post_to_slack", new=_capture):
+        await rule.on_record(
+            _fake_event("auth_ip_blocked", ip_bucket="203.0.113.7", block_seconds=86400)
+        )
+        # The breach card is untouched -- it is the whole point of the rule.
+        assert len(posted) == 1, posted
+        assert alerts_module._EMOJI[alerts_module.AlertSeverity.WARN] in posted[0]
+        assert "Auth-failure blocklist refusing a source" in posted[0]
+
+        # No further blocking transitions: the records stop long before the
+        # block does, which is exactly what the sweep would call a recovery.
+        clock[0] += cfg.window_sec * 2 + 1
+        await sweep_stale_breaches()
+
+    assert len(posted) == 1, posted
+    # Silently, though -- the incident is closed, not left firing forever with a
+    # staleness bound and a silence registration behind it.
+    assert not alerts_module._TRANSITIONS.is_firing("auth_ip_blocked")
+    assert "auth_ip_blocked" not in alerts_module._TRANSITIONS._bounds
+    assert "auth_ip_blocked" not in alerts_module._SILENT_RESOLUTIONS
 
 
 async def test_auth_ip_blocked_can_be_turned_off(monkeypatch):
