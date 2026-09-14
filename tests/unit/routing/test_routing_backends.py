@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from routing.backends import LocalBackend, RouteWiseCloudBackend, RoutingBackend
+from routing.backends import CloudBackend, LocalBackend, RouteWiseCloudBackend, RoutingBackend
 from routing.protocols import RoutingRequestOptions
 from routing.route_scope import scope_view_for_endpoints
 from routing.routers import FixedRouter, RoutingObservation
@@ -266,6 +266,34 @@ def test_local_backend_without_a_scope_claims_every_endpoint() -> None:
 
     assert backend.endpoint_scope is None
     assert backend.owns_observation(_observation(_CLOUD_ENDPOINT))
+
+
+@pytest.mark.unit
+def test_cloud_backend_role_cannot_be_implemented_without_ownership() -> None:
+    """An incomplete cloud backend must fail at construction, not at feedback.
+
+    ``owns_observation`` is the one thing the role cannot delegate: without it
+    the hybrid router only notices on the feedback path, and only once a
+    dispatch record is gone -- where the missing attribution silently costs a
+    learning sample.
+    """
+
+    class IncompleteCloudBackend(CloudBackend):
+        pass
+
+    with pytest.raises(TypeError, match="abstract method"):
+        IncompleteCloudBackend(FixedRouter())
+
+
+@pytest.mark.unit
+def test_routewise_cloud_backend_is_a_concrete_cloud_role() -> None:
+    backend = _cloud_backend(_route_table(_adapter(_CLOUD_ENDPOINT, provider="zai")))
+
+    assert isinstance(backend, CloudBackend)
+    assert backend.is_cloud is True
+    assert type(backend).__mro__[1] is CloudBackend
+    # Concrete: the role's only abstract member is satisfied.
+    assert type(backend).__abstractmethods__ == frozenset()
 
 
 @pytest.mark.unit

@@ -30,6 +30,7 @@ here infers ownership from a hostname, URL or provider name.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from routing.route_scope import (
@@ -399,7 +400,7 @@ class LocalBackend(RoutingBackendBase):
         self._observation_scope.prime(_adapters_in_router(self._router))
 
 
-class CloudBackend(RoutingBackendBase):
+class CloudBackend(RoutingBackendBase, ABC):
     """Cloud execution domain: a set of remote providers behind one contract.
 
     This is the role ``HybridRouter`` dispatches a cloud request to, and the
@@ -409,11 +410,17 @@ class CloudBackend(RoutingBackendBase):
     backend is constructed over a shared route table and must be told which
     endpoints of it are its own.
 
-    The default here holds no network state and simply runs the wrapped
-    router's selection. ``RouteWiseCloudBackend`` is the shipped
-    implementation, and it adds the candidate-range projection that keeps
-    RouteWise's primaries, fallbacks and background probes inside that range. A
-    different cloud algorithm subclasses this with its own router.
+    Abstract on purpose. Everything except ownership is delegated by
+    :class:`RoutingBackendBase`; ``owns_observation`` is left to the subclass
+    because it cannot be defaulted usefully. A cloud implementation that cannot
+    name the endpoints it served still passes the request contract, so a wrong
+    default would only appear on the feedback path -- after a dispatch record
+    was evicted, where a missing attribution silently costs a learning sample.
+    Declaring it abstract makes an incomplete implementation fail when it is
+    constructed rather than when it is first asked to attribute.
+
+    ``RouteWiseCloudBackend`` is the shipped implementation; a different cloud
+    algorithm subclasses this with its own router and its own ownership rule.
 
     Args:
         router: The router implementing cloud selection and execution.
@@ -423,14 +430,14 @@ class CloudBackend(RoutingBackendBase):
             owns it.
     """
 
-    def __init__(
-        self,
-        router: RouterProtocol,
-        *,
-        name: str = "cloud",
-        manage_lifecycle: bool = False,
-    ) -> None:
-        super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
+    @abstractmethod
+    def owns_observation(self, obs: RoutingObservation) -> bool:
+        """Return whether ``obs`` names an endpoint this cloud backend served.
+
+        Runs on the feedback path without a surviving dispatch record, so it
+        must be cheap and side-effect free.
+        """
+        ...
 
     @property
     def is_cloud(self) -> bool:
