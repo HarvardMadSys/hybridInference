@@ -305,6 +305,39 @@ burning the pool. A completion POST is never retried against the *same* key —
 re-sending a non-idempotent generation would double-bill it. Resilience comes
 from the router's fallback chain, not from blind retries.
 
+### Streaming timeouts
+
+An upstream that stops sending mid-generation while keeping the socket open is a
+fault the gateway has to notice on its own. Waiting for the connection to break
+means finding out only once something further out gives up — and by then every
+stream committed to that endpoint has already died together, while new ones kept
+being dispatched to it. Four clocks cover a streaming request, staggered so the
+innermost one reports first:
+
+| Clock | Default | Covers |
+|---|---|---|
+| `STREAM_IDLE_TIMEOUT_SECONDS` | 180s | Gap between two data-bearing SSE frames, after the first |
+| `STREAM_MAX_IDLE_S` | 240s | Same gap on `/v1/messages`, counted in *forwarded* frames |
+| `STREAM_FIRST_BYTE_TIMEOUT_SECONDS` | unset | Connect to first frame, i.e. prefill |
+| `STREAM_REQUEST_TIMEOUT_SECONDS` | 3600s | The whole streaming response |
+
+The first-byte and inter-chunk budgets are separate on purpose. A socket-level
+read timeout (`sock_read`) restarts on every read, so it cannot give a long
+prefill room without giving a stalled backend the same room. Prefill is
+legitimately slow — a full 1M-token prompt measures 138s to first token on the
+local sglang replicas — while the inter-chunk gap on that same hardware is
+2-4ms. So only the inter-chunk budget carries a default; a non-positive value
+disables either. `/v1/messages` keeps its own, looser ceiling because it counts
+frames the gateway forwards, and a buffered XML tool call can hold one back for
+a minute-plus without the upstream being idle at all.
+
+When the inter-chunk budget expires, `OpenAICompatAdapter` raises
+`UpstreamStreamIdleError` — distinct from the end-of-body
+`_INCOMPLETE_STREAM_ERROR`, which is what a deployment proxy's own read timeout
+looks like from here. It propagates as a `stream_exception`, so the endpoint
+loses availability and its circuit opens, rather than the partial answer being
+capped with a fabricated `[DONE]`.
+
 ## Configuration
 
 Three YAML files describe a deployment: a model registry, a routing config, and

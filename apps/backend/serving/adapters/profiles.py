@@ -283,17 +283,72 @@ def resolve_tool_choice_for_profile(profile: ProviderProfile, tool_choice: Any) 
     return None
 
 
-def get_stream_idle_timeout_seconds(profile: ProviderProfile) -> float | None:
-    """Return the stream socket-read idle timeout in seconds, if configured."""
-    del profile
-    raw = os.getenv("STREAM_IDLE_TIMEOUT_SECONDS")
+# Seconds an upstream may go silent *mid-stream* -- between two data-bearing SSE
+# frames -- before the gateway declares it stalled. On by default: a detector
+# that has to be switched on per deployment is a detector that is off everywhere
+# it is needed.
+#
+# Why 180s. Measured single-stream on the H200 sglang replicas (h200b, TP=2,
+# DeepSeek-V4-Flash, `/flush_cache` before every point), inter-token latency is
+# 2.25-3.98 ms at 3.1-4.7 tokens per SSE chunk across 4K-1M input -- so a healthy
+# stream's frame-to-frame gap is single-digit milliseconds, and ~100 ms per
+# stream even at c=128 saturation. 180s is three orders of magnitude above that.
+# The headroom is not for decode, it is for the one legitimate mid-stream stall
+# this backend can produce: a request retracted when the KV pool fills has to be
+# re-prefilled from scratch, and the worst prefill measured on this hardware (a
+# full 1M-token prompt) is 138s. 180s clears that with ~30% to spare.
+#
+# The ceiling is the deployment proxy's own byte-anchored 300s read timeout:
+# once that fires, every in-flight stream on the replica dies at once and the
+# gateway learns about the stall only as a bare EOF. Sitting 120s below it means
+# the gateway reaches its own verdict first, marks the endpoint unhealthy, and
+# stops committing new streams to a replica that is already dead.
+_DEFAULT_STREAM_IDLE_TIMEOUT_S = 180.0
+
+
+def _positive_timeout_env(name: str, default: float | None) -> float | None:
+    """Parse a timeout env var: unset -> default, non-positive -> disabled."""
+    raw = os.getenv(name)
     if raw is None or raw.strip() == "":
-        return None
+        return default
     try:
         value = float(raw)
     except ValueError:
-        return None
+        logger.warning("Invalid %s=%r; falling back to %r", name, raw, default)
+        return default
     return value if value > 0 else None
+
+
+def get_stream_idle_timeout_seconds(profile: ProviderProfile) -> float | None:
+    """Return the mid-stream idle timeout in seconds.
+
+    This is the *inter-chunk* budget and nothing else: it starts only once the
+    upstream has delivered its first frame, so a slow first token (a long prefill
+    on a 1M-context model) is never charged against it. The wait for that first
+    frame is :func:`get_stream_first_byte_timeout_seconds`.
+
+    ``STREAM_IDLE_TIMEOUT_SECONDS`` overrides the default; a non-positive value
+    disables the detector entirely.
+    """
+    del profile
+    return _positive_timeout_env("STREAM_IDLE_TIMEOUT_SECONDS", _DEFAULT_STREAM_IDLE_TIMEOUT_S)
+
+
+def get_stream_first_byte_timeout_seconds(profile: ProviderProfile) -> float | None:
+    """Return the connect-to-first-frame timeout in seconds, if configured.
+
+    Unbounded by default, and deliberately so. This budget covers prefill, and
+    prefill is legitimately slow: 138s for a full 1M-token prompt on the local
+    sglang replicas, more when the request queues behind others. There is no
+    value that separates "still prefilling" from "wedged during prefill" using
+    only the information the gateway has, so the conservative choice is to bound
+    the case we *can* tell apart (mid-stream silence) and leave this one to the
+    deployment proxy and ``STREAM_REQUEST_TIMEOUT_SECONDS``.
+
+    Set ``STREAM_FIRST_BYTE_TIMEOUT_SECONDS`` to opt a deployment in.
+    """
+    del profile
+    return _positive_timeout_env("STREAM_FIRST_BYTE_TIMEOUT_SECONDS", None)
 
 
 def extract_tool_calls_for_profile(

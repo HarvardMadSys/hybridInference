@@ -568,11 +568,31 @@ _RESOLUTION_CONTEXT: dict[str, Callable[[], dict[str, Any]]] = {}
 #: thinner than the one that failed to send.
 _RESOLUTION_DETAIL: dict[str, dict[str, Any]] = {}
 
+#: Keys whose incident must close without a word, registered by
+#: ``alert_on_transition`` for the rules that pass ``announce_resolution=False``.
+#: A registry keyed on the incident rather than an argument threaded through,
+#: for exactly the reason ``_RESOLUTION_CONTEXT`` is one: the sweep paths are
+#: handed a bare key and have no access to the rule that owns it, so the opt-out
+#: has to be reachable from the key alone or the card this suppresses would
+#: simply come back out of the sweep. Only the message is suppressed — the
+#: incident still closes, clearing tracker state, the staleness bound and the
+#: resolution registries — so a silenced key neither stays firing forever nor
+#: leaks a ``_bounds`` entry. Written on the breach edge and dropped on a close,
+#: so a dynamic key leaves nothing behind and a rule that stops opting out is
+#: not held silent by an earlier breach.
+_SILENT_RESOLUTIONS: set[str] = set()
+
 
 def _forget_resolution_detail(key: str) -> None:
-    """Drop an incident's summary and its builder. For a confirmed close."""
+    """Drop an incident's summary, its builder and its silence. For a close.
+
+    The ``_SILENT_RESOLUTIONS`` entry goes with them: every breached evaluation
+    re-registers it, so holding it past the close would only leak one entry per
+    dynamic key and keep a rule silent after it stopped asking to be.
+    """
     _RESOLUTION_CONTEXT.pop(key, None)
     _RESOLUTION_DETAIL.pop(key, None)
+    _SILENT_RESOLUTIONS.discard(key)
 
 
 def _resolution_detail(key: str) -> dict[str, Any]:
@@ -659,6 +679,7 @@ def reset_transition_state() -> None:
     _STALE_RETRY_ATTEMPTS.clear()
     _RESOLUTION_CONTEXT.clear()
     _RESOLUTION_DETAIL.clear()
+    _SILENT_RESOLUTIONS.clear()
 
 
 async def alert_on_transition(
@@ -673,6 +694,7 @@ async def alert_on_transition(
     stale_after: float | None = None,
     now: float | None = None,
     resolution_context: Callable[[], dict[str, Any]] | None = None,
+    announce_resolution: bool = True,
 ) -> bool:
     """Send only when the breach state changes, so incidents open and close once.
 
@@ -700,6 +722,19 @@ async def alert_on_transition(
     the recovery card as on the breach. It is built at most once per close,
     then snapshotted for the retry path, because a rule that tallies an
     incident has to be free to reset that tally once it is reported.
+
+    ``announce_resolution=False`` is the opposite opt-in: the incident closes,
+    but nothing is said about it. It is for a rule whose *silence carries no
+    information* — one that only ever observes a transition goes quiet the
+    moment the transition is over, so both closes available to it (the settling
+    edge here and the stale sweep's "no recent samples" card) announce nothing
+    but the rule having stopped talking, while wording it as a recovery the rule
+    never measured. The bookkeeping is deliberately unchanged: tracker state,
+    the key's staleness bound and the resolution registries are cleared exactly
+    as a delivered close clears them, so a silenced key neither stays firing
+    forever nor leaks an entry. Only the message is dropped, which is why such a
+    close returns ``False`` — the return says whether a message was sent, not
+    whether the incident closed.
     """
     tracker = _TRANSITIONS if kind == "metric" else _STATE_TRANSITIONS
     moment = now or time.time()
@@ -723,6 +758,13 @@ async def alert_on_transition(
         # from there rather than from another call to this function.
         if resolution_context is not None:
             _RESOLUTION_CONTEXT[key] = resolution_context
+        # Same reasoning for the silence, and both directions are written on
+        # purpose: a rule that stops passing ``announce_resolution=False`` must
+        # not be held quiet by what an earlier breach registered.
+        if announce_resolution:
+            _SILENT_RESOLUTIONS.discard(key)
+        else:
+            _SILENT_RESOLUTIONS.add(key)
         # Every breached evaluation still goes to the sink, exactly as before.
         # The cooldown there decides whether it becomes a message, and under the
         # control plane each repeat is what advances the incident's occurrence
@@ -736,6 +778,20 @@ async def alert_on_transition(
             cooldown_sec=cooldown_sec,
         )
     if transition != "resolved":
+        return False
+    if key in _SILENT_RESOLUTIONS:
+        # Close it, say nothing. There is no send to confirm and so nothing to
+        # retry: no ``_PendingResolution`` is queued and the key is not re-armed,
+        # since a retry could only reproduce the card this rule opted out of.
+        # The ``is_firing`` guard is the one the delivered close uses, for the
+        # same reason — ``observe`` dropped the firing state on this edge, so
+        # anything present now belongs to a fresh incident that must stay
+        # tracked. Any entry an earlier, announcing close left in the queue is
+        # dropped here too, so the sweep cannot post on this key's behalf.
+        if not tracker.is_firing(key):
+            tracker.forget(key)
+            _forget_resolution_detail(key)
+        _PENDING_RESOLUTIONS.pop(key, None)
         return False
     detail = {"alert": key, **_resolution_detail(key)}
     sent = await alert_slack(
@@ -799,6 +855,17 @@ async def sweep_stale_breaches() -> None:
             # is live again and this recovery would announce it as over.
             continue
         tracker = _TRANSITIONS if pending.kind == "metric" else _STATE_TRANSITIONS
+        if key in _SILENT_RESOLUTIONS:
+            # A silent close queues nothing — it has no send that can fail — so
+            # this is an entry left by an announcing close on a key that has
+            # since opted out. Retrying it would post the card the opt-out
+            # exists to prevent, so drop it and finish the close here instead:
+            # the entry is the only thing holding the incident open, and the
+            # identity check above already ruled out a live re-breach.
+            _PENDING_RESOLUTIONS.pop(key, None)
+            tracker.forget(key)
+            _forget_resolution_detail(key)
+            continue
         pending.attempts += 1
         sent = False
         try:
@@ -849,30 +916,37 @@ async def sweep_stale_breaches() -> None:
             )
 
     for key in _TRANSITIONS.sweep(now):
+        # A rule that opted out of announcing its close opts out of this card
+        # above all: "no recent samples" is the most misleading thing that can
+        # be said about a key whose rule only ever speaks on a transition, since
+        # having no recent samples is that rule's normal state. Everything below
+        # the send still runs, so the incident closes here as it always did.
+        silent = key in _SILENT_RESOLUTIONS
         sent = False
-        try:
-            sent = await alert_slack(
-                AlertSeverity.INFO,
-                # "No recent samples" is a materially weaker claim than an
-                # observed-clear recovery: the rule stopped seeing data (idle
-                # traffic, a drained process), so the breach can no longer be
-                # evaluated. Say so, instead of wording that reads as if the
-                # metric was measured healthy.
-                f"Recovered (no recent samples): {key}",
-                # The rule's own summary first, then this path's reason, which
-                # must win the key if a rule happens to use the same name.
-                {
-                    "alert": key,
-                    **_resolution_detail(key),
-                    "reason": "no samples within the rule window",
-                },
-                dedupe_key=key,
-                cooldown_sec=0,
-                status="resolved",
-            )
-        except Exception:
-            # One stuck resolution must not strand every other open incident.
-            log.exception("stale breach resolution failed for %s", key)
+        if not silent:
+            try:
+                sent = await alert_slack(
+                    AlertSeverity.INFO,
+                    # "No recent samples" is a materially weaker claim than an
+                    # observed-clear recovery: the rule stopped seeing data (idle
+                    # traffic, a drained process), so the breach can no longer be
+                    # evaluated. Say so, instead of wording that reads as if the
+                    # metric was measured healthy.
+                    f"Recovered (no recent samples): {key}",
+                    # The rule's own summary first, then this path's reason, which
+                    # must win the key if a rule happens to use the same name.
+                    {
+                        "alert": key,
+                        **_resolution_detail(key),
+                        "reason": "no samples within the rule window",
+                    },
+                    dedupe_key=key,
+                    cooldown_sec=0,
+                    status="resolved",
+                )
+            except Exception:
+                # One stuck resolution must not strand every other open incident.
+                log.exception("stale breach resolution failed for %s", key)
         if _TRANSITIONS.is_firing(key):
             # The metric re-breached while the send was in flight and opened a
             # fresh incident: leave its state (and the bound the new ``observe``
@@ -880,9 +954,13 @@ async def sweep_stale_breaches() -> None:
             # re-arming would overwrite its liveness clock with a backdated one
             # and set up a premature no-samples close.
             continue
-        if sent:
+        if sent or silent:
             # Confirmed close: without this, dynamic keys (per-user cost,
             # per-period budgets) each leave a ``_bounds`` entry behind forever.
+            # A silent close is confirmed by construction — there was no
+            # delivery that could have failed, so there is nothing to re-arm
+            # for and the retry counting below would only keep the key coming
+            # back for a card that will never be sent.
             _STALE_RETRY_ATTEMPTS.pop(key, None)
             _TRANSITIONS.forget(key)
             _forget_resolution_detail(key)

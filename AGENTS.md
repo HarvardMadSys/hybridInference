@@ -138,9 +138,9 @@ Opt in to excluded tiers explicitly: `pytest -m dbtest tests/integration/`.
 - ALWAYS use a git worktree for development — never work in the main checkout.
 - SSE streaming lives in `apps/backend/serving/servers/`. Middleware order
   matters; new middleware that buffers responses will break streaming.
-- Storage layer supports both Postgres and Cloudflare D1 — check
-  `apps/backend/serving/storage/` for the active backend before assuming
-  SQL dialect.
+- Storage layer is Postgres (asyncpg), in `apps/backend/serving/storage/`.
+  Cloudflare D1 support was removed in #460; `DB_BACKEND` and `DB_DUAL_WRITE`
+  are read by no code. There is one SQL dialect — write Postgres.
 - Alerting has two permanent, independent paths (decision: issue #1103).
   Backend gateway alerts go through `alert_slack()`
   (`apps/backend/serving/observability/alerts.py`) to a Slack webhook;

@@ -1,4 +1,12 @@
-"""Internal endpoints for Nginx auth_request subrequests."""
+"""Internal endpoints called by the console's server-side route handlers.
+
+Written originally for Nginx ``auth_request`` subrequests. Host nginx was
+purged from both deployments on 2026-09-13 — the Cloudflare tunnel now routes
+straight to the frontend container, and ``apps/frontend/next.config.js`` does
+the path routing — so no subrequest reaches anything here any more. The one
+route below outlived that because its caller did: the gate moved into a Next.js
+route handler rather than disappearing. See ``verify_admin``.
+"""
 
 from __future__ import annotations
 
@@ -51,7 +59,13 @@ async def verify_admin(
 ) -> Response:
     """Verify that the caller has admin role via their refresh_token cookie.
 
-    Used by Nginx ``auth_request`` to gate access to pgAdmin.
+    Gates access to pgAdmin. The caller is the console's pgAdmin proxy,
+    ``apps/frontend/src/app/pgadmin/[[...path]]/route.ts``, which fetches this
+    over the internal network with the browser's cookie and admits only on an
+    explicit 200. It is a route handler and not a rewrite because a rewrite
+    cannot authenticate, which is also why this endpoint survived the removal of
+    the Nginx ``auth_request`` block that used to call it.
+
     Returns 200 for admin only, 401/403 otherwise.
     """
     user = await _validate_session(refresh_token, op_store)

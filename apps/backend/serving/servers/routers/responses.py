@@ -55,8 +55,11 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from buffering the
-# stream to compress it, which collapses TTFT; `X-Accel-Buffering: no` disables
-# nginx buffering.
+# stream to compress it, which collapses TTFT; `X-Accel-Buffering: no` asks a
+# proxy not to buffer at all. The latter is an nginx-originated header name,
+# kept because several proxies honour it — nothing in this deployment reads it
+# now that no nginx sits in front, but it costs nothing and travels with the
+# response wherever it is redeployed.
 _SSE_HEADERS = {
     "Cache-Control": "no-cache, no-transform",
     "Connection": "keep-alive",

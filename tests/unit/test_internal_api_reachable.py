@@ -1,13 +1,13 @@
 """The internal API the cloud agent calls is actually routed to the backend.
 
-Nginx sends unmatched paths to the frontend, so a backend path reaches FastAPI
-only if `next.config.js` rewrites it. Every route the control plane calls was
-missing from that list, and the failure is silent in the worst way: the caller
-gets a 404 whose body is an HTML page, which reads as "the gateway is down"
-rather than "this path is not forwarded". Verified against both live
-deployments before this was fixed — `/internal/verify-admin` answered the
-gateway's JSON 401 while `/internal/model-catalog`, on the same host, answered
-the frontend's HTML.
+The Cloudflare tunnel routes every public path to the frontend container, so a
+backend path reaches FastAPI only if `next.config.js` rewrites it. Every route
+the control plane calls was missing from that list, and the failure is silent
+in the worst way: the caller gets a 404 whose body is an HTML page, which reads
+as "the gateway is down" rather than "this path is not forwarded". Verified
+against both live deployments before this was fixed — `/internal/verify-admin`
+answered the gateway's JSON 401 while `/internal/model-catalog`, on the same
+host, answered the frontend's HTML.
 
 A route existing and a route being reachable are different facts, and every
 test in this repository asserted the first one.
@@ -98,11 +98,11 @@ def test_every_internal_route_is_forwarded_by_the_frontend() -> None:
 def test_the_shared_internal_prefix_is_not_forwarded_wholesale() -> None:
     """No rewrite forwards `/internal` blindly.
 
-    `/internal` also carries `verify-admin` and `verify-grafana`, which
-    authenticate a browser session by cookie. A `/internal/:path*` rewrite
-    would forward whatever is added under this prefix next, without anyone
-    deciding it should be reachable from outside — the opposite mistake to the
-    one above, and the easy way to "fix" a failure of the first test.
+    `/internal` also carries `verify-admin`, which authenticates a browser
+    session by cookie. A `/internal/:path*` rewrite would forward whatever is
+    added under this prefix next, without anyone deciding it should be
+    reachable from outside — the opposite mistake to the one above, and the
+    easy way to "fix" a failure of the first test.
     """
     blanket = [
         source

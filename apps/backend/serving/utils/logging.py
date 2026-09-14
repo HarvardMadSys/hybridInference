@@ -155,6 +155,20 @@ _STRUCTURED_LOG_KEYS = (
     "function_name",
     "finish_reason",
     "arguments_len",
+    # Adaptive outbound concurrency (adapters/upstream_limiter.py). A limit
+    # moving is only readable as a pair -- ``old_limit`` next to ``new_limit``
+    # next to the ``reason`` that moved it -- and ``key_fingerprint`` is what
+    # says *which* of a provider's keys, since the key itself is never logged.
+    # ``in_flight`` / ``waiting`` / ``limit`` / ``timeout_sec`` are the state a
+    # saturation line exists to report: without them it says only "something
+    # somewhere queued too long".
+    "key_fingerprint",
+    "old_limit",
+    "new_limit",
+    "in_flight",
+    "waiting",
+    "limit",
+    "timeout_sec",
 )
 
 
