@@ -190,3 +190,43 @@ not duplicate their content.
 | Add a new model | [docs/developer/adding-models.md](docs/developer/adding-models.md) |
 | Add a local model (vLLM/SGLang/Ollama) | [docs/developer/add-local-model.md](docs/developer/add-local-model.md) |
 | Run / operate the cloud agent | `docs/operations.md` in [hybridInference-cloud-agent](https://github.com/HarvardMadSys/hybridInference-cloud-agent) |
+
+## 8. Local subsystem guidance
+
+Some durable subsystem ownership boundaries may contain their own `AGENTS.md`.
+An agent working inside such a tree must follow the repository-wide guidance
+here and every applicable ancestor guide along the path. A nested guide
+supplements its ancestors; it does not override repository-wide workflow or
+quality rules.
+
+Nested guidance is intentionally sparse. Create it only where ownership,
+load-bearing invariants, staged migration, specialized verification, or
+repeated cross-boundary mistakes justify a local contract. It is not required
+for every package or directory. Possible future candidates include serving,
+storage, adapters, and frontend, but this index does not mandate guides there.
+
+Subsystem guides describe ownership, non-ownership, durable invariants,
+cross-boundary edit expectations, verification categories, and pointers to
+dated design or implementation records. They do not duplicate full
+architecture specs, implementation plans, exhaustive file maps, or current
+call graphs.
+
+Keep the records distinct: specs capture a proposed or decided target at a
+point in time, plans describe a staged migration, and reviews preserve evidence
+of what was actually verified. None of these layers is replaced by a nested
+guide.
+
+Current implementation is not automatically target architecture. When a
+subsystem is under revision, its guide must say so and agents must consult the
+newest applicable records in [`docs/agents/specs/`](docs/agents/specs/),
+[`docs/agents/plans/`](docs/agents/plans/), and
+[`docs/reviews/`](docs/reviews/) before broad changes. When an accepted
+architecture changes, create a new dated design record or explicitly supersede
+the applicable prior record. Update a subsystem guide only when its ownership,
+invariants, edit rules, or verification contract changes.
+
+### Subsystem guidance index
+
+| Path | Purpose |
+|---|---|
+| [`apps/backend/routing/`](apps/backend/routing/AGENTS.md) | Pilot guidance for the routing ownership boundary |
