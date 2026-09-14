@@ -978,8 +978,17 @@ class FixedRouter:
                     prefill_tokens=prefill_tokens,
                     preferred_endpoint_id=endpoint_id,
                 )
-                if selected is not None:
-                    return endpoint_id_for_adapter(selected)
+                if selected is None:
+                    continue
+                # ``_select_adapter`` degrades to an ordinary draw when the
+                # preferred endpoint is not admitted, so it can hand back a
+                # candidate of some other provider. This method promises one of
+                # ``provider``'s own endpoints, so an unhonored preference is
+                # reported as "no admitted candidate" rather than as a target the
+                # caller never named.
+                resolved = endpoint_id_for_adapter(selected)
+                if resolved == endpoint_id:
+                    return resolved
         except AllCircuitsOpenError:
             return None
         return None
@@ -1246,7 +1255,8 @@ class FixedRouter:
         handed the same recovering endpoint, which is the stampede the probe
         exists to prevent. The claim is therefore taken here, once, on the single
         adapter selection actually committed to -- covering every path an adapter
-        leaves ``_select_adapter`` by, affinity pin included.
+        leaves ``_select_adapter`` by, affinity and a scheduling policy's
+        preferred target included.
 
         A refused claim means another request holds the probe, not that the
         endpoint is out: drop it for *this* selection only and reselect over the
@@ -1277,12 +1287,15 @@ class FixedRouter:
         route = self.routes.get(model_id)
         attempts = len(route.adapters) if route and route.adapters else 1
 
+        exclude: set[str] = set()
         # A scheduling policy's preferred endpoint is tried first, exactly once,
-        # and without a dispatch claim -- the preference names where this request
-        # should start, and it is released before the ordinary loop so a failure
-        # still walks the same fallback candidates in the same order as always.
-        # The claim is skipped because a superseded preferred attempt must not
-        # leave a half-open probe holding the endpoint it lost to.
+        # and as an ordinary dispatch: it takes the same half-open probe claim as
+        # any other automatic pick. Only ``pin_provider`` -- returned above --
+        # overrides admission. Skipping the claim here would let every
+        # concurrent request into an endpoint whose circuit is recovering, which
+        # is the stampede the probe exists to prevent, and the preference is the
+        # normal path rather than an exception: a policy that can name an
+        # endpoint names one on every request.
         if preferred_endpoint_id and attempts > 0:
             preferred = self._select_adapter(
                 model_id,
@@ -1292,9 +1305,16 @@ class FixedRouter:
                 endpoint_scope=endpoint_scope,
             )
             if preferred is not None:
-                return preferred, None
+                preferred_endpoint = endpoint_id_for_adapter(preferred)
+                claim = self._health_registry.begin_dispatch(preferred_endpoint)
+                if claim is not None:
+                    return preferred, claim
+                # Another request holds this endpoint's probe. Drop the
+                # preference for this selection only and let the ordinary loop
+                # reselect over the rest, which is what a refused claim does for
+                # every other candidate.
+                exclude.add(preferred_endpoint)
 
-        exclude: set[str] = set()
         for _ in range(attempts):
             adapter = self._select_adapter(
                 model_id,

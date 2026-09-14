@@ -470,7 +470,14 @@ class HybridRouter:
         return model_id
 
     def refresh_route_table(self) -> None:
-        """Refresh each backend that exposes route-table refresh."""
+        """Refresh each backend that exposes route-table refresh.
+
+        Both backends of a shipped composition wrap the *same* router, so the
+        wrapped router's own refresh can run once per backend. That is harmless
+        because the operation is idempotent by contract, and each backend still
+        has to run its own half: re-deriving the candidate range is what makes a
+        route edit move an endpoint between domains.
+        """
         for backend in self._backends.values():
             refresh = getattr(backend, "refresh_route_table", None)
             if callable(refresh):
@@ -553,6 +560,14 @@ async def _fallback_stream(
         )
         buffered: list[Any] = []
         aclose = getattr(stream, "aclose", None)
+        # Set before the first forwarded chunk, not after the forwarding loop:
+        # the ``except`` below spans the whole section, so an upstream failure
+        # raised once output is already on the wire would otherwise be treated
+        # as a failed attempt and re-attempted on the next backend, splicing two
+        # answers into a single stream and swallowing the original error. The
+        # single-router path already refuses that with its own
+        # ``chunks_yielded`` guard.
+        committed = False
         try:
             async for chunk in stream:
                 buffered.append(chunk)
@@ -560,6 +575,7 @@ async def _fallback_stream(
             if buffered:
                 # Output exists; this attempt is committed. Forward what was
                 # held for the fallback decision, then stream the rest through.
+                committed = True
                 if attempts:
                     yield _attempt_history_chunk(
                         attempts,
@@ -579,6 +595,12 @@ async def _fallback_stream(
                 preferred_error = empty_error
                 preferred_endpoint = _resolved_endpoint(backend, target, model_id)
         except Exception as exc:
+            if committed:
+                # The client already holds part of this answer. Restarting on
+                # another backend would emit a stream no backend ever generated,
+                # so the failure propagates exactly as the single-router path
+                # propagates it.
+                raise
             attempts.append(_attempt_record(backend_name, exc))
             if index == 0:
                 preferred_error = exc

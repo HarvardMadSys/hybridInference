@@ -43,7 +43,7 @@ from routing.route_scope import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Collection
+    from collections.abc import AsyncIterator, Callable, Collection
 
     from routing.decisions import RoutingTarget
     from routing.protocols import RouterProtocol, RoutingRequestOptions
@@ -103,6 +103,26 @@ def _routes_from(source: Any) -> tuple[Any, ...]:
         return tuple(source.iter_effective_routes())
     except Exception:  # pragma: no cover - a router with an unusable view
         return ()
+
+
+def _resolve_endpoint_scope(
+    spec: Collection[str] | Callable[[], Collection[str] | None] | None,
+) -> frozenset[str] | None:
+    """Resolve a declared candidate range, which may be given as a live provider.
+
+    A composition whose route table can change under it -- an admin route edit,
+    followed by ``ModelRouterRegistry.refresh_route_tables()`` -- cannot freeze
+    the local/cloud split at construction. Which endpoints a domain owns is a
+    property of the *current* routes: a snapshot keeps dispatching to an endpoint
+    that was removed and makes one that was added unreachable, so the split has to
+    be re-derived from the same table the router reads.
+
+    ``None`` means no scope was declared, which is distinct from an empty one:
+    callers that require a non-empty range reject the former at construction.
+    """
+    if callable(spec):
+        spec = spec()
+    return frozenset(spec) if spec is not None else None
 
 
 @runtime_checkable
@@ -380,7 +400,9 @@ class LocalBackend(RoutingBackendBase):
             backend serves. Optional, but a hybrid composition should always
             declare it: two backends that both claim every endpoint cannot be
             told apart from an observation alone, so feedback for a cloud
-            request would also reach this local router.
+            request would also reach this local router. May also be a callable
+            returning the current set, for a composition whose route table is
+            edited while it runs; the callable is re-read on every refresh.
         model_scope: Optional canonical model ids this backend owns.
         name: Backend identity reported in routing metadata and diagnostics.
         manage_lifecycle: When True this backend starts and stops the wrapped
@@ -392,21 +414,29 @@ class LocalBackend(RoutingBackendBase):
         self,
         router: RouterProtocol,
         *,
-        endpoint_scope: Collection[str] | None = None,
+        endpoint_scope: Collection[str] | Callable[[], Collection[str] | None] | None = None,
         model_scope: Collection[str] | None = None,
         name: str = "local",
         manage_lifecycle: bool = False,
     ) -> None:
         super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
         self._model_scope = frozenset(model_scope) if model_scope is not None else None
-        # Seed the provider index from the wrapped router's own route table so a
-        # provider-label scope resolves to the endpoint ids that provider
-        # actually serves. Without this, declaring {"local-service"} would only
-        # match an observation that carried the label itself, and the canonical
-        # endpoint id an observation really carries would look out of scope.
-        self._observation_scope = ObservationScope(
-            endpoint_scope,
-            adapters=_adapters_in_router(router),
+        # Kept as given rather than resolved once: see refresh_route_table.
+        self._endpoint_scope_spec = endpoint_scope
+        self._observation_scope = self._build_observation_scope()
+
+    def _build_observation_scope(self) -> ObservationScope:
+        """Return the observation scope for the currently declared range.
+
+        Seed the provider index from the wrapped router's own route table so a
+        provider-label scope resolves to the endpoint ids that provider actually
+        serves. Without this, declaring {"local-service"} would only match an
+        observation that carried the label itself, and the canonical endpoint id
+        an observation really carries would look out of scope.
+        """
+        return ObservationScope(
+            _resolve_endpoint_scope(self._endpoint_scope_spec),
+            adapters=_adapters_in_router(self._router),
         )
 
     @property
@@ -483,15 +513,28 @@ class LocalBackend(RoutingBackendBase):
             )
         resolver = getattr(self._router, "preferred_endpoint_for_provider", None)
         if callable(resolver) and target.provider:
-            return resolver(model_id, target.provider)
+            endpoint_id = resolver(model_id, target.provider)
+            # The resolver runs the wrapped router's own selection, which may
+            # degrade to a candidate this domain does not own. Reporting it as
+            # resolved would put an endpoint in the routing metadata that this
+            # backend never dispatched to.
+            if endpoint_id is not None and self._observation_scope.includes_endpoint(endpoint_id):
+                return endpoint_id
         return None
 
     def refresh_route_table(self) -> None:
-        """Delegate the refresh and re-index the endpoints it may have changed."""
+        """Delegate the refresh and re-derive the range it may have changed.
+
+        Both halves are rebuilt, not just the provider index: the declared split
+        itself can move under a route edit. An endpoint added to this model's
+        route as a local server must start being claimed and dispatched to, and
+        one that stopped being local must stop, or this backend keeps serving an
+        endpoint the composition has already handed to the other domain.
+        """
         refresh = getattr(self._router, "refresh_route_table", None)
         if callable(refresh):
             refresh()
-        self._observation_scope.prime(_adapters_in_router(self._router))
+        self._observation_scope = self._build_observation_scope()
 
 
 class CloudBackend(RoutingBackendBase, ABC):
@@ -551,18 +594,28 @@ class CloudBackend(RoutingBackendBase, ABC):
 class FixedCloudBackend(CloudBackend):
     """Cloud execution domain over a router that already holds cloud candidates.
 
-    The counterpart of :class:`LocalBackend`: where the local side wraps the
-    shared router and is bounded by its declared scope, this side is given a
-    router whose route *is* the cloud range, so selection, fallback and
-    execution are delegated whole. It is the cloud algorithm for a ``fixed``
-    model -- the operator's configured weights, not RouteWise's LP -- while
-    :class:`RouteWiseCloudBackend` remains the algorithm for a model that
+    The counterpart of :class:`LocalBackend`, and built the same way: it wraps
+    the router that holds the model's routes and is bounded by its declared
+    scope, so selection, fallback and execution are delegated whole while the
+    candidate range stays inside the cloud domain. It is the cloud algorithm for
+    a ``fixed`` model -- the operator's configured weights, not RouteWise's LP --
+    while :class:`RouteWiseCloudBackend` remains the algorithm for a model that
     configures ``router: routewise``.
 
+    Wrapping the shared router rather than a copy of its routes is what keeps
+    this domain consistent with the rest of the process: an alias resolves
+    through the router that knows it, the weights stay the ones the operator
+    registered, and ``refresh_route_tables()`` is visible here the moment it is
+    visible there. Handing this class a router whose route *is* the cloud range
+    is still supported and still correct; it is simply not required, because the
+    scope bounds dispatch and both fallback loops.
+
     Args:
-        router: A router holding only this backend's candidates.
-        endpoint_scope: The endpoints that router may dispatch to. Recorded so
-            target resolution and feedback attribution agree with execution.
+        router: The router holding this model's routes.
+        endpoint_scope: The endpoints (or provider labels) this backend may
+            dispatch to. Recorded so target resolution and feedback attribution
+            agree with execution. May be a callable returning the current set,
+            for a composition whose route table is edited while it runs.
         model_scope: Optional canonical model ids this backend owns.
         name: Backend identity reported in routing metadata and diagnostics.
         manage_lifecycle: When True this backend starts and stops the wrapped
@@ -573,24 +626,40 @@ class FixedCloudBackend(CloudBackend):
         self,
         router: RouterProtocol,
         *,
-        endpoint_scope: Collection[str],
+        endpoint_scope: Collection[str] | Callable[[], Collection[str] | None],
         model_scope: Collection[str] | None = None,
         name: str = "cloud",
         manage_lifecycle: bool = False,
     ) -> None:
-        if not endpoint_scope:
+        if not _resolve_endpoint_scope(endpoint_scope):
             raise ValueError(
                 "FixedCloudBackend requires a non-empty endpoint_scope; with no "
                 "cloud endpoints declared this backend cannot serve anything"
             )
         super().__init__(router, name=name, manage_lifecycle=manage_lifecycle)
-        self._endpoint_scope = frozenset(endpoint_scope)
         self._model_scope = frozenset(model_scope) if model_scope is not None else None
+        # Kept as given rather than resolved once: see refresh_route_table.
+        self._endpoint_scope_spec = endpoint_scope
+        self._observation_scope = self._build_observation_scope()
+
+    def _build_observation_scope(self) -> ObservationScope:
+        """Return the ownership scope for the currently declared range.
+
+        Built from the same provider index :class:`LocalBackend` uses, so a
+        provider-label entry claims the endpoints that provider serves. A literal
+        ``endpoint_id in scope`` test cannot see a label at all: declaring
+        ``{"zai"}`` bounded dispatch but silently rejected every cloud target as
+        out of range and dropped every cloud observation.
+        """
+        return ObservationScope(
+            _resolve_endpoint_scope(self._endpoint_scope_spec),
+            adapters=_adapters_in_router(self._router),
+        )
 
     @property
     def endpoint_scope(self) -> frozenset[str]:
         """Return the declared cloud endpoints and provider labels."""
-        return self._endpoint_scope
+        return self._observation_scope.endpoint_scope or frozenset()
 
     def serves(self, model_id: str) -> bool:
         """Return whether the cloud range covers ``model_id``."""
@@ -600,18 +669,19 @@ class FixedCloudBackend(CloudBackend):
 
     def dispatch_scope(self, model_id: str) -> frozenset[str] | None:
         """Return the declared cloud endpoints for ``model_id``."""
-        return self._endpoint_scope if self.serves(model_id) else None
+        return self._observation_scope.endpoint_scope if self.serves(model_id) else None
 
     def resolve_target(self, target: RoutingTarget, model_id: str) -> str | None:
         """Resolve a policy target inside the declared cloud range."""
         if not self.serves(model_id):
             return None
         if target.endpoint_id:
-            return target.endpoint_id if target.endpoint_id in self._endpoint_scope else None
+            scope = self._observation_scope
+            return target.endpoint_id if scope.includes_endpoint(target.endpoint_id) else None
         resolver = getattr(self._router, "preferred_endpoint_for_provider", None)
         if callable(resolver) and target.provider:
             endpoint_id = resolver(model_id, target.provider)
-            if endpoint_id is not None and endpoint_id in self._endpoint_scope:
+            if endpoint_id is not None and self._observation_scope.includes_endpoint(endpoint_id):
                 return endpoint_id
         return None
 
@@ -619,11 +689,24 @@ class FixedCloudBackend(CloudBackend):
         """Return whether ``obs`` names an endpoint inside the cloud range."""
         if not self.serves(obs.model_id):
             return False
-        return obs.endpoint_id in self._endpoint_scope
+        return self._observation_scope.includes_endpoint(obs.endpoint_id)
 
     def adapter_in_scope(self, adapter: Any) -> bool:
         """Return whether ``adapter`` is inside the declared cloud range."""
-        return adapter_in_endpoint_scope(adapter, self._endpoint_scope)
+        return self._observation_scope.includes_adapter(adapter)
+
+    def refresh_route_table(self) -> None:
+        """Forward the refresh and re-derive the range it may have changed.
+
+        The re-derivation matters as much as the delegation: a route edit can
+        move an endpoint into or out of this domain, and a scope left at its
+        construction value would keep a removed endpoint dispatchable and make a
+        newly added one unreachable.
+        """
+        refresh = getattr(self._router, "refresh_route_table", None)
+        if callable(refresh):
+            refresh()
+        self._observation_scope = self._build_observation_scope()
 
 
 class RouteWiseCloudBackend(CloudBackend):
