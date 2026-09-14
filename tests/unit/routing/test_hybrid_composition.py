@@ -196,12 +196,17 @@ async def test_failed_domain_falls_back_to_the_other_domain() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_a_failed_spot_stays_inside_its_domain() -> None:
+async def test_a_failed_spot_stays_inside_its_domain(_first_candidate_wins: None) -> None:
     """Only the preferred domain is retried before the hybrid layer steps in.
 
     If the local domain's own fallback could reach the cloud, the retry would
     happen twice -- once inside the domain and once here -- and the cloud would
     be dispatched before the policy ever chose it.
+
+    The draw is pinned to the first candidate rather than merely weighted toward
+    it: at 1e9 against 1e8 the healthy replica is still picked about one run in
+    eleven, the request then succeeds on its primary, and the assertions below
+    have no ``failed_attempts`` to read.
     """
     dead_local = _adapter(
         _LOCAL_ENDPOINT,
