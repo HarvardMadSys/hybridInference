@@ -58,6 +58,30 @@ backend is a separate question, and the answer is in the console's own
 `next.config.js` rather than in any proxy config. See
 [The public path table](public-path-table.md).
 
+#### Known gap: protections the stack does not provide itself
+
+Three things a host reverse proxy is commonly relied on for are implemented
+nowhere inside this stack. A deployment that reaches the published ports
+directly — a tunnel daemon connecting to `127.0.0.1:3001`, for instance — never
+had them, and a deployment that retires its proxy loses them silently, because
+nothing fails when they go missing:
+
+| Not implemented | What a proxy in front typically did |
+|---|---|
+| Next.js Server Action guard | Refuse requests carrying a `Next-Action` header (`if ($http_next_action) { return 403; }`), so console server actions cannot be invoked from outside the console |
+| Request body cap on `/v1/` | Bound completion request bodies (commonly `client_max_body_size 50m`). The gateway enforces no size limit of its own |
+| `X-Forwarded-For` rewriting | Overwrite a client-supplied chain, so only hops the proxy inserted reach the gateway |
+
+The third is worth separating from what the gateway *does* do: it reads
+forwarded headers, gated on `TRUST_PROXY_HEADERS` / `TRUST_CLOUDFLARE_HEADERS`,
+but it never rewrites them. With no rewriting hop in front, the leftmost
+`X-Forwarded-For` entry is whatever the caller sent — which is why
+`CF-Connecting-IP` is preferred when Cloudflare is the immediate proxy. See
+[Trusted proxies and client IPs](trusted-proxies-and-client-ips.md).
+
+This is recorded as a known gap, not a regression: whether to reimplement any
+of it in the application is an open decision.
+
 ## Everyday operations
 
 All from the repository root:
@@ -273,6 +297,39 @@ purpose:
   *refusing* a source — a discrete decision at a much higher threshold, naming
   an address. It is on because the source is sometimes the deployment's own;
   see the troubleshooting entry below.
+
+### What an auth alert tells you
+
+An auth-failure card names the sources and, where it can, the accounts behind
+them — the addresses they came from, how many distinct ones, the leading
+characters of the keys presented, why each failed, and the paths being hit. The
+recovery card carries the same picture of the incident that just closed, rather
+than only the rule's name: by the time a spike resolves, the window it breached
+on is empty, so the numbers have to come from a tally kept across the incident.
+
+Two of those lines are worth reading carefully:
+
+- **Known accounts.** Most auth failures are anonymous by construction — nobody
+  was authenticated, which is the failure. A named account means a key this
+  deployment *did* issue was presented and refused, with `credential_state`
+  saying why (`revoked`, `expired`, `user_suspended`). That is the actionable
+  case: a monitor, CI job or service account whose credential went stale.
+  Resolving the owner costs one indexed lookup per failed auth, bounded by the
+  shared rejection-enrichment budget and shed instantly under a flood; set
+  `AUTH_FAILURE_IDENTIFY_CALLER=false` to spend nothing and lose the line. Read
+  a named account as evidence and no named account as *unknown*, never as proof
+  the traffic is external: the lookup is shed during exactly the flood you are
+  investigating, and answers nothing on a timeout, a failed lookup, or with the
+  setting off.
+- **Arrived via peers.** Present only when the reported addresses did not come
+  off the socket. They are then only as trustworthy as the proxy that set them,
+  and a forged `X-Forwarded-For` is exactly how a source spreads its failures
+  across the blocklist's buckets. The line names the sockets they actually
+  arrived on.
+
+Counts marked `(capped)` are floors, not totals: a source rotating addresses
+faster than the tally tracks them stops being counted rather than being allowed
+to grow it without bound. Do not size an incident from a capped number.
 
 ## Database
 

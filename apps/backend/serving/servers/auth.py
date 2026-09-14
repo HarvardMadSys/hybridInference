@@ -308,6 +308,7 @@ async def _authenticate_by_api_key(
                 "remote_ip": ip_info.client_ip,
                 "peer_ip": ip_info.peer_ip,
                 "ip_source": ip_info.source,
+                "path": request.url.path,
                 "key_prefix": None,
                 "reason": "missing_api_key",
             },
@@ -339,6 +340,35 @@ async def _authenticate_by_api_key(
     user = await op_store.get_auth_context_by_key_hash(key_hash)
 
     if not user:
+        # Resolve who the key belongs to, through the same bounded lookup the
+        # ip_blocked path above uses. Not gated on ``rejection_logging_enabled``
+        # the way that path is: it answers False for every 401 by construction
+        # (#1370 excluded auth rejections from the rejection log), so gating on
+        # it here would mean never resolving anyone. The switch is
+        # ``auth_failure_identify_caller``, which says what this costs.
+        #
+        # Worth spending because a key that fails here is either nobody's or a
+        # deployment's own caller whose credential was rotated, revoked or
+        # expired, and only the second is something to go and fix. Unresolved,
+        # the two are the same anonymous 401 and the same auth-failure count --
+        # which is what left an operator reading a spike alert unable to tell a
+        # scanner from their own broken monitor. The lookup itself is sheddable
+        # (``_identify_rejected_caller`` runs under the enrichment budget), so
+        # this is *the* flood path and stays cheap under one.
+        rejected_caller: dict[str, Any] | None = None
+        try:
+            if get_settings().auth_failure_identify_caller:
+                rejected_caller = await _identify_rejected_caller(
+                    authorization, x_api_key, op_store
+                )
+        except Exception:
+            logger.exception(
+                "auth_failure_enrichment_failed",
+                extra={
+                    "event": "auth_failure_enrichment_failed",
+                    "remote_ip": ip_info.client_ip,
+                },
+            )
         logger.warning(
             "auth_failure",
             extra={
@@ -346,8 +376,15 @@ async def _authenticate_by_api_key(
                 "remote_ip": ip_info.client_ip,
                 "peer_ip": ip_info.peer_ip,
                 "ip_source": ip_info.source,
+                "path": request.url.path,
                 "key_prefix": api_key[:6] if api_key else None,
                 "reason": "invalid_api_key",
+                # Both absent for a key this deployment never issued, which is
+                # the common case and is itself the signal. ``credential_state``
+                # is why it was refused (revoked / expired / user_suspended);
+                # the caller is never authenticated here either way.
+                "user_id": (rejected_caller or {}).get("user_id"),
+                "credential_state": (rejected_caller or {}).get("credential_state"),
             },
         )
         await record_auth_failure(ip_info.client_ip)
@@ -357,7 +394,11 @@ async def _authenticate_by_api_key(
                 status_code=401,
                 error_code="auth_invalid",
                 reason=f"key_prefix={api_key[:6] if api_key else None}",
-                user=None,
+                # Same shape the ip_blocked row uses: carries
+                # ``credential_state``, so a row records what state the
+                # credential was in and keeps the owner out of ``user_id`` --
+                # see ``log_rejection``. ``None`` for an unresolved key.
+                user=rejected_caller,
             )
         )
         raise HTTPException(

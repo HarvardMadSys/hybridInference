@@ -126,6 +126,17 @@ class Settings(BaseSettings):
     # would otherwise take every user behind the IP offline. Entries that fail
     # to parse are logged and skipped.
     auth_failure_block_exempt_ips: str = ""
+    # Resolve who a rejected API key belongs to when auth fails, so the
+    # ``auth_failure`` log record (and any alert built from it) can name the
+    # account instead of only a count and an address. Worth having because the
+    # keys that fail here are either nobody's -- a scanner's random token -- or a
+    # deployment's own monitor, CI job or service account whose credential was
+    # rotated, revoked or expired, and only the second is something to go and
+    # fix. Costs one indexed lookup per failure, under the shared rejection
+    # enrichment budget (REJECTED_ENRICHMENT_MAX_CONCURRENT), so a flood sheds it
+    # instantly rather than queueing; the unbounded key lookup that already runs
+    # on this path is the larger cost of the two. Set false to spend nothing.
+    auth_failure_identify_caller: bool = True
 
     # Cloudflare Turnstile (signup captcha)
     turnstile_site_key: str = ""
@@ -179,6 +190,22 @@ class Settings(BaseSettings):
 
     # Enable RouteWise online routing subsystem (per-model opt-in via models.yaml)
     enable_routewise: bool = False
+
+    # Adaptive cap on the gateway's own outbound concurrency against one remote
+    # account (serving.adapters.upstream_limiter). One bucket per
+    # (provider label, API key); local inference servers are never limited.
+    # The limit starts at _initial, drops by one on every upstream 429, and
+    # probes upward by one every _probe_success_interval *successful (HTTP 200)
+    # responses*, staying within [1, _max]. Only a 200 advances that counter —
+    # an error is not evidence the provider has headroom. A request that finds
+    # its bucket full waits up to _acquire_timeout_sec for a slot before failing
+    # over to another endpoint, so the value should stay well under the
+    # client-facing request timeout.
+    upstream_concurrency_enabled: bool = True
+    upstream_concurrency_initial_limit: int = Field(default=8, ge=1)
+    upstream_concurrency_max_limit: int = Field(default=64, ge=1)
+    upstream_concurrency_probe_success_interval: int = Field(default=100, ge=1)
+    upstream_concurrency_acquire_timeout_sec: float = Field(default=30.0, gt=0.0)
 
     # Slack alerting (optional). Empty SLACK_WEBHOOK_URL disables the feature
     # entirely — no scheduler job is registered and no errors are raised.

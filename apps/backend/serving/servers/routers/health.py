@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from serving.config.settings import has_role
 from serving.observability.alerts import AlertSeverity, alert_on_transition
+from serving.observability.state_alert_policy import db_disconnect_policy
 from serving.servers.auth import is_user_auth_enabled, optional_verify_api_key
 from serving.servers.deps import (
     database_enabled,
@@ -151,7 +152,11 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
     # sinks unreachable spends their timeouts in sequence and a recovery may
     # additionally wait out an in-flight one. Awaiting that here would let an
     # alerting outage restart a healthy gateway.
-    if op_store:
+    db_policy = db_disconnect_policy()
+    # ``state_changes.db_disconnect.enabled: false`` skips the report entirely
+    # rather than sending and letting the sink drop it: a fresh process has no
+    # open incident to close, so nothing is stranded by not reporting.
+    if op_store and db_policy.enabled:
         _report_in_background(
             alert_on_transition(
                 key=f"db_disconnect:{op_status.get('backend', 'operational')}",
@@ -163,11 +168,11 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
                     "store": "operational_store",
                     "error": (op_error or "health_check returned False")[:500],
                 },
-                cooldown_sec=300,
+                cooldown_sec=db_policy.cooldown_sec,
                 kind="state",
             )
         )
-    if log_store:
+    if log_store and db_policy.enabled:
         _report_in_background(
             alert_on_transition(
                 key=f"db_disconnect:{log_status.get('backend', 'log')}_log",
@@ -179,7 +184,7 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
                     "store": "log_store",
                     "error": (log_error or "health_check returned False")[:500],
                 },
-                cooldown_sec=300,
+                cooldown_sec=db_policy.cooldown_sec,
                 kind="state",
             )
         )
@@ -367,6 +372,17 @@ async def deep_health(
     if overall == "unhealthy":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
+    # Routes automatic selection can never pick, with the mechanism that
+    # zeroed each one. Reported alongside `providers` rather than folded into
+    # it because the exclusion is per (model, endpoint) -- one endpoint can be
+    # live for one model and overridden to zero for another -- and because the
+    # remediation differs per cause. Deliberately does NOT feed `overall`: an
+    # operator zeroing a route is a decision, not an outage, and degrading the
+    # deployment's health on it would page for a working gateway.
+    route_exclusions = (
+        router_exec.get_route_exclusions() if hasattr(router_exec, "get_route_exclusions") else []
+    )
+
     return {
         "status": overall,
         "routes_configured": routes_count,
@@ -376,6 +392,7 @@ async def deep_health(
             "log_store": store_health["log_store"],
         },
         "providers": provider_status,
+        "route_exclusions": route_exclusions,
     }
 
 

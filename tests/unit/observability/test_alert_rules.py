@@ -10,8 +10,8 @@ import pytest
 
 import serving.observability.alerts as alerts_module
 from serving.observability.alert_config import AlertConfig
-from serving.observability.alert_rules import AlertEngine
-from serving.observability.alerts import reset_transition_state
+from serving.observability.alert_rules import AlertEngine, AuthIpBlockedRule
+from serving.observability.alerts import reset_transition_state, sweep_stale_breaches
 from serving.observability.log_handler import AlertingLogHandler
 from serving.utils.context import MODEL_NOT_FOUND
 
@@ -726,7 +726,7 @@ async def test_auth_ip_blocked_wave_delivers_one_named_message(monkeypatch):
 
     posted: list[dict] = []
 
-    async def _capture(_url, message):
+    async def _capture(_url, message, **_kwargs):
         posted.append(message)
         return True
 
@@ -758,6 +758,61 @@ async def test_auth_ip_blocked_wave_delivers_one_named_message(monkeypatch):
             assert "/admin/auth-blocks" in body, body
         finally:
             await engine.stop()
+
+
+async def test_auth_ip_blocked_closes_without_announcing_a_recovery(monkeypatch):
+    """The block outlasts the records, so no close this rule reaches is news.
+
+    ``utils/auth_failure_blocklist.py`` emits one record per blocking
+    *transition* and then returns early for an already-blocked bucket, while the
+    block stands for ``auth_failure_block_duration_sec`` (a day by default) --
+    orders of magnitude longer than this rule's staleness bound. The silence
+    that follows a block is therefore guaranteed rather than informative, and a
+    "Recovered (no recent samples)" card would read as though the source had
+    been let back in while it is still being refused.
+
+    Driven through the real rule and the real ``alert_slack``, not a mocked
+    transition: the card this suppresses is emitted by the sweep, which is
+    handed a bare key, so the opt-out only works if it survives the trip from
+    the rule into the tracker.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig().rules.auth_ip_blocked
+    rule = AuthIpBlockedRule(cfg)
+
+    posted: list[str] = []
+
+    async def _capture(_url, message, **_kwargs):
+        posted.append(message)
+        return True
+
+    clock = [1_000.0]
+    monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+
+    with patch("serving.observability.alerts._post_to_slack", new=_capture):
+        await rule.on_record(
+            _fake_event("auth_ip_blocked", ip_bucket="203.0.113.7", block_seconds=86400)
+        )
+        # The breach card is untouched -- it is the whole point of the rule.
+        assert len(posted) == 1, posted
+        assert alerts_module._EMOJI[alerts_module.AlertSeverity.WARN] in posted[0]
+        assert "Auth-failure blocklist refusing a source" in posted[0]
+
+        # No further blocking transitions: the records stop long before the
+        # block does, which is exactly what the sweep would call a recovery.
+        clock[0] += cfg.window_sec * 2 + 1
+        await sweep_stale_breaches()
+
+    assert len(posted) == 1, posted
+    # Silently, though -- the incident is closed, not left firing forever with a
+    # staleness bound and a silence registration behind it.
+    assert not alerts_module._TRANSITIONS.is_firing("auth_ip_blocked")
+    assert "auth_ip_blocked" not in alerts_module._TRANSITIONS._bounds
+    assert "auth_ip_blocked" not in alerts_module._SILENT_RESOLUTIONS
 
 
 async def test_auth_ip_blocked_can_be_turned_off(monkeypatch):
@@ -1672,3 +1727,709 @@ async def test_sweep_keeps_closing_after_one_resolution_fails(monkeypatch):
         await engine._sweep_stale_breaches()
 
     assert mock_alert.await_count == 2
+
+
+class TestAuthFailureSpikeNamesWhoAndWhere:
+    """A spike alert has to answer "where from" and "whose", not just "how many".
+
+    An operator who opens the card wants an address to block and an account to
+    repair. A count and a window name neither, which is what left the page
+    unactionable.
+    """
+
+    @staticmethod
+    def _rule(**overrides):
+        from serving.observability.alert_rules import AuthFailureSpikeRule
+
+        cfg = AlertConfig().rules.auth_failure_spike
+        cfg.enabled = True
+        cfg.window_sec = 60
+        cfg.threshold_count = 3
+        for key, value in overrides.items():
+            setattr(cfg, key, value)
+        return AuthFailureSpikeRule(cfg)
+
+    @staticmethod
+    async def _feed(rule, records):
+        """Drive the rule and return the mocked transition calls."""
+        with patch(
+            "serving.observability.alert_rules.alert_on_transition",
+            new=AsyncMock(),
+        ) as mock_transition:
+            for record in records:
+                await rule.on_record(record)
+            return mock_transition
+
+    @staticmethod
+    def _failure(**fields):
+        fields.setdefault("reason", "invalid_api_key")
+        fields.setdefault("ip_source", "socket")
+        return _fake_event("auth_failure", **fields)
+
+    async def test_breach_card_names_addresses_keys_accounts_and_paths(self):
+        rule = self._rule()
+        records = [
+            self._failure(
+                remote_ip="203.0.113.9",
+                peer_ip="203.0.113.9",
+                key_prefix="hyi-ab",
+                path="/v1/chat/completions",
+            )
+            for _ in range(4)
+        ]
+        # One failure from a key this deployment did issue, whose owner is the
+        # actionable half of the alert: a live account with a dead credential.
+        records.append(
+            self._failure(
+                remote_ip="198.51.100.4",
+                peer_ip="198.51.100.4",
+                key_prefix="hyi-zz",
+                path="/v1/models",
+                user_id="01MONITOR",
+                credential_state="revoked",
+            )
+        )
+
+        mock_transition = await self._feed(rule, records)
+        context = mock_transition.await_args.kwargs["context"]()
+
+        assert context["count"] == 5
+        assert context["distinct_ips"] == 2
+        assert "203.0.113.9 (4)" in context["top_ips"]
+        assert "hyi-ab (4)" in context["top_key_prefixes"]
+        assert "invalid_api_key (5)" in context["failure_reasons"]
+        assert "01MONITOR (revoked) (1)" in context["known_accounts"]
+        assert "/v1/chat/completions (4)" in context["top_paths"]
+
+    async def test_an_anonymous_wave_carries_no_empty_account_row(self):
+        """A row reading "n/a" is worse than no row: it invites a second look."""
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [self._failure(remote_ip="203.0.113.9", key_prefix="hyi-ab") for _ in range(4)],
+        )
+        context = mock_transition.await_args.kwargs["context"]()
+
+        assert "known_accounts" not in context
+        assert "top_paths" not in context
+
+    async def test_forwarded_addresses_are_shown_against_the_sockets_they_came_on(self):
+        """A spoofed ``X-Forwarded-For`` is how a source spreads across buckets.
+
+        The reported addresses are only as trustworthy as the proxy that set
+        them, so naming the socket they actually arrived on is what makes a
+        forged hop visible.
+        """
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [
+                self._failure(
+                    remote_ip=f"203.0.113.{n}",
+                    peer_ip="198.51.100.7",
+                    ip_source="x-forwarded-for",
+                    key_prefix="hyi-ab",
+                )
+                for n in range(5)
+            ],
+        )
+        context = mock_transition.await_args.kwargs["context"]()
+
+        assert context["distinct_ips"] == 5
+        assert "198.51.100.7 (5)" in context["arrived_via_peers"]
+
+    async def test_one_forwarded_failure_among_direct_ones_still_names_its_socket(self):
+        """Forwarding is a property of a record, not of the window.
+
+        A window holding a direct failure from A and a forwarded one from B
+        through peer A has every peer address also appearing as somebody's
+        reported address. Comparing the two sets over the window therefore finds
+        nothing and drops the line — hiding the one forged hop it exists for.
+        """
+        rule = self._rule()
+        records = [
+            self._failure(remote_ip="203.0.113.9", peer_ip="203.0.113.9", ip_source="socket")
+            for _ in range(4)
+        ]
+        records.append(
+            self._failure(
+                remote_ip="198.51.100.4",
+                peer_ip="203.0.113.9",
+                ip_source="x-forwarded-for",
+            )
+        )
+
+        mock_transition = await self._feed(rule, records)
+        context = mock_transition.await_args.kwargs["context"]()
+
+        # The socket the forged hop arrived on, counted once — not five times,
+        # which would name the four direct failures as forwarded too.
+        assert context["arrived_via_peers"] == "203.0.113.9 (1)"
+
+    async def test_a_wholly_direct_window_names_no_peers(self):
+        """Nothing was forwarded, so there is no second address to distrust."""
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [
+                self._failure(remote_ip="203.0.113.9", peer_ip="203.0.113.9", ip_source="socket")
+                for _ in range(5)
+            ],
+        )
+
+        assert "arrived_via_peers" not in mock_transition.await_args.kwargs["context"]()
+
+    async def test_forwarding_is_inferred_when_a_record_omits_ip_source(self):
+        """An older record still says the same thing, just less directly."""
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [
+                _fake_event(
+                    "auth_failure",
+                    reason="invalid_api_key",
+                    remote_ip="198.51.100.4",
+                    peer_ip="203.0.113.9",
+                )
+                for _ in range(5)
+            ],
+        )
+
+        assert mock_transition.await_args.kwargs["context"]()["arrived_via_peers"] == (
+            "203.0.113.9 (5)"
+        )
+
+    async def test_a_long_path_cannot_crowd_out_the_rest_of_the_card(self):
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [self._failure(remote_ip="203.0.113.9", path="/v1/" + "a" * 4000) for _ in range(4)],
+        )
+        context = mock_transition.await_args.kwargs["context"]()
+
+        assert "…" in context["top_paths"]
+        assert len(context["top_paths"]) < 120
+
+    async def test_recovery_card_describes_the_incident_not_the_empty_window(self):
+        """By the time a spike resolves, the window it breached on is empty.
+
+        Which is exactly why the recovery card used to name only the rule. The
+        tally runs across the incident instead.
+        """
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [
+                self._failure(
+                    remote_ip="203.0.113.9",
+                    key_prefix="hyi-ab",
+                    user_id="01MONITOR",
+                    credential_state="expired",
+                )
+                for _ in range(6)
+            ],
+        )
+        summary = mock_transition.await_args.kwargs["resolution_context"]()
+
+        # All six: the four that breached (threshold 3) plus the two that
+        # arrived while the incident was open. A total smaller than the peak it
+        # sits next to would just read as a bug.
+        assert summary["failures_in_incident"] == "6"
+        assert summary["peak_in_window"] == "6 per 60s"
+        assert summary["distinct_ips"] == 1
+        assert "203.0.113.9 (6)" in summary["top_ips"]
+        assert "01MONITOR (expired) (6)" in summary["known_accounts"]
+        assert summary["incident_duration_sec"] >= 0
+
+    async def test_the_tally_is_handed_over_once_and_reset(self):
+        """The next incident must not inherit this one's addresses."""
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule, [self._failure(remote_ip="203.0.113.9") for _ in range(5)]
+        )
+        resolution_context = mock_transition.await_args.kwargs["resolution_context"]
+
+        assert resolution_context()["distinct_ips"] == 1
+        # Empty rather than a repeat: the alerts layer snapshots the first
+        # answer for its retry path, so a second call has nothing left to say.
+        assert resolution_context() == {}
+
+    async def test_a_resolution_the_rule_never_saw_open_adds_nothing(self):
+        """A restart mid-incident leaves no tally; zeroes would read as measured."""
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule, [self._failure(remote_ip="203.0.113.9") for _ in range(2)]
+        )
+
+        assert mock_transition.await_args.kwargs["breached"] is False
+        assert mock_transition.await_args.kwargs["resolution_context"]() == {}
+
+    async def test_a_source_rotating_addresses_cannot_grow_the_tally(self):
+        """An incident lasts as long as the spike; its tally must not."""
+        from serving.observability.alert_rules import _MAX_TRACKED_OFFENDERS
+
+        rule = self._rule()
+        mock_transition = await self._feed(
+            rule,
+            [self._failure(remote_ip=f"203.0.113.{n}") for n in range(_MAX_TRACKED_OFFENDERS * 4)],
+        )
+        summary = mock_transition.await_args.kwargs["resolution_context"]()
+
+        assert summary["distinct_ips"] == _MAX_TRACKED_OFFENDERS
+        # The count is a floor, and the card says so rather than implying a
+        # total the reader could size the incident from.
+        assert "(capped)" in summary["failures_in_incident"]
+        assert "(capped)" in summary["top_ips"]
+
+
+# ----------------------------------------------------------------------
+# ClientErrorBurstRule / StreamFailureRateRule
+#
+# Both exist because of a production RCA: 306 user-visible failures on one
+# model over 14 days, on 14 of 14 days, and not one alert. A relayed upstream
+# 400 is invisible to ``fivexx_rate``, too small a share of traffic for
+# ``failed_request_rate``, and routed past the breaker on purpose so
+# ``circuit_open`` can never see it either.
+# ----------------------------------------------------------------------
+
+
+#: Stand-in for the kind of text a relayed provider error carries: the caller's
+#: own tool-call arguments, echoed back. It must never reach an alert payload.
+_POISONED_DETAIL = (
+    "Assistant tool call function.arguments must be valid JSON: "
+    '{"credential": "swordfish-42", "query": "quarterly revenue"}'
+)
+
+
+def _make_client_error_record(
+    endpoint_id: str = "sglang:10.0.0.7:30000",
+    status: int = 400,
+    detail: str = _POISONED_DETAIL,
+) -> logging.LogRecord:
+    """Build a record shaped like ``endpoint_health``'s client_error_skip_breaker."""
+    rec = logging.LogRecord(
+        name="routing.routers",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="client_error_skip_breaker",
+        args=None,
+        exc_info=None,
+    )
+    rec.event = "client_error_skip_breaker"
+    rec.endpoint_id = endpoint_id
+    rec.status = status
+    rec.detail = detail
+    return rec
+
+
+def _make_stream_failed_record(
+    model: str = "deepseek-v4-flash",
+    error_type: str = "HTTPStatusError",
+) -> logging.LogRecord:
+    """Build a record shaped like completions_stream's stream_failed event."""
+    rec = logging.LogRecord(
+        name="serving.servers.routers.completions_stream",
+        level=logging.ERROR,
+        pathname="",
+        lineno=0,
+        msg=f"Stream failed for model={model} request_id=rid-1",
+        args=None,
+        exc_info=None,
+    )
+    rec.event = "stream_failed"
+    rec.model = model
+    rec.error_type = error_type
+    return rec
+
+
+def _client_error_rule(**overrides):
+    from serving.observability.alert_config import ClientErrorBurstConfig
+    from serving.observability.alert_rules import ClientErrorBurstRule
+
+    defaults = {"enabled": True, "window_sec": 600, "threshold_count": 12, "cooldown_sec": 0}
+    return ClientErrorBurstRule(ClientErrorBurstConfig(**{**defaults, **overrides}))
+
+
+def _stream_failure_rule(**overrides):
+    from serving.observability.alert_config import StreamFailureRateConfig
+    from serving.observability.alert_rules import StreamFailureRateRule
+
+    defaults = {"enabled": True, "window_sec": 600, "threshold_count": 8, "cooldown_sec": 0}
+    return StreamFailureRateRule(StreamFailureRateConfig(**{**defaults, **overrides}))
+
+
+def test_client_error_burst_config_parses() -> None:
+    """The overlay's documented fields and defaults."""
+    from serving.observability.alert_config import ClientErrorBurstConfig
+
+    cfg = ClientErrorBurstConfig()
+    assert cfg.enabled is True
+    assert cfg.window_sec == 600
+    assert cfg.threshold_count == 12
+    assert cfg.cooldown_sec == 3600
+
+
+async def test_client_error_burst_stays_silent_at_threshold() -> None:
+    """Exactly ``threshold_count`` in-window is tolerated (strict ``>``)."""
+    rule = _client_error_rule()
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(12):
+            await rule.on_record(_make_client_error_record())
+
+    assert mock_alert.await_count == 0
+
+
+async def test_client_error_burst_fires_past_threshold_naming_the_endpoint() -> None:
+    """The card carries what an operator acts on: endpoint, status, count."""
+    rule = _client_error_rule()
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(12):
+            await rule.on_record(_make_client_error_record())
+        await rule.on_record(_make_client_error_record(status=422))
+
+    assert mock_alert.await_count >= 1
+    payload = mock_alert.call_args_list[0].args[2]
+    assert payload["count"] == 13
+    assert payload["window_sec"] == 600
+    assert "sglang:10.0.0.7:30000 (13)" in payload["top_endpoints"]
+    assert "400 (12)" in payload["top_status_codes"]
+    assert "422 (1)" in payload["top_status_codes"]
+
+
+async def test_client_error_burst_payload_carries_no_user_content() -> None:
+    """``detail`` quotes the caller's request back; it must not reach Slack.
+
+    ``endpoint_health._detail_str`` only truncates and normalizes whitespace —
+    it does not redact — so the field is deliberately never read by the rule.
+    """
+    rule = _client_error_rule()
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(13):
+            await rule.on_record(_make_client_error_record())
+
+    body = json.dumps(mock_alert.call_args_list[0].args[2])
+    assert "swordfish-42" not in body
+    assert "quarterly revenue" not in body
+    assert _POISONED_DETAIL not in body
+    assert "detail" not in mock_alert.call_args_list[0].args[2]
+
+
+async def test_client_error_burst_cooldown_suppresses_the_repeat(monkeypatch) -> None:
+    """A wave posts one message, not one per breaching evaluation.
+
+    Patched at ``_post_to_slack`` rather than ``alert_slack`` so the real
+    dedupe and cooldown run — mocking the sink would assert on payloads no
+    operator ever receives.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+    rule = _client_error_rule(cooldown_sec=3600)
+    posted: list[dict] = []
+
+    async def _capture(_url, message, **_kwargs):
+        posted.append(message)
+        return True
+
+    with patch("serving.observability.alerts._post_to_slack", new=_capture):
+        for _ in range(40):
+            await rule.on_record(_make_client_error_record())
+
+    assert len(posted) == 1, posted
+    assert "Client-error burst relayed from upstream" in json.dumps(posted[0])
+
+
+async def test_client_error_burst_ignores_records_without_the_event() -> None:
+    """The rule selects on the structured attribute, never on the message text.
+
+    The alert handler is installed on the root logger, so the alerting path's
+    own records are fed straight back in. None of them carries an ``event``
+    attribute — which is what makes the feedback loop impossible rather than
+    merely unlikely. A record whose *message* is the formatted event line, as
+    the alerting path would re-log it, must count for nothing.
+    """
+    rule = _client_error_rule(threshold_count=1)
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(20):
+            echoed = logging.LogRecord(
+                name="serving.observability.alerts",
+                level=logging.ERROR,
+                pathname="",
+                lineno=0,
+                msg=(
+                    'client_error_skip_breaker event="client_error_skip_breaker" '
+                    'endpoint_id="sglang:10.0.0.7:30000" status=400'
+                ),
+                args=None,
+                exc_info=None,
+            )
+            await rule.on_record(echoed)
+        # A different structured event must not count either.
+        await rule.on_record(_make_stream_failed_record())
+
+    assert mock_alert.await_count == 0
+
+
+async def test_client_error_burst_disabled_does_not_fire() -> None:
+    """``enabled: false`` leaves the log record as the only trace."""
+    rule = _client_error_rule(enabled=False, threshold_count=0)
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(10):
+            await rule.on_record(_make_client_error_record())
+
+    assert mock_alert.await_count == 0
+
+
+def test_stream_failure_rate_config_parses() -> None:
+    """A **count**, not a percentage: the log line carries no denominator."""
+    from serving.observability.alert_config import StreamFailureRateConfig
+
+    cfg = StreamFailureRateConfig()
+    assert cfg.enabled is True
+    assert cfg.window_sec == 600
+    assert cfg.threshold_count == 8
+    assert cfg.cooldown_sec == 3600
+    # The ``_rate`` suffix is historical naming, not a percentage: nothing in
+    # the emitting codepath counts the streams that finished, so a
+    # ``threshold_pct`` would be measured against a denominator the rule cannot
+    # see. Asserted so a future "consistency" refactor has to argue with a test.
+    assert not hasattr(cfg, "threshold_pct")
+    assert not hasattr(cfg, "min_samples")
+
+
+async def test_stream_failure_rate_stays_silent_at_threshold() -> None:
+    """Exactly ``threshold_count`` in-window is tolerated (strict ``>``)."""
+    rule = _stream_failure_rule()
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(8):
+            await rule.on_record(_make_stream_failed_record())
+
+    assert mock_alert.await_count == 0
+
+
+async def test_stream_failure_rate_fires_past_threshold_naming_the_model() -> None:
+    """The card carries the model, the count, and the exception classes."""
+    rule = _stream_failure_rule()
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(8):
+            await rule.on_record(_make_stream_failed_record())
+        await rule.on_record(_make_stream_failed_record(error_type="IndexError"))
+
+    assert mock_alert.await_count >= 1
+    payload = mock_alert.call_args_list[0].args[2]
+    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["count"] == 9
+    assert payload["window_sec"] == 600
+    assert "HTTPStatusError (8)" in payload["top_error_types"]
+    assert "IndexError (1)" in payload["top_error_types"]
+    assert "deepseek-v4-flash" in mock_alert.call_args_list[0].args[1]
+
+
+async def test_stream_failure_rate_is_scoped_per_model() -> None:
+    """One model's failures must not push another over its own threshold."""
+    rule = _stream_failure_rule()
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(8):
+            await rule.on_record(_make_stream_failed_record(model="model-a"))
+        for _ in range(8):
+            await rule.on_record(_make_stream_failed_record(model="model-b"))
+        # 16 failures deployment-wide, neither model past its own threshold.
+        assert mock_alert.await_count == 0
+
+        await rule.on_record(_make_stream_failed_record(model="model-a"))
+
+    assert mock_alert.await_count >= 1
+    payload = mock_alert.call_args_list[0].args[2]
+    assert payload["model"] == "model-a"
+    # Its own window only — model-b's eight are not in this count.
+    assert payload["count"] == 9
+
+
+async def test_stream_failure_rate_cooldowns_are_per_model(monkeypatch) -> None:
+    """Two sick models are two incidents; one model's wave is one message."""
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+    rule = _stream_failure_rule(cooldown_sec=3600)
+    posted: list[dict] = []
+
+    async def _capture(_url, message, **_kwargs):
+        posted.append(message)
+        return True
+
+    with patch("serving.observability.alerts._post_to_slack", new=_capture):
+        for _ in range(30):
+            await rule.on_record(_make_stream_failed_record(model="model-a"))
+        assert len(posted) == 1, posted
+        for _ in range(30):
+            await rule.on_record(_make_stream_failed_record(model="model-b"))
+
+    # One per model, not one per breaching evaluation.
+    assert len(posted) == 2, posted
+    bodies = json.dumps(posted)
+    assert "model-a" in bodies
+    assert "model-b" in bodies
+
+
+async def test_stream_failure_rate_payload_carries_no_user_content() -> None:
+    """Only the exception class name, never a message that could quote a request."""
+    rule = _stream_failure_rule()
+    leaky = "BadRequestError: invalid tool arguments {'credential': 'swordfish-42'}"
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(9):
+            rec = _make_stream_failed_record()
+            # A record carrying the full text anyway must not widen the payload.
+            rec.detail = leaky
+            rec.error = leaky
+            await rule.on_record(rec)
+
+    payload = mock_alert.call_args_list[0].args[2]
+    assert set(payload) == {"model", "count", "window_sec", "top_error_types"}
+    assert "swordfish-42" not in json.dumps(payload)
+
+
+async def test_stream_failure_rate_ignores_records_without_the_event() -> None:
+    """As for the client-error burst: structured attribute, not message text."""
+    rule = _stream_failure_rule(threshold_count=1)
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(20):
+            echoed = logging.LogRecord(
+                name="serving.observability.alert_rules",
+                level=logging.ERROR,
+                pathname="",
+                lineno=0,
+                msg="Stream failed for model=deepseek-v4-flash request_id=rid-1",
+                args=None,
+                exc_info=None,
+            )
+            await rule.on_record(echoed)
+        await rule.on_record(_make_client_error_record())
+
+    assert mock_alert.await_count == 0
+
+
+async def test_stream_failure_rate_disabled_does_not_fire() -> None:
+    """``enabled: false`` leaves the log record as the only trace."""
+    rule = _stream_failure_rule(enabled=False, threshold_count=0)
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new_callable=AsyncMock,
+    ) as mock_alert:
+        for _ in range(10):
+            await rule.on_record(_make_stream_failed_record())
+
+    assert mock_alert.await_count == 0
+
+
+def test_overlay_yaml_keys_reach_the_rules(tmp_path) -> None:
+    """The exact block from the overlay's alerts.yaml lands on the rule objects.
+
+    This is the contract the config PR (HarvardMadSys/freeInference#153) shipped
+    against. ``AlertConfig`` ignores unknown keys silently, so a mismatched
+    field name here is not a boot failure — it is a rule running on defaults
+    nobody chose, with nothing to say so. Hence an end-to-end assertion from
+    YAML text through ``_build_rules`` rather than a model-only check.
+    """
+    from serving.observability.alert_config import load_alert_config
+    from serving.observability.alert_rules import ClientErrorBurstRule, StreamFailureRateRule
+
+    p = tmp_path / "alerts.yaml"
+    p.write_text(
+        """
+rules:
+  client_error_burst:
+    enabled: true
+    window_sec: 600
+    threshold_count: 12
+    cooldown_sec: 3600
+  stream_failure_rate:
+    enabled: true
+    window_sec: 600
+    threshold_count: 8
+    cooldown_sec: 3600
+"""
+    )
+    cfg = load_alert_config(p)
+
+    engine = AlertEngine(
+        handler=AlertingLogHandler(maxsize=10),
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+    engine._build_rules()
+    by_name = {rule.name: rule for rule in engine._rules}
+
+    burst = by_name["client_error_burst"]
+    assert isinstance(burst, ClientErrorBurstRule)
+    assert burst._cfg.enabled is True
+    assert burst._cfg.window_sec == 600
+    assert burst._cfg.threshold_count == 12
+    assert burst._cfg.cooldown_sec == 3600
+
+    streams = by_name["stream_failure_rate"]
+    assert isinstance(streams, StreamFailureRateRule)
+    assert streams._cfg.enabled is True
+    assert streams._cfg.window_sec == 600
+    assert streams._cfg.threshold_count == 8
+    assert streams._cfg.cooldown_sec == 3600
+
+
+def test_stream_failed_fields_survive_log_formatters() -> None:
+    """The extras the rule selects on must survive JSON and plain formatting."""
+    from serving.utils.logging import JsonFormatter, PlainFormatter
+
+    record = _make_stream_failed_record()
+    payload = json.loads(JsonFormatter().format(record))
+    plain = PlainFormatter("%(message)s").format(record)
+
+    assert payload["event"] == "stream_failed"
+    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["error_type"] == "HTTPStatusError"
+    assert 'model="deepseek-v4-flash"' in plain
+    assert 'error_type="HTTPStatusError"' in plain

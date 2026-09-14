@@ -485,6 +485,41 @@ async def test_slack_post_failure_is_swallowed():
 
 
 @pytest.mark.asyncio
+async def test_slack_post_does_not_leak_the_webhook_into_the_httpx_log(caplog):
+    """The legacy sender holds the same credential as the framework one.
+
+    A Slack incoming-webhook URL *is* the secret, and httpx logs the full
+    request URL at INFO for every call, so this sender leaked it exactly like
+    ``_post_to_slack`` did. Driven over a real client with a mock transport
+    because the leaking line is httpx's, not this module's.
+    """
+    import logging
+
+    import httpx
+
+    from serving.admin.failed_request_alerter import post_slack_alert
+
+    webhook = "https://hooks.slack.test/services/T00000000/B00000000/nOtArEaLtOkEn"
+    real_client = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(lambda _req: httpx.Response(200))
+        return real_client(*args, **kwargs)
+
+    with (
+        patch("serving.admin.failed_request_alerter.httpx.AsyncClient", factory),
+        caplog.at_level(logging.DEBUG),
+    ):
+        ok = await post_slack_alert(webhook, "hi")
+
+    assert ok is True
+    assert webhook not in caplog.text
+    assert "nOtArEaLtOkEn" not in caplog.text
+    # Redacted rather than muted: the call is still in the log.
+    assert "hooks.slack.test" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_slack_post_non_2xx_returns_false():
     """A non-2xx response must be treated as a failed post (False)."""
     from serving.admin.failed_request_alerter import post_slack_alert

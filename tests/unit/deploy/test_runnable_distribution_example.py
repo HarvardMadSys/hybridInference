@@ -154,17 +154,69 @@ def test_stage_one_volume_requires_no_production_database() -> None:
     """Check the fresh-host contract even when the runner has no Docker CLI."""
     base = yaml.safe_load(BASE_COMPOSE.read_text())
     override = yaml.safe_load(EXAMPLE_COMPOSE.read_text())
-    merged = dict(base["volumes"]["postgres_data"])
-    merged.update(override["volumes"]["postgres_data"])
 
-    assert merged["external"] is False
-    assert merged["name"] == (
-        "${COMPOSE_PROJECT_NAME:-hybridinference-example}_unused_postgres_data"
-    )
+    # The production stack keeps its external volume, untouched.
     assert base["volumes"]["postgres_data"] == {
         "external": True,
         "name": "hybridinference_postgres_data",
     }
+    assert base["services"]["postgres"]["volumes"] == ["postgres_data:/var/lib/postgresql/data"]
+
+    # Compose provisions the volumes of every service in the graph it resolves,
+    # including the ones `--no-deps` never starts, so the example has to move
+    # its postgres mount out of the way rather than rename the declaration:
+    # a declared volume no service references is created by `up` and skipped by
+    # `down --volumes`, which stranded one named volume per CI run.
+    assert "volumes" not in override
+    assert override["services"]["postgres"]["volumes"] == [
+        {"type": "tmpfs", "target": "/var/lib/postgresql/data"}
+    ]
+
+
+def test_stage_one_creates_no_docker_volumes() -> None:
+    """CI names a Compose project per run, so a stranded volume is permanent.
+
+    `up` creates every volume the resolved services reference -- `--no-deps`
+    only skips starting them -- while `down --volumes` removes only the volumes
+    its services still reference. A Stage 1 model that declares a volume nobody
+    mounts therefore leaks exactly one named volume per project, which on the
+    self-hosted runners is one per CI run, kept until someone prunes by hand.
+    """
+    if shutil.which("docker") is None:
+        pytest.skip("Docker Compose is not installed")
+
+    proc = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(BASE_COMPOSE),
+            "-f",
+            str(EXAMPLE_COMPOSE),
+            "--env-file",
+            str(EXAMPLE / "deploy" / "backend.env"),
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=REPO,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0 and "compose is not a docker command" in proc.stderr.lower():
+        pytest.skip("Docker Compose is not installed")
+    assert proc.returncode == 0, proc.stderr
+    rendered = json.loads(proc.stdout)
+
+    assert not rendered.get("volumes"), (
+        "Stage 1 declares a volume no service mounts: Compose creates it on "
+        "`up` and `down --volumes` will not take it away again"
+    )
+    assert rendered["services"]["postgres"]["volumes"] == [
+        {"type": "tmpfs", "target": "/var/lib/postgresql/data"}
+    ]
 
 
 def test_demo_compose_is_an_explicit_full_local_third_layer() -> None:

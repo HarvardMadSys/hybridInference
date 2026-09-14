@@ -39,7 +39,7 @@ class CompletionsLogger:
         """Create a logger.
 
         Args:
-            log_store: ``LogStore`` instance (Postgres / D1 / dual-write).
+            log_store: ``LogStore`` instance (Postgres).
                 ``None``-tolerant: ``schedule_log`` no-ops when this is
                 ``None``, so callers do not need to pre-gate.
             model_router_registry: Accepted for backward-compat with

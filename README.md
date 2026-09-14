@@ -5,6 +5,11 @@ models and external model APIs to a team. It is developed by the
 [Harvard MadSys Lab](https://juncheng.seas.harvard.edu/) at Harvard SEAS and powers
 [FreeInference](https://freeinference.org/).
 
+<p align="center">
+<a href="https://doc.hybridinference.org/"><b>Documentation</b></a> |
+<a href="https://join.slack.com/t/hybridinference/shared_invite/zt-4a6csrbu8-JgrTHo_CgcK6G0FnejGwfw"><b>Join Slack</b></a>
+</p>
+
 ## Who It's For
 
 Labs and teams serving LLMs to their members from their own GPUs, external
@@ -109,7 +114,9 @@ row describes you:
 | Send a change | [Contributing](docs/developer/contributing.md) |
 
 Bugs and questions go to the
-[issue tracker](https://github.com/HarvardMadSys/hybridInference/issues).
+[issue tracker](https://github.com/HarvardMadSys/hybridInference/issues), and
+development discussion happens in the
+[Slack workspace](https://join.slack.com/t/hybridinference/shared_invite/zt-4a6csrbu8-JgrTHo_CgcK6G0FnejGwfw).
 Security reports have their own channel — see [SECURITY.md](SECURITY.md).
 
 **See one in production:** [FreeInference](https://freeinference.org/) is a

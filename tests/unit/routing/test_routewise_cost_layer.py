@@ -112,6 +112,125 @@ def test_envelope_floor_fallback_keeps_bounded_ratio():
 
 
 @pytest.mark.unit
+def test_envelope_caps_retained_samples_at_max_samples():
+    """The window keeps the newest ``max_samples`` costs, not every one of them.
+
+    Without a cap the window holds one sample per request for its whole
+    duration, so both its memory and the cost of the snapshot sort grow with
+    traffic.
+    """
+    estimator = CostEnvelopeEstimator(
+        lower_percentile=0,
+        upper_percentile=100,
+        min_samples=1,
+        max_samples=3,
+    )
+
+    for i in range(10):
+        estimator.observe("m", 0.001 * (i + 1), now=float(i))
+
+    snap = estimator.snapshot("m", now=9.0)
+    assert snap is not None
+    assert snap.sample_count == 3
+    # Newest three: 0.008, 0.009, 0.010.
+    assert snap.lower == pytest.approx(0.008)
+    assert snap.upper == pytest.approx(0.010)
+
+
+@pytest.mark.unit
+def test_envelope_sample_cap_never_starves_calibration():
+    """A cap below ``min_samples`` is raised to it, not honored literally.
+
+    ``snapshot`` reports uncalibrated until the window holds ``min_samples``
+    entries, so a smaller cap would be a permanent floor on calibration rather
+    than a bound on cost: the pool could never calibrate however much traffic
+    arrived, failing a quota-only model's startup validation outright and
+    masking a mixed model's quota leg forever.
+    """
+    estimator = CostEnvelopeEstimator(
+        lower_percentile=0,
+        upper_percentile=100,
+        min_samples=50,
+        max_samples=10,
+        window_sec=10_000.0,
+    )
+
+    for i in range(500):
+        estimator.observe("m", 0.001 * (i % 7 + 1), now=float(i))
+
+    snap = estimator.snapshot("m", now=500.0)
+    assert snap is not None
+    assert snap.sample_count == 50
+
+
+@pytest.mark.unit
+def test_envelope_sample_cap_is_honored_when_it_clears_min_samples():
+    """The ordinary case still retains exactly ``max_samples``."""
+    estimator = CostEnvelopeEstimator(min_samples=1, max_samples=10, window_sec=10_000.0)
+
+    for i in range(500):
+        estimator.observe("m", 0.001 * (i % 7 + 1), now=float(i))
+
+    assert estimator.sample_count("m", now=500.0) == 10
+
+
+@pytest.mark.unit
+def test_envelope_reuses_a_calibrated_snapshot_within_the_cache_ttl():
+    """L/U describes hours of workload, so it is not re-derived per request."""
+    estimator = CostEnvelopeEstimator(
+        lower_percentile=0,
+        upper_percentile=100,
+        min_samples=1,
+        cache_ttl_sec=5.0,
+    )
+    estimator.observe("m", 0.01, now=0.0)
+    first = estimator.snapshot("m", now=0.0)
+    assert first is not None
+    assert first.upper == pytest.approx(0.01)
+
+    # A far pricier sample lands inside the TTL: the cached answer still stands.
+    estimator.observe("m", 10.0, now=1.0)
+    assert estimator.snapshot("m", now=1.0) is first
+
+    # Past the TTL the new sample is priced in.
+    refreshed = estimator.snapshot("m", now=6.0)
+    assert refreshed is not None
+    assert refreshed.upper == pytest.approx(10.0)
+
+
+@pytest.mark.unit
+def test_envelope_cache_never_delays_a_cold_pool_calibration():
+    """A cached ``None`` is dropped on the next sample, not held for the TTL."""
+    estimator = CostEnvelopeEstimator(min_samples=1, cache_ttl_sec=300.0)
+
+    assert estimator.snapshot("m", now=0.0) is None
+
+    estimator.observe("m", 0.01, now=1.0)
+
+    assert estimator.snapshot("m", now=1.0) is not None
+
+
+@pytest.mark.unit
+def test_envelope_cache_is_ignored_when_the_caller_clock_moves_backwards():
+    """A replayed timeline must not read an entry computed ahead of it."""
+    estimator = CostEnvelopeEstimator(
+        lower_percentile=0,
+        upper_percentile=100,
+        min_samples=1,
+        window_sec=1000.0,
+        cache_ttl_sec=60.0,
+    )
+    estimator.observe("m", 0.02, now=500.0)
+    assert estimator.snapshot("m", now=500.0) is not None
+
+    estimator.observe("m", 0.05, now=100.0)
+    earlier = estimator.snapshot("m", now=100.0)
+
+    assert earlier is not None
+    assert earlier.upper == pytest.approx(0.05)
+
+
+@pytest.mark.unit
 def test_envelope_supports_concurrent_observe_and_snapshot():
     estimator = CostEnvelopeEstimator(
         lower_percentile=0,

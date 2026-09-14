@@ -27,6 +27,8 @@ import random
 import threading
 import time
 import uuid
+import weakref
+from collections import deque
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -138,6 +140,154 @@ async def _await_cancelled_child(task: asyncio.Task[Any]) -> None:
     current = asyncio.current_task()
     if current is not None and current.cancelling():
         raise asyncio.CancelledError
+
+
+_PROBE_LIMIT_CLAIMS: weakref.WeakKeyDictionary[Any, int] = weakref.WeakKeyDictionary()
+_PROBE_LIMIT_LOCK = threading.Lock()
+
+
+def _claim_probe_limit(owner: Any, limit: int) -> None:
+    """Register *owner*'s ``routewise_probe_max_concurrency``.
+
+    Called when a router is built, which is before any router can probe, so the
+    effective cap is known in full by the time the first slot is granted. A cap
+    learned instead at acquisition would arrive too late: a router configured
+    for four could take four slots in the window before a router configured for
+    one first asked, and slots already granted cannot be recalled.
+
+    The claim is weak and lasts the router's lifetime rather than ending at
+    ``stop()``. That is the liveness signal we actually want: ``stop()`` cancels
+    the background loop but not a manual ``run_probe_once`` from
+    ``/probes/run``, which runs outside the model transition lock, so a
+    retirement can land while a probe is still on the wire -- and a probe holds
+    a reference to its router, so a router that is collectable is one with no
+    probe left to finish. Releasing at ``stop()`` would instead raise the cap
+    under that in-flight probe and let a sibling configured higher join it.
+    A stale claim only over-serializes probing, which is the safe direction.
+    """
+    with _PROBE_LIMIT_LOCK:
+        _PROBE_LIMIT_CLAIMS[owner] = max(int(limit), 1)
+
+
+def _effective_probe_limit() -> int:
+    """The lowest limit any live router claims; 1 when none has."""
+    with _PROBE_LIMIT_LOCK:
+        return min(_PROBE_LIMIT_CLAIMS.values(), default=1)
+
+
+class _ProbeConcurrencyGate:
+    """Process-wide cap on RouteWise latency probes in flight.
+
+    ``routewise_probe_max_concurrency`` says how much probe traffic the gateway
+    may put on its providers at once, but every RouteWise model builds its own
+    router with its own probe loop, so a semaphore owned by one router
+    multiplies the configured cap by the number of models. Models that share a
+    provider subscription then probe it at the same moment, and the provider
+    answers the collision with its own concurrency error -- which lands on
+    whichever request happens to be in flight, real traffic included, rather
+    than on the probe that caused it.
+
+    One gate per event loop makes the setting mean what it says. Capacity is
+    the lowest limit any router claims: routers normally agree, and where they
+    disagree the model that wants a single probe is the one whose provider
+    cannot take two.
+
+    The guarantee is forward-looking, not retroactive. A router built while
+    another is mid-cycle -- an admin strategy change, a runtime model publish --
+    lowers the cap for every probe not yet dispatched, and the gate then grants
+    nothing further until the overlap has drained to the new limit. It cannot
+    shrink the overlap already on the wire, because no client-side action
+    un-sends a request that has left; a probe is one 8-token call, so that
+    residue is bounded by ``routewise_probe_timeout_sec``.
+    """
+
+    def __init__(self) -> None:
+        self._active = 0
+        self._waiters: deque[asyncio.Future[None]] = deque()
+
+    @property
+    def limit(self) -> int:
+        """Effective cap across every router that has claimed one."""
+        return _effective_probe_limit()
+
+    @property
+    def active(self) -> int:
+        """Probes currently holding a slot."""
+        return self._active
+
+    @contextlib.asynccontextmanager
+    async def slot(self) -> AsyncIterator[None]:
+        """Hold one probe slot for the duration of the block."""
+        await self._acquire()
+        try:
+            yield
+        finally:
+            self._release()
+
+    async def _acquire(self) -> None:
+        if self._active < self.limit:
+            self._active += 1
+            return
+        waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._waiters.append(waiter)
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            if waiter.done() and not waiter.cancelled():
+                # The slot was handed over before the cancellation landed. Pass
+                # it on rather than lose it: a slot that leaks here is gone for
+                # the life of the process, and at the default limit of 1 that
+                # ends probing altogether.
+                self._release()
+            else:
+                with contextlib.suppress(ValueError):
+                    self._waiters.remove(waiter)
+            raise
+
+    def _release(self) -> None:
+        """Hand the slot on, plus any others the current limit now allows.
+
+        The loop condition already admits exactly one waiter per release while
+        the cap holds steady. It drains further only when the cap has risen
+        since these probes queued -- a retired router's claim expiring -- which
+        is the one case where waking a single waiter would leave a whole queued
+        cycle serialized at a limit nothing configures any more. A claim expires
+        by garbage collection, which has no usable hook and can run on any
+        thread, so the refill lands on the next release rather than the instant
+        the cap rises.
+
+        Deliberately synchronous: releasing from a ``finally`` that is already
+        unwinding a cancellation must not await, or the release is itself
+        cancelled and the slot is lost.
+        """
+        self._active = max(self._active - 1, 0)
+        limit = self.limit
+        while self._waiters and self._active < limit:
+            waiter = self._waiters.popleft()
+            if waiter.done():
+                continue
+            self._active += 1
+            waiter.set_result(None)
+
+
+_PROBE_GATES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _ProbeConcurrencyGate] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _probe_concurrency_gate() -> _ProbeConcurrencyGate:
+    """Return this event loop's probe gate, creating it on first use.
+
+    Keyed by loop rather than kept as one module-level object because asyncio
+    futures belong to the loop that created them, and every ``asyncio.run`` --
+    each test included -- brings a fresh loop.
+    """
+    loop = asyncio.get_running_loop()
+    gate = _PROBE_GATES.get(loop)
+    if gate is None:
+        gate = _ProbeConcurrencyGate()
+        _PROBE_GATES[loop] = gate
+    return gate
 
 
 @dataclass(frozen=True)
@@ -280,6 +430,10 @@ class RouteWiseRouter:
 
         self.route_table = route_table
         self.config = config
+        # Claimed here, not when this router first probes: every RouteWise
+        # router is built before any of them starts a probe loop, so the shared
+        # gate knows the whole set of limits before it grants its first slot.
+        _claim_probe_limit(self, self.config.routewise_probe_max_concurrency)
         self._rng = random.Random(self.config.random_seed)
         self.reference_api_price = self._parse_reference_api_price(config.reference_api_price)
         self.route_candidates: dict[str, list[RouteProviderCandidate]] = {}
@@ -289,6 +443,10 @@ class RouteWiseRouter:
         self._adapter_endpoint_ids: dict[int, str] = {}
         self._endpoint_adapter: dict[str, Any] = {}
         self._endpoint_models: dict[str, set[str]] = {}
+        # Canonical model ids with at least one quota route. The envelope is
+        # priced into quota candidates only, so models outside this set never
+        # need an L/U snapshot; see _select_decision_locked.
+        self._quota_bearing_models: set[str] = set()
         # Canonical model ids this router is responsible for. ``None`` means
         # "every model in the attached table" and is only correct for a router
         # that genuinely serves the whole table. The registry narrows this to
@@ -306,6 +464,8 @@ class RouteWiseRouter:
             upper_percentile=self.config.envelope_upper_percentile,
             window_sec=self.config.envelope_window_hours * 3600.0,
             min_samples=self.config.envelope_min_samples,
+            max_samples=self.config.envelope_max_samples,
+            cache_ttl_sec=self.config.envelope_cache_ttl_sec,
         )
         self.quota_snapshots = ProviderQuotaSnapshotStore()
         # One resource manager per pool id, built from route-level policies.
@@ -476,11 +636,14 @@ class RouteWiseRouter:
         self._adapter_endpoint_ids = {}
         self._endpoint_adapter = {}
         self._endpoint_models = {}
+        self._quota_bearing_models = set()
         self._latency_profiles = {}
         self._latency_history_priors_ms = {}
         self._classify_all()
         self._build_resource_pools()
         for model_id, candidates in self.route_candidates.items():
+            if any(candidate.provider_type is ProviderType.QUOTA for candidate in candidates):
+                self._quota_bearing_models.add(model_id)
             for candidate in candidates:
                 adapter = candidate.adapter
                 self._adapter_provider_type[id(adapter)] = candidate.provider_type
@@ -769,6 +932,13 @@ class RouteWiseRouter:
         LP. Provider failures are recorded as failed latency outcomes so they
         receive the normal RouteWise 60s error penalty.
 
+        ``routewise_probe_max_concurrency`` is enforced across every RouteWise
+        router in the process rather than per router, so two models that share
+        one provider subscription cannot probe it at the same moment — see
+        ``_ProbeConcurrencyGate``. A manual probe from the admin console queues
+        behind the background loops for the same reason. The cap covers the
+        provider call only; sample recording and persistence happen outside it.
+
         Endpoints whose catalog entry is ``on_demand: true`` are never probed,
         even when named explicitly via ``endpoint_id`` — see ``_probe_targets``.
         """
@@ -783,13 +953,7 @@ class RouteWiseRouter:
             self._last_probe_results = []
             return []
 
-        semaphore = asyncio.Semaphore(max(int(self.config.routewise_probe_max_concurrency), 1))
-
-        async def _guarded_probe(target_endpoint: str) -> RouteWiseProbeResult:
-            async with semaphore:
-                return await self._probe_endpoint(target_endpoint)
-
-        results = await asyncio.gather(*(_guarded_probe(endpoint) for endpoint in endpoints))
+        results = await asyncio.gather(*(self._probe_endpoint(endpoint) for endpoint in endpoints))
         self._last_probe_results = list(results)
         return list(results)
 
@@ -838,11 +1002,17 @@ class RouteWiseRouter:
     async def _probe_endpoint(self, endpoint_id: str) -> RouteWiseProbeResult:
         adapter = self._endpoint_adapter[endpoint_id]
         model_id = sorted(self._endpoint_models.get(endpoint_id) or {adapter.config.id})[0]
+        # The gate caps provider traffic, so it spans the provider call and
+        # nothing after it. Recording and persisting the sample outside it keeps
+        # a slow operational store -- an exhausted pool, a write waiting out its
+        # command timeout -- from queueing probes for every model in the worker
+        # while no provider call is in flight at all.
         try:
-            ttft_ms = await asyncio.wait_for(
-                self._measure_probe_ttft_ms(adapter),
-                timeout=max(float(self.config.routewise_probe_timeout_sec), 1.0),
-            )
+            async with _probe_concurrency_gate().slot():
+                ttft_ms = await asyncio.wait_for(
+                    self._measure_probe_ttft_ms(adapter),
+                    timeout=max(float(self.config.routewise_probe_timeout_sec), 1.0),
+                )
         except Exception as exc:
             error = self._probe_error_summary(exc)
             result = RouteWiseProbeResult(
@@ -1757,7 +1927,7 @@ class RouteWiseRouter:
             if selected.concurrency_pool
             else None
         )
-        return {
+        metadata: dict[str, Any] = {
             "request_id": request_id,
             "timestamp": time.time(),
             "is_streaming": False,
@@ -1777,26 +1947,9 @@ class RouteWiseRouter:
             "lp_status": solution.status,
             "lp_weights": dict(solution.weights),
             "candidate_costs_usd": {c.endpoint_id: c.effective_cost_usd for c in candidates},
-            "candidate_request_costs_usd": {c.endpoint_id: c.request_cost_usd for c in candidates},
-            "candidate_cost_reasons": {c.endpoint_id: c.cost_reason for c in candidates},
-            "candidate_prefix_cache_discounts_usd": {
-                c.endpoint_id: c.prefix_cache_discount_usd
-                for c in candidates
-                if c.prefix_cache_discount_usd > 0
-            },
-            "candidate_prefix_cache_expected_tokens": {
-                c.endpoint_id: c.prefix_cache_expected_tokens
-                for c in candidates
-                if c.prefix_cache_expected_tokens > 0
-            },
             "candidate_mean_ttft_sec": {c.endpoint_id: c.mean_ttft_sec for c in candidates},
             "candidate_mean_ttft_sources": {c.endpoint_id: c.mean_ttft_source for c in candidates},
             "candidate_provider_types": {c.endpoint_id: c.provider_type for c in candidates},
-            "candidate_quota_used_fraction": {
-                c.endpoint_id: c.quota_used_fraction
-                for c in candidates
-                if c.quota_used_fraction is not None
-            },
             "candidate_quota_remaining": {
                 c.endpoint_id: c.quota_remaining
                 for c in candidates
@@ -1864,6 +2017,31 @@ class RouteWiseRouter:
             "routing_estimated_cost_usd": self._routing_dollar_estimate(selected),
             # lp_weights and lp_status (above) already use canonical names.
         }
+        if self.config.decision_metadata_candidate_detail:
+            metadata.update(
+                {
+                    "candidate_request_costs_usd": {
+                        c.endpoint_id: c.request_cost_usd for c in candidates
+                    },
+                    "candidate_cost_reasons": {c.endpoint_id: c.cost_reason for c in candidates},
+                    "candidate_prefix_cache_discounts_usd": {
+                        c.endpoint_id: c.prefix_cache_discount_usd
+                        for c in candidates
+                        if c.prefix_cache_discount_usd > 0
+                    },
+                    "candidate_prefix_cache_expected_tokens": {
+                        c.endpoint_id: c.prefix_cache_expected_tokens
+                        for c in candidates
+                        if c.prefix_cache_expected_tokens > 0
+                    },
+                    "candidate_quota_used_fraction": {
+                        c.endpoint_id: c.quota_used_fraction
+                        for c in candidates
+                        if c.quota_used_fraction is not None
+                    },
+                }
+            )
+        return metadata
 
     def _select_hedge_plan(
         self,
@@ -2190,7 +2368,10 @@ class RouteWiseRouter:
         prompt_tokens = self._prompt_tokens_from_context(context)
         prediction = self._predict_output(model_id, prompt_tokens, context)
         pool = self._routewise_pool(model_id)
-        envelope = self.envelope.snapshot(pool)
+        # Only quota candidates are priced off the envelope. Sorting a window of
+        # workload costs to reach three unread metadata fields is the whole cost
+        # of the snapshot for an on-demand-only model, so skip it.
+        envelope = self.envelope.snapshot(pool) if model_id in self._quota_bearing_models else None
         now = time.time()
 
         admission_refused: set[str] = set()

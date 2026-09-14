@@ -1560,6 +1560,52 @@ class VerifyProviderRouteResponse(BaseModel):
     ok: bool = True
 
 
+class UpstreamConcurrencyBucket(BaseModel):
+    """Live AIMD state of one outbound concurrency bucket.
+
+    A bucket is one (provider label, API key) pair — the grain a vendor actually
+    meters. ``key_fingerprint`` is the truncated SHA-256 the limiter buckets by;
+    the credential itself is never held on a bucket and never leaves the process.
+
+    ``successes_since_probe`` counts HTTP 200s toward ``probe_success_interval``,
+    at which point ``limit`` rises by one and ``probing`` goes true until the
+    next 429 or probe.
+    """
+
+    provider: str
+    key_fingerprint: str
+    limit: int
+    in_flight: int
+    waiting: int
+    successes_since_probe: int
+    probing: bool
+
+
+class UpstreamConcurrencyConfig(BaseModel):
+    """Resolved ``UPSTREAM_CONCURRENCY_*`` tunables the controller is enforcing.
+
+    Already clamped by the limiter, so these are the values in force rather than
+    the ones the environment asked for.
+    """
+
+    enabled: bool
+    initial_limit: int
+    max_limit: int
+    probe_success_interval: int
+    acquire_timeout_sec: float
+
+
+class UpstreamConcurrencyResponse(BaseModel):
+    """Every outbound concurrency bucket plus the config they are tuned against.
+
+    ``buckets`` is empty until traffic creates one, which is the ordinary state
+    of an idle gateway rather than a fault.
+    """
+
+    config: UpstreamConcurrencyConfig
+    buckets: list[UpstreamConcurrencyBucket]
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -1664,6 +1710,9 @@ __all__ = [
     "UpdateSettingRequest",
     "UpdateUserRequest",
     "UpdateUserResponse",
+    "UpstreamConcurrencyBucket",
+    "UpstreamConcurrencyConfig",
+    "UpstreamConcurrencyResponse",
     "UserCostHistoryPoint",
     "UserCostHistoryResponse",
     "UserDetailResponse",

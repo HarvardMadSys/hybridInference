@@ -15,8 +15,9 @@ import platform
 import socket
 import threading
 import time
+import traceback
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
@@ -29,6 +30,8 @@ if TYPE_CHECKING:
 from serving.observability.alert_transitions import (
     ThresholdTransitionTracker,
 )
+from serving.utils import context as req_ctx
+from serving.utils.secret_urls import posting_to, scrub
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +41,19 @@ _LAST_FIRED: dict[str, float] = defaultdict(float)
 #: Keyed by dedupe key, each event fires when that key's send finishes. A
 #: resolution waits on it instead of being dropped; see ``alert_slack``.
 _IN_FLIGHT: dict[str, asyncio.Event] = {}
+
+#: Consecutive failed *firing* deliveries per dedupe key, cleared by a success.
+#: A count rather than a flag because the cooldown guard spends exactly one
+#: free retry on it — see ``alert_slack``. Resolutions are not counted here:
+#: they bypass the cooldown, so they never compete for that retry.
+_FAILED_DELIVERIES: dict[str, int] = {}
+
+#: Failed webhook deliveries since process start, keyed by HTTP status as a
+#: string (or ``"exception"`` for a transport error). Delivery health cannot be
+#: alerted on over the transport that is failing, so this is deliberately just a
+#: counter: the independent control-plane path can read it, and nothing here
+#: turns it into a Slack alert that would have to survive the same broken sink.
+_DELIVERY_FAILURES_TOTAL: dict[str, int] = defaultdict(int)
 
 #: How long a resolution waits for an in-flight send of the same key, and how
 #: many times. Bounded so a hung sink cannot pin the caller — the alert path
@@ -177,9 +193,22 @@ def _monotonic() -> float:
 
 
 def reset_dedupe_state() -> None:
-    """Test helper — clears in-memory dedupe table."""
+    """Test helper — clears in-memory dedupe table and delivery counters."""
     _LAST_FIRED.clear()
     _IN_FLIGHT.clear()
+    _FAILED_DELIVERIES.clear()
+    _DELIVERY_FAILURES_TOTAL.clear()
+
+
+def alert_delivery_failures_total() -> dict[str, int]:
+    """Failed webhook deliveries since process start, keyed by HTTP status.
+
+    A revoked webhook is invisible from inside the alert path — every post is
+    answered, just not with a 2xx — so the only honest signal of a dead sink is
+    a count of what it refused. Exposed as a plain counter on purpose: an alert
+    about the alert transport would travel over that same transport.
+    """
+    return dict(_DELIVERY_FAILURES_TOTAL)
 
 
 class AlertSeverity(str, enum.Enum):
@@ -211,6 +240,45 @@ def escape_slack_text(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+#: Longest request id rendered into an alert. The value is whatever the client
+#: sent, so it needs a bound: an id long enough to push the server block out of
+#: Slack's message limit would cost the page the very fields an operator reads
+#: first. Comfortably above the 24 hex characters the gateway generates itself.
+_REQUEST_ID_MAX_LEN = 128
+
+
+def _current_request_id() -> str | None:
+    """Sanitised request id of the request being served, or ``None``.
+
+    ``X-Request-ID`` is a *client-supplied* header that ``RequestIdMiddleware``
+    propagates verbatim, so what lands in the request context is whatever the
+    caller chose to send — not something the gateway generated. Treat it as
+    hostile: collapse it to one line (a newline would otherwise let a caller
+    forge bullets of their own in the card) and bound its length. Do not
+    "simplify" either step away on the assumption that this is a hex token.
+
+    Mrkdwn escaping is deliberately *not* done here. ``_format_message`` escapes
+    every context value it renders, at that single choke point precisely so no
+    producer can forget; escaping again would double-encode an ``&`` in the id.
+    ``endpoint_health._format_affected_callers`` leaves it alone for the same
+    reason. The escape still has to happen — an id of ``<!channel>`` would
+    otherwise ping the alert channel on the caller's behalf — it just happens
+    once, there.
+
+    ``None`` outside a request — the rules engine, the failed-request alerter
+    and the stale sweep all alert from background tasks with no request context,
+    and an alert about aggregate behaviour has no single request to point at.
+    """
+    value = req_ctx.get().get("request_id")
+    if not isinstance(value, str):
+        return None
+    # Same idiom as ``endpoint_health._detail_str``.
+    cleaned = " ".join(value.split())
+    if not cleaned:
+        return None
+    return cleaned[:_REQUEST_ID_MAX_LEN]
+
+
 def _format_message(
     severity: AlertSeverity,
     title: str,
@@ -223,13 +291,25 @@ def _format_message(
     # resolution rendered with the breach's own severity emoji is indis-
     # tinguishable from the outage. The webhook carries only this text, so the
     # recovery has to be said in it.
-    heading = f"{_EMOJI[severity]} *{title}*" if status == "firing" else f"✅ *Recovered:* {title}"
+    safe_title = escape_slack_text(title)
+    heading = (
+        f"{_EMOJI[severity]} *{safe_title}*"
+        if status == "firing"
+        else f"✅ *Recovered:* {safe_title}"
+    )
     lines = [heading, f"_{ts} · {info['environment']}_"]
     if context:
         lines.append("")
         for k, v in context.items():
             label = k.replace("_", " ").title()
-            lines.append(f"• *{label}:* {v}")
+            # Escaped here rather than at each call site. Context now routinely
+            # carries text the *caller being alerted about* chose — a client IP
+            # taken from a spoofable ``X-Forwarded-For`` hop, a request path, the
+            # first characters of a presented key — and one rule forgetting to
+            # escape is all it takes to let a scanner post ``<!channel>`` into the
+            # alert channel. Doing it in the single place every alert passes
+            # through means a new rule cannot reintroduce that.
+            lines.append(f"• *{label}:* {escape_slack_text(str(v))}")
     lines.append("")
     lines.append("*Server*")
     host_line = f"{info['hostname']} ({info['ip']})" if info["ip"] else info["hostname"]
@@ -243,15 +323,52 @@ def _format_message(
     return "\n".join(lines)
 
 
-async def _post_to_slack(webhook_url: str, message: str) -> bool:
-    """Post ``{"text": message}`` to Slack incoming webhook. Returns True on 2xx."""
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(webhook_url, json={"text": message})
-        return 200 <= resp.status_code < 300
-    except Exception:
-        log.exception("slack webhook post failed")
-        return False
+async def _post_to_slack(webhook_url: str, message: str, *, dedupe_key: str = "") -> bool:
+    """Post ``{"text": message}`` to Slack incoming webhook. Returns True on 2xx.
+
+    A non-2xx raises nothing, so this used to log only from the ``except``
+    branch and a webhook that had been revoked failed in complete silence: it
+    answered every post with 404, the caller saw a bare ``False``, and the sole
+    trace was httpx's INFO line for the request, which nobody greps. Two weeks
+    of alerts went that way. Any answer that is not a 2xx is therefore logged at
+    WARNING with the status and the alert it was carrying.
+
+    ``webhook_url`` is deliberately never logged. It is a bearer credential —
+    whoever holds it can post to the channel — and this line exists to be read
+    by people who do not need it. The same holds for the lines this function
+    does not write: ``httpx`` logs the full request URL at INFO for every call,
+    which put the credential into the container log a few hundred times a day,
+    so the post runs inside ``posting_to`` and every line about it — httpx's
+    own included — names the sink as ``scheme://host/#<fingerprint>`` instead.
+    """
+    with posting_to(webhook_url) as sink:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(webhook_url, json={"text": message})
+            if 200 <= resp.status_code < 300:
+                return True
+            _DELIVERY_FAILURES_TOTAL[str(resp.status_code)] += 1
+            log.warning(
+                "slack webhook post rejected: status=%s alert=%s sink=%s",
+                resp.status_code,
+                dedupe_key or "-",
+                sink,
+            )
+            return False
+        except Exception:
+            _DELIVERY_FAILURES_TOTAL["exception"] += 1
+            # Rendered and scrubbed here rather than handed to ``log.exception``:
+            # a transport that words its error in terms of the request puts the
+            # URL in the traceback, and the traceback is formatted inside the
+            # handler, long after the last point at which the whole string is in
+            # our hands.
+            log.error(
+                "slack webhook post failed: alert=%s sink=%s\n%s",
+                dedupe_key or "-",
+                sink,
+                scrub(traceback.format_exc(), webhook_url),
+            )
+            return False
 
 
 async def alert_slack(
@@ -319,11 +436,22 @@ async def alert_slack(
         # repeat, so one of them still has to yield.
         if key in _IN_FLIGHT:
             return False
-        if not resolution and last > 0.0 and now - last < cooldown_sec:
+        # The cooldown is armed on the *attempt* (see the ``finally`` below), so
+        # a sink that is refusing everything suppresses repeats instead of being
+        # hammered once per evaluation. The single exception is the first
+        # consecutive failure on a key: that alert may have been lost to a blip,
+        # and a real page swallowed for a whole cooldown is its own outage, so
+        # the next evaluation is let through regardless. Its attempt either
+        # succeeds (the count resets) or takes the count to 2, which closes the
+        # exception — a permanently broken sink costs at most two posts per
+        # cooldown per key instead of one per evaluation, forever.
+        retry_after_failure = _FAILED_DELIVERIES.get(key, 0) == 1
+        if not resolution and last > 0.0 and now - last < cooldown_sec and not retry_after_failure:
             return False
         _IN_FLIGHT[key] = asyncio.Event()
 
     sent = False
+    attempted = False
     try:
         # Admin-controlled global snooze: pause all alerts until a deadline.
         # Deliberately inside the try, after the in-flight registration: the
@@ -339,8 +467,24 @@ async def alert_slack(
                     return False
             except Exception:
                 log.debug("alert snooze check failed; sending alert", exc_info=True)
-        message = _format_message(severity, title, context, status)
-        sent = await _post_to_slack(webhook_url, message)
+        # Name the request that tripped the alert, so the page can be joined to
+        # a row in ``api_logs`` instead of to a minute of traffic. Firing only:
+        # a resolution's context is just the alert key, and the id of whichever
+        # request happened to observe the recovery describes a *healthy*
+        # request — pointing an investigation at it would be worse than saying
+        # nothing. A caller that already put an id in the context knows better
+        # than the ambient one, so it wins.
+        #
+        # Copied, never mutated: ``alert_on_transition`` hands the same dict to
+        # every repeat of an incident, and a rule may hold it as its own state.
+        detail = context
+        if not resolution and "request_id" not in context:
+            request_id = _current_request_id()
+            if request_id:
+                detail = {**context, "request_id": request_id}
+        message = _format_message(severity, title, detail, status)
+        attempted = True
+        sent = await _post_to_slack(webhook_url, message, dedupe_key=key)
         return sent
     except Exception:
         log.exception("alert_slack post raised; suppressing")
@@ -350,11 +494,35 @@ async def alert_slack(
             done = _IN_FLIGHT.pop(key, None)
             if done is not None:
                 done.set()
+            if sent:
+                # Any delivered post proves the sink answers for this key, so
+                # whatever streak it was carrying is over.
+                _FAILED_DELIVERIES.pop(key, None)
+            elif attempted and not resolution:
+                _FAILED_DELIVERIES[key] = _FAILED_DELIVERIES.get(key, 0) + 1
             if sent and resolution:
                 # The breach is over, so the next one must page immediately
                 # rather than serve out the cooldown this incident started.
                 _LAST_FIRED.pop(key, None)
-            elif sent:
+            elif attempted and not resolution:
+                # Armed on the attempt, not on delivery. Arming only on success
+                # meant a sink that never succeeds never armed anything: the
+                # same breach was re-posted at every evaluation for as long as
+                # it lasted, which is how one revoked webhook produced 199 posts
+                # in a fortnight and delivered none of them. A failed attempt is
+                # still an attempt; the guard above spends one free retry on the
+                # transient case so this cannot silently swallow a real alert.
+                #
+                # A *snoozed* or short-circuited call never reaches here with
+                # ``attempted`` set, so it still costs no cooldown.
+                #
+                # Resolutions stay out of both tables entirely, exactly as
+                # before: they never consult the cooldown, so arming it on a
+                # failed close would buy no suppression and would instead push
+                # the window for the *next* breach out by a full cooldown from
+                # the moment the close failed — a message nobody read delaying
+                # a page somebody needs. The resolution retries are bounded by
+                # the sweep caps below instead.
                 _LAST_FIRED[key] = _monotonic()
 
 
@@ -381,6 +549,75 @@ _STATE_TRANSITIONS = ThresholdTransitionTracker(
 _STALE_SWEEP_INTERVAL_SEC = 60
 
 
+#: Per-key builders describing a *closing* incident, registered by
+#: ``alert_on_transition`` for the rules that pass ``resolution_context``. A
+#: recovery card otherwise carries only the metric identity, which is right for
+#: a rate or latency rule — the numbers describe a healthy system by then — but
+#: leaves an auth-failure recovery naming neither the addresses nor the accounts
+#: the incident was about. Registration is keyed on the incident, so the sweep
+#: and the pending-retry paths reach the same summary the transition edge would
+#: have sent. One entry per open incident; dropped on a confirmed close.
+_RESOLUTION_CONTEXT: dict[str, Callable[[], dict[str, Any]]] = {}
+
+#: Summaries already built, held for the rest of the incident. A rule that
+#: tallies an incident hands the tally over once and resets it — otherwise the
+#: next incident inherits this one's offenders — so a builder answers usefully
+#: exactly once. Three paths may each send this incident's recovery (the
+#: transition edge, a failed send's retry, the stale sweep), and without this
+#: whichever ran second would rebuild an emptied summary and post a recovery
+#: thinner than the one that failed to send.
+_RESOLUTION_DETAIL: dict[str, dict[str, Any]] = {}
+
+#: Keys whose incident must close without a word, registered by
+#: ``alert_on_transition`` for the rules that pass ``announce_resolution=False``.
+#: A registry keyed on the incident rather than an argument threaded through,
+#: for exactly the reason ``_RESOLUTION_CONTEXT`` is one: the sweep paths are
+#: handed a bare key and have no access to the rule that owns it, so the opt-out
+#: has to be reachable from the key alone or the card this suppresses would
+#: simply come back out of the sweep. Only the message is suppressed — the
+#: incident still closes, clearing tracker state, the staleness bound and the
+#: resolution registries — so a silenced key neither stays firing forever nor
+#: leaks a ``_bounds`` entry. Written on the breach edge and dropped on a close,
+#: so a dynamic key leaves nothing behind and a rule that stops opting out is
+#: not held silent by an earlier breach.
+_SILENT_RESOLUTIONS: set[str] = set()
+
+
+def _forget_resolution_detail(key: str) -> None:
+    """Drop an incident's summary, its builder and its silence. For a close.
+
+    The ``_SILENT_RESOLUTIONS`` entry goes with them: every breached evaluation
+    re-registers it, so holding it past the close would only leak one entry per
+    dynamic key and keep a rule silent after it stopped asking to be.
+    """
+    _RESOLUTION_CONTEXT.pop(key, None)
+    _RESOLUTION_DETAIL.pop(key, None)
+    _SILENT_RESOLUTIONS.discard(key)
+
+
+def _resolution_detail(key: str) -> dict[str, Any]:
+    """Summary of the incident closing on ``key``, or empty. Never raises.
+
+    A resolution is the last word on an incident; a builder that raises must not
+    be able to take the recovery card down with it.
+    """
+    cached = _RESOLUTION_DETAIL.get(key)
+    if cached is not None:
+        return dict(cached)
+    builder = _RESOLUTION_CONTEXT.get(key)
+    if builder is None:
+        return {}
+    try:
+        detail = builder()
+    except Exception:
+        log.debug("resolution context for %s failed", key, exc_info=True)
+        detail = {}
+    if not isinstance(detail, dict):
+        detail = {}
+    _RESOLUTION_DETAIL[key] = detail
+    return dict(detail)
+
+
 @dataclass
 class _PendingResolution:
     """A resolution whose delivery failed, kept for the sweep timer to retry.
@@ -396,12 +633,41 @@ class _PendingResolution:
 
     kind: Literal["metric", "state"]
     title: str
+    #: ``time.time()`` of the send that failed, for the age cap below. Defaulted
+    #: from the clock rather than to ``0.0``: a zero would read as "queued at the
+    #: epoch" and the age cap would drop the entry on its first sweep, which is
+    #: a silent way for a future caller to lose a resolution.
+    queued_at: float = field(default_factory=time.time)
+    #: Retries spent by the sweep, for the attempt cap below.
+    attempts: int = 0
 
 
 #: Failed resolution sends by key, retried each sweep tick. In-memory like the
 #: trackers: a restart loses it, which degrades to the pre-#1076 behaviour
 #: (the incident's close is never announced), never to a wrong announcement.
 _PENDING_RESOLUTIONS: dict[str, _PendingResolution] = {}
+
+#: Bounds on how long a queued resolution is retried for. A resolution can only
+#: be confirmed by the sink it cannot reach, so while delivery is down every
+#: entry here is retried on every tick and none of them ever leaves — the queue
+#: becomes an amplifier, and it was the larger half of the 199 undelivered posts
+#: the revoked webhook produced. Whichever bound trips first drops the entry:
+#: the attempt count covers the normal 60-second tick, the age covers a sweep
+#: that runs rarely (a mostly-idle process, a paused scheduler).
+#:
+#: Giving up costs this incident's "Recovered" message, which is exactly the
+#: pre-#1076 behaviour and is worth far less than a channel nobody can read. A
+#: recovery announced an hour after the fact is not operationally useful anyway.
+_PENDING_RESOLUTION_MAX_ATTEMPTS = 10
+_PENDING_RESOLUTION_MAX_AGE_SEC = 900.0
+
+#: Stale-sweep resolution retries by key. The no-samples close at the bottom of
+#: the sweep re-arms on a failed send so the *next* tick retries, which is the
+#: same unbounded loop as the pending queue wearing a different hat: while the
+#: sink is down the key is re-armed forever, once a minute. Counted here and
+#: capped with the same attempt bound. No age bound is needed — the sweep is
+#: what increments this, so attempts and elapsed time are the same clock.
+_STALE_RETRY_ATTEMPTS: dict[str, int] = {}
 
 
 def reset_transition_state() -> None:
@@ -410,6 +676,10 @@ def reset_transition_state() -> None:
         tracker_._firing.clear()
         tracker_._bounds.clear()
     _PENDING_RESOLUTIONS.clear()
+    _STALE_RETRY_ATTEMPTS.clear()
+    _RESOLUTION_CONTEXT.clear()
+    _RESOLUTION_DETAIL.clear()
+    _SILENT_RESOLUTIONS.clear()
 
 
 async def alert_on_transition(
@@ -423,6 +693,8 @@ async def alert_on_transition(
     kind: Literal["metric", "state"] = "metric",
     stale_after: float | None = None,
     now: float | None = None,
+    resolution_context: Callable[[], dict[str, Any]] | None = None,
+    announce_resolution: bool = True,
 ) -> bool:
     """Send only when the breach state changes, so incidents open and close once.
 
@@ -442,6 +714,27 @@ async def alert_on_transition(
     is only built when a message is actually attempted. A resolution
     carries just the metric identity, since breach numbers describe a healthy
     system by then and would only mislead on the recovery card.
+
+    ``resolution_context`` is the exception a rule may opt into: a summary of
+    the incident that just closed, as opposed to a reading of the metric now.
+    Some incidents are about *who*, not how much — an auth-failure spike is the
+    addresses and accounts behind it — and that identity is as worth having on
+    the recovery card as on the breach. It is built at most once per close,
+    then snapshotted for the retry path, because a rule that tallies an
+    incident has to be free to reset that tally once it is reported.
+
+    ``announce_resolution=False`` is the opposite opt-in: the incident closes,
+    but nothing is said about it. It is for a rule whose *silence carries no
+    information* — one that only ever observes a transition goes quiet the
+    moment the transition is over, so both closes available to it (the settling
+    edge here and the stale sweep's "no recent samples" card) announce nothing
+    but the rule having stopped talking, while wording it as a recovery the rule
+    never measured. The bookkeeping is deliberately unchanged: tracker state,
+    the key's staleness bound and the resolution registries are cleared exactly
+    as a delivered close clears them, so a silenced key neither stays firing
+    forever nor leaks an entry. Only the message is dropped, which is why such a
+    close returns ``False`` — the return says whether a message was sent, not
+    whether the incident closed.
     """
     tracker = _TRANSITIONS if kind == "metric" else _STATE_TRANSITIONS
     moment = now or time.time()
@@ -456,6 +749,22 @@ async def alert_on_transition(
         # retry is stale — sending it later would announce a live breach as
         # recovered.
         _PENDING_RESOLUTIONS.pop(key, None)
+        _STALE_RETRY_ATTEMPTS.pop(key, None)
+        # A summary built for a close that then failed to send describes an
+        # incident this breach has reopened; the next close builds its own.
+        _RESOLUTION_DETAIL.pop(key, None)
+        # Registered on the breach, not the close: the sweep paths below are
+        # handed a bare key, and a breach whose traffic then stops is resolved
+        # from there rather than from another call to this function.
+        if resolution_context is not None:
+            _RESOLUTION_CONTEXT[key] = resolution_context
+        # Same reasoning for the silence, and both directions are written on
+        # purpose: a rule that stops passing ``announce_resolution=False`` must
+        # not be held quiet by what an earlier breach registered.
+        if announce_resolution:
+            _SILENT_RESOLUTIONS.discard(key)
+        else:
+            _SILENT_RESOLUTIONS.add(key)
         # Every breached evaluation still goes to the sink, exactly as before.
         # The cooldown there decides whether it becomes a message, and under the
         # control plane each repeat is what advances the incident's occurrence
@@ -470,10 +779,25 @@ async def alert_on_transition(
         )
     if transition != "resolved":
         return False
+    if key in _SILENT_RESOLUTIONS:
+        # Close it, say nothing. There is no send to confirm and so nothing to
+        # retry: no ``_PendingResolution`` is queued and the key is not re-armed,
+        # since a retry could only reproduce the card this rule opted out of.
+        # The ``is_firing`` guard is the one the delivered close uses, for the
+        # same reason — ``observe`` dropped the firing state on this edge, so
+        # anything present now belongs to a fresh incident that must stay
+        # tracked. Any entry an earlier, announcing close left in the queue is
+        # dropped here too, so the sweep cannot post on this key's behalf.
+        if not tracker.is_firing(key):
+            tracker.forget(key)
+            _forget_resolution_detail(key)
+        _PENDING_RESOLUTIONS.pop(key, None)
+        return False
+    detail = {"alert": key, **_resolution_detail(key)}
     sent = await alert_slack(
         AlertSeverity.INFO,
         f"Recovered: {title}",
-        {"alert": key},
+        detail,
         dedupe_key=key,
         cooldown_sec=cooldown_sec,
         status="resolved",
@@ -489,6 +813,7 @@ async def alert_on_transition(
         # budgets) would otherwise leak one entry each.
         if not tracker.is_firing(key):
             tracker.forget(key)
+            _forget_resolution_detail(key)
         _PENDING_RESOLUTIONS.pop(key, None)
     else:
         # ``observe`` already cleared the key, so without this the only
@@ -498,7 +823,11 @@ async def alert_on_transition(
         # send itself, which is the sole retry path for a state alert whose
         # single healthy edge is already spent.
         tracker.rearm(key, moment)
-        _PENDING_RESOLUTIONS[key] = _PendingResolution(kind=kind, title=title)
+        _PENDING_RESOLUTIONS[key] = _PendingResolution(
+            kind=kind,
+            title=title,
+            queued_at=moment,
+        )
     return sent
 
 
@@ -526,12 +855,24 @@ async def sweep_stale_breaches() -> None:
             # is live again and this recovery would announce it as over.
             continue
         tracker = _TRANSITIONS if pending.kind == "metric" else _STATE_TRANSITIONS
+        if key in _SILENT_RESOLUTIONS:
+            # A silent close queues nothing — it has no send that can fail — so
+            # this is an entry left by an announcing close on a key that has
+            # since opted out. Retrying it would post the card the opt-out
+            # exists to prevent, so drop it and finish the close here instead:
+            # the entry is the only thing holding the incident open, and the
+            # identity check above already ruled out a live re-breach.
+            _PENDING_RESOLUTIONS.pop(key, None)
+            tracker.forget(key)
+            _forget_resolution_detail(key)
+            continue
+        pending.attempts += 1
         sent = False
         try:
             sent = await alert_slack(
                 AlertSeverity.INFO,
                 f"Recovered: {pending.title}",
-                {"alert": key},
+                {"alert": key, **_resolution_detail(key)},
                 dedupe_key=key,
                 cooldown_sec=0,
                 status="resolved",
@@ -547,31 +888,65 @@ async def sweep_stale_breaches() -> None:
         # the tracker stays correct so the next real transition re-announces
         # and eventually closes properly. The check is race-free because no
         # await sits between the send returning and this line.
-        if sent and _PENDING_RESOLUTIONS.get(key) is pending:
+        if _PENDING_RESOLUTIONS.get(key) is not pending:
+            continue
+        if sent:
             _PENDING_RESOLUTIONS.pop(key, None)
             # Confirmed close: clears the re-armed firing state and the key's
             # staleness bound in one step.
             tracker.forget(key)
+            _forget_resolution_detail(key)
+        elif (
+            pending.attempts >= _PENDING_RESOLUTION_MAX_ATTEMPTS
+            or now - pending.queued_at >= _PENDING_RESOLUTION_MAX_AGE_SEC
+        ):
+            # Give up on announcing this close. The tracker keeps its re-armed
+            # firing state on purpose: the incident genuinely was never reported
+            # closed, so if the condition breaches and clears again the next
+            # resolved edge gets a fresh attempt. Dropping only the queue entry
+            # is what stops the retry, and it is the entry — not the tracker —
+            # that turns a down sink into a once-a-minute repeat of every
+            # resolution ever queued.
+            _PENDING_RESOLUTIONS.pop(key, None)
+            _forget_resolution_detail(key)
+            log.warning(
+                "giving up on resolution delivery for %s after %d attempts",
+                key,
+                pending.attempts,
+            )
 
     for key in _TRANSITIONS.sweep(now):
+        # A rule that opted out of announcing its close opts out of this card
+        # above all: "no recent samples" is the most misleading thing that can
+        # be said about a key whose rule only ever speaks on a transition, since
+        # having no recent samples is that rule's normal state. Everything below
+        # the send still runs, so the incident closes here as it always did.
+        silent = key in _SILENT_RESOLUTIONS
         sent = False
-        try:
-            sent = await alert_slack(
-                AlertSeverity.INFO,
-                # "No recent samples" is a materially weaker claim than an
-                # observed-clear recovery: the rule stopped seeing data (idle
-                # traffic, a drained process), so the breach can no longer be
-                # evaluated. Say so, instead of wording that reads as if the
-                # metric was measured healthy.
-                f"Recovered (no recent samples): {key}",
-                {"alert": key, "reason": "no samples within the rule window"},
-                dedupe_key=key,
-                cooldown_sec=0,
-                status="resolved",
-            )
-        except Exception:
-            # One stuck resolution must not strand every other open incident.
-            log.exception("stale breach resolution failed for %s", key)
+        if not silent:
+            try:
+                sent = await alert_slack(
+                    AlertSeverity.INFO,
+                    # "No recent samples" is a materially weaker claim than an
+                    # observed-clear recovery: the rule stopped seeing data (idle
+                    # traffic, a drained process), so the breach can no longer be
+                    # evaluated. Say so, instead of wording that reads as if the
+                    # metric was measured healthy.
+                    f"Recovered (no recent samples): {key}",
+                    # The rule's own summary first, then this path's reason, which
+                    # must win the key if a rule happens to use the same name.
+                    {
+                        "alert": key,
+                        **_resolution_detail(key),
+                        "reason": "no samples within the rule window",
+                    },
+                    dedupe_key=key,
+                    cooldown_sec=0,
+                    status="resolved",
+                )
+            except Exception:
+                # One stuck resolution must not strand every other open incident.
+                log.exception("stale breach resolution failed for %s", key)
         if _TRANSITIONS.is_firing(key):
             # The metric re-breached while the send was in flight and opened a
             # fresh incident: leave its state (and the bound the new ``observe``
@@ -579,14 +954,39 @@ async def sweep_stale_breaches() -> None:
             # re-arming would overwrite its liveness clock with a backdated one
             # and set up a premature no-samples close.
             continue
-        if sent:
+        if sent or silent:
             # Confirmed close: without this, dynamic keys (per-user cost,
             # per-period budgets) each leave a ``_bounds`` entry behind forever.
+            # A silent close is confirmed by construction — there was no
+            # delivery that could have failed, so there is nothing to re-arm
+            # for and the retry counting below would only keep the key coming
+            # back for a card that will never be sent.
+            _STALE_RETRY_ATTEMPTS.pop(key, None)
             _TRANSITIONS.forget(key)
-        else:
-            # The sweep already dropped the key, so leaving it dropped would
-            # lose the resolution outright. Re-arm stale enough that the *next*
-            # sweep retries: plain re-arming would restart the staleness clock
-            # and, with a long rule window, push the retry hours out while the
-            # incident stays open.
-            _TRANSITIONS.rearm(key, now, retry_in=_STALE_SWEEP_INTERVAL_SEC)
+            _forget_resolution_detail(key)
+            continue
+        attempts = _STALE_RETRY_ATTEMPTS.get(key, 0) + 1
+        if attempts >= _PENDING_RESOLUTION_MAX_ATTEMPTS:
+            # Same bound as the pending queue, for the same reason: re-arming
+            # after a failed send puts the key back in front of the *next*
+            # sweep, so while the sink is down this loop re-posts every open
+            # incident once a minute for as long as the process lives. Drop the
+            # key instead. Unlike the pending queue there is nothing to keep
+            # armed — a swept key is one nothing is evaluating any more, so
+            # leaving it firing only guarantees it comes back next tick.
+            _STALE_RETRY_ATTEMPTS.pop(key, None)
+            _TRANSITIONS.forget(key)
+            _forget_resolution_detail(key)
+            log.warning(
+                "giving up on no-samples resolution for %s after %d attempts",
+                key,
+                attempts,
+            )
+            continue
+        _STALE_RETRY_ATTEMPTS[key] = attempts
+        # The sweep already dropped the key, so leaving it dropped would
+        # lose the resolution outright. Re-arm stale enough that the *next*
+        # sweep retries: plain re-arming would restart the staleness clock
+        # and, with a long rule window, push the retry hours out while the
+        # incident stays open.
+        _TRANSITIONS.rearm(key, now, retry_in=_STALE_SWEEP_INTERVAL_SEC)

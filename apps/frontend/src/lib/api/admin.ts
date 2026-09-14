@@ -1445,6 +1445,45 @@ export async function setProviderDisabled(
 }
 
 // ========================================
+// Upstream Concurrency (adaptive outbound limiter)
+// ========================================
+
+// One (provider label, API key) bucket of the gateway's AIMD outbound limiter.
+// `key_fingerprint` is a truncated hash — the backend never holds or returns the
+// credential itself. `successes_since_probe` counts HTTP 200s toward
+// `probe_success_interval`, at which point `limit` rises by one and `probing`
+// stays true until the next 429 or probe.
+export interface UpstreamConcurrencyBucket {
+  provider: string;
+  key_fingerprint: string;
+  limit: number;
+  in_flight: number;
+  waiting: number;
+  successes_since_probe: number;
+  probing: boolean;
+}
+
+export interface UpstreamConcurrencyConfig {
+  enabled: boolean;
+  initial_limit: number;
+  max_limit: number;
+  probe_success_interval: number;
+  acquire_timeout_sec: number;
+}
+
+// `buckets` is empty until traffic creates one, which is the ordinary state of
+// an idle gateway rather than a failure.
+export interface UpstreamConcurrencyResponse {
+  config: UpstreamConcurrencyConfig;
+  buckets: UpstreamConcurrencyBucket[];
+}
+
+export async function getUpstreamConcurrency(): Promise<UpstreamConcurrencyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/upstream-concurrency');
+  return jsonOrThrow<UpstreamConcurrencyResponse>(resp);
+}
+
+// ========================================
 // Provider Hourly Performance Stats
 // ========================================
 

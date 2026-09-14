@@ -14,7 +14,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from inspect import isawaitable
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from routing.protocols import RoutingRequestOptions
     from serving.adapters.base import BaseAdapter
 
-from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry
+from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry, _http_status_of
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
     PrefillLease,
@@ -141,6 +141,166 @@ AFFINITY_TTL_SECONDS: float = 300.0
 AFFINITY_SWEEP_THRESHOLD: int = 1000
 AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
 
+# Why a route's effective weight stops matching the weight its configuration
+# asked for. Reported separately, never merged, because each names a different
+# owner and a different remediation -- see ``FixedRouter.get_route_exclusions``.
+#: A ``provider_weight_overrides`` row set this (model, endpoint) pair's weight.
+EXCLUSION_WEIGHT_OVERRIDE = "weight_override"
+#: A ``disabled_providers`` row zeroes every adapter carrying that provider label.
+EXCLUSION_PROVIDER_DISABLED = "provider_disabled"
+#: ``RoutingManager`` reweighted the route from ``routing.yaml``'s local/remote
+#: split. Only reachable where no weight-override resolver is attached: with one,
+#: selection reads the registration weights and the manager's pass is inert.
+EXCLUSION_ROUTING_YAML = "routing_yaml"
+#: No runtime mechanism is involved: the model registry itself declares weight 0.
+EXCLUSION_CONFIGURED_ZERO = "configured_zero"
+
+#: Tolerance for comparing two weight shares. The configured and effective sides
+#: are normalized by separate divisions, so an unchanged route can land a few
+#: ULPs apart; without a tolerance every even split would be reported as
+#: diverged.
+_WEIGHT_SHARE_EPSILON = 1e-9
+
+
+def _shares_differ(left: float, right: float) -> bool:
+    """Return whether two normalized weight shares differ meaningfully."""
+    return abs(left - right) > _WEIGHT_SHARE_EPSILON
+
+
+def _weight_shares(weights: Sequence[float]) -> list[float]:
+    """Return weights as shares of their own total, or all-zero when it is zero.
+
+    Reporting only. Registration weights and selection weights live on different
+    scales (see ``FixedRouter.describe_route_weights``); this is what makes the
+    two comparable without either side having to be renormalized in place.
+    """
+    total = sum(weights)
+    if total <= 0:
+        return [0.0 for _ in weights]
+    return [float(weight) / total for weight in weights]
+
+
+# HTTP statuses that describe the *request the client sent*, as opposed to the
+# state of whichever route happened to answer it. Only these may displace the
+# primary route's error when a request is reported to the caller — see
+# ``_select_surfaced_error``.
+#
+# Deliberately excluded, though they are all 4xx:
+#   401 / 403 / 407 — a rejected credential is this gateway's own
+#       misconfiguration, not anything in the caller's payload. 403 is also what
+#       several providers return for "you've reached your concurrent request
+#       limit", which clears on its own within seconds.
+#   408 / 429 — upstream slowness and overload.
+# Promoting any of those over a primary transport failure would relabel a
+# recoverable capacity blip on one route as a terminal, non-retryable client
+# error, and would tell users their key was revoked when it was not.
+_REQUEST_DESCRIBING_STATUSES = frozenset({400, 404, 413, 422})
+
+
+@dataclass(frozen=True)
+class _RouteAttempt:
+    """One dispatched route and the exception it raised.
+
+    ``failed_attempt()`` renders an attempt down to a dict of strings and drops
+    the exception object, so the ``failed_attempts`` telemetry list it builds
+    cannot answer "which of these should the caller actually be told about?".
+    This keeps the exceptions themselves, in dispatch order, alongside it.
+    """
+
+    adapter: BaseAdapter
+    error: BaseException
+
+
+def _describes_request(exc: BaseException) -> bool:
+    """Return whether ``exc`` reports something wrong with the request itself.
+
+    Borrows ``endpoint_health``'s status extraction rather than duck-typing the
+    exception again here: the breaker already decides what counts as a client
+    error from the same attributes, and two readers that disagree about where an
+    upstream's status lives would classify the same failure two ways.
+    """
+    return _http_status_of(exc) in _REQUEST_DESCRIBING_STATUSES
+
+
+def _select_surfaced_error(attempts: Sequence[_RouteAttempt]) -> _RouteAttempt:
+    """Choose which of several failed attempts the caller is told about.
+
+    ``attempts[0]`` is the primary pick and remains the default: a request is
+    normally reported the way the route chosen for it reported it, and every
+    other attempt is preserved either way as ``failed_attempts`` telemetry.
+
+    That default is overridden in exactly one case — the primary's failure says
+    nothing about the request while some fallback's does. A dead endpoint raises
+    a bare ``ClientConnectorError`` carrying no HTTP status at all, which the
+    classifier in ``completions_stream`` defaults to 500 and renders as
+    "Internal server error": a *retryable* status for a request that can never
+    succeed, hiding the 400 a live route had already returned explaining what is
+    malformed in the payload. Which of the two answers a user got came down to
+    the weighted coin flip at selection time.
+
+    Only request-describing statuses can win that way; see
+    ``_REQUEST_DESCRIBING_STATUSES`` for why a fallback's 403 or 429 must not.
+    """
+    primary = attempts[0]
+    if _describes_request(primary.error):
+        return primary
+    return next(
+        (attempt for attempt in attempts[1:] if _describes_request(attempt.error)),
+        primary,
+    )
+
+
+def _raise_surfaced_error(
+    attempts: Sequence[_RouteAttempt],
+    failed_attempts: list[dict[str, str]],
+) -> NoReturn:
+    """Raise the error the caller is told about, once every route has failed.
+
+    Guarantees the raised exception carries ``_routing``. The error-log path
+    reads ``exc._routing`` to attribute the failure to a real upstream; with it
+    absent, ``completions_stream`` falls back to the provider it last saw on the
+    wire — the final fallback *attempted*, not the one being reported — or to
+    the ``"router"`` sentinel, which the provider-performance aggregations drop
+    outright, taking cost accounting with them. The primary's error is given a
+    block by its caller before fallback even begins, but a fallback's error has
+    none, so surfacing one without this would reintroduce exactly the
+    misattribution that block exists to prevent.
+
+    Raises rather than returning the exception so the ``raise`` happens inside
+    the caller's ``except`` block: Python then chains implicitly, giving the
+    surfaced fallback error the primary's failure as its ``__context__`` and
+    leaving a re-raised primary error's chain untouched. Returning it and
+    writing ``raise ... from primary_error`` at the call site would instead
+    claim a direct causal link that does not exist (two routes failed
+    independently) and, when the primary is the one selected, make it its own
+    cause.
+    """
+    selected = _select_surfaced_error(attempts)
+    exc = selected.error
+    routing = getattr(exc, "_routing", None)
+    if isinstance(routing, dict):
+        # ``failed_attempts`` is stored by reference, so the primary's block
+        # already reflects every attempt appended after it was built; a block
+        # attached further upstream (a nested router, an adapter) does not.
+        routing.setdefault("failed_attempts", failed_attempts)
+    else:
+        routing = {
+            "provider": selected.adapter.config.provider,
+            "base_url": selected.adapter.config.base_url,
+            "endpoint_id": endpoint_id_for_adapter(selected.adapter),
+            "failed_attempts": failed_attempts,
+        }
+        exc._routing = routing  # type: ignore[attr-defined]
+    if selected is not attempts[0]:
+        # Same marker the success path puts on a response served by a fallback,
+        # and it matters more here: this block's provider is the route that
+        # produced the status being reported, not the route the request was
+        # actually sent to. Without it an ``api_logs`` row reads as if routing
+        # had picked this endpoint. ``setdefault`` so a block built further
+        # upstream keeps whatever it already decided.
+        routing.setdefault("fallback", True)
+    raise exc
+
 
 # ============================================================================
 # FixedRouter
@@ -201,6 +361,10 @@ class FixedRouter:
         # counts, which lets one mega-prefill monopolize a replica while its
         # siblings idle; this is the signal that lets selection see that.
         self._prefill_load = PrefillLoadTracker()
+        # Divergence set last announced by ``log_route_weight_divergence``.
+        # None (not an empty set) means "never reported", which is what lets a
+        # gateway with no overrides boot silently.
+        self._logged_weight_divergence: frozenset[tuple[Any, ...]] | None = None
 
     @property
     def prefill_load(self) -> PrefillLoadTracker:
@@ -277,8 +441,267 @@ class FixedRouter:
             del self._affinity[k]
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
-        """Return a snapshot of provider availability and circuit state."""
-        return self._health_registry.snapshot()
+        """Return a snapshot of provider availability, circuit state and exclusions.
+
+        The exclusion half is merged in -- and endpoints that appear *only* as
+        excluded are added to the map -- because a zero-weighted route is never
+        dispatched to, so it never reaches the health registry at all. Without
+        it a model down to its last live route reads here exactly like a model
+        that only ever had one: the health snapshot can only describe endpoints
+        traffic has already been sent to.
+        """
+        status = self._health_registry.snapshot()
+        for fact in self.get_route_exclusions():
+            entry = status.setdefault(fact["endpoint_id"], {})
+            models = entry.setdefault("excluded_from_models", [])
+            if fact["model_id"] not in models:
+                models.append(fact["model_id"])
+            reasons = entry.setdefault("exclusion_reasons", [])
+            for reason in fact["reasons"]:
+                if reason not in reasons:
+                    reasons.append(reason)
+        for entry in status.values():
+            # One endpoint can be excluded from several models for several
+            # reasons; sort so the payload is stable across calls (and so tests
+            # do not depend on dict iteration order).
+            if "excluded_from_models" in entry:
+                entry["excluded_from_models"].sort()
+                entry["exclusion_reasons"].sort()
+        return status
+
+    def describe_route_weights(self) -> list[dict[str, Any]]:
+        """Explain every published route's effective weight and what changed it.
+
+        One entry per (model, endpoint) pair, carrying the weight the model
+        registry asked for, the weight routing actually uses, and the mechanism
+        behind any difference. Both weights are reported as **shares of the
+        model's route table** -- each side normalized over that model's routes --
+        because the two are kept on different scales internally (registration
+        weights before normalization, selection weights after), and a report that
+        mixed the scales would flag every multi-route model as diverged.
+
+        This deliberately *mirrors* ``_get_effective_adapters`` instead of
+        calling it. That method may await an async-only override resolver, which
+        raises when called from inside a running event loop -- and this runs on
+        ``/health/deep``, inside exactly such a loop. A diagnostic must never be
+        the thing that takes the status endpoint down.
+        ``test_describe_route_weights_agrees_with_selection`` pins the mirror
+        against drift.
+
+        Known limit: an override resolver that exposes only the async
+        ``get_for_model`` cannot be read from here, so its overrides are reported
+        as absent. That under-reports rather than raises, which is the right
+        failure for a status surface; every resolver the gateway constructs
+        exposes the sync snapshot.
+        """
+        disabled_resolver = self.disabled_provider_resolver
+        facts: list[dict[str, Any]] = []
+        for model_id, route in self._published_routes_snapshot():
+            overrides = self._weight_override_snapshot(model_id)
+            # What the model registry asked for, before anything at runtime.
+            registered = route.raw_adapters or [
+                (adapter, weight, endpoint_id_for_adapter(adapter))
+                for adapter, weight in route.adapters
+            ]
+            # Where selection starts from, mirroring ``_get_effective_adapters``:
+            # the pre-normalization registration weights when a readable override
+            # resolver can rewrite them, otherwise the live normalized list --
+            # which is also the one ``RoutingManager.apply()`` mutates in place.
+            if overrides is None or not route.raw_adapters:
+                baseline = [
+                    (adapter, weight, endpoint_id_for_adapter(adapter))
+                    for adapter, weight in route.adapters
+                ]
+                overrides = {}
+            else:
+                baseline = list(route.raw_adapters)
+            # Keyed by adapter, not by position: ``RoutingManager.apply()``
+            # rebuilds ``route.adapters`` covered-first, so it can reorder the
+            # list relative to ``raw_adapters``.
+            registered_shares = _weight_shares([weight for _, weight, _ in registered])
+            registered_share = {
+                adapter: share
+                for (adapter, _weight, _endpoint_id), share in zip(
+                    registered, registered_shares, strict=False
+                )
+            }
+            baseline_share = _weight_shares([weight for _, weight, _ in baseline])
+            effective_weights: list[float] = []
+            per_route_reasons: list[list[str]] = []
+            for index, (adapter, base_weight, endpoint_id) in enumerate(baseline):
+                configured = registered_share.get(adapter, 0.0)
+                reasons: list[str] = []
+                # Attribution is by *mechanism*, never by comparing the route's
+                # own configured and effective shares. Zeroing one route raises
+                # every sibling's share, and blaming the survivor for the share
+                # it inherited is how a report turns one operator action into a
+                # line per route.
+                if configured <= 0:
+                    reasons.append(EXCLUSION_CONFIGURED_ZERO)
+                elif _shares_differ(baseline_share[index], configured):
+                    # Selection's starting weights are not the registry's, and
+                    # no runtime override has been applied yet: what rewrote
+                    # them is RoutingManager applying routing.yaml's local/remote
+                    # split. Unreachable with a weight resolver attached, where
+                    # selection reads the registration weights and the manager's
+                    # pass is inert.
+                    reasons.append(EXCLUSION_ROUTING_YAML)
+                weight = float(base_weight)
+                override = overrides.get(endpoint_id)
+                if override is not None and float(override) != weight:
+                    weight = float(override)
+                    reasons.append(EXCLUSION_WEIGHT_OVERRIDE)
+                if disabled_resolver is not None and disabled_resolver.is_disabled(
+                    adapter.config.provider
+                ):
+                    weight = 0.0
+                    reasons.append(EXCLUSION_PROVIDER_DISABLED)
+                effective_weights.append(weight)
+                per_route_reasons.append(reasons)
+            effective_share = _weight_shares(effective_weights)
+            for index, (adapter, _base_weight, endpoint_id) in enumerate(baseline):
+                facts.append(
+                    {
+                        "model_id": model_id,
+                        "endpoint_id": endpoint_id,
+                        "provider": adapter.config.provider,
+                        "base_url": adapter.config.base_url,
+                        "configured_weight": registered_share.get(adapter, 0.0),
+                        "effective_weight": effective_share[index],
+                        "reasons": per_route_reasons[index],
+                    }
+                )
+        return facts
+
+    def get_route_exclusions(self) -> list[dict[str, Any]]:
+        """Return the published routes automatic selection can never pick.
+
+        A zero effective weight is skipped both by weighted selection and by
+        every fallback loop (``if adapter == primary or weight <= 0``), so these
+        routes are configured capacity that does not exist. The cause labels are
+        kept separate rather than merged into one "disabled" flag: a
+        ``provider_weight_overrides`` row is per (model, endpoint) and is undone
+        in the admin console's routing-weights view, a ``disabled_providers``
+        row is a provider-wide kill switch undone in the providers view, a
+        ``routing.yaml`` split is undone in the overlay's routing file, and a
+        weight of 0 in the model registry is undone in its models file.
+        Different owners, different fixes.
+        """
+        return [fact for fact in self.describe_route_weights() if fact["effective_weight"] <= 0]
+
+    def log_route_weight_divergence(self) -> None:
+        """Log every route whose effective weight differs from its configured one.
+
+        Called once at startup and again after each override / disabled-provider
+        reload, so an operator reading the boot log can see the runtime weight
+        table rather than having to query the operational store to discover that
+        a model with six configured routes has one live one.
+
+        Self-deduplicating on the divergence set: the refresh loops call this
+        every time a reload reports a change, and a weight that has been zero
+        for 71 days must not print a line per reload.
+        """
+        # A route the registry itself weights at zero is configuration, not
+        # divergence, so it is reported by ``get_route_exclusions`` but never
+        # announced here -- the boot log would otherwise carry a permanent line
+        # for every deliberately parked route.
+        diverged = [
+            fact
+            for fact in self.describe_route_weights()
+            if set(fact["reasons"]) - {EXCLUSION_CONFIGURED_ZERO}
+        ]
+        signature = frozenset(
+            (
+                fact["model_id"],
+                fact["endpoint_id"],
+                fact["effective_weight"],
+                tuple(fact["reasons"]),
+            )
+            for fact in diverged
+        )
+        with self._lock:
+            previous = self._logged_weight_divergence
+            if signature == previous:
+                return
+            self._logged_weight_divergence = signature
+        if not diverged:
+            # ``previous`` is None on the first call, so a gateway that boots
+            # with no overrides at all stays silent instead of announcing that
+            # nothing changed.
+            if previous:
+                logger.info(
+                    "route_weight_divergence_cleared",
+                    extra={"event": "route_weight_divergence_cleared"},
+                )
+            return
+        for fact in diverged:
+            zeroed = fact["effective_weight"] <= 0
+            # A route zeroed at runtime is removed capacity and is what the
+            # RCA had to find by hand; a route merely re-weighted is still
+            # routable, so it is reported but not as a warning.
+            log = logger.warning if zeroed else logger.info
+            # The verb says what happened to the weight, never which mechanism
+            # did it -- "overridden" is also the name of one of the four causes,
+            # so a provider-disabled route announced as "overridden" would send
+            # an operator to the wrong admin tab. The cause is in the brackets.
+            log(
+                "Route %s at runtime: %s via %s is %.4g (config: %.4g) [%s]",
+                "zeroed" if zeroed else "re-weighted",
+                fact["model_id"],
+                fact["endpoint_id"],
+                fact["effective_weight"],
+                fact["configured_weight"],
+                ", ".join(fact["reasons"]) or "unknown",
+                extra={
+                    "event": "route_weight_zeroed" if zeroed else "route_weight_overridden",
+                    "model_id": fact["model_id"],
+                    "endpoint_id": fact["endpoint_id"],
+                    "provider": fact["provider"],
+                    "configured_weight": fact["configured_weight"],
+                    "effective_weight": fact["effective_weight"],
+                    "reason": ", ".join(fact["reasons"]) or "unknown",
+                },
+            )
+
+    def _published_routes_snapshot(self) -> list[tuple[str, RouteConfig]]:
+        """Return one (canonical model id, route) pair per published route.
+
+        Aliases share a ``RouteConfig`` by reference, so reporting per route key
+        would list the same endpoints once per alias.
+        """
+        with self._lock:
+            items = list(self.routes.items())
+        seen_canonical_ids: set[str] = set()
+        snapshot: list[tuple[str, RouteConfig]] = []
+        for route_key, route in items:
+            if not route.published:
+                continue
+            canonical_model_id = route.canonical_model_id or route_key
+            if canonical_model_id in seen_canonical_ids:
+                continue
+            seen_canonical_ids.add(canonical_model_id)
+            snapshot.append((canonical_model_id, route))
+        return snapshot
+
+    def _weight_override_snapshot(self, model_id: str) -> dict[str, float] | None:
+        """Return the synchronous weight-override snapshot for one model.
+
+        ``None`` means "no overrides are readable from here": either no resolver
+        is attached -- the case ``_get_effective_adapters`` itself falls back to
+        the route's own weights for -- or the one attached offers only the async
+        ``get_for_model`` shape, which a diagnostic must not await (see
+        ``describe_route_weights``). Reporting the second as "no overrides" can
+        understate an override that is in fact set; every resolver the gateway
+        constructs exposes the sync snapshot, and under-reporting beats a status
+        endpoint that raises.
+        """
+        resolver = self.weight_override_resolver
+        if resolver is None:
+            return None
+        get_snapshot = getattr(resolver, "get_snapshot_for_model", None)
+        if get_snapshot is None:
+            return None
+        return dict(get_snapshot(model_id))
 
     def record_observation(self, obs: RoutingObservation) -> None:
         """Ignore observations because fixed routing has no online-learning state."""
@@ -835,13 +1258,18 @@ class FixedRouter:
                 exc=primary_error,
             )
             failed_attempts = [failed_attempt(primary, primary_error)]
+            # Kept in step with ``failed_attempts`` because that list holds only
+            # rendered strings; ``_raise_surfaced_error`` below needs the exception
+            # objects to decide which failure the caller is told about.
+            attempts = [_RouteAttempt(primary, primary_error)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream instead of the "router"
             # sentinel — mirrors the success-path resp["_routing"] injection.
-            # The outer error handler covers both re-raise points below
-            # (pin mode and all-providers-failed); ``failed_attempts`` is stored
-            # by reference so it reflects any fallback attempts appended before
-            # ``primary_error`` is finally re-raised.
+            # Covers the pin-mode re-raise below; the all-providers-failed exit
+            # may surface a fallback's error instead, and ``_raise_surfaced_error``
+            # attaches that one's block. ``failed_attempts`` is stored by
+            # reference either way, so whichever block is surfaced reflects every
+            # fallback attempt appended after this point.
             if not hasattr(primary_error, "_routing"):
                 primary_error._routing = {  # type: ignore[attr-defined]
                     "provider": primary.config.provider,
@@ -911,10 +1339,11 @@ class FixedRouter:
                         exc=fallback_error,
                     )
                     failed_attempts.append(failed_attempt(adapter, fallback_error))
+                    attempts.append(_RouteAttempt(adapter, fallback_error))
                     continue
                 finally:
                     self._health_registry.end_dispatch(fallback_claim)
-            raise primary_error
+            _raise_surfaced_error(attempts, failed_attempts)
         finally:
             # Every exit, cancellation included: a claim the request keeps is a
             # cooldown the endpoint spends invisible to selection. Released after
@@ -1035,6 +1464,10 @@ class FixedRouter:
                 exc=primary_error,
             )
             failed_attempts = [failed_attempt(primary, primary_error)]
+            # Kept in step with ``failed_attempts`` because that list holds only
+            # rendered strings; ``_raise_surfaced_error`` below needs the exception
+            # objects to decide which failure the caller is told about.
+            attempts = [_RouteAttempt(primary, primary_error)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream. Unlike the
             # non-streaming twin below, this generator never gets a chance to
@@ -1045,13 +1478,16 @@ class FixedRouter:
             # the consumer keeps overwriting its provider with the latest one
             # seen. When every attempt fails without yielding content, that
             # leaves the last (lowest-priority) fallback attributed instead
-            # of primary, whose error is what's actually re-raised below.
+            # of the attempt whose error is what's actually surfaced below.
             # Setting exc._routing here mirrors chat_completion's pattern and
-            # takes priority over the consumer's SSE-derived guess. Covers
-            # all three re-raise points below (pin mode, a stream already
-            # committed to primary, and all-providers-failed); failed_attempts
-            # is stored by reference so it reflects any fallback attempts
-            # appended before primary_error is finally re-raised.
+            # takes priority over the consumer's SSE-derived guess. Covers the
+            # two re-raise points below that are pinned to primary (pin mode,
+            # and a stream already committed to primary); the all-providers-
+            # failed exit may surface a fallback's error instead, and
+            # ``_raise_surfaced_error`` attaches that one's block.
+            # failed_attempts is stored by reference either way, so whichever
+            # block is surfaced reflects every fallback attempt appended after
+            # this point.
             if not hasattr(primary_error, "_routing"):
                 primary_error._routing = {  # type: ignore[attr-defined]
                     "provider": primary.config.provider,
@@ -1130,6 +1566,7 @@ class FixedRouter:
                         exc=fallback_error,
                     )
                     failed_attempts.append(failed_attempt(adapter, fallback_error))
+                    attempts.append(_RouteAttempt(adapter, fallback_error))
                     # Once this fallback provider's bytes reached the client the
                     # SSE stream has committed to it (same invariant as the
                     # primary path above). Re-raise instead of splicing yet
@@ -1145,7 +1582,7 @@ class FixedRouter:
                     # the outer unwind would be the last one only, and every
                     # earlier attempt's probe would sit out its whole deadline.
                     self._health_registry.end_dispatch(fallback_claim)
-            raise primary_error
+            _raise_surfaced_error(attempts, failed_attempts)
         finally:
             # Backstop for every exit this generator has: an upstream error
             # before the first token, and — the case that actually leaks in

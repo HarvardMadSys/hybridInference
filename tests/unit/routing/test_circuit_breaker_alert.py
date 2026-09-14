@@ -15,8 +15,21 @@ from routing.endpoint_health import (
     _CircuitBreaker,
     _CircuitState,
 )
+from serving.observability import state_alert_policy
 from serving.observability.alerts import AlertSeverity, _format_message, reset_transition_state
 from serving.utils.logging import _STRUCTURED_LOG_KEYS, JsonFormatter
+
+
+def _set_usage_limit_paging(monkeypatch, enabled: bool) -> None:
+    """Pin the plan-usage paging knob for one test, restoring it afterwards."""
+    monkeypatch.setattr(
+        state_alert_policy,
+        "_CIRCUIT_OPEN",
+        state_alert_policy.circuit_open_policy().model_copy(
+            update={"page_on_usage_limit": enabled}
+        ),
+        raising=True,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -261,15 +274,29 @@ def test_caller_str_collapses_whitespace_in_display_name():
     assert "\n" not in rendered
 
 
-def test_format_affected_callers_escapes_slack_control_characters():
-    """A display name with Slack mrkdwn control chars is escaped, not injected."""
+def test_affected_callers_are_escaped_in_the_rendered_alert():
+    """A display name with Slack mrkdwn control chars is escaped, not injected.
+
+    Asserted on the rendered message rather than on
+    ``_format_affected_callers``, because that is where the escaping now
+    happens: ``alerts._format_message`` escapes every context value it renders,
+    so no rule can forget to. Escaping here as well would double-encode the
+    ``&`` that escaping produces.
+    """
+    from serving.observability.alerts import AlertSeverity, _format_message
+
     cb = _CircuitBreaker(
         provider="openai", failure_threshold=999, cooldown_seconds=30, min_availability=0.0
     )
     cb.on_failure(reason="err", caller="<!channel> (01)")
     rendered = cb._format_affected_callers()
-    assert rendered == "&lt;!channel&gt; (01) x1"
-    assert "<" not in rendered and ">" not in rendered
+    assert rendered == "<!channel> (01) x1"
+
+    message = _format_message(
+        AlertSeverity.ERROR, "Provider circuit opened", {"affected_callers": rendered}
+    )
+    assert "&lt;!channel&gt; (01) x1" in message
+    assert "<!channel>" not in message
 
 
 async def test_circuit_open_alert_lists_affected_callers(monkeypatch):
@@ -367,6 +394,46 @@ async def test_registry_names_affected_user_from_request_context(monkeypatch):
         assert context["affected_callers"] == "alice (01ABC) x2"
 
 
+async def test_circuit_open_page_names_the_request_that_tripped_it(monkeypatch):
+    """The page has to be joinable to a row in ``api_logs``.
+
+    Asserted through the real ``alert_slack`` rather than a mock of it, because
+    ``alert_slack`` is the thing that reads the request contextvar — patching it
+    out would leave nothing to test. The id survives into the alert because the
+    breaker schedules its send with ``asyncio.ensure_future``, which copies the
+    current context into the task; the request that tripped the breaker has
+    typically moved on by the time the send runs.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.7")
+    from serving.observability.alerts import reset_dedupe_state
+    from serving.utils import context as req_ctx
+
+    reset_dedupe_state()
+
+    cb = _CircuitBreaker(provider="zhipu:open.bigmodel.cn:443")
+
+    with patch(
+        "serving.observability.alerts._post_to_slack",
+        new=AsyncMock(return_value=True),
+    ) as mock_post:
+        with req_ctx.push(request_id="7f3c9a12b4de"):
+            cb.on_failure(reason="upstream_500")
+            cb.on_failure(reason="upstream_500")
+            assert cb.state == _CircuitState.OPEN
+        # Deliberately outside the push: the send was scheduled inside it, and
+        # what carries the id is the task's copied context, not this one.
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    mock_post.assert_awaited_once()
+    message = mock_post.await_args.args[1]
+    assert "Provider circuit opened" in message
+    assert "• *Request Id:* 7f3c9a12b4de" in message
+
+
 async def test_upstream_fault_trip_does_not_label_its_victims_as_offenders(monkeypatch):
     """An endpoint dropping SSE streams must not page with its users as culprits.
 
@@ -420,7 +487,7 @@ async def test_usage_limit_trip_makes_no_accusation_either(monkeypatch):
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
     monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.7")
-    monkeypatch.setattr("routing.endpoint_health._PAGE_ON_USAGE_LIMIT", True)
+    _set_usage_limit_paging(monkeypatch, True)
     from serving.observability.alerts import reset_dedupe_state
 
     reset_dedupe_state()

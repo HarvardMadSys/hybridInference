@@ -169,3 +169,92 @@ class TestProviderProfile:
         assert profile.max_samples == 1
         assert len(profile._events) == 1
         assert profile.sample_count(101.0) == 1
+
+
+def _scan_summaries(profile: ProviderProfile) -> tuple[int, int, float]:
+    """Recompute (successes, errors, success TTFT sum) by scanning the window."""
+    successes = sum(1 for _ts, ttft, err in profile._events if err is None and ttft > 0)
+    errors = sum(1 for _ts, _ttft, err in profile._events if err is not None)
+    total_ms = sum(ttft for _ts, ttft, err in profile._events if err is None and ttft > 0)
+    return successes, errors, total_ms
+
+
+@pytest.mark.unit
+class TestProviderProfileRunningAggregates:
+    """The summaries on the routing path are running totals, not window scans.
+
+    ``_latency_estimate`` asks every candidate endpoint for its mean on every
+    decision, so these must stay O(1) *and* agree exactly with what a scan of
+    the retained window would have produced.
+    """
+
+    def test_aggregates_track_evictions_by_max_samples(self):
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=10_000.0, max_samples=4)
+
+        for i in range(10):
+            profile.record(float(i), 100.0 * (i + 1))
+
+        successes, errors, total_ms = _scan_summaries(profile)
+        assert (successes, errors) == (4, 0)
+        assert profile.sample_count(9.0) == successes
+        assert profile.total_count(9.0) == successes + errors
+        assert profile.mean_ttft_sec(9.0) == pytest.approx(total_ms / successes / 1000.0)
+
+    def test_aggregates_track_evictions_by_window(self):
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=5.0, max_samples=100)
+
+        profile.record(0.0, 100.0)
+        profile.record(1.0, 200.0, "timeout")
+        profile.record(2.0, 300.0)
+        profile.record(6.0, 400.0)
+        profile.record(7.0, 500.0, "rate_limit")
+
+        # A 5 s window ending at 7.0 cuts off below 2.0, so the first two
+        # outcomes drop and the 2.0 success stays.
+        successes, errors, total_ms = _scan_summaries_after_prune(profile, 7.0)
+        assert (successes, errors) == (2, 1)
+        assert profile.sample_count(7.0) == successes
+        assert profile.total_count(7.0) == successes + errors
+        assert profile.error_rate(7.0) == pytest.approx(errors / len(profile._events))
+        assert profile.mean_with_errors_sec(7.0, error_penalty_ms=60_000.0) == pytest.approx(
+            (total_ms + errors * 60_000.0) / (successes + errors) / 1000.0
+        )
+
+    def test_aggregates_agree_with_a_scan_over_a_mixed_history(self):
+        """Successes, errors and untimed successes, interleaved with eviction."""
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=50.0, max_samples=16)
+
+        for i in range(120):
+            ts = float(i)
+            if i % 5 == 0:
+                profile.record(ts, -1.0, "error")
+            elif i % 7 == 0:
+                # A success the adapter could not time: counted in neither.
+                profile.record(ts, 0.0)
+            else:
+                profile.record(ts, 120.0 + (i % 11) * 30.0)
+
+        now = 119.0
+        successes, errors, total_ms = _scan_summaries_after_prune(profile, now)
+        assert profile.sample_count(now) == successes
+        assert profile.total_count(now) == successes + errors
+        assert profile.mean_with_errors_sec(now, error_penalty_ms=60_000.0) == pytest.approx(
+            (total_ms + errors * 60_000.0) / (successes + errors) / 1000.0
+        )
+
+    def test_aggregates_reset_once_the_window_empties(self):
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=5.0)
+        profile.record(0.0, 250.0)
+        assert profile.mean_ttft_sec(0.0) == pytest.approx(0.25)
+
+        assert profile.mean_with_errors_sec(1000.0, error_penalty_ms=60_000.0) is None
+        assert profile.mean_ttft_sec(1000.0) == float("inf")
+        assert profile.sample_count(1000.0) == 0
+        assert profile.total_count(1000.0) == 0
+        assert profile._success_sum_ms == 0.0
+
+
+def _scan_summaries_after_prune(profile: ProviderProfile, now: float) -> tuple[int, int, float]:
+    """Prune to *now*, then recompute the summaries by scanning."""
+    profile._prune(now)
+    return _scan_summaries(profile)

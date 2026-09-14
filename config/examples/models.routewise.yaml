@@ -125,6 +125,8 @@ models:
       # envelope_upper_percentile: 90.0
       # envelope_min_samples: 1
       # envelope_bootstrap_donor_models: null
+      # envelope_max_samples: 20000        # 0 keeps every sample in the window
+      # envelope_cache_ttl_sec: 1.0        # 0 re-derives L/U on every request
       #
       # Latency profile and the best-effort TTFT target
       # latency_slo_sec: 3.0
@@ -139,10 +141,19 @@ models:
       # Remaining probe settings
       # routewise_probe_timeout_sec: 30.0
       # routewise_probe_idle_threshold_sec: 900.0
+      # Probes in flight across the whole gateway, not per model. Raise it only
+      # when every provider behind every probed model can take the extra
+      # parallel request; where models disagree, the lowest value wins.
       # routewise_probe_max_concurrency: 1
       #
       # Prefix-cache-aware cost adjustment
       # prefix_cache_cost_adjustment_enabled: false
+      #
+      # Per-request decision detail written to api_logs.metadata->'routewise'.
+      # Turn on to study why a candidate lost (its own request cost, cost
+      # reason, prefix-cache discount and quota use); the console reads none
+      # of it, so it is off by default rather than stored on every request.
+      # decision_metadata_candidate_detail: false
 
     route:
       # Premium: answers immediately, costs more.

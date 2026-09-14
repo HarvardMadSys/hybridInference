@@ -593,7 +593,12 @@ models:
         assert latency_call["model_ids"] == ["alias", "m"]
         assert envelope_call["model_ids"] == ["alias", "m"]
         assert latency_call["limit"] == 123
-        assert envelope_call["limit"] is None
+        # The envelope pass is bounded too: an unbounded fetch reads every
+        # api_logs row in the window at each boot, and it replays token counts
+        # only, so it does not ask for the metadata column.
+        assert envelope_call["limit"] == 123
+        assert envelope_call["include_metadata"] is False
+        assert latency_call.get("include_metadata", True) is True
         assert (envelope_call["since"] - latency_call["since"]).total_seconds() < 0
         rw.bootstrap_from_log_rows.assert_any_call(
             [{"model_id": "m", "source": "latency"}],
@@ -606,6 +611,40 @@ models:
             include_envelope=True,
             envelope_model_overrides={},
         )
+
+    @pytest.mark.asyncio
+    async def test_routewise_envelope_bootstrap_limit_clears_min_samples(self):
+        """The replay bound never sits below the calibration threshold.
+
+        envelope_min_samples above db_bootstrap_max_rows would otherwise make
+        the replay unable to calibrate, and a quota-only model refused by
+        start() cannot boot -- so it never serves the traffic that would fill
+        the window either.
+        """
+        log_store = AsyncMock()
+        log_store.get_routewise_bootstrap_rows.side_effect = [[], []]
+        rw = _mock_routewise(
+            config=RouteWiseConfig(
+                db_bootstrap_max_rows=100,
+                envelope_min_samples=5000,
+                latency_window_sec=900.0,
+                envelope_window_hours=24,
+            )
+        )
+        rw.bootstrap_from_log_rows.return_value = {
+            "rows": 0,
+            "latency_events": 0,
+            "failed_attempts": 0,
+            "envelope_samples": 0,
+        }
+
+        await bootstrap._bootstrap_routewise_from_logs(log_store, [rw], {id(rw): {"m"}})
+
+        latency_call = log_store.get_routewise_bootstrap_rows.await_args_list[0].kwargs
+        envelope_call = log_store.get_routewise_bootstrap_rows.await_args_list[1].kwargs
+        # The latency pass has no such threshold and stays at the configured cap.
+        assert latency_call["limit"] == 100
+        assert envelope_call["limit"] == 5000
 
     @pytest.mark.asyncio
     async def test_routewise_db_bootstrap_includes_envelope_donor_models(self):

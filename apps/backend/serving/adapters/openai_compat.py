@@ -14,6 +14,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import aiohttp
 
 from serving.config.settings import get_settings
+from serving.exceptions import UpstreamStreamIdleError
 from serving.stream import done_sentinel
 from serving.utils.logging import get_logger
 from serving.utils.messages import flatten_text_content, merge_leading_system_messages
@@ -29,6 +30,7 @@ from .profiles import (
     filter_response_format,
     filter_sampling_params,
     function_call_delta_to_tool_calls,
+    get_stream_first_byte_timeout_seconds,
     get_stream_idle_timeout_seconds,
     get_usage_normalizer,
     normalize_messages_for_profile,
@@ -36,6 +38,7 @@ from .profiles import (
     resolve_tool_choice_for_profile,
     supports_guided_json,
 )
+from .upstream_limiter import UpstreamSaturated, UpstreamSlot, acquire_upstream_slot
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
@@ -45,6 +48,70 @@ logger = get_logger(__name__)
 _INCOMPLETE_STREAM_ERROR = (
     "Upstream stream ended without a terminal finish_reason or [DONE] sentinel"
 )
+
+
+class UpstreamStreamError(aiohttp.ClientError):
+    """An error the upstream reported *inside* an otherwise-200 SSE stream.
+
+    OpenAI-compatible servers -- this gateway among them -- answer a mid-stream
+    failure with a ``data: {"error": {...}}`` frame and then close, emitting no
+    terminal ``finish_reason`` and no ``[DONE]``. To a reader that only looks
+    for terminators, that is indistinguishable from a truncated generation, so
+    the adapter raised ``_INCOMPLETE_STREAM_ERROR`` -- a statusless
+    ``aiohttp.ClientError`` -- and the frame's own explanation was dropped.
+
+    A statusless exception is the problem. ``endpoint_health.record_failure``
+    exempts client errors from the circuit breaker by duck-typing an HTTP
+    status off the exception, so a relayed 4xx that the upstream had *already*
+    excused as the caller's fault ("you've reached your concurrent request
+    limit") arrived here with nothing to classify on, counted against the
+    endpoint, and paged -- while the upstream itself had logged
+    ``client_error_skip_breaker`` for the very same request.
+
+    Carrying ``status`` restores that classification, and the message carries
+    the upstream's own text so the caller reads the real reason instead of a
+    framing complaint. ``ClientError`` is the base so the existing mid-stream
+    ``except aiohttp.ClientError`` handling (key release, propagation) is
+    unchanged.
+    """
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+# Used when an error frame names no usable HTTP status. Not a client error, so
+# the breaker still counts it -- which is what a statusless error frame did
+# before this, and the safe direction for an upstream fault we cannot classify.
+_UNCLASSIFIED_STREAM_ERROR_STATUS = 502
+
+
+def _stream_error_status(error: Any) -> int:
+    """Extract the HTTP status an upstream error frame reports, or 502."""
+    if isinstance(error, dict):
+        # ``code`` is the OpenAI-compatible spelling, and it is frequently a
+        # string enum ("rate_limit_exceeded") rather than a number -- only an
+        # in-range int is a status. ``status`` / ``status_code`` cover the
+        # servers that mirror the HTTP code under a different key.
+        for key in ("code", "status", "status_code"):
+            val = error.get(key)
+            if isinstance(val, bool):
+                continue
+            if isinstance(val, int) and 100 <= val <= 599:
+                return val
+    return _UNCLASSIFIED_STREAM_ERROR_STATUS
+
+
+def _stream_error_message(error: Any) -> str:
+    """Render an upstream error frame as a single operator-readable line."""
+    if isinstance(error, dict):
+        msg = error.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    return "Upstream reported an error mid-stream"
+
 
 # Total timeout (seconds) for a non-streaming upstream completion POST. The old
 # 120s cap killed long-but-healthy generations (reasoning models, large
@@ -68,6 +135,51 @@ except (TypeError, ValueError):
     _COMPLETION_TIMEOUT_S = _DEFAULT_COMPLETION_TIMEOUT_S
 
 
+async def _iter_with_idle_timeout(
+    source: AsyncIterator[str],
+    idle_timeout: float | None,
+    *,
+    endpoint_id: str | None = None,
+    frames_already_seen: int = 0,
+) -> AsyncIterator[str]:
+    """Re-yield ``source``, raising if it goes quiet for ``idle_timeout`` seconds.
+
+    The caller has already pulled the first frame out of ``source`` (that is what
+    commits the key lease), so every gap this measures is an *inter-chunk* gap.
+    Prefill is over by the time the first frame lands, which is precisely why a
+    budget this tight is safe here and would not be safe on the socket.
+
+    The clock runs only while awaiting the upstream. A consumer that stops
+    pulling -- a slow client, backpressure -- suspends this generator at the
+    ``yield``, outside the timed await, so a slow *reader* can never be mistaken
+    for a silent *writer*.
+
+    ``wait_for`` cancels the pending ``__anext__`` on expiry, which throws
+    ``CancelledError`` into ``stream_post`` at its read and unwinds its
+    ``__aexit__`` -- so the wedged connection is torn down rather than left
+    hanging on a backend that will never answer. A cancellation arriving from
+    *outside* (client disconnect) is a ``BaseException`` that propagates through
+    this generator untouched and is never converted into an upstream fault.
+    """
+    if idle_timeout is None:
+        async for item in source:
+            yield item
+        return
+
+    frames = frames_already_seen
+    while True:
+        try:
+            item = await asyncio.wait_for(source.__anext__(), idle_timeout)
+        except StopAsyncIteration:
+            return
+        except asyncio.TimeoutError as exc:
+            raise UpstreamStreamIdleError(
+                idle_timeout, endpoint_id=endpoint_id, frames=frames
+            ) from exc
+        frames += 1
+        yield item
+
+
 def _normalize_text_content(content: Any) -> Any:
     """Normalize structured content blocks into plain text when needed."""
     # Anything that is not a block mapping or a block list is already what the
@@ -78,6 +190,133 @@ def _normalize_text_content(content: Any) -> Any:
     if not isinstance(content, dict | list):
         return content
     return flatten_text_content(content)
+
+
+def _repaired_tool_arguments(raw: Any) -> str | None:
+    """Return a replacement for a tool call's ``arguments``, or None to keep it.
+
+    ``function.arguments`` must be a string holding a JSON *object*. sglang and
+    vLLM enforce that on every historical assistant tool call in the request,
+    not just the newest one, and reject the whole turn with a 400
+    (``Assistant tool call function.arguments must be valid JSON.`` or
+    ``... must be a JSON object.``). Because clients replay the transcript, a
+    single malformed call poisons that conversation permanently: every later
+    turn resends it and fails the same way. Three broken shapes were observed
+    in production -- a truncated ``"{"``, a fragment missing its leading brace,
+    and an empty string -- all of them produced by a client-side streaming
+    tool-call parser, none of them repairable into the arguments the model
+    originally meant.
+
+    So normalize rather than validate: anything that does not decode to an
+    object becomes ``"{}"``. The substitution only ever turns a guaranteed 400
+    into a request the upstream accepts -- every input that would have
+    succeeded (a JSON object string) is handed back untouched, by identity, so
+    the caller can tell a repair happened. A ``dict`` is re-encoded rather than
+    discarded: it is not the shape the OpenAI schema asks for, but several
+    clients send the decoded object and its content is intact — unless it will
+    not encode to JSON, which puts it back with every other unusable shape.
+
+    This mirrors what the gateway's other ingresses already do --
+    ``anthropic_translator._normalize_tool_input``, ``claude_format`` and
+    ``gemini`` all coerce a malformed tool input to an empty object. The
+    ``/v1/messages`` surface is structurally immune because it re-serializes
+    through ``json.dumps``; ``/v1/chat/completions`` forwards the client's
+    string verbatim and so needs this.
+    """
+    if isinstance(raw, dict):
+        try:
+            # allow_nan=False: `json.loads` accepts the non-standard NaN and
+            # Infinity literals, so a decoded object can hold a float that the
+            # default `dumps` re-emits bare -- not JSON, and rejected by the
+            # very upstream check this function exists to satisfy.
+            return json.dumps(raw, allow_nan=False)
+        except (TypeError, ValueError, RecursionError):
+            return "{}"
+    try:
+        # Non-strings and blank strings never reach `json.loads`: the guard
+        # sends them straight to `parsed = None` to be repaired. The catch
+        # covers what parsing a real string can still throw -- malformed JSON,
+        # and RecursionError from a deeply nested argument string, which a
+        # client can reach in a few kilobytes because the request body's own
+        # parse saw `arguments` as an opaque string and never decoded its
+        # contents. TypeError is belt and braces for a non-str slipping past
+        # the guard.
+        parsed = json.loads(raw) if isinstance(raw, str) and raw.strip() else None
+    except (json.JSONDecodeError, TypeError, RecursionError):
+        parsed = None
+    return None if isinstance(parsed, dict) else "{}"
+
+
+def _sanitize_tool_call_arguments(
+    messages: list[dict[str, Any]], *, endpoint_id: str
+) -> list[dict[str, Any]]:
+    """Repair malformed ``tool_calls[*].function.arguments`` copy-on-write.
+
+    Copy-on-write is load-bearing, not stylistic: the list handed in is the
+    router's ``self._messages``, which is written verbatim to
+    ``api_logs.prompt`` and re-read on every fallback attempt. Mutating it
+    would rewrite the request log to something the client never sent and change
+    what the next route in the fallback chain sees. Only the messages and tool
+    calls that actually needed a repair are rebuilt; a well-formed list is
+    handed back as the same object, like the system-ordering pass above it.
+
+    Every unexpected shape (``tool_calls`` absent, None, or not a list; an
+    entry that is not a mapping or carries no ``function``) is skipped rather
+    than raised on -- this sits on the request path for every model, so it must
+    never be the thing that fails a turn.
+    """
+    repaired_messages: list[dict[str, Any]] | None = None
+
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+
+        repaired_calls: list[Any] | None = None
+        for call_index, tool_call in enumerate(tool_calls):
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            raw = function.get("arguments")
+            repaired = _repaired_tool_arguments(raw)
+            if repaired is None:
+                continue
+
+            if repaired_calls is None:
+                repaired_calls = list(tool_calls)
+            repaired_calls[call_index] = {
+                **tool_call,
+                "function": {**function, "arguments": repaired},
+            }
+            # The producer-side bug outlives the consumer-side symptom: once
+            # the 400s stop, this line is the only remaining evidence that a
+            # client is still emitting unparseable tool calls. The argument
+            # text itself is user data and is never logged -- the id and the
+            # function name are enough to find the conversation.
+            logger.warning(
+                "tool_call_arguments_repaired",
+                extra={
+                    "event": "tool_call_arguments_repaired",
+                    "tool_call_id": tool_call.get("id"),
+                    # Not "name": logging refuses an `extra` key that collides
+                    # with a LogRecord attribute, and LogRecord.name is the
+                    # logger's own name.
+                    "tool_name": function.get("name"),
+                    "endpoint_id": endpoint_id,
+                },
+            )
+
+        if repaired_calls is None:
+            continue
+        if repaired_messages is None:
+            repaired_messages = list(messages)
+        repaired_messages[index] = {**message, "tool_calls": repaired_calls}
+
+    return messages if repaired_messages is None else repaired_messages
 
 
 def _caller_role() -> str | None:
@@ -385,9 +624,20 @@ class OpenAICompatAdapter(BaseAdapter):
         no-op on a list already in the accepted shape — it hands back the
         argument itself, no copy — while the profile normalization and
         per-message cleaning below apply as they always have.
+
+        Historical tool-call ``arguments`` are repaired for the same reason and
+        on the same terms — see :func:`_sanitize_tool_call_arguments`. This
+        method is the single chokepoint both :meth:`chat_completion` and
+        :meth:`stream_chat_completion` build their payload through, and
+        ``OpenRouterAdapter`` inherits all three, so every OpenAI-compatible
+        route is covered by the one call.
         """
         messages = merge_leading_system_messages(messages)
         messages = normalize_messages_for_profile(self._usage_profile, messages)
+        messages = _sanitize_tool_call_arguments(
+            messages,
+            endpoint_id=getattr(self.config, "endpoint_id", None) or self.config.provider,
+        )
         return [self._clean_message(msg) for msg in messages]
 
     def _normalize_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
@@ -399,15 +649,23 @@ class OpenAICompatAdapter(BaseAdapter):
         return resolve_tool_choice_for_profile(self._usage_profile, tool_choice)
 
     def _build_stream_timeout(self) -> aiohttp.ClientTimeout | None:
-        """Return a provider-specific streaming timeout, if configured."""
-        idle_timeout = get_stream_idle_timeout_seconds(self._usage_profile)
-        if idle_timeout is None:
+        """Return the socket-level streaming timeout, if one is configured.
+
+        ``sock_read`` is a *byte-anchored* clock: aiohttp restarts it on every
+        read, including the one that waits out prefill for the first token. It
+        therefore cannot express "give the first token as long as it needs, but
+        not the tenth" -- so only the first-byte budget goes here (unbounded by
+        default), and the mid-stream idle budget is enforced per frame in
+        ``_iter_with_idle_timeout`` where the two can be told apart.
+        """
+        first_byte_timeout = get_stream_first_byte_timeout_seconds(self._usage_profile)
+        if first_byte_timeout is None:
             return None
         try:
-            return aiohttp.ClientTimeout(total=None, sock_read=idle_timeout)
+            return aiohttp.ClientTimeout(total=None, sock_read=first_byte_timeout)
         except TypeError:
             # Test doubles may expose a simplified ClientTimeout(total=...) shim.
-            return SimpleNamespace(total=None, sock_read=idle_timeout)
+            return SimpleNamespace(total=None, sock_read=first_byte_timeout)
 
     def _format_passthrough_chunk(self, processed_chunk: dict[str, Any]) -> str:
         """Forward an upstream delta while normalizing model/role fields."""
@@ -471,6 +729,23 @@ class OpenAICompatAdapter(BaseAdapter):
 
         return headers
 
+    async def _acquire_upstream_slot(self, api_key: str | None) -> UpstreamSlot:
+        """Take an outbound concurrency slot for the key this request will use.
+
+        Buckets are per (provider label, key), so a pooled adapter must pass the
+        key it just leased rather than the route's configured one — sibling keys
+        are usually separate accounts with separate allowances. Local inference
+        servers get an inert slot (see ``upstream_limiter.is_local_endpoint``).
+
+        Raises:
+            UpstreamSaturated: no slot came free within the acquire timeout.
+        """
+        return await acquire_upstream_slot(
+            self._key_pool_provider_label,
+            api_key,
+            base_url=self.config.base_url,
+        )
+
     async def _post_with_pool(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         """POST JSON with sequential key-pool rotation on any upstream error.
 
@@ -487,9 +762,16 @@ class OpenAICompatAdapter(BaseAdapter):
         Pool exhaustion re-raises the last error (or KeyPoolExhausted if none was
         seen yet), which the caller surfaces as an upstream failure for the
         router fallback chain.
+
+        Both branches hold an outbound concurrency slot for the duration of the
+        request (see ``upstream_limiter``). In the pooled branch a saturated key
+        rotates like any other key-specific failure — a sibling key may have
+        room — and only a request that finds every usable key saturated fails
+        with ``UpstreamSaturated``.
         """
         if self._key_pool is None:
             headers = self._build_headers()
+            slot = await self._acquire_upstream_slot(self.config.api_key)
             # retries=1 => exactly one attempt, NO retry. A chat.completion POST
             # is non-idempotent: re-sending on any ClientError (which includes a
             # response-phase >=400, or a total timeout that fires while the
@@ -499,13 +781,26 @@ class OpenAICompatAdapter(BaseAdapter):
             # comes from the router's provider fallback chain, not from blindly
             # re-running the same generation (mirrors the pooled path, which does
             # one json_post per key).
-            return await self.http.json_post_with_retry(
-                url=url,
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
-                retries=1,
-            )
+            try:
+                response = await self.http.json_post_with_retry(
+                    url=url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                    retries=1,
+                )
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                slot.release(
+                    status_code=e.status if isinstance(e, aiohttp.ClientResponseError) else 0
+                )
+                raise
+            else:
+                slot.release(status_code=200)
+                return response
+            finally:
+                # Idempotent; the release that matters ran above. This one only
+                # covers an exit neither branch saw — cancellation, most of all.
+                slot.release()
 
         affinity_key = _pool_affinity_key()
         provider = self._key_pool_provider_label
@@ -548,6 +843,19 @@ class OpenAICompatAdapter(BaseAdapter):
                 },
             )
 
+            try:
+                slot = await self._acquire_upstream_slot(api_key)
+            except UpstreamSaturated as saturated:
+                # This key's outbound allowance is full. Rotate rather than
+                # fail: sibling keys are separate accounts with their own
+                # allowances, and ``tried`` already holds this one so the next
+                # pass picks a different key. The lease is released neutrally —
+                # nothing was sent, so the key is neither credited with a
+                # success nor charged with a failure, and it must not be muted.
+                self._key_pool.release(lease, status_code=None)
+                last_error = saturated
+                continue
+
             headers = self._build_headers(api_key_override=api_key)
             try:
                 response = await self.http.json_post(
@@ -558,6 +866,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 )
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
+                slot.release(status_code=status)
                 outcome = self._key_pool.release(lease, status_code=status, tried=tried)
                 if outcome is ReleaseOutcome.PROPAGATE:
                     # Either a request-scoped client error (fails identically on
@@ -584,6 +893,11 @@ class OpenAICompatAdapter(BaseAdapter):
                 )
                 last_error = e
                 continue  # try next key
+            else:
+                slot.release(status_code=200)
+            finally:
+                # Idempotent; covers an exit neither branch above saw.
+                slot.release()
 
             self._key_pool.release(lease, status_code=200)
             logger.debug(
@@ -614,10 +928,10 @@ class OpenAICompatAdapter(BaseAdapter):
 
     async def _open_stream_with_pool(
         self, url: str, payload: dict[str, Any], timeout: Any = None
-    ) -> AsyncGenerator[tuple[Any, Any, str], None]:
+    ) -> AsyncGenerator[tuple[Any, Any, str, UpstreamSlot], None]:
         """Open a streaming POST with sequential key-pool rotation on opening errors.
 
-        Yields exactly one tuple: ``(stream_iter, lease, first_chunk)``.
+        Yields exactly one tuple: ``(stream_iter, lease, first_chunk, slot)``.
 
         - ``stream_iter`` is the underlying async iterator from ``stream_post``;
           the caller should continue iterating it after processing
@@ -626,18 +940,26 @@ class OpenAICompatAdapter(BaseAdapter):
           or ``None`` when no pool is configured.
         - ``first_chunk`` is the first chunk already pulled from the iterator
           (must be processed first by the caller).
+        - ``slot`` is the outbound concurrency slot, which the caller must
+          release wherever it releases the lease. Concurrency means *generations
+          in flight*, not responses opened, so the slot has to live as long as
+          the stream does — every exit path included (normal end, mid-stream
+          error, client disconnect). Releasing it here, where the body has not
+          been read yet, would cap nothing.
 
         Rotates keys only on status (``ClientResponseError``) opening errors,
         which the client raises before any response-body byte is read: 429/auth
         rotate (muting the key only once there is nothing left to rotate to),
-        request-scoped 4xx propagate. A non-status I/O error may instead be a
-        disconnect after the upstream returned 2xx and began streaming, so it
-        propagates without rotating to avoid re-submitting (duplicate generation
-        / double billing). Mid-stream errors are handled by the streaming
-        consumer, not here.
+        request-scoped 4xx propagate. A key whose outbound allowance is full
+        rotates the same way, without touching the key's own state. A non-status
+        I/O error may instead be a disconnect after the upstream returned 2xx and
+        began streaming, so it propagates without rotating to avoid re-submitting
+        (duplicate generation / double billing). Mid-stream errors are handled by
+        the streaming consumer, not here.
         """
         if self._key_pool is None:
             headers = self._build_headers()
+            slot = await self._acquire_upstream_slot(self.config.api_key)
             stream_iter = self.http.stream_post(
                 url=url, json=payload, headers=headers, timeout=timeout
             )
@@ -645,9 +967,19 @@ class OpenAICompatAdapter(BaseAdapter):
                 first = await stream_iter.__anext__()
             except StopAsyncIteration:
                 # Empty stream is incomplete. Yield no lease/chunk so the
-                # caller's terminal-signal check raises the upstream error.
+                # caller's terminal-signal check raises the upstream error — and
+                # hand the slot back here, since nobody downstream will.
+                slot.release(status_code=0)
                 return
-            yield stream_iter, None, first
+            except BaseException as exc:
+                # Nothing was yielded, so the slot is this frame's to return. A
+                # status error is the AIMD signal that matters (429); anything
+                # else — I/O failure, cancellation — is a neutral release.
+                slot.release(
+                    status_code=exc.status if isinstance(exc, aiohttp.ClientResponseError) else None
+                )
+                raise
+            yield stream_iter, None, first, slot
             return
 
         affinity_key = _pool_affinity_key()
@@ -686,6 +1018,17 @@ class OpenAICompatAdapter(BaseAdapter):
                 },
             )
 
+            try:
+                slot = await self._acquire_upstream_slot(api_key)
+            except UpstreamSaturated as saturated:
+                # Same rotation as the non-streaming path: this key's outbound
+                # allowance is full, a sibling's may not be. Neutral lease
+                # release — nothing was sent, so the key is neither credited nor
+                # muted.
+                self._key_pool.release(lease, status_code=None)
+                last_error = saturated
+                continue
+
             headers = self._build_headers(api_key_override=api_key)
             stream_iter = self.http.stream_post(
                 url=url, json=payload, headers=headers, timeout=timeout
@@ -700,6 +1043,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 # ``tried`` deliberately: that is the pool's "cannot rotate"
                 # signal, and it is the mute -- not a rotation here -- that moves
                 # the next request along.
+                slot.release(status_code=0)
                 self._key_pool.release(lease, status_code=0)
                 logger.debug(
                     "key_pool_active_affinities",
@@ -713,6 +1057,7 @@ class OpenAICompatAdapter(BaseAdapter):
             except aiohttp.ClientResponseError as e:
                 # Status error — raised by the client before any response body
                 # byte is read, so re-issuing the request on another key is safe.
+                slot.release(status_code=e.status)
                 outcome = self._key_pool.release(lease, status_code=e.status, tried=tried)
                 if outcome is ReleaseOutcome.PROPAGATE:
                     # Nothing to rotate to: request-scoped error, or a transient
@@ -745,11 +1090,20 @@ class OpenAICompatAdapter(BaseAdapter):
                 # not mute or rotate — release the key unchanged and propagate.
                 # Neutral (None), NOT 200: crediting a success here would reset
                 # the sole-key backoff streak mid-outage.
+                slot.release(status_code=None)
                 self._key_pool.release(lease, status_code=None)
                 raise
+            except BaseException:
+                # Cancellation before the first chunk: the slot is held for a
+                # request that no longer exists, so hand it back here — nothing
+                # downstream ever learns this attempt happened. The key pool
+                # needs nothing; a neutral release is its no-op.
+                slot.release()
+                raise
 
-            # First chunk read successfully — commit the lease (caller releases on stream end)
-            yield stream_iter, lease, first
+            # First chunk read successfully — commit the lease and the slot
+            # (caller releases both on stream end).
+            yield stream_iter, lease, first, slot
             return
 
         # Loop exhausted — every key errored on open, or the pool had no usable
@@ -1076,20 +1430,34 @@ class OpenAICompatAdapter(BaseAdapter):
         primed: str | None = None
         stream_iter: AsyncIterator[str] | None = None
         active_lease = None
+        active_slot: UpstreamSlot | None = None
 
-        async for it, lease, first in self._open_stream_with_pool(
+        async for it, lease, first, slot in self._open_stream_with_pool(
             url, payload, timeout=stream_timeout
         ):
             stream_iter = it
             active_lease = lease
+            active_slot = slot
             primed = first
             break  # helper yields exactly once
+
+        idle_timeout = get_stream_idle_timeout_seconds(self._usage_profile)
+        stream_endpoint_id = getattr(self.config, "endpoint_id", None) or self.config.provider
 
         async def _drain() -> AsyncIterator[str]:
             if primed is not None:
                 yield primed
             if stream_iter is not None:
-                async for c in stream_iter:
+                # Guarded from here on, not from the first frame: ``primed`` is
+                # already in hand, so prefill is behind us and what remains is
+                # decode, where silence means a stalled backend rather than a
+                # long prompt.
+                async for c in _iter_with_idle_timeout(
+                    stream_iter,
+                    idle_timeout,
+                    endpoint_id=stream_endpoint_id,
+                    frames_already_seen=1,  # ``primed``
+                ):
                     yield c
 
         # Stream response. Only failures reading from the upstream iterator mute
@@ -1100,6 +1468,7 @@ class OpenAICompatAdapter(BaseAdapter):
         # client-side cancellations (CancelledError, GeneratorExit) are
         # BaseExceptions that never mute either.
         stream_error = False
+        stream_error_status: int | None = None
         try:
             async for chunk in _drain():
                 if not chunk.strip():
@@ -1116,6 +1485,18 @@ class OpenAICompatAdapter(BaseAdapter):
                         data = json.loads(data_str)
 
                         raw_choices = data.get("choices") if isinstance(data, dict) else None
+
+                        # An error frame ends the stream: the upstream is
+                        # telling us why it stopped, so surface *that* rather
+                        # than letting the loop fall out and report the missing
+                        # terminator. Guarded on empty choices because a normal
+                        # content chunk may legitimately carry a null `error`.
+                        if isinstance(data, dict) and data.get("error") and not raw_choices:
+                            error = data["error"]
+                            raise UpstreamStreamError(
+                                _stream_error_message(error),
+                                _stream_error_status(error),
+                            )
                         if isinstance(raw_choices, list) and any(
                             isinstance(choice, dict) and bool(choice.get("finish_reason"))
                             for choice in raw_choices
@@ -1138,23 +1519,61 @@ class OpenAICompatAdapter(BaseAdapter):
                 # Surfacing it as an upstream error keeps partial content
                 # observable without fabricating a normal final chunk + [DONE].
                 raise aiohttp.ClientError(_INCOMPLETE_STREAM_ERROR)
-        except asyncio.TimeoutError:
-            # Idle timeout reading upstream: mute the key, end the stream
-            # gracefully (flush + [DONE] are still emitted below).
+        except UpstreamStreamIdleError as exc:
+            # The mid-stream idle detector fired. Mute the key and propagate --
+            # the router charges the endpoint a ``stream_exception``, which is
+            # the whole point: a wedged replica has to stop being selected.
             stream_error = True
             logger.warning(
-                "[OpenAICompat] Stream idle timeout for model=%s after %.1fs",
-                self.config.id,
-                getattr(stream_timeout, "sock_read", -1.0) if stream_timeout else -1.0,
+                "upstream_stream_idle",
+                extra={
+                    "event": "upstream_stream_idle",
+                    "model": self.config.id,
+                    "provider": self.config.provider,
+                    "endpoint_id": stream_endpoint_id,
+                    "idle_seconds": exc.idle_seconds,
+                    "frames": exc.frames,
+                },
             )
+            raise
+        except asyncio.TimeoutError as exc:
+            # A socket-level read timeout, i.e. the optional first-byte budget.
+            # It used to be swallowed here and the stream capped with a normal
+            # flush + [DONE], which handed the caller a truncated answer dressed
+            # as a complete one and told the router nothing. Re-raised as the
+            # same distinct fault so both timers land in one place.
+            stream_error = True
+            sock_read = getattr(stream_timeout, "sock_read", None) if stream_timeout else None
+            raise UpstreamStreamIdleError(
+                float(sock_read) if sock_read else 0.0,
+                endpoint_id=stream_endpoint_id,
+            ) from exc
         except aiohttp.ClientError:
             # Mid-stream upstream I/O failure (disconnect, ClientPayloadError):
             # mute the key, then propagate to the client as before.
             stream_error = True
+            # An error *frame* names a status, and a 4xx one is the caller's
+            # request being refused -- the key is healthy and muting it would
+            # sideline a working credential over someone else's bad request.
+            # Hand the pool the real status and let its own policy decide;
+            # everything statusless keeps the historical 0 ("non-HTTP failure").
+            if isinstance(e, UpstreamStreamError):
+                stream_error_status = e.status
             raise
         finally:
+            # The outbound slot was held for the whole generation, not just the
+            # response open, so it comes back here — on every exit path this
+            # ``finally`` covers, client disconnect and mid-stream error
+            # included. Released with the same outcome as the lease, and
+            # unconditionally on the pool: a pool-less adapter still holds one.
+            if active_slot is not None:
+                active_slot.release(status_code=0 if stream_error else 200)
             if active_lease is not None and self._key_pool is not None:
-                self._key_pool.release(active_lease, status_code=0 if stream_error else 200)
+                if stream_error:
+                    release_status = stream_error_status if stream_error_status else 0
+                else:
+                    release_status = 200
+                self._key_pool.release(active_lease, status_code=release_status)
                 logger.debug(
                     "key_pool_active_affinities",
                     extra={

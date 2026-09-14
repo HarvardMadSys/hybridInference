@@ -16,7 +16,7 @@ import aiohttp
 import pytest
 
 from serving.adapters.base import ModelConfig
-from serving.adapters.openai_compat import OpenAICompatAdapter
+from serving.adapters.openai_compat import OpenAICompatAdapter, UpstreamStreamError
 from serving.http import AsyncHTTPClient
 
 
@@ -164,3 +164,89 @@ async def test_stream_with_no_terminal_signal_at_all_still_raises(monkeypatch):
     with pytest.raises(aiohttp.ClientError, match=r"ended without.*finish_reason.*\[DONE\]"):
         async for _ in _adapter().stream_chat_completion([{"role": "user", "content": "hi"}]):
             pass
+
+
+def _error_frame(error: dict) -> bytes:
+    """An upstream's mid-stream error frame, as OpenAI-compatible servers send it."""
+    return f"data: {json.dumps({'error': error})}\n\n".encode()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_error_frame_surfaces_upstream_status_and_message(monkeypatch):
+    """The production page: a relayed 4xx counted against the endpoint.
+
+    A gateway upstream refused the request with 403 ("concurrent request
+    limit"), sent it as an error frame, and closed without a terminator. Both
+    terminal flags were unset, so the adapter raised the statusless
+    ``_INCOMPLETE_STREAM_ERROR``; with no status to classify on,
+    ``record_failure`` skipped its client-error exemption and the breaker
+    tripped -- over a refusal the upstream had itself excused.
+    """
+    _serve(
+        monkeypatch,
+        [
+            _frame({"role": "assistant"}),
+            _error_frame(
+                {
+                    "message": "You've reached your concurrent request limit.",
+                    "type": "server_error",
+                    "code": 403,
+                }
+            ),
+        ],
+    )
+
+    with pytest.raises(UpstreamStreamError) as excinfo:
+        async for _ in _adapter().stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass
+
+    assert excinfo.value.status == 403
+    assert "concurrent request limit" in str(excinfo.value)
+    # The framing complaint must not mask the reason the upstream gave.
+    assert "finish_reason" not in str(excinfo.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_error_frame_without_numeric_code_still_counts_as_upstream_fault(monkeypatch):
+    """A string ``code`` is not a status, and guessing one is worse than 502.
+
+    ``rate_limit_exceeded`` and friends are the OpenAI spelling. Falling back to
+    502 keeps the breaker counting the failure exactly as it did before this
+    check existed -- the exemption is opt-in on a status we can actually read.
+    """
+    _serve(
+        monkeypatch,
+        [_error_frame({"message": "upstream exploded", "code": "internal_error"})],
+    )
+
+    with pytest.raises(UpstreamStreamError) as excinfo:
+        async for _ in _adapter().stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass
+
+    assert excinfo.value.status == 502
+    assert "upstream exploded" in str(excinfo.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_null_error_on_a_content_chunk_is_not_an_error_frame(monkeypatch):
+    """Several servers stamp ``"error": null`` on every delta. That is not a failure."""
+    payload = {
+        "model": "glm-5.2",
+        "error": None,
+        "choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}],
+    }
+    _serve(
+        monkeypatch,
+        [
+            f"data: {json.dumps(payload)}\n\n".encode(),
+            _frame({}, finish_reason="stop"),
+            b"data: [DONE]\n\n",
+        ],
+    )
+
+    chunks = await _stream(_adapter())
+
+    assert chunks[-1].strip() == "data: [DONE]"

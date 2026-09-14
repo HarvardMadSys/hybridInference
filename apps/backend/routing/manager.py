@@ -153,4 +153,13 @@ class RoutingManager:
                 "local": len(conf.local_deployment),
                 "remote": len(conf.remote_deployment),
             },
+            # What the probe loop last saw, per local endpoint. Empty when
+            # probing is disabled (``health_check: 0``) or before the first
+            # pass completes.
+            "endpoint_health": self.health.status_snapshot() if self.health else {},
+            # Stated explicitly because the obvious reading of the map above is
+            # wrong: `apply()` is the only reader of these verdicts and it runs
+            # once at bootstrap, synchronously, before the prober has run at
+            # all. An unhealthy endpoint here is still taking traffic.
+            "endpoint_health_enforced": False,
         }

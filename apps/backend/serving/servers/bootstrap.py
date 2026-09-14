@@ -243,23 +243,44 @@ def _collect_routewise_runtime_routers(
     return routewise_routers, model_ids_by_router
 
 
+def _report_route_weight_divergence(router: Any | None) -> None:
+    """Announce routes whose runtime weight no longer matches their config.
+
+    Never lets a diagnostic abort the caller: this runs in bootstrap and inside
+    the refresh loops, and losing route weights over a logging fault would be a
+    strictly worse outcome than losing the log line.
+    """
+    if router is None or not hasattr(router, "log_route_weight_divergence"):
+        return
+    try:
+        router.log_route_weight_divergence()
+    except Exception:
+        logger.warning("Route weight divergence report failed", exc_info=True)
+
+
 async def _refresh_weight_override_snapshots(
     resolver: WeightOverrideResolver,
     model_router_registry: ModelRouterRegistry | None = None,
     *,
     interval_seconds: float = 10.0,
     rebuild_pending: bool = False,
+    router: Any | None = None,
 ) -> None:
     """Periodically reload route weight overrides so workers converge after admin edits."""
     refresh_state = _EffectiveRouteRefreshState(rebuild_pending=rebuild_pending)
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            await _reload_effective_route_state(
+            changed = await _reload_effective_route_state(
                 resolver,
                 model_router_registry,
                 refresh_state,
             )
+            if changed:
+                # The report itself is deduplicated on the divergence set, so a
+                # reload that changed a model this router does not serve costs
+                # one walk of the route table and no log line.
+                _report_route_weight_divergence(router)
         except Exception:
             logger.warning("Route weight override snapshot refresh failed", exc_info=True)
 
@@ -270,17 +291,20 @@ async def _refresh_disabled_provider_snapshots(
     *,
     interval_seconds: float = 10.0,
     rebuild_pending: bool = False,
+    router: Any | None = None,
 ) -> None:
     """Periodically reload the disabled-provider set so workers converge after admin edits."""
     refresh_state = _EffectiveRouteRefreshState(rebuild_pending=rebuild_pending)
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            await _reload_effective_route_state(
+            changed = await _reload_effective_route_state(
                 resolver,
                 model_router_registry,
                 refresh_state,
             )
+            if changed:
+                _report_route_weight_divergence(router)
         except Exception:
             logger.warning("Disabled provider snapshot refresh failed", exc_info=True)
 
@@ -402,10 +426,26 @@ async def _bootstrap_routewise_from_logs(
                 include_envelope=False,
             )
             donor_overrides = (donor_overrides_by_router or {}).get(id(rw), {})
+            # Bounded like the latency pass. An unbounded fetch reads every
+            # api_logs row in the envelope window at each boot, and anything past
+            # the estimator's own envelope_max_samples cap is dropped on arrival.
+            # include_metadata=False keeps the widest column out of the result:
+            # this pass replays token counts only.
+            #
+            # The bound never drops below envelope_min_samples, mirroring
+            # CostEnvelopeEstimator._window_maxlen. The envelope stays
+            # uncalibrated until it holds that many samples, and a quota-only
+            # model that cannot reach it is refused by RouteWiseRouter.start():
+            # the gateway would fail to boot, so it would never serve the very
+            # traffic that fills the window. A cap here has to bound the replay,
+            # not gate calibration. db_bootstrap_max_rows <= 0 still disables
+            # the replay outright -- that path returns above.
+            envelope_limit = max(max_rows, max(int(rw.config.envelope_min_samples), 1))
             envelope_rows = await log_store.get_routewise_bootstrap_rows(
                 model_ids=sorted({*model_ids, *donor_overrides}),
                 since=now - dt.timedelta(seconds=envelope_window_sec),
-                limit=None,
+                limit=envelope_limit,
+                include_metadata=False,
             )
             envelope_counts = rw.bootstrap_from_log_rows(
                 envelope_rows,
@@ -893,22 +933,22 @@ async def initialize() -> AppServices:
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
 
-    # The circuit breaker pages ``alert_slack`` directly, which is gated on the
-    # webhook/relay env vars and not on ALERTS_ENABLED — so its plan-usage mute
-    # has to be applied outside the alert-engine block below, or the knob would be
-    # ignored by exactly the deployments still being paged. Best-effort: a
-    # deployment with no alerts.yaml keeps the default (page once per outage).
+    # Both state alerts — the breaker's ``circuit_open`` and the health route's
+    # ``db_disconnect`` — page ``alert_slack`` directly, gated on the
+    # webhook/relay env vars and not on ALERTS_ENABLED. Their policy therefore
+    # has to be applied outside the alert-engine block below, or every knob in
+    # ``state_changes`` would be ignored by exactly the deployments still being
+    # paged. Best-effort: a deployment with no alerts.yaml keeps the defaults
+    # (page once per outage, 300s apart).
     try:
-        from routing.endpoint_health import set_usage_limit_paging
         from serving.observability.alert_config import load_alert_config as _load_alert_config
+        from serving.observability.state_alert_policy import apply_state_change_policy
 
-        set_usage_limit_paging(
-            _load_alert_config(
-                str(resolve_config_path("alerts").path)
-            ).state_changes.circuit_open.page_on_usage_limit
+        apply_state_change_policy(
+            _load_alert_config(str(resolve_config_path("alerts").path)).state_changes
         )
     except Exception:
-        logger.debug("circuit-open alert policy unavailable; keeping defaults", exc_info=True)
+        logger.debug("state-change alert policy unavailable; keeping defaults", exc_info=True)
 
     # In-process alerting framework. Defaults to disabled. Operators flip the
     # ALERTS_ENABLED env var (or set SLACK_ALERTS_WEBHOOK_URL) to turn it on.
@@ -1148,6 +1188,7 @@ async def initialize() -> AppServices:
                     weight_override_resolver,
                     model_router_registry,
                     rebuild_pending=weight_rebuild_pending,
+                    router=router,
                 )
             )
             _BACKGROUND_TASKS.add(weight_override_refresh_task)
@@ -1173,6 +1214,7 @@ async def initialize() -> AppServices:
                     disabled_provider_resolver,
                     model_router_registry,
                     rebuild_pending=disabled_rebuild_pending,
+                    router=router,
                 )
             )
             _BACKGROUND_TASKS.add(disabled_provider_refresh_task)
@@ -1180,6 +1222,12 @@ async def initialize() -> AppServices:
             logger.info("Disabled provider resolver initialized")
         except Exception as exc:
             logger.warning(f"Disabled provider resolver initialization failed: {exc}")
+
+    # Say which routes the operational store just took out of service. Both
+    # resolvers are attached by now, so this is the first moment the effective
+    # weight table exists — and a boot log that does not name the difference is
+    # how a model spent 71 days with a zero-weighted route nobody knew about.
+    _report_route_weight_divergence(router)
 
     # Per-user concurrency limiter — reads live caps from RuntimeSettings so
     # operators can tune them at runtime. Falls back to registry defaults

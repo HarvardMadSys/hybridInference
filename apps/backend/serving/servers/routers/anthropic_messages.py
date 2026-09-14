@@ -39,6 +39,7 @@ from routing.prefill_load import (
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
+from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.config.settings import has_role
 from serving.exceptions import (
     generic_message_for_status,
@@ -80,8 +81,14 @@ router = APIRouter()
 # request after ~30s of silence, but slow upstream backends can take longer to
 # emit a first token. During idle gaps the stream emits an SSE comment heartbeat
 # every _KEEPALIVE_INTERVAL seconds to keep the connection alive, giving the
-# upstream up to _MAX_STREAM_IDLE seconds to produce the next FORWARDED frame
-# before we give up. _STREAM_SENTINEL marks end-of-upstream on the internal queue.
+# upstream a bounded number of seconds to produce the next FORWARDED frame before
+# we give up. _STREAM_SENTINEL marks end-of-upstream on the internal queue.
+#
+# Two ceilings, not one, because the two waits are not the same budget. Before
+# the first forwarded frame the upstream is prefilling, and prefill is
+# legitimately slow -- a full 1M-token prompt measures 138s on the local sglang
+# replicas -- so _MAX_FIRST_FRAME_IDLE stays at the historical 300s. After the
+# first frame the upstream is decoding, and _MAX_STREAM_IDLE applies instead.
 #
 # The idle timer only resets on a frame the adapter actually yields, but a
 # provider can be actively streaming while producing no forwardable frame for a
@@ -89,9 +96,15 @@ router = APIRouter()
 # it, and a large tool call (a big Write) can buffer for a minute-plus. A 60s
 # ceiling false-aborts those healthy generations, so the ceiling is generous and
 # env-tunable. The client still gets a heartbeat every _KEEPALIVE_INTERVAL, so a
-# higher ceiling only delays detection of a genuinely dead upstream (rare), which
-# is the right trade vs. killing a good turn. (A byte-level idle detector inside
-# the adapter is the fuller fix -- tracked in the surface bug backlog.)
+# higher ceiling only delays detection of a genuinely dead upstream.
+#
+# 240s rather than the 300s it used to be, because 300s is also the deployment
+# proxy's byte-anchored read timeout: the two clocks expired together, so this
+# surface never got an early warning and the two failures were indistinguishable
+# after the fact. The three now fire in order -- the adapter's byte-level
+# detector at 180s (STREAM_IDLE_TIMEOUT_SECONDS, and the only one that sees a
+# stall on a still-open connection), this frame-level ceiling at 240s, the proxy
+# at 300s -- so whichever layer actually lost the upstream is the one that says so.
 _KEEPALIVE_INTERVAL = 15
 
 # Upper bound on content blocks in one accumulated Anthropic message. The
@@ -102,9 +115,17 @@ _KEEPALIVE_INTERVAL = 15
 # tool use runs to dozens of blocks, not thousands.
 _MAX_CONTENT_BLOCKS = 1024
 try:
-    _MAX_STREAM_IDLE = int(os.environ.get("STREAM_MAX_IDLE_S", "300"))
+    _MAX_STREAM_IDLE = int(os.environ.get("STREAM_MAX_IDLE_S", "240"))
 except (TypeError, ValueError):
-    _MAX_STREAM_IDLE = 300
+    _MAX_STREAM_IDLE = 240
+try:
+    _MAX_FIRST_FRAME_IDLE = int(os.environ.get("STREAM_MAX_FIRST_FRAME_IDLE_S", "300"))
+except (TypeError, ValueError):
+    _MAX_FIRST_FRAME_IDLE = 300
+# An operator who raised STREAM_MAX_IDLE_S did so to stop a slow model being cut
+# off, and before the split that value covered prefill too. Never give them less
+# head room for the first frame than they asked for overall.
+_MAX_FIRST_FRAME_IDLE = max(_MAX_FIRST_FRAME_IDLE, _MAX_STREAM_IDLE)
 _STREAM_SENTINEL: Any = object()
 
 
@@ -1720,6 +1741,7 @@ async def anthropic_messages(
 
                 reader_task = asyncio.create_task(_reader())
                 idle_seconds = 0.0
+                saw_upstream_frame = False
                 try:
                     while True:
                         try:
@@ -1728,16 +1750,20 @@ async def anthropic_messages(
                             )
                         except asyncio.TimeoutError:
                             idle_seconds += _KEEPALIVE_INTERVAL
-                            if idle_seconds >= _MAX_STREAM_IDLE:
+                            # Prefill before the first frame, decode after it.
+                            idle_ceiling = (
+                                _MAX_STREAM_IDLE if saw_upstream_frame else _MAX_FIRST_FRAME_IDLE
+                            )
+                            if idle_seconds >= idle_ceiling:
                                 stream_failed = True
                                 stream_status_code = 504
-                                stream_error_message = (
-                                    f"Upstream sent no data for {_MAX_STREAM_IDLE}s"
-                                )
+                                stream_error_message = f"Upstream sent no data for {idle_ceiling}s"
                                 stream_error_operator = stream_error_message
                                 logger.warning(
                                     f"[{request_id}] Stream idle timeout after "
-                                    f"{_MAX_STREAM_IDLE}s; aborting"
+                                    f"{idle_ceiling}s "
+                                    f"({'mid-stream' if saw_upstream_frame else 'before first frame'})"
+                                    "; aborting"
                                 )
                                 # An upstream that went silent for the whole
                                 # ceiling is a genuine fault, even though it
@@ -1762,6 +1788,11 @@ async def anthropic_messages(
                             yield b": keepalive\n\n"
                             continue
                         idle_seconds = 0.0
+                        # Anything off the queue -- a frame, the sentinel, an
+                        # upstream exception -- proves the upstream got past
+                        # prefill, so the tighter mid-stream ceiling applies from
+                        # here on.
+                        saw_upstream_frame = True
                         if item is _STREAM_SENTINEL:
                             # Clean end of body. ``_parse_sse_chunk`` only emits
                             # an event once it sees the blank line SSE delimits
@@ -1859,6 +1890,39 @@ async def anthropic_messages(
                 logger.warning(f"[{request_id}] Streaming dispatch failed: key pool exhausted")
                 # Carries no HTTP status, so it is never exempt: every key for
                 # this endpoint is muted and nothing it is sent can succeed.
+                _record_dispatch_failure(
+                    dispatch_endpoint_id,
+                    reason="messages_stream_exception",
+                    detail=stream_error_operator,
+                    exc=exc,
+                )
+                err = {
+                    "type": "error",
+                    "error": {
+                        "type": "rate_limit_error",
+                        "message": stream_error_message,
+                    },
+                }
+                yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
+            except UpstreamSaturated as exc:
+                # This gateway is already holding as many concurrent requests
+                # against the provider account as its adaptive limit allows, and
+                # none came free while this one waited. Same client answer as the
+                # exhausted-pool case above and for the same reason: the fix is to
+                # back off, not to retry immediately, and this surface pins one
+                # adapter up front so there is no fallback chain to try instead.
+                # Retry-after is short because a slot can free at any moment.
+                #
+                # ``_record_dispatch_failure`` is still called for the log trail;
+                # ``endpoint_health`` filters this exception out of the breaker
+                # itself, since the endpoint was never asked.
+                stream_failed = True
+                stream_status_code = 429
+                stream_error_message = scrub_error_for_user(None, request_id, 429)
+                stream_error_operator = operator_safe_error(exc)
+                logger.warning(
+                    f"[{request_id}] Streaming dispatch failed: upstream concurrency saturated"
+                )
                 _record_dispatch_failure(
                     dispatch_endpoint_id,
                     reason="messages_stream_exception",
@@ -2063,6 +2127,37 @@ async def anthropic_messages(
         return _anthropic_error(
             429, error_message, headers={"retry-after": str(int(KeyPool.MUTE_SECONDS))}
         )
+    except UpstreamSaturated as exc:
+        # The adaptive outbound limit for this provider account is already full
+        # and no slot came free while this request waited. Answered like the
+        # exhausted pool above -- a rate-limit condition the client should back
+        # off on, not an internal fault -- because this surface pins one adapter
+        # up front and has no fallback chain to try instead. The retry-after is
+        # one second, not a mute window: a slot frees the moment any in-flight
+        # generation finishes.
+        error_message = scrub_error_for_user(None, request_id, 429)
+        logger.warning(f"[{request_id}] Adapter messages() failed: upstream concurrency saturated")
+        _record_dispatch_failure(
+            dispatch_endpoint_id,
+            reason="messages_exception",
+            detail=operator_safe_error(exc),
+            exc=exc,
+        )
+        _log_failure(
+            log_store,
+            request_id=request_id,
+            canonical=canonical,
+            adapter=adapter,
+            metadata=metadata,
+            params_for_log=params_for_log,
+            messages_for_log=messages_for_log,
+            request_payload_for_log=request_payload_for_log,
+            start=start,
+            status_code=429,
+            error_message=error_message,
+            operator_error=operator_safe_error(exc),
+        )
+        return _anthropic_error(429, error_message, headers={"retry-after": "1"})
     except (TimeoutError, asyncio.TimeoutError) as exc:
         # Upstream exceeded the (generous) completion timeout. Surface a 504
         # gateway-timeout rather than a generic 502 "Internal server error" so

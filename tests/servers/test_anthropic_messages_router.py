@@ -1742,14 +1742,16 @@ async def test_streaming_emits_keepalive_during_idle_gap(anthropic_test_client, 
 
 @pytest.mark.asyncio
 async def test_streaming_aborts_after_max_idle(anthropic_test_client, monkeypatch):
-    """If the upstream never sends data, keepalives stop at _MAX_STREAM_IDLE and
-    the stream aborts with a 504 error event (usage stays zero -- not billed)."""
+    """If the upstream never sends data, keepalives stop at the pre-first-frame
+    ceiling and the stream aborts with a 504 error event (usage stays zero --
+    not billed)."""
     import asyncio
 
     from serving.servers.routers import anthropic_messages as amod
 
     monkeypatch.setattr(amod, "_KEEPALIVE_INTERVAL", 0.02)
     monkeypatch.setattr(amod, "_MAX_STREAM_IDLE", 0.08)
+    monkeypatch.setattr(amod, "_MAX_FIRST_FRAME_IDLE", 0.08)
 
     async def _iter():
         await asyncio.sleep(5)  # effectively never within the test window
@@ -1784,6 +1786,123 @@ async def test_streaming_aborts_after_max_idle(anthropic_test_client, monkeypatc
     assert captured.get("error") is not None
     assert captured["usage"]["input_tokens"] == 0  # failed stream -> not billed
     assert captured["usage"]["output_tokens"] == 0
+
+
+def test_mid_stream_ceiling_is_desynchronised_from_the_proxy_read_timeout():
+    """300s was also the deployment proxy's read timeout, so both clocks expired
+    together and this surface never got an early warning."""
+    from serving.servers.routers import anthropic_messages as amod
+
+    assert amod._MAX_STREAM_IDLE < 300
+    assert amod._MAX_FIRST_FRAME_IDLE >= amod._MAX_STREAM_IDLE
+
+
+@pytest.mark.asyncio
+async def test_slow_first_frame_is_not_cut_by_the_mid_stream_ceiling(
+    anthropic_test_client, monkeypatch
+):
+    """Prefill is not decode. A long wait for the *first* frame is what a 1M-token
+    prompt legitimately looks like (138s measured on the local replicas), so the
+    tight mid-stream ceiling must not apply to it."""
+    import asyncio
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    monkeypatch.setattr(amod, "_KEEPALIVE_INTERVAL", 0.02)
+    monkeypatch.setattr(amod, "_MAX_STREAM_IDLE", 0.08)
+    monkeypatch.setattr(amod, "_MAX_FIRST_FRAME_IDLE", 30)
+
+    full_sse = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"msg_p","model":"claude-opus-4-7",'
+        b'"role":"assistant","content":[],"usage":{"input_tokens":5,"output_tokens":1}}}\n\n'
+        b"event: content_block_delta\n"
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n'
+        b"event: message_stop\n"
+        b'data: {"type":"message_stop"}\n\n'
+    )
+
+    async def _iter():
+        await asyncio.sleep(0.25)  # several mid-stream ceilings' worth of prefill
+        yield full_sse
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        amod, "_schedule_log_store_task", lambda log_store, **kw: captured.update(kw)
+    )
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    collected = b""
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for raw in r.aiter_bytes():
+            collected += raw
+
+    assert b": keepalive" in collected  # heartbeats carried it through prefill
+    assert b"event: error" not in collected  # and it was never aborted
+    assert b"message_stop" in collected
+    assert captured.get("status_code") == 200
+
+
+@pytest.mark.asyncio
+async def test_silence_after_the_first_frame_aborts_at_the_mid_stream_ceiling(
+    anthropic_test_client, monkeypatch
+):
+    """Once a frame has landed, prefill is over and the tight ceiling takes over --
+    even with a generous first-frame budget still configured."""
+    import asyncio
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    monkeypatch.setattr(amod, "_KEEPALIVE_INTERVAL", 0.02)
+    monkeypatch.setattr(amod, "_MAX_STREAM_IDLE", 0.08)
+    monkeypatch.setattr(amod, "_MAX_FIRST_FRAME_IDLE", 30)
+
+    async def _iter():
+        yield (
+            b"event: message_start\n"
+            b'data: {"type":"message_start","message":{"id":"msg_w","model":"claude-opus-4-7",'
+            b'"role":"assistant","content":[],"usage":{"input_tokens":5,"output_tokens":1}}}\n\n'
+        )
+        await asyncio.sleep(30)  # the wedge: decoding stops, connection stays open
+        yield b""
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        amod, "_schedule_log_store_task", lambda log_store, **kw: captured.update(kw)
+    )
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    collected = b""
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for raw in r.aiter_bytes():
+            collected += raw
+
+    assert b"event: error" in collected
+    assert captured.get("status_code") == 504
 
 
 # ---------------------------------------------------------------------------
