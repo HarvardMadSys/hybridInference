@@ -647,6 +647,22 @@ class AuthIpBlockedRule:
     With the default ``threshold_count: 1`` a single block is already a breach;
     raising it pages only once a window holds that many. See
     :class:`AuthIpBlockedConfig`.
+
+    No recovery is ever announced (``announce_resolution=False``), because this
+    rule only ever observes *transitions* and its silence is therefore
+    guaranteed rather than informative. ``utils/auth_failure_blocklist.py``
+    emits one ``auth_ip_blocked`` record per new block and then returns early
+    for a bucket that is already blocked ("Already blocked ... Not a fresh
+    transition"), while the block itself stands for
+    ``auth_failure_block_duration_sec`` -- 86400s by default, far longer than
+    this rule's staleness bound of ``window_sec * _STALE_WINDOW_FACTOR`` (600s).
+    So the records stop long before the block does, and every close this rule
+    can produce -- the settling edge as much as the sweep's "Recovered (no
+    recent samples)" card -- is an artifact of the rule going quiet, never
+    evidence that the source was unblocked. Posting it is pure noise on top of
+    reading as though the block had lifted, which is the opposite of the truth
+    while the source is still being refused. The incident still closes silently
+    in the tracker, so the key does not stay firing forever.
     """
 
     name = "auth_ip_blocked"
@@ -706,6 +722,10 @@ class AuthIpBlockedRule:
             cooldown_sec=self._cfg.cooldown_sec,
             stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
             now=now,
+            # Close the incident, announce nothing: the records stop when the
+            # blocking transitions stop, not when the block lifts. See the
+            # class docstring.
+            announce_resolution=False,
         )
 
 
